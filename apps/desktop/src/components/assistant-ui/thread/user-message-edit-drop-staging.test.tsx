@@ -128,7 +128,9 @@ describe('edit composer drop staging failures', () => {
 
     expect(warning.kind).toBe('warning')
     // A reason another item follows loses its period; the detail keeps it whole.
-    expect(warning.message).toContain(`Could not attach ${'a'.repeat(24)}…${'a'.repeat(19)}.zip: ${limit.slice(0, -1)}; `)
+    expect(warning.message).toContain(
+      `Could not attach ${'a'.repeat(24)}…${'a'.repeat(19)}.zip: ${limit.slice(0, -1)}; `
+    )
     expect(warning.message).toContain(`Could not attach big.zip: ${limit}`)
     expect(warning.message).not.toContain(longName)
     expect(warning.message).not.toContain('notes.txt')

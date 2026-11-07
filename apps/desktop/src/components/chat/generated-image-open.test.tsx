@@ -65,42 +65,45 @@ it.each([
   ['electron', '/srv/hermes/images/cat.png', 'cat.png', '/srv/hermes/images/cat.png'],
   ['electron', 'renders/out.png', 'out.png', '/srv/project/renders/out.png'],
   ['browser', 'renders/out.png', 'out.png', '/srv/project/renders/out.png']
-])('saves a gateway image through the %s bridge (%s), never opening its tokened URL', async (host, image, name, saved) => {
-  // Resolves like /api/fs/download: in the named session's cwd, else in the gateway's own.
-  saveGatewayFile.mockImplementation(async ({ path, profile, sessionId }) => {
-    const cwd = sessionId ? SESSION_CWDS[`${profile}/${sessionId}`] : '/srv/gateway'
+])(
+  'saves a gateway image through the %s bridge (%s), never opening its tokened URL',
+  async (host, image, name, saved) => {
+    // Resolves like /api/fs/download: in the named session's cwd, else in the gateway's own.
+    saveGatewayFile.mockImplementation(async ({ path, profile, sessionId }) => {
+      const cwd = sessionId ? SESSION_CWDS[`${profile}/${sessionId}`] : '/srv/gateway'
 
-    if (!cwd) {
-      throw new Error('404: Session not found')
-    }
+      if (!cwd) {
+        throw new Error('404: Session not found')
+      }
 
-    return { path: path.startsWith('/') ? path : `${cwd}/${path}`, saved: true }
-  })
-  window.document.documentElement.dataset.hermesDesktopHost = host
-  $connection.set({
-    baseUrl: 'https://gateway.example',
-    connectionId: 'remote-1',
-    mode: 'remote',
-    profile: 'default',
-    token: 'secret-token'
-  } as unknown as HermesConnection)
-  $sessions.set([{ id: 'origin-session', profile: 'work' } as SessionInfo])
-  $selectedStoredSessionId.set('origin-session')
+      return { path: path.startsWith('/') ? path : `${cwd}/${path}`, saved: true }
+    })
+    window.document.documentElement.dataset.hermesDesktopHost = host
+    $connection.set({
+      baseUrl: 'https://gateway.example',
+      connectionId: 'remote-1',
+      mode: 'remote',
+      profile: 'default',
+      token: 'secret-token'
+    } as unknown as HermesConnection)
+    $sessions.set([{ id: 'origin-session', profile: 'work' } as SessionInfo])
+    $selectedStoredSessionId.set('origin-session')
 
-  const link = openImageLink(image)
-  await act(async () => {
-    fireEvent.click(link)
-  })
+    const link = openImageLink(image)
+    await act(async () => {
+      fireEvent.click(link)
+    })
 
-  await vi.waitFor(() =>
-    expect(saveGatewayFile).toHaveBeenCalledWith(
-      expect.objectContaining({ connectionId: 'remote-1', path: image, suggestedName: name })
+    await vi.waitFor(() =>
+      expect(saveGatewayFile).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionId: 'remote-1', path: image, suggestedName: name })
+      )
     )
-  )
-  await expect(saveGatewayFile.mock.results[0]!.value).resolves.toEqual({ path: saved, saved: true })
-  expect(JSON.stringify(saveGatewayFile.mock.calls)).not.toContain('secret-token')
-  expect(openExternal).not.toHaveBeenCalled()
-})
+    await expect(saveGatewayFile.mock.results[0]!.value).resolves.toEqual({ path: saved, saved: true })
+    expect(JSON.stringify(saveGatewayFile.mock.calls)).not.toContain('secret-token')
+    expect(openExternal).not.toHaveBeenCalled()
+  }
+)
 
 // A chat with no stored id yet names its live runtime session, as the chat's other file opens do.
 it('saves a relative gateway image from a chat not stored yet through its runtime session', async () => {
@@ -130,8 +133,12 @@ it('saves a relative gateway image from a chat not stored yet through its runtim
 })
 
 // Anything else opens as on main: a web image's own URL.
-it('opens a web image\'s URL with the system handler in native Desktop', async () => {
-  $connection.set({ baseUrl: 'https://gateway.example', mode: 'remote', token: 'secret-token' } as unknown as HermesConnection)
+it("opens a web image's URL with the system handler in native Desktop", async () => {
+  $connection.set({
+    baseUrl: 'https://gateway.example',
+    mode: 'remote',
+    token: 'secret-token'
+  } as unknown as HermesConnection)
 
   const link = openImageLink('https://images.example/cat.png')
   await act(async () => {
@@ -162,7 +169,11 @@ it.each(['electron', 'browser'])('saves a data: image that will not decode in %s
 
   ;(window as unknown as { hermesDesktop: object }).hermesDesktop = { openExternal, saveGatewayFile, saveImageFromUrl }
   window.document.documentElement.dataset.hermesDesktopHost = host
-  $connection.set({ baseUrl: 'https://gateway.example', mode: 'remote', token: 'secret-token' } as unknown as HermesConnection)
+  $connection.set({
+    baseUrl: 'https://gateway.example',
+    mode: 'remote',
+    token: 'secret-token'
+  } as unknown as HermesConnection)
 
   const link = openImageLink(image)
   await act(async () => {

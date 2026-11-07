@@ -459,7 +459,9 @@ async function syncRelayRosters() {
 
     const agentsByConnection = new Map<string, RelayAgentRow[]>()
     // One profiles.list per connection: its routes share a socket and answer one profile set.
-    const firstRoutes = connections.filter((connection, index) => connections.findIndex(other => other.id === connection.id) === index)
+    const firstRoutes = connections.filter(
+      (connection, index) => connections.findIndex(other => other.id === connection.id) === index
+    )
     await Promise.all(
       firstRoutes.map(async connection => {
         const agents = await relayAgentsOn(connection, labels)
@@ -588,7 +590,9 @@ async function drainRelayOutboxes() {
         const pending = pendingRelaysFor(sender)
 
         for (const envelope of Array.isArray(res?.envelopes) ? res.envelopes : []) {
-          if (envelope.id && !pending.has(envelope.id)) {pending.set(envelope.id, structuredClone(envelope))}
+          if (envelope.id && !pending.has(envelope.id)) {
+            pending.set(envelope.id, structuredClone(envelope))
+          }
         }
 
         // Every claimed-but-unACKed envelope rides again: a delivery that
@@ -692,7 +696,9 @@ async function settleRelayDelivery(
   }
 
   if (res.status !== 'settled' && res.status !== 'failed') {
-    if (res.status === 'ambiguous') {noteBotAttention(attentionKey, 'unknown_execution')}
+    if (res.status === 'ambiguous') {
+      noteBotAttention(attentionKey, 'unknown_execution')
+    }
 
     return
   }
@@ -770,7 +776,9 @@ async function deliverRelayEnvelope(
     noteBotAttention(attentionKey, reason || error?.message || error)
 
     // A transport exception can follow a committed admission; never settle it as failure.
-    if (!reason || reason === 'runtime_unavailable') {return}
+    if (!reason || reason === 'runtime_unavailable') {
+      return
+    }
     await postReply({
       error: String(error?.message || error || 'delivery failed'),
       ...(reason

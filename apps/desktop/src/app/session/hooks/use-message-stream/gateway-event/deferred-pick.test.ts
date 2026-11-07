@@ -21,7 +21,8 @@ function context(payload: Record<string, unknown>, overrides: Record<string, unk
       activeGatewayProfile: 'default',
       activeSessionIdRef: { current: 's' },
       queryClient: { invalidateQueries: vi.fn(async () => undefined) },
-      updateSessionState: (sid: string, updater: (state: never) => never) => (states[sid] = updater(states[sid] as never))
+      updateSessionState: (sid: string, updater: (state: never) => never) =>
+        (states[sid] = updater(states[sid] as never))
     },
     event: { payload, session_id: 's', type: 'session.updated' },
     explicitSid: 's',
@@ -38,33 +39,56 @@ function context(payload: Record<string, unknown>, overrides: Record<string, unk
 }
 
 describe('handleDeferredPickEvent', () => {
-  afterEach(() => { vi.clearAllMocks() })
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
 
   it('shows a refused next-turn pick by name and repaints the committed model', () => {
     setCurrentModelTransient('picked')
     setCurrentProviderTransient('custom')
 
-    const { ctx, states } = context({ model: 'frozen', operation: 'model', provider: 'openrouter',
-      reason: 'model_resolution_failed', session_id: 's', status: 'refused', target_model: 'picked' })
+    const { ctx, states } = context({
+      model: 'frozen',
+      operation: 'model',
+      provider: 'openrouter',
+      reason: 'model_resolution_failed',
+      session_id: 's',
+      status: 'refused',
+      target_model: 'picked'
+    })
 
     expect(handleDeferredPickEvent(ctx)).toBe(true)
-    expect(notifyError).toHaveBeenCalledWith(expect.objectContaining({ message: 'model_resolution_failed' }), 'Model switch failed')
+    expect(notifyError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'model_resolution_failed' }),
+      'Model switch failed'
+    )
     expect(states.s).toMatchObject({ model: 'frozen', provider: 'openrouter' })
     expect([$currentModel.get(), $currentProvider.get()]).toEqual(['frozen', 'openrouter'])
   })
 
   it('asks for a guarded next-turn pick instead of dropping it', () => {
-    const { ctx } = context({ confirm: 'token', confirm_message: 'Costly', operation: 'model',
-      payload: { model: 'guarded', provider: 'custom' }, session_id: 's', status: 'confirmation_required', target_model: 'guarded' })
+    const { ctx } = context({
+      confirm: 'token',
+      confirm_message: 'Costly',
+      operation: 'model',
+      payload: { model: 'guarded', provider: 'custom' },
+      session_id: 's',
+      status: 'confirmation_required',
+      target_model: 'guarded'
+    })
 
     expect(handleDeferredPickEvent(ctx)).toBe(true)
-    expect(surfaceModelSwitchConfirm).toHaveBeenCalledWith(expect.objectContaining({ confirmMessage: 'Costly', model: 'guarded' }))
+    expect(surfaceModelSwitchConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({ confirmMessage: 'Costly', model: 'guarded' })
+    )
     expect(notifyError).not.toHaveBeenCalled()
   })
 
   it('leaves other session updates to their handlers', () => {
     expect(handleDeferredPickEvent(context({ operation: 'rename', session_id: 's', title: 'x' }).ctx)).toBe(false)
-    expect(handleDeferredPickEvent(context({ model: 'm', operation: 'model', revision: 3, session_id: 's' }).ctx)).toBe(false)
+    expect(handleDeferredPickEvent(context({ model: 'm', operation: 'model', revision: 3, session_id: 's' }).ctx)).toBe(
+      false
+    )
   })
 
   it('declining a guarded next-turn pick paints the committed model again', async () => {
@@ -72,9 +96,16 @@ describe('handleDeferredPickEvent', () => {
     setCurrentProviderTransient('custom')
     surfaceModelSwitchConfirm.mockResolvedValueOnce(false)
 
-    const { ctx, states } = context({ committed_model: 'frozen', committed_provider: 'openrouter', confirm: 'token',
-      operation: 'model', payload: { model: 'guarded', provider: 'custom' }, session_id: 's',
-      status: 'confirmation_required', target_model: 'guarded' })
+    const { ctx, states } = context({
+      committed_model: 'frozen',
+      committed_provider: 'openrouter',
+      confirm: 'token',
+      operation: 'model',
+      payload: { model: 'guarded', provider: 'custom' },
+      session_id: 's',
+      status: 'confirmation_required',
+      target_model: 'guarded'
+    })
 
     states.s = { model: 'guarded', provider: 'custom' }
     expect(handleDeferredPickEvent(ctx)).toBe(true)
@@ -88,8 +119,15 @@ describe('handleDeferredPickEvent', () => {
     let answer: (value: boolean) => void = () => undefined
     surfaceModelSwitchConfirm.mockReturnValueOnce(new Promise<boolean>(resolve => (answer = resolve)))
 
-    const { ctx } = context({ committed_model: 'frozen', confirm: 'token', operation: 'model',
-      payload: { model: 'guarded' }, session_id: 's', status: 'confirmation_required', target_model: 'guarded' })
+    const { ctx } = context({
+      committed_model: 'frozen',
+      confirm: 'token',
+      operation: 'model',
+      payload: { model: 'guarded' },
+      session_id: 's',
+      status: 'confirmation_required',
+      target_model: 'guarded'
+    })
 
     handleDeferredPickEvent(ctx)
     setCurrentModelTransient('newer')
@@ -102,9 +140,21 @@ describe('handleDeferredPickEvent', () => {
     setCurrentModelTransient('picked')
     setCurrentProviderTransient('custom')
 
-    const { ctx, states } = context({ model: 'other-profile-model', operation: 'model', provider: 'openrouter',
-      reason: 'model_resolution_failed', session_id: 's', status: 'refused', target_model: 'picked' },
-    { event: { payload: {}, profile: 'other', session_id: 's', type: 'session.updated' }, fromActiveSource: () => false })
+    const { ctx, states } = context(
+      {
+        model: 'other-profile-model',
+        operation: 'model',
+        provider: 'openrouter',
+        reason: 'model_resolution_failed',
+        session_id: 's',
+        status: 'refused',
+        target_model: 'picked'
+      },
+      {
+        event: { payload: {}, profile: 'other', session_id: 's', type: 'session.updated' },
+        fromActiveSource: () => false
+      }
+    )
 
     expect(handleDeferredPickEvent(ctx)).toBe(true)
     expect([$currentModel.get(), $currentProvider.get()]).toEqual(['picked', 'custom'])
@@ -119,12 +169,21 @@ describe('handleDeferredPickEvent', () => {
       return true
     }) as never)
 
-    const { ctx } = context({ confirm: 'token', operation: 'model', payload: { model: 'guarded', provider: 'custom', reasoning: 'high' },
-      session_id: 's', status: 'confirmation_required', target_model: 'guarded' })
+    const { ctx } = context({
+      confirm: 'token',
+      operation: 'model',
+      payload: { model: 'guarded', provider: 'custom', reasoning: 'high' },
+      session_id: 's',
+      status: 'confirmation_required',
+      target_model: 'guarded'
+    })
 
     handleDeferredPickEvent(ctx)
     await vi.waitFor(() => expect(requestGatewayForAgent).toHaveBeenCalled())
     expect(requestGatewayForAgent).toHaveBeenCalledWith(null, 'default', 'session.model', {
-      confirm: 'token', payload: { model: 'guarded', provider: 'custom', reasoning: 'high' }, session_id: 's' })
+      confirm: 'token',
+      payload: { model: 'guarded', provider: 'custom', reasoning: 'high' },
+      session_id: 's'
+    })
   })
 })

@@ -20,9 +20,17 @@ export function refreshGatewayGroupRooms(): void {
 
 /** Drop a disbanded room's key and every alias to it, then re-read the sidebar list. */
 export function forgetCanonicalGroup({ connectionId, profile, roomId }: CanonicalGroupBinding): void {
-  $disbandedGatewayRooms.set(new Set($disbandedGatewayRooms.get()).add(canonicalGroupKey({ connectionId, profile }, roomId)))
-  $canonicalGroupBindings.set(Object.fromEntries(Object.entries($canonicalGroupBindings.get()).filter(([, binding]) =>
-    binding.connectionId !== connectionId || binding.profile !== profile || binding.roomId !== roomId)))
+  $disbandedGatewayRooms.set(
+    new Set($disbandedGatewayRooms.get()).add(canonicalGroupKey({ connectionId, profile }, roomId))
+  )
+  $canonicalGroupBindings.set(
+    Object.fromEntries(
+      Object.entries($canonicalGroupBindings.get()).filter(
+        ([, binding]) =>
+          binding.connectionId !== connectionId || binding.profile !== profile || binding.roomId !== roomId
+      )
+    )
+  )
   refreshGatewayGroupRooms()
 }
 
@@ -35,8 +43,15 @@ export function registerCanonicalGroup(route: CanonicalGroupRoute, room: Canonic
   const current = $canonicalGroupBindings.get()[key]
 
   // The roster re-lists on a poll: an unchanged room must not wake every binding reader.
-  if (current?.connectionId !== route.connectionId || current.profile !== route.profile || current.roomName !== room.name) {
-    $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [key]: { ...route, roomId: room.room_id, roomName: room.name } })
+  if (
+    current?.connectionId !== route.connectionId ||
+    current.profile !== route.profile ||
+    current.roomName !== room.name
+  ) {
+    $canonicalGroupBindings.set({
+      ...$canonicalGroupBindings.get(),
+      [key]: { ...route, roomId: room.room_id, roomName: room.name }
+    })
   }
 
   return key
@@ -52,7 +67,10 @@ export function registerCanonicalGroup(route: CanonicalGroupRoute, room: Canonic
 export type CanonicalGroupOrigin = 'key' | 'name'
 
 /** The route `group` names when it is a key: null for a name, whatever its shape. */
-export function canonicalGroupKeyRoute(group: string, origin: CanonicalGroupOrigin): ReturnType<typeof parseCanonicalGroupKey> {
+export function canonicalGroupKeyRoute(
+  group: string,
+  origin: CanonicalGroupOrigin
+): ReturnType<typeof parseCanonicalGroupKey> {
   return origin === 'name' ? null : parseCanonicalGroupKey(group)
 }
 
@@ -61,7 +79,9 @@ export function canonicalGroupKeyRoute(group: string, origin: CanonicalGroupOrig
 export function parseCanonicalGroupKey(key: string): (CanonicalGroupRoute & { roomId: string }) | null {
   const match = /^canonical:([^:]*):([^:]*):(.+)$/.exec(key)
 
-  if (!match) {return null}
+  if (!match) {
+    return null
+  }
 
   try {
     return { connectionId: decodeURIComponent(match[1]), profile: decodeURIComponent(match[2]), roomId: match[3] }
@@ -119,7 +139,9 @@ export function publishCanonicalGroup(
 ): void {
   const key = registerCanonicalGroup(resolved.authority, resolved.room)
 
-  if (origin === 'key' && key === group) {return}
+  if (origin === 'key' && key === group) {
+    return
+  }
   const binding = { ...resolved.authority, roomId: resolved.room.room_id, roomName: resolved.room.name }
   const alias = canonicalGroupKeyRoute(group, origin) ? group : canonicalGroupAliasKey(route, group)
   $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [alias]: binding })
@@ -166,7 +188,9 @@ async function listGatewayGroupRooms(route: CanonicalGroupRoute): Promise<Gatewa
   try {
     rooms = await listCanonicalRooms(route)
   } catch (error) {
-    if (rpcMethodMissing(error)) {return []}
+    if (rpcMethodMissing(error)) {
+      return []
+    }
     throw error
   }
 
@@ -185,7 +209,9 @@ async function listGatewayGroupRooms(route: CanonicalGroupRoute): Promise<Gatewa
   const hidden = $disbandedGatewayRooms.get()
   const kept = [...hidden].filter(key => !key.startsWith(prefix) || keys.has(key))
 
-  if (kept.length !== hidden.size) {$disbandedGatewayRooms.set(new Set(kept))}
+  if (kept.length !== hidden.size) {
+    $disbandedGatewayRooms.set(new Set(kept))
+  }
 
   return listed
 }
@@ -216,7 +242,9 @@ export function useGatewayGroupRooms(): GatewayGroupRoom[] {
 
   // A create or disband here re-reads now; a failed re-read keeps the last good list.
   useEffect(() => {
-    if (revision && host.state.gateway.get() === 'open') {void refetch()}
+    if (revision && host.state.gateway.get() === 'open') {
+      void refetch()
+    }
   }, [revision, refetch])
 
   return useMemo(

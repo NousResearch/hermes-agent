@@ -16,24 +16,35 @@ it('shared-gateway refusals render from the active locale pack, English otherwis
   const contract = { sources: ['tui'], parameters: ['request_id', 'source'] }
 
   // Ink's client hands the shared translation its own `t`.
-  const refusal = () => { try { canonicalRequest('session.create', { yolo: true }, contract, t);
+  const refusal = () => {
+    try {
+      canonicalRequest('session.create', { yolo: true }, contract, t)
 
- return '' } catch (e) { return (e as Error).message } }
+      return ''
+    } catch (e) {
+      return (e as Error).message
+    }
+  }
 
   const dir = await mkdtemp(join(process.env.TMPDIR ?? '.', 'i18n-canonical-'))
   const bogus = join(dir, 'not-an-image.png')
 
   await writeFile(bogus, 'plain text')
-  const imageError = () => stageImagePath(bogus, {} as never, { sid: 's', profileHome: dir } as never).catch((e: Error) => e.message)
+  const imageError = () =>
+    stageImagePath(bogus, {} as never, { sid: 's', profileHome: dir } as never).catch((e: Error) => e.message)
 
   try {
     expect(refusal()).toBe('gateway does not support TUI launch options: yolo')
     expect(await imageError()).toBe('Unsupported image: expected PNG, JPEG, GIF, or WebP bytes')
 
-    applyLocale('xx', { lang: 'xx', surface: 'tui', messages: {
-      'canonical.launch.unsupportedOptions': 'XX-launch {0}',
-      'canonical.images.unsupported': 'XX-image'
-    } })
+    applyLocale('xx', {
+      lang: 'xx',
+      surface: 'tui',
+      messages: {
+        'canonical.launch.unsupportedOptions': 'XX-launch {0}',
+        'canonical.images.unsupported': 'XX-image'
+      }
+    })
 
     expect(refusal()).toBe('XX-launch yolo')
     expect(await imageError()).toBe('XX-image')

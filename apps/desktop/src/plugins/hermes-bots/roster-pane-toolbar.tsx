@@ -11,7 +11,12 @@ import {
   Tip
 } from '@hermes/plugin-sdk'
 
-import { connectionName, groupSelectionElsewhere, seatableGroupBots, useGroupCapability } from './canonical-group-capabilities'
+import {
+  connectionName,
+  groupSelectionElsewhere,
+  seatableGroupBots,
+  useGroupCapability
+} from './canonical-group-capabilities'
 import { botSourceStatus } from './data'
 import type { useBots } from './i18n'
 import { setActivityToasts } from './roster-actions'

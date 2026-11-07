@@ -175,10 +175,10 @@ def test_one_oversized_image_keeps_the_strict_trigger(odd):
     }
     outbound = [upload, *_screenshot_tool_messages(OUTBOUND_IMAGE_LIMIT, shrunk)]
     assert evict_stale_outbound_tool_images(outbound) == IMAGE_EVICTION_BATCH
-    # The upload itself is reserved and never rewritten.
-    assert upload["content"][1]["image_url"]["url"] == url
+    assert not any(part.get("type") == "image_url" for part in outbound[0]["content"])
+    assert outbound[0]["content"][0]["text"] == "look at this"
 
-    # Same request on the wire shape: 20 pre-shrunk carriers plus the odd reserved upload.
+    # Same request on the wire shape: 20 pre-shrunk carriers plus the odd upload carrier.
     wire = _wire_tool_results(OUTBOUND_IMAGE_LIMIT, shrunk)
     source = ({"type": "url", "url": url} if odd == "remote"
               else {"type": "base64", "media_type": "image/png", "data": url.split(",", 1)[1]})
@@ -251,6 +251,44 @@ def test_unfixable_upload_breach_still_retires_in_batches():
     assert moves <= -(-(len(span) - OUTBOUND_IMAGE_FLOOR) // IMAGE_EVICTION_BATCH)
 
 
+def test_anthropic_wire_evicts_old_user_images_before_newer_tool_images():
+    """The direct wire pass treats user images as carriers too."""
+    image = {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/png", "data": "A" * 80},
+    }
+    tool_results = [
+        {
+            "type": "tool_result",
+            "tool_use_id": f"c{i}",
+            "content": [{"type": "text", "text": f"shot {i}"}, image],
+        }
+        for i in range(OUTBOUND_IMAGE_LIMIT)
+    ]
+    result = [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "old upload"}, image],
+        },
+        {"role": "user", "content": tool_results},
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "new upload"}, image],
+        },
+    ]
+
+    _evict_old_screenshots(result)
+
+    assert not any(block["type"] == "image" for block in result[0]["content"])
+    assert result[2]["content"][1]["type"] == "image"
+    kept_tools = [
+        block["tool_use_id"]
+        for block in result[1]["content"]
+        if any(inner["type"] == "image" for inner in block["content"])
+    ]
+    assert kept_tools == [f"c{i}" for i in range(IMAGE_EVICTION_BATCH - 1, OUTBOUND_IMAGE_LIMIT)]
+
+
 def test_unfixable_upload_breach_under_byte_pressure_fits_and_still_steps():
     """The hold never keeps a request over the byte budget, and byte pressure narrows the
     step instead of collapsing to the floor (which would move the frontier every image)."""
@@ -309,7 +347,8 @@ def test_a_small_new_screenshot_never_restores_retired_ones():
         now = retired([2_900_000] * 11 + [100_000] * extra)
         assert now[0] >= previous[0] and now[1] >= previous[1], (extra, previous, now)
         previous = now
-    assert len(previous[0]) >= IMAGE_EVICTION_BATCH
+    # The upload is now one of the retired carriers, so the first batch contains seven tool rows.
+    assert len(previous[0]) >= IMAGE_EVICTION_BATCH - 1
 
 
 def test_retirement_is_latched_when_an_upload_leaves_the_request(tmp_path, monkeypatch):
@@ -339,5 +378,6 @@ def test_retirement_is_latched_when_an_upload_leaves_the_request(tmp_path, monke
                 if m.get("role") == "tool" and any(p.get("type") == "image_url" for p in m["content"])]
 
     before = kept(oversized)
-    assert len(before) == OUTBOUND_IMAGE_LIMIT - IMAGE_EVICTION_BATCH
+    # The retired batch contains the upload carrier plus seven tool rows.
+    assert len(before) == OUTBOUND_IMAGE_LIMIT - IMAGE_EVICTION_BATCH + 1
     assert kept(None) == before

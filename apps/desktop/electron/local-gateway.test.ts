@@ -37,11 +37,11 @@ test('the ensure client never hands a dev renderer origin to the long-lived loca
   expect(JSON.parse(result.stdout)).toBeNull()
 })
 
-test('a multi-byte character split across stderr reads reaches the ensure diagnostic intact', async () => {
-  // Write up to the first byte of é (c3 a9), let the read land, then the rest: per-chunk
-  // decoding turned a non-ASCII path in the last stderr line into U+FFFD.
+test('a multi-byte character split across reads reaches the ensure client output intact', async () => {
+  // Write up to the first byte of é (c3 a9) on both pipes, let the reads land, then the rest:
+  // per-chunk decoding turned the logged last line into U+FFFD.
   const script =
-    "const b = Buffer.from('/home/José\\n'); process.stderr.write(b.subarray(0, 10)); setTimeout(() => process.stderr.write(b.subarray(10)), 200)"
+    "const b = Buffer.from('/home/José\\n'); for (const s of [process.stdout, process.stderr]) s.write(b.subarray(0, 10)); setTimeout(() => { process.stdout.write(b.subarray(10)); process.stderr.write(b.subarray(10)) }, 200)"
 
   const result = await runGatewayEnsure(
     { command: process.execPath, args: ['-e', script], env: {}, shell: false },
@@ -50,7 +50,7 @@ test('a multi-byte character split across stderr reads reaches the ensure diagno
     { PATH: process.env.PATH ?? '' }
   )
 
-  expect(result.stderr).toBe('/home/José\n')
+  expect(result).toMatchObject({ stdout: '/home/José\n', stderr: '/home/José\n' })
 })
 
 test('a shell-delegated ensure quotes a spaced Windows install path (#74064)', async () => {

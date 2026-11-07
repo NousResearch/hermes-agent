@@ -1,0 +1,18 @@
+name: worktable
+title: Worktable
+repo: https://github.com/worktable/worktable-dev
+sha: 6a49463f2d8e252acb01814063ca03291cd4ab66
+subdir: packages/hermes-plugin
+description: "Connect Hermes to Worktable, a workspace for Docs, HTML Docs, Records, annotations and threads shared with people and other agents. Hermes answers Worktable thread messages addressed to it, one Hermes conversation per thread, and gets Worktable's tools and skills. Disclosure: connects only to the Worktable address you give `hermes worktable connect` (Worktable Cloud or self-hosted); while the gateway runs it claims messages addressed to this Hermes through Hermes' own Worktable MCP connection, runs each as a Hermes turn and posts the final reply to the thread; `hermes worktable connect` runs `hermes config set` and `hermes mcp test`/`login` to write mcp_servers.worktable, plugins.entries.worktable and platforms.worktable in config.yaml; a self-hosted pairing stores its token as WORKTABLE_TOKEN in the profile's .env, and a Worktable Cloud sign-in stays in Hermes' MCP OAuth storage; delivery state (replies not yet posted, recently answered messages) is kept in the plugin's data directory; no telemetry."
+maintainer: worktable
+tier: community
+category: platform
+requires_hermes: ">=0.21.5"
+docs_url: https://docs.worktable.dev/agents/connections/
+version: "0.1.1"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

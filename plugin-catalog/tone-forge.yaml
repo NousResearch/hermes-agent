@@ -1,0 +1,35 @@
+name: tone-forge
+title: ToneForge
+repo: https://github.com/efesn/toneforge-hermes-plugin
+sha: 5035b3563033dddd8a0def041d31703042f29496
+version: "1.1.0"
+description: "AI guitar tone engineer for IK Multimedia AmpliTube 5 inside Hermes Agent: plain-language tone recipes (ordered chain, amp/cab families, mic placement, pedals, 7-band EQ, noise gate, levels) with a per-decision rationale, a versioned JSON preset library, a reference-track analyser that sets the numbers from a measured recording, and a MIDI bridge that drives only the CCs the user assigned. Disclosure: the analysis tool spawns ffmpeg (and yt-dlp only when the caller passes an explicit url) with fixed argv and no shell; downloads land in a temporary directory deleted after the call; the plugin writes only under HERMES_HOME/plugin-data/tone-forge and never modifies AmpliTube's own files."
+maintainer: efesn
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+platforms: [windows]
+readme: true
+docs_url: https://github.com/efesn/toneforge-hermes-plugin#readme
+capabilities:
+  provides_tools:
+    - toneforge_create_preset
+    - toneforge_analyze_reference
+    - toneforge_adjust_preset
+    - toneforge_save_preset
+    - toneforge_list_presets
+    - toneforge_get_preset
+    - toneforge_delete_preset
+    - toneforge_list_profiles
+    - toneforge_midi_status
+    - toneforge_list_midi_ports
+    - toneforge_select_midi_port
+    - toneforge_send_midi
+    - toneforge_set_parameter
+    - toneforge_map_parameter
+    - toneforge_list_mappings
+    - toneforge_remove_mapping
+    - toneforge_midi_probe
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

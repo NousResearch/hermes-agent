@@ -3583,7 +3583,7 @@ def _prepare_same_provider_retry(
     else:
         retry_client, retry_model = _get_cached_client(
             resolved_provider, resolved_model, async_mode=async_mode, base_url=resolved_base_url,
-            api_key=resolved_api_key, api_mode=resolved_api_mode, main_runtime=main_runtime,
+            api_key=resolved_api_key, api_mode=resolved_api_mode, main_runtime=main_runtime, task=task,
         )
         effective_provider = _effective_provider_for_client(retry_client, resolved_provider)
     if retry_client is None:
@@ -7409,7 +7409,7 @@ def _classify_failure(exc: Exception, provider: Optional[str], client: Any, mode
         return exc.failure
     provider = _classification_provider(client, provider or "")
     verdict = aux_errors.classify_attempt(exc, provider, client, model, base_url)
-    failure = aux_errors.Failure(exc, verdict, any(rung[0](exc) for rung in _parameter_rungs(client, 0)))
+    failure = aux_errors.Failure(exc, verdict, any(rung[0](exc) for rung in _parameter_rungs(client, 0)), client)
     _note_relay_auxiliary_error(exc, failure)
     return failure
 
@@ -7592,6 +7592,24 @@ def _ladder_nous_rungs(
     return None, first_err
 
 
+def _failure_pool(route: _LadderRoute, failure: aux_errors.Failure) -> tuple[Optional[str], str]:
+    """The credential pool a failure's verdict is about, and the key that sent the request. A rebuilt retry an
+    auto route resolved to another backend belongs to no pool of this route, so its verdict benches nothing here."""
+    pool_provider = _recoverable_pool_provider(route.resolved_provider, route.client, main_runtime=route.main_runtime)
+    sender = route.client if failure.client is None else failure.client
+    if sender is not route.client and _recoverable_pool_provider(
+            route.resolved_provider, sender, main_runtime=route.main_runtime) != pool_provider:
+        return None, ""
+    # The exact key used, so recovery finds the right pool entry even if another process rotated meanwhile.
+    return pool_provider, str(getattr(sender, "api_key", "") or "")
+
+
+def _recover_failure_pool(route: _LadderRoute, failure: aux_errors.Failure) -> bool:
+    pool_provider, failed_api_key = _failure_pool(route, failure)
+    return bool(pool_provider) and _recover_provider_pool(
+        pool_provider, failure.error, failed_api_key=failed_api_key, verdict=failure.verdict)
+
+
 def _ladder_credential_rungs(
     first_err: aux_errors.Failure, route: _LadderRoute, kwargs: dict[str, Any], client_is_nous: bool,
 ):
@@ -7621,10 +7639,7 @@ def _ladder_credential_rungs(
             # pool gate below and the ladder tail's eviction check both read this narrowed
             # value. An unclaimed failure (e.g. a 500) re-raised out of ``_rung`` above
             # instead, since the provider-fallback rung only acts on ``aux_errors.fallback_label``.
-    pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=route.main_runtime)
-    # Capture the exact key used so recovery finds the right pool entry even if another
-    # process rotated the pool meanwhile (current() would be None).
-    _client_api_key = str(getattr(client, "api_key", "") or "")
+    pool_provider = _failure_pool(route, first_err)[0]
     # Gate on the narrowed error: a connection failure from the retry above arrives here
     # unaccepted on purpose (a fresh key cannot fix an unreachable endpoint), so rotation
     # is skipped and ``first_err`` is handed to the provider-fallback chain as-is.
@@ -7635,8 +7650,7 @@ def _ladder_credential_rungs(
             resp, first_err = yield from rate_limit_retry_rungs(first_err, route, kwargs)
             if first_err is None:
                 return resp, None
-        if _recover_provider_pool(pool_provider, first_err.error, failed_api_key=_client_api_key,
-                                  verdict=first_err.verdict):
+        if _recover_failure_pool(route, first_err):
             logger.info("Auxiliary %s%s: recovered %s via credential-pool rotation after %s",
                         task or "call", tag, pool_provider, type(first_err.error).__name__)
             step = _LadderStep("retry_same_provider", (resolved_provider, route.resolved_model))
@@ -7645,7 +7659,7 @@ def _ladder_credential_rungs(
                 return resp, None
             # Rotated key also hit a wall: mark it now so concurrent processes skip it, then fall back.
             if first_err.verdict.should_rotate_credential:
-                _recover_provider_pool(pool_provider, first_err.error, verdict=first_err.verdict)
+                _recover_failure_pool(route, first_err)
     return None, first_err
 
 

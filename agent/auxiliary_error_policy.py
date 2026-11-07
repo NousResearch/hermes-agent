@@ -35,10 +35,12 @@ _PROVIDER_REFUSALS = TRANSIENT_REASONS | {_R.auth, _R.auth_permanent, _R.billing
 
 
 class Failure(NamedTuple):
-    """A failed request, its verdict, and whether a parameter rung's detector names the rejected field."""
+    """A failed request, its verdict, whether a parameter rung's detector names the rejected field, and the
+    client that sent it (whose pool and key a credential verdict is about)."""
     error: Exception
     verdict: ClassifiedError
     rejects_parameter: bool = False
+    client: Any = None
 
 
 def classify_attempt(error: Exception, provider: Optional[str], client: Any = None, model: Any = None,

@@ -4,7 +4,7 @@
 mixin code is dialect-agnostic through the ``_read_ctx`` / ``_execute_write`` seams: it binds
 ``?`` placeholders, reads ``rowcount``/``total_changes``/``in_transaction``, and calls a small
 set of SQLite introspection statements (``sqlite_master`` existence checks, ``PRAGMA table_info``,
-``PRAGMA main.data_version``, ``GLOB``, ``INSERT OR IGNORE/REPLACE``). :func:`_convert_statement`
+``PRAGMA main.data_version``, ``GLOB``, ``substr(``, ``IS NOT``, ``INSERT OR IGNORE/REPLACE``). :func:`_convert_statement`
 maps those onto their PostgreSQL equivalents so the shared SQL text stays byte-identical; any
 SQLite-ism without a mapping raises :class:`UnsupportedSQLError` instead of failing silently.
 """
@@ -216,6 +216,65 @@ def _rewrite_glob(statement: str) -> str:
     return "".join(out)
 
 
+_SUBSTR_WORD_RE = re.compile(r"substr", re.IGNORECASE)
+
+
+def _rewrite_substr(statement: str) -> str:
+    """``substr(X, Y[, Z])`` (SQLite) -> ``substring(X FROM Y [FOR Z])``: canonical
+    PostgreSQL form (the FROM/FOR keywords instead of positional start/length arguments).
+
+    Literal-aware like :func:`_rewrite_glob`: binding tokens and string literals are copied
+    verbatim, and the keyword is rewritten only as a function call with 2-3 real arguments."""
+    out: list[str] = []
+    i, n = 0, len(statement)
+    while i < n:
+        token = _BINDING_TOKEN.match(statement, i)
+        if token:
+            out.append(token.group())
+            i = token.end()
+            continue
+        prev = statement[i - 1] if i else ""
+        if _SUBSTR_WORD_RE.fullmatch(statement[i:i + 6]) and not (prev.isalnum() or prev in "_.$"):
+            j = i + 6
+            while j < n and statement[j] in " \t":
+                j += 1
+            if j < n and statement[j] == "(":
+                depth, k, start = 1, j + 1, j + 1
+                args: list[str] = []
+                while k < n and depth:
+                    c = statement[k]
+                    if c == "'":
+                        k += 1  # string literal: skip whole (quotes may hide parens/commas)
+                        while k < n and statement[k] != "'":
+                            k += 1
+                    elif c == "(":
+                        depth += 1
+                    elif c == ")":
+                        depth -= 1
+                        if not depth:
+                            break
+                    elif c == "," and depth == 1:
+                        args.append(statement[start:k].strip())
+                        start = k + 1
+                    k += 1
+                if depth:
+                    raise UnsupportedSQLError(f"unbalanced substr( in: {statement[:80]}")
+                args.append(statement[start:k].strip())
+                if not 1 <= len(args) <= 3 or any(a == "" for a in args):
+                    raise UnsupportedSQLError(f"unsupported substr( arity in: {statement[:80]}")
+                if len(args) == 1:
+                    out.append(f"substring({args[0]} FROM 1)")
+                elif len(args) == 2:
+                    out.append(f"substring({args[0]} FROM {args[1]})")
+                else:
+                    out.append(f"substring({args[0]} FROM {args[1]} FOR {args[2]})")
+                i = k + 1
+                continue
+        out.append(statement[i])
+        i += 1
+    return "".join(out)
+
+
 # ``COALESCE(json_extract((CASE WHEN json_valid(X) <> 0 THEN X ELSE 'null' END), '$.model_only'), 0) = 0``
 # -> text test over the extracted scalar (model_only is only ever written as JSON ``true`` or absent).
 _MODEL_ONLY_RE = re.compile(
@@ -236,6 +295,11 @@ _RETIRED_OWN_CASE_RE = re.compile(
 _ROUTE_FENCE_CASE_RE = re.compile(
     r"NOT CASE WHEN json_valid\(([^)]+)\)\s+THEN coalesce\("
     r"json_extract\(\1, ('[^']+')\)\s+AND\s+json_extract\(\1, ('[^']+')\) < ([\w:]+) - ([\w:]+), 0\)\s+ELSE 0 END")
+# ``a IS NOT CASE WHEN json_valid(X) THEN json_extract(X, 'P') END`` (moved_receipts): SQLite's
+# null-safe inequality; PostgreSQL's IS NOT is a boolean-indicator test, and its null-safe
+# inequality is IS DISTINCT FROM (identical NULL semantics on both sides of the expression).
+_IS_NOT_GUARDED_EXTRACT_RE = re.compile(
+    r"IS NOT (CASE WHEN json_valid\(([^)]+)\) THEN json_extract\(\2, ('[^']+')\) END)")
 # ``OR json_extract(X, 'P') THEN`` (state_meta upsert guard): the bare extraction is a
 # SQLite text-truthy predicate operand; the extraction result is never a value here.
 _JSON_OR_BARE_TRUTHY_RE = re.compile(
@@ -256,6 +320,7 @@ def _convert_statement(statement: str) -> str:
     """SQLite -> PostgreSQL statement translation (placeholders, sqlite-isms). Cached: shared
     SQL text is stable per call site."""
     out = _rewrite_glob(statement)
+    out = _rewrite_substr(out)
     out = _rewrite_insert_or(out)
     out = _rewrite_pragma(out)
     out = _rewrite_sqlite_master(out)
@@ -276,6 +341,8 @@ def _convert_statement(statement: str) -> str:
         r"NOT CASE WHEN json_valid(\1) "
         r"THEN (json_extract(\1, \2) IS NOT NULL AND json_extract(\1, \2) <> '' "
         r"AND json_extract(\1, \3)::numeric < \4 - \5) ELSE FALSE END", out)
+    out = _IS_NOT_GUARDED_EXTRACT_RE.sub(
+        r"IS DISTINCT FROM (CASE WHEN json_valid(\2) THEN json_extract(\2, \3) END)", out)
     out = _JSON_NUM_EXTRACT_CMP_RE.sub(r"json_extract(\1, \2)::numeric\3", out)
     out = _JSON_TEXT_TRUTHY_RE.sub(
         r"json_valid(\1) AND json_extract(\1, \2) IS NOT NULL AND json_extract(\1, \2) <> ''", out)

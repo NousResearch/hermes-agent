@@ -520,3 +520,51 @@ def test_postgres_bindings_preserve_literals_and_postgres_casts(postgres_db):
     assert dict(named) == {
         "bound": value, "literal": ":value", "percent": "50%", "number": 23, "repeated": value,
     }
+
+
+def test_moved_receipts_scan_and_boot_heal_are_dialect_parity(state_db):
+    """DEFECT-1 regression: the shared moved-receipt statement (``hermes_state_local.
+    moved_receipts``) must run on both backends. Its SQLite-only forms (``substr``, ``IS NOT
+    CASE``) were a parse error on PostgreSQL, and the statement runs unconditionally at gateway
+    authority init (``release_handed_off_receipts``), so every postgres-backed boot crashed."""
+    from gateway.session_local_recovery import release_handed_off_receipts
+    from hermes_state_local import POLICY_PREFIX, moved_receipts
+    from hermes_state_runtime import begin_runtime_epoch
+
+    def receipt(owner, target, route, raw=None):
+        if raw is None:
+            raw = json.dumps({
+                "profile_id": "proto", "principal_id": "user-1", "request_id": "req-" + owner,
+                "session_id": owner, "route": route,
+                "entry": {"session_id": target, "created_at": "2026-01-02T03:04:05",
+                          "origin": {"chat_id": target}},
+                "policy": {"source": "local", "model": "m", "cwd": "", "request_json": "{}"}})
+        return POLICY_PREFIX + owner, raw
+
+    state_db.create_session("owner-moved", "telegram", session_key="telegram:777:-100100")
+    state_db.create_session("owner-same", "telegram", session_key="telegram:777:-200200")
+    state_db.create_session("owner-malformed", "telegram", session_key="telegram:777:-300300")
+    # The target row's route was rewritten by a lane (moved); the second still matches its
+    # receipt (not moved); the third receipt is malformed JSON (skipped by the json_valid
+    # guard on both dialects, never aborting the scan).
+    state_db.set_meta(*receipt("owner-moved", "owner-moved", "telegram:777:-999999"))
+    state_db.set_meta(*receipt("owner-same", "owner-same", "telegram:777:-200200"))
+    state_db.set_meta(*receipt("owner-malformed", "owner-malformed", "telegram:777:-300300",
+                               raw="{not json"))
+
+    epoch = begin_runtime_epoch(state_db, instance_id="test-instance")
+    with state_db._read_ctx() as conn:
+        moved = moved_receipts(conn)
+    assert moved == {"owner-moved": ("owner-moved", "telegram")}
+
+    # The boot-heal entry point runs the same statement in a write transaction and retires the
+    # moved receipt; every postgres-backed boot used to crash inside this call (DEFECT-1).
+    release_handed_off_receipts(state_db, epoch=epoch)
+    with state_db._read_ctx() as conn:
+        kept = [r[0] for r in conn.execute(
+            "SELECT key FROM state_meta WHERE key IN (?, ?)",
+            (POLICY_PREFIX + "owner-moved", POLICY_PREFIX + "owner-same")).fetchall()]
+        malformed = conn.execute(
+            "SELECT 1 FROM state_meta WHERE key = ?", (POLICY_PREFIX + "owner-malformed",)).fetchone()
+    assert kept == [POLICY_PREFIX + "owner-same"]
+    assert malformed is not None

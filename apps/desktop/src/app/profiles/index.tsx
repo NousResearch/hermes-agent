@@ -5,15 +5,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
+import { ColorSwatches } from '@/components/ui/color-swatches'
+import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { getProfileSoul, type ProfileInfo, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
 import { AlertTriangle, Save } from '@/lib/icons'
-import { resolveProfileColor } from '@/lib/profile-color'
+import { PROFILE_SWATCHES, resolveProfileColor } from '@/lib/profile-color'
 import { normalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
-import { $profileColors, profileLabel, refreshProfiles } from '@/store/profile'
+import {
+  $profileColors,
+  normalizeProfileKey,
+  profileLabel,
+  refreshProfiles,
+  setProfileColor
+} from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
@@ -201,25 +209,60 @@ function ProfileRow({
   onSelect: () => void
   profile: ProfileInfo
 }) {
+  const { t } = useI18n()
+  const p = t.profiles
   const colors = useStore($profileColors)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const color = colors[normalizeProfileKey(profile.name)] ?? null
+  const rowMenuItems = profile.is_default
+    ? menuItems
+    : [
+        menuItems[0],
+        { icon: 'symbol-color', label: p.color, onSelect: () => setPickerOpen(true) },
+        ...menuItems.slice(1)
+      ]
+
+  const pickColor = (next: null | string) => {
+    setProfileColor(profile.name, next)
+    setPickerOpen(false)
+  }
 
   return (
-    <PanelListRow
-      active={active}
-      lead={
-        <ProfileGlyph
-          aria-hidden="true"
-          color={resolveProfileColor(profile.name, colors)}
-          isDefault={profile.is_default}
-          name={profile.name}
-        />
-      }
-      menuItems={menuItems}
-      menuLabel={profileLabel(profile)}
-      onSelect={onSelect}
-      rowKey={profile.name}
-      title={profileLabel(profile)}
-    />
+    <Popover onOpenChange={setPickerOpen} open={pickerOpen}>
+      <PopoverAnchor asChild>
+        <div>
+          <PanelListRow
+            active={active}
+            lead={
+              <ProfileGlyph
+                aria-hidden="true"
+                color={resolveProfileColor(profile.name, colors)}
+                isDefault={profile.is_default}
+                name={profile.name}
+              />
+            }
+            menuItems={rowMenuItems}
+            menuLabel={profileLabel(profile)}
+            onSelect={onSelect}
+            rowKey={profile.name}
+            title={profileLabel(profile)}
+          />
+        </div>
+      </PopoverAnchor>
+
+      {!profile.is_default ? (
+        <PopoverContent aria-label={p.colorFor} className="w-auto p-2" side="right">
+          <ColorSwatches
+            clearIcon="sync"
+            clearLabel={p.autoColor}
+            onChange={pickColor}
+            swatches={PROFILE_SWATCHES}
+            swatchLabel={p.setColor}
+            value={color}
+          />
+        </PopoverContent>
+      ) : null}
+    </Popover>
   )
 }
 

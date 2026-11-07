@@ -1,10 +1,6 @@
 # Catalog entry for NousResearch/hermes-agent/plugin-catalog/
 # Pin: the v0.6.1 release commit of the public plugin repo
-# (https://github.com/Blackleets/hermes-guild, tag v0.6.1).
-#
-# ⚠️ SHA PENDIENTE: sustituir el marcador de abajo por el SHA completo
-# (40 hex) del commit de la release v0.6.1 en cuanto el repo exista y el
-# push esté hecho. No abrir el PR con el marcador puesto.
+# (https://github.com/Blackleets/hermes-guild).
 name: hermes-guild
 repo: https://github.com/Blackleets/hermes-guild
 sha: bb5e3fd0bb6328b3652d648ba7162500255218fb

@@ -26,7 +26,7 @@ To be a kanban worker lane, an integration must provide three things:
 
 ### 1. An assignee string
 
-The dispatcher matches `task.assignee` against either a Hermes profile name (the default lane shape) or a registered non-spawnable identifier (the plugin lane shape — see [Adding an external CLI worker lane](#adding-an-external-cli-worker-lane) below). Tasks whose assignee doesn't resolve are left on `ready` with a `skipped_nonspawnable` event so a board operator can fix them; they are not silently dropped or executed by an arbitrary fallback.
+The dispatcher matches `task.assignee` against either a Hermes profile name (the default lane shape) or a plugin-registered worker lane (see [Plugin worker lanes](#plugin-worker-lanes) below). Tasks whose assignee doesn't resolve are left on `ready` with a `skipped_nonspawnable` event so a board operator can fix them; they are not silently dropped or executed by an arbitrary fallback.
 
 ### 2. A spawn mechanism
 
@@ -44,7 +44,7 @@ For Hermes profile lanes, the dispatcher's `_default_spawn` runs `hermes -p <ass
 | `HERMES_PROFILE` | the worker's own profile name (for `kanban_comment` author attribution) |
 | `HERMES_TENANT` | tenant namespace, if the task has one |
 
-For non-Hermes lanes (registered via a plugin), the plugin supplies its own `spawn_fn` callable that gets `task`, `workspace`, and `board` and returns an optional pid for crash detection.
+For plugin lanes, the plugin's `KanbanWorkerLane.spawn(claim)` starts the work. It returns a child PID for crash detection, `None` for work that runs inside the plugin's own process, or `NOT_HANDLED` to give the task back to the native spawn. See [Plugin worker lanes](#plugin-worker-lanes).
 
 ### Descendant process scope
 
@@ -116,19 +116,63 @@ When you create profiles for your fleet, choose names that match the *role* you 
 
 A specialisation of the profile lane: an orchestrator is a Hermes profile whose toolset includes `kanban` but excludes `terminal` / `file` / `code` / `web` for implementation. Its job is decomposing a high-level goal into child tasks via `kanban_create` + `kanban_link` and stepping back. The orchestrator skill encodes the anti-temptation rules.
 
-## Adding an external CLI worker lane
+## Plugin worker lanes
 
-Wiring a non-Hermes CLI tool (Codex CLI, Claude Code CLI, OpenCode CLI, a local coding-model runner, etc.) as a kanban worker lane is *not yet a paved path*. The dispatcher's spawn function is pluggable (`spawn_fn` is a parameter on `dispatch_once`), and a plugin could register its own `spawn_fn` for a non-Hermes assignee, but the surrounding integration work — wrapping the CLI's exit code into `kanban_complete` / `kanban_block` calls, mapping the CLI's workspace/sandbox conventions onto the dispatcher's `HERMES_KANBAN_WORKSPACE` env, handling auth and per-CLI policy — is still per-integration design work.
+A plugin adds a lane with `ctx.register_kanban_worker_lane(lane)`, where `lane` is a `hermes_cli.kanban_worker_lanes.KanbanWorkerLane`. Use it for a non-Hermes CLI worker (Codex CLI, Claude Code CLI, OpenCode CLI, a local model runner), or for a platform plugin that runs Kanban tasks inside the gateway as its own turns.
 
-If you're considering adding a CLI lane, open an issue describing the specific CLI and the workflow you're trying to enable. The contract above is the constraints any such lane must satisfy; the implementation shape (one plugin per CLI vs a generic CLI-runner plugin parameterised by config) is open.
+```python
+from hermes_cli.kanban_worker_lanes import NOT_HANDLED, KanbanWorkerLane
 
-The historical issue for this is [#19931](https://github.com/NousResearch/hermes-agent/issues/19931) and the closed-not-merged Codex-specific PR [#19924](https://github.com/NousResearch/hermes-agent/pull/19924) — those describe the original architecture proposal but didn't land a runner.
+
+class CodexLane(KanbanWorkerLane):
+    name = "codex"
+    assignees = ("codex-*",)   # exact names or shell-style globs
+    boards = ()                # empty: every board
+
+    def accepts(self, task, *, board, lane):
+        return lane == "ready"   # optional: leave review runs to the native spawn
+
+    def spawn(self, claim):
+        return start_codex(claim.task, claim.workspace)   # the child's PID
+
+
+def register(ctx):
+    ctx.register_kanban_worker_lane(CodexLane())
+```
+
+### Routing
+
+- **Match.** A lane takes a task when the task's assignee matches `assignees`, the board slug matches `boards`, and `accepts(task, board=..., lane=...)` returns True. An empty `assignees` or `boards` matches every value, but a lane must name at least one assignee or board. A lane may name assignees that are also Hermes profiles: on the boards it names, it runs their tasks, and the same profiles keep the native spawn on every other board.
+- **Order.** Lanes are tried in name order. Hermes claims the task first, then calls `spawn`. A `spawn` that returns `NOT_HANDLED` passes the claimed task to the next matching lane, then to the native spawn. A `spawn` that raises is a failed spawn: the claim is released and the attempt counts toward the failure breaker.
+- **Lane kind.** `claim.lane` is `"ready"` for ordinary work and `"review"` for a review run (`kanban.review_dispatch`).
+- **What Hermes keeps.** The claim, the run record, the caps (`max_spawn`, `max_in_progress`, `max_in_progress_per_profile`), the respawn guard, retries and the breaker apply to lane tasks as to native ones. `spawn` runs while the dispatcher holds the board's tick lock, so it must start the work and return.
+- **Where lanes apply.** A lane runs only in a process that loaded its plugin, normally the gateway's embedded dispatcher (`kanban.dispatch_in_gateway: true`, the default). A dispatcher that did not load the plugin, for example a standalone `hermes kanban daemon`, leaves the lane's non-profile tasks in `ready`. `kanban.dispatch_profiles` limits native profile claims only. A gateway that serves several profiles sees the lanes of every profile it serves, and each lane's code runs under the Hermes home of the profile that registered it. A plugin under `plugins.isolation: host` cannot register a lane.
+
+### The claim and in-process work
+
+`spawn` receives a `WorkerLaneClaim`: `task` (with `current_run_id` and `claim_lock`), `workspace`, `board`, `lane`, `run_id` and `claim_lock`.
+
+A lane that starts a child process returns its PID. Crash detection and the live-worker claim extension then follow that PID, as for a native worker, and the child ends its run through the `kanban_*` tools or the CLI.
+
+A lane that runs the work inside its own process (for example a gateway platform plugin that runs the task as one of its turns) returns `None` and keeps the claim. The work reports through it, from any thread:
+
+| Call | Effect |
+|---|---|
+| `claim.heartbeat(note=None)` | Records progress and extends the claim. |
+| `claim.complete(summary, result=None, metadata=None)` | Ends the run as `done` (approves a review run). |
+| `claim.request_review(summary, metadata=None, reviewer=None)` | Ends the run and moves the card to `review`. |
+| `claim.block(reason, kind=None)` | Ends the run as `blocked`. |
+| `claim.fail(error)` | Ends the run as a failed attempt: releases the claim, counts toward the breaker, and lets the dispatcher retry. |
+
+Every call is fenced on the run id. A call for a run that Hermes already reclaimed, or that another run replaced, changes nothing and returns False. With no PID, the claim TTL is the liveness signal: heartbeat at least once per `DEFAULT_CLAIM_TTL_SECONDS` (15 minutes; `HERMES_KANBAN_CLAIM_TTL_SECONDS`). A run that stops heartbeating, for example because the gateway restarted, is reclaimed after the TTL and counted as a failure.
+
+The issue that asked for this is [#70547](https://github.com/NousResearch/hermes-agent/issues/70547). The earlier Codex-specific proposal is [#19931](https://github.com/NousResearch/hermes-agent/issues/19931) and the closed-not-merged PR [#19924](https://github.com/NousResearch/hermes-agent/pull/19924).
 
 ## Failure modes the dispatcher handles
 
 So lane authors don't have to reimplement these:
 
-- **Stale claim TTL** — a worker that claims and then never heartbeats / completes / blocks gets reclaimed after `DEFAULT_CLAIM_TTL_SECONDS` (15 min default) — but only if the worker process has actually died. A live worker (slow model spending 20+ min in one tool-free LLM call) gets the claim *extended* instead of killed; only a dead PID is reclaimed.
+- **Stale claim TTL** — a worker that claims and then never heartbeats / completes / blocks gets reclaimed after `DEFAULT_CLAIM_TTL_SECONDS` (15 min default) — but only if the worker process has actually died. A plugin lane run with no PID is reclaimed when its heartbeats stop. A live worker (slow model spending 20+ min in one tool-free LLM call) gets the claim *extended* instead of killed; only a dead PID is reclaimed.
 - **Crashed worker** — a worker whose host-local PID has vanished is detected by `detect_crashed_workers` and reaped; the task increments `consecutive_failures` and may auto-block when the breaker trips.
 - **Run-level retry** — when a task is retried (post-block, post-crash, post-reclaim), the worker can use the `expected_run_id` parameter on terminating tools to fail fast if its own run was already superseded.
 - **Per-task max runtime** — `task.max_runtime_seconds` hard-caps wall-clock time per run, regardless of PID liveness. Catches genuinely-deadlocked workers that the live-PID extension would otherwise keep running.

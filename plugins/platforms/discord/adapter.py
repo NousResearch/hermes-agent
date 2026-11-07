@@ -6297,15 +6297,24 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
         reply_to_id = None
         reply_to_text = None
+        reply_to_is_own = False
         if message.reference:
             reply_to_id = str(message.reference.message_id)
             if message.reference.resolved:
                 reply_to_text = getattr(message.reference.resolved, "content", None) or None
+                # Own-message semantics: the replied-to author is THIS bot (not just any
+                # bot in the room). Feeds the reply-context note ("your previous message")
+                # and the gateway STT guard for bot-quoted media (#150824).
+                _ref_author = getattr(message.reference.resolved, "author", None)
+                _own_id = str(getattr(getattr(self._client, "user", None), "id", "") or "")
+                _ref_author_id = str(getattr(_ref_author, "id", "") or "")
+                reply_to_is_own = bool(_own_id and _ref_author_id and _ref_author_id == _own_id)
         event = MessageEvent(
             text=event_text, message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.id), media_urls=media_urls, media_types=media_types,
             media_text_inlined=media_text_inlined,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
+            reply_to_is_own_message=reply_to_is_own,
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )

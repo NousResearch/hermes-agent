@@ -236,6 +236,41 @@ class TestReplyToText:
 
 
     @pytest.mark.asyncio
+    async def test_reply_to_bot_message_sets_own_flag(self, reply_text_adapter):
+        """Reply to THIS bot's message: reply_to_is_own_message=True (#150824)."""
+        resolved_msg = SimpleNamespace(content="here is audio", author=SimpleNamespace(id=999, bot=True))
+        ref = SimpleNamespace(message_id=555, resolved=resolved_msg)
+        message = _make_message(reference=ref)
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.reply_to_is_own_message is True
+
+    @pytest.mark.asyncio
+    async def test_reply_to_human_message_own_flag_false(self, reply_text_adapter):
+        resolved_msg = SimpleNamespace(content="some media", author=SimpleNamespace(id=42, bot=False))
+        ref = SimpleNamespace(message_id=556, resolved=resolved_msg)
+        message = _make_message(reference=ref)
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_reply_to_other_bot_not_own(self, reply_text_adapter):
+        """Another bot's message is not 'your previous message' - precision matters."""
+        resolved_msg = SimpleNamespace(content="beep boop", author=SimpleNamespace(id=777, bot=True))
+        ref = SimpleNamespace(message_id=557, resolved=resolved_msg)
+        message = _make_message(reference=ref)
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
     async def test_reference_with_empty_resolved_content(self, reply_text_adapter):
         """Empty string content should become None, not leak as empty string."""
         resolved_msg = SimpleNamespace(content="")

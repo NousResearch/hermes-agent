@@ -464,6 +464,10 @@ def _transform_sudo_command(
     from tools.terminal_tool import _get_sudo_password_callback
     if command is None:
         return None, None
+    if platform.system() == "Windows":
+        # Windows sudo.exe is UAC-based (no password prompt, no -S/-p flags): the Linux-style
+        # "-S -p ''" stdin-password rewrite below breaks it. Return the command unchanged.
+        return command, None
     transformed, sudo_count = _rewrite_real_sudo_invocations(command)
     if sudo_count == 0:
         return command, None

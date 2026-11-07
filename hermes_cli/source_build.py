@@ -123,9 +123,31 @@ def prepare_launch_dependencies(project_root: Path, *, env: dict) -> None:
     workspaces = ("ui-tui", "web") + (("apps/desktop",) if desktop else ())
     # Someone is waiting for this launch, which falls back to the previous build when it fails:
     # offline, pnpm's default retries spend ~70 s before failing, one retry ~10 s.
-    if not any(key.lower() == "pnpm_config_fetch_retries" for key in env):
+    if not _fetch_retries_configured(project_root, env):
         env = {**env, "pnpm_config_fetch_retries": "1"}
     prepare_source_dependencies(project_root, workspaces, env=env)
+
+
+def _fetch_retries_configured(project_root: Path, env: dict) -> bool:
+    """Whether the user chose a download retry count: in the environment, the user npmrc (pnpm 12
+    ignores it there, but npm honoured it), or anywhere pnpm reads it (its global config.yaml,
+    pnpm-workspace.yaml). A pnpm that cannot answer counts as configured: the default stays."""
+    from pm.index_config import read_npmrc, user_npmrc
+
+    names = {"pnpm_config_fetch_retries", "npm_config_fetch_retries"}
+    if any(key.lower() in names for key in env) or "fetch-retries" in read_npmrc(user_npmrc(env), env):
+        return True
+    pnpm = shutil.which("pnpm", path=env["PATH"])
+    if pnpm is None:
+        return True
+    try:
+        answer = subprocess.run(
+            [pnpm, "config", "get", "fetchRetries", "--json"], cwd=project_root, env=env,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return answer.stdout.strip() != "null"
 
 
 def build_source_tui(project_root: Path, *, env: dict) -> None:

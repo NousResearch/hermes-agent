@@ -88,8 +88,9 @@ stopped for longer (Ctrl-Z) loses the lock: before every move, restore, delete, 
 write and pnpm start it re-reads the lock, and once the lock is no longer its own it exits
 without touching the trees. A live owner is waited for at most 10 minutes; then the run
 fails. Downloads retry with pnpm's defaults, except for a source launch (`hermes --tui`,
-the dashboard), which retries once, so an unreachable registry fails it in about 10 s
-instead of 70 s.
+the dashboard), which retries once unless the user set a count (`pnpm_config_fetch_retries`,
+`fetch-retries` in the user npmrc, or `fetchRetries` in pnpm's config.yaml or
+`pnpm-workspace.yaml`), so an unreachable registry fails it in about 10 s instead of 70 s.
 `--pnpm ARGS...` instead runs the same resolved pnpm with `ARGS`.
 
 The prepared source needs these inputs:

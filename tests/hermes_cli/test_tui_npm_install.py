@@ -63,6 +63,27 @@ def test_source_launch_prepares_base_union_but_compiles_only_tui(tui_source):
 
 
 @pytest.mark.platforms("posix")
+@pytest.mark.parametrize("where", ["npmrc", "pnpm global config", "pnpm-workspace.yaml"])
+def test_source_launch_keeps_the_users_download_retries(tui_source, tmp_path, monkeypatch, where):
+    """A retry count the user chose (for a flaky mirror) is theirs: a launch lowers only pnpm's default."""
+    import os
+
+    root, _ = tui_source
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    if where == "npmrc":
+        npmrc = Path(os.environ["HERMES_HOME"]) / "npmrc"
+        npmrc.write_text(npmrc.read_text(encoding="utf-8") + "fetch-retries=5\n", encoding="utf-8")
+    elif where == "pnpm global config":
+        (tmp_path / "xdg/pnpm").mkdir(parents=True)
+        (tmp_path / "xdg/pnpm/config.yaml").write_text("fetchRetries: 5\n", encoding="utf-8")
+    else:
+        workspace = root / "pnpm-workspace.yaml"
+        workspace.write_text("fetchRetries: 5\n" + workspace.read_text(encoding="utf-8"), encoding="utf-8")
+    main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert "retries" not in _events(root)[0]
+
+
+@pytest.mark.platforms("posix")
 def test_source_compile_failure_stops_launch_without_reinstall(tui_source):
     root, acquired = tui_source
     (root / "fail-tui").touch()

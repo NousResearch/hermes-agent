@@ -221,7 +221,11 @@ test('a v2 user keeps every connection, field, secret, quarantined entry and sig
   ])
 
   const tokens = readJson(path.join(root, GATEWAY_CONNECTION_TOKENS_FILE))
-  assert.deepEqual(tokens.tokens, { gw: tokenSet('gw-at'), cloud: tokenSet('cloud-at') })
+  // Each imported set keeps the URL main's file keyed it by: it is bound to that gateway.
+  assert.deepEqual(tokens.tokens, {
+    gw: { ...tokenSet('gw-at'), baseUrl: 'https://gw.example' },
+    cloud: { ...tokenSet('cloud-at'), baseUrl: 'https://c.example' }
+  })
   assert.deepEqual(tokens.unbound, { 'https://pending.example': tokenSet('pending-at') })
   assert.deepEqual(tokens.undecrypted, { 'https://dead.example': locked })
 
@@ -230,7 +234,10 @@ test('a v2 user keeps every connection, field, secret, quarantined entry and sig
   assert.deepEqual(loadNativeTokenSet('https://gw.example', io), tokenSet('gw-at'))
   assert.deepEqual(loadNativeTokenSet('https://pending.example', io), tokenSet('pending-at'))
   persistNativeTokenSet('https://gw.example', tokenSet('gw-2'), io)
-  assert.deepEqual(readJson(path.join(root, GATEWAY_CONNECTION_TOKENS_FILE)).tokens.gw, tokenSet('gw-2'))
+  assert.deepEqual(readJson(path.join(root, GATEWAY_CONNECTION_TOKENS_FILE)).tokens.gw, {
+    ...tokenSet('gw-2'),
+    baseUrl: 'https://gw.example'
+  })
 
   assert.equal(fs.readFileSync(path.join(userData, 'connections.json'), 'utf8'), before, 'userData untouched')
 })

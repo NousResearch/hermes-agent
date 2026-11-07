@@ -8442,6 +8442,8 @@ function readDesktopConnectionsRegistry(): any {
 
 function writeDesktopConnectionsRegistry(registry) {
   gatewayConnectionsStore.write(registry)
+  // A remove or re-point drops that entry's sign-in on disk; the URL-keyed cache follows.
+  _nativeTokens.clear()
 }
 
 /**

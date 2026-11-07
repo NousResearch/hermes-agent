@@ -297,7 +297,7 @@ def ensure_access_token(connection_id: str, *, rejected_token: str = "") -> str:
 
     Raises :class:`NotSignedIn` when there is no sign-in or the remote rejects its refresh token
     (the sign-in is dropped), :class:`OAuthSignInError` when the remote cannot be reached (kept)."""
-    _entry, base_url, headers = _connection(connection_id)
+    _entry, _base_url, headers = _connection(connection_id)
     with _refresh_lock(connection_id):
         tokens = store.read_tokens(connection_id)
         if not tokens:
@@ -308,10 +308,13 @@ def ensure_access_token(connection_id: str, *, rejected_token: str = "") -> str:
         if not tokens.get("refreshToken"):
             store.write_tokens(connection_id, None)
             raise NotSignedIn("The sign-in expired; sign in again.")
-        return _refresh(connection_id, base_url, headers, tokens)
+        return _refresh(connection_id, headers, tokens)
 
 
-def _refresh(connection_id: str, base_url: str, headers: dict, tokens: dict) -> str:
+def _refresh(connection_id: str, headers: dict, tokens: dict) -> str:
+    # The refresh token goes only to the gateway that issued it (``read_tokens`` hands out a set
+    # only while the entry still names that URL).
+    base_url = str(tokens["baseUrl"]).rstrip("/")
     try:
         response = _post_json(_endpoint(base_url, "/auth/native/refresh"),
                               {"refresh_token": tokens["refreshToken"], "provider": tokens.get("provider") or ""},
@@ -325,6 +328,9 @@ def _refresh(connection_id: str, base_url: str, headers: dict, tokens: dict) -> 
         raise OAuthSignInError(f"{base_url} could not renew the sign-in ({response.status_code}).")
     rotated = parse_token_response(response.json())
     current = store.read_tokens(connection_id) or {}
+    if not current:
+        # Signed out, or re-pointed at another gateway meanwhile: this rotation belongs to neither.
+        raise NotSignedIn("The connection changed while renewing its sign-in; sign in again.")
     if current.get("accessToken") != tokens.get("accessToken"):
         # A sign-in (Desktop's or a browser's) replaced the tokens meanwhile: it wins.
         return current.get("accessToken") or rotated["accessToken"]

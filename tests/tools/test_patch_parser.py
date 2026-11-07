@@ -416,7 +416,8 @@ class TestValidationPhase:
 
 
     def test_validation_and_apply_seek_boilerplate_hunks_from_context_hints(self):
-        """contract v4a rule 3"""
+        """contract v4a rule 3: later boilerplate hunks seek from inert anchors, then fall back when
+        the intended target is before the monotonic cursor."""
         patch = """\
 *** Begin Patch
 *** Update File: adapter_test.py
@@ -971,7 +972,11 @@ class TestSafeCursorHunkSelection:
         assert "hunk 2" in (result.error or "").lower()
 
     def test_repeated_later_hunks_apply_successive_duplicate_blocks(self):
-        """contract v4a rule 3"""
+        """contract v4a rule 3: an explicit sequence of identical later hunks means successive sites.
+
+        A single broad later hunk stays fail-closed; two or more identical hunks
+        explicitly encode the cursor-ordered sequence required by the V4A repro.
+        """
         patch = (
             "*** Begin Patch\n"
             "*** Update File: providers.py\n"

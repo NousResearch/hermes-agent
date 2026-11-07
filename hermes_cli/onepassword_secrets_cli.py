@@ -30,6 +30,7 @@ from hermes_cli._secrets_common import (
     rotate_token,
     secret_cli_env,
     section_cfg,
+    section_cfg_for_write,
     yn,
 )
 from hermes_cli.config import get_env_path, load_config, save_config, save_env_value
@@ -46,7 +47,7 @@ def _op_cfg() -> dict:
 
 
 def _op_cfg_for_write(cfg: dict) -> dict:
-    return cfg.setdefault("secrets", {}).setdefault("onepassword", {})
+    return section_cfg_for_write(cfg, "onepassword")
 
 
 def _references(op_cfg: dict) -> dict:

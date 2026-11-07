@@ -366,7 +366,7 @@ class TestAggregateChatStream:
         assert time.monotonic() - started < 5.0
         assert "stalled: no new output for 0.4s" in str(excinfo.value)
         assert _should_skip_same_provider_retry(
-            "compression", _classify_failure(excinfo.value, "", None, None, None))
+            "compression", _classify_failure(excinfo.value, "", None, None))
 
     @pytest.mark.parametrize("case", ["reasoning_before_first_token", "provider_stale_timeout_before_first_token",
                                       "stall_after_terminal_usage", "late_timer_after_pool_reuse"])

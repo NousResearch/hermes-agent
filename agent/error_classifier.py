@@ -68,6 +68,12 @@ class FailoverReason(enum.Enum):
     unknown = "unknown"                  # Unclassifiable — retry with backoff
 
 
+# Transient transport verdicts: the provider is expected back (the aux same-provider retry, the turn ladder).
+TRANSIENT_REASONS = frozenset({FailoverReason.timeout, FailoverReason.overloaded, FailoverReason.server_error})
+# A refusal of the request's content or data policy: no resend, field strip or quota reading changes it.
+POLICY_REFUSAL_REASONS = frozenset({FailoverReason.data_policy_denied, FailoverReason.content_policy_blocked})
+
+
 @dataclass
 class ClassifiedError:
     """Structured classification of an API error with recovery hints."""
@@ -1170,7 +1176,7 @@ def _shape_context(c: _Ctx, verdict: Verdict, *, hooked: bool) -> dict[str, Any]
     # An upstream's quota behind a healthy aggregator key (OpenRouter's wrapper), or quota wording in a
     # policy refusal, benches nothing.
     if (c.status_code in (None, 402, 403, 404, 429)
-            and reason not in (_R.upstream_rate_limit, _R.data_policy_denied, _R.content_policy_blocked)
+            and reason is not _R.upstream_rate_limit and reason not in POLICY_REFUSAL_REASONS
             and any(p in c.msg for p in _QUOTA_WINDOW_PATTERNS)):
         extra["quota_exhausted"] = True
     if (c.status_code in (None, 400) and reason in (_R.format_error, _R.unknown)

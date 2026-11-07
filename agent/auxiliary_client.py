@@ -89,12 +89,12 @@ _aux_probe_state = threading.local()
 
 class _AuxProbeClientStub:
     """Non-functional placeholder returned while `aux_probe_mode` is active."""
-    __slots__ = ("_hermes_aux_backend_provider", "api_key", "base_url")
+    __slots__ = ("_hermes_aux_backend_provider", "_hermes_aux_effective_provider", "api_key", "base_url")
 
     def __init__(self, api_key: str = "", base_url: str = "") -> None:
         self.api_key = api_key
         self.base_url = base_url
-        self._hermes_aux_backend_provider = ""
+        self._hermes_aux_backend_provider = self._hermes_aux_effective_provider = ""
 
     def __getattr__(self, name: str) -> Any:
         # Loud failure if a probe stub ever leaks into a runtime call path.
@@ -3623,7 +3623,7 @@ def _retry_same_provider_sync(*, resolved_provider: str, resolved_api_mode: Opti
     resp, exc = _outcome(lambda: _validate_llm_response(_relay_sync_completion(
         retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode), task))
     if exc is not None:
-        raise _ClassifiedAttempt(_classify_failure(exc, resolved_provider, retry_client, retry_kwargs.get("model"), None))
+        raise _ClassifiedAttempt(_classify_failure(exc, resolved_provider, retry_client, retry_kwargs.get("model")))
     return resp
 
 
@@ -3637,7 +3637,7 @@ async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mod
         return await asyncio.to_thread(_validate_llm_response, resp, task)
     resp, exc = await _aoutcome(_send())
     if exc is not None:
-        raise _ClassifiedAttempt(_classify_failure(exc, resolved_provider, retry_client, retry_kwargs.get("model"), None))
+        raise _ClassifiedAttempt(_classify_failure(exc, resolved_provider, retry_client, retry_kwargs.get("model")))
     return resp
 
 
@@ -5679,8 +5679,7 @@ def _refresh_nous_auxiliary_client(
         client, final_model = _to_async_client(sync_client, model or "", is_vision=is_vision)
     else:
         client, final_model = sync_client, model
-    with contextlib.suppress(AttributeError):  # the probe stub has slots
-        client._hermes_aux_effective_provider = "nous"  # an auto route's retry still classifies as Nous
+    client._hermes_aux_effective_provider = "nous"  # an auto route's retry still classifies as Nous
     cache_key = _client_cache_key(
         cache_provider, async_mode=async_mode, base_url=base_url, api_key=api_key,
         api_mode=api_mode, main_runtime=main_runtime, is_vision=is_vision, task=lookup_task,
@@ -6890,7 +6889,7 @@ def _create_with_progress(
         affordable = _affordable_max_tokens_from_error(exc)
         if affordable is None:
             raise
-        failure = _classify_failure(exc, provider, client, kwargs.get("model"), None)
+        failure = _classify_failure(exc, provider, client, kwargs.get("model"))
         existing_cap = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
         if not aux_errors.benches_provider(failure.verdict) or (
                 isinstance(existing_cap, (int, float)) and 0 < existing_cap <= affordable):
@@ -6959,7 +6958,7 @@ def _create_with_progress_once(
         # recovery ladder, as a plain call would.
         if force_stream:
             raise
-        failure = _classify_failure(exc, provider, client, kwargs.get("model"), None)
+        failure = _classify_failure(exc, provider, client, kwargs.get("model"))
         if aux_errors.stream_negotiation_reraises(failure.verdict):
             raise _ClassifiedAttempt(failure)
         # Possibly a streaming-specific rejection: retry non-streaming once; a genuinely bad
@@ -7195,7 +7194,7 @@ async def _acreate_with_progress(
         # re-sending the whole prompt non-streaming.
         if force_stream:
             raise
-        failure = _classify_failure(exc, provider, client, kwargs.get("model"), None)
+        failure = _classify_failure(exc, provider, client, kwargs.get("model"))
         if aux_errors.stream_negotiation_reraises(failure.verdict):
             raise _ClassifiedAttempt(failure)
         logger.debug("Auxiliary %s: streamed async request failed (%s); retrying non-streaming",
@@ -7405,7 +7404,7 @@ def _rung(step: _LadderStep, accept: Callable[[aux_errors.Failure], bool], route
 
 
 def _classify_failure(exc: Exception, provider: Optional[str], client: Any, model: Any,
-                      base_url: Optional[str]) -> aux_errors.Failure:
+                      base_url: Optional[str] = None) -> aux_errors.Failure:
     if isinstance(exc, _ClassifiedAttempt):
         return exc.failure
     provider = _classification_provider(client, provider or "")

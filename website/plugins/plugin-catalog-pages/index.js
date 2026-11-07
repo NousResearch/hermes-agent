@@ -1,27 +1,22 @@
-// Docusaurus plugin: static pages for every plugin catalog entry and every author.
+// Docusaurus marketplace route generator.
 //
-//   /docs/plugins/<name>          one page per entry in website/static/api/plugins.json
-//   /docs/plugins/by/<slug>       one page per maintainer (slug from extract-plugins.py)
-//
-// Both are generated at build time from the same plugins.json the catalog grid fetches, so
-// there is no second data source: a merged catalog PR is the only way a page appears,
-// changes or disappears. Every entry's README is fetched from the pinned commit and rendered
-// through the allowlist in ./readme.js unless the entry sets `readme: false`.
-//
-// The site degrades, never fails: a missing plugins.json (extract-plugins.py did not run)
-// generates zero pages with a warning, and a README that cannot be fetched leaves that
-// section off the page.
+// Builds detail and creator pages for the reviewed Plugin and Bot catalogs.
+// Both catalogs are extracted before Docusaurus loads this plugin, so the
+// generated pages and browse grids always share one data source.
+// Plugin READMEs come from pinned commits through the allowlist in ./readme.js,
+// unless an entry sets `readme: false`. Failed README fetches omit that section.
 
 const fs = require("node:fs");
 const path = require("node:path");
 const { fetchReadme, renderReadme } = require("./readme.js");
 
 const PLUGINS_JSON = path.join("static", "api", "plugins.json");
-const META_JSON = path.join("static", "api", "plugins-meta.json");
+const PLUGIN_META_JSON = path.join("static", "api", "plugins-meta.json");
+const BOTS_JSON = path.join("static", "api", "bots.json");
 const README_CONCURRENCY = 12;
 
-function log(msg) {
-  console.warn(`[plugin-catalog-pages] ${msg}`);
+function log(message) {
+  console.warn(`[marketplace-pages] ${message}`);
 }
 
 function readJson(file, fallback) {
@@ -33,116 +28,115 @@ function readJson(file, fallback) {
 }
 
 async function mapLimit(items, limit, fn) {
-  const out = new Array(items.length);
+  const output = new Array(items.length);
   let next = 0;
   async function worker() {
     while (next < items.length) {
-      const i = next++;
-      out[i] = await fn(items[i], i);
+      const index = next++;
+      output[index] = await fn(items[index], index);
     }
   }
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return out;
+  return output;
 }
 
-/** Group entries by maintainerSlug, preserving the catalog's (stars-first) order inside a group. */
-function groupAuthors(entries) {
-  const authors = new Map();
+function groupCreators(entries) {
+  const creators = new Map();
   for (const entry of entries) {
     const slug = entry.maintainerSlug || "unknown";
-    const author = authors.get(slug) || { slug, name: entry.maintainer || slug, plugins: [] };
-    author.plugins.push(entry);
-    authors.set(slug, author);
+    const creator = creators.get(slug) || { slug, name: entry.maintainer || slug, entries: [] };
+    creator.entries.push(entry);
+    creators.set(slug, creator);
   }
-  return [...authors.values()];
+  return [...creators.values()];
 }
 
-module.exports = function pluginCatalogPages(context) {
+module.exports = function marketplacePages(context) {
   const { siteDir, baseUrl } = context;
   const cacheDir = path.join(siteDir, ".cache", "plugin-readmes");
-
   return {
-    name: "plugin-catalog-pages",
+    name: "marketplace-pages",
 
     getPathsToWatch() {
-      return [path.join(siteDir, PLUGINS_JSON)];
+      return [path.join(siteDir, PLUGINS_JSON), path.join(siteDir, BOTS_JSON)];
     },
 
     async loadContent() {
-      const entries = readJson(path.join(siteDir, PLUGINS_JSON), null);
-      if (!Array.isArray(entries)) {
-        log(`${PLUGINS_JSON} missing or invalid; generating no plugin pages`);
-        return { entries: [], meta: {} };
-      }
-      const meta = readJson(path.join(siteDir, META_JSON), {});
-      const wantReadme = entries.filter((e) => e.readme && e.readmeUrl);
+      const plugins = readJson(path.join(siteDir, PLUGINS_JSON), []);
+      const bots = readJson(path.join(siteDir, BOTS_JSON), []);
+      const safePlugins = Array.isArray(plugins) ? plugins : [];
+      const safeBots = Array.isArray(bots) ? bots : [];
+      const wantReadme = safePlugins.filter((entry) => entry.readme && entry.readmeUrl);
       const rendered = await mapLimit(wantReadme, README_CONCURRENCY, async (entry) => {
         const fetched = await fetchReadme(entry.readmeUrl, cacheDir, log);
         if (fetched == null) return null;
         try {
           return { html: await renderReadme(fetched.markdown, fetched.url), url: fetched.url };
-        } catch (err) {
-          log(`README for ${entry.name} failed to render: ${err && err.message ? err.message : err}`);
+        } catch (error) {
+          log(`README for ${entry.name} failed to render: ${error && error.message ? error.message : error}`);
           return null;
         }
       });
-      const readmes = Object.fromEntries(wantReadme.map((entry, i) => [entry.name, rendered[i]]));
       if (wantReadme.length) {
         log(`rendered ${rendered.filter(Boolean).length}/${wantReadme.length} READMEs from pinned commits`);
       }
-      return { entries, meta, readmes };
+      return {
+        plugins: safePlugins,
+        pluginMeta: readJson(path.join(siteDir, PLUGIN_META_JSON), {}),
+        readmes: Object.fromEntries(wantReadme.map((entry, index) => [entry.name, rendered[index]])),
+        bots: safeBots,
+      };
     },
 
     async contentLoaded({ content, actions }) {
       const { addRoute, createData } = actions;
-      const { entries, meta, readmes = {} } = content;
-      if (!entries.length) return;
-      const authors = groupAuthors(entries);
-      const bySlug = new Map(authors.map((a) => [a.slug, a]));
-      const prefix = `${baseUrl.replace(/\/$/, "")}/plugins`;
+      const { plugins, pluginMeta, readmes, bots } = content;
+      const root = baseUrl.replace(/\/$/, "");
 
-      // Compact cards for shelves ("More by this author", author page grid) — the full entry
-      // minus nothing heavy; keeping the shape identical to plugins.json keeps one card type.
-      for (const entry of entries) {
-        const author = bySlug.get(entry.maintainerSlug || "unknown");
-        const siblings = author ? author.plugins.filter((p) => p.name !== entry.name) : [];
-        const data = await createData(
-          `plugin-${entry.name}.json`,
-          JSON.stringify({
-            plugin: entry,
-            readmeHtml: readmes[entry.name]?.html || null,
-            readmeSourceUrl: readmes[entry.name]?.url || null,
-            author: author ? { slug: author.slug, name: author.name, count: author.plugins.length } : null,
-            moreByAuthor: siblings,
-            generatedAt: meta.generatedAt || null,
-            starsFetchedAt: meta.starsFetchedAt || null,
-          }),
-        );
-        addRoute({
-          path: `${prefix}/${entry.name}`,
-          component: "@site/src/components/PluginCatalog/PluginPage",
-          exact: true,
-          modules: { data },
-        });
+      const pluginCreators = groupCreators(plugins);
+      const pluginsByCreator = new Map(pluginCreators.map((creator) => [creator.slug, creator]));
+      for (const entry of plugins) {
+        const creator = pluginsByCreator.get(entry.maintainerSlug || "unknown");
+        const siblings = creator ? creator.entries.filter((item) => item.name !== entry.name) : [];
+        const data = await createData(`plugin-${entry.name}.json`, JSON.stringify({
+          plugin: entry,
+          readmeHtml: readmes[entry.name]?.html || null,
+          readmeSourceUrl: readmes[entry.name]?.url || null,
+          author: creator ? { slug: creator.slug, name: creator.name, count: creator.entries.length } : null,
+          moreByAuthor: siblings,
+          generatedAt: pluginMeta.generatedAt || null,
+          starsFetchedAt: pluginMeta.starsFetchedAt || null,
+        }));
+        addRoute({ path: `${root}/plugins/${encodeURIComponent(entry.name)}`, component: "@site/src/components/PluginCatalog/PluginPage", exact: true, modules: { data } });
+      }
+      for (const creator of pluginCreators) {
+        const data = await createData(`plugin-author-${creator.slug}.json`, JSON.stringify({
+          author: { slug: creator.slug, name: creator.name, count: creator.entries.length },
+          plugins: creator.entries,
+          generatedAt: pluginMeta.generatedAt || null,
+        }));
+        addRoute({ path: `${root}/plugins/by/${encodeURIComponent(creator.slug)}`, component: "@site/src/components/PluginCatalog/AuthorPage", exact: true, modules: { data } });
       }
 
-      for (const author of authors) {
-        const data = await createData(
-          `author-${author.slug}.json`,
-          JSON.stringify({
-            author: { slug: author.slug, name: author.name, count: author.plugins.length },
-            plugins: author.plugins,
-            generatedAt: meta.generatedAt || null,
-          }),
-        );
-        addRoute({
-          path: `${prefix}/by/${author.slug}`,
-          component: "@site/src/components/PluginCatalog/AuthorPage",
-          exact: true,
-          modules: { data },
-        });
+      const botCreators = groupCreators(bots);
+      const botsByCreator = new Map(botCreators.map((creator) => [creator.slug, creator]));
+      for (const bot of bots) {
+        const creator = botsByCreator.get(bot.maintainerSlug || "unknown");
+        const data = await createData(`bot-${bot.name}.json`, JSON.stringify({
+          bot,
+          creator: creator ? { slug: creator.slug, name: creator.name, count: creator.entries.length } : null,
+          moreByCreator: creator ? creator.entries.filter((item) => item.name !== bot.name) : [],
+        }));
+        addRoute({ path: `${root}/bots/${encodeURIComponent(bot.name)}`, component: "@site/src/components/BotCatalog/BotPage", exact: true, modules: { data } });
       }
-      log(`generated ${entries.length} plugin pages and ${authors.length} author pages under ${prefix}/`);
+      for (const creator of botCreators) {
+        const data = await createData(`bot-creator-${creator.slug}.json`, JSON.stringify({
+          creator: { slug: creator.slug, name: creator.name, count: creator.entries.length },
+          bots: creator.entries,
+        }));
+        addRoute({ path: `${root}/bots/by/${encodeURIComponent(creator.slug)}`, component: "@site/src/components/BotCatalog/CreatorPage", exact: true, modules: { data } });
+      }
+      log(`generated ${plugins.length} plugin pages, ${pluginCreators.length} plugin creator pages, ${bots.length} bot pages, and ${botCreators.length} bot creator pages`);
     },
   };
 };

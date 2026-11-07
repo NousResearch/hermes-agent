@@ -1,0 +1,2 @@
+nickname,reward_rate_percent,cap_remaining,credit_remaining,term_provenance,as_of,official_source,notes
+{{card nickname}},{{percent}},{{currency amount}},{{currency amount}},{{synthetic/user-provided/current-official}},{{ISO date}},{{official URL or blank}},{{protections/preferences; no secrets}}

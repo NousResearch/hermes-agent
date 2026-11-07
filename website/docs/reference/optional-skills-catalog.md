@@ -47,6 +47,19 @@ hermes skills uninstall <skill-name>
 | [**hyperliquid**](../user-guide/skills/optional/blockchain/blockchain-hyperliquid.md) | Hyperliquid market data, account history, trade review. |
 | [**solana**](../user-guide/skills/optional/blockchain/blockchain-solana.md) | Query Solana wallets, tokens, txs, and NFTs in USD. |
 
+## bots
+
+| Skill | Description |
+|-------|-------------|
+| [**competitor-watch**](../user-guide/skills/optional/bots/bots-competitor-watch.md) | Baseline public competitors and report material changes. |
+| [**credit-card-optimizer**](../user-guide/skills/optional/bots/bots-credit-card-optimizer.md) | Compare owned cards using explicit rewards assumptions. |
+| [**design-critic**](../user-guide/skills/optional/bots/bots-design-critic.md) | Rank screen critiques by observable user impact. |
+| [**inbox-triage**](../user-guide/skills/optional/bots/bots-inbox-triage.md) | Triage supplied messages into priorities and reply drafts. |
+| [**meeting-recap-deck**](../user-guide/skills/optional/bots/bots-meeting-recap-deck.md) | Turn meeting notes into a traceable recap outline. |
+| [**recruiting-coordinator**](../user-guide/skills/optional/bots/bots-recruiting-coordinator.md) | Coordinate interview loops without making hiring decisions. |
+| [**research-analyst**](../user-guide/skills/optional/bots/bots-research-analyst.md) | Produce bounded research briefs with traceable evidence. |
+| [**sales-call-coach**](../user-guide/skills/optional/bots/bots-sales-call-coach.md) | Score sales transcripts and coach one repeatable habit. |
+
 ## communication
 
 | Skill | Description |

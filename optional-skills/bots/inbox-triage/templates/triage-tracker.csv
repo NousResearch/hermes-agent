@@ -1,0 +1,2 @@
+thread_id,subject,latest_date,priority_lane,reason,owner,deadline,next_action,draft_status,source_pointer
+{{thread id}},{{subject}},{{ISO date}},{{urgent/action/waiting/read}},{{evidence-based reason}},{{owner or unresolved}},{{deadline or unresolved}},{{next action}},{{none/DRAFT}},{{message pointer}}

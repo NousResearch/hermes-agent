@@ -340,6 +340,22 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'bots',
+                  key: 'skills-optional-bots',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/bots/bots-competitor-watch',
+                    'user-guide/skills/optional/bots/bots-credit-card-optimizer',
+                    'user-guide/skills/optional/bots/bots-design-critic',
+                    'user-guide/skills/optional/bots/bots-inbox-triage',
+                    'user-guide/skills/optional/bots/bots-meeting-recap-deck',
+                    'user-guide/skills/optional/bots/bots-recruiting-coordinator',
+                    'user-guide/skills/optional/bots/bots-research-analyst',
+                    'user-guide/skills/optional/bots/bots-sales-call-coach',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'communication',
                   key: 'skills-optional-communication',
                   collapsed: true,

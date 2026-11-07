@@ -7,6 +7,7 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  host,
   SearchField,
   Tip
 } from '@hermes/plugin-sdk'
@@ -138,6 +139,10 @@ export function renderRosterToolbar({
               <DropdownMenuItem onSelect={() => setCreateOpen(true)}>
                 <Codicon className="mr-1.5" name="hubot" />
                 {b.bot.newTitle}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => host.navigate('/capabilities?tab=bots')}>
+                <Codicon className="mr-1.5" name="globe" />
+                {b.roster.browseMarketplace}
               </DropdownMenuItem>
               <NewGroupChatItem
                 elsewhereNote={b.crossGateway.selectionElsewhere}

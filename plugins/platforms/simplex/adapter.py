@@ -100,6 +100,13 @@ def _mime_for_ext(ext: str) -> str:
     return "application/octet-stream"
 
 
+_QUOTE_PREVIEW_MAX = 1000  # quoted text is rendered into the prompt; keep it bounded
+_QUOTE_LABELS = {
+    "image": "[image]", "video": "[video]", "voice": "[voice]",
+    "file": "[file]", "link": "[link]", "report": "[report]", "chat": "[chat]",
+}
+
+
 def _display_name(obj: dict, profile_key: str, default: str = "") -> str:
     """``localDisplayName`` falling back to the nested profile's ``displayName``."""
     return obj.get("localDisplayName", "") or (obj.get(profile_key, {}) or {}).get("displayName", default)
@@ -389,14 +396,48 @@ class SimplexAdapter(BasePlatformAdapter):
             timestamp = datetime.fromisoformat(ts_str) if ts_str else datetime.now(tz=UTC)
         except (ValueError, AttributeError):
             timestamp = datetime.now(tz=UTC)
+        reply_to_id, reply_to_text, reply_own = self._extract_quote(chat_item_data)
         msg_event = MessageEvent(
             source=source, text=text or "", message_type=msg_type, media_urls=media_urls,
-            media_types=media_types, timestamp=timestamp, raw_message=chat_item)
+            media_types=media_types, timestamp=timestamp, raw_message=chat_item,
+            reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
+            reply_to_is_own_message=reply_own)
         logger.debug("SimpleX: message from %s in %s: %s", _redact_id(sender_id), chat_id[:20], (text or "")[:50])
-        if msg_type == MessageType.TEXT and text:  # batch rapid-fire text into one combined message
+        # A quote must not go through text batching: the merge carries only text, media and
+        # reply_expected, so the reply fields would be dropped (or paired with the wrong id).
+        if msg_type == MessageType.TEXT and text and not reply_to_id:  # batch rapid-fire text into one combined message
             self._enqueue_text_event(msg_event)
         else:
             await self.handle_message(msg_event)
+
+    def _extract_quote(self, chat_item) -> tuple[str | None, str, bool]:
+        """Return (reply_to_id, reply_to_text, is_own_message) for a quoted reply.
+
+        ``quotedItem`` is a SIBLING of ``content``/``meta`` on the chat item, and it holds the
+        quoted ``MsgContent`` directly, with no ``msgContent`` wrapper (unlike the item itself).
+        ``itemId`` is nullable upstream when the quoted item was never received, so a null id
+        must drop the quote rather than emit the string "None" as a pointer. Every MsgContent
+        carries ``text``, but a quoted image embeds its full bytes, so this reads ``text`` only
+        and never serialises the subtree.
+        """
+        quoted = chat_item.get("quotedItem") if isinstance(chat_item, dict) else None
+        if not isinstance(quoted, dict):
+            return None, "", False
+        q_id = quoted.get("itemId")
+        if q_id is None:
+            return None, "", False
+        content = quoted.get("content")
+        preview = ""
+        if isinstance(content, dict):
+            preview = content.get("text") or ""
+            if not preview:
+                preview = _QUOTE_LABELS.get(str(content.get("type") or ""), "[message]")
+        if not isinstance(preview, str):
+            return str(q_id), "", False
+        preview = " ".join(preview.split())
+        chat_dir = quoted.get("chatDir")
+        own = isinstance(chat_dir, dict) and chat_dir.get("type") == "directSnd"
+        return str(q_id), self._truncate_preview(preview, _QUOTE_PREVIEW_MAX), bool(own)
 
     # Text batching: enqueue lives on BasePlatformAdapter.
 

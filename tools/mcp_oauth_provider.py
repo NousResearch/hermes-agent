@@ -8,6 +8,7 @@ modules keep their own subclass (logger name, disk-watch hooks) on top of it.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import TYPE_CHECKING, Any
@@ -49,6 +50,26 @@ def stamp_default_user_agent(request):
     if "user-agent" not in request.headers:
         request.headers["User-Agent"] = DEFAULT_AUTH_REQUEST_USER_AGENT
     return request
+
+
+async def _refresh_rejection_error(response) -> str | None:
+    """The RFC 6749 §5.2 ``error`` code of a rejected refresh, when the body is the issuer's JSON.
+
+    Only a body that parses as an object with a string ``error`` answers a code. A WAF's HTML "Request
+    blocked" page (#115329), a proxy's error text or a 5xx without a JSON body answers ``None``, which
+    the caller must read as "unknown", never as a revoked grant.
+    """
+    # The SDK's responses come from ``httpx2`` (mcp 2.x); older installs still hand us ``httpx``.
+    try:
+        import httpx2 as _httpx
+    except ImportError:  # pragma: no cover - only without the mcp extra
+        import httpx as _httpx
+    try:
+        payload = json.loads(await response.aread())
+    except (_httpx.HTTPError, ValueError, TypeError):
+        return None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    return error if isinstance(error, str) else None
 
 
 def _asm_discovery_failure(response) -> str | None:
@@ -467,6 +488,16 @@ class HermesProviderMixin:
                     "Recovered a peer-rotated refresh token instead of clearing the session"
                 )
                 return True
+            if 400 <= response.status_code < 500 and await _refresh_rejection_error(response) == "invalid_grant":
+                # A definite revoked grant (#150367). ``clear_tokens()`` only forgets the pair in memory,
+                # so the dead refresh token stayed on disk and every new provider — the next gateway
+                # request, a cron run, a new session — loaded it and got rejected again (1,411 times in
+                # 25 hours for the reporting install). Drop it under the fence we still hold; an
+                # unexpired access token stays usable, and the next start asks for a fresh login.
+                from tools.mcp_oauth import HermesTokenStorage
+                storage = getattr(self.context, "storage", None)
+                if isinstance(storage, HermesTokenStorage):
+                    storage.strip_refresh_token(reason="revoked-grant")
             self.context.clear_tokens()
             return False
         from httpx import HTTPError

@@ -60,8 +60,8 @@ def _read_config(home: Path) -> dict:
 
 def _merged_platform_block(home: Path, name: str) -> Optional[dict]:
     """Platform *name*'s block as the gateway loader merges it for *home*: legacy ``gateway.json`` base
-    layer, then config.yaml's ``gateway.platforms`` / ``platforms`` / ``gateway.<name>`` blocks in the
-    loader's order (managed overlay and ``${VAR}`` applied). ``None`` when no layer names it."""
+    layer, then config.yaml's ``gateway.platforms`` / ``platforms`` / ``gateway.<name>`` blocks and a top-level
+    ``<name>:`` block in the loader's order (managed overlay and ``${VAR}`` applied). ``None`` when no layer names it."""
     from gateway import config_loader
     gw_data = config_loader.load_legacy_gateway_json(home)
     gw_data = gw_data if isinstance(gw_data, dict) else {}
@@ -73,6 +73,15 @@ def _merged_platform_block(home: Path, name: str) -> Optional[dict]:
     yaml_cfg = yaml_cfg if isinstance(yaml_cfg, dict) else {}
     block = config_loader.merge_platform_sections(
         yaml_cfg, yaml_cfg.get("gateway"), gw_data, also=frozenset({name})).get(name)
+    root = yaml_cfg.get(name)
+    if isinstance(root, dict):  # a top-level ``<name>:`` block, bridged as bridge_platform_shared_keys does: its
+        from gateway.config import PlatformConfig  # adapter keys beat gateway.json's extra, not config.yaml's nested one
+        authored = config_loader.merge_platform_sections(yaml_cfg, yaml_cfg.get("gateway"), {}, also=frozenset({name}))
+        block = dict(block) if isinstance(block, dict) else {}
+        block["extra"] = {**(block.get("extra") or {}), **PlatformConfig.from_dict({**root, "home_channel": None}).extra,
+                          **(authored.get(name) or {}).get("extra", {})}  # a home_channel names a plugin's Platform
+        if "enabled" in root:  # and its enabled wins
+            block["enabled"] = root["enabled"]
     return block if isinstance(block, dict) else None
 
 

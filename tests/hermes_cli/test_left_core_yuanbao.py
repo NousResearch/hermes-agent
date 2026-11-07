@@ -58,6 +58,13 @@ _SHIPPED_PLATFORM_TOOLSETS = (
     # An explicit disable kept core's adapter off whatever credentials were set, legacy block included.
     ("YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n", "platforms:\n  yuanbao:\n    enabled: false\n", False),
     ("YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n", "gateway:\n  yuanbao:\n    enabled: false\n", False),
+    # A top-level ``yuanbao:`` block counted too: the loader bridged its keys into extra and its enabled won.
+    ("", "yuanbao:\n  app_id: a\n  app_secret: s\n", True),
+    ("YUANBAO_APP_SECRET=s\n", "yuanbao:\n  app_id: a\n", True),
+    ("YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n", "yuanbao:\n  enabled: false\n", False),
+    ("YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n", "platforms:\n  yuanbao:\n    enabled: false\nyuanbao:\n  enabled: true\n", True),
+    ("", "platforms:\n  yuanbao:\n    extra: {app_secret: ''}\nyuanbao:\n  app_id: a\n  app_secret: s\n", False),  # nested extra wins
+    ("", "yuanbao:\n  app_id: a\n  app_secret: s\n  home_channel: {platform: yuanbao, chat_id: c1}\n", True),
 ])
 def test_yuanbao_in_use_matches_what_core_ran(tmp_path, env, config, in_use):
     assert lcm.yuanbao_in_use(_home(tmp_path, env=env, config=config)) is in_use
@@ -68,6 +75,13 @@ def test_a_disable_in_legacy_gateway_json_vetoes_env_credentials(tmp_path):
     home = _home(tmp_path, env="YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n")
     (home / "gateway.json").write_text(json.dumps({"platforms": {"yuanbao": {"enabled": False}}}))
     assert lcm.yuanbao_in_use(home) is False
+
+
+def test_a_top_level_yuanbao_block_outranks_legacy_gateway_json_extras(tmp_path):
+    import json
+    home = _home(tmp_path, config="yuanbao:\n  app_id: a\n  app_secret: s\n")
+    (home / "gateway.json").write_text(json.dumps({"platforms": {"yuanbao": {"extra": {"app_secret": ""}}}}))
+    assert lcm.yuanbao_in_use(home) is True
 
 
 def test_a_yuanbao_home_gets_the_plugin_once_with_the_labs_notice(tmp_path):

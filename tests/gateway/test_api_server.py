@@ -980,24 +980,24 @@ class TestCapabilitiesEndpoint:
 class TestSkillsEndpoint:
     @pytest.mark.asyncio
     async def test_skills_returns_list_envelope(self, adapter):
-        fake_skills = [
-            {"name": "github", "description": "GitHub workflow skill", "category": "github"},
-            {"name": "ascii-art", "description": "ASCII art generation", "category": "creative"},
-        ]
-        with patch(
-            "tools.skills_tool.find_all_skills",
-            return_value=list(fake_skills),
-        ):
-            app = _create_app(adapter)
-            async with TestClient(TestServer(app)) as cli:
-                resp = await cli.get("/v1/skills")
-                assert resp.status == 200
-                data = await resp.json()
-                assert data["object"] == "list"
-                names = sorted(s["name"] for s in data["data"])
-                assert names == ["ascii-art", "github"]
-                for entry in data["data"]:
-                    assert set(entry.keys()) >= {"name", "description", "category"}
+        # Real SKILL.md files, no patched finder: a Mock accepts any keyword, so the
+        # route passed a removed ``include_editorial`` kwarg and 500'd while this was green.
+        from hermes_constants import get_hermes_home
+        for category, name, desc in (("github", "github", "GitHub workflow skill"),
+                                     ("creative", "ascii-art", "ASCII art generation")):
+            skill_dir = get_hermes_home() / "skills" / category / name
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {desc}\n---\nbody\n", encoding="utf-8")
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/skills")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["object"] == "list"
+            by_name = {s["name"]: s for s in data["data"]}
+            assert by_name["github"]["category"] == "github"
+            assert by_name["ascii-art"]["description"] == "ASCII art generation"
 
 
 class TestToolsetsEndpoint:

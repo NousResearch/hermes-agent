@@ -52,7 +52,6 @@ import {
   refreshGatewayGroupRooms,
   resolveCanonicalGroup
 } from './canonical-group-registry'
-import { GatewayGroupUpgrade } from './canonical-group-upgrade'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import type { GroupCreationIntent } from './canonical-groups'
 import { canonicalGroupCreateError, canonicalGroupRequest, canonicalGroupRoster, createCanonicalGroup, onCanonicalConnection } from './canonical-groups'
@@ -1668,7 +1667,6 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
         </div>
       ) : null}
       {header}
-      <GatewayGroupUpgrade group={group} members={members} onCreated={key => openGroupChat(key, 'key')} visible={visible} />
       <GroupHoldStatus
         holds={room.holds}
         memberLabel={member => displayName(member, botRosterMeta(member, allMeta))}

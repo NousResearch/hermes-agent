@@ -51,8 +51,13 @@ SCHEMA_VERSION = 1
 _CITE_RE = re.compile(r"\[(\d{1,4})\](?![(:])")
 _SOURCES_HEADER_RE = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*)?sources:?(?:\*\*)?\s*$", re.IGNORECASE)
 _SOURCE_LINE_RE = re.compile(r"^\s*\[(\d{1,4})\]\s*[-–:]?\s*(\S+)")
-_URL_IN_TEXT_RE = re.compile(r"https?://[^\s\"'<>)\]}]+")
+# A URL in a Sources line.  A balanced "(...)" group stays part of the URL
+# (Elsevier PIIs such as S0092-8674(23)00593-7, Wikipedia titles); a lone
+# closing bracket still ends it, so "(see https://a.example)" stops at ".example".
+_URL_IN_TEXT_RE = re.compile(r"https?://(?:\([^\s\"'<>()]*\)|[^\s\"'<>)\]}])+")
 _FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
+# A bullet or numbered list item, as hand-written Sources blocks use.
+_BLOCK_LIST_ITEM_RE = re.compile(r"^(?:[-*+]|\d{1,4}[.)])\s")
 # Explicit declaration that a claim comes from model knowledge, not a source.
 _UNVERIFIED_RE = re.compile(r"\[unverified\]", re.IGNORECASE)
 
@@ -368,9 +373,26 @@ def _split_draft(text: str) -> tuple[str, dict[int, str]]:
 def _strip_sources_block(text: str) -> str:
     """Return the draft with its trailing Sources block removed.
 
-    Everything from the last Sources header onward goes; a draft with no such
-    header is returned unchanged.  This is what makes ``render --replace-in``
-    idempotent instead of stacking duplicate blocks.
+    The block is the last Sources header plus the lines that belong to it:
+    blank lines, ``[n]`` entries, and indented continuation lines (evidence
+    quotes).  A draft with no such header is returned unchanged.  This is
+    what makes ``render --replace-in`` idempotent instead of stacking
+    duplicate blocks.  Use :func:`_split_sources_block` to keep the lines
+    that follow the block.
+    """
+    head, _tail = _split_sources_block(text)
+    return head
+
+
+def _split_sources_block(text: str) -> tuple[str, str]:
+    """Split a draft into (text before the Sources block, text after it).
+
+    Lines after the block -- a closing ``ANSWER:`` line, a sign-off -- start
+    at the first non-blank line that is not a ``[n]`` entry, an indented
+    continuation, a list item, or a line carrying a URL (hand-written blocks
+    use ``- url`` and ``1. url`` too, and those must be replaced, not kept).
+    Both parts are ``""`` when absent; with no Sources header the whole draft
+    is the first part.
     """
     lines = text.splitlines()
     header_idx = -1
@@ -378,8 +400,21 @@ def _strip_sources_block(text: str) -> str:
         if _SOURCES_HEADER_RE.match(line):
             header_idx = i
     if header_idx < 0:
-        return text
-    return "\n".join(lines[:header_idx])
+        return text, ""
+    end = len(lines)
+    for j in range(header_idx + 1, len(lines)):
+        line = lines[j]
+        if (
+            not line.strip()
+            or _SOURCE_LINE_RE.match(line)
+            or line[:1].isspace()
+            or _BLOCK_LIST_ITEM_RE.match(line)
+            or _URL_IN_TEXT_RE.search(line)
+        ):
+            continue
+        end = j
+        break
+    return "\n".join(lines[:header_idx]), "\n".join(lines[end:])
 
 
 def _sentences(prose: str) -> list[str]:
@@ -643,8 +678,11 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if args.replace_in:
             target = Path(args.replace_in)
-            body = _strip_sources_block(target.read_text(encoding="utf-8"))
-            target.write_text(body.rstrip("\n") + "\n\n" + block + "\n", encoding="utf-8")
+            body, tail = _split_sources_block(target.read_text(encoding="utf-8"))
+            text = body.rstrip("\n") + "\n\n" + block + "\n"
+            if tail.strip():
+                text += "\n" + tail.strip("\n") + "\n"
+            target.write_text(text, encoding="utf-8")
             print(f"Sources block rewritten in {target}")
             return 0
         print(block)

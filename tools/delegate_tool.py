@@ -337,6 +337,9 @@ def _build_child_agent(
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
+    # Plugins see one conversation per delegation tree.
+    from agent.prompt_cache_scope import conversation_id
+    child._inherited_conversation_id = conversation_id(parent_agent)
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
@@ -346,9 +349,13 @@ def _build_child_agent(
     except TypeError:
         child._delegate_parent_ref = None  # non-weakref-able test doubles
     # Sidebar marker: subagent sessions stay out of session pickers even when a
-    # parent delete orphans them (mirrors /branch's ``_branched_from``).
+    # parent delete orphans them (mirrors /branch's ``_branched_from``). The
+    # subagent_id lets a viewer find the stored transcript once the live registry
+    # has forgotten the child (``delegate_tool_sessions``).
     if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
+        from tools.delegate_tool_sessions import SUBAGENT_ID_KEY
         child._session_init_model_config["_delegate_from"] = parent_sid
+        child._session_init_model_config[SUBAGENT_ID_KEY] = subagent_id
     child._delegate_profile_home = profile_home  # _ChildRun.await_child runs the conversation in this scope
     if child_pool is not None:
         child._credential_pool = child_pool

@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         timeout-minutes: 3
-      # The repo's PM-pinned node and pnpm (the root package.json refuses any other pnpm).
+      # The repo's PM-pinned node and pnpm (the pm/lock.json pin).
       - uses: ./.github/actions/setup-pm
         timeout-minutes: 10
         with:

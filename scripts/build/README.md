@@ -70,8 +70,8 @@ fails. The provider deduplicates the selection and runs one root
 `pnpm install --frozen-lockfile --trust-lockfile --prod=false` filtered to the
 selected workspaces and their workspace dependencies. The root project is always
 included. It includes development and optional dependencies. pnpm enforces the
-root `engines` pin; the provider enforces the exact `devEngines` pnpm version
-(`pmOnFail: ignore` keeps that pin out of the lockfile). pnpm runs dependency
+root `engines` pin; the provider enforces the exact `pm/lock.json` pnpm version
+(`pmOnFail: ignore` keeps any pnpm pin out of the lockfile). pnpm runs dependency
 build scripts only for the packages `allowBuilds` in `pnpm-workspace.yaml` names
 (`strictDepBuilds` fails the install on any other). The lockfile is trusted
 here: the `minimumReleaseAge` policy is verified in CI, where it is written.
@@ -219,7 +219,9 @@ source checkout as the output root. Builders without a runtime environment
 prepare one with `scripts/build/icon_environment.py`.
 
 The desktop native tree contains prepared packages, including `node-pty` with
-its compiled binding. macOS also requires `get-windows/main`. The provider owns
+its compiled binding. `get-windows` is optional: when staging degraded it away
+the app ships without window enumeration, but a staged copy on macOS must include
+its `main` helper. The provider owns
 the architecture and Electron ABI match. `--platform` defaults to the running
 Node platform and controls native-file checks. It does not cross-compile a
 binding. `--typecheck` enables the desktop renderer TypeScript check and defaults

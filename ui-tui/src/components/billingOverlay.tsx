@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto'
 
 import { Box, Text, useInput } from '@hermes/ink'
+import type { BillingStateResponse } from '@hermes/shared/gateway-types'
 import { useRef, useState } from 'react'
 
 import type { BillingOverlayState } from '../app/interfaces.js'
-import type { BillingStateResponse } from '../gatewayTypes.js'
 import type { Translations } from '../i18n/types.js'
 import { useT } from '../i18n/useT.js'
 import type { Theme } from '../theme.js'

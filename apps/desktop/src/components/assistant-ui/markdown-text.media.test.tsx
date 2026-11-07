@@ -1,6 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { registry } from '@/contrib/registry'
+import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
 import { $connection } from '@/store/session'
 
 import { MarkdownImage, MarkdownTextContent, MessageTextContent } from './markdown-text'
@@ -48,6 +50,83 @@ describe('MarkdownTextContent remote images', () => {
       path: '/api/fs/read-data-url?path=%2Fhome%2Fuser%2Fproject%2Fimages%2Fremote-preview.png',
       profile: 'remote-work'
     })
+  })
+
+  it('keeps foreign-history images, file links and a real registered directive inert', async () => {
+    const live = vi.fn(() => <div data-testid="foreign-live-card">Live action</div>)
+
+    const dispose = registry.register({
+      id: 'test:foreign-history',
+      area: TRANSCRIPT_DIRECTIVE_AREA,
+      source: 'plugin:test',
+      data: { name: 'foreign-history', render: live } satisfies TranscriptDirectiveContribution
+    })
+
+    try {
+      // Positive control: this exact registered directive mounts in ordinary chat.
+      const ordinary = render(<MessageTextContent media={false} text="::foreign-history" />)
+      await screen.findByTestId('foreign-live-card')
+      ordinary.unmount()
+      live.mockClear()
+      api.mockClear()
+
+      const foreign = render(
+        <MessageTextContent
+          media={false}
+          previewOnly
+          text={`![Foreign image](${REMOTE_IMAGE_PATH})\n\n[Owner notes](/home/user/project/notes.md)\n\n::foreign-history\n\nMEDIA:/home/user/project/private.mp3\n\n[Relative notes](notes.md) [File URI](file:///home/peer/private.md) [Credential URL](https://user:secret@example.com/private) [Unsafe script](javascript:alert(1))`}
+        />
+      )
+
+      await screen.findByText('Foreign image')
+      expect(screen.getByText('Owner notes')).toBeTruthy()
+      expect(foreign.container.textContent).toContain('::foreign-history')
+      expect(foreign.container.textContent).toContain('MEDIA:/home/user/project/private.mp3')
+      expect(foreign.container.querySelector('a, img, video, audio, button')).toBeNull()
+      expect(screen.queryByTestId('foreign-live-card')).toBeNull()
+      expect(live).not.toHaveBeenCalled()
+      expect(api).not.toHaveBeenCalled()
+    } finally {
+      dispose()
+    }
+  })
+
+  it('opens only an explicit web link from foreign history, with only the sanitized address and the safe target', async () => {
+    const view = render(<MessageTextContent media={false} previewOnly text={'Read [the release notes](https://example.com/notes?x=1 "Release notes").'} />)
+    const link = await screen.findByRole('link', { name: 'the release notes' })
+    expect(link.getAttribute('href')).toBe('https://example.com/notes?x=1')
+    expect(view.container.querySelectorAll('a')).toHaveLength(1)
+    // Nothing the renderer hands the link component (its node, a title, a target) reaches the anchor.
+    expect(link.getAttributeNames().sort()).toEqual(['class', 'href', 'rel', 'target'])
+    expect([link.getAttribute('target'), link.getAttribute('rel')]).toEqual(['_blank', 'noopener noreferrer'])
+    expect(api).not.toHaveBeenCalled()
+  })
+
+  // The parsed hostname folds decimal, octal, hex, dotted-unicode and percent-encoded spellings;
+  // bracketed IPv6 hosts are already blocked by the renderer's URL hardening.
+  it.each([
+    'http://127.0.0.1:9119/api/status', 'http://2130706433/', 'http://0177.0.0.1/', 'http://0x7f000001/',
+    'http://①②⑦.0.0.1/', 'https://%6c%6f%63%61%6c%68%6f%73%74/', 'http://localhost./', 'http://dash.localhost/',
+    'http://0.0.0.0:8080/', 'http://[::1]/', 'http://[::ffff:127.0.0.1]/', 'http://[fe80::1]/', 'http://[fd12:3456::1]/',
+    'http://169.254.169.254/latest/meta-data/', 'http://10.1.2.3/', 'http://172.16.0.1/', 'http://192.168.1.1/'
+  ])('keeps a foreign link to a local or private host as text: %s', async href => {
+    const view = render(<MessageTextContent media={false} previewOnly text={`Open [the dashboard](${href}) or [the docs](https://example.com/docs).`} />)
+    await screen.findByRole('link', { name: 'the docs' })
+    expect(screen.getByText(/the dashboard/).closest('a')).toBeNull()
+    expect(view.container.querySelectorAll('a')).toHaveLength(1)
+  })
+
+  it('shows a foreign svg fence as its source instead of drawing it', async () => {
+    const fence = '```svg\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><circle cx="2" cy="2" r="1"/></svg>\n```'
+    // Positive control: ordinary chat draws the same fence.
+    const ordinary = render(<MessageTextContent text={fence} />)
+    await waitFor(() => expect(ordinary.container.querySelector('circle')).toBeTruthy())
+    ordinary.unmount()
+
+    const foreign = render(<MessageTextContent media={false} previewOnly text={fence} />)
+    await waitFor(() => expect(foreign.container.textContent).toContain('<circle'))
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(foreign.container.querySelector('svg circle')).toBeNull()
   })
 })
 

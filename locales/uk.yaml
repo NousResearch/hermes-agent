@@ -974,9 +974,6 @@ platform:
     approved: "✅ Схвалено."
     denied: "❌ Відхилено."
     approval_expired: "⌛ Час схвалення минув — команду не виконано (час уже вичерпано або її вирішено в іншому місці)."
-  yuanbao:
-    slow_response_notice: "Це завдання трохи складніше — я ще працюю над ним, зачекайте, будь ласка..."
-    owner_command_denied: "⚠️ {command} доступна лише творцеві в режимі приватного чату"
   shared:
     truncated_suffix: "\n...(скорочено)"
     unknown: "невідомо"
@@ -1371,6 +1368,12 @@ platform:
       unauthorized: "Ці елементи керування доступні лише авторизованому користувачу Matrix."
       not_requester: "Ці елементи керування доступні лише користувачу, який запросив цю дію."
   feishu:
+    clarify:
+      title: "Hermes потребує вашої відповіді"
+      other: "✏️ Інше (ввести відповідь)"
+      awaiting_typed: "Очікуємо текстову відповідь від {user}…"
+    picker:
+      apply_error: "Помилка застосування вибору: {error}"
     approval:
       action_session: "На сеанс"
       action_always: "Завжди"
@@ -1474,6 +1477,8 @@ platform:
     prompt_other: "✏️ Інше (ввести відповідь)"
     prompt_expired: ⌛ Цей запит більше не очікує відповіді. Надішліть відповідь звичайним повідомленням.
 slash:
+  rewind:
+    description: "Відкотитися до попереднього запиту, щоб відредагувати й надіслати його знову, або відгалузитися звідти (Esc Esc)"
   approve:
     description: "Схвалити небезпечну команду, що очікує"
   bg:
@@ -1701,6 +1706,20 @@ slash:
   quit:
     description: "Вийти з CLI (--delete також видаляє історію сеансу)"
 cli:
+  backtrack:
+    title: "↺ Стенограма — виберіть запит для редагування"
+    keys_hint: "Перегляд стенограми · ↑↓/jk прокрутка · ←→/hl запити · ↵ редагувати · f відгалузити · esc назад"
+    prime_hint: "натисніть esc ще раз, щоб редагувати попереднє повідомлення"
+    no_previous: "Немає попереднього повідомлення для редагування."
+    editing_hint: "↺ Редагування запиту {number} — Enter відкочує сюди й надсилає · Esc Esc скасовує"
+    edit_cancelled: "↺ Відкат скасовано; нічого не видалено."
+    rewound: "↺ Відкочено до запиту {number} (повідомлень в архіві: {count}); надсилання зміненого запиту."
+    forked: "⑂ Відгалуження перед запитом {number}; початковий сеанс {parent} не змінено. Відредагуйте запит нижче й натисніть Enter, щоб надіслати."
+    nothing: "(._.) Немає попередніх запитів для відкату."
+    target_changed: "(x_x) Сеанс змінився відтоді, як ви вибрали запит {number}; нічого не видалено. Вашу правку повернуто в поле введення."
+    invalid: "(._.) Немає запиту {value} — виберіть від 1 до {total}."
+    usage: "Використання: /rewind [N | fork N]"
+    rewind_failed: "(x_x) Не вдалося виконати відкат; історію не змінено: {error}"
   modern:
     thought_for: "Міркував {seconds} с"
     thought: "Міркував"
@@ -2164,6 +2183,7 @@ cli:
     images_attached_other: "📎 Прикріплено зображень: {count}"
     command_interrupted: "Команду перервано."
     welcome: "Вітаємо в Hermes Agent! Введіть повідомлення або /help для списку команд."
+    vscode_images_hint: "VS Code може показувати тут зображення в повній роздільній здатності: увімкніть terminal.integrated.enableImages у налаштуваннях."
     activated_skills_label: "Активовані навички:"
     redaction_disabled_title: "⚠  Приховування секретів ВИМКНЕНО"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). Ключі API та токени можуть з'являтися у відкритому вигляді у виводі чату, JSON сеансів і журналах. Задайте {setting} у config.yaml, щоб увімкнути знову."
@@ -2618,6 +2638,7 @@ cli:
     goal_turns: "⊙ ціль {used}/{max}"
     goal: "⊙ ціль"
     ctx_pinned: " закріплено"
+    ctx_fallback: " за замовчуванням"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Схованка ({count} елемент)"
@@ -3957,3 +3978,8 @@ plan_usage:
   large_notice_limit: "Велика модель: досягнуто {name} ({resets})."
   large_notice_limit_stops: "Велика модель: досягнуто {name} ({resets}), до скидання вона не запуститься."
   large_notice_percent: "Велика модель: витрачає більше ліміту плану на повідомлення. Місячний ліміт великих моделей: використано {percent}."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Файли, змінені у скасованих ходах: {files}. Виконайте /rollback, щоб переглянути контрольні точки й відновити одну."
+    more: "ще {count}"

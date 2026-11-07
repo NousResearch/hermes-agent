@@ -54,6 +54,7 @@ from urllib.parse import quote
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.releases import handoff, r2, semver, stable, versioning
+from scripts.releases.desktop_targets import TARGETS as DESKTOP_TARGETS
 
 MARKER = "<!-- HERMES_BUILDS_TABLE -->"
 END_MARKER = "<!-- /HERMES_BUILDS_TABLE -->"
@@ -569,7 +570,7 @@ def splice(body: str, block: str) -> str:
 def render_channel_summary(manifest: dict) -> str:
     request = manifest["request"]
     rows = []
-    for platform, arch in (("darwin", "arm64"), ("win32", "arm64"), ("win32", "x64")):
+    for platform, arch in DESKTOP_TARGETS:
         selected = [row for row in manifest["packages"] if row["platform"] == platform
                     and row["arch"] == arch and row["variant"] == "bundled"]
         label = f"{platform} {arch}"

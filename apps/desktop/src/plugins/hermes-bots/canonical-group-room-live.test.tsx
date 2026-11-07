@@ -31,6 +31,46 @@ afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.h
 
 const members = [{ member_id: 'ops', profile: 'ops', handle: 'ops', display_name: 'Ops' }]
 
+it('starts a new thread after a refused reply is cancelled', async () => {
+  const binding = { connectionId: 'remote', profile: 'team', roomId: 'cancel-refused-reply' }
+
+  const events = [{ seq: 1, room_id: binding.roomId, event_id: 'm1', kind: 'message.member', actor: { kind: 'member', id: 'ops' },
+    payload: { text: 'Deploy is green.', thread_id: 'thread-ops' } }]
+
+  let refuse = true
+  request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.state') {return { room: { name: 'Room', members }, driver_status: {} }}
+
+    if (method === 'groups.log') {return { events }}
+
+    if (method === 'groups.send') {
+      if (refuse) {throw Object.assign(new Error('not admitted'), { data: { admitted: false } })}
+
+      return { accepted: true, client_event_id: params.event_id }
+    }
+
+    return {}
+  })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  fireEvent.click(await screen.findByRole('button', { name: 'Reply to Ops' }))
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: '@ops ship it' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await screen.findByText('The gateway refused this message. Edit it and send again.')
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel reply' }))
+  expect(screen.queryByText('Replying to Ops')).toBeNull()
+  refuse = false
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(''))
+  const sends = request.mock.calls.filter(call => call[1] === 'groups.send')
+  expect(sends).toHaveLength(2)
+  expect(sends[0][2].payload.thread_id).toBe('thread-ops')
+  expect(sends[1][2].payload).toMatchObject({ text: '@ops ship it', thread_id: expect.any(String) })
+  expect(sends[1][2].payload.thread_id).not.toBe('thread-ops')
+  expect(sends[1][2].event_id).not.toBe(sends[0][2].event_id)
+})
+
 it('drops a closed roomâ€™s Bots-list state, which nothing polls any more', async () => {
   const binding = { connectionId: 'local', profile: 'team', roomId: 'closing' }
   request.mockImplementation(async (_route, method) => method === 'groups.state'
@@ -50,19 +90,61 @@ it('keeps the thread this window was replying in while it sends another windowâ€
   const events = [{ seq: 1, room_id: 'held-reply', event_id: 'm1', kind: 'message.member', actor: { kind: 'member', id: 'ops' },
     payload: { text: 'Deploy is green.', thread_id: 'thread-ops' } }]
 
-  request.mockImplementation(async (_route, method) => method === 'groups.state'
-    ? { room: { name: 'Room', members }, driver_status: {} } : method === 'groups.log' ? { events } : {})
+  request.mockImplementation(async (_route, method, params) => method === 'groups.state'
+    ? { room: { name: 'Room', members }, driver_status: {} } : method === 'groups.log' ? { events }
+      : method === 'groups.send' ? { accepted: true, client_event_id: params.event_id } : {})
   render(<CanonicalGroupWorkspace binding={binding} />)
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
   fireEvent.click(await screen.findByRole('button', { name: 'Reply to Ops' }))
-  await prepareCanonicalGroupSend(binding, { text: 'from the other window', attachments: [] })
+  const other = await prepareCanonicalGroupSend(binding, { text: 'from the other window', attachments: [] })
   fireEvent.change(screen.getByRole('textbox'), { target: { value: '@ops ship it' } })
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
   await waitFor(async () => expect(await readCanonicalGroupSend(binding)).toBeUndefined())
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('@ops ship it'))
   expect(screen.getByText('Replying to Ops')).toBeTruthy()
+  expect(request.mock.calls.filter(call => call[1] === 'groups.send').map(call => call[2])).toEqual([{ ...other.params, profile: 'team' }])
 
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
   await waitFor(() => expect(request.mock.calls.filter(c => c[1] === 'groups.send')).toHaveLength(2))
   expect(request.mock.calls.filter(c => c[1] === 'groups.send')[1][2].payload).toMatchObject({ text: '@ops ship it', thread_id: 'thread-ops' })
+})
+
+
+it('keeps a refused other-window reply in its thread, then hands this window its reply back', async () => {
+  const binding = { connectionId: 'remote', profile: 'team', roomId: 'refused-reply' }
+
+  const events = [{ seq: 1, room_id: binding.roomId, event_id: 'm1', kind: 'message.member', actor: { kind: 'member', id: 'ops' },
+    payload: { text: 'Deploy is green.', thread_id: 'thread-ops' } }]
+
+  let refuse = true
+  request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.state') {return { room: { name: 'Room', members }, driver_status: {} }}
+
+    if (method === 'groups.log') {return { events }}
+
+    if (method === 'groups.send') {
+      if (refuse) {throw Object.assign(new Error('not admitted'), { data: { admitted: false } })}
+
+      return { accepted: true, client_event_id: params.event_id }
+    }
+
+    return {}
+  })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  fireEvent.click(await screen.findByRole('button', { name: 'Reply to Ops' }))
+  await prepareCanonicalGroupSend(binding, { text: 'other reply', attachments: [], thread_id: 'other-thread' })
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: '@ops ship it' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await screen.findByText('The gateway refused this message. Edit it and send again.')
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  expect(screen.queryByText('Replying to Ops')).toBeNull()
+  refuse = false
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'edited other reply' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await screen.findByText('Replying to Ops')
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('@ops ship it')
+  const sends = request.mock.calls.filter(call => call[1] === 'groups.send')
+  expect(sends[1][2].payload).toMatchObject({ text: 'edited other reply', thread_id: 'other-thread' })
+  expect(sends[1][2].event_id).not.toBe(sends[0][2].event_id)
 })

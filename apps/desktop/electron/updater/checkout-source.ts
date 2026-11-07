@@ -4,9 +4,11 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 
 import { buildDesktopBackendEnv } from '../backend-env'
-import { buildUpdateCheckEnv, hasProxyEnv, isGitNetworkError, withoutProxyEnv } from '../update-proxy'
+import { hasProxyEnv, isGitNetworkError, withoutProxyEnv } from '../update-proxy'
 import { resolveInstallationLauncher } from '../updater-process'
 import { hiddenWindowsChildOptions } from '../windows-child-options'
+
+import { updateProxyEnv } from './system-proxy-env'
 
 import type { UpdaterStatusWire } from './index'
 
@@ -53,9 +55,20 @@ function probeFlags(probe: SourceUpdateProbe): string[] {
   ]
 }
 
-export function sourceUpdateEnvironment(updateRoot: string, hermesHome: string): NodeJS.ProcessEnv {
+/**
+ * Every update child's env: this process's env plus the system proxy when none
+ * is set (#123387). The proxy env overrides process.env, so its extended
+ * NO_PROXY is the one the children read (buildDesktopBackendEnv, spread after
+ * it, sets only PYTHON* and PATH); it is empty whenever the user set a proxy.
+ */
+export async function sourceUpdateEnvironment(
+  updateRoot: string,
+  hermesHome: string,
+  note?: (message: string) => void
+): Promise<NodeJS.ProcessEnv> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    ...(await updateProxyEnv(process.env, note, updateRoot)),
     ...buildDesktopBackendEnv(),
     HERMES_HOME: hermesHome,
     HERMES_INSTALL_ROOT: updateRoot
@@ -68,9 +81,11 @@ export function sourceUpdateEnvironment(updateRoot: string, hermesHome: string):
 
 /** Python owns config identity and publication checks; this bridge only transports them. */
 export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<SourceUpdate | null> {
-  const env = buildUpdateCheckEnv(sourceUpdateEnvironment(probe.updateRoot, probe.hermesHome))
+  const env = { ...(await sourceUpdateEnvironment(probe.updateRoot, probe.hermesHome)), GIT_TERMINAL_PROMPT: '0' }
+
   try {
     const result = await readSourceUpdateWithEnv(probe, env)
+
     if (!result?.error || !hasProxyEnv(env) || !isGitNetworkError(result.message || '')) {
       return result
     }
@@ -79,6 +94,7 @@ export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<Source
       throw error
     }
   }
+
   // Bypass the cached transport failure when retrying without the unavailable proxy.
   return readSourceUpdateWithEnv({ ...probe, force: true }, withoutProxyEnv(env))
 }

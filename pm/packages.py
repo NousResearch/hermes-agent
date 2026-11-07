@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -220,6 +221,10 @@ class Uv(_BionicDebArm, BinaryPackage, DebPackage):
         return github_release_tags("astral-sh/uv")
 
 
+# The POSIX interpreter name the pinned Windows Python also answers to (see Python.stage).
+WINDOWS_PYTHON3 = "python3.exe"
+
+
 @register
 class Python(_BionicDebArm, BinaryPackage, DebPackage):
     """The pinned interpreter for launchers and every PM-managed uv command.
@@ -261,6 +266,28 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         # old bundle-time drop did) makes doctor's re-hash mismatch.
         if target == "win32-arm64":
             (staged / "vcruntime140_1.dll").unlink(missing_ok=True)
+        # python-build-standalone's Windows build ships python.exe only, so `python3` (npm and
+        # vitest helpers, POSIX-minded scripts) resolves past the activated PATH to the Microsoft
+        # Store's App Execution Alias stub, which installs nothing and fails. python.exe is a
+        # small launcher of pythonXY.dll that finds its home from its own directory, so a copy
+        # under the POSIX name is the same interpreter. Staged before publish, so the recorded
+        # tree digest covers it.
+        if target.startswith("win32"):
+            shutil.copy2(staged / "python.exe", staged / WINDOWS_PYTHON3)
+
+    def verify(self, entry: Path, target: str) -> str:
+        reason = super().verify(entry, target)
+        if reason or not target.startswith("win32"):
+            return reason
+        # An entry staged before python3.exe existed fails here, so an explicit install
+        # (activation's setup) restages it once; startup's facts check never calls verify.
+        alias = entry / WINDOWS_PYTHON3
+        try:
+            if alias.read_bytes() == (entry / "python.exe").read_bytes():
+                return ""
+        except OSError:
+            return f"{WINDOWS_PYTHON3} is missing beside python.exe"
+        return f"{WINDOWS_PYTHON3} differs from python.exe"
 
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":
@@ -326,6 +353,51 @@ def _copy_seed_file(src: str | os.PathLike, dst: str | os.PathLike) -> str | os.
     return dst
 
 
+def _copy_seed_link(src: str | os.PathLike, dst: str | os.PathLike) -> None:
+    """Recreate one payload cache symlink, healing a directory left by an older seed.
+
+    uv caches a wheel as a symlink into ``archive-v0/``; following it (the
+    ``copytree`` default) leaves a directory where uv later renames its own
+    entry into place, which fails with EISDIR. The payload's targets are
+    relative, so the target is copied verbatim, never resolved.
+    """
+    linkto = os.readlink(src)
+    dst = Path(dst)
+    staging = dst.parent / f".seed-link-{uuid.uuid4().hex}"
+    os.symlink(linkto, staging)
+    try:
+        if dst.is_dir() and not dst.is_symlink():
+            # A pre-fix seed copied the link target's contents here; uv cannot replace it.
+            shutil.rmtree(dst)
+        os.replace(staging, dst)  # atomic: replaces a file or an existing symlink
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def _seed_tree(src: Path, dst: Path) -> None:
+    """Merge one payload bucket, preserving uv's link entries.
+
+    ``is_symlink()`` must be tested before ``is_dir()``: ``is_dir()`` follows
+    links, and following them is exactly the bug this walker replaced.
+    """
+    dst.mkdir(parents=True, exist_ok=True)
+    for child in src.iterdir():
+        target = dst / child.name
+        if child.is_symlink():
+            _copy_seed_link(child, target)
+        elif child.is_dir():
+            _seed_tree(child, target)
+        else:
+            _copy_seed_file(child, target)
+
+
+def uv_cache_path() -> Path:
+    """Where the hermes-owned uv cache lives; unlike uv_cache_dir(), never seeds or writes."""
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root() / "cache" / "uv"
+
+
 def uv_cache_dir() -> Path:
     """The hermes-owned uv cache: machine-scoped and shared (keyed by
     content — two profiles reuse one cache), anchored to the DEFAULT
@@ -336,11 +408,9 @@ def uv_cache_dir() -> Path:
     from it is near-free (probed: 0.4s vs 1.2s cold) — the blow-away-
     on-update contract depends on it. uv's default cache location is
     per-user/platform-opinionated and never used by pm."""
-    from hermes_constants import get_default_hermes_root
-
     from pm.paths import repo_root, store_root
 
-    machine_cache = get_default_hermes_root() / "cache" / "uv"
+    machine_cache = uv_cache_path()
     marker = machine_cache / ".seeded"
     # The marker names the lock whose payload was merged. An update ships a new payload cache for
     # a new lock; a bare "done" marker skipped it forever, so plugin rebuilds fetched the new pins
@@ -352,7 +422,10 @@ def uv_cache_dir() -> Path:
     # seed. Do not drop the suffix: the lock alone cannot tell those two images apart.
     payload_cache = long_root(store_root().parent / "uv-cache")
     if payload_cache.is_dir():
-        seed += "+payload"
+        # The suffix names the seed's copy semantics, not just "a payload exists": it moved to
+        # ``payload2`` when the seed stopped following links, so an existing volume re-runs the
+        # merge once and the directory-shaped entries the old copy left are healed in place.
+        seed += "+payload2"
     try:
         current = marker.read_text(encoding="utf-8-sig").strip() == seed
     except OSError:
@@ -368,14 +441,18 @@ def uv_cache_dir() -> Path:
             if payload_cache.is_dir():
                 seeded = long_root(machine_cache)
                 seeded.mkdir(parents=True, exist_ok=True)
-                for entry in payload_cache.iterdir():
+                # archive-v0 first: a wheel link published before its bucket points at nothing,
+                # for another profile's uv and, if the seed dies there, until the retry.
+                for entry in sorted(payload_cache.iterdir(), key=lambda entry: entry.name != "archive-v0"):
                     if entry.name == ".seeded":
                         continue
                     dest = seeded / entry.name
                     # Merge into whatever an earlier failed or killed seed left: skipping
                     # an existing directory would record that partial copy as complete.
-                    if entry.is_dir():
-                        shutil.copytree(entry, dest, dirs_exist_ok=True, copy_function=_copy_seed_file)
+                    if entry.is_symlink():
+                        _copy_seed_link(entry, dest)
+                    elif entry.is_dir():
+                        _seed_tree(entry, dest)
                     else:
                         _copy_seed_file(entry, dest)
         except OSError as exc:
@@ -427,9 +504,9 @@ class Venv(StatePackage):
         h.update(json.dumps(python).encode())
         # Plugin members union into the venv — a changed member set must
         # re-sync even when extras and core lock are unchanged.
-        from pm.workspace import enabled_member_dirs, members_stamp
+        from pm.workspace import build_member_dirs, members_stamp
 
-        h.update(members_stamp(enabled_member_dirs() if plugin_dirs is None else plugin_dirs).encode())
+        h.update(members_stamp(build_member_dirs(extras) if plugin_dirs is None else plugin_dirs).encode())
         return h.hexdigest()
 
     def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False, explicit: bool = False,
@@ -444,7 +521,7 @@ class Venv(StatePackage):
         from pm.environment import managed_environment
         from pm.lock import Facts
         from pm.native_build import source_build_environment
-        from pm.workspace import enabled_member_dirs, lock_and_sync
+        from pm.workspace import build_member_dirs, lock_and_sync
 
         project = self.project_root()
         generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
@@ -457,7 +534,8 @@ class Venv(StatePackage):
             # An update does evict them, loudly: it must not fail on another profile's config.
             from pm.plugins_state import enabled_plugins_ordered
             enabled_plugins_ordered(skip_invalid_secondary=skip_invalid_secondary)
-        members = [] if repair else (enabled_member_dirs() if plugin_dirs is None else plugin_dirs)
+        members = [] if repair else (build_member_dirs(extras, environment.python) if plugin_dirs is None
+                                     else plugin_dirs)
         try:
             generation.mkdir(parents=True)
             (generation / ".lease-managed").touch()

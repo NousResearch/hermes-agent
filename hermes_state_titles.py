@@ -8,7 +8,7 @@ import re
 from typing import Any, Dict, Optional
 
 from agent.message_sanitization import _sanitize_surrogates
-from hermes_state_common import _COMPRESSION_CHILD_SQL, escape_like as _escape_like
+from hermes_state_common import _COMPRESSION_CHILD_SQL, _non_continuation_child_sql, escape_like as _escape_like
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -63,10 +63,10 @@ class SessionTitlesMixin:
     def _is_compression_ancestor(self, conn, *, ancestor_id: str, descendant_id: str) -> bool:
         """True if *ancestor_id* is a compression predecessor of *descendant_id*, via the
         canonical continuation edge ``_COMPRESSION_CHILD_SQL`` (excludes delegate/branch
-        children that also carry ``parent_session_id``)."""
+        children that also carry ``parent_session_id``, even under a compressed parent)."""
         if not ancestor_id or not descendant_id or ancestor_id == descendant_id:
             return False
-        edge = _COMPRESSION_CHILD_SQL.format(a="child")
+        edge = _COMPRESSION_CHILD_SQL.format(a="child") + _non_continuation_child_sql("child.", "parent.id")
         return conn.execute(f"""
             WITH RECURSIVE ancestors(id) AS (
                 SELECT ?

@@ -25,11 +25,16 @@ from agent.errors import EmptyStreamError
 
 logger = logging.getLogger(__name__)
 
-_bedrock_runtime_client_cache: dict[str, Any] = {}
-_bedrock_control_client_cache: dict[str, Any] = {}
-# Routed multiplex profiles: one client per (profile home, region). boto3 freezes the credential
-# chain into the client at construction, so a region-only slot would sign profile B's calls with A's keys.
-_bedrock_clients_by_home: dict[tuple[str, str, str], Any] = {}
+# Keyed by (region, read_timeout): boto3 freezes its Config into the client, so two models with
+# different ``timeout_seconds`` overrides in one region need two clients (None = botocore default).
+_bedrock_runtime_client_cache: dict[tuple[str, Optional[float]], Any] = {}
+_bedrock_control_client_cache: dict[tuple[str, Optional[float]], Any] = {}
+# Routed multiplex profiles: one client per (profile home, service, region, read_timeout). boto3 freezes
+# the credential chain into the client too, so a region-only slot would sign profile B's calls with A's keys.
+_bedrock_clients_by_home: dict[tuple[str, str, str, Optional[float]], Any] = {}
+# botocore's own connect default, set explicitly so a long read budget never stretches the TCP/TLS
+# connect wait: a 600s ``request_timeout_seconds`` is for slow generations, not unreachable endpoints.
+_BOTO_CONNECT_TIMEOUT_SECONDS = 60
 
 # botocore session kwarg <- profile .env variable (the explicit sources of the default chain).
 _AWS_SCOPED_CREDENTIAL_VARS: tuple[tuple[str, str], ...] = (
@@ -81,8 +86,8 @@ _BEDROCK_OPENAI_PROFILE_PREFIXES: tuple[str, ...] = _BEDROCK_PROFILE_PREFIXES + 
 # OpenAI-compatible endpoint; its geo/global profile form is served by bedrock-runtime, where these
 # cards list Converse as supported. Narrow allowlist so GPT-OSS models stay on the native path.
 BEDROCK_OPENAI_RESPONSES_MODEL_IDS: tuple[str, ...] = (
-    "openai.gpt-6-astra", "openai.gpt-6.1-sol", "openai.gpt-6-sol", "openai.gpt-6-luna",
-    "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna",
+    "openai.gpt-6-astra", "openai.gpt-6.1-sol", "openai.gpt-6.1-terra", "openai.gpt-6-sol", "openai.gpt-6-luna",
+    "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna", "openai.gpt-5.4",
 )
 _BEDROCK_OPENAI_MODEL_IDS_LOWER = frozenset(m.lower() for m in BEDROCK_OPENAI_RESPONSES_MODEL_IDS)
 _BEDROCK_OPENAI_HOST_RE = re.compile(r"^bedrock-mantle\.([a-z0-9-]+)\.api\.aws$", re.IGNORECASE)
@@ -123,28 +128,49 @@ def _require_boto3():
     return boto3
 
 
-def _cached_client(cache: dict[str, Any], service: str, region: str):
-    """Get or create a per-region boto3 client. Unscoped: the default credential chain, one client per
-    region. Routed profile: one client per (home, service, region), built from that profile's scoped
-    ``AWS_*`` (falling back to the default chain only for what the profile does not set)."""
+def _new_client(factory: Any, service: str, region: str, read_timeout: Optional[float]):
+    """``factory.client(...)`` with botocore's own timeouts (60s read / 60s connect) unless a
+    request timeout is configured. The model-call client makes one attempt per call: Hermes's
+    retry loop owns retries and backoff (throttles classify as rate_limit there), and botocore's
+    default of 5 attempts re-sends a read timeout, so a hung call took ~5x the timeout to fail.
+    ``total_max_attempts`` counts the first request; ``max_attempts`` would count retries only."""
+    from botocore.config import Config
+    config = Config(retries={"total_max_attempts": 1}) if service == "bedrock-runtime" else Config()
+    if read_timeout is not None:
+        config = config.merge(Config(read_timeout=read_timeout, connect_timeout=_BOTO_CONNECT_TIMEOUT_SECONDS))
+    return factory.client(service, region_name=region, config=config)
+
+
+def _cached_client(cache: dict[tuple[str, Optional[float]], Any], service: str, region: str, *,
+                   read_timeout: Optional[float] = None):
+    """Get or create a boto3 client per (region, read timeout). Unscoped: the default credential
+    chain. Routed profile: one client per (home, service, region, read timeout), built from that
+    profile's scoped ``AWS_*`` (falling back to the default chain only for what the profile does not set)."""
     from hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is None:
-        if region not in cache:
-            cache[region] = _require_boto3().client(service, region_name=region)
-        return cache[region]
-    key = (hermes_home_key(), service, region)
-    client = _bedrock_clients_by_home.get(key)
+        key = (region, read_timeout)
+        if key not in cache:
+            cache[key] = _new_client(_require_boto3(), service, region, read_timeout)
+        return cache[key]
+    home_key = (hermes_home_key(), service, region, read_timeout)
+    client = _bedrock_clients_by_home.get(home_key)
     if client is None:
         # Scope check first: a cred-less multiplex profile must hit the ambient-chain
         # refusal, not a boto3 ImportError on hosts that lack the package.
         kwargs = scoped_aws_session_kwargs()
-        client = _require_boto3().Session(**kwargs).client(service, region_name=region)
-        _bedrock_clients_by_home[key] = client
+        client = _new_client(_require_boto3().Session(**kwargs), service, region, read_timeout)
+        _bedrock_clients_by_home[home_key] = client
     return client
 
 
-def _get_bedrock_runtime_client(region: str):
-    return _cached_client(_bedrock_runtime_client_cache, "bedrock-runtime", region)
+def _get_bedrock_runtime_client(region: str, model: Optional[str] = None):
+    """The ``bedrock-runtime`` client for *region* whose read timeout is *model*'s configured
+    request timeout (``providers.bedrock.models.<model>.timeout_seconds`` over
+    ``providers.bedrock.request_timeout_seconds``). Resolved per call, so a model switch or a
+    fallback to another Bedrock model gets that model's budget, not the one the session started with."""
+    from hermes_cli.timeouts import get_provider_request_timeout
+    return _cached_client(_bedrock_runtime_client_cache, "bedrock-runtime", region,
+                          read_timeout=get_provider_request_timeout("bedrock", model))
 
 
 def _get_bedrock_control_client(region: str):
@@ -161,11 +187,18 @@ def reset_client_cache():
 
 
 def invalidate_runtime_client(region: str) -> bool:
-    """Evict one region's cached ``bedrock-runtime`` client (stale HTTP pool); True if evicted."""
+    """Evict one region's cached ``bedrock-runtime`` clients, every read timeout (stale HTTP pool);
+    True if any was evicted."""
     from hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is not None:
-        return _bedrock_clients_by_home.pop((hermes_home_key(), "bedrock-runtime", region), None) is not None
-    return _bedrock_runtime_client_cache.pop(region, None) is not None
+        cache: dict = _bedrock_clients_by_home
+        prefix = (hermes_home_key(), "bedrock-runtime", region)
+    else:
+        cache, prefix = _bedrock_runtime_client_cache, (region,)
+    stale = [key for key in list(cache) if key[:len(prefix)] == prefix]
+    for key in stale:
+        cache.pop(key, None)
+    return bool(stale)
 
 
 
@@ -470,7 +503,9 @@ def bind_bedrock_runtime(agent, base_url: str, api_mode: str) -> None:
     agent._is_anthropic_oauth = False
     if api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_bedrock_client
-        agent._anthropic_client = build_anthropic_bedrock_client(agent._bedrock_region)
+        from hermes_cli.timeouts import get_provider_request_timeout
+        agent._anthropic_client = build_anthropic_bedrock_client(
+            agent._bedrock_region, timeout=get_provider_request_timeout("bedrock", getattr(agent, "model", None)))
     else:
         agent._anthropic_client = None
 
@@ -904,6 +939,23 @@ def _converse_replay_policy(model: Optional[str]) -> str:
     return "strip" if any(p in lowered for p in _CONVERSE_REPLAY_STRIP_PATTERNS) else "unsigned"
 
 
+def _minted_outside_claude(issuer: Optional[str]) -> bool:
+    if issuer is None:
+        return False
+    if _APPLICATION_PROFILE_ARN_RE.search(issuer) and _resolve_inference_profile_model_id(issuer) == issuer:
+        # An application profile names no model, and without bedrock:GetInferenceProfile it stays
+        # unresolved: the issuer is unknown, not foreign, so its reasoning keeps the answering policy.
+        return False
+    return _converse_replay_policy(issuer) != "signed"
+
+
+def reasoning_minted_outside_claude(msg: dict) -> bool:
+    """True when a non-Claude Converse model stamped this turn's reasoning. Claude gets none of it on either
+    Bedrock wire (Converse here, AnthropicBedrock in anthropic_message_convert): it cannot open another
+    family's sealed blobs. Unstamped turns (Claude's own AnthropicBedrock turns, older sessions) are False."""
+    return _minted_outside_claude(_issuer(msg))
+
+
 def _unsigned_reasoning(block: dict) -> Optional[dict]:
     reasoning = block.get("reasoningContent")
     if not isinstance(reasoning, dict):
@@ -943,7 +995,7 @@ def _reasoning_filter(policy: str, issuer: Optional[str], own: bool, *, in_loop:
     if own:
         return _verbatim if in_loop or policy in ("unsigned", "issuer") else prior
     if issuer is not None:
-        return _without_reasoning if policy == "signed" and _converse_replay_policy(issuer) != "signed" else prior
+        return _without_reasoning if policy == "signed" and _minted_outside_claude(issuer) else prior
     return loop if in_loop else prior
 
 
@@ -1309,7 +1361,7 @@ def call_converse(
     """Non-streaming Converse call → OpenAI-compatible response. Retries once without a rejected cachePoint
     placement; evicts the cached client on stale-connection errors."""
     from agent.prompt_caching import is_one_shot_request
-    client = _get_bedrock_runtime_client(region)
+    client = _get_bedrock_runtime_client(region, model)
     # Auxiliary-only entry point: a one-shot's cachePoint is a write no later call reads.
     kwargs = build_converse_kwargs(model, messages, tools, max_tokens, temperature, top_p, stop_sequences, guardrail_config,
                                    prompt_cache=not is_one_shot_request(messages, tools))
@@ -1452,18 +1504,37 @@ BEDROCK_CONTEXT_LENGTHS: dict[str, int] = {
     **dict.fromkeys((
         "meta.llama4-maverick", "meta.llama4-scout", "meta.llama3-3-70b-instruct", "mistral.mistral-large", "deepseek.v3",
     ), 128_000),
+    # Open-weight and third-party models: the "Context window" field of each AWS card
+    # (docs.aws.amazon.com/bedrock/latest/userguide/model-card-<vendor>-<model>.html, read 2026-11-04). Their
+    # model_metadata rows are vendor-direct windows (often larger), so they get their own rows. A card above the
+    # model_metadata row for the same id (MiniMax M2, DeepSeek V3.2, Nemotron 3, Qwen3 235B/Next/VL) waits for that
+    # row first, as every entry here stays <= it; Llama 4 is #106492 (measured windows differ from the cards).
+    "amazon.nova-2-lite": 1_000_000, "ai21.jamba-1-5": 256_000,
+    **dict.fromkeys(("google.gemma-4-26b", "google.gemma-4-31b"), 256_000),
+    **dict.fromkeys(("minimax.minimax-m2.1", "minimax.minimax-m2.5"), 196_000),
+    **dict.fromkeys(("mistral.devstral-2", "mistral.mistral-large-3"), 256_000),
+    **dict.fromkeys(("moonshotai.kimi-k2.5", "moonshot.kimi-k2-thinking", "moonshotai.kimi-k2-thinking"), 256_000),
+    "moonshotai.kimi-k3": 1_000_000, "qwen.qwen3-coder": 256_000,
+    "zai.glm-4.7": 203_000, "zai.glm-5": 200_000, "zai.glm-5.3": 1_000_000,
     # OpenAI on Bedrock: docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html. GPT-6.1 Sol's
     # card states "1M tokens"; the other cards state 1,050,000. 272K is the long-context PRICING tier
     # boundary on these cards, not the window. Each entry stays <= model_metadata.DEFAULT_CONTEXT_LENGTHS.
     "openai.gpt-6.1-sol": 1_000_000,
     **dict.fromkeys((
-        "openai.gpt-6-astra", "openai.gpt-6-sol", "openai.gpt-6-luna",
-        "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna",
+        "openai.gpt-6-astra", "openai.gpt-6.1-terra", "openai.gpt-6-sol", "openai.gpt-6-luna",
+        "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna", "openai.gpt-5.4",
     ), 1_050_000),
 }
 
 BEDROCK_DEFAULT_CONTEXT_LENGTH = 128_000  # unknown Bedrock models
 _DEFAULT_WINDOW_WARNED: set = set()  # one fallback WARNING per model id per process
+# Issuers whose model_metadata.DEFAULT_CONTEXT_LENGTHS family rows match their Bedrock cards (card sweep
+# 2026-11-04, 34 cards: 27 equal, 6 below, 1 above: GPT-6.1 Sol at 1,050,000 vs its 1M card, which has its own
+# row above). A model one of them ships on Bedrock before this table lists it takes that catalog family window
+# (GPT-6.1 Terra was 128K here while the catalog had 1,050,000). Other issuers' catalog rows are vendor-direct
+# windows that overstate Bedrock (Llama 3 8B: card 8K, "llama" 131,072; Qwen3 32B: card 32K, "qwen" 131,072),
+# so those models keep the default.
+_CATALOG_FAMILY_ID_RE = re.compile(r"(?:^|[./])(?:anthropic|openai|xai)\.([a-z0-9][a-z0-9.:-]*)$")
 
 # Probe padding tiers (tokens): a wildly oversized payload yields an opaque InternalServerException
 # instead of a clean ValidationException.
@@ -1477,7 +1548,7 @@ def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
     probe costs nothing. An accepted tier is a safe lower bound; None (no creds/network/unparseable) → static table."""
     from agent.model_metadata import parse_context_limit_from_error
     try:
-        client = _get_bedrock_runtime_client(region)
+        client = _get_bedrock_runtime_client(region, model_id)
     except Exception as exc:  # boto3 missing / credential resolution failure
         logger.debug("Bedrock context probe skipped for %s: %s", model_id, exc)
         return None
@@ -1501,33 +1572,52 @@ def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
     return None
 
 
+def bedrock_static_context_length(model_id: str) -> Optional[int]:
+    """Offline window: the table row (longest substring), else the catalog family window for a covered issuer
+    (``_CATALOG_FAMILY_ID_RE``); None when neither knows the model. An application-profile ARN reads only the
+    per-process profile cache, so display callers never make a control-plane call."""
+    if _APPLICATION_PROFILE_ARN_RE.search(model_id):
+        model_id = _inference_profile_model_cache.get(model_id, model_id)
+    lowered = model_id.lower()
+    matches = [key for key in BEDROCK_CONTEXT_LENGTHS if key in lowered]
+    if matches:
+        return BEDROCK_CONTEXT_LENGTHS[max(matches, key=len)]
+    family = _CATALOG_FAMILY_ID_RE.search(lowered)
+    if family is None:
+        return None
+    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+    hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, family.group(1))
+    return hit[1] if hit else None
+
+
 def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = True) -> int:
-    """Context window: live probe (if ``probe`` and ``region``) → static table → default. The table is fallback
-    only: a stale substring match silently caps the window (a 1M Opus pinned to 200K via "opus-4").
-    An application-inference-profile ARN is first resolved to the model it wraps (#114476)."""
+    """Context window: live probe (if ``probe`` and ``region``) → static table → catalog family → default. The
+    table is fallback only: a stale substring match silently caps the window (a 1M Opus pinned to 200K via
+    "opus-4"). An application-inference-profile ARN is first resolved to the model it wraps (#114476)."""
     profile_arn = model_id if _APPLICATION_PROFILE_ARN_RE.search(model_id) else ""
     if profile_arn:
         model_id = _resolve_inference_profile_model_id(profile_arn, region)
     if probe and region and (probed := probe_bedrock_context_length(model_id, region)):
         return probed
-    matches = [key for key in BEDROCK_CONTEXT_LENGTHS if key in model_id.lower()]
-    if matches:
-        return BEDROCK_CONTEXT_LENGTHS[max(matches, key=len)]
+    known = bedrock_static_context_length(model_id)
+    if known:
+        return known
+    override = ("Set model.context_length, or model_overrides.bedrock.<model id>.context_window, in config.yaml "
+                "if the model's window is larger.")
     if profile_arn:
         logger.warning(
-            "Bedrock inference profile %s resolved no known model window; using the %s default. "
-            "Grant bedrock:GetInferenceProfile or set model.context_length explicitly if the "
-            "wrapped model has a larger window.",
-            profile_arn,
-            f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}",
+            "Bedrock inference profile %s resolved no known model window; using the static %s-token fallback "
+            "(not a detected limit). Grant bedrock:GetInferenceProfile, or: %s",
+            profile_arn, f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}", override,
         )
     elif model_id not in _DEFAULT_WINDOW_WARNED:
         _DEFAULT_WINDOW_WARNED.add(model_id)
         logger.warning(
             "Bedrock model %s has no known context window; using the static %s-token fallback "
-            "(not a detected limit). Set model.context_length in config.yaml if the model's window is larger.",
-            model_id, f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}",
+            "(not a detected limit). %s", model_id, f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}", override,
         )
+    from agent.context_default_record import mark_context_defaulted
+    mark_context_defaulted()
     return BEDROCK_DEFAULT_CONTEXT_LENGTH
 
 

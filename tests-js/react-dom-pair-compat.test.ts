@@ -68,6 +68,7 @@ function workspaceManifests(): { name: string, manifest: Manifest }[] {
 
 test('workspaces declaring react and react-dom pin them to the same exact version', () => {
   const offenders: string[] = []
+  let checked = 0
 
   for (const { name, manifest } of workspaceManifests()) {
     const deps = { ...manifest.devDependencies, ...manifest.dependencies }
@@ -75,6 +76,7 @@ test('workspaces declaring react and react-dom pin them to the same exact versio
     const reactDom = deps['react-dom']
 
     if (!react || !reactDom) {continue}
+    checked++
 
     if (react !== reactDom) {
       offenders.push(`${name} declares react"${react}" but react-dom"${reactDom}"`)
@@ -87,6 +89,7 @@ test('workspaces declaring react and react-dom pin them to the same exact versio
     }
   }
 
+  assert.ok(checked > 0, 'found no workspace declaring react and react-dom; the workspace list resolved to nothing')
   assert.deepEqual(
     offenders,
     [],

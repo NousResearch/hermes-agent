@@ -100,12 +100,13 @@ def apply_llm_request_middleware(request: dict[str, Any], **context: Any) -> Req
 
 
 def apply_tool_request_middleware(
-    tool_name: str, args: dict[str, Any], **context: Any
+    tool_name: str, args: dict[str, Any], *, original_args: dict[str, Any] | None = None, **context: Any
 ) -> RequestMiddlewareResult:
     """Apply registered tool request middleware; ``{"args": {...}}`` replaces the effective tool
-    arguments before hooks, guardrails, approvals, and execution see them."""
-    original_args = _safe_copy(args)
-    current_args = _safe_copy(original_args)
+    arguments before hooks, guardrails, approvals, and execution see them. ``original_args`` is the
+    model's pre-Relay call when ``args`` already carries Relay rewrites (defaults to ``args``)."""
+    original_args = _safe_copy(args if original_args is None else original_args)
+    current_args = _safe_copy(args)
     trace: list[dict[str, Any]] = []
 
     session_id = str(context.get("session_id") or "")

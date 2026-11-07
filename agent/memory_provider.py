@@ -223,3 +223,31 @@ class MemoryProvider(ABC):
         """Absolute paths of provider state OUTSIDE HERMES_HOME for ``hermes backup``/``import``
         (paths outside the home dir are skipped). MUST work without ``initialize()`` or network."""
         return []
+
+    # -- Profile lifecycle (uninitialized instance; that profile's home and secrets bound; errors are
+    # logged). Keep them fast: the dashboard and Desktop run them inside the create/rename request,
+    # so put network work (creating a remote peer) on a background thread. --
+
+    def on_profile_created(self, profile_name: str, hermes_home: str) -> None:
+        """A profile whose config selects this provider was just created by ``create_profile`` (CLI,
+        dashboard, Desktop/TUI; a clone carries ``memory.provider``). Not called for profile import.
+        Set up per-profile provider state here (a peer, a host entry)."""
+
+    def on_profile_renamed(self, old_name: str, new_name: str, hermes_home: str) -> None:
+        """A profile whose config selects this provider was renamed; ``hermes_home`` is its new
+        directory. Re-key anything the provider stores under the old profile name."""
+
+    # -- Dashboard config panel for a ``config_schema.py`` declaring ``storage=STORAGE_PROVIDER`` --
+
+    def read_config_fields(self, hermes_home: str) -> dict[str, Any]:
+        """``{"values": {field key: stored native value}, "placeholders": {field key: text}}``. A key
+        absent from ``values`` reads as unset; a placeholder shows what a blank field resolves to.
+        A stored secret may be included: it only marks the field as set and is never sent out."""
+        return {"values": {}, "placeholders": {}}
+
+    def write_config_fields(self, values: dict[str, Any], hermes_home: str) -> None:
+        """Persist the submitted fields (only those present): natives already coerced, ``None`` clears a
+        key, non-blank secrets included (core saves each to ``.env`` under its ``env_key`` once this
+        returns). Raise ``ValueError`` (a subclass such as ``json.JSONDecodeError`` counts, also under
+        ``plugins.isolation: host``) to refuse the save (the dashboard shows it as a 400)."""
+        raise NotImplementedError(f"memory provider {self.name} declares storage=provider but cannot write it")

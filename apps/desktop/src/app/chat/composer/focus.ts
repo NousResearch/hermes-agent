@@ -764,9 +764,21 @@ export const focusComposerInput = (el: HTMLElement | null) => {
     el.focus({ preventScroll: true })
   }
 
+  const retry = () => {
+    // Newer native-control or tab navigation wins over queued retries. A fresh
+    // explicit composer request still gets the synchronous focus call below.
+    const active = document.activeElement
+
+    if (active instanceof HTMLMediaElement || active?.closest('[role="tab"]')) {
+      return
+    }
+
+    focus()
+  }
+
   focus()
-  window.requestAnimationFrame(focus)
-  window.setTimeout(focus, 0)
+  window.requestAnimationFrame(retry)
+  window.setTimeout(retry, 0)
 }
 
 /** Drop focus from the main composer input (status-stack chrome, sidebar, etc.).

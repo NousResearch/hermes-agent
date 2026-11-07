@@ -1,6 +1,6 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { type Dispatch, type PropsWithChildren, type SetStateAction, useLayoutEffect, useState } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as sessionOwnerUtils from '@/app/session/hooks/use-session-actions/utils'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
@@ -66,6 +66,7 @@ function renderSubmitHook({
   editor.dataset.slot = 'composer-rich-input'
   editor.textContent = text
   const editorRef = { current: editor }
+  const focusInput = vi.fn()
   const loadIntoComposer = vi.fn()
   const stashAt = vi.fn()
   const onCancel = vi.fn()
@@ -122,7 +123,7 @@ function renderSubmitHook({
         drainNextQueued: vi.fn(async () => false),
         editorRef,
         exitQueuedEdit: vi.fn(() => false),
-        focusInput: vi.fn(),
+        focusInput,
         inputDisabled,
         loadIntoComposer,
         onCancel,
@@ -143,6 +144,8 @@ function renderSubmitHook({
     loadIntoComposer,
     stashAt,
     clearDraft,
+    editor,
+    focusInput,
     hook,
     onCancel,
     onSteer,
@@ -167,16 +170,19 @@ describe('useComposerSubmit external request routing', () => {
     vi.restoreAllMocks()
   })
 
-  it.each(['interrupt', 'steer'] as const)('keeps a rejected %s draft in the local queue without submit admission', async mode => {
-    const h = renderSubmitHook({ busy: true, busyInputMode: mode, text: 'keep guidance' })
-    h.onSteer.mockRejectedValue(new Error('correction unsupported'))
-    act(() => h.hook.result.current.submitDraft())
-    await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['keep guidance']))
-    expect(h.onSteer).toHaveBeenCalledWith('keep guidance', mode)
-    expect(h.onSubmit).not.toHaveBeenCalled()
-    expect(h.queueCurrentDraft).not.toHaveBeenCalled()
-    clearQueuedPrompts('stored-session')
-  })
+  it.each(['interrupt', 'steer'] as const)(
+    'keeps a rejected %s draft in the local queue without submit admission',
+    async mode => {
+      const h = renderSubmitHook({ busy: true, busyInputMode: mode, text: 'keep guidance' })
+      h.onSteer.mockRejectedValue(new Error('correction unsupported'))
+      act(() => h.hook.result.current.submitDraft())
+      await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['keep guidance']))
+      expect(h.onSteer).toHaveBeenCalledWith('keep guidance', mode)
+      expect(h.onSubmit).not.toHaveBeenCalled()
+      expect(h.queueCurrentDraft).not.toHaveBeenCalled()
+      clearQueuedPrompts('stored-session')
+    }
+  )
 
   it('routes a refused native steer through canonical queue admission', async () => {
     $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as never)
@@ -186,9 +192,17 @@ describe('useComposerSubmit external request routing', () => {
 
     try {
       act(() => h.hook.result.current.steerDraft())
-      await waitFor(() => expect(h.onSubmit).toHaveBeenCalledWith('keep guidance', expect.objectContaining({ fromQueue: true, sessionId: 'runtime-session', storedSessionId: 'stored-session' })))
+      await waitFor(() =>
+        expect(h.onSubmit).toHaveBeenCalledWith(
+          'keep guidance',
+          expect.objectContaining({ fromQueue: true, sessionId: 'runtime-session', storedSessionId: 'stored-session' })
+        )
+      )
       expect(getQueuedPrompts('stored-session')).toEqual([])
-    } finally { $connection.set(null); $queuedPromptsBySession.set({}) }
+    } finally {
+      $connection.set(null)
+      $queuedPromptsBySession.set({})
+    }
   })
 
   it.each([true, false])('steers a busy external visible submit and queues only on rejection (%s)', async accepted => {
@@ -245,6 +259,7 @@ describe('useComposerSubmit external request routing', () => {
 
     expect(onSubmit).toHaveBeenCalledExactlyOnceWith('[setup] links opened', {
       submission_id: expect.any(String),
+      attachments: [],
       composerScope: 'stored-session',
       displayKind: 'hidden'
     })
@@ -252,6 +267,64 @@ describe('useComposerSubmit external request routing', () => {
     expect(getQueuedPrompts('stored-session')).toEqual([])
     expect(loadIntoComposer).not.toHaveBeenCalled()
     expect(stashAt).not.toHaveBeenCalled()
+  })
+
+  it.each([true, false])(
+    'sends an idle external request without the draft files, and queues a rejected one instead of overwriting the draft (%s)',
+    async accepted => {
+      const draftFile = { id: 'draft-file', kind: 'file', label: 'notes.md' } as never
+
+      const { onSubmit, loadIntoComposer, stashAt, clearDraft } = renderSubmitHook({
+        attachments: [draftFile],
+        busy: false,
+        text: 'half-written draft'
+      })
+
+      onSubmit.mockResolvedValue(accepted)
+
+      await act(async () => {
+        expect(requestComposerSubmit('continue', { target: 'main' })).toBe(true)
+      })
+
+      expect(onSubmit).toHaveBeenCalledExactlyOnceWith('continue', expect.objectContaining({ attachments: [] }))
+      expect(clearDraft).not.toHaveBeenCalled()
+      expect(loadIntoComposer).not.toHaveBeenCalled()
+      expect(stashAt).not.toHaveBeenCalled()
+      expect(getQueuedPrompts('stored-session').map(({ text, attachments }) => ({ text, attachments }))).toEqual(
+        accepted ? [] : [{ text: 'continue', attachments: [] }]
+      )
+
+      if (!accepted) {
+        // Same message, same identity: the rejection may follow an uncertain delivery the owner dedupes by id.
+        const [, options] = onSubmit.mock.calls[0] as unknown as [string, { submission_id: string }]
+        expect(getQueuedPrompts('stored-session')[0]?.id).toBe(options.submission_id)
+      }
+    }
+  )
+
+  it('queues a rejected external request from a new chat under the session it was created in', async () => {
+    const { onSubmit } = renderSubmitHook({ busy: false, sessionKey: '__new__:fresh-draft' })
+
+    const submit = onSubmit as unknown as ReturnType<
+      typeof vi.fn<(text: string, options?: { onComposerScopeAssigned?: (scope: string) => void }) => Promise<boolean>>
+    >
+
+    submit.mockImplementation(async (_text, options) => {
+      options?.onComposerScopeAssigned?.('created-session')
+
+      return false
+    })
+
+    try {
+      await act(async () => {
+        expect(requestComposerSubmit('continue', { target: 'main' })).toBe(true)
+      })
+
+      await waitFor(() => expect(getQueuedPrompts('created-session').map(({ text }) => text)).toEqual(['continue']))
+      expect(getQueuedPrompts('__new__:fresh-draft')).toEqual([])
+    } finally {
+      clearQueuedPrompts('created-session')
+    }
   })
 
   it('does not fan out a main ship across keep-alives or other projects', async () => {
@@ -270,6 +343,7 @@ describe('useComposerSubmit external request routing', () => {
     await waitFor(() =>
       expect(visibleMain.onSubmit).toHaveBeenCalledWith('ship this branch', {
         submission_id: expect.any(String),
+        attachments: [],
         composerScope: 'session-a'
       })
     )
@@ -288,6 +362,7 @@ describe('useComposerSubmit external request routing', () => {
     await waitFor(() =>
       expect(tile.onSubmit).toHaveBeenCalledWith('ship project B', {
         submission_id: expect.any(String),
+        attachments: [],
         composerScope: 'tile-session'
       })
     )
@@ -303,6 +378,7 @@ describe('useComposerSubmit external request routing', () => {
     await waitFor(() =>
       expect(second.onSubmit).toHaveBeenCalledWith('ship exactly one session', {
         submission_id: expect.any(String),
+        attachments: [],
         composerScope: 'session-second'
       })
     )
@@ -322,6 +398,7 @@ describe('useComposerSubmit external request routing', () => {
     await waitFor(() =>
       expect(visibleB.onSubmit).toHaveBeenCalledWith('ship session B', {
         submission_id: expect.any(String),
+        attachments: [],
         composerScope: 'session-b'
       })
     )
@@ -467,7 +544,10 @@ describe('useComposerSubmit busy-turn routing', () => {
     })
 
     await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith('/compress preserve context', { submission_id: expect.any(String), composerScope: 'stored-session' })
+      expect(onSubmit).toHaveBeenCalledWith('/compress preserve context', {
+        submission_id: expect.any(String),
+        composerScope: 'stored-session'
+      })
     )
     expect(clearDraft).toHaveBeenCalledTimes(1)
     expect(onSteer).not.toHaveBeenCalled()
@@ -572,7 +652,9 @@ describe('useComposerSubmit busy-turn routing', () => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('```terminal\nselected terminal lines\n```\n\nlook at', 'interrupt'))
+    await waitFor(() =>
+      expect(onSteer).toHaveBeenCalledWith('```terminal\nselected terminal lines\n```\n\nlook at', 'interrupt')
+    )
     expect(queueCurrentDraft).not.toHaveBeenCalled()
   })
 
@@ -590,6 +672,45 @@ describe('useComposerSubmit busy-turn routing', () => {
 
     expect(onSteer).not.toHaveBeenCalled()
     expect(queueCurrentDraft).not.toHaveBeenCalled()
+  })
+})
+
+describe('useComposerSubmit keyboard after send', () => {
+  beforeEach(() => {
+    // Touch handling is the browser-hosted Desktop's.
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+  })
+
+  afterEach(() => {
+    cleanup()
+    window.document.body.replaceChildren()
+    delete window.document.documentElement.dataset.hermesDesktopHost
+    vi.unstubAllGlobals()
+  })
+
+  // iOS raises the keyboard for a focus() inside the Send tap, covering the
+  // reply just as it starts streaming.
+  it.each([
+    ['desktop', false, false, 1],
+    ['touch with the keyboard up', true, true, 1],
+    ['touch with the keyboard put away', true, false, 0]
+  ])('refocuses the composer after a send on %s', async (_case, touch, editorFocused, focusCalls) => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockReturnValue({ addEventListener: vi.fn(), matches: touch, removeEventListener: vi.fn() })
+    )
+    const { editor, focusInput, hook, onSubmit } = renderSubmitHook({ text: 'hello' })
+    editor.tabIndex = 0
+    window.document.body.append(editor)
+
+    if (editorFocused) {
+      editor.focus()
+    }
+
+    await act(async () => hook.result.current.submitDraft())
+
+    expect(onSubmit).toHaveBeenCalledOnce()
+    expect(focusInput).toHaveBeenCalledTimes(focusCalls)
   })
 })
 
@@ -918,7 +1039,12 @@ describe('useComposerSubmit with a blocking prompt parked on the session', () =>
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('/status', { submission_id: expect.any(String), composerScope: 'stored-session' }))
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith('/status', {
+        submission_id: expect.any(String),
+        composerScope: 'stored-session'
+      })
+    )
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onSteer).not.toHaveBeenCalled()
   })
@@ -1028,7 +1154,12 @@ describe('useComposerSubmit with a setup card waiting in the onboarding chat', (
 
   it('runs no slash command while setup is in progress: the words stay and a note says why', () => {
     $onboardingPhase.set('shown')
-    $onboardingSession.set({ connectionId: null, runId: 'run-1', runtimeId: 'runtime-session', storedId: 'stored-session' })
+    $onboardingSession.set({
+      connectionId: null,
+      runId: 'run-1',
+      runtimeId: 'runtime-session',
+      storedId: 'stored-session'
+    })
     $notifications.set([])
     const respond = parkCard('name')
 
@@ -1050,7 +1181,12 @@ describe('useComposerSubmit with a setup card waiting in the onboarding chat', (
 
   it('queues no slash command while setup is in progress (Cmd/Ctrl+Enter)', () => {
     $onboardingPhase.set('shown')
-    $onboardingSession.set({ connectionId: null, runId: 'run-1', runtimeId: 'runtime-session', storedId: 'stored-session' })
+    $onboardingSession.set({
+      connectionId: null,
+      runId: 'run-1',
+      runtimeId: 'runtime-session',
+      storedId: 'stored-session'
+    })
 
     const { clearDraft, hook, onSubmit, queueCurrentDraft } = renderSubmitHook({ busy: true, text: '/help' })
 
@@ -1063,12 +1199,57 @@ describe('useComposerSubmit with a setup card waiting in the onboarding chat', (
 
   it('runs slash commands as usual in the same chat once setup has ended', () => {
     $onboardingPhase.set('done')
-    $onboardingSession.set({ connectionId: null, runId: 'run-1', runtimeId: 'runtime-session', storedId: 'stored-session' })
+    $onboardingSession.set({
+      connectionId: null,
+      runId: 'run-1',
+      runtimeId: 'runtime-session',
+      storedId: 'stored-session'
+    })
 
     const { hook, onSubmit } = renderSubmitHook({ text: '/help' })
 
     act(() => hook.result.current.submitDraft())
 
     expect(onSubmit).toHaveBeenCalledWith('/help', expect.anything())
+  })
+})
+
+describe('useComposerSubmit on an insecure origin (plain-HTTP LAN: no crypto.randomUUID)', () => {
+  const V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+  beforeEach(() => vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) }))
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
+
+  it('sends a fresh draft with a v4 submission_id', async () => {
+    const { hook, onSubmit } = renderSubmitHook({ text: 'hello from the LAN' })
+
+    act(() => hook.result.current.submitDraft())
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0]).toEqual([
+      'hello from the LAN',
+      expect.objectContaining({ submission_id: expect.stringMatching(V4) })
+    ])
+  })
+
+  it('puts the draft back when preparing the send throws', async () => {
+    const attachment = { id: 'file-1', kind: 'file', label: 'notes.txt', path: '/work/notes.txt' } as ComposerAttachment
+
+    const { clearDraft, hook, loadIntoComposer, onSubmit, stashAt } = renderSubmitHook({
+      attachments: [attachment],
+      text: 'keep these words'
+    })
+
+    onSubmit.mockImplementation(() => {
+      throw new TypeError('preparation failed')
+    })
+
+    act(() => hook.result.current.submitDraft())
+    expect(clearDraft).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(loadIntoComposer).toHaveBeenCalledWith('keep these words', [attachment]))
+    expect(stashAt).toHaveBeenCalledWith('stored-session', 'keep these words', [attachment])
   })
 })

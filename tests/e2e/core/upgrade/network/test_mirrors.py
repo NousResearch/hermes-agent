@@ -47,6 +47,7 @@ def _public_index_hits(edge: S.Edge) -> list[str]:
     return [str(h) for h in edge.proxy.hits if h.host in S.PUBLIC_INDEXES]
 
 
+@pytest.mark.allow_network  # S.prefetch seeds the mirror with the pinned wheels from PyPI
 def test_pip_mirror_update_restages_pm_runtime_through_the_mirror(inst):
     """The new upstream commit changes the PM runtime's inputs (``pm/pyproject.toml``), so the
     update must restage that runtime from ``pm/uv.lock``. pip.conf names the mirror; the public
@@ -76,6 +77,7 @@ def test_pip_mirror_update_restages_pm_runtime_through_the_mirror(inst):
     assert not public, f"a public index was contacted despite the mirror: {public}\n" + r.report(inst)
 
 
+@pytest.mark.allow_network  # S.prefetch seeds the mirror with the pinned npm tarball
 def test_npm_registry_mirror_serves_pm_npm_download(inst):
     """``~/.npmrc`` names the mirror; the npm tool's store entry is missing, so
     `hermes pm install npm` has to fetch its pinned tarball: from the mirror, never from

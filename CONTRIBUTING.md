@@ -118,7 +118,7 @@ The rules that most often send a submission back: the plugin must extend Hermes 
 |-------------|-------|
 | **Git** | With the `git-lfs` extension installed |
 | **Python 3.14** | The project requires `>=3.14,<3.15`; PM provides the pinned interpreter |
-| **Node.js** | Use the PM pin, or a version accepted by root `package.json`: `^22.22.0`, `^24.11.0`, or `>=26.0.0` |
+| **Node.js** | Use the PM pin, or a version accepted by root `package.json`: `>=26` |
 
 ### PM developer environment
 
@@ -601,7 +601,7 @@ Gateway and messaging sessions never collect secrets in-band; they instruct the 
 - The skill relies on a CLI tool that may not be installed (e.g., `himalaya`, `openhue`, `ddgs`)
 - Treat command checks as guidance, not discovery-time hiding
 
-See `skills/gifs/gif-search/` and `skills/email/himalaya/` for examples.
+See `optional-skills/media/gif-search/` and `skills/email/himalaya/` for examples.
 
 ### Skill authoring standards (HARDLINE)
 

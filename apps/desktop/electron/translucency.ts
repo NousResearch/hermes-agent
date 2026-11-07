@@ -142,11 +142,28 @@ export function opacityNeedsSetting(next: number, current = 1): boolean {
 }
 
 /**
+ * The native opacity a window should carry, given whether this platform can do
+ * translucency at all.
+ *
+ * `translucencySupportedOn` drops the Settings row on everything but macOS and
+ * Windows, on the strength of Electron documenting `setOpacity` as a no-op
+ * elsewhere. On Linux it is not one: the X11 window carries the value as
+ * `_NET_WM_WINDOW_OPACITY`, and a native Wayland surface composites the same
+ * fade into the frame, so a Linux window really does render faded when handed
+ * the value. The gate therefore belongs where the value reaches the window, not
+ * only where the row is drawn, because a state persisted or imported from
+ * another platform reaches this path without ever passing the Settings check.
+ */
+export function nativeOpacityFor(state: TranslucencyState, supported: boolean): number {
+  return supported ? windowOpacityFor(state) : 1
+}
+
+/**
  * BrowserWindow constructor options for a chat window's native opacity. Empty
  * unless the state actually asks the window to fade — see opacityNeedsSetting.
  */
-export function windowOpacityOptions(state: TranslucencyState): { opacity?: number } {
-  const opacity = windowOpacityFor(state)
+export function windowOpacityOptions(state: TranslucencyState, supported = true): { opacity?: number } {
+  const opacity = nativeOpacityFor(state, supported)
 
   return opacityNeedsSetting(opacity) ? { opacity } : {}
 }

@@ -31,6 +31,7 @@ import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts
 import { type MockServerOptions, startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import { resolveElectronBinary } from './electron-binary'
+import { stopSandboxGatewayDaemons } from './run-tmp-reaper'
 import { installErrorBannerGuard } from './test'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
@@ -150,6 +151,10 @@ export function createSandbox(prefix: string): Sandbox {
     hermesHome,
     userDataDir,
     cleanup: () => {
+      // `app.close()` leaves the detached gateway the app dialled; alive, it
+      // would also rewrite this home right after the rmSync below.
+      stopSandboxGatewayDaemons(root, hermesHome)
+
       try {
         fs.rmSync(root, { recursive: true, force: true })
       } catch {

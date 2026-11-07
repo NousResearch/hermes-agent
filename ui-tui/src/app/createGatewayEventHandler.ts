@@ -44,6 +44,7 @@ import { reportGatewayStartTimeout } from './gatewayStartTimeout.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { applyControlSnapshot } from './loopStatus.js'
 import { getOverlayState, patchOverlayState, SENSITIVE_PROMPTS } from './overlayStore.js'
+import { takePastes } from './pasteStore.js'
 import { markBubbleShown, newlyStartedRows } from './pendingBubbles.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
@@ -661,7 +662,9 @@ function applySessionInfo(payload: unknown, { appendMessage, setHistoryItems, se
   // authority starts it, so it lands after the previous assistant reply.
   for (const started of newlyStartedRows(current?.pending_submissions, incoming.pending_submissions)) {
     markBubbleShown(started.input_id)
-    appendMessage({ role: 'user', text: started.user })
+    // Submitted here: show it as it was typed, chips and their sections.
+    const pastes = started.user ? takePastes(started.user) : undefined
+    appendMessage({ role: 'user', text: pastes?.display ?? started.user, ...(pastes && { pastes: pastes.pastes }) })
   }
 
   // A replayed snapshot can be the only terminal signal after reconnect.
@@ -1599,7 +1602,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           )
         }
 
-        return
+        return turnController.pushImageSegment(ev.payload.image_path, ev.payload.tool_id)
       }
 
       case 'request.cancel': {

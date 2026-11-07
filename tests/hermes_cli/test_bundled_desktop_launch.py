@@ -226,7 +226,7 @@ class TestCmdGuiOnABundle:
         return SimpleNamespace(**base)
 
     @staticmethod
-    def _run(monkeypatch, repo: Path, args, *, launcher_ok: bool = True):
+    def _run(monkeypatch, repo: Path, args, *, launcher_ok: bool = True, setuid_helper_unusable: bool = False):
         """Run cmd_gui against *repo*, recording builds and launches."""
         builds: list[list[str]] = []
         launches: list[list[str]] = []
@@ -249,6 +249,7 @@ class TestCmdGuiOnABundle:
         monkeypatch.setattr(main_desktop, "_desktop_linux_sandbox_fixup", lambda *a, **k: launcher_ok)
         monkeypatch.setattr(main_desktop, "_desktop_linux_needs_no_sandbox", lambda: not launcher_ok)
         monkeypatch.setattr(main_desktop, "_desktop_linux_sandbox_helper_is_regular_file", lambda *a, **k: True)
+        monkeypatch.setattr(main_desktop, "_desktop_linux_needs_disable_setuid_sandbox", lambda *a: setuid_helper_unusable)
         monkeypatch.setattr(main_desktop, "_detect_linux_password_store", lambda: None)
 
         with patch("hermes_cli.bundled_app.subprocess.Popen", side_effect=record_popen), \
@@ -268,6 +269,14 @@ class TestCmdGuiOnABundle:
         # app's own signed resources.
         assert builds == []
         assert launches == [[str(launcher)]]
+
+    def test_a_non_setuid_helper_beside_a_working_userns_sandbox_is_bypassed(self, tmp_path, monkeypatch):
+        """The probe passed with --disable-setuid-sandbox, so the real launch must carry it too."""
+        repo, launcher = _host_bundle(tmp_path)
+        code, _builds, launches = self._run(monkeypatch, repo, self._args(), setuid_helper_unusable=True)
+
+        assert code == 0
+        assert launches == [[str(launcher), "--disable-setuid-sandbox"]]
 
     def test_explicit_profile_reaches_the_bundled_launcher(self, tmp_path, monkeypatch):
         """`hermes -p work desktop` on a bundle hands Electron --profile work."""

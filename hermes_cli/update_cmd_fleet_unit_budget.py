@@ -8,33 +8,27 @@ poller must outwait the unit's ``RestartSec`` cooldown. Both read unit propertie
 from __future__ import annotations
 
 import subprocess
+import time
 from contextlib import suppress
 
 # poll() takes signed 32-bit milliseconds; keep headroom for rounding in communicate().
 _SYSTEMCTL_RESTART_TIMEOUT_MAX = (2**31 - 1) // 1000 - 1
 
 
-def systemd_restart_timeout(scope_cmd: list, svc_name: str, *, start_only: bool = False) -> float:
-    """Outwait the unit's stop + start budgets, not just the systemctl client.
-
-    A client timeout does not cancel the manager's queued restart. Unknown or
-    infinite limits use systemd's usual 90s per phase so automation stays bounded.
-    Custom ExecStop chains or EXTEND_TIMEOUT_USEC can still exceed this budget;
-    genuine timeouts must continue through the existing per-unit failure path.
-    """
+def _unit_stop_start_budgets(scope_cmd: list, svc_name: str) -> tuple[float, float]:
+    """``(TimeoutStopUSec, TimeoutStartUSec)`` in seconds. Unknown or infinite limits use
+    systemd's usual 90s per phase so automation stays bounded."""
     from gateway.shutdown_forensics import parse_systemd_duration_to_us
     from hermes_cli.update_cmd_fleet import _systemctl
 
-    budgets = {"TimeoutStartUSec": 90.0}
-    if not start_only:
-        budgets["TimeoutStopUSec"] = 90.0
+    budgets = {"TimeoutStopUSec": 90.0, "TimeoutStartUSec": 90.0}
     try:
         show = _systemctl(
             scope_cmd + ["show", svc_name, "--property=TimeoutStopUSec,TimeoutStartUSec"],
             timeout=5,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return sum(budgets.values()) + 15.0
+        return budgets["TimeoutStopUSec"], budgets["TimeoutStartUSec"]
     if show.returncode == 0:
         for line in (show.stdout or "").splitlines():
             key, _, raw = line.partition("=")
@@ -47,7 +41,84 @@ def systemd_restart_timeout(scope_cmd: list, svc_name: str, *, start_only: bool 
                         budgets[key] = duration / 1_000_000
                 except (ValueError, OverflowError):
                     pass
-    return min(sum(budgets.values()) + 15.0, _SYSTEMCTL_RESTART_TIMEOUT_MAX)
+    return budgets["TimeoutStopUSec"], budgets["TimeoutStartUSec"]
+
+
+def systemd_restart_timeout(scope_cmd: list, svc_name: str, *, start_only: bool = False) -> float:
+    """Outwait the unit's stop + start budgets, not just the systemctl client.
+
+    A client timeout does not cancel the manager's queued restart: ``run_unit_job`` then
+    waits for that job instead of calling the restart failed.
+    """
+    stop, start = _unit_stop_start_budgets(scope_cmd, svc_name)
+    return min((0.0 if start_only else stop) + start + 15.0, _SYSTEMCTL_RESTART_TIMEOUT_MAX)
+
+
+#: A wait on a unit's own job never runs past this, whatever its timeouts say.
+_UNIT_JOB_HARD_CAP_S = 900.0
+#: Exit status ``run_unit_job`` reports when systemd's job for the unit is still running.
+UNIT_JOB_STILL_RUNNING = 124
+_TRANSITIONAL_STATES = ("activating", "deactivating", "reloading", "refreshing")
+
+
+def unit_job_budget(scope_cmd: list, svc_name: str, verb: str) -> float:
+    """How long systemd may legitimately take to finish *verb* on the unit: TimeoutStopUSec
+    twice (the SIGTERM wait, then the final-SIGKILL wait systemd bounds by the same value; a
+    cgroup child stuck in D state takes both), plus TimeoutStartUSec for a start, plus slack."""
+    stop, start = _unit_stop_start_budgets(scope_cmd, svc_name)
+    budget = 2 * stop + (start if verb in ("start", "restart") else 0.0) + 30.0
+    return min(budget, _UNIT_JOB_HARD_CAP_S)
+
+
+def unit_job_state(scope_cmd: list, svc_name: str) -> dict[str, str]:
+    """``ActiveState``/``SubState``/``MainPID``/``Job`` of the unit; ``{}`` when unreadable."""
+    from hermes_cli.update_cmd_fleet import _systemctl
+
+    try:
+        show = _systemctl(scope_cmd + ["show", svc_name, "--property=ActiveState,SubState,MainPID,Job"], timeout=10)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return {}
+    if show.returncode != 0:
+        return {}
+    return dict(line.partition("=")[::2] for line in (show.stdout or "").splitlines() if "=" in line)
+
+
+def _settled(state: dict[str, str]) -> bool:
+    return state.get("ActiveState") not in (None, "", *_TRANSITIONAL_STATES) and not state.get("Job")
+
+
+def run_unit_job(manage_cmd: list, scope_cmd: list, verb: str, svc_name: str, *, timeout: float):
+    """``systemctl <verb> <unit>``, where a client timeout is UNKNOWN, not failed.
+
+    The timeout cancels nothing: systemd keeps running the job (a ``start`` queued behind a
+    slow stop included), so judging it failed reports a restart that then happens, and a
+    rollback ``start`` queues behind the stop and boots the unit later, unasked. Past the
+    timeout this waits for the unit's job to settle, bounded by ``unit_job_budget`` from the
+    call, and reports the settled state: exit 0 when the unit reached what *verb* asked for
+    (``active`` for start/restart, stopped for stop), else ``UNIT_JOB_STILL_RUNNING`` while
+    the job still runs, 1 when it settled elsewhere. A call that returns in time is untouched.
+    """
+    from hermes_cli.update_cmd_fleet import _systemctl
+
+    started = time.monotonic()
+    try:
+        return _systemctl(manage_cmd + [verb, svc_name], timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        argv = exc.cmd
+    deadline = started + max(unit_job_budget(scope_cmd, svc_name, verb), timeout)
+    state = unit_job_state(scope_cmd, svc_name)
+    while not _settled(state) and time.monotonic() < deadline:
+        time.sleep(1.0)
+        state = unit_job_state(scope_cmd, svc_name)
+    waited, active = time.monotonic() - started, state.get("ActiveState", "unknown")
+    if not _settled(state):
+        print(f"  ⏳ systemctl {verb} {svc_name} timed out after {timeout:.0f}s; systemd's job is still "
+              f"running after {waited:.0f}s ({active}/{state.get('SubState', '?')})")
+        return subprocess.CompletedProcess(argv, UNIT_JOB_STILL_RUNNING, "", f"systemd's {verb} job still running")
+    reached = active == "active" if verb in ("start", "restart") else active in ("inactive", "failed")
+    print(f"  ⏳ systemctl {verb} {svc_name} timed out after {timeout:.0f}s; systemd finished the job "
+          f"after {waited:.0f}s ({active})")
+    return subprocess.CompletedProcess(argv, 0 if reached else 1, "", "" if reached else f"unit settled {active}")
 
 
 _RESTART_SEC_UNITS = (("ms", 0.001), ("us", 0.000001), ("min", 60.0), ("s", 1.0))

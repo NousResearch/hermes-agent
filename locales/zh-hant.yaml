@@ -66,6 +66,9 @@ gateway:
     usage_switch_model: "`/model <name>` — 切換模型"
     usage_switch_provider: "`/model <name> --provider <slug>` — 切換提供方"
     usage_persist: "`/model <name> --global` — 永久儲存"
+    usage_reset: "`/model reset` — 清除本工作階段的模型覆寫"
+    reset_done: "已清除本工作階段的模型覆寫 — 現在使用 `{model}`（頻道/全域預設）。對話歷史已保留。"
+    reset_none: "本工作階段沒有啟用的模型覆寫 — 已在使用 `{model}`（頻道/全域預設）。"
     err_skew: "此閘道執行的程式碼版本為 {boot_rev}，但磁碟上的檢出版本已是 {disk_rev}。此時切換模型可能因模組過時而崩潰 — 請重新啟動閘道以載入新程式碼：hermes gateway restart"
     err_switch_failed: "切換模型至 {model} 失敗（{error}）；維持使用 {current}。"
     err_config_not_updated: "config.yaml 未更新（{error}）"
@@ -697,6 +700,7 @@ gateway:
     no_credentials: "⚠️ 我無法連上 AI 模型服務，因此這則訊息未被處理。請使用 /login 重新登入，或使用 /model 選擇其他模型。若持續失敗，請在主機上執行 `hermes doctor`。"
     cron_session_read_only: "⚠️ 此聊天屬於一個排程工作，只會執行該工作，因此你的訊息未被執行。請開始新的聊天後再傳送。"
     workspace_unavailable: "⚠️ 此聊天的工作資料夾已不存在（{path}），因此你的訊息未被執行。請重新建立該資料夾，或將聊天移至其他資料夾（CLI 中使用 `/worktree new`，桌面應用程式中使用「Move to project」），然後再次傳送訊息。"
+    launch_credentials_unavailable: "⚠️ 此聊天無法再使用它開始時的 API 金鑰{detail}，因此無法在其中執行任何內容。開啟中的聊天不會自行切換到其他金鑰，所以 /retry 也會以同樣方式失敗。請使用 /new 以目前的金鑰開始新聊天。"
   skills:
     disabled: "**{name}** 技能已安裝但已停用。\n啟用方式：`hermes skills config`"
     not_installed: "**{name}** 技能可用但尚未安裝。\n安裝方式：`hermes skills install {install_name}`"
@@ -1004,6 +1008,8 @@ platform:
       confirm_title: "確認"
       already_resolved: "這個批准請求已處理過～"
       expired: "⌛ 批准已逾期 — 指令未執行（已逾時或已在其他地方處理）"
+      no_longer_pending: "⌛ 這個批准請求已不再等待（已逾時或已在其他地方回應）"
+      click_failed: "⚠️ 無法記錄你的選擇。請再按一次，或用 /approve 或 /deny 回覆。"
       by_user: "{label}（由 {user} 操作）"
       resolved_once: "已批准一次"
       resolved_session: "已批准（本工作階段）"
@@ -1365,6 +1371,12 @@ platform:
       unauthorized: "只有已授權的 Matrix 使用者可以使用這些控制項。"
       not_requester: "只有提出此操作的使用者可以使用這些控制項。"
   feishu:
+    clarify:
+      title: "Hermes 需要你的輸入"
+      other: "✏️ 其他（輸入答案）"
+      awaiting_typed: "等待 {user} 輸入回應…"
+    picker:
+      apply_error: "套用選擇時發生錯誤：{error}"
     approval:
       action_session: "本次工作階段"
       action_always: "永久"
@@ -1468,6 +1480,8 @@ platform:
     prompt_other: "✏️ 其他（輸入答案）"
     prompt_expired: ⌛ 該提示已不再等待回答。請以一般訊息傳送您的回覆。
 slash:
+  rewind:
+    description: "回溯至先前的提示以編輯並重新傳送,或從該處分支 (Esc Esc)"
   approve:
     description: "批准待處理的危險指令"
   bg:
@@ -1695,6 +1709,20 @@ slash:
   quit:
     description: "離開 CLI（加上 --delete 同時移除工作階段歷史）"
 cli:
+  backtrack:
+    title: "↺ 回溯 — 選擇先前的提示"
+    keys_hint: "↑/↓ 選擇 · Enter 編輯並重新傳送 · f 從此處分支 · Esc 關閉"
+    preview_label: "提示 {number} / {total}:"
+    more_lines: "…(還有 {count} 行)"
+    editing_hint: "↺ 正在編輯提示 {number} — Enter 回溯至此並傳送 · Esc Esc 取消"
+    edit_cancelled: "↺ 已取消回溯;未移除任何內容。"
+    rewound: "↺ 已回溯至提示 {number}(已封存 {count} 則訊息);正在傳送編輯內容。"
+    forked: "⑂ 已在提示 {number} 之前建立分支;原始工作階段 {parent} 未變更。請編輯下方提示,然後按 Enter 傳送。"
+    nothing: "(._.) 沒有可回溯的先前提示。"
+    target_changed: "(x_x) 自你選擇提示 {number} 後工作階段已變更;未移除任何內容。你的編輯已放回輸入框。"
+    invalid: "(._.) 沒有提示 {value} — 請選擇 1 至 {total}。"
+    usage: "用法:/rewind [N | fork N]"
+    rewind_failed: "(x_x) 回溯失敗;歷史記錄未變更:{error}"
   modern:
     thought_for: "思考了 {seconds} 秒"
     thought: "思考"
@@ -2006,6 +2034,8 @@ cli:
     usage_switch_reasoning: "切換並設定推理強度"
     usage_switch_provider: "切換提供方"
     usage_refresh: "重新擷取即時模型清單"
+    reset_none: "已在使用設定的預設模型（{model}）— 無需重設。"
+    reset_no_default: "config.yaml 中沒有 model.default — 無可重設的目標。"
     choice_switch_anyway: "仍要切換"
     desc_switch_anyway: "在目前的 Hermes 工作階段使用此模型。"
     choice_cancel: "取消"
@@ -2017,7 +2047,6 @@ cli:
     cleared_picker_cache: "已清除模型選擇器快取。正在重新整理..."
     moa_one_shot_queued: "已排入 MoA 單次執行（預設集 {preset}）；本輪結束後將還原先前的模型。"
     normalized_model: "已將 {provider} 的模型 '{old}' 正規化為 '{new}'。"
-    normalized_copilot_model: "已將 Copilot 模型 '{old}' 正規化為 '{new}'。"
     stripped_provider_prefix: "已移除 '{old}' 的提供方前綴；{provider} 將使用 '{new}'。"
     restored_from_session: "已從工作階段還原模型：{model}"
     could_not_load_config: "❌ 無法載入設定：{error}"
@@ -2157,6 +2186,7 @@ cli:
     images_attached_other: "📎 已附加 {count} 張圖片"
     command_interrupted: "指令已中斷。"
     welcome: "歡迎使用 Hermes Agent！輸入訊息開始，或輸入 /help 查看指令。"
+    vscode_images_hint: "VS Code 可以在這裡以完整解析度顯示圖片：請在設定中開啟 terminal.integrated.enableImages。"
     activated_skills_label: "已啟用的技能："
     redaction_disabled_title: "⚠  機密遮蔽已停用"
     redaction_disabled_body: "（HERMES_REDACT_SECRETS={value}）。API 金鑰與 token 可能會原文出現在聊天輸出、工作階段 JSON 和日誌中。在 config.yaml 中設定 {setting} 可重新啟用。"
@@ -2611,6 +2641,7 @@ cli:
     goal_turns: "⊙ 目標 {used}/{max}"
     goal: "⊙ 目標"
     ctx_pinned: " 已釘選"
+    ctx_fallback: " 預設值"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 暫存（{count} 項）"

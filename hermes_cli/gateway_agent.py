@@ -19,7 +19,7 @@ import uuid
 from contextlib import suppress
 
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
-from hermes_cli.gateway_connection import DISCONNECTED, CallStopped, lost_before
+from hermes_cli.gateway_connection import DISCONNECTED, NOT_SENT, CallStopped, lost_before
 
 logger = logging.getLogger(__name__)
 
@@ -406,6 +406,10 @@ class GatewayAgent:
         self._apply_info(state.info)
         if state.usage:
             self.apply_session_usage(state.usage)
+        self._sync_show_reasoning()
+        notice = self._lost_turn_notice()
+        if notice:
+            self._emit_print(notice)
 
     # -- reasoning display -------------------------------------------------------------------
     @property
@@ -418,16 +422,23 @@ class GatewayAgent:
         sink's presence is what makes the agent ask the provider for reasoning. The gateway agent
         gets the same switch: the session's ``show_reasoning`` display flag, sent on each change."""
         self._reasoning_callback = callback
-        wanted = (self.session_id, callback is not None)
-        if wanted == self._show_reasoning_sent:  # per session: a rotated id gets its own flag
+        self._sync_show_reasoning()
+
+    def _sync_show_reasoning(self):
+        """Sent unless this viewer already set the value: a session it attaches (/new, /resume, /branch)
+        may hold another viewer's "1". A "0" outlives a redial (a restarted gateway starts with the
+        flag unset, read as off); a "1" is set again on each gateway life."""
+        show = self._reasoning_callback is not None
+        sent = self._show_reasoning_sent
+        if sent and sent[:2] == (self.session_id, show) and (not show or sent[2] == self.connection.epoch):
             return
         try:
             self.connection.call("config.set", session_id=self.session_id, key="show_reasoning",
-                                 value="1" if wanted[1] else "0", timeout=10)
+                                 value="1" if show else "0", timeout=10)
         except GatewayClientError as exc:
             logger.debug("config.set show_reasoning failed: %s", exc)
             return
-        self._show_reasoning_sent = wanted
+        self._show_reasoning_sent = (self.session_id, show, self.connection.epoch)
 
     @property
     def service_tier(self):
@@ -760,9 +771,9 @@ class GatewayAgent:
             try:
                 # Inside the try: staging an image is a gateway call, and its failure is a failed turn.
                 # Building the params consumes a ``/model --once`` pick (``_take_turn_route``).
-                state = self._state()
-                if state.gaps != state.attached_gaps:  # a replay gap between turns retired the subscription
-                    self.connection.reattach(turn.session_id, abandon=self._stop(turn))
+                notice = self._prepare_submit(turn)
+                if notice:
+                    return self._unadmitted(history, user_message, notice)
                 params = self._submit_params(user_message, persist_user_message, turn_author)
                 if self._stop(turn)():
                     raise CallStopped("prompt.submit")
@@ -780,6 +791,8 @@ class GatewayAgent:
                 return self._failed(history, user_message, str(exc),
                                     failure_reason="session_busy" if busy else None, retryable=busy)
             except GatewayClientError as exc:
+                if str(exc) == NOT_SENT:
+                    return self._unadmitted(history, user_message, str(exc))
                 return self._failed(history, user_message, str(exc), failure_reason="gateway_connection")
             if (receipt or {}).get("voice_stopped") is True:
                 return self._voice_stopped(history)
@@ -839,6 +852,23 @@ class GatewayAgent:
         """The ``abandon`` of a turn's end-of-turn reads (its receipt, the cumulative stats): only losing the
         terminal stops them. Past Ctrl-C's settle bound they still run, bounded by their own timeouts."""
         return lambda: not self._owns(turn)
+
+    def _prepare_submit(self, turn):
+        """Before a prompt is sent: re-attach after a replay gap, give a redialled (restarted) owner the
+        reasoning flag again, and return the notice of a turn lost in that restart: a prompt queued
+        behind it would wait with no end, so it is refused until ``/discard``."""
+        state = self._state()
+        if state.gaps != state.attached_gaps:  # a replay gap between turns retired the subscription
+            self.connection.reattach(turn.session_id, abandon=self._stop(turn))
+        self.connection.start()
+        self._sync_show_reasoning()
+        notice = self._lost_turn_notice()
+        return f"Your message was not sent.\n{notice}" if notice else ""
+
+    def _lost_turn_notice(self):
+        from hermes_cli.gateway_chat_view import pending_lines
+        pending = self._state().pending
+        return "\n".join(pending_lines(pending)) if any(row["status"] == "unknown" for row in pending) else ""
 
     def _pump(self, stream_callback, starts, turn):
         """Dispatch frames until this admission's ``message.complete``; returns its payload, or the
@@ -1242,6 +1272,13 @@ class GatewayAgent:
         self._give_back_turn_route()  # nothing was admitted: a ``/model --once`` pick is still owed
         self._emit_print(t("cli.voice.stop_phrase_typed"))
         return {**_RESULT_DEFAULTS, "messages": list(history), "voice_stopped": True, "session_id": self.session_id}
+
+    def _unadmitted(self, history, user_message, error):
+        """A turn the owner never saw (a pre-submit notice, or a submit that was never sent): the CLI
+        keeps its local state (no history row, the ``/model --once`` pick and notes) for the resend."""
+        self._give_back_turn_route()
+        return {**self._failed(history, user_message, error, failure_reason="gateway_connection"),
+                "messages": history, "admitted": False}
 
     def _failed(self, history, user_message, error, *, failure_reason=None, retryable=False):
         """``failure_reason="gateway_connection"``: the CLI shows ``error`` as written instead of

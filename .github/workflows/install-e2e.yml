@@ -233,7 +233,7 @@ jobs:
     name: Validate pinned bundle transitions
     # Bundled legs need dispatch-only manifests.
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     outputs:
       windows: ${{ steps.inputs.outputs.windows }}
       macos: ${{ steps.inputs.outputs.macos }}
@@ -243,6 +243,13 @@ jobs:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ inputs.commit }}
+      # The repo's engines require the locked Node (>=26); the runner's system Node is older.
+      - uses: ./.github/actions/setup-pm
+        with:
+          toolchain: node
+          cache: false
+          cache-python: false
+          cache-node: false
       - id: inputs
         env:
           BUNDLE_WINDOWS_MANIFEST: ${{ inputs.windows-bundle-manifest }}

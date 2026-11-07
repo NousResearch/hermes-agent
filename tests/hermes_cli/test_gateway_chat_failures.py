@@ -209,7 +209,9 @@ async def test_oneshot_refuses_unknown_blocked_session_before_submitting(capsys)
     snapshot = {"stored_session_id": "stored", "pending": [{"admission_id": lost, "status": "unknown", "execution_generation": 4}]}
     assert await asyncio.wait_for(GatewayChatView(Peer(), snapshot, quiet=True).run("pong", oneshot=True), 2) == 3
     err = capsys.readouterr().err
-    assert f"/discard {lost}" in err and "prompt.resolve_unknown" in err and "nothing was submitted" in err
+    # A one-shot cannot take /discard: it names the command that can, not a line to type.
+    assert "hermes sessions discard stored --yes" in err
+    assert not [line for line in err.splitlines() if line.startswith("/discard")], err
 
 
 @pytest.mark.asyncio

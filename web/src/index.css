@@ -9,8 +9,10 @@
 @import '@nous-research/ui/styles/globals.css';
 
 /* Scan the published design-system bundle so its utility classes survive
-   Tailwind's JIT purge. */
+   Tailwind's JIT purge. The package sits in this workspace's node_modules
+   or, when hoisted, the repo root's; a missing path is skipped. */
 @source '../node_modules/@nous-research/ui/dist';
+@source '../../node_modules/@nous-research/ui/dist';
 
 /* ------------------------------------------------------------------ */
 /* JetBrains Mono — bundled for the embedded TUI (/chat tab).          */

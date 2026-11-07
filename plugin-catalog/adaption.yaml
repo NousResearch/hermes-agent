@@ -1,13 +1,14 @@
 name: adaption
+title: Adaption
 repo: https://github.com/adaptionlabs/adaption-hermes-plugin
-sha: 958ad2e9077107be1919a5365541caa4e0acdcc8
-description: "Dataset import, adaptation, augmentation, translation, synthetic generation, and AutoScientist fine-tuning through the hosted Adaption MCP. Portable Agent Plugins v1 package with three workflow skills; the MCP server is added separately with OAuth (or an API key for headless use). Disclosure — skill-only, no code; the MCP tools call api.prod.adaptionlabs.ai, and launches spend Adaption credits (the skills request a cost estimate first, Hermes does not enforce it). Hermes does not prompt before those tools unless the server is configured with trust: untrusted."
+sha: 3ab5264a043ea65ad03f2fbad841219d9649fb6a
+description: "Dataset import, adaptation, augmentation, translation, localization, synthetic generation (Invent), and AutoScientist fine-tuning through Adaption's hosted MCP server, with three workflow skills bundled. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to Adaption's hosted server (api.prod.adaptionlabs.ai) and acts on the user's Adaption account, tagged with a fixed hermes-plugin source parameter and header; the tool set is served by that server at runtime and is not covered by the pinned sha. Sign-in runs the pinned mcp-remote@0.1.49 through npx (Node.js 20.18.1+ and npm required; its own npm dependencies resolve to their latest matching versions at first run) with Adaption's pre-registered public OAuth client, which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth. Launching runs spends Adaption credits; the package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only (including cost estimates) and refuses them in unattended runs."
 maintainer: adaptionlabs
 tier: community
 category: tools
-requires_hermes: ">=0.21.5"
+requires_hermes: ">=0.21.6"
 docs_url: https://github.com/adaptionlabs/adaption-hermes-plugin#readme
-version: "0.1.0"
+version: "0.3.0"
 readme: true
 platforms: []
 capabilities:

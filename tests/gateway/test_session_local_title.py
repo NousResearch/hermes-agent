@@ -6,7 +6,7 @@ import pytest
 from gateway.config import Platform
 from gateway.session import SessionSource
 from gateway.session_authority import LiveSession, SessionAuthority
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 from gateway.session_local_title import resolve_titled_session
 from hermes_state import SessionDB
 from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch
@@ -34,7 +34,7 @@ def test_title_resolves_like_classic_cli_and_never_confirms_foreign_titles(tmp_p
         # A non-local (messaging) session carrying a title is not resumable through the local client.
         db.create_session('tg-1', source='telegram', chat_id='chat', user_id='human')
         db.set_session_title('tg-1', 'telegram thread')
-        human = Principal('human', 'owned', frozenset({'session:read'}), 'viewer')
+        human = SessionActor('human', 'owned', frozenset({'session:read'}), 'viewer')
 
         def resolve(title):
             return resolve_titled_session(authority, human, title).session_id

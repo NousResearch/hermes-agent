@@ -1,0 +1,38 @@
+name: aegis-gate
+title: aegis-gate
+repo: https://github.com/Rainyy99/aegis-hermes
+sha: 8165627f98f9b7ef825b9cee2f64301dca20e040
+subdir: ""
+version: "0.1.0"
+description: >-
+  AEGIS gate — a pre-execution verification gate for AI agents.
+  Registers a fail-closed pre_tool_call hook that checks a tool call
+  before it executes: claim provenance (Gate 1), contract
+  verification via Sourcify with a source risk-pattern scan
+  (Gate 2), EIP-712 signature-payload structure (Gate 3), and
+  instruction-channel injection scoring (Gate 4). Verdicts map to
+  Hermes directives: BLOCK vetoes the call, WARN escalates it to the
+  human-approval gate, ALLOW passes it untouched, and a gate that
+  cannot complete abstains into escalation rather than passing
+  silently. Disclosure: the plugin makes read-only HTTPS requests to
+  sourcify.dev and to sources referenced by a tool call (Gates 1/2
+  evidence fetches, inside a strict ~20s per-call time budget); it
+  holds no credentials, runs no subprocesses, executes nothing
+  itself, and stores only an in-process verdict cache. The four
+  gates are a Python port of the author's own AEGIS kit (NEAR
+  Hackathon, Nov 2026), calibrated against the kit's test battery
+  and case files.
+maintainer: Rainyy99
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/Rainyy99/aegis-hermes#readme
+readme: true
+platforms: []
+known_issues:
+  - "WARN verdicts escalate to Hermes's human-approval gate; on unattended one-shot surfaces (hermes -z, cron_mode: approve, --yolo) Hermes auto-approves approval-gate escalations by its own contract, so WARN is advisory there. BLOCK vetoes never enter the approval gate and are absolute on every surface."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: []

@@ -19,6 +19,7 @@ import itertools
 import os
 import re
 import shlex
+import subprocess
 from typing import Iterable
 
 # Verbs whose every path operand is written (or removed/renamed).
@@ -34,6 +35,13 @@ _INPLACE_EDITORS = frozenset({"sed", "perl", "ruby"})
 _GIT_MUTATIONS = frozenset({
     "add", "am", "apply", "checkout", "clean", "commit", "merge", "mv", "pull", "rebase", "reset",
     "restore", "revert", "rm", "stash", "switch", "cherry-pick"})
+_GIT_PATHSPEC_VERBS = frozenset({"add", "commit", "mv", "rm"})
+_GIT_OPTIONS_WITH_ARG = frozenset({
+    "-m", "--message", "-F", "--file", "-C", "--reuse-message", "-c", "--reedit-message",
+    "--author", "--date", "--cleanup", "-t", "--template", "--trailer", "-u", "--untracked-files",
+    "--fixup", "--squash", "--pathspec-from-file"})
+_GIT_WHOLE_TREE_FLAGS = frozenset({
+    "-A", "--all", "--no-ignore-removal", "-u", "--update", "-a", "--interactive", "-i", "--patch", "-p"})
 _INTERPRETERS = re.compile(
     r"^(?:python[0-9.]*|node|nodejs|deno|bun|ruby|perl|php|bash|sh|zsh|dash|ksh|pwsh|powershell)$")
 _WRAPPERS = frozenset({"sudo", "env", "command", "builtin", "exec", "nohup", "setsid", "time", "nice", "xargs"})
@@ -97,6 +105,13 @@ def skill_refusal(name: str) -> str:
             f"write_file, patch and terminal all refuse. Don't retry or work around it (no copying it "
             f"under another name); tell the user what you would change. They can unlock it with "
             f"`hermes curator unlock {name}` or the lock switch in Desktop.")
+
+
+def skill_tree_git_refusal(name: str, sub: str) -> str:
+    return (f"This repository contains locked skill '{name}', so tree-wide `git {sub}` is refused "
+            f"to keep the skill's files unchanged on disk. Path-scoped `git add`, `git commit`, "
+            f"`git rm` and `git mv` outside '{name}' are allowed, as are `git push` and `git fetch`. "
+            f"Don't work around the lock; ask the user to run `git {sub}` or `hermes curator unlock {name}`.")
 
 
 RECORD_REFUSAL = ("skills/.usage.json holds the user's skill locks, so the agent cannot change it "
@@ -325,6 +340,50 @@ def _check_find(verb: str, args: list[str], scope: _Scope) -> str | None:
     return scope.first_hit(starts, ancestor="any") if writes else None
 
 
+def _git_pathspecs(sub: str, args: list[str]) -> tuple[list[str], bool]:
+    """Positional pathspecs for ``git add/commit/mv/rm``, and whether a flag sweeps the whole tree."""
+    specs: list[str] = []
+    whole_tree = False
+    it = iter(args)
+    for arg in it:
+        if arg == "--":
+            specs.extend(a for a in it if a)
+            break
+        if arg in ("--pathspec-from-file",) or arg.startswith("--pathspec-from-file="):
+            return [], True
+        if arg in _GIT_OPTIONS_WITH_ARG:
+            next(it, None)
+            continue
+        if arg.startswith("-") and not arg.startswith("--") and len(arg) > 2 and arg[:2] in ("-m", "-F", "-C", "-c", "-t", "-u"):
+            continue
+        if arg in _GIT_WHOLE_TREE_FLAGS or (
+                sub in ("add", "commit") and arg.startswith("-") and not arg.startswith("--")
+                and any(ch in arg[1:] for ch in ("A", "a", "u", "i", "p"))):
+            whole_tree = True
+            continue
+        if not arg.startswith("-"):
+            specs.append(arg)
+    return specs, whole_tree
+
+
+def _git_staged_paths(where: str) -> list[str]:
+    """Absolute paths currently staged in the index of *where* (empty when not a git repo)."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", where, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=2, check=False)
+        if proc.returncode != 0 or not (top := proc.stdout.strip()):
+            return []
+        diff = subprocess.run(
+            ["git", "-C", where, "diff", "--cached", "--name-only"],
+            capture_output=True, text=True, timeout=2, check=False)
+        if diff.returncode != 0:
+            return []
+        return [os.path.join(top, line) for line in diff.stdout.splitlines() if line]
+    except OSError:
+        return []
+
+
 def _check_git(verb: str, args: list[str], scope: _Scope) -> str | None:
     if verb != "git":
         return None
@@ -335,8 +394,30 @@ def _check_git(verb: str, args: list[str], scope: _Scope) -> str | None:
             where = _expand(rest.pop(0), scope.cwd, scope.env)[0]
         elif flag in ("-c", "--git-dir", "--work-tree") and rest:
             rest.pop(0)
-    if rest and rest[0] in _GIT_MUTATIONS:
-        return _hit(where, scope.locked, scope.record, ancestor="any")
+    if not rest or rest[0] not in _GIT_MUTATIONS:
+        return None
+    sub = rest[0]
+    if sub in _GIT_PATHSPEC_VERBS:
+        specs, whole_tree = _git_pathspecs(sub, rest[1:])
+        if whole_tree:
+            return _hit(where, scope.locked, scope.record, ancestor="any")
+        git_scope = _Scope(where, scope.locked, scope.record, scope.depth, scope.env)
+        if reason := git_scope.first_hit(specs, ancestor="any"):
+            return reason
+        if sub == "commit" and not specs:
+            for path in _git_staged_paths(where):
+                if reason := _hit(path, scope.locked, scope.record, ancestor="any"):
+                    return reason
+            return _hit(where, scope.locked, scope.record)
+        return None
+    if reason := _hit(where, scope.locked, scope.record):
+        return reason
+    real = os.path.realpath(where)
+    for name, root in scope.locked:
+        if real != os.sep and _inside(root, real):
+            return skill_tree_git_refusal(name, sub)
+    if real != os.sep and _inside(scope.record, real):
+        return RECORD_REFUSAL
     return None
 
 

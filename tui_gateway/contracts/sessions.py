@@ -634,6 +634,7 @@ class SessionInterruptParams(SessionParams):
     #: The caller pauses the turn and continues it itself (a hidden ``prompt.submit``): its ``message.complete``
     #: says ``paused``. A plain interrupt (the user's Stop) for the same turn wins.
     resume: bool | None = None
+    expected_hosted_execution_generation: int | None = Field(default=None, ge=1)
 
 
 class InterruptStatus(WireEnum):

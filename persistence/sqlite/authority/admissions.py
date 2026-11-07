@@ -32,7 +32,7 @@ from . import _admission_store as store
 from ._runtime import refused, retry_terminal_admission
 
 if TYPE_CHECKING:
-    from persistence.gateway.hosted_rooms import HostedMemberGuard
+    from persistence.gateway.hosted_rooms import HostedAttemptGuard, HostedMemberGuard
 
 __all__ = ["SQLiteAdmissionRepository"]
 
@@ -62,7 +62,7 @@ class SQLiteAdmissionRepository:
               intent: Literal["queue", "steer", "redirect"] = "queue", gate: AdmissionGate = None,
               replaces: QueuedReplacement | None = None, supersedes: str | None = None,
               api_target: ApiTargetClaim | None = None, rewrite: TranscriptRewrite | None = None,
-              hosted: HostedMemberGuard | None = None, fold: QueuedFold | None = None) -> tuple[AdmissionRecord, bool]:
+              hosted: HostedMemberGuard | HostedAttemptGuard | None = None, fold: QueuedFold | None = None) -> tuple[AdmissionRecord, bool]:
         with refused():
             row, created = store.admit_session_input(
                 self._store.holder(), epoch=epoch, principal_id=principal_id, session_id=session_id,

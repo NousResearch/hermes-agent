@@ -43,3 +43,28 @@ def test_hosted_admission_runs_the_member_check(backend, scope_a):
     assert _admit(store, epoch, "hosted:room:1", _guard(home_current=False)) == (record, False)
     with pytest.raises(AuthorityRefusal, match="^runtime_draining$"):
         _admit(store, epoch, "hosted:room:3", _guard(owner="bob"), gate=GateRefusal("runtime_draining"))
+
+
+def test_unused_attempt_fences_delayed_submit_and_keeps_the_next_attempt_independent(backend, scope_a):
+    from dataclasses import asdict
+    import json
+
+    from persistence.authority.vocabulary import OwnerRule
+    from persistence.gateway.hosted_rooms import HostedTaskIdentity
+
+    store = backend.open(scope_a)
+    epoch = _seed(store)
+    task = HostedTaskIdentity("room", "task", "thread", "turn")
+    lookup = dict(epoch=epoch, session_id=SESSION, room_id="room", task_id="task",
+                  principal="hosted:room:m1", owner=OwnerRule("alice", frozenset(), frozenset()))
+    assert store.hosted_rooms.find_or_close_attempt(**lookup, generation=1) is None
+    from persistence.gateway.hosted_rooms import HostedAttemptGuard
+    def submit(generation):
+        request_id = "hosted:" + json.dumps([asdict(task), generation])
+        return _admit(store, epoch, request_id, HostedAttemptGuard(task, generation))
+    with pytest.raises(AuthorityRefusal, match="stale_generation"):
+        submit(1)
+    admitted, created = submit(2)
+    assert created
+    assert store.hosted_rooms.find_or_close_attempt(**lookup, generation=2) == {
+        "admission_id": admitted.admission_id, "status": "queued", "outcome": None}

@@ -6,11 +6,13 @@ The task payload normalization with its field sets and limits, the bound task ma
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping
 from functools import partial
 from typing import Any
 
-from persistence.gateway.hosted_rooms import DriverValidationError
+from persistence.core.errors import AuthorityRefusal
+from persistence.gateway.hosted_rooms import DriverValidationError, HostedTaskIdentity
 from session_rules.hosted_attachments import validate_task_manifest
 from session_rules.hosted_rooms import bounded_int, compact_json, identifier, text
 
@@ -32,6 +34,18 @@ _bounded_int = partial(bounded_int, error=DriverValidationError)
 
 
 MAX_TASK_INPUT_EVENTS = 128
+
+
+def parse_hosted_attempt(request_id: str, room_id: str) -> tuple[HostedTaskIdentity, int]:
+    """Decode a hosted admission's task and generation, including older JSON encodings."""
+    try:
+        task, generation = json.loads(request_id[7:])
+        identity = HostedTaskIdentity(**task)
+        if identity.room_id != room_id or type(generation) is not int:
+            raise ValueError('invalid hosted identity')
+    except (TypeError, ValueError, KeyError) as exc:
+        raise AuthorityRefusal('storage_unavailable') from exc
+    return identity, generation
 
 
 def validate_task_input(value: Any) -> dict[str, Any]:

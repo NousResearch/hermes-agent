@@ -43,6 +43,7 @@ __all__ = [
     "EventAttachmentConflictError",
     "EventConflictError",
     "EventCursorConflictError",
+    "HostedAttemptGuard",
     "HostedMemberGuard",
     "HostedOwnerClaim",
     "HostedPlacement",
@@ -319,6 +320,14 @@ class HostedMemberGuard:
 
 
 @dataclass(frozen=True, slots=True)
+class HostedAttemptGuard:
+    """The destination's attempt fence for a submit whose membership was attested by another daemon."""
+
+    task: HostedTaskIdentity
+    generation: int
+
+
+@dataclass(frozen=True, slots=True)
 class RoomLinkRecord:
     """One ``hosted_room_links`` row, built by the gateway's ``StoredRoomLink.as_record()``; ``grant`` is a secret and stays out of ``repr``."""
 
@@ -477,6 +486,11 @@ class HostedRoomRepository(Protocol):
 
     def bind_transport(self, *, epoch: int, session_id: str, binding: str) -> None:
         """One write on the bound profile's store: the epoch fence, then insert-if-absent of the caller-encoded ``binding`` for ``session_id``; a different stored text (byte-exact) refuses ``AuthorityRefusal('permission_denied')`` and an identical one is a no-op."""
+        ...
+
+    def find_or_close_attempt(self, *, epoch: int, session_id: str, room_id: str, task_id: str, generation: int,
+                              principal: str, owner: OwnerRule) -> Mapping[str, JsonValue] | None:
+        """Read the exact hosted admission (id, status and outcome), or fence its unused key in the same write."""
         ...
 
     def label_room_session(self, *, epoch: int, session_id: str, title: str) -> None:
@@ -779,15 +793,15 @@ class HostedRoomDriverRepository(Protocol):
         """Return a running attempt the member never admitted to the queue."""
         ...
 
-    def cancel_task(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:
+    def cancel_task(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None, expected_execution_generation: int | None = None) -> Mapping[str, JsonValue]:
         """Cancel a queued or deferred task directly."""
         ...
 
-    def begin_task_cancel(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:
+    def begin_task_cancel(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None, expected_execution_generation: int | None = None) -> Mapping[str, JsonValue]:
         """Request the two-phase stop of running work."""
         ...
 
-    def complete_task_cancel(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:
+    def complete_task_cancel(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None, expected_execution_generation: int | None = None) -> Mapping[str, JsonValue]:
         """Complete an acknowledged stop."""
         ...
 

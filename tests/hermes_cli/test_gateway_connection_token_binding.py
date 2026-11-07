@@ -81,3 +81,35 @@ def test_a_set_whose_url_differs_from_the_entry_is_never_refreshed_there(home, h
     with pytest.raises(oauth.NotSignedIn):
         oauth.ensure_access_token(saved["id"])
     assert seen == []
+
+
+def test_a_refresh_answered_after_the_entry_was_re_pointed_is_not_bound_to_the_new_host(home, monkeypatch):
+    """A re-point landing after the refresh's last read but before its write must not bind host A's
+    rotated tokens to host B (the write re-checks the issuer under the tokens lock)."""
+    saved = _oauth("Box", "https://a.example")
+    store.write_tokens(saved["id"], {"accessToken": "AT-A", "refreshToken": "RT-A", "expiresAt": 1})
+
+    class Rotated:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"access_token": "AT-A-rotated", "refresh_token": "RT-A2", "expires_at": time.time() + 3600}
+
+    monkeypatch.setattr(oauth, "_post_json", lambda *_args, **_kw: Rotated)
+    real_read, reads = store.read_tokens, []
+
+    def read_then_re_point(connection_id):
+        found = real_read(connection_id)
+        reads.append(connection_id)
+        if len(reads) == 2:  # the refresh's post-rotation check passed; another writer re-points now
+            store.save_connection({"id": connection_id, "kind": "remote", "label": "Box",
+                                   "url": "https://b.example", "authMode": "oauth"})
+        return found
+
+    monkeypatch.setattr(store, "read_tokens", read_then_re_point)
+    with pytest.raises(oauth.NotSignedIn):
+        oauth.ensure_access_token(saved["id"])
+    monkeypatch.setattr(store, "read_tokens", real_read)
+    assert store.read_tokens(saved["id"]) is None
+    assert "AT-A-rotated" not in store.tokens_path().read_text()

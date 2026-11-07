@@ -46,13 +46,17 @@ def _teardown(changed: list[str], removed: list[str]) -> None:
     from hermes_cli import gateway_connections_ssh as ssh
     from hermes_cli.web_routers.webapp_relay_proxy import close_gateway_sockets
 
-    for connection_id in [*changed, *removed]:
-        close_gateway_sockets(connection_id)
-    for connection_id in removed:
-        reach.forget(connection_id)
-    for connection_id in changed:
-        ssh.disconnect(connection_id)
-        oauth.cancel_sign_in(connection_id)
+    # Each entry on its own: a host that stopped answering (ssh teardown raising) must not leave
+    # the rest open or stop the watcher.
+    steps = ([(close_gateway_sockets, i) for i in [*changed, *removed]]
+             + [(reach.forget, i) for i in removed]
+             + [(ssh.disconnect, i) for i in changed] + [(oauth.cancel_sign_in, i) for i in changed])
+    for step, connection_id in steps:
+        try:
+            step(connection_id)
+        except Exception:  # health: allow BLE001 -- one entry's teardown failing must not skip the rest
+            _log.warning("Saved gateway %s: %s failed after another writer's edit", connection_id,
+                         step.__name__, exc_info=True)
 
 
 class StoreWatch:

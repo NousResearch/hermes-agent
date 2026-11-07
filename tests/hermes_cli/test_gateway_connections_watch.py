@@ -74,3 +74,23 @@ def test_another_writers_re_point_or_remove_closes_the_relayed_socket_and_a_rena
         with pytest.raises(WebSocketDisconnect) as closed:
             ws.receive_text()
         assert (closed.value.code, closed.value.reason) == (4404, "Gateway removed")
+
+
+def test_one_entrys_failed_teardown_still_tears_down_the_others(monkeypatch):
+    """An SSH host that stopped answering raises from its teardown; the next entry is still torn down."""
+    from hermes_cli import gateway_connections_reach as reach
+    from hermes_cli import gateway_connections_watch as watch_mod
+    from hermes_cli.gateway_connections_ssh_transport import SshReachError
+
+    closed, forgotten = [], []
+    monkeypatch.setattr(webapp_relay_proxy, "close_gateway_sockets", closed.append)
+
+    def forget(connection_id):
+        forgotten.append(connection_id)
+        if connection_id == "a":
+            raise SshReachError("unreachable", "host stopped answering")
+
+    monkeypatch.setattr(reach, "forget", forget)
+    watch_mod._teardown([], ["a", "b"])
+    assert closed == ["a", "b"]
+    assert forgotten == ["a", "b"]

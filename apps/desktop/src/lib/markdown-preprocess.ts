@@ -1134,8 +1134,58 @@ function normalizeFenceBlocks(text: string): string {
   return out.join('\n')
 }
 
+const UNIFIED_DIFF_HUNK_RE = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/
+
+function fenceBareUnifiedDiffsInProse(prose: string): string {
+  const lines = prose.split('\n')
+  const out: string[] = []
+  let index = 0
+
+  while (index < lines.length) {
+    if (!/^--- a\/\S/.test(lines[index]) || !/^\+\+\+ b\/\S/.test(lines[index + 1] ?? '')) {
+      out.push(lines[index])
+      index += 1
+
+      continue
+    }
+
+    let end = index + 2
+    let hasHunk = false
+
+    while (end < lines.length) {
+      const line = lines[end]
+
+      if (UNIFIED_DIFF_HUNK_RE.test(line)) {
+        hasHunk = true
+      } else if (!line.startsWith('+') && !line.startsWith('-') && !line.startsWith(' ') && !line.startsWith('\\')) {
+        break
+      }
+
+      end += 1
+    }
+
+    if (!hasHunk) {
+      out.push(lines[index])
+      index += 1
+
+      continue
+    }
+
+    out.push('```diff', ...lines.slice(index, end), '```')
+    index = end
+  }
+
+  return out.join('\n')
+}
+
+function fenceBareUnifiedDiffs(text: string): string {
+  return splitFencedCode(text)
+    .map(segment => (segment.code ? segment.text : fenceBareUnifiedDiffsInProse(segment.text)))
+    .join('')
+}
+
 export function preprocessMarkdown(text: string): string {
-  const cleaned = stripReasoningBlocks(text).replace(PREVIEW_MARKER_RE, '')
+  const cleaned = fenceBareUnifiedDiffs(stripReasoningBlocks(text).replace(PREVIEW_MARKER_RE, ''))
   const scrubbed = scrubBacktickNoise(cleaned)
   const normalizedFences = normalizeFenceBlocks(scrubbed)
   const strippedEmptyFences = stripEmptyFenceBlocks(normalizedFences)

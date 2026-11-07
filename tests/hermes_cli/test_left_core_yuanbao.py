@@ -207,15 +207,16 @@ def test_a_legacy_hermes_list_kept_the_yb_tools_off_and_keeps_them_off(tmp_path)
     assert known["telegram"] == ["yuanbao"] and "slack" not in known
 
 
-def test_a_disabled_hermes_yuanbao_bundle_keeps_the_yb_tools_disabled(tmp_path):
-    """Core's ``hermes-yuanbao`` bundle was the core tools plus yb_*; ``agent.disabled_toolsets`` naming it
-    removed the yb_* tools. The name is unknown once the bundle is gone, so the conversion disables the
-    plugin's ``yuanbao`` toolset there, once, and turns nothing else off."""
+@pytest.mark.parametrize("bundle", ["hermes-yuanbao", "hermes-gateway"])
+def test_a_disabled_hermes_yuanbao_bundle_keeps_the_yb_tools_disabled(tmp_path, bundle):
+    """Core's ``hermes-yuanbao`` bundle was the core tools plus yb_*, and ``hermes-gateway`` included it;
+    ``agent.disabled_toolsets`` naming either removed the yb_* tools. Neither does once the bundle is gone,
+    so the conversion disables the plugin's ``yuanbao`` toolset there, once, and turns nothing else off."""
     home = _home(tmp_path, env="YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n",
-                 config="agent:\n  disabled_toolsets: [hermes-yuanbao, memory]\n")
+                 config=f"agent:\n  disabled_toolsets: [{bundle}, memory]\n")
     for _ in range(2):
         lcm.migrate_home(home, install=lambda name: (home / "plugins" / name).mkdir(parents=True, exist_ok=True)
                          or {"ok": True}, say=lambda message: None)
     from hermes_cli.config import read_user_config_raw
     assert read_user_config_raw(home / "config.yaml")["agent"]["disabled_toolsets"] == [
-        "hermes-yuanbao", "memory", "yuanbao"]
+        bundle, "memory", "yuanbao"]

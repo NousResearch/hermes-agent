@@ -499,9 +499,9 @@ class LeftCoreFeature:
     # them off in the home: a saved platform list naming one names the plugin's toolsets instead, and
     # ``agent.disabled_toolsets`` takes them for platforms on a default composite.
     replaces_toolsets: tuple[str, ...] = ()
-    # Core-era toolset names that went away with core and resolved to the plugin's tools (core's
-    # ``hermes-yuanbao`` bundle: the core tools plus the yb_* tools). ``agent.disabled_toolsets`` naming
-    # one disabled those tools, and the name is unknown now, so the one-time scope conversion disables
+    # Core-era toolset names that resolved to the plugin's tools (core's ``hermes-yuanbao`` bundle: the
+    # core tools plus the yb_* tools; ``hermes-gateway``, which included it). ``agent.disabled_toolsets``
+    # naming one disabled those tools; neither name reaches them now, so the one-time scope conversion disables
     # the plugin's toolsets there too. Unlike *replaces_toolsets*, nothing else is turned off.
     legacy_toolsets: tuple[str, ...] = ()
     # Gateway platform the plugin ships: a running gateway serves it only after a restart.
@@ -635,7 +635,8 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
                      "YUANBAO_DM_POLICY", "YUANBAO_DM_ALLOW_FROM", "YUANBAO_GROUP_POLICY", "YUANBAO_GROUP_ALLOW_FROM",
                      "YUANBAO_ALLOWED_USERS", "YUANBAO_ALLOW_ALL_USERS", "YUANBAO_HOME_CHANNEL",
                      "YUANBAO_HOME_CHANNEL_NAME"),
-        toolsets=("yuanbao",), off_platforms=_YUANBAO_OFF_PLATFORMS, legacy_toolsets=("hermes-yuanbao",),
+        toolsets=("yuanbao",), off_platforms=_YUANBAO_OFF_PLATFORMS,
+        legacy_toolsets=("hermes-yuanbao", "hermes-gateway"),
         platform="yuanbao", enable_env=("YUANBAO_APP_ID", "YUANBAO_APP_SECRET"), notice=_yuanbao_notice,
     ),
 )

@@ -84,7 +84,12 @@ def _local_account_author() -> str:
         return ""
     if info is None or not getattr(info, "logged_in", False):
         return ""
-    for value in (getattr(info, "org_name", None), getattr(info, "email", None)):
+    claims = getattr(info, "raw_claims", None) or {}
+    for value in (getattr(info, "org_name", None), getattr(info, "email", None),
+                  # The local-JWT snapshot leaves ``email`` unset but keeps the
+                  # verified claims of the stored Portal token (hermes-cli tokens
+                  # carry ``email``).
+                  claims.get("name"), claims.get("email")):
         value = str(value or "").strip()
         # The raw NAS ids are what this whole change exists to avoid re-surfacing.
         if value and not value.startswith("nas_"):

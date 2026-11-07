@@ -36,26 +36,26 @@ function CatalogDetailHeader({ entry, action, dialog }: { entry: CatalogEntry; a
   const Title = dialog ? DialogTitle : 'h3'
 
   return (
-        <header className="space-y-3">
-          <div className="flex min-w-0 items-start gap-3">
-            <div className="min-w-0 flex-1">
-              <div className={cn('flex min-w-0 items-center gap-2', dialog && !entry.imageUrl && 'pr-7')}>
-                <Title className="min-w-0 flex-1 break-words text-lg font-semibold tracking-tight">{entry.name}</Title>
-                {action && <span className="shrink-0">{action}</span>}
-              </div>
-              <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-(--ui-text-tertiary)">
-                <span className="min-w-0 truncate">{entry.author || catalogLabel(entry.source)}</span>
-                <CatalogHeaderMeta entry={entry} />
-              </div>
-            </div>
+    <header className="space-y-3">
+      <div className="flex min-w-0 items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className={cn('flex min-w-0 items-center gap-2', dialog && !entry.imageUrl && 'pr-7')}>
+            <Title className="min-w-0 flex-1 break-words text-lg font-semibold tracking-tight">{entry.name}</Title>
+            {action && <span className="shrink-0">{action}</span>}
           </div>
-          {(entry.sourceUrl || entry.docsUrl) && (
-            <div className="flex flex-wrap gap-3 text-xs">
-              {entry.sourceUrl && <ExternalLink href={entry.sourceUrl}>{c.repository}</ExternalLink>}
-              {entry.docsUrl && <ExternalLink href={entry.docsUrl}>{c.documentation}</ExternalLink>}
-            </div>
-          )}
-        </header>
+          <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-(--ui-text-tertiary)">
+            <span className="min-w-0 truncate">{entry.author || catalogLabel(entry.source)}</span>
+            <CatalogHeaderMeta entry={entry} />
+          </div>
+        </div>
+      </div>
+      {(entry.sourceUrl || entry.docsUrl) && (
+        <div className="flex flex-wrap gap-3 text-xs">
+          {entry.sourceUrl && <ExternalLink href={entry.sourceUrl}>{c.repository}</ExternalLink>}
+          {entry.docsUrl && <ExternalLink href={entry.docsUrl}>{c.documentation}</ExternalLink>}
+        </div>
+      )}
+    </header>
   )
 }
 
@@ -91,13 +91,14 @@ export function CatalogDetail({
   ] as [string, ReactNode][]
 
   return (
-    <div className={cn('min-w-0 space-y-5', dialog && 'pb-4 [&>:not(img)]:mx-4 [&>:first-child:not(img)]:mt-4')} data-catalog-detail={kind} ref={root}>
+    <div
+      className={cn('min-w-0 space-y-5', dialog && 'pb-4 [&>:not(img)]:mx-4 [&>:first-child:not(img)]:mt-4')}
+      data-catalog-detail={kind}
+      ref={root}
+    >
       {entry.imageUrl && (
         <CatalogImage
-          className={cn(
-            'aspect-[2/1] object-cover',
-            dialog ? 'w-full rounded-t-xl' : 'w-full rounded-md'
-          )}
+          className={cn('aspect-[2/1] object-cover', dialog ? 'w-full rounded-t-xl' : 'w-full rounded-md')}
           key={entry.imageUrl}
           src={entry.imageUrl}
         />

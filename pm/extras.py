@@ -402,3 +402,21 @@ def legacy_selection(project_root: Path) -> list[str]:
         and extra_supported(extra, importable=lambda _anchor: False)
     )
     return ["all", *carried]
+
+
+def first_generation_selection(project_root: Path) -> tuple[list[str] | None, dict]:
+    """``(extras, {"carried": ...})`` for a ``sync_venv`` that may build PM's first generation.
+
+    Every dependency sync that can be the first one of a pre-PM tree (the update's completion
+    bootstrap, the historical takeover, the launch migration) passes these. Until PM records a
+    selection the sync would otherwise reach only the core, and the update would drop every
+    feature the old venv held. ``(None, {})`` once a selection is recorded: that ledger owns them.
+    The old venv's extras are carried, not asked for: none of them undoes a ``--without``, and
+    one beyond ``[all]`` that no longer builds is left out (``pm.carried_extras``).
+    """
+    from pm.environments import runtime_facts_path
+
+    if runtime_facts_path(Path(project_root)).is_file():
+        return None, {}
+    extras = legacy_selection(project_root)
+    return extras, ({"carried": extras[1:]} if len(extras) > 1 else {})

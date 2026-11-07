@@ -20,6 +20,7 @@ import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import { type ProjectIdeaTemplate, randomIdeaTemplates } from '@/lib/project-idea-templates'
 import { cn } from '@/lib/utils'
+import type { ProjectInfo } from '@/types/hermes'
 import { notifyError } from '@/store/notifications'
 import {
   $newProjectDropPlacement,
@@ -73,6 +74,10 @@ export function ProjectDialog() {
   useEffect(() => {
     if (open) {
       setName(state?.name ?? '')
+      // Create-mode prefill: when a caller (the session "Move to project"
+      // submenu) knows the session's folder, seed the picker with it so the
+      // user doesn't have to re-pick the same directory.
+      setFolders(mode === 'create' && state?.prefillFolder ? [state.prefillFolder] : [])
       setFolders([])
       setIdea('')
       setTemplates(randomIdeaTemplates())
@@ -166,8 +171,10 @@ export function ProjectDialog() {
       // The arm is consumed exactly on SUCCESS (before the close): a failed
       // create leaves the dialog open for a retry that still lands where it
       // was dropped; the open-state effect discards it on cancel/teardown.
+      let created: ProjectInfo | null = null
+
       await runSubmit(async () => {
-        const created = await createProject({
+        created = await createProject({
           dropPlacement,
           folders,
           idea: idea.trim() || undefined,
@@ -178,7 +185,23 @@ export function ProjectDialog() {
         if (created) {
           enterProject(created.id)
         }
+
+        return created
       }, clearNewProjectDropPlacement)
+
+      // Fire the create-then-move (or whatever) callback AFTER the dialog
+      // closes, so the user is back in the menu/submenu and the toast lands
+      // against the right surface. Errors are toasted but never block the
+      // dialog's own success path — the project IS created either way.
+      // The project was already created at this point, so a failure in the
+      // follow-up move must not be reported as a create failure.
+      if (created && state?.onCreated) {
+        try {
+          await state.onCreated(created)
+        } catch (err) {
+          notifyError(err, p.moveFailed)
+        }
+      }
     }
   }
 

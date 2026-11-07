@@ -2411,6 +2411,22 @@ cli:
     footer_detail: "Esc roster · PgUp/PgDn tail{steer} · x stop"
     footer_roster: "↑/↓ select · Enter tail{steer} · x stop · q/Ctrl+T close"
 
+  subagent_view:
+    label_brief: "Brief"
+    label_user: "You"
+    label_assistant: "Hermes"
+    label_subagent: "Subagent"
+    label_result: "Result"
+    delegation_title: "⇉ Subagent · {outcome} · {goal}"
+    outcome_running: "running"
+    outcome_completed: "done"
+    outcome_failed: "failed"
+    outcome_interrupted: "stopped"
+    outcome_timeout: "timed out"
+    outcome_error: "error"
+    waiting_for_result: "(waiting for the result)"
+    result_truncated: "… (result truncated)"
+
   dock:
     process_goal_label: "background process"
     last_output: "last: {detail}"

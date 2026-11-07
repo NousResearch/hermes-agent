@@ -16,7 +16,7 @@ description: >-
   stdlib only, no network, no credentials. Disclosure — none: no network calls,
   no shell commands, no background processes, no credential access; every tool
   reads or writes only the local ledger file.
-maintainer: GiaVaSwNi
+maintainer: explorelifehus-eng
 tier: community
 category: memory
 requires_hermes: ">=0.19"

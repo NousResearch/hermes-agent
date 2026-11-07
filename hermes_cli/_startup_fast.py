@@ -241,6 +241,14 @@ def print_fast_version_info(*, check_updates: bool = True) -> None:
         pass
 
 
+def try_fast_command() -> bool:
+    """Dispatch cheap version/ACP launches before the CLI import wall."""
+    if sys.argv[1:] == ["acp"]:
+        from acp_adapter.relay import exec_relay_if_hosted
+        exec_relay_if_hosted()
+    return try_fast_version()
+
+
 def try_fast_version(argv: list[str] | None = None) -> bool:
     """Handle ``hermes --version`` before the heavy import wall.
 

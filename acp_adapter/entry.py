@@ -171,6 +171,9 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(rc)
         return
 
+    from acp_adapter.relay import exec_relay_if_hosted
+    exec_relay_if_hosted()
+
     _setup_logging()
     _load_env()
 

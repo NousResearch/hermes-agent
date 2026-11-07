@@ -59,6 +59,24 @@ agent:
 MCP servers that the editor sends with `session/new` are separate. The
 client asks for them per session, and they are always added.
 
+## Shared gateway transport
+
+On supported Unix hosts, the running gateway serves ACP at `$HERMES_HOME/acp.sock`.
+The socket is owner-only (0600), and both ends verify the peer's operating-system
+user ID. Each editor gets its own ACP projection and launch policy inside the gateway.
+`hermes acp` re-execs into a stdlib-only relay rather than importing the agent stack
+for every open editor connection. No editor configuration change is needed.
+
+The relay reconnects after a gateway restart, initializes first, then resumes its
+held sessions without replaying their transcripts. Requests already sent when the
+connection breaks fail with an unknown-outcome error and are **never resubmitted**.
+Unsent requests wait for reattachment. Existing permission answers cannot cross
+connection generations.
+
+Windows, missing/unavailable sockets, container routing, and explicit remote gateway
+URLs retain the existing viewer path. A profile without its own hosted socket also
+uses that fallback. `HERMES_ACP_HOSTED=0` disables the hosted transport for diagnosis.
+
 ## Editor-provided MCP servers
 
 On gateways advertising `acp-session-mcp-v1`, editor `mcpServers` belong to the

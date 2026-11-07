@@ -102,3 +102,18 @@ async def test_cli_only_acp_flags_reach_the_session(monkeypatch, tmp_path):
     await _agent(created).new_session(cwd=str(tmp_path))
     assert created[0].get('accept_hooks') is True and created[0].get('ignore_rules') is True
     assert 'yolo' not in created[0] and 'safe_mode' not in created[0]
+
+
+@pytest.mark.asyncio
+async def test_hosted_connections_do_not_inherit_each_others_launch_flags(monkeypatch, tmp_path):
+    monkeypatch.setenv('HERMES_YOLO_MODE', '1')  # gateway launch, not either editor's policy
+    created = []
+    first, second = _agent(created), _agent(created)
+    first._environ = {'HERMES_SAFE_MODE': '1', 'HERMES_MODEL': 'explicit',
+                      'HERMES_INFERENCE_PROVIDER': 'openrouter'}
+    second._environ = {}
+    await first.new_session(cwd=str(tmp_path))
+    await second.new_session(cwd=str(tmp_path))
+    assert created[0]['safe_mode'] is True and created[0]['model'] == 'explicit'
+    assert not set(_FLAGS) & created[1].keys()
+    assert 'yolo' not in created[0]

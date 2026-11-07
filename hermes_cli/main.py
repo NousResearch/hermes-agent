@@ -247,7 +247,7 @@ _suppress_mouse_residue_early()
 _startup_fast.ensure_project_root_on_path()
 
 # ``hermes --version`` is answered before config/logging imports.
-if _startup_fast.try_fast_version():
+if _startup_fast.try_fast_command():
     raise SystemExit(0)
 
 import argparse

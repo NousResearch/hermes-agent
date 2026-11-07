@@ -43,9 +43,10 @@ _ENV_LAUNCH_FLAGS = (("yolo", "HERMES_YOLO_MODE"), ("ignore_rules", "HERMES_IGNO
                      ("accept_hooks", "HERMES_ACCEPT_HOOKS"))
 
 
-def env_launch_flags() -> dict:
+def env_launch_flags(environ=None) -> dict:
     from utils import is_truthy_value
-    return {field: True for field, name in _ENV_LAUNCH_FLAGS if is_truthy_value(os.environ.get(name))}
+    environ = os.environ if environ is None else environ
+    return {field: True for field, name in _ENV_LAUNCH_FLAGS if is_truthy_value(environ.get(name))}
 
 
 def shell_client_env() -> dict:

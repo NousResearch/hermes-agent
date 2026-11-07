@@ -14,7 +14,8 @@ single-segment conversation (every in-place compaction) is paged in SQL on its d
 index, so only the page's bodies are read. A rotated lineage needs the one display dedupe over every
 segment; it is read whole only while it is under ``sessions.max_resume_messages`` (the resume's own
 guard), and past that only its current segment is paged, as a resume past it shows only live rows. A
-cursor holds which of the two its page read (``_scope``); a read in the other answers ``reset``.
+cursor holds which of the two its page read (``_scope``); a read in the other answers ``reset``. A
+newest-first cursor of a current segment holds that segment too: once a compaction rotates it, ``reset``.
 
 Forward polling (``order: 'oldest'``): the cursor also holds the segment it read and
 ``transcript_cursor_state`` of the rows it covered. While both still hold, only appends happened and the
@@ -92,7 +93,7 @@ def _encode_cursor(binding, key, poll, whole):
     """*binding*: ``(session_id, subagent_id, order)``. *key*: the page edge ``(position, durable)``, None
     for the start (an oldest-order read of an empty transcript), or ``(position, durable, n)`` when the
     page ended inside that row's group (its handoffs and the row, in reading order; *n*: ``_sent``). *poll*: ``(segment, through, state)`` of an
-    oldest-order read, else None. *whole*: the scope the page was read in (``_scope``); a key means a
+    oldest-order read, ``(segment, None, None)`` of a tip-only latest-order one, else None. *whole*: the scope the page was read in (``_scope``); a key means a
     slot only in it."""
     segment, through, state = poll if poll is not None else (None, None, None)
     payload = [_CURSOR_TAG, *binding, list(key) if key is not None else [], segment, through,
@@ -119,7 +120,8 @@ def _decode_cursor(cursor, binding):
             or (len(key) == 3 and key[2] == 0)
             or (oldest and not (isinstance(segment, str) and segment and _uint(through) and isinstance(state, list)
                                 and len(state) == 3 and all(_uint(part) for part in state)))
-            or (not oldest and (segment, through, state) != (None, None, None))):
+            or (not oldest and ((through, state) != (None, None)
+                                or not (segment is None or (whole is False and isinstance(segment, str) and segment))))):
         raise RuntimeStoreError('invalid_params', field='cursor')
     return {'key': tuple(key) or None, 'segment': segment, 'through': through,
             'state': tuple(state) if state is not None else None, 'whole': whole}
@@ -419,9 +421,11 @@ def _read(db, target, lineage, order, held, limit, whole, page):
     if held is not None and held['whole'] is not whole:
         held = None
     if order == 'latest':
+        if held is not None and not whole and held['segment'] != target:
+            held = None  # a tip-only key names a slot of its segment: a rotation since starts again
         rows, key, _ = read_page(db, target, order, held and held['key'], limit, lineage=lineage,
                                  whole=whole, **page)
-        return rows, key, None, held is None, whole
+        return rows, key, None if whole else (target, None, None), held is None, whole
     holds = (held is not None and held['segment'] == target
              and db.transcript_cursor_state(target, held['through'], lineage) == held['state'])
     after = held['key'] if holds else None
@@ -433,7 +437,8 @@ def _read(db, target, lineage, order, held, limit, whole, page):
 
 def _poll(db, target, lineage, order, held, limit, **page):
     """``(rows, next key, poll state, reset, whole)``. Latest order pages back from the cursor's message
-    wherever a compaction moved it. Oldest order continues after the cursor only while its segment and
+    wherever a compaction moved it (in the lineage read whole; a current segment's cursor resets once a
+    rotation replaces that segment). Oldest order continues after the cursor only while its segment and
     ``transcript_cursor_state`` still hold, else starts again (``reset``). Either order starts again when
     the scope (``_scope``) is not the cursor's. The scope, the check, the page and the state stored for
     the next poll are read in one read transaction, so a cursor vouches for exactly the rows its page
@@ -480,7 +485,7 @@ def read_transcript(db, target, lineage, binding, held, limit, *, profile_home, 
     """The reply fields ``rows``, ``next_cursor`` and ``reset`` of one page of physical *target*."""
     rows, key, poll, reset, whole = _poll(db, target, lineage, binding[2], held, limit,
                                           profile_home=profile_home, inline_images=inline_images)
-    next_cursor = _encode_cursor(binding, key, poll, whole) if key is not None or poll is not None else None
+    next_cursor = _encode_cursor(binding, key, poll, whole) if key is not None or binding[2] == 'oldest' else None
     return {'rows': rows, 'next_cursor': next_cursor, 'reset': reset}
 
 

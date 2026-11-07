@@ -393,3 +393,44 @@ async def test_a_display_index_that_never_stays_whole_resets_the_poller(tmp_path
             assert _shape(reader.rows) == await reader.fresh()
         finally:
             await owner.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('rotate', [False, True])
+async def test_a_newest_first_walk_of_a_tip_restarts_when_a_compaction_rotates_it(tmp_path, monkeypatch, rotate):
+    """Past the resume guard only the tip segment is paged newest-first, so its cursor names a slot of that
+    segment: once a compaction rotates the tip to a new segment, the next page starts again from the
+    newest (``reset``) and the walk ends holding what a fresh walk holds. Without a rotation the walk
+    pages on (control)."""
+    import hermes_state
+    from gateway.session_authority import initialize_session_authority
+
+    store, db, runner = _legacy_owner(tmp_path, monkeypatch)
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
+    native = _native(authority, tmp_path, 'native')
+    try:
+        for n in range(3):
+            db.append_message('tui-tip', 'user', f'tip question {n}')
+            db.append_message('tui-tip', 'assistant', f'tip answer {n}')
+        monkeypatch.setattr(hermes_state, 'resolved_max_resume_messages', lambda: 1)
+        reply = (await _call(native, 'session.transcript', session_id='old-tui', limit=2, order='latest'))['result']
+        rows, resets = reply['rows'], []
+        if rotate:
+            assert db.try_acquire_compression_lock('tui-tip', 'fixture')
+            try:
+                db.publish_compression_child(parent_session_id='tui-tip', child_session_id='tui-tip-2', source='tui',
+                    model='m', messages=[{'role': 'user', 'content': f'rotated question {n}'}
+                                         for n in range(3)], compression_lock_holder='fixture')
+            finally:
+                db.release_compression_lock('tui-tip', 'fixture')
+        while reply['next_cursor'] and len(resets) < 20:
+            reply = (await _call(native, 'session.transcript', session_id='old-tui', limit=2, order='latest',
+                                 cursor=reply['next_cursor']))['result']
+            resets.append(reply['reset'])
+            rows = reply['rows'] if reply['reset'] else reply['rows'] + rows
+        fresh = await _every_page(native, 'old-tui', 2, 'latest')
+        assert resets[:1] == [rotate] and not any(resets[1:]), resets
+        assert _shape(rows) == _shape(fresh), (rows, fresh)
+    finally:
+        await native.close()
+        store.close_all_db_handles()

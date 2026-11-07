@@ -198,7 +198,9 @@ listener keeps working.
   index outside the transaction when a row lacks its slot, as REST `/messages` does, then reads again);
   a rotated lineage is deduplicated whole, and past `sessions.max_resume_messages` only its current
   segment is paged. A cursor also holds which of the two its page read: when appends take the lineage
-  past that guard, a reply in either order is `reset: true` from its first page.
+  past that guard, a reply in either order is `reset: true` from its first page. A newest-first cursor
+  of that current segment also holds the segment: once a compaction rotates it to a new one, the next
+  reply is `reset: true` from the newest page.
   With `subagent_id` it reads a delegated child of `session_id` instead
   (`gateway/session_transcript_subagent.py`); the reply adds `subagent_id`, `available`, `running`
   and `child_session_id`. The session must be live on this owner (else `not_found`) and readable by

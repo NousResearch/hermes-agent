@@ -82,12 +82,15 @@ def compaction_summary(message: Any) -> Optional[dict[str, Any]]:
     if not is_compaction_summary_message(message):
         return None
     text = ContextCompressor._strip_summary_prefix(flatten_message_text(message.get("content")))
-    count = _COMPACTED_COUNT.search(text)
+    sections = {}
     for heading in _MODEL_ONLY_SECTIONS:
         start = text.find(heading)
         if start >= 0:
             end = text.find("\n## ", start + len(heading))
+            sections[heading] = text[start:end if end >= 0 else len(text)]
             text = text[:start] + (text[end + 1:] if end >= 0 else "")
+    # The footer's count, never one a quoted user message happens to spell out (the quotes are cut first).
+    counts = _COMPACTED_COUNT.findall(sections.get(_LEAN_RECOVERY_HEADING, text))
     text = "\n".join(line for line in text.splitlines() if line.strip() != _HISTORICAL_ONLY_LINE)
     return {"summary": re.sub(r"\n{3,}", "\n\n", text).strip(),
-            "compacted_messages": int(count[1]) if count else None}
+            "compacted_messages": int(counts[-1]) if counts else None}

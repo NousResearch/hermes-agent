@@ -15239,7 +15239,7 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   // registerGlobalRoute: an applied SSH route joins the list (reconcileApplied… leaves SSH alone).
   const nextRegistry = key
     ? previousRegistry
-    : registerGlobalRoute(reconcileAppliedGlobalConnection(previousRegistry, config), config)
+    : registerGlobalRoute(reconcileAppliedGlobalConnection(previousRegistry, config), config, { select: true })
 
   // Primary apply: the applied window's recorded route still names the source
   // it just LEFT, and a profile-less re-dial is answered from that record

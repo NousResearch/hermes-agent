@@ -1483,3 +1483,28 @@ class TestDefaultTaskId:
         assert kt._default_task_id("") == worker_env
         assert kt._default_task_id("   ") == worker_env
         assert kt._default_task_id(None) == worker_env
+
+
+def test_list_rows_carry_block_kind(monkeypatch, worker_env):
+    """A listing must say WHY a card waits, not just that it does: without this
+    an orchestrator needs one ``kanban_show`` per blocked card (~8 kB each) just
+    to tell a self-clearing ``dependency`` block from one a human owes an
+    answer on.
+    """
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    conn = kbc.connect()
+    try:
+        waiting = kb.create_task(conn, title="waiting on a human", assignee="factory")
+        moving = kb.create_task(conn, title="moving along", assignee="factory")
+        assert kb.block_task(conn, waiting, reason="unlock the phone", kind="needs_input")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    d = json.loads(kt._handle_list({"limit": 20}))
+    rows = {t["id"]: t for t in d["tasks"]}
+    assert rows[waiting]["block_kind"] == "needs_input"
+    assert rows[moving]["block_kind"] is None

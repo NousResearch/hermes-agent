@@ -67,10 +67,9 @@ def main() -> int:
 
     writer = PdfWriter()
     for idx in indices:
-        page = reader.pages[idx]
+        page = writer.add_page(reader.pages[idx])
         if args.rotate:
             page.rotate(args.rotate)
-        writer.add_page(page)
     if args.compress:
         for page in writer.pages:
             page.compress_content_streams()

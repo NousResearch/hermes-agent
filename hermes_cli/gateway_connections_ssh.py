@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shlex
 import threading
 import time
 from dataclasses import dataclass
@@ -36,6 +35,7 @@ from hermes_cli.gateway_connections_ssh_transport import (
     build_exec_args,
     control_socket_path,
     default_control_dir,
+    login_shell_quote,
     pick_local_port,
     resolve_ssh_binary,
 )
@@ -227,7 +227,7 @@ def interactive_shell_argv(connection: dict, cwd: str, *, root: Path) -> list[st
             raise SshReachError("unknown", "The SSH connection changed while starting the terminal; retry.")
         command = 'exec "$SHELL" -l'
         if cwd:
-            command = f"cd {shlex.quote(cwd)} 2>/dev/null; {command}"
+            command = f"cd {login_shell_quote(cwd)} 2>/dev/null; {command}"
         return [tunnel.ssh.ssh_binary, "-tt", *build_exec_args(tunnel.ssh.endpoint, command)]
 
 

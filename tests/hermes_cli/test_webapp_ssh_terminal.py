@@ -1,7 +1,7 @@
 """Saved SSH terminals use the SSH shell transport, not Webapp on remote serve (#150864)."""
 from types import SimpleNamespace
 from urllib.parse import urlencode
-import shlex
+import subprocess
 
 import pytest
 from starlette.testclient import TestClient
@@ -74,7 +74,26 @@ def test_saved_ssh_terminal_does_not_attach_under_another_remote_profile(ssh_web
         assert closed.value.code == 4403
 
 
-def test_ssh_spawn_uses_the_saved_master_and_quotes_remote_cwd(ssh_webapp, monkeypatch):
+def _fish_cd_target(command: str) -> str:
+    """The ``cd`` argument as fish reads it. Unlike POSIX, fish decodes ``\\\\`` and ``\\'`` inside '…'."""
+    escapes = {None: None, "'": "\\'", '"': '\\"$'}
+    assert command.startswith("cd ")
+    out, i, quote = [], 3, None
+    while i < len(command) and (quote or command[i] != " "):
+        ch = command[i]
+        if ch in "'\"" and quote in (None, ch):
+            quote = None if quote else ch
+        elif ch == "\\" and (quote is None or command[i + 1] in escapes[quote]):
+            i += 1
+            out.append(command[i])
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+@pytest.mark.platforms("posix")
+def test_ssh_spawn_uses_the_saved_master_and_quotes_remote_cwd(ssh_webapp, monkeypatch, tmp_path):
     from hermes_cli import web_server_chat
 
     seen = []
@@ -85,14 +104,23 @@ def test_ssh_spawn_uses_the_saved_master_and_quotes_remote_cwd(ssh_webapp, monke
         return spawn(argv, **kwargs)
 
     monkeypatch.setattr(web_server_chat.PtyBridge, "spawn", record)
-    cwd = "/remote/work's directory; not a local command"
+    remote = tmp_path / "work's \\\\dir\\; not a local command"
+    remote.mkdir()
+    cwd = str(remote)
     with TestClient(ssh_webapp.host) as client:
         with _open(ssh_webapp, client, cwd=cwd) as ws:
             assert metadata(ws)["cwd"] == cwd
     argv, options = seen[0]
     assert argv[:2] == ["/usr/bin/ssh", "-tt"]
     assert argv[-2] == "operator@remote.example"
-    assert argv[-1] == f'cd {shlex.quote(cwd)} 2>/dev/null; exec "$SHELL" -l'
+    assert argv[-1].endswith(' 2>/dev/null; exec "$SHELL" -l')
+    assert _fish_cd_target(argv[-1]) == cwd  # a fish login shell reaches the same directory
+    shell = tmp_path / "print-pwd"
+    shell.write_text("#!/bin/sh\npwd -P\n")
+    shell.chmod(0o755)
+    landed = subprocess.run(["sh", "-c", argv[-1]], capture_output=True, text=True, check=False,
+                            env={"SHELL": str(shell), "PATH": "/usr/bin:/bin"})
+    assert landed.stdout.strip() == str(remote.resolve())
     assert f"ControlPath={ssh_webapp.tunnel.ssh.endpoint.control_path}" in argv
     assert "BatchMode=yes" in argv and "StrictHostKeyChecking=accept-new" in argv
     assert options["cwd"] != cwd

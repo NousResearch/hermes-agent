@@ -234,7 +234,7 @@ class TestSettings:
         a = _make(monkeypatch, {"email": USER, "thinking_reaction": "🤔"})
         a._credentials = object()  # e.g. Application Default Credentials on GCE
         with caplog.at_level(logging.WARNING):
-            a._workspace_user.start(pubsub=True)
+            await a._workspace_user.start(pubsub=True)
         assert "cannot impersonate" in caplog.text
         await a.on_processing_start(_event())
         assert not a._workspace_user._reaction_tasks
@@ -374,7 +374,7 @@ class TestListenedMessages:
     async def test_http_callback_mode_does_not_listen(self, monkeypatch, caplog):
         a = _make(monkeypatch, _listen())
         with caplog.at_level(logging.WARNING):
-            a._workspace_user.start(pubsub=False)
+            await a._workspace_user.start(pubsub=False)
         assert a._workspace_user.listener is None and "Pub/Sub inbound" in caplog.text
 
     def test_batch_events_carry_every_message(self):

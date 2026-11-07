@@ -10,7 +10,9 @@ was not @mentioned in (Google delivers only those to an app). A real Workspace u
   the posted marker message, wherever the user is a member;
 * ``listen_spaces`` + ``listen_pattern``: a Google Workspace Events subscription per listed
   space, so a message that matches the pattern reaches the agent without an @mention, from
-  ``GOOGLE_CHAT_ALLOWED_USERS`` senders only (``workspace_events.py``).
+  ``GOOGLE_CHAT_ALLOWED_USERS`` senders only (``workspace_events.py``);
+* ``answer_dms``: person-to-person DMs that allowed people open with the user are answered by
+  the user, as the user (``workspace_user_dms.py``).
 
 The app still posts every reply. Nothing here runs unless configured, and the delegated token
 carries only the scopes the enabled features need (``WorkspaceUserSettings.scopes``).
@@ -30,6 +32,11 @@ logger = logging.getLogger("gateway.platforms.google_chat")
 
 REACTIONS_SCOPE = "https://www.googleapis.com/auth/chat.messages.reactions"
 MESSAGES_READONLY_SCOPE = "https://www.googleapis.com/auth/chat.messages.readonly"
+# answer_dms: post, edit and delete as the user (also covers reading and reactions), find its DMs.
+MESSAGES_SCOPE = "https://www.googleapis.com/auth/chat.messages"
+SPACES_READONLY_SCOPE = "https://www.googleapis.com/auth/chat.spaces.readonly"
+MEMBERSHIPS_READONLY_SCOPE = "https://www.googleapis.com/auth/chat.memberships.readonly"
+_TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
 _SPACE_NAME_RE = re.compile(r"^spaces/[A-Za-z0-9_-]+$")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -75,6 +82,17 @@ def _listen_settings(raw: dict[str, Any], allowed: frozenset[str]) -> dict[str, 
     return {"listen_spaces": tuple(dict.fromkeys(spaces)), "listen_pattern": pattern}
 
 
+def _answer_dms(raw: dict[str, Any], allowed: frozenset[str]) -> bool:
+    value = raw.get("answer_dms")
+    if not (value is True or str(value or "").strip().lower() in _TRUE_WORDS):
+        return False
+    if not allowed:
+        logger.warning("[GoogleChat] workspace_user.answer_dms needs GOOGLE_CHAT_ALLOWED_USERS: only DMs with "
+                       "listed users are answered (GOOGLE_CHAT_ALLOW_ALL_USERS is not honoured here); not answering")
+        return False
+    return True
+
+
 @dataclass(frozen=True)
 class WorkspaceUserSettings:
     """``platforms.google_chat.workspace_user`` from config.yaml, validated."""
@@ -84,6 +102,7 @@ class WorkspaceUserSettings:
     thinking_reaction: str = ""
     listen_spaces: tuple[str, ...] = ()
     listen_pattern: Optional[re.Pattern[str]] = None
+    answer_dms: bool = False
 
     @property
     def listening(self) -> bool:
@@ -91,6 +110,8 @@ class WorkspaceUserSettings:
 
     def scopes(self) -> list[str]:
         """The DWD scopes the enabled features need; the Workspace admin grants exactly these."""
+        if self.answer_dms:  # chat.messages covers the reading and reacting of the other features
+            return [MESSAGES_SCOPE, SPACES_READONLY_SCOPE, MEMBERSHIPS_READONLY_SCOPE]
         return [scope for scope, needed in ((REACTIONS_SCOPE, bool(self.thinking_reaction)),
                                             (MESSAGES_READONLY_SCOPE, self.listening)) if needed]
 
@@ -111,10 +132,10 @@ class WorkspaceUserSettings:
         allowed = parse_allowed_users(allowed_users_csv)
         settings = cls(email=email, allowed_users=allowed,
                        thinking_reaction=str(raw.get("thinking_reaction") or "").strip(),
-                       **_listen_settings(raw, allowed))
+                       answer_dms=_answer_dms(raw, allowed), **_listen_settings(raw, allowed))
         if not settings.scopes():
             logger.warning("[GoogleChat] workspace_user.email is set but no feature is enabled "
-                           "(thinking_reaction, listen_spaces); the Workspace user stays off")
+                           "(thinking_reaction, listen_spaces, answer_dms); the Workspace user stays off")
             return None
         return settings
 
@@ -143,6 +164,7 @@ class WorkspaceUser:
         self._reactions: dict[str, str] = {}  # message name -> reaction name
         self._thinking_chat: dict[str, str] = {}  # chat_id -> message whose reaction replaces the marker
         self.listener: Any = None
+        self.dms: Any = None  # workspace_user_dms.DirectMessages when answer_dms is on
         self.available = True  # False once start() found credentials that cannot impersonate
 
     # -- delegated credentials and clients -----------------------------------
@@ -176,29 +198,37 @@ class WorkspaceUser:
         return self._client("workspaceevents", "v1")
 
     # -- lifecycle -------------------------------------------------------------
-    def start(self, *, pubsub: bool) -> None:
-        """Called from ``connect()`` on the adapter loop, under its profile scope."""
+    async def start(self, *, pubsub: bool) -> None:
+        """Called from ``connect()`` on the adapter loop, under its profile scope, before the
+        Pub/Sub stream starts (the DMs are known before their first message can arrive)."""
         try:
             self.credentials()
         except WorkspaceUserUnavailable as exc:
             logger.warning("[GoogleChat] %s; the Workspace user stays off", exc)
             self.available = False
             return
-        logger.info("[GoogleChat] Workspace user %s via domain-wide delegation: reaction=%s, listening in %d space(s)",
-                    self.settings.email, self.settings.thinking_reaction or "off", len(self.settings.listen_spaces))
-        if not self.settings.listening:
+        logger.info("[GoogleChat] Workspace user %s via domain-wide delegation: reaction=%s, listening in %d space(s), "
+                    "answering DMs=%s", self.settings.email, self.settings.thinking_reaction or "off",
+                    len(self.settings.listen_spaces), "on" if self.settings.answer_dms else "off")
+        if not (self.settings.listening or self.settings.answer_dms):
             return
         if not pubsub:
-            logger.warning("[GoogleChat] workspace_user.listen_spaces needs Pub/Sub inbound (Workspace Events are "
-                           "delivered to the app's Pub/Sub topic); not listening in HTTP callback mode")
+            logger.warning("[GoogleChat] workspace_user.listen_spaces and answer_dms need Pub/Sub inbound (Workspace "
+                           "Events are delivered to the app's Pub/Sub topic); off in HTTP callback mode")
             return
-        from .workspace_events import SpaceListener
-        self.listener = SpaceListener(self, self._adapter)
-        self.listener.start()
+        if self.settings.listening:
+            from .workspace_events import SpaceListener
+            self.listener = SpaceListener(self, self._adapter)
+            self.listener.start()
+        if self.settings.answer_dms:
+            from .workspace_user_dms import DirectMessages
+            self.dms = DirectMessages(self, self._adapter)
+            await self.dms.start()
 
     async def stop(self) -> None:
-        if self.listener is not None:
-            await self.listener.stop()
+        for part in (self.listener, self.dms):
+            if part is not None:
+                await part.stop()
         tasks, self._reaction_tasks = list(self._reaction_tasks.values()), {}
         for task in tasks:
             task.cancel()
@@ -210,14 +240,20 @@ class WorkspaceUser:
             return False
         if is_lifecycle_event(attrs):
             logger.info("[GoogleChat] Workspace Events lifecycle event: %s", str(attrs.get("ce-type")).rsplit(".", 1)[-1])
-            if self.listener is not None:
-                self.listener.wake()
+            for part in (self.listener, self.dms):
+                if part is not None:
+                    part.wake()
             return True
         for message in event_messages(attrs, envelope):
-            admitted = self.listener.admit(message) if self.listener is not None else None
+            part = self.dms if self.owns(message.get("name")) else self.listener
+            admitted = part.admit(message) if part is not None else None
             if admitted:
                 self._adapter._submit_on_loop(self._adapter._dispatch_message(*admitted))
         return True
+
+    def owns(self, name: Any) -> bool:
+        """True when ``name`` (space, message, attachment) is in a DM the user answers as itself."""
+        return self.dms is not None and self.dms.owns(name)
 
     # -- thinking reaction -----------------------------------------------------
     def begin_thinking(self, chat_id: str, message_id: str) -> None:

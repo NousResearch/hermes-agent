@@ -8,5 +8,5 @@ _SEND_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-
 
 SEND_ENTRY_KWARGS = {
     "target_ref_syntax_fn": regex_groups_parser(_SEND_TARGET_RE),
-    "standalone_send": StandaloneSendPolicy(label="Feishu", media=True, text_direct=True),
+    "standalone_send": StandaloneSendPolicy(label="Feishu", media=True, text_direct=True, forward_metadata=True),
 }

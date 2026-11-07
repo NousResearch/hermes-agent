@@ -50,3 +50,5 @@ class StandaloneSendPolicy:
     # Generic text-only path: call the sender per chunk directly, skipping the live adapter and
     # any ``send_message_handler``.
     text_direct: bool = False
+    # Topic transports need the directory's reply anchor on standalone text/media sends.
+    forward_metadata: bool = False

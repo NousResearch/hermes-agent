@@ -56,26 +56,25 @@ def _patch(body):
     return f"{_STAR} Begin Patch\n{_STAR} Update File: f\n{body}{_STAR} End Patch\n"
 
 
+_BODIES = {
+    "not_found_near_source": lambda s: f'@@\n-k = "other{s[:4]}"\n+k = "x"\n',
+    "ambiguous_source": lambda s: f'@@\n-k = "{s}"\n+k = "x"\n',
+    "hint_missing": lambda s: f"@@ {s}-absent @@\n-z = 9\n+z = 2\n",
+    "hint_ambiguous_addition": lambda s: f"@@ k = @@\n+added {s}\n",
+    "hunk_text_not_found": lambda s: f"@@\n-nothing {s}\n+replacement {s}\n",
+    "read_error": lambda s: "@@\n-z = 1\n+z = 2\n",
+    "write_error": lambda s: "@@\n-z = 1\n+z = 2\n",
+}
+
+
 def _run(secret, case):
     src = f'k = "{secret}"\nk = "{secret}"\nz = 1\n'
-    store = Store({"f": src})
-    if case == "not_found_near_source":
-        body = f'@@\n-k = "other{secret[:4]}"\n+k = "x"\n'
-    elif case == "ambiguous_source":
-        body = '@@\n-k = "' + secret + '"\n+k = "x"\n'
-    elif case == "hint_missing":
-        body = f"@@ {secret}-absent @@\n-z = 9\n+z = 2\n"
-    elif case == "hint_ambiguous_addition":
-        body = f"@@ k = @@\n+added {secret}\n"
-    elif case == "hunk_text_not_found":
-        body = f"@@\n-nothing {secret}\n+replacement {secret}\n"
-    elif case == "read_error":
-        store = Store({"f": src}, read_error=f"boom {secret}")
-        body = "@@\n-z = 1\n+z = 2\n"
-    else:
-        store = Store({"f": src}, write_error=f"disk {secret}")
-        body = "@@\n-z = 1\n+z = 2\n"
-    operations, error = parse_v4a_patch(_patch(body))
+    store = Store(
+        {"f": src},
+        read_error=f"boom {secret}" if case == "read_error" else None,
+        write_error=f"disk {secret}" if case == "write_error" else None,
+    )
+    operations, error = parse_v4a_patch(_patch(_BODIES[case](secret)))
     assert error is None, error
     return apply_v4a_operations(operations, store), store
 

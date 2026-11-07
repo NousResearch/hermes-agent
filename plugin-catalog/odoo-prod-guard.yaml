@@ -1,0 +1,26 @@
+name: odoo-prod-guard
+repo: https://github.com/tylerjharden/hermes-hackathon-ipp
+sha: 3e2feea4b1216a6b2343b18a6de710ae5b126c46
+subdir: plugins/odoo-prod-guard
+description: Odoo JSON-2 tools with a Hermes approval gate on non-routine production writes.
+maintainer: tylerjharden
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "1.0.0"
+screenshots:
+  - https://raw.githubusercontent.com/tylerjharden/hermes-hackathon-ipp/3e2feea4b1216a6b2343b18a6de710ae5b126c46/plugins/odoo-prod-guard/desktop/screenshots/desktop-after.png
+  - https://raw.githubusercontent.com/tylerjharden/hermes-hackathon-ipp/3e2feea4b1216a6b2343b18a6de710ae5b126c46/plugins/odoo-prod-guard/desktop/screenshots/mobile-after.png
+capabilities:
+  provides_tools:
+    - odoo_call
+    - odoo_search_read
+    - odoo_version
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - ODOO_URL
+    - ODOO_DB
+    - ODOO_USER
+    - ODOO_API_KEY

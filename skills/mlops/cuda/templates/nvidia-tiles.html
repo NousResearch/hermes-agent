@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>æ://n — NVIDIA Tiles</title>
+<style>
+  :root {
+    --void:#050505; --gold:#d4af37; --neon:#00ff9d; --ink:#f0ece4;
+    --nv:#76b900; --nv-dim:rgba(118,185,0,.16); --nv-hot:rgba(118,185,0,.5);
+    --muted:rgba(240,236,228,.4); --border:rgba(118,185,0,.18);
+    --border-hot:rgba(118,185,0,.5); --panel:#090909; --panel2:#0b0b0b;
+    --glow:rgba(118,185,0,.1); --err:#ff5555; --amber:#ffaa00;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;background:var(--void);color:var(--ink);font-family:ui-monospace,'JetBrains Mono',Menlo,monospace;min-height:100vh;}
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:999;opacity:.03;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(118,185,0,.12) 2px,rgba(118,185,0,.12) 4px);}
+  .wrap{max-width:1120px;margin:0 auto;padding:26px 22px 56px;}
+  header{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;border-bottom:1px solid var(--border-hot);padding-bottom:14px;margin-bottom:20px;flex-wrap:wrap;}
+  .brand{display:flex;gap:14px;align-items:center;}
+  .glyph{width:46px;height:46px;border:1px solid var(--border-hot);display:grid;place-items:center;font-weight:800;font-size:22px;background:var(--panel2);color:var(--nv);box-shadow:0 0 22px var(--glow);}
+  h1{margin:0;font-size:19px;letter-spacing:.16em;color:var(--nv);text-transform:uppercase;}
+  .sub{margin:4px 0 0;font-size:11px;color:var(--muted);letter-spacing:.18em;text-transform:uppercase;}
+  .addr{font-size:11px;color:var(--neon);letter-spacing:.1em;text-align:right;}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px;}
+  .tile{border:1px solid var(--border);background:var(--panel);padding:16px;transition:.2s;position:relative;overflow:hidden;}
+  .tile:hover{border-color:var(--border-hot);box-shadow:0 0 18px var(--glow);}
+  .tile h2{margin:0 0 4px;font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--nv);display:flex;justify-content:space-between;}
+  .tile .tag{color:var(--muted);font-size:9px;letter-spacing:.1em;}
+  .tile p.d{margin:0 0 12px;font-size:11px;color:var(--muted);line-height:1.4;}
+  .row{display:flex;justify-content:space-between;gap:10px;padding:4px 0;font-size:12px;border-bottom:1px solid rgba(118,185,0,.06);}
+  .row:last-child{border-bottom:0;}
+  .k{color:var(--muted);} .v{color:var(--ink);text-align:right;font-weight:600;}
+  .ok{color:var(--neon);} .no{color:var(--err);} .warn{color:var(--amber);} .nv{color:var(--nv);}
+  .bar{height:7px;background:var(--panel2);border:1px solid var(--border);margin:8px 0 4px;position:relative;overflow:hidden;}
+  .bar>i{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--nv),var(--neon));transition:width .4s;}
+  .btn{border:1px solid var(--nv-hot);background:transparent;color:var(--nv);font-family:inherit;font-size:10px;letter-spacing:.12em;text-transform:uppercase;padding:6px 10px;cursor:pointer;margin-top:10px;transition:.15s;}
+  .btn:hover{background:var(--nv);color:var(--void);}
+  .btn:disabled{opacity:.4;cursor:not-allowed;}
+  .dock{margin-top:22px;border:1px solid var(--border);background:var(--panel2);height:150px;overflow:auto;padding:10px 12px;font-size:11px;line-height:1.5;}
+  .dock .ln{white-space:pre-wrap;word-break:break-word;}
+  .dock .ok{color:var(--nv);} .dock .err{color:var(--err);} .dock .gold{color:var(--gold);}
+  .foot{margin-top:22px;font-size:10px;color:var(--muted);letter-spacing:.14em;text-align:center;text-transform:uppercase;}
+  .live{color:var(--nv);}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <div class="glyph">&gt;_n</div>
+      <div>
+        <h1>NVIDIA · Tiles</h1>
+        <p class="sub">NemoClaw compute surface · sovereign GPU node</p>
+      </div>
+    </div>
+    <div class="addr">_n: → nvidia (NemoClaw) → compute<br/><span class="live" id="ts">live</span></div>
+  </header>
+
+  <div class="tiles">
+    <div class="tile">
+      <h2>GPU <span class="tag">nvidia-smi</span></h2>
+      <p class="d">Live RTX 3050 telemetry — pulled via host bridge on mount + refresh.</p>
+      <div class="row"><span class="k">device</span><span class="v" id="g-name">—</span></div>
+      <div class="row"><span class="k">driver</span><span class="v" id="g-drv">—</span></div>
+      <div class="row"><span class="k">VRAM used / total</span><span class="v" id="g-vram">—</span></div>
+      <div class="bar"><i id="g-vram-bar" style="width:0%"></i></div>
+      <div class="row"><span class="k">utilization</span><span class="v" id="g-util">—</span></div>
+      <div class="row"><span class="k">temp</span><span class="v" id="g-temp">—</span></div>
+      <div class="row"><span class="k">CUDA toolkit</span><span class="v ok">nvcc 13.3 ✓</span></div>
+      <button class="btn" id="btn-refresh" onclick="refreshGpu()">↻ Refresh GPU</button>
+    </div>
+
+    <div class="tile">
+      <h2>Compute Path <span class="tag">stack</span></h2>
+      <p class="d">Build chains available on this node.</p>
+      <div class="row"><span class="k">CUDA kernels</span><span class="v ok">nvcc 13.3</span></div>
+      <div class="row"><span class="k">PyTorch / CuPy</span><span class="v" id="g-torch">probe…</span></div>
+      <div class="row"><span class="k">TensorRT-LLM</span><span class="v warn">server-side</span></div>
+      <div class="row"><span class="k">WebGPU (in-browser)</span><span class="v ok">Qwen3-0.6B</span></div>
+      <div class="row"><span class="k">Flash Attention</span><span class="v ok">pytorch SDPA</span></div>
+      <button class="btn" id="btn-probe" onclick="probeStack()">⚡ Probe Stack</button>
+    </div>
+
+    <div class="tile">
+      <h2>Processes <span class="tag">smi</span></h2>
+      <p class="d">Compute processes currently holding GPU memory.</p>
+      <div id="g-procs" class="row" style="display:block"><span class="k">—</span></div>
+      <button class="btn" onclick="listProcesses()">⊙ List Processes</button>
+    </div>
+
+    <div class="tile">
+      <h2>Bench <span class="tag">matrix</span></h2>
+      <p class="d">Quick compute sanity — GPU vs CPU matmul (establishes local supremacy baseline).</p>
+      <div class="row"><span class="k">CPU matmul</span><span class="v" id="b-cpu">—</span></div>
+      <div class="row"><span class="k">GPU matmul</span><span class="v" id="b-gpu">—</span></div>
+      <div class="row"><span class="k">speedup</span><span class="v nv" id="b-up">—</span></div>
+      <button class="btn" onclick="runBench()">▣ Run Bench</button>
+    </div>
+
+    <div class="tile">
+      <h2>Routes <span class="tag">grammar</span></h2>
+      <p class="d">Operator grammar bindings for this compute surface.</p>
+      <div class="row"><span class="k">&gt;_n:</span><span class="v nv">nvidia → compute</span></div>
+      <div class="row"><span class="k">host cmd</span><span class="v">remoteUse.nvidia</span></div>
+      <div class="row"><span class="k">mesh</span><span class="v">pc://mesh/victus/local</span></div>
+      <button class="btn" onclick="openHost()">⊞ Open Host Surface</button>
+    </div>
+
+    <div class="tile">
+      <h2>Envelope <span class="tag">limits</span></h2>
+      <p class="d">Honest capability boundary of this node.</p>
+      <div class="row"><span class="k">VRAM</span><span class="v warn">6 GB</span></div>
+      <div class="row"><span class="k">FP16 train</span><span class="v ok">small LoRA</span></div>
+      <div class="row"><span class="k">inference</span><span class="v ok">7-13B Q4</span></div>
+      <div class="row"><span class="k">container</span><span class="v no">docker missing</span></div>
+    </div>
+  </div>
+
+  <div class="dock" id="dock"></div>
+  <div class="foot">&gt;_n| NemoClaw surface · <span class="live">truth over marketing</span> · #hermiphicationisinevitable</div>
+</div>
+
+<script>
+const vscode = (function(){ try { return window.acquireVsCodeApi ? window.acquireVsCodeApi() : null; } catch(e){ return null; } })();
+function log(msg, cls){ const d=document.getElementById('dock'); const ln=document.createElement('div'); ln.className='ln '+(cls||''); ln.textContent='> '+msg; d.appendChild(ln); d.scrollTop=d.scrollHeight; }
+document.getElementById('ts').textContent = new Date().toISOString().slice(11,19);
+
+function refreshGpu(){
+  if (vscode){ vscode.postMessage({command:'remoteUse.nvidia', action:'smi'}); log('requesting nvidia-smi via host…','gold'); return; }
+  // browser fallback: hit a local bridge if present
+  fetch('http://127.0.0.1:7890/nvidia').then(r=>r.json()).then(d=>applyGpu(d)).catch(()=>log('no host bridge — run inside VS Code','err'));
+}
+function applyGpu(d){
+  document.getElementById('g-name').textContent = d.name || '—';
+  document.getElementById('g-drv').textContent = d.driver || '—';
+  const used=d.memory_used||0, tot=d.memory_total||0;
+  document.getElementById('g-vram').textContent = (used/1024).toFixed(1)+' / '+(tot/1024).toFixed(1)+' GB';
+  document.getElementById('g-vram-bar').style.width = tot? (used/tot*100).toFixed(1)+'%':'0%';
+  document.getElementById('g-util').textContent = (d.utilization_gpu||0)+' %';
+  document.getElementById('g-temp').textContent = (d.temperature_gpu||0)+' °C';
+  document.getElementById('ts').textContent = new Date().toISOString().slice(11,19)+' live';
+  log('gpu: '+d.name+' · '+((d.utilization_gpu||0))+'% util · '+d.temperature_gpu+'°C','ok');
+}
+function listProcesses(){
+  if (vscode){ vscode.postMessage({command:'remoteUse.nvidia', action:'procs'}); return; }
+  log('process list requires VS Code host','err');
+}
+function probeStack(){
+  const out=document.getElementById('g-torch');
+  try {
+    // best-effort: check if python torch importable via host
+    if (vscode){ vscode.postMessage({command:'remoteUse.nvidia', action:'torch'}); out.textContent='probing…'; return; }
+    out.textContent='host only';
+  } catch(e){ out.textContent='no'; }
+}
+function runBench(){
+  log('CPU matmul N=512…','gold');
+  const N=512, a=Array.from({length:N*N},()=>Math.random()), b=Array.from({length:N*N},()=>Math.random()), c=new Float64Array(N*N);
+  const t0=performance.now();
+  for(let i=0;i<N;i++)for(let j=0;j<N;j++){let s=0;for(let k=0;k<N;k++)s+=a[i*N+k]*b[k*N+j];c[i*N+j]=s;}
+  const cpu=performance.now()-t0;
+  document.getElementById('b-cpu').textContent=(cpu/1000).toFixed(2)+'s';
+  log('CPU done '+((cpu/1000).toFixed(2))+'s — GPU path needs host (CUDA)','ok');
+  document.getElementById('b-gpu').textContent='host-only';
+  document.getElementById('b-up').textContent='—';
+}
+function openHost(){
+  if (vscode){ vscode.postMessage({command:'remoteUse.nvidia', action:'open'}); log('open host nvidia surface','gold'); }
+  else { window.open('vscode://hermes-agent.remoteUse.nvidia','_blank'); }
+}
+// host -> webview messages
+window.addEventListener('message', (e)=>{
+  const m=e.data||{};
+  if (m.command==='remoteUse.nvidia'){
+    if (m.action==='smi' && m.data) applyGpu(m.data);
+    else if (m.action==='procs' && m.data) {
+      const box=document.getElementById('g-procs');
+      box.innerHTML = (m.data.length? m.data.map(p=>'<div class="row"><span class="k">'+p.pid+'</span><span class="v">'+p.name+' · '+(isFinite(p.used_memory)?((p.used_memory/1024).toFixed(0)+'MB'):'n/a')+'</span></div>').join('') : '<span class="k">no compute processes</span>');
+      log('processes: '+(m.data.length||0)+' active','ok');
+    }
+    else if (m.action==='torch' && m.data){ document.getElementById('g-torch').textContent=m.data.torch? ('torch '+m.data.version) : 'not installed'; log('torch probe: '+(m.data.torch?m.data.version:'absent'), m.data.torch?'ok':'warn'); }
+  }
+});
+// auto-refresh on mount
+refreshGpu();
+</script>
+</body>
+</html>

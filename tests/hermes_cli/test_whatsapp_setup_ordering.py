@@ -84,7 +84,8 @@ def test_aborted_setup_does_not_enable_whatsapp(isolated_home, monkeypatch):
     )
 
 
-def test_existing_pairing_skip_branch_enables_whatsapp(isolated_home, monkeypatch):
+@pytest.mark.parametrize("paired", [True, False])
+def test_existing_pairing_skip_branch_enables_only_paired_identity(isolated_home, monkeypatch, paired):
     """User runs ``hermes whatsapp`` with an existing paired session and
     chooses "no, keep my session" at the re-pair prompt.  The env var
     should be (re-)written to true so the gateway picks WhatsApp back up,
@@ -95,7 +96,7 @@ def test_existing_pairing_skip_branch_enables_whatsapp(isolated_home, monkeypatc
     # Pre-create a paired session WITHOUT WHATSAPP_ENABLED in .env.
     session = isolated_home / "whatsapp" / "session"
     session.mkdir(parents=True)
-    (session / "creds.json").write_text("{}")
+    (session / "creds.json").write_text('{"me":{"id":"15551234567:1@s.whatsapp.net"}}' if paired else "{}", encoding="utf-8-sig")
     monkeypatch.setenv("WHATSAPP_MODE", "bot")
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
 
@@ -136,5 +137,5 @@ def test_existing_pairing_skip_branch_enables_whatsapp(isolated_home, monkeypatc
     with redirect_stdout(buf):
         cmd_whatsapp(MagicMock())
 
-    # The skip-rebar branch should have set the env var on its way out.
-    assert _env_value(isolated_home, "WHATSAPP_ENABLED") == "true"
+    # Keeping partial credentials must not enable an unfinished pairing.
+    assert (_env_value(isolated_home, "WHATSAPP_ENABLED") == "true") == paired

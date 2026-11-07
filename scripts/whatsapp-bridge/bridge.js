@@ -30,6 +30,8 @@ import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
+import { createInterface } from 'node:readline/promises';
+import { createBrowserPasskeySigner } from './passkey_browser.js';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
@@ -120,6 +122,12 @@ try {
 } catch {}
 const PAIR_ONLY = args.includes('--pair-only');
 const PAIR_JSON = args.includes('--pair-json');
+const PASSKEY_BROWSER = getArg('passkey-browser', '');
+const passkeySigner = PASSKEY_BROWSER ? createBrowserPasskeySigner(PASSKEY_BROWSER) : undefined;
+if (PASSKEY_BROWSER && (!PAIR_ONLY || PAIR_JSON || !process.stdin.isTTY)) {
+  console.error('--passkey-browser requires interactive --pair-only setup.');
+  process.exit(1);
+}
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
 const WHATSAPP_GROUP_POLICY = String(process.env.WHATSAPP_GROUP_POLICY || 'pairing').trim().toLowerCase();
@@ -402,6 +410,18 @@ function emitPairEvent(event) {
 const scheduleReconnect = createReconnectScheduler(() => startSocket());
 const getWAVersion = createVersionResolver(fetchLatestBaileysVersion);
 
+async function confirmPasskey(socket, code, signal) {
+  if (PAIR_JSON || !process.stdin.isTTY) throw new Error('Passkey confirmation requires an interactive terminal');
+  const terminal = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await terminal.question(`Does the code ${code} match your phone? [y/N] `, { signal });
+    if (answer.trim().toLowerCase() !== 'y') throw new Error('Owner declined passkey confirmation');
+    await socket.confirmPasskeyVerification();
+  } finally {
+    terminal.close();
+  }
+}
+
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
   const version = await getWAVersion();
@@ -409,6 +429,7 @@ async function startSocket() {
   sock = makeWASocket({
     ...(version ? { version } : {}),
     auth: state,
+    signPasskeyAssertion: passkeySigner,
     logger,
     printQRInTerminal: false,
     browser: ['Hermes Agent', 'Chrome', '120.0'],
@@ -425,7 +446,30 @@ async function startSocket() {
 
   sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
 
+  const currentSocket = sock;
+  const passkeyLifetime = new AbortController();
   sock.ev.on('connection.update', (update) => {
+    if (update.connection === 'close') passkeyLifetime.abort();
+    if (update.passkeyRequired) {
+      emitPairEvent({ event: 'passkey_required', interactive: Boolean(passkeySigner) });
+      if (!passkeySigner) {
+        console.error('WhatsApp requires passkey verification. Pair with --passkey-browser and a local Chrome/Edge executable.');
+        process.exit(1);
+      }
+      if (!PAIR_JSON) console.log('Complete passkey verification in the browser window.');
+    }
+    if (update.passkeyError) {
+      emitPairEvent({ event: 'error', error: 'passkey_failed' });
+      console.error('WhatsApp passkey verification failed or was cancelled.');
+      process.exit(1);
+    }
+    if (update.passkeyVerification && !update.passkeyVerification.skipHandoffUX) {
+      confirmPasskey(currentSocket, update.passkeyVerification.code, passkeyLifetime.signal).catch(() => {
+        if (passkeyLifetime.signal.aborted) return;
+        emitPairEvent({ event: 'error', error: 'passkey_confirmation_failed' });
+        process.exit(1);
+      });
+    }
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {

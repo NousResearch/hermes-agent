@@ -6,6 +6,7 @@ a hard-coded 120s, return a 5019 timeout error, and then DROP the host's late
 never reached the gateway session and the desktop never refreshed.
 """
 
+import json
 import queue
 import sys
 import threading
@@ -15,7 +16,7 @@ import types
 import pytest
 
 from tests.waiting import wait_until
-from tui_gateway import server
+from tui_gateway import host_supervisor, server
 from tui_gateway.host_supervisor import HostSupervisor
 
 
@@ -355,3 +356,43 @@ def test_a_crash_answers_waiting_controls_before_the_turn_callbacks_run():
 
     assert seen_by_callback == [[{"type": "control.error", "request_id": seen_by_callback[0][0]["request_id"],
                                   "reason": "crash", "message": "compute host exited with code 1"}]]
+
+
+def test_an_ack_the_host_wrote_before_exiting_still_answers_its_waiter(monkeypatch):
+    """The host can write a control.ack and exit right away (a SIGTERM drain, a crash after the
+    reply), and the stdout drain may read that ack after the exit is seen: its waiter gets the ack,
+    not the crash error. A control sent to a replacement host meanwhile keeps waiting."""
+    sup, _sent = _supervisor()
+    exit_now, cleaned_up = threading.Event(), threading.Event()
+    replies: dict = {}
+
+    def send(request_id):
+        threading.Thread(target=lambda: replies.setdefault(request_id, sup.control(
+            "sid", route_name="session.save", payload={"request_id": request_id}, wait=True, timeout=30))).start()
+        assert wait_until(lambda: request_id in sup._pending_controls, timeout=5)
+
+    def host_stdout():
+        yield json.dumps({"type": "hello", "build_sha": "", "hermes_home": ""}) + "\n"
+        assert wait_until(lambda: sup._proc is None, timeout=5)  # the exit is already seen
+        send("to-replacement")
+        yield json.dumps({"type": "control.ack", "sid": "sid", "request_id": "save-1", "result": {}}) + "\n"
+
+    class _HostThatAckedThenExited:
+        pid, stdin, stdout, stderr = 0, None, host_stdout(), iter(())
+
+        def wait(self):
+            exit_now.wait(timeout=5)
+            return 0
+
+    monkeypatch.setattr(host_supervisor.subprocess, "Popen", lambda *_a, **_k: _HostThatAckedThenExited())
+    sup._persist_registry = sup._remove_registry = lambda: None
+    sup._maybe_respawn_after_crash = cleaned_up.set
+    sup._spawn_locked(reason="test")
+    send("save-1")
+
+    exit_now.set()
+    assert cleaned_up.wait(timeout=10)
+
+    assert wait_until(lambda: "save-1" in replies, timeout=5)
+    assert replies["save-1"]["type"] == "control.ack"
+    assert "to-replacement" not in replies and "to-replacement" in sup._pending_controls

@@ -163,6 +163,7 @@ describe('an addressed member that (pass)ed', () => {
   it('@everyone: a member that answered is not nudged or flagged for passing on a teammate reply later', async () => {
     // Each member answers its first turn, then passes on the other's reply.
     const turns = new Map<string, number>()
+
     const room = await loadRoom({
       turn: ({ profile }) => {
         const count = (turns.get(String(profile)) ?? 0) + 1
@@ -175,7 +176,11 @@ describe('an addressed member that (pass)ed', () => {
     room.rounds.sendToGroupChat('All', MEMBERS, '@everyone status?')
     await settle(room, 'All')
 
-    expect(log(room, 'All').filter(entry => entry.from.kind === 'member').map(entry => entry.text)).toEqual(['research answer', 'builder answer'])
+    expect(
+      log(room, 'All')
+        .filter(entry => entry.from.kind === 'member')
+        .map(entry => entry.text)
+    ).toEqual(['research answer', 'builder answer'])
     expect(room.gateway.calls.every(call => !call.prompt.includes('explicitly addressed'))).toBe(true)
     expect(room.activity.currentGroupActivity('All').filter(event => event.kind === 'failed')).toEqual([])
   })
@@ -210,10 +215,21 @@ describe('an addressed member that (pass)ed', () => {
 
     const entries = log(room, 'Follow').map(entry => `${entry.from.kind}:${entry.text}`)
 
-    expect(entries).toEqual(['user:@builder first thing?', 'user:@builder and the second thing?', 'member:first answer'])
-    expect(room.gateway.calls.filter(call => call.profile === 'builder').some(call => call.prompt.includes('explicitly addressed'))).toBe(true)
+    expect(entries).toEqual([
+      'user:@builder first thing?',
+      'user:@builder and the second thing?',
+      'member:first answer'
+    ])
+    expect(
+      room.gateway.calls
+        .filter(call => call.profile === 'builder')
+        .some(call => call.prompt.includes('explicitly addressed'))
+    ).toBe(true)
     expect(room.activity.currentGroupActivity('Follow').filter(event => event.kind === 'failed')).toEqual([
-      expect.objectContaining({ member: room.membership.groupMemberKey(MEMBERS[1]), reason: 'explicitly addressed member passed twice' })
+      expect.objectContaining({
+        member: room.membership.groupMemberKey(MEMBERS[1]),
+        reason: 'explicitly addressed member passed twice'
+      })
     ])
   })
 })

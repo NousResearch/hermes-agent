@@ -31,17 +31,21 @@ class FakeWorkletNode {
 function setup() {
   let resolve!: () => void
   let reject!: (error: Error) => void
+
   const loading = new Promise<void>((done, fail) => {
     resolve = done
     reject = fail
   })
+
   const context = Object.assign(new EventTarget(), {
     audioWorklet: { addModule: () => loading },
     destination: {},
     currentTime: 12.5,
     state: 'running'
   }) as unknown as AudioContext
+
   const connections = new Set<FakeWorkletNode>()
+
   const source = {
     connect: (node: FakeWorkletNode) => connections.add(node),
     disconnect: (node: FakeWorkletNode) => connections.delete(node)

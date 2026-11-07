@@ -16,6 +16,7 @@ import threading
 import time
 import urllib.parse
 from datetime import datetime, timezone, UTC
+from functools import cache
 from pathlib import Path
 from collections.abc import Collection
 from typing import Any, Optional
@@ -163,7 +164,7 @@ def _require_platform(platform_id: str) -> dict[str, Any]:
 
 def _platform_enablement(
     platform_id: str, entry: dict[str, Any], env_on_disk: dict[str, str], scoped: bool,
-    source_keys: Collection[str] = (),
+    source_keys: Collection[str] = (), *, config_loader,
 ) -> tuple[bool, bool, dict | None]:
     """(enabled, configured, home_channel). Profile-scoped: the profile's config.yaml, .env and
     enabled secret sources only, never ``load_gateway_config()`` (see ``builtin_platform_status``)."""
@@ -172,7 +173,7 @@ def _platform_enablement(
         # ``source_keys``: names the profile's enabled secret sources resolved (1Password, Bitwarden, a plugin).
         configured = bool(required) and all(env_on_disk.get(key) or key in source_keys for key in required)
         try:
-            config = load_config()
+            config = config_loader()
             plat_cfg = (config.get("platforms") or {}).get(platform_id)
             plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}
             hc = plat_cfg.get("home_channel")
@@ -189,9 +190,9 @@ def _platform_enablement(
             enabled, home_channel = False, None
         return enabled, configured, home_channel
     try:
-        from gateway.config import Platform, load_gateway_config
+        from gateway.config import Platform
 
-        gateway_config = load_gateway_config()
+        gateway_config = config_loader()
         platform = Platform(platform_id)
         platform_config = gateway_config.platforms.get(platform)
         enabled = bool(platform_config and platform_config.enabled)
@@ -203,7 +204,7 @@ def _platform_enablement(
     return enabled, configured, home_channel
 
 
-def _relay_disabled_platform_ids(scoped: bool) -> frozenset[str]:
+def _relay_disabled_platform_ids(scoped: bool, config_loader) -> frozenset[str]:
     """Platforms the GATEWAY_RELAY_URL relay-exclusive rule switches off at gateway load
     (#141175), read from the same load_gateway_config() the unscoped enablement arm uses, so the
     page can say "Team Gateway" instead of a bare "Disabled" that reverts every restart.
@@ -211,9 +212,7 @@ def _relay_disabled_platform_ids(scoped: bool) -> frozenset[str]:
     if scoped:
         return frozenset()
     try:
-        from gateway.config import load_gateway_config
-
-        platforms = load_gateway_config().platforms
+        platforms = config_loader().platforms
         return frozenset(p.value for p, cfg in platforms.items() if cfg.disabled_by_relay)
     except Exception:  # health: allow BLE001 -- advisory label; an unreadable config keeps the plain state
         _log.debug("relay-disabled platform lookup failed", exc_info=True)
@@ -224,6 +223,7 @@ def _messaging_platform_payload(
     entry: dict[str, Any], env_on_disk: dict[str, str], runtime: dict | None,
     scoped: bool = False, profile_home: Optional[Path] = None, source_keys: Collection[str] = (),
     relay_disabled: frozenset[str] = frozenset(), relay_view: tuple[frozenset[str], bool] = (frozenset(), False),
+    *, config_loader,
 ) -> dict[str, Any]:
     platform_id = entry["id"]
     rt = runtime if isinstance(runtime, dict) else {}
@@ -263,7 +263,8 @@ def _messaging_platform_payload(
             "value": value if info["is_list"] else None, **info,
         })
 
-    enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped, source_keys)
+    enabled, configured, home_channel = _platform_enablement(
+        platform_id, entry, env_on_disk, scoped, source_keys, config_loader=config_loader)
     if gateway_running and runtime_platform.get("mirrored_from") and platform_id in _LISTENER_MIRRORS:
         # Served secondary: the default's shared listener already answers this platform at
         # /p/<profile>/... (enabling it locally 409s), so the secondary's own empty config
@@ -333,11 +334,24 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     scoped = scoped_dir is not None
     source_values = get_secret_source_values(scoped_dir) if scoped else {}
     source_keys = frozenset(key for key, value in source_values.items() if str(value).strip())
-    relay_disabled = _relay_disabled_platform_ids(scoped)
+
+    @cache
+    def request_config():
+        # One load per request (failures too), never shared across requests or profiles.
+        try:
+            if scoped:
+                return load_config()
+            from gateway.config import load_gateway_config
+
+            return load_gateway_config()
+        except Exception:  # health: allow BLE001 -- an unreadable config must not break the list; rows fall back to env state
+            return None  # retried next request
+
+    relay_disabled = _relay_disabled_platform_ids(scoped, request_config)
     relay_view = _relay_channel_view(own_home)
     return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped, profile_home=scoped_dir,
                                         source_keys=source_keys, relay_disabled=relay_disabled,
-                                        relay_view=relay_view)
+                                        relay_view=relay_view, config_loader=request_config)
             for entry in entries]
 
 

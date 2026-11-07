@@ -271,3 +271,82 @@ def test_resume_snapshot_carries_the_resident_agents_own_readouts():
         stored = snapshot_usage(authority, ref, agent)
         assert stored['cache_hit_pct'] == 80 and stored['calls'] == 3 and 'avg_tps' not in stored
     assert snapshot_usage(authority, SimpleNamespace(session_id='gone'), None) is None
+
+
+def test_tui_usage_reports_a_known_window_before_anything_is_counted():
+    """A model switch sizes the window before a prompt lands in it (``compressor.update_model`` zeroes
+    the old occupancy): the status bar gets the window alone. The occupancy is unknown, not a measured
+    ``0``, so it is omitted and the bar paints ``—`` -- a fabricated zero reads as an empty window."""
+    from gateway.session_usage import tui_usage
+    usage = tui_usage({'model': 'switched', 'last_prompt_tokens': 0, 'context_tokens': 0,
+                       'context_length': 200_000, 'context_source': 'provider_usage',
+                       'compression_count': 0})
+    assert usage['context_max'] == 200_000
+    for key in ('context_used', 'context_percent', 'context_estimated', 'context_source'):
+        assert key not in usage, key
+    assert usage['compressions'] == 0
+    # No window: still nothing (no fabricated max), as before.
+    assert 'context_max' not in tui_usage({'last_prompt_tokens': 900, 'context_length': 0})
+
+
+def _switch_authority(published, row):
+    return SimpleNamespace(
+        sessions={'s': SimpleNamespace(event_stream=SimpleNamespace(
+            publish=lambda sid, payload, *, event_type: published.append((sid, payload, event_type))))},
+        db=SimpleNamespace(get_session=lambda sid: row if sid == 's' else None))
+
+
+def _local():
+    return SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL))
+
+
+def test_a_committed_model_switch_republishes_the_status_bar_on_the_new_window():
+    """The canonical gateway has no live agent to read after a switch (the pick evicted it): the
+    committed window rides a ``session.usage`` frame, with the stored counters beside it because the
+    classic CLI / ACP replace their whole view from the top level (a context-only frame blanks them)."""
+    from gateway.session_usage import publish_switch_usage
+    from tui_gateway.contracts.registry import EVENTS
+    published = []
+    authority = _switch_authority(published, {'input_tokens': 150, 'output_tokens': 40,
+                                              'cache_read_tokens': 800, 'cache_write_tokens': 50,
+                                              'api_call_count': 3, 'model': 'switched'})
+    publish_switch_usage(authority, 's', _local(), 200_000)
+    sid, frame, event_type = published[-1]
+    assert (sid, event_type) == ('s', 'session.usage')
+    EVENTS['session.usage'].payload.model_validate(frame)
+    usage = frame['usage']
+    assert usage['context_max'] == 200_000
+    for key in ('context_used', 'context_percent', 'context_estimated'):
+        assert key not in usage, key
+    assert (usage['calls'], usage['model']) == (3, 'switched')
+    assert (frame['api_calls'], frame['input_tokens'], frame['prompt_tokens']) == (3, 150, 1000)
+    # The tick's own window: `usageFromTick` reads the top-level counters, not the nested block.
+    assert (frame['context_length'], frame['last_prompt_tokens']) == (200_000, 0)
+
+
+def test_a_switch_to_a_route_with_no_reported_window_clears_the_stale_readout():
+    """Every viewer merges shallowly (``mergeUsageStable`` / ``mergeUsage``): a frame that states no
+    window must clear the context block explicitly (an omitted field would keep the previous model's)."""
+    from gateway.session_usage import publish_switch_usage
+    from tui_gateway.contracts.registry import EVENTS
+    published = []
+    authority = _switch_authority(published, {'input_tokens': 150, 'api_call_count': 3, 'model': 'm'})
+    publish_switch_usage(authority, 's', _local(), None)
+    frame = published[-1][1]
+    EVENTS['session.usage'].payload.model_validate(frame)
+    usage = frame['usage']
+    assert 'context_max' not in usage and 'context_source' not in usage
+    assert frame['api_calls'] == 3  # the counters survive: the switch counted nothing away
+    # `usageFromTick` clears on an explicit null window; an omitted field would keep the old one.
+    assert frame['context_length'] is None and frame['last_prompt_tokens'] == 0
+
+
+def test_a_platform_chat_switch_publishes_no_usage_frame():
+    """A platform chat has no status bar: its figures ride the turn's own replies, so the switch
+    publishes nothing to its stream (the local projection owns this frame)."""
+    from gateway.session_usage import publish_switch_usage
+    published = []
+    authority = _switch_authority(published, {'api_call_count': 3, 'model': 'm'})
+    publish_switch_usage(authority, 's', SimpleNamespace(source=SimpleNamespace(
+        platform=Platform.TELEGRAM)), 200_000)
+    assert published == []

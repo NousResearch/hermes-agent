@@ -107,6 +107,7 @@ export function useContextBreakdown({ busy, enabled, requestGateway, sessionId }
 
     const listener = (id: string, next: number) => {
       if (id === sessionId) {
+        setFetched(null)
         setGeneration(current => (current === next ? current : next))
       }
     }

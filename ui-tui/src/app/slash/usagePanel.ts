@@ -35,12 +35,14 @@ export function usageTotalsSections(r: UsageTotals): PanelSection[] {
 
   if (r.context_max) {
     const mark = r.context_estimated ? '~' : ''
+    // A window with no occupancy reading (a switch adopts the new window before anything is counted
+    // in it) reads `—`, not a fabricated `0`: `gateway/session_usage.py::tui_usage` omits them.
     sections.push({
       text: t(
         'slashCmd.session.usage.context',
-        `${mark}${f(r.context_used)}`,
+        r.context_used == null ? '—' : `${mark}${f(r.context_used)}`,
         f(r.context_max),
-        `${mark}${r.context_percent}`
+        r.context_percent == null ? '—' : `${mark}${r.context_percent}`
       )
     })
   }

@@ -393,6 +393,46 @@ async def test_a_level_picked_with_the_model_survives_a_profile_edit_and_a_resum
 
 
 @pytest.mark.asyncio
+async def test_a_committed_pick_publishes_the_new_window_before_the_next_turn(home, endpoints):
+    """The pick evicts the cached agent, so the ``session.info`` that follows cannot size the new
+    model's window (the mirror still holds the old route's figures): the committed window must ride
+    its own ``session.usage`` frame, or a 1M -> 500k switch shows 1M until a turn prices a prompt in
+    the new model. Nothing has been counted in the new window, so no occupancy reading is published."""
+    (_, url), _ = endpoints
+
+    def pin(model, window):
+        (home / 'config.yaml').write_text(json.dumps({'model': {
+            'provider': 'custom', 'default': model, 'base_url': url, 'api_key': 'key-a',
+            'context_length': window}}), encoding='utf-8')
+
+    pin('original', 1_000_000)
+    store, runner, authority, owner = _owner(home)
+    _bind_resolver(runner)
+    frames = []
+    try:
+        live = await _create(owner, authority, home, 'follow')
+        sid = next(sid for sid, value in authority.sessions.items() if value is live)
+        live.event_stream.observers.add(frames.append)
+        pin('picked', 500_000)
+        response = await _pick(owner, authority, sid, {'model': 'picked', 'provider': 'custom'})
+        assert 'result' in response, response
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+    usage = [frame['params']['payload'] for frame in frames if frame['params']['type'] == 'session.usage']
+    assert usage, [frame['params']['type'] for frame in frames]
+    payload = usage[-1]
+    # The window the rebuilt agent will adopt, on the frame the status bar ticks from — and stated
+    # at the top level too (``usageFromTick`` reads the counters there).
+    assert payload['usage']['context_max'] == 500_000
+    assert payload['context_length'] == 500_000
+    assert payload['context_reset'] is True
+    for key in ('context_used', 'context_percent', 'context_estimated', 'context_source'):
+        assert key not in payload['usage'], key
+    assert payload['last_prompt_tokens'] == 0
+
+
+@pytest.mark.asyncio
 async def test_a_model_committed_on_a_frozen_bot_chat_holds_when_an_open_adopts_it(home, endpoints):
     """A ``/model`` the user committed while the Bot Chat was frozen is the session's pick: the open that
     adopts the chat keeps it (like a composer pick) until the profile itself moves."""

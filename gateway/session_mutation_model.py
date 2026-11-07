@@ -153,6 +153,30 @@ async def prepare_model(authority, live, payload, prepared):
     return dict(prepared, policy=asdict(policy))
 
 
+async def committed_context_length(authority, live) -> int | None:
+    """The window the committed model switch adopts, resolved the way the next agent build resolves it.
+
+    A pick changes the route, so the old window must not be read off anything the session still holds:
+    the compressor is gone with the evicted agent. Resolution runs off-loop (catalog + custom-provider
+    metadata) and mirrors ``prepare_model``'s own resolution inputs, so the published figure cannot
+    disagree with the window the rebuilt agent will use. ``None`` = this route reports no window.
+    """
+    from gateway.session_policy import policy_for_source
+    from hermes_cli.config import get_compatible_custom_providers
+    from hermes_cli.model_switch import resolve_display_context_length_async
+    policy = policy_for_source(authority.runner, live.source)
+    if policy is None:  # not a local viewer, or a history mount: nothing to project
+        return None
+    config, route = await asyncio.to_thread(_current_route, authority, live, policy)
+    block = config.get('model') or {}
+    return await resolve_display_context_length_async(
+        route.model, route.provider, base_url=route.base_url, api_key=route.api_key or "",
+        custom_providers=get_compatible_custom_providers(config),
+        config_context_length=block.get('context_length'),
+        configured_model=block.get('default') or block.get('model'),
+        configured_provider=block.get('provider'), configured_base_url=block.get('base_url'))
+
+
 def is_model_reset(payload):
     """``/model reset`` as a ``model`` mutation; with any other selection field it is refused, as on
     every surface (``parse_model_switch_args``)."""

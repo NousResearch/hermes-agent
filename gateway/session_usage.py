@@ -137,13 +137,17 @@ def tui_usage(stats: dict) -> dict:
              "completion": stats.get("completion_tokens") or 0, "total": stats.get("total_tokens") or 0,
              "calls": stats.get("api_calls") or 0}
     used, maximum = stats.get("last_prompt_tokens") or 0, stats.get("context_length") or 0
-    if used and maximum:
-        # ``agent/context_breakdown.py::context_usage_fields``: current occupancy, clamped.
-        used = min(used, maximum)
-        source = stats.get("context_source") or "provider_usage"
-        usage.update(context_used=used, context_max=maximum,
-                     context_percent=max(0, min(100, round(used / maximum * 100))),
-                     context_source=source, context_estimated=source != "provider_usage")
+    if maximum:
+        # ``agent/context_breakdown.py::context_usage_fields``: the window is reported even before
+        # anything is counted in it (a model switch adopts the new window and zeroes occupancy);
+        # occupancy figures stay absent until there is a reading, never substituted.
+        usage["context_max"] = maximum
+        if used:
+            used = min(used, maximum)
+            source = stats.get("context_source") or "provider_usage"
+            usage.update(context_used=used,
+                         context_percent=max(0, min(100, round(used / maximum * 100))),
+                         context_source=source, context_estimated=source != "provider_usage")
     if stats.get("context_source") is not None:  # a compressor, sized or not (``_get_usage``'s ``if comp``)
         usage["compressions"] = stats.get("compression_count") or 0
     prompt_total, cache_read = stats.get("prompt_tokens") or 0, stats.get("cache_read_tokens") or 0
@@ -200,6 +204,34 @@ def publish_usage(turn, agent, *, record: bool = False) -> None:
             captured = execution_result.get()
             if captured is not None:
                 captured["session_usage"] = stats
+
+
+def publish_switch_usage(authority, session_id: str, live, context_length: int | None) -> None:
+    """A committed model switch: put the new window on the status bar now, not at the next turn.
+
+    The pick evicts the cached agent (``session_local.publish_local_policy``), so the ``session.info``
+    that follows reads a mirror that cannot size the new model's window: without this frame the
+    previous model's window (1M) and occupancy would stand until a prompt is priced in the new one
+    (500k). Occupancy stays absent -- ``update_model`` zeroed the old model's reading and nothing has
+    been counted in the new window yet -- so ``tui_usage`` never turns "unknown" into ``0``. A ``None``
+    window is carried as an explicit ``context_length`` null for the same reason: every viewer merges
+    shallowly, and an omitted field would keep the window of the model the session just left.
+
+    *session_id* is the committed receipt's session (a live session carries its route and source, not
+    its id); *live* only answers whether this session has a local viewer to paint.
+    """
+    from gateway.config import Platform
+    sid = session_id or None
+    # A local viewer's projection only: platform chats get their figures with the turn's own replies.
+    if not sid or getattr(getattr(live, "source", None), "platform", None) != Platform.LOCAL:
+        return
+    with contextlib.suppress(Exception):  # an informational frame never fails a committed switch
+        maximum = max(0, int(context_length or 0))
+        stats = _stored_stats(authority.db.get_session(sid) or {})
+        stats.update(last_prompt_tokens=0, context_length=maximum or None)
+        frame = usage_frame(stats)
+        frame["context_reset"] = True
+        authority.sessions[sid].event_stream.publish(sid, frame, event_type="session.usage")
 
 
 _STORED_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")

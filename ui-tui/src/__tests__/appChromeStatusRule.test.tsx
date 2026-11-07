@@ -119,6 +119,24 @@ describe('StatusRule model label', () => {
   })
 })
 
+describe('StatusRule context readout', () => {
+  it('shows an occupancy the owner has not measured as `—`, not as a zero', () => {
+    // A committed model switch adopts the new window before anything is counted in it: the tick
+    // carries `context_max` alone (`gateway/session_usage.py::tui_usage`), so a fabricated `0`
+    // would read as an empty window instead of an unknown count.
+    const unknown = { calls: 1, context_max: 200_000, input: 0, output: 0, total: 50_000 }
+    const wide = textContent(StatusRule({ ...baseProps, statusBarFields: null, usage: unknown }))
+
+    expect(wide).toContain('—/200k')
+    expect(wide).not.toContain('0/200k')
+
+    // Narrow terminals drop the `/window` tail; the unknown side stays unknown.
+    const narrow = textContent(StatusRule({ ...baseProps, cols: 44, statusBarFields: null, usage: unknown }))
+
+    expect(narrow).not.toContain('0 tok')
+  })
+})
+
 describe('StatusRule session title', () => {
   it('marks only estimated context occupancy at every visible width', () => {
     for (const cols of [80, 120, 200]) {

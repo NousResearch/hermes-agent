@@ -7,7 +7,6 @@ import sqlite3
 import time
 from typing import Sequence
 
-from hermes_constants import get_hermes_home
 from hermes_state_common import FTS_SQL, FTS_STALE_KEY, FTS_TRIGRAM_SQL, _FTS_TRIGGERS
 from hermes_state_errors import is_fts_scoped_corruption_error, is_sqlite_lock_error
 
@@ -163,36 +162,41 @@ def _drop_orphan_fts_shadow_tables(cursor: sqlite3.Cursor, families: Sequence[st
     return repaired
 
 
+_RETIRED_CJK_TRIGGERS = ("messages_fts_cjk_insert", "messages_fts_cjk_delete", "messages_fts_cjk_update")
+_RETIRED_CJK_OBJECTS = (*_RETIRED_CJK_TRIGGERS, "messages_fts_cjk_src", "messages_fts_cjk",
+                        *(f"messages_fts_cjk_{suffix}" for suffix in _FTS5_SHADOW_SUFFIXES))
+
+
+def retired_cjk_index_present(cursor: sqlite3.Cursor) -> bool:
+    """True when an object of the ``messages_fts_cjk`` index an earlier release built is still in the schema."""
+    return cursor.execute(
+        f"SELECT 1 FROM sqlite_master WHERE name IN ({','.join('?' for _ in _RETIRED_CJK_OBJECTS)}) LIMIT 1",
+        _RETIRED_CJK_OBJECTS,
+    ).fetchone() is not None
+
+
 def drop_retired_cjk_index(cursor: sqlite3.Cursor) -> bool:
     """Remove the ``messages_fts_cjk`` index an earlier release built with the loadable cjk_unicode61
-    tokenizer, and its markers. Idempotent; True when anything was dropped."""
-    if not cursor.execute(
-        "SELECT 1 FROM sqlite_master WHERE name LIKE 'messages\\_fts\\_cjk%' ESCAPE '\\' LIMIT 1"
-    ).fetchone():
+    tokenizer, and its markers. The shadow tables are renamed into the FTS trash, which
+    ``optimize_fts_storage`` empties in chunks. Idempotent; True when anything was removed. Logs nothing:
+    the repair probe runs it inside a transaction it rolls back."""
+    if not retired_cjk_index_present(cursor):
         return False
     # Triggers first: they call the tokenizer, so while they exist every outside write to messages fails.
-    for trigger in ("messages_fts_cjk_insert", "messages_fts_cjk_delete", "messages_fts_cjk_update"):
+    for trigger in _RETIRED_CJK_TRIGGERS:
         cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
     cursor.execute("DROP VIEW IF EXISTS messages_fts_cjk_src")
-    # Before the table: a crash after this still leaves an object for the next open to find.
     cursor.execute(
         "DELETE FROM state_meta WHERE key IN ('fts_cjk_stale', 'fts_cjk_rebuild_high_water', 'fts_cjk_rebuild_progress')"
     )
-    try:
-        cursor.execute("DROP TABLE IF EXISTS messages_fts_cjk")
-    except sqlite3.OperationalError as exc:
-        # SQLite < 3.47 must construct the vtable to drop it, which needs the tokenizer.
-        if not any(m in str(exc).lower() for m in ("no such tokenizer", "no such module")):
-            raise
-        cursor.execute("PRAGMA writable_schema=ON")
-        cursor.execute("DELETE FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts_cjk'")
-        cursor.execute("PRAGMA writable_schema=RESET")
-        for suffix in _FTS5_SHADOW_SUFFIXES:
-            cursor.execute(f"DROP TABLE IF EXISTS messages_fts_cjk_{suffix}")
-    logger.warning(
-        "Dropped the retired messages_fts_cjk index; CJK search now uses the trigram index. "
-        "%s is no longer loaded and can be deleted.", get_hermes_home() / "lib" / "libfts5_cjk.so",
-    )
+    # DROP TABLE needs the tokenizer before SQLite 3.47 and deletes every page under the write lock.
+    cursor.execute("PRAGMA writable_schema=ON")
+    cursor.execute("DELETE FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts_cjk'")
+    cursor.execute("PRAGMA writable_schema=RESET")
+    for suffix in _FTS5_SHADOW_SUFFIXES:
+        shadow = f"messages_fts_cjk_{suffix}"
+        if cursor.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (shadow,)).fetchone():
+            cursor.execute(f"ALTER TABLE {shadow} RENAME TO {SessionFtsSetupMixin._FTS_TRASH_PREFIX}{shadow}")
     return True
 
 

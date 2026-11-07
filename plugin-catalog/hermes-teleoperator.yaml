@@ -1,0 +1,38 @@
+name: hermes-teleoperator
+title: Hermes Teleoperator
+repo: https://github.com/Tsurgcom/hermes-teleoperator
+sha: 81f227b0f6b5f077176d43d49991f8e5526f1bb3
+version: 1.1.2
+description: >-
+  Keep one conversation on the gateway while switching shell, files, skills and
+  explicitly permitted MCP tools between machines over SSH. The standalone Rust
+  receiver needs no Hermes or language runtime. Commands have the destination
+  SSH user's full OS authority; this is not a sandbox.
+maintainer: Tsurgcom
+tier: community
+category: tools
+requires_hermes: ">=0.21.3"
+docs_url: https://github.com/Tsurgcom/hermes-teleoperator/blob/81f227b0f6b5f077176d43d49991f8e5526f1bb3/README.md
+image: https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/81f227b0f6b5f077176d43d49991f8e5526f1bb3/assets/marketplace-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/81f227b0f6b5f077176d43d49991f8e5526f1bb3/assets/architecture.svg
+  - https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/81f227b0f6b5f077176d43d49991f8e5526f1bb3/assets/switching.svg
+readme: true
+platforms:
+  - linux
+known_issues:
+  - "Windows is unsupported. Linux is the only catalog-claimed platform; macOS binaries exist but are not execution-tested in CI."
+  - "Gateway and receiver versions must match exactly. SSH keys and verified known-host entries must already be configured."
+  - "Receiver runs with the SSH user's authority, not native Hermes approval guards. Browser, memory, cron and delegation do not migrate."
+  - "Remote MCP is explicit-allowlist stdio only; sampling, elicitation and interactive callbacks are rejected. Small-file transfers are limited to 8 MiB."
+  - "Receiver setup is explicit, downloads release binaries and verifies SHA256SUMS from the same GitHub release; checksums are not independent publisher signatures. SSH key authorization remains a manual administrator action."
+  - "The pinned README's old marketplace-on-hold sentence refers to the superseded v0.1.0 submission, not this v1.1.2 entry."
+capabilities:
+  provides_tools:
+    - teleoperator
+  provides_hooks:
+    - pre_llm_call
+    - on_session_end
+  provides_middleware:
+    - tool_execution
+  requires_env: []

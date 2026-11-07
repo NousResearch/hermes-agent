@@ -1,0 +1,276 @@
+"""Tests for the content-free computer-use telemetry seam."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+from agent import relay_runtime
+from hermes_cli.observability.shared_metrics_contract import computer_use_phase_fields
+from hermes_cli.observability import relay_shared_metrics
+from tools.computer_use import tool as computer_use_tool
+from tools.computer_use.backend import ActionResult
+from tools.computer_use.runtime_metrics import ComputerUseTelemetry
+
+
+def test_computer_use_phase_fields_are_bounded_and_content_free() -> None:
+    fields = computer_use_phase_fields(
+        {
+            "action": "type",
+            "phase": "input",
+            "outcome": "success",
+            "backend_kind": "cua",
+            "backend_cache_hit": "hit",
+            "backend_rebound": "rebound",
+            "capture_mode": "vision",
+            "target_changed": True,
+            "element_count": 101,
+            "image_bytes": 64 * 1024,
+            "aux_vision_used": False,
+            "prompt": "private prompt",
+            "session_id": "private session",
+        }
+    )
+
+    assert fields == {
+        "action": "type",
+        "phase": "input",
+        "outcome": "success",
+        "backend_kind": "cua",
+        "backend_cache_hit": "hit",
+        "backend_rebound": "rebound",
+        "capture_mode": "vision",
+        "target_state": "changed",
+        "element_count_bucket": "gte_11",
+        "image_size_bucket": "64kb_to_256kb",
+        "aux_vision": "not_used",
+    }
+    assert "private" not in str(fields)
+
+
+def test_computer_use_phase_fields_keep_backend_rebind_phase() -> None:
+    assert computer_use_phase_fields({"phase": "backend_rebind"})["phase"] == "backend_rebind"
+
+
+def test_computer_use_phase_fields_reject_unbounded_values() -> None:
+    fields = computer_use_phase_fields(
+        {
+            "action": "run arbitrary command",
+            "phase": "private phase",
+            "outcome": "private outcome",
+            "backend_kind": "private backend",
+            "capture_mode": "private mode",
+            "target_changed": "yes",
+            "element_count": -1,
+            "image_bytes": -1,
+            "aux_vision_used": None,
+        }
+    )
+
+    assert fields == {
+        "action": "unknown",
+        "phase": "unknown",
+        "outcome": "unknown",
+        "backend_kind": "unknown",
+        "backend_cache_hit": "unknown",
+        "backend_rebound": "unknown",
+        "capture_mode": "unknown",
+        "target_state": "unknown",
+        "element_count_bucket": "unknown",
+        "image_size_bucket": "unknown",
+        "aux_vision": "unknown",
+    }
+
+
+def test_computer_use_telemetry_closes_total_and_phase_spans() -> None:
+    class _Runtime:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, object, object]] = []
+
+        def start_computer_use_phase(self, event):
+            handle = len(self.events)
+            self.events.append(("start", handle, event))
+            return handle
+
+        def finish_computer_use_phase(self, phase, event) -> None:
+            self.events.append(("finish", phase, event))
+
+    runtime = _Runtime()
+    telemetry = ComputerUseTelemetry("capture", session_id="session", task_id="task")
+    telemetry._runtime = runtime
+
+    with telemetry:
+        telemetry.set_backend(SimpleNamespace(), cache_hit=True, rebound=False)
+        telemetry.mark_backend_rebound()
+        telemetry.set_backend(SimpleNamespace(), cache_hit=False, rebound=False)
+        telemetry.observe_capture(
+            SimpleNamespace(
+                mode="som",
+                elements=[1, 2],
+                png_bytes_len=128,
+                app="private app",
+                window_title="private title",
+            )
+        )
+        with telemetry.phase("capture"):
+            telemetry.set_aux_vision(True)
+
+    assert [event[0] for event in runtime.events] == ["start", "start", "finish", "finish"]
+    assert runtime.events[1][2]["phase"] == "capture"
+    assert runtime.events[1][2]["backend_cache_hit"] == "miss"
+    assert runtime.events[1][2]["backend_rebound"] == "rebound"
+    assert runtime.events[2][2]["outcome"] == "success"
+    assert runtime.events[3][2]["phase"] == "total"
+
+
+def test_computer_use_action_emits_operation_phases(monkeypatch) -> None:
+    class _Runtime:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, object, object]] = []
+
+        def start_computer_use_phase(self, event):
+            handle = len(self.events)
+            self.events.append(("start", handle, event))
+            return handle
+
+        def finish_computer_use_phase(self, phase, event) -> None:
+            self.events.append(("finish", phase, event))
+
+    class _Backend(computer_use_tool._NoopBackend):
+        def wait(self, seconds: float) -> ActionResult:
+            return ActionResult(ok=True, action="wait", message=f"waited {seconds:.2f}s")
+
+    runtime = _Runtime()
+    monkeypatch.setattr(relay_runtime, "relay_instrumentation_enabled", lambda: True)
+    monkeypatch.setattr(relay_shared_metrics, "get_computer_use_runtime", lambda: runtime)
+    computer_use_tool.reset_backend_for_tests()
+    monkeypatch.setattr(computer_use_tool, "_new_backend", lambda permission_mode: _Backend())
+    try:
+        result = computer_use_tool.handle_computer_use(
+            {"action": "wait", "seconds": 0}, session_id="session", task_id="task"
+        )
+    finally:
+        computer_use_tool.reset_backend_for_tests()
+
+    assert result.startswith('{"ok": true')
+    started = [event[2] for event in runtime.events if event[0] == "start"]
+    assert {event["phase"] for event in started} >= {
+        "total", "admission", "backend_resolve", "backend_start", "dispatch_lock_wait", "backend_call"
+    }
+    opened = {event[1] for event in runtime.events if event[0] == "start"}
+    closed = {event[1] for event in runtime.events if event[0] == "finish"}
+    assert closed == opened
+    finished = [event[2] for event in runtime.events if event[0] == "finish"]
+    assert finished[-1]["phase"] == "total"
+    assert finished[-1]["outcome"] == "success"
+
+
+def test_computer_use_observer_respects_profile_opt_in_and_fails_open(tmp_path, monkeypatch):
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    opted_in, disabled = tmp_path / "a", tmp_path / "b"
+    for home, enabled in ((opted_in, True), (disabled, False)):
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            f"telemetry:\n  shared_metrics:\n    enabled: {str(enabled).lower()}\n", encoding="utf-8"
+        )
+
+    seen = []
+
+    class FailingRuntime:
+        def start_computer_use_phase(self, event):
+            raise RuntimeError("observer unavailable")
+
+    def runtime():
+        seen.append(get_hermes_home())
+        return FailingRuntime()
+
+    monkeypatch.setattr(relay_runtime, "relay_instrumentation_enabled", lambda: True)
+    monkeypatch.setattr(relay_shared_metrics, "_get_runtime", runtime)
+    for home in (opted_in, disabled, opted_in):
+        token = set_hermes_home_override(str(home))
+        try:
+            with ComputerUseTelemetry("wait", session_id="same-session", task_id="same-task") as telemetry:
+                with telemetry.phase("backend_call"):
+                    result = {"ok": True}
+                telemetry.set_result(result)
+            assert result == {"ok": True}
+        finally:
+            reset_hermes_home_override(token)
+    assert seen == [opted_in, opted_in]
+
+
+@pytest.mark.parametrize("failure_stage", ["create", "start"])
+def test_backend_admission_failure_preserves_response_and_unavailable_outcome(monkeypatch, failure_stage):
+    import json
+
+    import tools.computer_use_tool  # noqa: F401 — register the real dispatch handler
+    from tools.registry import registry
+
+    class Runtime:
+        def __init__(self):
+            self.opened = []
+            self.closed = []
+
+        def start_computer_use_phase(self, event):
+            handle = len(self.opened)
+            self.opened.append(handle)
+            return handle
+
+        def finish_computer_use_phase(self, handle, event):
+            self.closed.append((handle, event))
+
+    class Backend(computer_use_tool._NoopBackend):
+        def start(self):
+            raise RuntimeError("driver unavailable")
+
+    def new_backend(permission_mode):
+        if failure_stage == "create":
+            raise RuntimeError("driver unavailable")
+        return Backend()
+
+    runtime = Runtime()
+    monkeypatch.setattr(relay_runtime, "relay_instrumentation_enabled", lambda: True)
+    monkeypatch.setattr(relay_shared_metrics, "get_computer_use_runtime", lambda: runtime)
+    monkeypatch.setattr(computer_use_tool, "_new_backend", new_backend)
+    computer_use_tool.reset_backend_for_tests()
+    try:
+        result = json.loads(registry.dispatch(
+            "computer_use", {"action": "wait", "seconds": 0}, session_id="session", task_id="task"
+        ))
+    finally:
+        computer_use_tool.reset_backend_for_tests()
+
+    assert result["error"] == "computer_use backend unavailable: driver unavailable"
+    assert "hermes computer-use install" in result["hint"]
+    assert {handle for handle, _ in runtime.closed} == set(runtime.opened)
+    assert runtime.closed[-1][1]["phase"] == "total"
+    assert runtime.closed[-1][1]["outcome"] == "unavailable"
+
+
+def test_failed_followup_capture_keeps_successful_action_result():
+    class Backend:
+        def capture(self, **kwargs):
+            raise RuntimeError("capture unavailable")
+
+    class Runtime:
+        def __init__(self):
+            self.closed = []
+
+        def start_computer_use_phase(self, event):
+            return event["phase"]
+
+        def finish_computer_use_phase(self, handle, event):
+            self.closed.append((handle, event["outcome"]))
+
+    import json
+
+    runtime = Runtime()
+    telemetry = ComputerUseTelemetry("click", session_id="s", task_id="t")
+    telemetry._runtime = runtime
+    with telemetry:
+        result = computer_use_tool._maybe_follow_capture(Backend(), ActionResult(ok=True, action="click"), True)
+        telemetry.set_result(result)
+    assert json.loads(result)["ok"] is True
+    assert runtime.closed == [("capture", "failed"), ("total", "success")]

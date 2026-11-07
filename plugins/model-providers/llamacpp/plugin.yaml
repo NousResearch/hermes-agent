@@ -1,0 +1,5 @@
+name: llamacpp-provider
+kind: model-provider
+version: 0.1.0
+description: llama.cpp / llama-swap local inference provider
+author: TacoTakumi

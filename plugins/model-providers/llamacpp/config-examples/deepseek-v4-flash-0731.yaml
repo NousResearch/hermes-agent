@@ -1,0 +1,38 @@
+# Example: DeepSeek V4 Flash 0731 served by llama-swap.
+#
+# Copy this content into a fresh ~/.hermes/config.yaml and adjust the
+# api URL. The model id must match your llama-swap config entry (here:
+# deepseek-v4-flash-0731-iq3s).
+#
+# Validated live against a llama-swap deployment serving
+# deepseek-v4-flash-0731-iq3s (llama.cpp build b10285). Its chat template consults reasoning_effort
+# in a form the probe cannot verify membership for, so a configured
+# effort is omitted from the wire rather than risking a template error.
+# The enable_thinking toggle is honored, which is what this example
+# demonstrates. DeepSeek-named models are also part of Hermes's existing
+# reasoning_content echo family (matched by model substring), so
+# replayed assistant messages keep their reasoning for prompt-cache
+# reuse with no extra config.
+#
+# What reaches the wire with this config (observable in request bodies):
+# - chat_template_kwargs: {"rig_example_note": "dsv4-example",
+#   "enable_thinking": false} - the per-model "none" override turns
+#   thinking off as a JSON boolean. Remove the override to let the
+#   model think.
+
+model:
+  default: deepseek-v4-flash-0731-iq3s
+  provider: llamacpp
+
+providers:
+  llamacpp:
+    api: http://192.168.1.10:8080/v1   # adjust to your endpoint
+    models:
+      deepseek-v4-flash-0731-iq3s:
+        chat_template_kwargs:
+          rig_example_note: dsv4-example
+
+agent:
+  reasoning_effort: medium               # session-wide default
+  reasoning_overrides:
+    deepseek-v4-flash-0731-iq3s: none    # thinking off for this model

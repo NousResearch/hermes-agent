@@ -128,6 +128,22 @@ def test_limit_hit_keeps_drained_matches_when_group_kill_is_refused(tree, ops_fa
     assert not result.error and len(result.matches) == 2, result.to_dict()
 
 
+def test_limit_hit_keeps_drained_output_when_rg_exits_before_the_kill(tree, ops_factory, monkeypatch):
+    """rg can exit between ``poll()`` and the kill helper's ``getpgid`` (macOS answers ESRCH
+    for an unreaped zombie). Nothing is left to kill; the search must keep what it drained
+    instead of failing with ``[Errno 3] No such process``. The child is still alive at the
+    bound, so the kill branch runs every time."""
+    import os
+    import time
+
+    ops = ops_factory(tree, [])
+    monkeypatch.setattr(os, "getpgid", lambda pid: (_ for _ in ()).throw(ProcessLookupError(3, "No such process")))
+    started = time.monotonic()
+    result = ops._run_rg_native(["sh", "-c", "'echo a; echo b; echo c; exec sleep 30'"], 2, timeout=10)
+    assert result.exit_code == 0 and result.stdout.split() == ["a", "b"], result
+    assert time.monotonic() - started < 5
+
+
 def test_local_search_runs_the_pinned_ripgrep_not_the_first_on_path(_local_env, tmp_path, monkeypatch):
     """The terminal PATH puts the user's tools first; Hermes's own search still runs PM's rg."""
     import pm

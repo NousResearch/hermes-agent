@@ -725,19 +725,24 @@ _TEMPERATURE_400 = "Unsupported parameter: 'temperature' is not supported with t
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
 @pytest.mark.parametrize("third,answer", [(200, "ok"), (400, "fallback")], ids=["refreshed-request-answers",
                                                                                   "rejected-again-falls-back"])
-def test_a_parameter_repair_survives_a_credential_refresh(is_async, third, answer):
-    """temperature 400 -> the repaired request 401s -> refresh: the rebuilt request still omits temperature. If the
-    provider rejects it anyway, that is a parameter-named 400 after a spent rung: model incompatible, fall back."""
-    sent, statuses = [], iter([400, 401, third])
+@pytest.mark.parametrize("second", [401, 402], ids=["refresh", "rotation"])
+def test_a_parameter_repair_survives_a_credential_refresh(is_async, third, answer, second):
+    """temperature 400 -> the repaired request 401s (refresh) or 402s (pool rotation): the rebuilt request still
+    omits temperature. If the provider rejects it anyway, that is a parameter-named 400 after a spent rung: model
+    incompatible, fall back."""
+    sent, statuses = [], iter([400, second, third])
     ok = {"id": "x", "object": "chat.completion", "created": 0, "model": "fast-1", "choices": [
         {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]}
 
     def handle(request):
         sent.append(json.loads(request.content))
         status = next(statuses)
-        message = {400: _TEMPERATURE_400, 401: "invalid api key"}.get(status)
+        message = {400: _TEMPERATURE_400, 401: "invalid api key", 402: "Insufficient credits"}.get(status)
         return httpx.Response(status, json={"error": {"message": message}} if message else ok, request=request)
 
     client = _wire(handle, key="sk-0", is_async=is_async)
-    assert _routed_call([client] * 2, provider="openrouter", is_async=is_async, temperature=0.3) == answer
+    pool = CredentialPool("openrouter", [Key("openrouter", f"k{i}", f"k{i}", "api_key", i, "manual", f"sk-{i}")
+                                         for i in range(2)])
+    assert _routed_call([client] * 2, provider="openrouter", is_async=is_async, temperature=0.3,
+                        pool=pool) == answer
     assert len(sent) == 3 and ["temperature" in body for body in sent] == [True, False, False]

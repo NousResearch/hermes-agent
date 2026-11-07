@@ -22,6 +22,9 @@ _RESULTS_BUDGET_BYTES = 384 * 1024
 
 
 class HostedRoomAuthorityRPC:
+    fenced_interrupts = True
+    requires_interrupt_generation = True
+    interrupt_ack_is_delivery = True
     accepts_attachments = True  # submit resolves event-bound bytes per member
 
     def __init__(self, authority, loop, *, room_id, member_id, profile, principal,
@@ -117,9 +120,17 @@ class HostedRoomAuthorityRPC:
         await self.authority.resolve(self.principal, self.ref)
         return {'session_id': self.ref.session_id, 'title': f'Group: {self.room_id}'}
 
-    def _rows(self):
-        self.authority.authorize(self.principal, self.ref, 'session:read')
-        rows = list_session_admissions(self.authority.db, session_id=self.ref.session_id, pending_only=False)
+    def _rows(self, conn=None, *, task_id=None):
+        if conn is None:
+            self.authority.authorize(self.principal, self.ref, 'session:read')
+            rows = list_session_admissions(self.authority.db, session_id=self.ref.session_id, pending_only=False)
+        else:
+            # Match the JSON string token, independent of object order/spacing and owner stamp.
+            # Fetch no prompt payloads and decode only candidate attempts while holding the writer.
+            rows = conn.execute(
+                "SELECT admission_id, request_id, principal_id, status, outcome FROM session_admissions "
+                "WHERE target_session_id=? AND instr(request_id, ?) > 0 ORDER BY seq",
+                (self.ref.session_id, json.dumps(task_id))).fetchall()
         result = []
         for row in rows:
             if not same_owner(row['principal_id'], self.principal.subject) or not row['request_id'].startswith('hosted:'):
@@ -134,7 +145,40 @@ class HostedRoomAuthorityRPC:
             result.append((row, identity, generation))
         return result
 
-    def _terminal(self, row, task, generation, *, notify=True):
+    def _closed_attempt_key(self, task_id, generation):
+        return 'gateway.hosted.closed_attempt.v1:' + json.dumps(
+            [self.ref.session_id, task_id, generation], separators=(',', ':'))
+
+    async def _lookup_attempt(self, params):
+        """Find this attempt, or durably close its unused key before reporting absence.
+
+        Like peer Discard's find-or-close, the absence and fence share the admission
+        writer transaction: a submit already attested on another daemon cannot land later.
+        """
+        task_id, generation = params['expected_task_id'], params['execution_generation']
+        if not isinstance(task_id, str) or not task_id or type(generation) is not int or generation < 1:
+            raise RuntimeStoreError('invalid_params')
+        self.authority.authorize(self.principal, self.ref, 'session:read')
+        from gateway.session_runtime_workers import tracked_write
+        from hermes_state_runtime import _epoch, _session
+        def find_or_close(conn):
+            _epoch(conn, self.authority.epoch)
+            _session(conn, self.ref.session_id)  # retirement may follow the earlier authorization
+            match = next(((row, task, gen) for row, task, gen in self._rows(conn, task_id=task_id)
+                          if task.task_id == task_id and gen == generation), None)
+            if match is None:
+                conn.execute('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)',
+                             (self._closed_attempt_key(task_id, generation), 'closed'))
+            return match
+        match = await tracked_write(self.authority, partial(self.authority.db._execute_write, find_or_close))
+        if match is None:
+            return {'status': 'absent'}
+        row, task, generation = match
+        if row['status'] == 'terminal':
+            return {'status': 'terminal', 'receipt': self._terminal(row, task, generation, bounded=True, notify=False)}
+        return {'status': 'running' if row['status'] == 'started' else row['status']}
+
+    def _terminal(self, row, task, generation, *, notify=True, bounded=False):
         from gateway.session_results import admission_result
         saved = admission_result(self.authority.db, row['admission_id'])
         # Unknown discard and queued cancellation never ran: no result exists to recover.
@@ -148,6 +192,11 @@ class HostedRoomAuthorityRPC:
         callback = self.callbacks.pop(row['admission_id'], None)
         if callback is not None and notify:
             callback(receipt)
+        if bounded:
+            from tui_gateway.hosted_room_driver import MAX_TERMINAL_TEXT_BYTES
+            raw = receipt['text'].encode('utf-8')
+            if len(raw) > MAX_TERMINAL_TEXT_BYTES:
+                receipt['text'] = raw[:MAX_TERMINAL_TEXT_BYTES + 4].decode('utf-8', 'ignore')
         return receipt
 
     async def _submit(self, params):
@@ -165,11 +214,15 @@ class HostedRoomAuthorityRPC:
         with capture_lease():
             payload = await asyncio.to_thread(prepare_before_submit, partial(
                 submission_payload, self, params['prompt'], params.get('attachments')))
-            authorize_write = self.authorize_write
+            def authorize_write(conn):
+                if conn.execute('SELECT 1 FROM state_meta WHERE key=?',
+                                (self._closed_attempt_key(task.task_id, generation),)).fetchone():
+                    raise RuntimeStoreError('stale_generation')
+                if self.authorize_write is not None:
+                    self.authorize_write(conn, task, generation)
             receipt = await self.authority.submit(self.principal, Submission(
                 request_id, self.ref, payload, 'queue'),
-                _authorize_write=(lambda conn: authorize_write(conn, task, generation))
-                if authorize_write is not None else None)
+                _authorize_write=authorize_write)
         self.callbacks[receipt.admission_id] = params['on_terminal']
         if receipt.status in {'queued', 'started'}:
             waiter = self.authority.waiters.get(receipt.admission_id)
@@ -223,15 +276,11 @@ class HostedRoomAuthorityRPC:
         if wanted is not None and (not isinstance(wanted, list) or len(wanted) > 256
                                    or not all(isinstance(i, str) and i for i in wanted)):
             raise RuntimeStoreError('invalid_params')
-        from tui_gateway.hosted_room_driver import MAX_TERMINAL_TEXT_BYTES
         receipts, used = [], 0
         for row, task, generation in reversed(self._rows()):
             if row['status'] != 'terminal' or (wanted is not None and row['admission_id'] not in wanted):
                 continue
-            receipt = self._terminal(row, task, generation)
-            raw = receipt['text'].encode('utf-8')
-            if len(raw) > MAX_TERMINAL_TEXT_BYTES:
-                receipt['text'] = raw[:MAX_TERMINAL_TEXT_BYTES + 4].decode('utf-8', 'ignore')
+            receipt = self._terminal(row, task, generation, bounded=True)
             used += len(json.dumps(receipt))
             if receipts and used > _RESULTS_BUDGET_BYTES:
                 break
@@ -244,7 +293,8 @@ class HostedRoomAuthorityRPC:
             if row['status'] == 'terminal':
                 self._terminal(row, task, generation)
         current = next(((row, task, generation) for row, task, generation in rows if row['status'] in {'started', 'unknown', 'queued'}), None)
-        result = {'active': current is not None and current[0]['status'] != 'unknown',
+        result = {'lookup_attempt': True, 'interrupt_execution_generation': True,
+                  'active': current is not None and current[0]['status'] != 'unknown',
                   'task_id': current[1].task_id if current else None,
                   'execution_generation': current[2] if current else None,
                   'status': current[0]['status'] if current else 'idle'}
@@ -263,10 +313,15 @@ class HostedRoomAuthorityRPC:
 
     async def _interrupt(self, params):
         rows = self._rows()
-        current = next(((row, task) for row, task, _ in rows if row['status'] in {'started', 'unknown', 'queued'}), None)
-        if current is None or current[1].task_id != params['expected_task_id']:
+        current = next(((row, task, generation) for row, task, generation in rows
+                        if row['status'] in {'started', 'unknown', 'queued'}), None)
+        expected = params.get('execution_generation')
+        if expected is not None and (type(expected) is not int or expected < 1):
+            raise RuntimeStoreError('invalid_params')
+        if (current is None or current[1].task_id != params['expected_task_id']
+                or expected not in (None, current[2])):
             raise RuntimeStoreError('stale_generation')
-        row, _ = current
+        row, _, _ = current
         if row['status'] == 'unknown':
             raise RuntimeStoreError('unknown_execution')
         if row['status'] == 'queued':
@@ -339,8 +394,13 @@ class HostedRoomAuthorityRPC:
     def info(self, *, profile, session_id, source):
         return self._call('info', profile=profile, session_id=session_id, source=source)
 
-    def interrupt(self, *, profile, session_id, source, expected_task_id):
-        return self._call('interrupt', profile=profile, session_id=session_id, source=source, expected_task_id=expected_task_id)
+    def lookup_attempt(self, *, profile, session_id, source, expected_task_id, execution_generation):
+        return self._call('lookup_attempt', profile=profile, session_id=session_id, source=source,
+                          expected_task_id=expected_task_id, execution_generation=execution_generation)
+
+    def interrupt(self, *, profile, session_id, source, expected_task_id, execution_generation=None):
+        return self._call('interrupt', profile=profile, session_id=session_id, source=source,
+                          expected_task_id=expected_task_id, execution_generation=execution_generation)
 
     def discard(self, *, profile, session_id, source, expected_task_id, execution_generation):
         return self._call('discard', profile=profile, session_id=session_id, source=source,

@@ -111,6 +111,51 @@ async def test_a_named_launch_stays_standalone_across_the_reload(tmp_path, monke
     assert [(d.enabled, d.source) for d in decisions] == [(True, "default"), (False, "guard")]  # no re-decision
 
 
+@pytest.mark.asyncio
+async def test_a_default_launch_keeps_its_reserved_homes_across_the_reload(tmp_path, monkeypatch):
+    """The multiplexing half of the reload: the boot reserved default + foo, and the reloaded config
+    keeps that reservation instead of rescanning profiles the process never reserved."""
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "foo").mkdir(parents=True)
+    (root / "config.yaml").write_text("model: {default: m}\n")
+    (root / "profiles" / "foo" / "config.yaml").write_text("model: {default: m}\n")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    import hermes_constants
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+    seen = {}
+
+    class Runner(gateway_run.GatewayRunner):
+        def __init__(self, config):
+            seen["multiplex"] = config.multiplex_profiles
+            seen["reserved"] = [name for name, _home in getattr(config, "_runtime_profile_homes", None) or ()]
+            raise SystemExit(0)
+
+    from agent.secret_scope import set_multiplex_active
+    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", False)
+    monkeypatch.setattr("agent.secret_scope._AUTO_PINNED_HOME", None)
+    monkeypatch.setattr("hermes_cli.left_core_migration.recover_at_startup",
+                        lambda *, say=None, gateway_start=False: ["yuanbao"])
+    monkeypatch.setattr("gateway.run._host_attach_or_none", lambda replace, force: _none())
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **kw: None)
+    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
+    monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
+    monkeypatch.setattr("gateway.run._write_runtime_status_quiet", lambda **kw: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", Runner)
+
+    try:
+        with pytest.raises(SystemExit):
+            await gateway_run.start_gateway(replace=False, verbosity=None)
+    finally:
+        set_multiplex_active(False)
+
+    assert seen == {"multiplex": True, "reserved": ["default", "foo"]}
+
+
 async def _none():
     return None
 

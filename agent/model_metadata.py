@@ -1173,7 +1173,14 @@ def save_context_length(model: str, base_url: str, length: int, *, source: str =
 
 
 def save_provider_context_length(model: str, base_url: str, length: int, provider: str = "") -> None:
-    """Persist a provider-confirmed window, distinguishing it from legacy Bedrock fallbacks."""
+    """Persist a provider-confirmed window, distinguishing it from legacy Bedrock fallbacks.
+
+    A sub-minimum figure is never persisted: agent init rejects it, so a cached row (often a
+    misread output cap) would fail every later session until hand-deleted."""
+    if length < MINIMUM_CONTEXT_LENGTH:
+        logger.warning("Not caching provider context length %s@%s -> %s tokens (below the %s minimum)",
+                       model, base_url, f"{length:,}", f"{MINIMUM_CONTEXT_LENGTH:,}")
+        return
     if _is_bedrock_context(base_url, provider):
         save_context_length(model, base_url or "bedrock://", length, source="bedrock-confirmed-v1")
     else:

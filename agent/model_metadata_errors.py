@@ -9,10 +9,14 @@ from typing import Optional
 def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     """Context limit quoted in a provider error ("maximum context length is 32768 tokens"), if any.
 
-    A message about only an OUTPUT cap ("... model output limit of 16384") never says "context";
-    bail out so the generic "limit ... of N" pattern can't cache the output cap as the window."""
+    A message about only an OUTPUT cap ("... model output limit of 16384", "max_tokens exceeds the
+    limit of 4096") never says "context"; bail out so the generic "limit ... of N" pattern can't
+    cache the output cap as the window. vLLM's max_model_len IS the window, so it still parses."""
     error_lower = error_msg.lower()
-    if ("output limit" in error_lower or "output tokens" in error_lower or "output token" in error_lower) and "context" not in error_lower:
+    output_subject = any(p in error_lower for p in (
+        "output limit", "output token", "max_tokens", "max_completion_tokens", "max_output_tokens"))
+    window_named = any(p in error_lower for p in ("context", "max_model_len", "maximum model length"))
+    if output_subject and not window_named:
         return None
     patterns = (
         r'max_model_len\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM: "max_model_len 32768", "=32768", ": 32768", "(32768)", "is 32768"

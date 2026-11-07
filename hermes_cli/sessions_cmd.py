@@ -1200,6 +1200,7 @@ def _cmd_repair_prompts(db, args):
     """
     findings = []
     unverifiable = []
+    snapshots = {}
     target = getattr(args, "session_id", None)
     if target:
         session_id = db.resolve_session_id(target)
@@ -1208,6 +1209,7 @@ def _cmd_repair_prompts(db, args):
             return 1
         row = db.get_session(session_id)
         if row and row.get("system_prompt"):
+            snapshots[row["id"]] = (row["system_prompt"], row.get("tool_names"))
             findings.append({
                 "id": row["id"], "reason": "targeted clear", "prompt_chars": len(row["system_prompt"]),
             })
@@ -1233,6 +1235,7 @@ def _cmd_repair_prompts(db, args):
                 pin = _repair_prompts_pin_names(row)
                 entry = {"id": row["id"], "prompt_chars": len(row["system_prompt"])}
                 if "skill_manage" in (pin or ()):
+                    snapshots[row["id"]] = (row["system_prompt"], row.get("tool_names"))
                     findings.append({
                         **entry,
                         "reason": "skill_manage guidance missing while the tools[] pin carries skill_manage",
@@ -1252,6 +1255,7 @@ def _cmd_repair_prompts(db, args):
 
     apply = bool(getattr(args, "apply", False))
     as_json = bool(getattr(args, "json", False))
+    skipped = []
 
     def _payload(cleared):
         return {
@@ -1259,6 +1263,7 @@ def _cmd_repair_prompts(db, args):
             "unverifiable": unverifiable,
             "apply": apply,
             "cleared": cleared,
+            "skipped": skipped,
         }
 
     if not findings:
@@ -1294,12 +1299,19 @@ def _cmd_repair_prompts(db, args):
 
     cleared = []
     for finding in findings:
-        db.update_system_prompt(finding["id"], None)
-        cleared.append(finding["id"])
+        prompt, pin = snapshots[finding["id"]]
+        if db.clear_system_prompt_if_unchanged(
+            finding["id"], expected_prompt=prompt, expected_tool_names=pin,
+        ):
+            cleared.append(finding["id"])
+        else:
+            skipped.append({"id": finding["id"], "reason": "prompt or tools changed since scan"})
 
     if as_json:
         print(json.dumps(_payload(cleared), indent=2))
     else:
+        for row in skipped:
+            print(f"Skipped {row['id']}: {row['reason']}.")
         print(f"\nCleared {len(cleared)} stored prompt(s); the next turn for each rebuilds and persists "
               "a healthy prompt.")
         print("One 'Stored system prompt ... is null' warning per repaired session is expected on that rebuild.")

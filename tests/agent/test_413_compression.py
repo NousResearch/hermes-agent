@@ -432,10 +432,12 @@ class TestHTTP413Compression:
         assert result["completed"] is True
         assert len(request_payloads) == 2
         assert len(request_payloads[1]["messages"]) < len(request_payloads[0]["messages"])
-        assert request_payloads[1]["messages"][0] == {
-            "role": "system",
-            "content": "compressed prompt",
-        }
+        # The compressed prompt is the byte-stable cached prefix; the per-turn
+        # wall-clock stamp rides on the request-only ephemeral tail after it.
+        sys_msg = request_payloads[1]["messages"][0]
+        assert sys_msg["role"] == "system"
+        assert sys_msg["content"].startswith("compressed prompt")
+        assert "Current time: " in sys_msg["content"]  # stamp appended after base
         assert request_payloads[1]["messages"][1] == {
             "role": "user",
             "content": "compressed summary",

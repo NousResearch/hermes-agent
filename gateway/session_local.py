@@ -495,6 +495,9 @@ def local_session_info(authority, ref):
         info['launch_request'] = json.loads(policy.request_json)
         from gateway.session_coding_workspace import workspace_binding
         info['coding_workspace'] = workspace_binding(policy)
+        from gateway.session_client import policy_client
+        if (client := policy_client(policy)) is not None:  # only a client that named itself
+            info['client'] = client
         from agent.session_client_env import NOT_LOCAL_WARNING
         # Session-start notices main's TUI already renders as ``config_warning``.
         notices = (project_plugins_warning(policy), NOT_LOCAL_WARNING if policy.client_env_remote else None)
@@ -506,8 +509,10 @@ def local_session_info(authority, ref):
 
 def _classic_cli_fields(authority, ref, live, agent, policy):
     """What main's HermesCLI read off itself for /status, the status bar and the exit summary: the
-    stored title and times, the session's yolo, api_mode, the loaded tool count and a masked
-    credential hint (never the key). Lazy sessions report what is known without building an agent."""
+    stored title, archived flag, and times, the session's yolo, api_mode, the loaded tool count and a
+    masked credential hint (never the key). Lazy sessions report what is known without building an
+    agent. ``archived`` is a JSON boolean (``bool(row.get("archived"))``), never SQLite ``1``:
+    Desktop's hidden Bot Chat probe uses ``archived === true``."""
     import contextlib
     stored_id = ref.session_id
     with contextlib.suppress(Exception):
@@ -532,5 +537,6 @@ def _classic_cli_fields(authority, ref, live, agent, policy):
     started = row.get('started_at')
     return {'title': row.get('title'), 'started_at': started,
             'last_active_at': row.get('last_activity_at') or started, 'yolo': yolo,
+            'archived': bool(row.get('archived')),
             'api_mode': api_mode or None, 'tool_count': len(tools) if isinstance(tools, list) else None,
             'credential_hint': hint}

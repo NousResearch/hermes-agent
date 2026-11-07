@@ -128,8 +128,6 @@ def _pin_tool(args) -> int:
     lockfile.set_pin(args.name, args.version, artifacts)
     lockfile.save()
     print(f"pinned {args.name} {args.version} ({len(artifacts)} targets)")
-    if args.name == "pnpm":
-        _sync_pnpm_dev_engines(lockfile)
     return _regenerate_bootstrap_pins(lockfile)
 
 
@@ -657,28 +655,6 @@ def _sync_venv_step() -> bool:
     return True
 
 
-def _sync_pnpm_dev_engines(lockfile) -> None:
-    """Carry the pnpm pin into root package.json's devEngines.
-
-    scripts/build/node-deps.mjs refuses any pnpm but the devEngines one, so a
-    pnpm re-pin that left it behind would break every install. A lock outside a
-    checkout (a test fixture) has no manifest.
-    """
-    import json
-
-    manifest_path = lockfile.path.parent.parent / "package.json"
-    version = lockfile.version("pnpm")
-    if not version or not manifest_path.is_file():
-        return
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    pin = manifest.get("devEngines", {}).get("packageManager", {})
-    if pin.get("name") != "pnpm" or pin.get("version") == version:
-        return
-    pin["version"] = version
-    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(f"✓ package.json devEngines pnpm → {version}")
-
-
 def _regenerate_bootstrap_pins(lockfile) -> int:
     """Splice the new uv and Windows git pins into this checkout's installers.
 
@@ -720,8 +696,6 @@ def _apply_pins(changed: list, lockfile) -> int:
         print(f"✓ {d.name} pinned {d.locked or '—'} → {d.version}")
     if pinned:
         lockfile.save()
-        if "pnpm" in pinned:
-            _sync_pnpm_dev_engines(lockfile)
         fragments = _regenerate_bootstrap_pins(lockfile)
         rc = 1 if _install_names(pinned) or not _sync_venv_step() or fragments else 0
     else:
@@ -752,6 +726,7 @@ def _refresh_uv_lock() -> int:
 
 
 def _refresh_pnpm_lock() -> int:
+    from pm import pnpm_release_age
     from pm.install import env_for, installed_package
     from pm.packages import pnpm_env
 
@@ -762,15 +737,22 @@ def _refresh_pnpm_lock() -> int:
     # Every workspace and the root, within the declared ranges: --no-save keeps the manifests'
     # specifiers as written, and the release-age policy applies to every new pick.
     command = [str(pnpm.binary), "update", "--recursive", "--lockfile-only", "--no-save"]
-    code, tail = _run_live(command, cwd=str(repo_root()), env=pnpm_env(env_for("pnpm")))
+    env = pnpm_env(env_for("pnpm"))
+    code, tail = _run_live(command, cwd=str(repo_root()), env=env)
     if code != 0:
         print(f"✗ pnpm update failed:\n{tail}")
-        # --no-save turns the "only too-young versions match" case into the
-        # REQUIRES_SAVE error: pnpm would otherwise write the exclude itself.
-        if "ERR_PNPM_NO_MATURE_MATCHING_VERSION" in tail or "ERR_PNPM_STRICT_MIN_RELEASE_AGE_REQUIRES_SAVE" in tail:
-            print("  a range's only matches are newer than minimumReleaseAge (pnpm-workspace.yaml): "
-                  "wait for them to age, or add the package to minimumReleaseAgeExclude")
+        # --no-save turns "only too-young versions match" into an error that names no package.
+        if pnpm_release_age.is_release_age_failure(tail):
+            picks = pnpm_release_age.immature_picks(str(pnpm.binary), repo_root(), env)
+            print(pnpm_release_age.exclude_hint(picks))
         return 1
+    # pnpm's minimumReleaseAgeExcludePrune would fire on every install, user builds included, and
+    # rewrite the tracked pnpm-workspace.yaml there; the excludes the new lock no longer holds leave
+    # here instead, in the same commit as the lock change.
+    root = repo_root()
+    dropped = pnpm_release_age.prune_excludes(root / "pnpm-workspace.yaml", root / "pnpm-lock.yaml")
+    if dropped:
+        print(f"  dropped from minimumReleaseAgeExclude (no longer locked): {', '.join(dropped)}")
     print("✓ pnpm-lock.yaml refreshed")
     return 0
 

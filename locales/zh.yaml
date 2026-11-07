@@ -974,9 +974,6 @@ platform:
     approved: "✅ 已批准。"
     denied: "❌ 已拒绝。"
     approval_expired: "⌛ 审批已过期——命令未执行（已超时或已在别处处理）。"
-  yuanbao:
-    slow_response_notice: "任务有点复杂，正在努力处理中，请耐心等待..."
-    owner_command_denied: "⚠️ {command} 仅在私聊模式下对创建者可用"
   shared:
     truncated_suffix: "\n...（已截断）"
     unknown: "未知"
@@ -1710,10 +1707,10 @@ slash:
     description: "退出 CLI（加 --delete 可同时删除会话历史）"
 cli:
   backtrack:
-    title: "↺ 回溯 — 选择之前的提示"
-    keys_hint: "↑/↓ 选择 · Enter 编辑并重新发送 · f 从此处分叉 · Esc 关闭"
-    preview_label: "提示 {number} / {total}:"
-    more_lines: "…(还有 {count} 行)"
+    title: "↺ 对话记录 — 选择要编辑的提示"
+    keys_hint: "浏览对话记录 · ↑↓/jk 滚动 · ←→/hl 提示 · ↵ 编辑 · f 分叉 · esc 返回"
+    prime_hint: "再按一次 esc 编辑上一条消息"
+    no_previous: "没有可编辑的上一条消息。"
     editing_hint: "↺ 正在编辑提示 {number} — Enter 回溯到此处并发送 · Esc Esc 取消"
     edit_cancelled: "↺ 已取消回溯;未删除任何内容。"
     rewound: "↺ 已回溯到提示 {number}(已归档 {count} 条消息);正在发送编辑内容。"

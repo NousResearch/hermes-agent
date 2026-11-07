@@ -45,7 +45,6 @@ def _runner(store, adapter):
     runner._running_agents_ts = {}
     runner._busy_ack_ts = {}
     runner._pending_approvals = {}
-    runner._update_prompt_pending = {}
     runner._agent_cache_lock = None
     runner.session_store = store
     runner._session_db = AsyncSessionDB(store._db)

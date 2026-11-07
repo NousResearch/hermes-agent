@@ -794,6 +794,15 @@ BEGIN
     -- cache keys on (conversation_revision). Whoever wrote the row, old builds included.
     UPDATE sessions SET transcript_revision = transcript_revision + 1 WHERE id = new.session_id;
 END;
+DROP TRIGGER IF EXISTS messages_display_revision_update;
+CREATE TRIGGER IF NOT EXISTS messages_display_revision_update
+AFTER UPDATE OF codex_reasoning_items, codex_message_items, display_kind, display_metadata ON messages
+BEGIN
+    -- A reaction, a display rewrite or checkpoint pruning: a transcript poller's cursor
+    -- (transcript_cursor_state) keys on these too. Its own name, so an older build's open, which
+    -- recreates the trigger above with that build's column list, leaves this one in place.
+    UPDATE sessions SET transcript_revision = transcript_revision + 1 WHERE id = new.session_id;
+END;
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_display_page
@@ -1126,12 +1135,6 @@ BEGIN
                   WHERE id = new.session_id AND {FTS_TRIGRAM_SESSION_SQL});
 END;
 """
-
-_FTS_CJK_TRIGGERS = ("messages_fts_cjk_insert", "messages_fts_cjk_delete", "messages_fts_cjk_update")
-
-# Set when a tokenizer-less process dropped the cjk triggers to keep writes alive: the cjk index is missing rows
-# and must not serve reads until `hermes sessions optimize-storage` rebuilds it on a capable host.
-FTS_CJK_STALE_KEY = "fts_cjk_stale"
 
 # Set when a base/trigram FTS index was detached after runtime corruption; startup must rebuild the complete
 # index before reinstalling sync triggers (rows written while they were absent leave an unknown gap).

@@ -414,7 +414,10 @@ _PS_EXE_AT_COMMAND_POSITION = (
 )
 
 DANGEROUS_PATTERNS = [
-    (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
+    # A bare root operand is destructive even without recursive flags. Do not
+    # treat every absolute operand as root: recursive deletion has dedicated
+    # rules below, while single-file /tmp cleanup is safe in unattended runs.
+    (r'\brm\s+(?:-[^\s]*\s+)*/(?=\s|$|[;&|])', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
     # GNU rm permutes options, so flags may FOLLOW operands (`rm build/ -rf`). The operand run

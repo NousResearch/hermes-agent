@@ -88,7 +88,7 @@ async def export_session(connection, ref, params):
     """``session.export``: the ``/save`` transcript rendered for the CLIENT to write (json/md/html,
     optional force-redaction). Nothing is written on the gateway host, so a remote Desktop and a
     local Ink both save to the user's own disk (T10/T11)."""
-    _live_ref(connection, ref, params, {'session_id', 'profile', 'format', 'redact'}, 'session:read')
+    _live_ref(connection, ref, params, {'session_id', 'profile', 'format', 'redact', 'transcript_options'}, 'session:read')
     fmt, redact = params.get('format', 'json'), params.get('redact', False)
     if not isinstance(fmt, str) or not isinstance(redact, bool):
         raise RuntimeStoreError('invalid_params')
@@ -97,25 +97,66 @@ async def export_session(connection, ref, params):
         fmt = normalize_save_format(fmt)
     except ValueError:
         raise RuntimeStoreError('invalid_params') from None
+    if 'transcript_options' in params:
+        from hermes_cli.session_transcript import validate_options
+        try:
+            validate_options(params['transcript_options'])
+            if fmt != 'json':
+                raise ValueError('transcripts require json')
+        except ValueError:
+            raise RuntimeStoreError('invalid_params') from None
     authority = connection.authority
-    from gateway.session_ancillary import physical_target
-    target = physical_target(authority, ref)
+    if 'transcript_options' in params:
+        from gateway.session_local_recovery import transcript_target
+        target = transcript_target(authority, ref)
+    else:
+        from gateway.session_ancillary import physical_target
+        target = physical_target(authority, ref)
 
     def render():
         from hermes_cli.session_export import load_save_snapshot, render_session_for_save
         from hermes_state import SessionExportTooLargeError
         try:
-            data = load_save_snapshot(authority.db, target, fmt)
+            data = load_save_snapshot(authority.db, target, 'md' if 'transcript_options' in params else fmt)
+            if data and 'transcript_options' in params:
+                data['messages'] = authority.db.get_messages(target, include_compacted=True, include_ancestors=True)
         except SessionExportTooLargeError as exc:
             raise RuntimeStoreError('export_too_large') from exc
         if not data:
             raise RuntimeStoreError('not_found')
+        if 'transcript_options' in params:
+            from hermes_cli.session_transcript import project_transcript, TranscriptTooLargeError
+            home = _profile_home(authority) if getattr(authority, 'profile_id', None) else None
+            roots = []
+            session = getattr(authority, 'sessions', {}).get(ref.session_id)
+            if session is not None and home is not None:
+                from gateway.session_policy import policy_for_source
+                policy = policy_for_source(authority.runner, session.source)
+                if policy and policy.cwd:
+                    from tui_gateway import server
+                    staged = server._session_home_dir({'cwd': policy.cwd, 'profile_home': str(home)}, 'attachments')
+                    if staged != home / 'attachments':
+                        roots.append(staged)
+            try:
+                data = project_transcript(data, params['transcript_options'], home=home, trusted_roots=roots)
+            except TranscriptTooLargeError as exc:
+                raise RuntimeStoreError('export_too_large') from exc
         if redact:
-            from hermes_cli.session_export_md import redact_session_data
-            data = redact_session_data(data)
+            if 'transcript_options' in params:
+                from hermes_cli.session_transcript import redact_transcript
+                data = redact_transcript(data)
+            else:
+                from hermes_cli.session_export_md import redact_session_data
+                data = redact_session_data(data)
         return render_session_for_save(data, fmt)
     content = await asyncio.to_thread(render)
-    return {'format': fmt, 'filename': default_save_filename(target, fmt), 'content': content}
+    result = {'format': fmt, 'filename': default_save_filename(target, fmt), 'content': content}
+    if 'transcript_options' in params:
+        result['transcript_version'] = 1
+        from hermes_cli.session_transcript import MAX_SERIALIZED_BYTES
+        if len(json.dumps(result, ensure_ascii=True).encode('utf-8')) > MAX_SERIALIZED_BYTES:
+            raise RuntimeStoreError('export_too_large')
+    return result
 
 
 async def session_history(connection, ref, params):

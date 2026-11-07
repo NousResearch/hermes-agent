@@ -30,7 +30,6 @@ import { triggerHaptic } from '@/lib/haptics'
 import { ArchiveOff } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
-import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import {
@@ -42,7 +41,6 @@ import {
   refreshProjectTree
 } from '@/store/projects'
 import {
-  $activeSessionId,
   $connection,
   $selectedStoredSessionId,
   $sessions,
@@ -54,8 +52,8 @@ import {
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
 import { ambientRequestFor } from '@/store/session-gone-latch'
+import { runtimeIdForStoredSession } from '@/store/session-runtime-binding'
 import {
-  $sessionStates,
   $sessionTiles,
   closeAllOpenSessionTiles,
   requestForOwnedSession
@@ -65,56 +63,7 @@ import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal }
 
 import type { SessionTitleResponse } from '../../types'
 
-// Rename a session, preferring the gateway's session.title RPC over REST.
-//
-// A freshly *branched* session (and any brand-new chat) lives only in the
-// gateway's in-memory _sessions map keyed by its RUNTIME id — no row is
-// persisted to state.db until the first turn. REST PATCH /api/sessions/{id}
-// resolves against the stored sessions table, so it 404s ("Session not found")
-// on these runtime-only sessions. The session.title RPC resolves the live
-// runtime session AND persists the row on demand, so it succeeds where REST
-// cannot. This mirrors the /title slash command's fix (use-prompt-actions.ts).
-//
-// We only take the RPC path for the ACTIVE/selected session: its runtime id is
-// known ($activeSessionId) and it lives on the active gateway, so there is no
-// profile-routing ambiguity. Every other row (already persisted, possibly on a
-// background profile) keeps the REST path, which handles profile scoping and a
-// non-empty title is required by the RPC (it rejects clears), so clears stay on
-// REST too.
-/** Resolve a live runtime id for a stored session id, from any surface that
- *  currently holds one — not just the selected-primary row.
- *
- *  A branched session opens as its own TAB and deliberately does NOT become the
- *  selected primary row, so `$selectedStoredSessionId`/`$activeSessionId` do not
- *  see it. Until its first turn it also has no persisted DB row, so a REST
- *  rename 404s "session not found". But the branch flow binds a runtime and
- *  stores it on the tile (`patchSessionTile(..., { runtimeId })`), and
- *  `$sessionStates` is keyed by runtime id with `storedSessionId` on each state.
- *  Consulting those lets the working `session.title` RPC path fire for a
- *  just-branched draft instead of falling through to a 404. (#70317) */
-function resolveRuntimeIdForStored(storedSessionId: string): null | string {
-  if (storedSessionId === $selectedStoredSessionId.get()) {
-    const active = $activeSessionId.get()
-
-    if (active) {
-      return active
-    }
-  }
-
-  const tileRuntimeId = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
-
-  if (tileRuntimeId) {
-    return tileRuntimeId
-  }
-
-  for (const [runtimeId, state] of Object.entries($sessionStates.get())) {
-    if (state.storedSessionId === storedSessionId) {
-      return runtimeId
-    }
-  }
-
-  return null
-}
+import { SessionExportDialog } from './session-export-dialog'
 
 export async function renameSessionPreferringRpc(
   storedSessionId: string,
@@ -126,7 +75,7 @@ export async function renameSessionPreferringRpc(
     $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))?.profile ||
     undefined
 
-  const runtimeId = resolveRuntimeIdForStored(storedSessionId)
+  const runtimeId = runtimeIdForStoredSession(storedSessionId)
   const gateway = activeGateway()
 
   if (title && runtimeId && gateway) {
@@ -278,6 +227,7 @@ function useSessionActions({
 }: SessionActions) {
   const { t } = useI18n()
   const r = t.sidebar.row
+  const [exportTarget, setExportTarget] = useState<{ sessionId: string; profile?: string; title: string } | null>(null)
   const [renameOpen, setRenameOpen] = useState(false)
   // The rename item opens a Dialog. When a menu closes, Radix restores focus to
   // its trigger — for a sidebar row that trigger is the row's own <button>, so
@@ -438,7 +388,8 @@ function useSessionActions({
       label: r.export,
       onSelect: () => {
         triggerHaptic('selection')
-        void exportSession(sessionId, { profile, title })
+        suppressCloseFocusRef.current = true
+        setExportTarget({ sessionId, profile, title })
       }
     })
   ]
@@ -640,7 +591,9 @@ function useSessionActions({
     />
   )
 
-  return { deleteDialog, onCloseAutoFocus, renameDialog, renderItems }
+  const exportDialog = <SessionExportDialog onClose={() => setExportTarget(null)} target={exportTarget} />
+
+  return { deleteDialog, exportDialog, onCloseAutoFocus, renameDialog, renderItems }
 }
 
 interface DeleteSessionDialogProps {
@@ -690,7 +643,7 @@ export function SessionActionsMenu({
   ...actions
 }: SessionActionsMenuProps) {
   const { t } = useI18n()
-  const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
+  const { deleteDialog, exportDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
 
   return (
     <>
@@ -708,6 +661,7 @@ export function SessionActionsMenu({
       </ActionsMenu>
       {renameDialog}
       {deleteDialog}
+      {exportDialog}
     </>
   )
 }
@@ -718,7 +672,7 @@ interface SessionContextMenuProps extends SessionActions {
 
 export function SessionContextMenu({ children, ...actions }: SessionContextMenuProps) {
   const { t } = useI18n()
-  const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
+  const { deleteDialog, exportDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
 
   return (
     <>
@@ -732,6 +686,7 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
       </ActionsContextMenu>
       {renameDialog}
       {deleteDialog}
+      {exportDialog}
     </>
   )
 }

@@ -284,22 +284,39 @@ canonical_method("rollback.session_diff", params=RollbackSessionDiffParams, resu
                      "retained checkpoint, as data for its terminal renderer.")
 
 
+class SessionTranscriptOptions(Params):
+    """The eight boolean keys the Desktop chooser sends and ``validate_options`` accepts."""
+
+    include_tools: bool
+    include_reasoning: bool
+    include_images: bool
+    include_videos: bool
+    include_files: bool
+    include_links: bool
+    include_asides: bool
+    collapse_details: bool
+
+
 class SessionExportParams(Params):
-    """``format``: json (default) / md / markdown / html / snapshot (``normalize_save_format``)."""
+    """``format``: json (default) / md / markdown / html / snapshot (``normalize_save_format``).
+    ``transcript_options``, when present, asks for the filtered JSON transcript."""
 
     session_id: str
     profile: str | None = None
     format: str = "json"
     redact: bool = False
+    transcript_options: SessionTranscriptOptions | None = None
 
 
 class SessionExportResult(Result):
     """``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default
-    file name. The client writes it (the gateway may be remote); nothing is written on the host."""
+    file name. The client writes it (the gateway may be remote); nothing is written on the host.
+    ``transcript_version`` is 1 only for that filtered transcript."""
 
     format: str
     filename: str
     content: str
+    transcript_version: Literal[1] | None = None
 
 
 canonical_method("session.export", params=SessionExportParams, result=SessionExportResult,

@@ -7,6 +7,7 @@ import path from 'node:path'
 
 export interface SaveTextFileRequest {
   content?: unknown
+  encoding?: unknown
   defaultPath?: unknown
   filters?: unknown
   title?: unknown
@@ -26,7 +27,7 @@ export interface SaveTextFileDeps {
     properties?: Array<'createDirectory' | 'showOverwriteConfirmation'>
     title: string
   }) => Promise<{ canceled: boolean; filePath?: string }>
-  writeFile?: (filePath: string, content: string) => Promise<void>
+  writeFile?: (filePath: string, content: string | Uint8Array) => Promise<void>
 }
 
 interface IpcMainLike {
@@ -77,7 +78,30 @@ export async function saveTextFileAs(
     throw new Error('Invalid content')
   }
 
-  const content = request.content
+  if (request.encoding !== undefined && request.encoding !== 'base64') {
+    throw new Error('Invalid encoding')
+  }
+
+  // Bound encoded input before decoding or running validation over it.
+  const inputLimit =
+    request.encoding === 'base64' ? 4 * Math.ceil(SAVE_TEXT_FILE_MAX_BYTES / 3) : SAVE_TEXT_FILE_MAX_BYTES
+
+  if (request.content.length > inputLimit) {
+    throw new Error('Content too large')
+  }
+
+  if (
+    request.encoding === 'base64' &&
+    (request.content.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(request.content))
+  ) {
+    throw new Error('Invalid base64')
+  }
+
+  const content = request.encoding === 'base64' ? Buffer.from(request.content, 'base64') : request.content
+
+  if (typeof content !== 'string' && content.toString('base64') !== request.content) {
+    throw new Error('Invalid base64')
+  }
 
   if (Buffer.byteLength(content, 'utf8') > SAVE_TEXT_FILE_MAX_BYTES) {
     throw new Error('Content too large')
@@ -97,7 +121,9 @@ export async function saveTextFileAs(
     return { saved: false, canceled: true }
   }
 
-  const write = deps.writeFile ?? ((filePath: string, text: string) => fs.promises.writeFile(filePath, text, 'utf8'))
+  const write =
+    deps.writeFile ?? ((filePath: string, data: string | Uint8Array) => fs.promises.writeFile(filePath, data, 'utf8'))
+
   await write(result.filePath, content)
 
   return { saved: true, path: result.filePath }

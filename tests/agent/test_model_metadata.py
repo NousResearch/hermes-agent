@@ -289,14 +289,14 @@ class TestDefaultContextLengths:
                 ) == 1_000_000
 
     def test_k3_context_is_scoped_to_confirmed_coding_endpoint(self):
-        """The bare ``k3`` slug's 1 Mi context must not leak to unverified endpoints.
+        """The bare K3 slugs' 1 Mi context must not leak to unverified endpoints.
 
         The named ``kimi-k3`` / ``kimi-k3-cot`` slugs resolve to 1 Mi
         EVERYWHERE via DEFAULT_CONTEXT_LENGTHS — the window is a property of
         the model, served at 1M on api.moonshot.ai and api.moonshot.cn alike
         (verified against models.dev + OpenRouter live metadata). Only the
-        bare ``k3`` slug, which exists solely on the Kimi Coding Plan
-        endpoint, stays endpoint-scoped.
+        bare slugs, which exist solely on the Kimi Coding Plan
+        endpoint, stay endpoint-scoped.
         """
         with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
@@ -321,16 +321,17 @@ class TestDefaultContextLengths:
             )
 
             for base_url in accepted_urls:
-                for model in ("k3", "kimi-k3", "kimi-k3-cot"):
+                for model in ("k3", "k3.1-pro", "k3.1-pro-highspeed", "kimi-k3", "kimi-k3-cot"):
                     assert get_model_context_length(
                         model, provider="kimi-coding", base_url=base_url
                     ) == 1_048_576
 
             for base_url in rejected_urls:
-                # Bare slug: endpoint-scoped, must NOT leak off-endpoint.
-                assert get_model_context_length(
-                    "k3", provider="kimi-coding", base_url=base_url
-                ) != 1_048_576
+                # Bare slugs: endpoint-scoped, must NOT leak off-endpoint.
+                for model in ("k3", "k3.1-pro", "k3.1-pro-highspeed"):
+                    assert get_model_context_length(
+                        model, provider="kimi-coding", base_url=base_url
+                    ) != 1_048_576
                 # Named slugs: global DEFAULT_CONTEXT_LENGTHS entry applies
                 # everywhere the model is actually named kimi-k3.
                 for model in ("kimi-k3", "kimi-k3-cot"):

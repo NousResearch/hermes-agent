@@ -2,14 +2,15 @@ name: household-tiers
 repo: https://github.com/chevlume/household-tiers
 # Pin of the plugin tree this entry describes. A later commit that only
 # updates this line is not included; set sha to the commit you submit.
-sha: "4c3cac79342de3a73de46bb66cdc66619ace9eac"
+sha: "1896b63f63c8f1615d974e30c3c731e895fb8d70"
 description: "Per-person tool tiers for one shared Hermes bot, with a family preset for curfew, a parent alert, and a homework note: built-in owner memory (MEMORY.md/USER.md) withheld from non-owner prompts; an external provider block joined after those boxes is removed; a provider block with no built-in box, and compaction's auxiliary summary, are not filtered."
 maintainer: chevlume
 category: platform
 requires_hermes: ">=0.22.7"
 version: "0.1.1"
 known_issues:
-  - "pytest (108 passed), plugins validate, and plugins doctor were run on Hermes tag v0.22.7 (b200f5bc60e31588ba2cb60e288029c4a54ba5fa) and on commit ed1afb082eb3e46cf2edae9d8f68fb67b09ee4df (193 commits after that tag). requires_hermes stays >=0.22.7. Python was CPython 3.14.10."
+  - "pytest (108 passed, 0 failed, 0 skipped), plugins validate, and plugins doctor were run on Hermes commit ed1afb082eb3e46cf2edae9d8f68fb67b09ee4df with uv CPython 3.11.18, 3.12.16, 3.13.18, and 3.14.10. uv sync --locked refuses interpreters before 3.14 (lock environment python_full_version >= 3.14); those runs installed that lock's wheels into each interpreter. Tag v0.22.7 (b200f5bc60e31588ba2cb60e288029c4a54ba5fa) was not re-run. requires_hermes stays >=0.22.7. CPython 3.13.18 and 3.14.10 also printed 44 DeprecationWarnings from Hermes plugins_manifest.py."
+  - "hermes plugins validate still warns on tools.memory_tool_store.ENTRY_DELIMITER in __init__.py (three sites). That constant is not on a public plugin surface. Memory files are get_hermes_home() / memories, the same path as get_memory_dir(). The plugin does not call MemoryStore._parse_entries. Measurement imports live under tests/ and are not part of plugin load."
   - "With plugins.isolation set to host the plugin host does not forward the per-turn sender, so household-tiers fails closed (everyone is a guest) and the parent alert is skipped. Use isolation in_process for per-person tiers."
   - "Shared sessions (a thread with thread_sessions_per_user false, or a group with group_sessions_per_user false) carry replies to other people. Non-owner tiers are refused there by default (shared_threads refuse) and asked to use a direct message."
   - "If household-tiers.json is unreadable, tool calls are blocked and memory blocks are withheld from every request, including the owner's, and every gateway turn gets a short error reply until the file is fixed."

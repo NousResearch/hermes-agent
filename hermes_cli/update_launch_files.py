@@ -81,28 +81,9 @@ def _refresh_systemd_user_unit() -> None:
 
 
 def _refresh_unloaded_launchd_plist() -> None:
-    """Rewrite the plist of a job launchd does not hold (stopped, or paused for this update).
+    from hermes_cli.gateway_launchd import refresh_unloaded_launchd_plist
 
-    A loaded job keeps the definition launchd read; its restart re-reads the file
-    (``launchd_restart`` refreshes and re-bootstraps), so writing it here would make that
-    refresh see a current file and skip the reload.
-    """
-    from hermes_cli import gateway as gw
-    from hermes_cli.gateway_service_owner import definition_belongs_to_home, refuse_temp_home_service_write
-
-    plist = gw.get_launchd_plist_path()
-    if not plist.exists() or gw.launchd_plist_is_current():
-        return
-    if gw._locate_launchd_gateway_service(gw.get_launchd_label())[0] is not None:
-        return
-    if not definition_belongs_to_home(plist, gw.get_hermes_home(), "rewrite"):
-        return
-    text = gw.generate_launchd_plist()
-    if refuse_temp_home_service_write(text, "launchd plist"):
-        return
-    gw._prepare_service_launcher()
-    plist.write_text(text, encoding="utf-8")
-    print(f"  ↻ Updated {plist.name} to match the current Hermes install")
+    refresh_unloaded_launchd_plist()
 
 
 def _refresh_windows_launcher_scripts() -> None:

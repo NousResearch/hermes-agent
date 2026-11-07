@@ -53,7 +53,7 @@ _STATIC_FEATURE_FLAGS = {
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
     "reasoning_streaming": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
-    "skills_api": True, "audio_api": False, "realtime_voice": False,
+    "skills_api": True, "profile_roster": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
     "session_key_header": "X-Hermes-Session-Key"}
 # /v1/capabilities "endpoints" table: name -> (method, path[, feature]). An entry naming a
@@ -70,6 +70,8 @@ _CAPABILITY_ENDPOINTS = (
     ("run_unknown_resolution", ("POST", "/v1/runs/{run_id}/resolve-unknown", "run_unknown_resolution")),
     ("run_stop", ("POST", "/v1/runs/{run_id}/stop")), ("skills", ("GET", "/v1/skills")),
     ("toolsets", ("GET", "/v1/toolsets")), ("sessions", ("GET", "/api/sessions")),
+    ("profiles", ("GET", "/v1/profiles", "profile_roster")),
+    ("profile_avatar", ("GET", "/v1/profiles/{name}/avatar", "profile_roster")),
     ("session_create", ("POST", "/api/sessions")),
     ("session", ("GET", "/api/sessions/{session_id}")),
     ("session_update", ("PATCH", "/api/sessions/{session_id}")),
@@ -112,7 +114,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
-from gateway.platforms import api_server_room_grants as _room_grants
+from gateway.platforms import api_server_profiles as _api_profiles, api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
@@ -1590,6 +1592,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if _CRON_AVAILABLE:
             # Chronos fire webhook (NAS -> agent): authenticated by a NAS-minted JWT.
             routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
+        routes.extend(_api_profiles._http_routes(self))
         return routes
 
     # -- Session header helpers -------------------------------------------------------

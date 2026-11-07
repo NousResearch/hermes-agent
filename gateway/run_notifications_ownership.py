@@ -90,6 +90,36 @@ class GatewayNotificationOwnershipMixin:
             return ""
         return target
 
+    async def _rotated_route_successor(self, owner_session_id: str, session_key: str) -> str:
+        """The live session of *session_key* a completion pinned to an ended session is delivered into.
+
+        A pin the route has rolled past (idle/daily reset, archived thread, stale reap) can never pass
+        admission: ownership follows compression lineage only. The user's policy is to deliver it into the
+        route's live session, labelled as a previous-session result. The route is the security boundary:
+        the pinned session must itself record *session_key* (a different route is never retargeted), and
+        a session closed at a user boundary (/new, a switch) or by compression keeps its own handling.
+        Returns the successor's session id, or ``""`` to fall through to today's behaviour.
+        """
+        from gateway.run import _USER_BOUNDARY_END_REASONS
+        session_db = cast(Any, self)._session_db
+        if session_db is None or not session_key or not owner_session_id:
+            return ""
+        try:
+            session_store = cast(Any, self).session_store
+            await asyncio.to_thread(session_store._ensure_loaded)
+            entry = session_store._entries.get(session_key)
+            if entry is None or entry.suspended or entry.session_id == owner_session_id:
+                return ""
+            owner = await session_db.get_session(owner_session_id)
+            if (owner is None or not owner.get("ended_at") or owner.get("session_key") != session_key
+                    or owner.get("end_reason") in (*_USER_BOUNDARY_END_REASONS, "compression")):
+                return ""
+            live = await session_db.get_session(entry.session_id)
+        except Exception:
+            logger.debug("Rotated-route successor lookup failed for %s", owner_session_id, exc_info=True)
+            return ""
+        return entry.session_id if live is not None and not live.get("ended_at") else ""
+
     async def _lookup_completion_owner(self, session_id: str, current_session_id: str = ""):
         """Nonmutating delegation proof shared by preflight and route resolution.
 

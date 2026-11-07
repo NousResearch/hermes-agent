@@ -1957,28 +1957,28 @@ function rememberBotChatScope(storedSessionId: string, scope: SessionTileWorkspa
   const current = $botChatSessionIds.get()
   const { [storedSessionId]: previous, ...rest } = $botChatScopes.get()
 
-  const changed = isBotChat
-    ? previous?.workspaceOwnerKey !== scope.workspaceOwnerKey || previous?.workspaceTabTitle !== scope.workspaceTabTitle
-    : Boolean(previous)
-
-  if (changed) {
-    $botChatScopes.set(isBotChat ? { ...rest, [storedSessionId]: scope } : rest)
-  }
-
-  if (current.has(storedSessionId) === isBotChat) {
+  // A scope-less re-open carries no bot information — that is absence, not
+  // revocation. ⌘W on another tab promotes a Bot tile into main by closing the
+  // tile FIRST, so the route open that follows can only report the ambient
+  // sessions scope. Forgetting what we knew there dropped the main tab's
+  // caption back to "New session" (#99152 follow-up) and flipped the composer
+  // back to coding chrome, while the same chat opened as a tile kept its name.
+  if (!isBotChat) {
     return
   }
 
-  const next = new Set(current)
-
-  if (isBotChat) {
-    next.add(storedSessionId)
-  } else {
-    next.delete(storedSessionId)
+  if (
+    previous?.workspaceOwnerKey !== scope.workspaceOwnerKey ||
+    previous?.workspaceTabTitle !== scope.workspaceTabTitle
+  ) {
+    $botChatScopes.set({ ...rest, [storedSessionId]: scope })
   }
 
-  $botChatSessionIds.set(next)
-  writeJson(BOT_CHAT_SCOPE_KEY, next.size ? [...next] : null)
+  if (!current.has(storedSessionId)) {
+    const next = new Set(current).add(storedSessionId)
+    $botChatSessionIds.set(next)
+    writeJson(BOT_CHAT_SCOPE_KEY, [...next])
+  }
 }
 
 /** True while this live session is a bot's chat rather than a working session.

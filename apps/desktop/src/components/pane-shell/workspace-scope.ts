@@ -73,6 +73,32 @@ export function workspaceOwnerTitle(
   return $workspaceOwnerLabels.get()[scope.workspaceOwnerKey] ?? title
 }
 
+/** The base caption a SESSION pane registers: its loaded row's title, else the
+ *  bot workspace's own canonical title, else the caller's new-session
+ *  placeholder.
+ *
+ *  The middle rung exists because a canonical Bot Chat is `hidden = 1` and is
+ *  therefore in NO sidebar slice, so the row lookup comes back empty even
+ *  though the chat is open. `workspaceOwnerTitle` can only swap 'Bot Chat' for
+ *  the bot's display name when the base title IS that canonical title; without
+ *  this rung a hidden Bot Chat opened in place (the main tab) fell through to
+ *  "New session" while the same chat opened as a tile read its bot's name
+ *  (#99152 follow-up). A row title always wins: only the placeholder is
+ *  replaceable. */
+export function workspaceSessionBaseTitle(
+  rowTitle: null | string | undefined,
+  scope: { workspaceMode?: WorkspaceMode; workspaceOwnerKey?: string; workspaceTabTitle?: string } | undefined,
+  placeholder: string
+): string {
+  const loaded = rowTitle?.trim()
+
+  if (loaded) {
+    return loaded
+  }
+
+  return scope?.workspaceMode === 'bots' && scope.workspaceTabTitle ? scope.workspaceTabTitle : placeholder
+}
+
 /** May the user rename this session? A canonical Bot Chat's exact title is its
  *  identity — Bot Mode re-resolves it by name on every open and the backend's
  *  #95397 guard refuses a user rename — so surfaces that show one must not

@@ -21,6 +21,8 @@ import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
 import {
   allPaneIds,
   anchorsFirst,
+  arrangeChatGroups,
+  type ChatArrangement,
   type DropPosition,
   findGroup,
   findGroupOfPane,
@@ -36,13 +38,16 @@ import {
   movePane as movePaneOp,
   movePanes as movePanesOp,
   normalize,
+  type Orientation,
   removePane,
   reorderPanesInGroup as reorderPanesInGroupOp,
   setActivePane as setActivePaneOp,
   setGroupMinimized,
   setGroupTabStrip as setGroupTabStripOp,
+  setSplitOrientation as setSplitOrientationOp,
   setSplitWeights as setSplitWeightsOp,
   type SplitNode,
+  swapPanes as swapPanesOp,
   type TabStripMode
 } from './model'
 import { isTreePaneParked } from './parked-panes'
@@ -809,6 +814,22 @@ export function treePanesWithPrefix(prefix: string): string[] {
  *  generic renderer stays session-agnostic; null until wired (the "+" hides).
  *  An atom so the strip re-renders when the action becomes available. */
 export const $newSessionTabAction = atom<(() => void) | null>(null)
+
+/** A plugin's takeover of a chat strip's "+" (`host.layout.redirectNewSessionTab`):
+ *  called with the zone's chat pane; returning true means it handled the click,
+ *  false falls through to `$newSessionTabAction`. Null when nobody redirects. */
+export const $newSessionTabRedirect = atom<((anchorPane: string) => boolean) | null>(null)
+
+/** Where a new chat tile lands: an edge (or the center, as a tab) of a pane. */
+export interface NewSessionTilePlacement {
+  pane: string
+  pos: 'bottom' | 'center' | 'left' | 'right' | 'top'
+}
+
+/** Open a fresh chat as a tile at `placement`: the same create path a
+ *  new-session drag onto a pane edge uses. The app wiring registers it, like
+ *  `$newSessionTabAction`; null until wired. */
+export const $newSessionTileAction = atom<((placement: NewSessionTilePlacement) => void) | null>(null)
 
 /**
  * Keyboard slots (⌘1…⌘9, ⌃Tab) must index the SAME tabs the strip paints —
@@ -2188,6 +2209,56 @@ export function setTreeSplitWeights(splitId: string, weights: number[]) {
     // Weight drags are high-frequency: update live, persist on the trailing edge.
     $layoutTree.set(setSplitWeightsOp(tree, splitId, weights))
   }
+}
+
+/** One-shot (non-drag) weight change: update and persist together. */
+export function commitTreeSplitWeights(splitId: string, weights: number[]) {
+  const tree = $layoutTree.get()
+
+  if (tree) {
+    commit(setSplitWeightsOp(tree, splitId, weights))
+  }
+}
+
+export function setTreeSplitOrientation(splitId: string, orientation: Orientation) {
+  const tree = $layoutTree.get()
+
+  if (tree) {
+    commit(setSplitOrientationOp(tree, splitId, orientation))
+  }
+}
+
+export function swapTreePanes(a: string, b: string) {
+  const tree = $layoutTree.get()
+
+  if (tree) {
+    commit(swapPanesOp(tree, a, b))
+  }
+}
+
+/** Rebuild the chat area as `spec` (see `arrangeChatGroups`). False, and the
+ *  tree untouched, when the spec doesn't name every chat zone exactly once or
+ *  a user-placed zone sits between chats. */
+export function arrangeTreeChat(spec: ChatArrangement, isChat: (paneId: string) => boolean): boolean {
+  const tree = $layoutTree.get()
+  const next = tree ? arrangeChatGroups(tree, spec, isChat) : null
+
+  if (!next) {
+    return false
+  }
+
+  if (next !== tree) {
+    commit(next)
+  }
+
+  return true
+}
+
+/** Child count of split `splitId`, or null when the tree has no such split. */
+export function treeSplitArity(splitId: string): null | number {
+  const tree = $layoutTree.get()
+
+  return tree ? (findSplitWeights(tree, splitId)?.length ?? null) : null
 }
 
 function findSplitWeights(node: LayoutNode, splitId: string): number[] | null {

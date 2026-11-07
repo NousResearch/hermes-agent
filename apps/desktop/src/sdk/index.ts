@@ -93,6 +93,7 @@ import {
   setSessionOwnerHint
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
+import { $sessionListDensity, type SessionListDensity } from '@/store/session-list-density'
 import {
   $focusedRuntimeId,
   $focusedSessionState,
@@ -110,6 +111,7 @@ import type { SessionMutationSnapshot } from '../../../shared/src/session-http-m
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
+import { $pluginPinnedSessionIds, $pluginSessionLayout, layoutHost, type PluginSessionLayout } from './layout'
 import { planPluginOpenSession } from './plugin-open-session-plan'
 import { dropLeftoverProfilePrefs, warmProfile } from './profile-local'
 import {
@@ -125,9 +127,9 @@ import { $viewport, type ViewportRect } from './viewport'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
 export * from './areas'
+export type { PluginChatArrangement, PluginLayoutNode, PluginSessionLayout } from './layout'
 /** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
 export type * from './plugin-contract'
-export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -309,6 +311,13 @@ export interface PluginOpenSessionOptions {
    *  itself because only this SDK layer sees $resumeExhaustedSessionId. */
   retryHydrationTimeoutOnce?: boolean
   tabTitle?: string
+  /** Where a NEW session tile lands (intent `tab`, or `stack` when main is
+   *  occupied): split `pane` on `pos`, or stack into it with `center`. Pane
+   *  ids: `workspace` (main), `session-tile:<storedId>`, or any pane id.
+   *  Ignored when the session is already on screen (it is focused instead)
+   *  and for `in-place` / `main` / `window`. Feature-detect with
+   *  `host.state.sessionLayout`. */
+  dock?: { pane?: string; pos: 'bottom' | 'center' | 'left' | 'right' | 'top' }
 }
 
 export interface PluginNewChatOptions {
@@ -594,6 +603,17 @@ export const host = {
      *  The UsageStats-optional fields (context_*, cost_usd) arrive as the
      *  backend reports them, so read them with a fallback. */
     focusedUsage: readonlyAtom<null | UsageStats>($focusedUsage),
+    /** Durable ids of the sidebar's Pinned section, in order. */
+    pinnedSessionIds: readonlyAtom<readonly string[]>($pluginPinnedSessionIds),
+    /** The user's session-list density (Settings → Appearance): `compact` is
+     *  one line, `comfortable` adds a metadata line (branch · model · counts),
+     *  `detailed` also adds the opening request. For plugins that list sessions. */
+    sessionListDensity: readonlyAtom<SessionListDensity>($sessionListDensity),
+    /** The pane tree (splits with weights, groups of stacked panes) plus the
+     *  focused zone and main's stored session id — read-only. Chat panes are
+     *  `workspace` and `session-tile:<storedId>`. Pair with `host.layout` and
+     *  `host.openSession(id, { intent: 'tab', dock })` to tile sessions. */
+    sessionLayout: readonlyAtom<PluginSessionLayout>($pluginSessionLayout),
     /** Gateway socket state: 'idle' | 'connecting' | 'open' | …. Not turn-busy. */
     gateway: readonlyAtom<string>($gatewayState),
     /** Current main model slug. */
@@ -809,6 +829,9 @@ export const host = {
 
   /** Session-list mutations (pin, reorder, colour) — see `./sessions`. */
   sessions: sessionsHost,
+
+  /** Session tiling verbs (resize, re-orient, swap, close) — see `./layout`. */
+  layout: layoutHost,
 
   /** Typed capabilities bridge — see `./bridge.ts`. `pluginDecisions` is
    *  read-only: plugin toggling stays in the app's Plugins tab. */
@@ -1028,12 +1051,20 @@ export const host = {
           }
 
           if (options.workspaceMode === 'bots') {
-            openSession(storedSessionId, navigate, intent, {
+            const botScope = {
               ownerRoute: ownerRoute ?? undefined,
-              workspaceMode: 'bots',
+              workspaceMode: 'bots' as const,
               workspaceOwnerKey: options.workspaceOwnerKey,
               ...(options.tabTitle ? { workspaceTabTitle: options.tabTitle } : {})
-            })
+            }
+
+            if (options.dock) {
+              openSession(storedSessionId, navigate, intent, botScope, options.dock)
+            } else {
+              openSession(storedSessionId, navigate, intent, botScope)
+            }
+          } else if (options.dock) {
+            openSession(storedSessionId, navigate, intent, undefined, options.dock)
           } else {
             openSession(storedSessionId, navigate, intent)
           }
@@ -1537,6 +1568,7 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
+export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
 export type { DesktopSettingKey, DesktopSettingValues } from './settings'
 
 // -- ui: the design language --------------------------------------------------
@@ -1647,6 +1679,7 @@ export { APPEARANCE_AREAS } from '@/app/settings/appearance-contrib'
  *  it (wide) or under it (narrow); `ToggleRow` is the one on/off row — a Switch,
  *  never an Off/On pill pair. Use them for preference rows in plugin panes and
  *  dialogs so they line up with core Settings. */
+export { KeybindEditor } from '@/app/settings/keybind-settings'
 export { ListRow, ToggleRow } from '@/app/settings/primitives'
 /** THE full per-toolset config panel core Settings renders — provider picker,
  *  env vars / API keys, model catalog picker, and post-setup runners. Route-
@@ -1843,6 +1876,7 @@ export * as icons from '@/lib/icons'
 export { isSubmitEnter } from '@/lib/ime'
 export { type KeybindContribution, KEYBINDS_AREA, PLUGIN_APP_ACTIONS } from '@/lib/keybinds/actions'
 export { formatModifierToken } from '@/lib/keybinds/combo'
+export { useKeybindCombos } from '@/lib/keybinds/use-keybind-hint'
 /** A `Map` with a ceiling, for the module-level caches a plugin keeps across
  *  a renderer that stays open for days. Only for values that can be
  *  regenerated — eviction costs a recompute or a refetch, never correctness. */

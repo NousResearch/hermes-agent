@@ -1396,6 +1396,9 @@ host.state.gateway          // ReadableAtom<string>  socket state ('idle' | 'con
 host.state.model            // ReadableAtom<string>
 host.state.profile          // ReadableAtom<string>
 host.state.viewport         // ReadableAtom<{ width, height, narrow }>
+host.state.sessionLayout    // ReadableAtom<{ root, focusedGroupId, mainStoredSessionId }>  pane tree, read-only
+host.state.pinnedSessionIds // ReadableAtom<readonly string[]>  ids in the sidebar's Pinned section, in order
+host.state.sessionListDensity // ReadableAtom<'compact' | 'comfortable' | 'detailed'>  the user's session-list density
 ```
 
 `gatewayActivationEpoch` is a named SDK export: `import { gatewayActivationEpoch } from '@hermes/plugin-sdk'`.
@@ -1431,6 +1434,7 @@ host.navigate('/route')                    // hash-route navigation
 host.openSession(id, { profile?, intent? }) // open a stored session core-style;
                                            //   profile: soft-swap to that profile's backend first
                                            //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'
+                                           //   dock: { pane?, pos } where a NEW tile lands (see Tiling session panes)
 host.newChat(profile?)                     // fresh chat draft, optionally in another profile
 host.openWorkspace(id, { render, title?, minWidth?, onClose? })
                                            // dock a plugin-rendered tab into the MAIN
@@ -1452,6 +1456,13 @@ host.sessions.pin(storedSessionId, pinned?, index?)  // pin/unpin (default pinne
 host.sessions.reorder(ids)                 // replace the manual Recents order (what a drag persists); [] resets
 host.sessions.reorderPinned(ids)           // permute the Pinned section (the pinned drag path)
 host.sessions.setColor(storedSessionId, color | null)  // per-session colour override; null clears
+host.layout.setSplitWeights(splitId, weights) // resize a split: one weight > 0 per child → boolean
+host.layout.setSplitOrientation(splitId, o)   // 'row' (side by side) | 'column' (stacked) → boolean
+host.layout.swapPanes(paneA, paneB)        // chat panes only (workspace, session-tile:*) → boolean
+host.layout.closePane(paneId)              // chat panes only; like the tab's ✕, the sibling takes the space → boolean
+host.layout.arrangeSessions(spec)          // re-tile every chat zone at once; sidebar and rails stay put → boolean
+host.layout.newChatTile({ pane?, pos? })   // fresh chat as a new tile (default right of main) → boolean
+host.layout.redirectNewSessionTab(fn)      // take over a chat strip's "+": fn(chatPane) → true if handled → disposer
 host.skills.list(profile?)                 // every skill for the scope (Capabilities endpoints)
 host.skills.setEnabled(name, on, profile?)  // enable/disable a skill — the Capabilities toggle
 host.toolsets.list(profile?)               // toolsets + enabled state
@@ -1609,6 +1620,92 @@ happens on user click — never from a background event alone.
 The other doors (`openExternal`, `revealPath`, `writeClipboard`) resolve
 `false` instead of throwing when the capability isn't available (older desktop
 shell, plain browser) — branch on the result rather than sniffing the bridge.
+
+### Tiling session panes — `host.state.sessionLayout` / `host.layout` {#tiling-session-panes}
+
+Session tiles live in the same pane tree as every other zone. A plugin reads it
+through `host.state.sessionLayout` and arranges chats with `host.layout`:
+
+- `root` is the tree. A `split` has an `orientation` (`row` = side by side,
+  `column` = stacked), one `weight` per child, and `children`. A `group` is a
+  zone of stacked `panes` with one `active`.
+- Chat panes are `workspace` (main; its chat is `mainStoredSessionId`, null on a
+  blank draft) and `session-tile:<storedSessionId>`. Other ids are core or
+  plugin panes; the `host.layout` pane verbs refuse them.
+- `host.openSession(id, { intent: 'tab', dock: { pane, pos } })` lands a NEW
+  tile on `pos` (`left` / `right` / `top` / `bottom`, or `center` to stack) of
+  `pane`. A session already on screen is focused instead, so a dock never
+  duplicates or moves it.
+
+```js
+import { host } from '@hermes/plugin-sdk'
+
+// Open a session to the right of the focused chat (older Hermes: as a tab).
+export function openBeside(storedSessionId) {
+  const layout = host.state.sessionLayout?.get()
+  const focused = host.state.focusedStoredSessionId.get()
+  const pane = !focused
+    ? undefined
+    : focused === layout?.mainStoredSessionId
+      ? 'workspace'
+      : `session-tile:${focused}`
+
+  return host.openSession(storedSessionId, {
+    intent: 'tab',
+    dock: layout && pane ? { pane, pos: 'right' } : undefined
+  })
+}
+```
+
+Feature-detect with `host.state.sessionLayout` before relying on any of it:
+older Desktop builds ignore `dock` and open a stacked tab.
+
+A tiling layout (a grid, a master and stack) re-tiles all chats at once with
+`host.layout.arrangeSessions(spec)`. A leaf `{ pane }` names a chat pane, and
+its whole zone moves with its tabs. A split is `{ orientation, children,
+weights? }`, with equal weights when `weights` is omitted. The spec must name
+every chat zone exactly once. Only the chat area is rebuilt: the sidebar, tool
+rails and their sizes stay where they are, and the call returns `false` without
+changing anything when the spec doesn't fit or the user docked a non-chat zone
+between two chats.
+
+```js
+// Four chats as an even 2×2 grid.
+host.layout.arrangeSessions({
+  orientation: 'column',
+  children: [
+    { orientation: 'row', children: [{ pane: 'workspace' }, { pane: 'session-tile:a' }] },
+    { orientation: 'row', children: [{ pane: 'session-tile:b' }, { pane: 'session-tile:c' }] }
+  ]
+})
+```
+
+`host.layout.newChatTile({ pane, pos })` opens a fresh chat as a tile, using the
+same create path as dragging "New session" onto a pane's edge.
+
+`host.layout.redirectNewSessionTab(fn)` lets a tiling plugin decide what the
+"+" after a chat zone's tabs does. `fn` gets that zone's chat pane and returns
+`true` once it has handled the click, typically by opening a new tile there:
+
+```js
+ctx.onDispose(host.layout.redirectNewSessionTab(pane => host.layout.newChatTile({ pane, pos: 'right' })))
+```
+
+Return `false` (or throw) and the stock new tab opens. Only one handler is
+active, the most recent; ⌘T and the "+" of other tab kinds are unaffected.
+
+To make a plugin's shortcuts editable on its own settings page, render
+`KeybindEditor` for each `KEYBINDS_AREA` action id. It shows the same row as
+Settings ▸ Keybinds (caps, capture, conflict warning, reset) and writes the
+same overrides:
+
+```js
+jsx(KeybindEditor, { actionId: 'my-plugin.focus-left' })
+```
+
+To show a shortcut in your own UI (a hint card, a legend), read the live
+binding with `useKeybindCombos(actionId)`. It returns the raw combos
+(`['ctrl+alt+f']`), or `[]` when unbound, and re-renders on a rebind.
 
 ### Files — `ctx.files` {#plugin-files}
 

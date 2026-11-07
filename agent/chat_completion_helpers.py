@@ -1393,7 +1393,8 @@ def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config
 
 
 def _build_bedrock_kwargs(agent, api_messages, tools_for_api, reasoning_config):
-    # Bedrock Converse — the adapter converts messages/tools and calls boto3 directly.
+    # Bedrock Converse — the adapter converts messages/tools and calls boto3 directly; the adapter
+    # decides which models take the reasoning config and in what shape.
     return agent._get_transport().build_kwargs(model=agent.model, messages=api_messages, tools=tools_for_api,
         max_tokens=agent.max_tokens, region=getattr(agent, "_bedrock_region", None) or "us-east-1",
         guardrail_config=getattr(agent, "_bedrock_guardrail_config", None), reasoning_config=reasoning_config)

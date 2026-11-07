@@ -1496,7 +1496,12 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
                         f"  AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL "
                         f"  AND {_sql_json_extract('child.model_config', '$._reset_from')} IS NULL "
                         f"  AND NOT {_legacy_reset_child_sql('child', _RESET_END_REASONS_SQL)} "
-                        "  AND COALESCE(child.source, '') != 'tool' "
+                        # A parallel worker is not a continuation: `delegate_task` children carry
+                        # `source='subagent'` and NO `_delegate_from` marker, so the marker test above
+                        # misses them and the walk walks INTO one — every read of a parent that has
+                        # ever dispatched a child then answered with that child's transcript
+                        # (a two-line `wc -l` turn in place of the whole conversation).
+                        "  AND COALESCE(child.source, '') NOT IN ('tool', 'subagent') "
                         "ORDER BY child.started_at DESC, child.id DESC LIMIT 1", (current,)).fetchone()
                 except Exception:
                     return session_id

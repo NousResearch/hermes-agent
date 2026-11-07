@@ -1,0 +1,40 @@
+name: lampstand
+title: lampstand
+repo: https://github.com/vincitamore/lampstand
+sha: 18354a0476a3b55e4926ba0706421740a4c8a5a7
+version: "0.3.1"
+description: "lampstand turns one Hermes into a team that remembers who it works for. Plant a house (a git repository you own) and every chat started in it works under the same written principles and rules, keeps one shared record of tasks, decisions, knowledge and reminders as plain Markdown, and can wake the other chats through shared rooms, including from a Telegram, Discord or Slack chat. Nine house tools plus role-briefed delegation, /lampstand, a desktop House page (five lamps for the house's checks, work, inbox, knowledge, the constitution with adopt and strike, rooms, rhythm, health), a status-bar lamp and transcript cards. Nothing becomes a rule until you adopt it. Disclosure: runs its own Node CLI (Node 22.13+) and git in the house, and each act lands as a git commit with no per-call approval; rooms are off until you install vincitamore/agora (not the catalog's agora entry) and grant allow_gateway_injection, after which it runs that agora checkout from PATH with the gateway's environment, a background thread polls listening chats every 15 s, and a room message starts a full agent turn with that chat's tools and approval mode; reads the profile's state.db read-only to route wakes; the agent/operator split is an environment marker, not a security boundary; no network calls of its own, no telemetry, no stored credentials."
+maintainer: vincitamore
+category: tools
+tier: community
+requires_hermes: ">=0.22.6"
+docs_url: "https://github.com/vincitamore/lampstand/blob/18354a0476a3b55e4926ba0706421740a4c8a5a7/docs/install-hermes.md"
+screenshots:
+- "https://raw.githubusercontent.com/vincitamore/lampstand/cb10d05f7f60ba804f957a485ce787d2674388aa/docs/screenshots/1-overview.png"
+- "https://raw.githubusercontent.com/vincitamore/lampstand/cb10d05f7f60ba804f957a485ce787d2674388aa/docs/screenshots/2-constitution.png"
+- "https://raw.githubusercontent.com/vincitamore/lampstand/cb10d05f7f60ba804f957a485ce787d2674388aa/docs/screenshots/3-work.png"
+readme: true
+known_issues:
+- "Needs Node.js 22.13 or later and git; without Node the house tools and the House page say that Node is missing."
+- "The desktop House page ships switched off: turn it on under Capabilities, Plugins, then restart the gateway once so its backend routes mount."
+- "Rooms need vincitamore/agora 0.2.5+ (npm install -g github:vincitamore/agora#v0.2.5, never the npm package named agora) and `hermes config set plugins.entries.lampstand.allow_gateway_injection true`."
+capabilities:
+  provides_tools:
+  - lampstand_delegate
+  - lampstand_house
+  - lampstand_tasks
+  - lampstand_inbox
+  - lampstand_knowledge
+  - lampstand_reminders
+  - lampstand_propose
+  - lampstand_room_post
+  - lampstand_room_read
+  - lampstand_room_listen
+  provides_hooks:
+  - pre_llm_call
+  - post_llm_call
+  - pre_verify
+  - post_compaction
+  - post_gateway_admission
+  provides_middleware: []
+  requires_env: []

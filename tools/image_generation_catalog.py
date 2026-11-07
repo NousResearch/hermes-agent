@@ -13,6 +13,11 @@ from typing import Any, Dict, Optional
 _PRESET_SIZES = {"landscape": "landscape_16_9", "square": "square_hd", "portrait": "portrait_16_9"}
 _ASPECT_SIZES = {"landscape": "16:9", "square": "1:1", "portrait": "9:16"}
 _DEFAULT_SIZES = {"image_size_preset": _PRESET_SIZES, "aspect_ratio": _ASPECT_SIZES}
+# OpenAI GPT Image 2+: edges multiples of 16, ratio <= 3:1, 655,360-8,294,400 px.
+_GPT_IMAGE_SIZES = {
+    "landscape": {"width": 1280, "height": 720}, "square": "square_hd",
+    "portrait": {"width": 720, "height": 1280},
+}
 
 
 def _model(
@@ -136,16 +141,14 @@ FAL_MODELS: dict[str, dict[str, Any]] = {
         },
         max_reference_images=16,
     ),
-    # GPT Image 2 uses FAL's preset enum (unlike 1.5's literal dims) mapped to the
-    # 4:3 variants: the 16:9 presets (1024x576) fall below its 655,360 min-pixel
-    # requirement. openai_api_key (BYOK) is deliberately not in `supports` — all
-    # users go through the shared FAL billing path. Its edit endpoint lives under
-    # the OpenAI namespace (NOT fal-ai/) and auto-infers size, so no image_size.
+    # GPT Image 2 / 2.5 take custom {width, height}; FAL's 16:9 presets (1024x576) fall
+    # below their 655,360 min-pixel floor, so 16:9 is sent explicitly. openai_api_key
+    # (BYOK) is deliberately not in `supports` — all users go through the shared FAL
+    # billing path. Edit endpoints get no image_size: FAL's default `auto` keeps the
+    # source aspect, where a size preset would squeeze it.
     "fal-ai/gpt-image-2": _model(
         "GPT Image 2", "~20s", "SOTA text rendering + CJK, world-aware photorealism", "$0.04–0.06/image",
-        style="image_size_preset", sizes={
-            "landscape": "landscape_4_3", "square": "square_hd", "portrait": "portrait_4_3",
-        },
+        style="image_size_preset", sizes=_GPT_IMAGE_SIZES,
         defaults={"quality": "medium", "num_images": 1, "output_format": "png"},
         supports={
             "prompt", "image_size", "quality", "num_images", "output_format", "sync_mode",
@@ -156,14 +159,11 @@ FAL_MODELS: dict[str, dict[str, Any]] = {
         },
         max_reference_images=16,
     ),
-    # Same minimum pixel count as GPT Image 2; keep medium quality explicit
-    # rather than inheriting FAL's higher-cost high default.
+    # Keep medium quality explicit rather than inheriting FAL's higher-cost high default.
     **{
         f"openai/gpt-image-2.5/{variant}/text-to-image": _model(
             f"GPT Image 2.5 {variant.title()}", speed, strengths, "Token-based pricing",
-            sizes={
-                "landscape": "landscape_4_3", "square": "square_hd", "portrait": "portrait_4_3",
-            },
+            sizes=_GPT_IMAGE_SIZES,
             defaults={"quality": "medium", "num_images": 1, "output_format": "png"},
             supports={
                 "prompt", "image_size", "quality", "num_images", "output_format", "background",
@@ -171,7 +171,7 @@ FAL_MODELS: dict[str, dict[str, Any]] = {
             },
             edit_endpoint=f"openai/gpt-image-2.5/{variant}/edit",
             edit_supports={
-                "prompt", "image_urls", "image_size", "quality", "num_images", "output_format",
+                "prompt", "image_urls", "quality", "num_images", "output_format",
                 "background", "output_compression", "sync_mode", "mask_url", "input_fidelity",
             },
             max_reference_images=16,

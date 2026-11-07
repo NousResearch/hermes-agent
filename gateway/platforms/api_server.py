@@ -78,7 +78,14 @@ _CAPABILITY_ENDPOINTS = (
     ("session_fork", ("POST", "/api/sessions/{session_id}/fork")),
     ("session_chat", ("POST", "/api/sessions/{session_id}/chat")),
     ("session_chat_stream", ("POST", "/api/sessions/{session_id}/chat/stream")),
-    ("session_model_lock", ("POST", "/api/sessions/{session_id}/model")))
+    ("session_model_lock", ("POST", "/api/sessions/{session_id}/model")),
+    ("dashboard_candidates", ("GET", "/api/desktop/dashboard-candidates")),
+    ("browser_pair_start", ("POST", "/api/browser-extension/pair/start")),
+    ("browser_pairing", ("POST", "/api/browser-extension/pair/start")),
+    ("browser_pair_approve", ("GET", "/api/browser-extension/pair/approve/{pairing_id}")),
+    ("browser_pair_grant", ("POST", "/api/browser-extension/pair/grant/{pairing_id}")),
+    ("browser_pair_deny", ("POST", "/api/browser-extension/pair/deny/{pairing_id}")),
+    ("browser_pair_status", ("GET", "/api/browser-extension/pair/status/{pairing_id}")))
 
 
 def _approval_event_choices(*, smart_denied: bool, allow_session: bool, allow_permanent: bool) -> list[str]:
@@ -109,6 +116,7 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
+from gateway.browser_pairing import BrowserPairingStore, PAIRING_TTL_SECONDS, normalize_extension_origin
 from gateway.config import Platform, PlatformConfig
 from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
@@ -639,6 +647,29 @@ _SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
     "X-XSS-Protection": "0",
     "Referrer-Policy": "no-referrer"}
+# Set on a response (``response[_FRAMEABLE_KEY] = True``) that names its own
+# ``frame-ancestors``; the middleware then leaves X-Frame-Options off, since
+# DENY would veto the very embedding that CSP header allows.
+_FRAMEABLE_KEY = "frameable"
+_PAIRING_FORM_PATH_RE = re.compile(r"/api/browser-extension/pair/(?:grant|deny)/[^/]+$")
+_LOOPBACK_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "::1"})
+_PAIRING_EMBED_CSS = (
+    ".embed .frame{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr}"
+    ".embed .rail-statue,.embed .rail-bottom,.embed .rail-sub,.embed .pane-art,.embed .pane-foot,"
+    ".embed .rail-row:not(.rail-row-status){display:none}"
+    ".embed .rail-inner{min-height:0;flex-direction:row;flex-wrap:nowrap;justify-content:space-between;"
+    "align-items:center;gap:12px;padding:14px 18px}"
+    ".embed .rail-mid{margin:0;text-align:right}.embed .rail-row .rail-value{margin:0}"
+    ".embed .brand-chip{width:34px;height:42px}.embed .brand-text{font-size:24px}"
+    ".embed .pane{align-items:center;justify-content:center}"
+    ".embed .pane-inner{padding:22px 18px;max-width:none;text-align:center}"
+    ".embed .display{font-size:46px;margin-bottom:12px}"
+    ".embed .prompt,.embed .lede{font-size:14px;margin:0 auto 12px}"
+    ".embed .code{margin-bottom:18px;font-size:10px}"
+    ".embed .actions{justify-content:center;gap:12px}"
+    ".embed button{font-size:19px;padding:10px 24px 9px}"
+)
+_PAIRING_FORM_ORIGIN_REFUSAL = "Approve and Deny only work from the gateway's own approval page."
 
 if AIOHTTP_AVAILABLE:
     @web.middleware
@@ -648,7 +679,7 @@ if AIOHTTP_AVAILABLE:
         origin = request.headers.get("Origin", "")
         cors_headers = None
         if adapter is not None:
-            if not adapter._origin_allowed(origin):
+            if not adapter._origin_allowed(origin) and not adapter._is_pairing_form_post(request):
                 return web.Response(status=403)
             cors_headers = adapter._cors_headers_for_origin(origin)
         if request.method == "OPTIONS":
@@ -682,7 +713,10 @@ if AIOHTTP_AVAILABLE:
     async def security_headers_middleware(request, handler):
         """Add security headers to all responses (including errors)."""
         response = await handler(request)
+        frameable = response.get(_FRAMEABLE_KEY) is True
         for k, v in _SECURITY_HEADERS.items():
+            if frameable and k == "X-Frame-Options":
+                continue
             response.headers.setdefault(k, v)
         return response
 else:
@@ -1110,6 +1144,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self.gateway_runner: Optional[Any] = None  # set by gateway/run.py
         # Admitted requests not yet in agent bookkeeping, so shutdown drain counts them.
         self._pending_agent_requests: int = 0
+        # Loopback browser-extension pairing: one-click scoped bearer
+        # tokens (see gateway/browser_pairing.py). Persisted under
+        # HERMES_HOME/state/browser_pairing.json so pairings and minted
+        # tokens survive gateway restarts.
+        self._browser_pairing = BrowserPairingStore()
         # Daily API metrics + heartbeat stamps published to gateway runtime status (#52323).
         self._metrics_day: str = self._metrics_day_key()
         self._metrics_requests_today: int = 0
@@ -1416,6 +1455,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         listener only; named profiles fail closed rather than inherit the owner's key."""
         profile = _api_request_profile.get()
         expected_key = self._expected_api_key()
+        # Loopback browser clients are paired to this Hermes installation. Do not make
+        # an extension break merely because a named profile has no per-profile key;
+        # remote clients still take the strict key path below.
+        if self._request_is_loopback(request) and self._browser_pairing.is_valid_token(
+                request.headers.get("Authorization", "")[7:].strip()
+                if request.headers.get("Authorization", "").startswith("Bearer ") else ""):
+            return None
         if not expected_key:
             if not (profile and profile != "default"):
                 return None
@@ -1430,6 +1476,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # Compare as bytes: compare_digest raises TypeError on non-ASCII str, and the
             # token is raw client input — a stray byte must 401, not 500.
             if hmac.compare_digest(token.encode(), expected_key.encode()):
+                return None
+            # Scoped browser pairing tokens on loopback authorize access for the paired extension.
+            if self._request_is_loopback(request) and self._browser_pairing.is_valid_token(token):
                 return None
         logger.warning("API server rejected invalid API key: %s", self._request_audit_log_suffix(request))
         return self._auth_failed_response()
@@ -1558,6 +1607,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("GET", "/v1/models", self._handle_models),
             ("GET", "/api/model/options", self._handle_model_options),
             ("GET", "/v1/capabilities", self._handle_capabilities),
+            ("GET", "/api/desktop/dashboard-candidates", self._handle_dashboard_candidates),
+            ("POST", "/api/browser-extension/pair/start", self._handle_browser_pair_start),
+            ("GET", "/api/browser-extension/pair/approve/{pairing_id}", self._handle_browser_pair_approve),
+            ("POST", "/api/browser-extension/pair/grant/{pairing_id}", self._handle_browser_pair_grant),
+            ("POST", "/api/browser-extension/pair/deny/{pairing_id}", self._handle_browser_pair_deny),
+            ("GET", "/api/browser-extension/pair/status/{pairing_id}", self._handle_browser_pair_status),
             ("GET", "/v1/skills", self._handle_skills),
             ("GET", "/v1/toolsets", self._handle_toolsets),
             ("GET", "/api/sessions", self._handle_list_sessions),
@@ -2359,7 +2414,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
             **_STATIC_FEATURE_FLAGS,
             "run_unknown_resolution": getattr(runner, "session_authority", None) is not None,
-            "cors": bool(self._cors_origins)}
+            "cors": bool(self._cors_origins),
+            # Loopback browser pairing lets the Hermes Browser extension
+            # obtain a scoped token with one local approval click.
+            "browserPairing": True}
         return web.json_response({
             "object": "hermes.api_server.capabilities", "platform": "hermes-agent",
             "model": self._model_name,
@@ -2376,6 +2434,521 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 for name, entry in _CAPABILITY_ENDPOINTS
                 if len(entry) < 3 or features[entry[2]]},
         })
+
+    def _request_is_loopback(self, request: "web.Request") -> bool:
+        """True when the request arrived over the loopback interface."""
+        host = None
+        try:
+            transport = request.transport
+            if transport is not None:
+                peer = transport.get_extra_info("peername")
+                if isinstance(peer, tuple) and peer:
+                    host = peer[0]
+                elif isinstance(peer, str):
+                    host = peer
+        except Exception:
+            host = None
+        return host in ("127.0.0.1", "::1", "localhost") or (host or "").startswith("127.")
+
+    @staticmethod
+    def _host_is_loopback_name(netloc: str) -> bool:
+        """True when a ``Host``/``Origin`` authority names a loopback host (any port)."""
+        netloc = (netloc or "").strip().lower()
+        if netloc.startswith("["):
+            hostname = netloc[1:].split("]", 1)[0]
+        else:
+            hostname = netloc.rsplit(":", 1)[0] if netloc.count(":") == 1 else netloc
+        return hostname in _LOOPBACK_HOSTNAMES
+
+    @staticmethod
+    def _pairing_wants_embed(request: "web.Request", frame_origin: str) -> bool:
+        """The compact layout, for a page the asking extension frames (``?embed=1``)."""
+        return bool(frame_origin) and request.query.get("embed") == "1"
+
+    def _is_pairing_form_post(self, request: "web.Request") -> bool:
+        """True for a grant/deny POST that the gateway's own approval page submitted.
+
+        Approve and Deny are plain form posts, so what keeps another local
+        extension or web page from submitting them is the browser-set request
+        origin, which a page cannot forge: ``Origin`` must be this gateway's own
+        loopback address, and ``Sec-Fetch-Site`` (when sent) must say
+        same-origin. Both are required to name a loopback host, so a page that
+        rebinds its own hostname to 127.0.0.1 is not "the gateway's own page"
+        either. A request that carries no ``Origin`` is refused.
+        """
+        if request.method != "POST" or not _PAIRING_FORM_PATH_RE.search(request.path):
+            return False
+        origin = request.headers.get("Origin", "").strip().lower()
+        if not origin or not self._host_is_loopback_name(origin.split("://", 1)[-1]):
+            return False
+        if origin != f"{request.scheme}://{request.host}".lower():
+            return False
+        if not self._host_is_loopback_name(request.host):
+            return False
+        site = request.headers.get("Sec-Fetch-Site", "").strip().lower()
+        return not site or site == "same-origin"
+
+
+    def _browser_pairing_asset(self, name: str) -> str:
+        """Return a data: URI for a pairing-page asset, or '' if unavailable.
+
+        Assets live in ``gateway/assets/browser_pairing/`` and ship in the
+        wheel via the ``gateway = ["assets/**/*"]`` package-data entry. A
+        missing asset degrades the page gracefully (fallback fonts, no
+        decorative images) instead of breaking pairing.
+        """
+        import base64
+
+        path = Path(__file__).resolve().parent.parent / "assets" / "browser_pairing" / name
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return ""
+        mime = {
+            ".woff2": "font/woff2",
+            ".png": "image/png",
+            ".webp": "image/webp",
+            ".svg": "image/svg+xml",
+        }.get(path.suffix.lower(), "application/octet-stream")
+        return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
+    def _pairing_page(
+        self, title: str, message: str, body_extra: str = "", rail_rows=None, embed: bool = False
+    ) -> str:
+        """Nous Portal-branded pairing page (approve + status pages).
+
+        Split layout in the portal's design language: cobalt rail with a white
+        dithered Hermes bust and session metadata, off-white pane with the
+        dithered Hermes as a full-bleed background, the small animated cobalt
+        globe over the Hermes Browser wordmark, Rules display headline, and
+        portal-style approve/deny buttons. Content is vertically centered.
+        Below 860px the rail becomes a cobalt header band and the full Hermes
+        moves under the content, bleeding off the bottom-right corner, so the
+        two figures still face each other across the prompt.
+
+        Type follows hermes-agent.nousresearch.com: compressed Rules caps for
+        the portal brand, headline and buttons, the site's body stack for UI
+        copy, and a tracked mono for labels. The site's own cuts (Rules
+        Gothic, Rules Variable) are licensed and not redistributed, so the
+        page embeds the Rules Compressed file the web dashboard already ships
+        in ``web/public/fonts/``.
+
+        ``embed`` is the compact layout for a page shown inside the extension's
+        own panel (a few hundred pixels wide and tall): a slim header band, no
+        figure, the prompt and buttons centred, nothing that needs scrolling.
+        """
+        import html
+
+        safe_title = html.escape(title)
+        safe_message = html.escape(message)
+        asset = self._browser_pairing_asset
+        statue = asset("statue.png")
+        railstatue = asset("railstatue.png")
+        badge = asset("badge.png")
+        globe = asset("globe.webp")
+        hbelogo = asset("hbe-logo.svg")
+
+        font_faces = ""
+        for family, weight, filename in (
+            ("Rules Compressed", 500, "RulesCompressed-Medium.woff2"),
+            ("JBM", 400, "jbm.woff2"),
+        ):
+            src = asset(filename)
+            if src:
+                font_faces += (
+                    f"@font-face{{font-family:'{family}';font-weight:{weight};"
+                    f"src:url('{src}') format('woff2')}}"
+                )
+
+        rail_statue_html = f'<img class="rail-statue" src="{railstatue}" alt="" aria-hidden="true">' if railstatue else ""
+        brand_chip_html = f'<span class="brand-chip"><img src="{badge}" alt=""></span>' if badge else ""
+        globe_html = f'<img class="rail-globe" src="{globe}" alt="" aria-hidden="true">' if globe else ""
+        logo_html = f'<img class="rail-logo" src="{hbelogo}" alt="Hermes Browser">' if hbelogo else ""
+        # statue-fill is the statue's solid silhouette in the pane colour. On
+        # small screens it sits between the dithered statue and the HERMES
+        # wordmark so the word reads as behind the figure, not through it.
+        statue_fill = asset("statue-fill.png")
+        fill_html = f'<img class="pane-statue-fill" src="{statue_fill}" alt="" aria-hidden="true">' if statue_fill else ""
+        pane_statue_html = (
+            '<div class="pane-art"><p class="pane-mark" aria-hidden="true">Hermes</p>'
+            f'{fill_html}<img class="pane-statue" src="{statue}" alt="" aria-hidden="true"></div>'
+            if statue
+            else ""
+        )
+
+        rail_html = ""
+        for label, value in rail_rows or []:
+            row_class = "rail-row"
+            if label == "STATUS":
+                value = f'<span class="dot"></span>{value}'
+                row_class += " rail-row-status"
+            rail_html += f'<div class="{row_class}"><p class="rail-label">{label}</p><p class="rail-value">{value}</p></div>'
+        return (
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            f"<title>Hermes Browser · {safe_title}</title>"
+            "<style>"
+            + font_faces
+            + ":root{color-scheme:light;"
+            "--display:'Rules Compressed','Rules Gothic Compressed','Bahnschrift Condensed','Arial Narrow',sans-serif;"
+            "--ui:'Rules Variable',-apple-system,'Segoe UI',system-ui,sans-serif;"
+            "--mono:'JBM','JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}"
+            "*{box-sizing:border-box}"
+            "html,body{height:100%}"
+            "body{margin:0;background:#0505e8;-webkit-font-smoothing:antialiased;font-family:var(--mono)}"
+            ".frame{display:grid;grid-template-columns:320px 1fr;min-height:100vh}"
+            ".rail{position:relative;background:#0505e8;color:#fff;overflow:hidden}"
+            ".rail-statue{position:absolute;right:-70px;bottom:-14%;height:118%;opacity:.38;pointer-events:none}"
+            ".rail-inner{position:relative;z-index:1;display:flex;flex-direction:column;"
+            "justify-content:space-between;min-height:100vh;padding:30px 28px}"
+            ".brand{display:flex;gap:14px;align-items:center}"
+            ".brand-chip{flex:0 0 auto;width:54px;height:66px;border-radius:8px;overflow:hidden}"
+            ".brand-chip img{width:100%;height:100%;object-fit:cover;display:block}"
+            ".brand-text{font-family:var(--display);font-weight:500;text-transform:uppercase;"
+            "font-size:37px;line-height:.88;letter-spacing:.01em}"
+            ".rail-sub{font-size:10px;letter-spacing:.34em;margin:14px 0 0;opacity:.85}"
+            ".rail-mid{margin:34px 0}"
+            ".rail-label{font-size:9px;letter-spacing:.3em;opacity:.6;margin:0 0 5px}"
+            ".rail-value{font-size:12px;letter-spacing:.06em;margin:0 0 16px;word-break:break-all;line-height:1.5}"
+            ".dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#7cffb0;"
+            "margin-right:9px;vertical-align:1px;animation:pulse 1.6s ease-in-out infinite}"
+            ".rail-foot{font-size:9px;letter-spacing:.26em;opacity:.6;margin:0}"
+            ".pane{position:relative;background:#f6f7fb;overflow:hidden;display:flex;align-items:center}"
+            ".pane-art{position:absolute;inset:0;pointer-events:none}"
+            ".pane-statue{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;"
+            "object-position:right center;opacity:.8}"
+            ".pane-statue-fill{display:none}"
+            ".pane-inner{position:relative;z-index:1;padding:56px 72px;max-width:780px;width:100%}"
+            ".rail-globe{width:64px;height:auto;display:block;margin:0 0 12px;background:#f6f7fb;border-radius:50%;padding:7px}"
+            ".rail-logo{width:170px;max-width:100%;height:auto;display:block;margin:0 0 18px}"
+            ".display{font-family:var(--display);text-transform:uppercase;color:#0505e8;"
+            "font-weight:500;font-size:clamp(52px,7.4vw,104px);line-height:.9;margin:0 0 22px}"
+            ".lede{font-family:var(--ui);color:#3c4254;"
+            "font-size:16px;line-height:1.6;max-width:44ch;text-wrap:pretty;margin:0 0 26px}"
+            ".prompt{font-family:var(--ui);color:#3c4254;"
+            "font-size:16px;line-height:1.6;max-width:44ch;text-wrap:pretty;margin:0 0 14px}"
+            ".prompt strong{color:#111;font-weight:600}"
+            ".code{display:block;padding:10px 13px;border:1px solid rgba(5,5,232,.25);background:#edeff8;"
+            "color:#333;font-family:var(--mono);font-size:11px;letter-spacing:.05em;word-break:break-all;margin:0 0 26px}"
+            ".actions{display:flex;gap:16px;flex-wrap:wrap}"
+            "button{font-family:var(--display);font-weight:500;font-size:21px;line-height:1;"
+            "letter-spacing:.08em;text-transform:uppercase;padding:12px 30px 11px;cursor:pointer;"
+            "border-radius:0;border:2px solid #0505e8}"
+            ".approve{background:#0505e8;color:#fff}"
+            ".deny{background:#fff;color:#0505e8}"
+            "button:hover{filter:brightness(1.08)}"
+            "button:active{transform:translateY(1px)}"
+            "button:focus-visible{outline:2px solid #0505e8;outline-offset:3px}"
+            ".pane-foot{position:absolute;left:72px;bottom:26px;font-size:9px;letter-spacing:.26em;"
+            "text-transform:uppercase;color:#666;margin:0}"
+            "@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}"
+            "@media(min-width:861px) and (max-width:1199px){.pane-statue{opacity:.45}}"
+            ".pane-mark{display:none}"
+            # Phones and tablets: the rail becomes a header band (portal brand
+            # and status, bust behind looking right). At the bottom, HERMES is
+            # set huge in the display face like the site's footer wordmark,
+            # and the full Hermes stands in front of it on its silhouette.
+            "@media(max-width:860px){"
+            ".frame{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr}"
+            ".rail-statue{right:auto;bottom:auto;left:-56px;top:-28px;height:150%;opacity:.3}"
+            ".rail-inner{min-height:0;flex-direction:row;flex-wrap:wrap;justify-content:space-between;"
+            "align-items:flex-start;gap:18px 16px;padding:22px 20px}"
+            ".rail-mid{margin:0;display:flex;flex-wrap:wrap;gap:14px 28px}"
+            ".rail-row .rail-value{margin:0}"
+            ".brand-chip{width:42px;height:52px}.brand-text{font-size:30px}"
+            ".rail-sub{font-size:9px;margin-top:10px}"
+            ".rail-bottom{display:none}"
+            ".pane{flex-direction:column;align-items:stretch}"
+            ".pane-inner{order:1;padding:36px 20px 0;max-width:none;text-align:center}"
+            ".lede,.prompt{margin-left:auto;margin-right:auto}"
+            ".actions{justify-content:center}"
+            ".display{font-size:clamp(52px,16vw,88px)}"
+            ".pane-foot{order:2;position:static;padding:30px 20px 0;text-align:center}"
+            # The figure is centred and stands in front of HERMES, which runs
+            # across his middle. The mark lives inside .pane-art so its
+            # position tracks the statue at every width.
+            ".pane-art{order:3;position:relative;inset:auto;align-self:center;"
+            "width:min(600px,100%);margin:auto 0 0;padding-top:48px}"
+            ".pane-mark{display:block;position:absolute;left:50%;top:56%;transform:translate(-50%,-50%);"
+            "margin:0;white-space:nowrap;font-family:var(--display);font-weight:500;text-transform:uppercase;"
+            # "HERMES" is ~1.82em wide in Rules Compressed: run it edge to edge.
+            "font-size:min(560px,58vw);line-height:.78;color:rgba(5,5,232,.13)}"
+            ".pane-statue{position:relative;inset:auto;display:block;height:auto;opacity:.85}"
+            ".pane-statue-fill{display:block;position:absolute;left:0;right:0;bottom:0;width:100%;height:auto}}"
+            # Session and extension already appear in the prompt, so the
+            # header band keeps only the status.
+            "@media(max-width:860px){.rail-row:not(.rail-row-status){display:none}.rail-mid{text-align:right}}"
+            "@media(max-width:600px){.rail-value{font-size:11px}}"
+            # Tablets have room to centre the figure itself (it sits left of
+            # the image's centre, with the staff on the right) and to keep
+            # HERMES inside the frame, low across his waist.
+            "@media(min-width:601px) and (max-width:860px){.pane-art{transform:translateX(12%)}"
+            ".pane-mark{left:38%;top:72%;font-size:min(56vw,420px)}}"
+            "@media(max-width:860px) and (max-height:500px){.display{font-size:52px;margin-bottom:14px}"
+            ".rail-row:not(.rail-row-status){display:none}.rail-inner{gap:12px 16px;padding:16px 20px}"
+            ".pane-inner{padding-top:20px}}"
+            "@media(prefers-reduced-motion:reduce){.dot{animation:none}}"
+            # A scrollbar in the portal's colours, square like the extension's own;
+            # Firefox has no pseudo-elements, so it gets the thin standard one.
+            "::-webkit-scrollbar{width:8px;height:8px}"
+            "::-webkit-scrollbar-track{background:transparent}"
+            "::-webkit-scrollbar-thumb{background:rgba(5,5,232,.55);border:1px solid #0505e8}"
+            "@supports not selector(::-webkit-scrollbar){html{scrollbar-width:thin;"
+            "scrollbar-color:rgba(5,5,232,.55) transparent}}"
+            + (_PAIRING_EMBED_CSS if embed else "")
+            + "</style></head>"
+            + ("<body class=\"embed\">" if embed else "<body>")
+            + "<div class=\"frame\">"
+            "<aside class=\"rail\">"
+            + rail_statue_html
+            + "<div class=\"rail-inner\">"
+            "<div class=\"rail-top\">"
+            "<div class=\"brand\">"
+            + brand_chip_html
+            + "<span class=\"brand-text\">NOUS<br>PORTAL</span>"
+            "</div>"
+            "<p class=\"rail-sub\">HERMES AGENT</p>"
+            "</div>"
+            + f"<div class=\"rail-mid\">{rail_html}</div>"
+            + "<div class=\"rail-bottom\">"
+            + globe_html
+            + logo_html
+            + "<p class=\"rail-foot\">LOCAL GATEWAY · 127.0.0.1</p>"
+            "</div>"
+            "</div>"
+            "</aside>"
+            "<main class=\"pane\">"
+            + pane_statue_html
+            + "<div class=\"pane-inner\">"
+            + f"<h1 class=\"display\">{safe_title}</h1>"
+            + (f"<p class=\"lede\">{safe_message}</p>" if safe_message else "")
+            + f"{body_extra}"
+            "</div>"
+            "<p class=\"pane-foot\">Return to Hermes Browser</p>"
+            "</main>"
+            "</div></body></html>"
+        )
+
+    def _pairing_page_response(
+        self, page: str, status: int = 200, frame_origin: str = ""
+    ) -> "web.Response":
+        """HTML response for pairing pages with a page-safe CSP.
+
+        The global API-server CSP (default-src 'none') would otherwise block
+        the inline <style> and data: logo, leaving the approval page unstyled.
+        This override still blocks scripts, frames, and all external fetches —
+        it only permits inline styles and data: images for this surface.
+
+        ``frame_origin`` is the exact extension origin that asked to pair. When
+        set, only that origin may embed the page (``frame-ancestors``) and
+        X-Frame-Options is left off; otherwise the page cannot be framed at all.
+        Every pairing page also sends ``Referrer-Policy: same-origin``: the
+        default ``no-referrer`` makes browsers send ``Origin: null`` on form
+        posts, and the grant/deny origin check could not tell them apart.
+        """
+        frame_origin = normalize_extension_origin(frame_origin)
+        ancestors = frame_origin or "'none'"
+        response = web.Response(
+            text=page,
+            content_type="text/html",
+            status=status,
+            headers={
+                "Content-Security-Policy": (
+                    "default-src 'none'; style-src 'unsafe-inline'; font-src data:; "
+                    f"img-src data:; media-src data:; frame-ancestors {ancestors}"
+                ),
+                "Referrer-Policy": "same-origin",
+            },
+        )
+        if frame_origin:
+            response[_FRAMEABLE_KEY] = True
+        return response
+
+    async def _handle_browser_pair_start(self, request: "web.Request") -> "web.Response":
+        """POST /api/browser-extension/pair/start — mint a short-lived pairing."""
+        if not self._request_is_loopback(request):
+            return web.Response(status=403, text="Loopback only.")
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        name = str(payload.get("name") or "Hermes Browser Extension")[:80]
+        extension_id = str(payload.get("extensionId") or payload.get("extension_id") or "")[:200]
+        # The exact origin the approval page may be framed by. A browser names the
+        # caller in ``Origin``; if that is present it must be the same origin, so
+        # one page cannot ask for another extension's panel to host the page.
+        extension_origin = normalize_extension_origin(
+            payload.get("extensionOrigin") or payload.get("extension_origin")
+        )
+        sent_origin = request.headers.get("Origin", "").strip()
+        if sent_origin and sent_origin != extension_origin:
+            extension_origin = ""
+        record = self._browser_pairing.create_pairing(
+            name=name, extension_id=extension_id, extension_origin=extension_origin
+        )
+        approval_url = (
+            f"http://{request.host}/api/browser-extension/pair/approve/"
+            f"{record['pairing_id']}"
+        )
+        return web.json_response(
+            {
+                "pairing_id": record["pairing_id"],
+                "approval_url": approval_url,
+                "ttl_seconds": PAIRING_TTL_SECONDS,
+                # True when the approval page may be shown inside the extension's own
+                # panel; older gateways omit it, which tells the extension to open a tab.
+                "embeddable": bool(record["extension_origin"]),
+            }
+        )
+
+    async def _handle_browser_pair_approve(self, request: "web.Request") -> "web.Response":
+        """GET /api/browser-extension/pair/approve/{id} — local approval page."""
+        import html
+
+        pairing_id = request.match_info.get("pairing_id", "")
+        if not self._request_is_loopback(request):
+            return web.Response(status=403, text="Loopback only.")
+        record = self._browser_pairing.get_pairing(pairing_id)
+        if not record:
+            return web.Response(
+                status=404,
+                text="Pairing request not found or expired. Close this tab and click Connect again.",
+            )
+        frame_origin = record.get("extension_origin", "")
+        embed = self._pairing_wants_embed(request, frame_origin)
+        if record["status"] == "approved":
+            return self._pairing_page_response(
+                self._pairing_page(
+                    "Already approved",
+                    "This browser is already paired. Close this tab and return to Hermes Browser.",
+                    rail_rows=[("STATUS", "APPROVED")],
+                    embed=embed,
+                ),
+                frame_origin=frame_origin,
+            )
+        if record["status"] != "pending":
+            return self._pairing_page_response(
+                self._pairing_page(
+                    "Pairing closed",
+                    "This pairing request is no longer active. Close this tab and click Connect again.",
+                    rail_rows=[("STATUS", "CLOSED")],
+                    embed=embed,
+                ),
+                frame_origin=frame_origin,
+            )
+        suffix = "?embed=1" if embed else ""
+        name = html.escape(record["name"])
+        ext = html.escape(record["extension_id"] or "Hermes Browser Extension")
+        page = self._pairing_page(
+            "Approve connection",
+            "",
+            rail_rows=[("SESSION", name), ("EXTENSION", ext), ("STATUS", "PENDING APPROVAL")],
+            embed=embed,
+            body_extra=(
+                f"<p class=\"prompt\">Allow <strong>{name}</strong> to connect to your local Hermes gateway?</p>"
+                f"<code class=\"code\">{ext}</code>"
+                "<div class=\"actions\">"
+                f"<form method=\"post\" action=\"/api/browser-extension/pair/grant/{pairing_id}{suffix}\">"
+                "<button id=\"approveButton\" class=\"approve\" type=\"submit\">Approve</button></form>"
+                f"<form method=\"post\" action=\"/api/browser-extension/pair/deny/{pairing_id}{suffix}\">"
+                "<button id=\"denyButton\" class=\"deny\" type=\"submit\">Deny</button></form>"
+                "</div>"
+            ),
+        )
+        return self._pairing_page_response(page, frame_origin=frame_origin)
+
+    async def _handle_browser_pair_grant(self, request: "web.Request") -> "web.Response":
+        """POST /api/browser-extension/pair/grant/{id} — approve and mint token."""
+        pairing_id = request.match_info.get("pairing_id", "")
+        if not self._request_is_loopback(request):
+            return web.Response(status=403, text="Loopback only.")
+        if not self._is_pairing_form_post(request):
+            return web.Response(status=403, text=_PAIRING_FORM_ORIGIN_REFUSAL)
+        granted = self._browser_pairing.grant_pairing(pairing_id)
+        if not granted:
+            return web.Response(
+                status=410,
+                text="Pairing request not found or expired. Close this tab and click Connect again.",
+            )
+        return self._pairing_page_response(
+            self._pairing_page(
+                "Approved",
+                "Hermes Browser is connected. You can close this tab.",
+                rail_rows=[("STATUS", "APPROVED")],
+                embed=self._pairing_wants_embed(request, granted.get("extension_origin", "")),
+            ),
+            frame_origin=granted.get("extension_origin", ""),
+        )
+
+    async def _handle_browser_pair_deny(self, request: "web.Request") -> "web.Response":
+        """POST /api/browser-extension/pair/deny/{id} — reject the pairing."""
+        pairing_id = request.match_info.get("pairing_id", "")
+        if not self._request_is_loopback(request):
+            return web.Response(status=403, text="Loopback only.")
+        if not self._is_pairing_form_post(request):
+            return web.Response(status=403, text=_PAIRING_FORM_ORIGIN_REFUSAL)
+        denied = self._browser_pairing.deny_pairing(pairing_id)
+        if not denied:
+            return web.Response(status=410, text="Pairing request not found.")
+        return self._pairing_page_response(
+            self._pairing_page(
+                "Denied",
+                "You denied this pairing. You can close this tab.",
+                rail_rows=[("STATUS", "DENIED")],
+                embed=self._pairing_wants_embed(request, denied.get("extension_origin", "")),
+            ),
+            frame_origin=denied.get("extension_origin", ""),
+        )
+
+    async def _handle_browser_pair_status(self, request: "web.Request") -> "web.Response":
+        """GET /api/browser-extension/pair/status/{id} — poll for the scoped token."""
+        pairing_id = request.match_info.get("pairing_id", "")
+        if not self._request_is_loopback(request):
+            return web.json_response(
+                {"error": {"message": "Browser pairing is available only on the local machine.", "code": "pairing_loopback_only"}},
+                status=403,
+            )
+        record = self._browser_pairing.get_pairing(pairing_id)
+        if not record:
+            return web.json_response(
+                {"error": {"message": "Pairing request was not found.", "code": "pairing_not_found"}},
+                status=404,
+            )
+        pairing_status = record["status"]
+        if pairing_status == "approved":
+            return web.json_response({"status": "approved", "token": record.get("token")})
+        if pairing_status == "denied":
+            return web.json_response(
+                {"error": {"message": "Pairing request was denied.", "code": "pairing_denied"}},
+                status=410,
+            )
+        return web.json_response({"status": pairing_status})
+
+    async def _handle_dashboard_candidates(self, request: "web.Request") -> "web.Response":
+        """GET /api/desktop/dashboard-candidates: return active loopback ports running Hermes Desktop serve."""
+        if not self._request_is_loopback(request):
+            auth_err = self._check_auth(request)
+            if auth_err:
+                return auth_err
+        import json, socket
+        from pathlib import Path
+        from hermes_constants import get_hermes_home
+        candidates: List[int] = []
+        ledger_path = Path(get_hermes_home()) / "spawn-ledger.json"
+        if ledger_path.is_file():
+            try:
+                data = json.loads(ledger_path.read_text(encoding="utf-8"))
+                for entry in (data if isinstance(data, list) else []):
+                    if entry.get("purpose") == "serve" and entry.get("port"):
+                        port = int(entry["port"])
+                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                            s.settimeout(0.08)
+                            if s.connect_ex(("127.0.0.1", port)) == 0:
+                                if port not in candidates:
+                                    candidates.append(port)
+            except Exception as e:
+                logger.debug("dashboard-candidates ledger read failed: %s", e)
+        return web.json_response({"candidates": candidates})
 
     @_require_auth
     async def _handle_skills(self, request: web.Request) -> web.Response:
@@ -3970,7 +4543,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             assert self._app is not None
             # Native routes + multiplex /p/<profile>/ mirrors (the prefix middleware validates and
             # scopes config/credentials when multiplexing is on).
-            for method, path, handler in self._http_route_table():
+            from gateway.browser_webapp_tickets import http_routes as _webapp_ticket_routes
+            for method, path, handler in [*self._http_route_table(), *_webapp_ticket_routes(self)]:
                 self._app.router.add_route(method, path, handler)
                 self._app.router.add_route(method, f"/p/{{profile}}{path}", handler)
             # Registered LAST so every native mirror above wins: anything else under /p/<profile>/ is a

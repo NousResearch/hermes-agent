@@ -85,6 +85,30 @@ def _redirect_uri(request: Request) -> str:
     return urlunparse(parsed._replace(path=f"{prefix}{parsed.path}"))
 
 
+def _public_origin_hop(request: Request):
+    """Where a listener declares a public URL, the provider returns to ``<public>/auth/callback``, and
+    the state cookie set where sign-in started never reaches it from ``127.0.0.1`` (cookies are per
+    host): every sign-in begun on this machine's own address failed with a missing PKCE state cookie.
+    Such a start goes to the same path and query on the public URL first, so the cookie and the
+    callback share a host. A request the proxy forwarded is never moved: it arrives as https or with
+    forwarding headers, and the provider's code and state never pass through here."""
+    public_url = _prefix_mod.resolve_public_url(request.app.state)
+    if not public_url or request.url.scheme != "http":
+        return None
+    if request.headers.get("x-forwarded-for") or request.headers.get("x-forwarded-host"):
+        return None
+    peer = request.client.host if request.client else ""
+    if not (peer == "::1" or peer.startswith("127.")):
+        return None
+    public = urlparse(public_url)
+    if (public.hostname or "").lower() == (request.url.hostname or "").lower() and \
+            (public.port or (443 if public.scheme == "https" else 80)) == (request.url.port or 80):
+        return None
+    query = request.url.query
+    return RedirectResponse(url=f"{public_url}{request.url.path}{f'?{query}' if query else ''}",
+                            status_code=302, headers=_NO_STORE)
+
+
 def _provider_pkce_segments(cookie_payload: dict[str, str]) -> dict[str, str]:
     """Parse a provider's flat ``state=…;verifier=…`` PKCE string into a dict — the ONE place
     the flat form is parsed; :func:`set_pkce_cookie` encodes the dict."""
@@ -228,6 +252,9 @@ async def api_auth_providers() -> Any:
 
 @router.get("/auth/login", name="auth_login")
 async def auth_login(request: Request, provider: str, next: str = ""):
+    hop = _public_origin_hop(request)
+    if hop is not None:
+        return hop
     p = get_provider(provider)
     if p is None:
         raise _http(404, f"Unknown provider: {provider!r}")
@@ -315,6 +342,9 @@ async def auth_native_authorize(
     if not code_challenge:
         raise _http(400, "code_challenge required")
     redirect_uri = _validate_loopback_redirect_uri(redirect_uri)
+    hop = _public_origin_hop(request)
+    if hop is not None:
+        return hop
     p = _select_native_provider(provider)
     if p is None and not provider:
         candidates = list_interactive_providers()

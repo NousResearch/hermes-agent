@@ -61,10 +61,10 @@ class FakeDMChannel:
 
 
 class FakeTextChannel:
-    def __init__(self, channel_id: int = 1, name: str = "general", guild_name: str = "Hermes Server"):
+    def __init__(self, channel_id: int = 1, name: str = "general", guild_name: str = "Hermes Server", guild_id: int = 700):
         self.id = channel_id
         self.name = name
-        self.guild = SimpleNamespace(name=guild_name)
+        self.guild = SimpleNamespace(name=guild_name, id=guild_id)
         self.topic = None
 
     def history(self, *, limit, before, after=None, oldest_first=None):
@@ -112,6 +112,7 @@ def adapter(monkeypatch):
         "DISCORD_REQUIRE_MENTION",
         "DISCORD_THREAD_REQUIRE_MENTION",
         "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_FREE_RESPONSE_GUILDS",
         "DISCORD_FREE_RESPONSE_AUTO_THREAD",
         "DISCORD_AUTO_THREAD",
         "DISCORD_NO_THREAD_CHANNELS",
@@ -206,6 +207,118 @@ async def test_discord_free_response_in_server_channels(adapter, monkeypatch):
     assert event.text == "hello from channel"
     assert event.source.chat_id == "123"
     assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_free_response_guilds_wildcard_scopes_to_listed_server(adapter, monkeypatch):
+    """'*' in free_response_channels only exempts guilds in free_response_guilds."""
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "*")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_GUILDS", "700")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    home = make_message(channel=FakeTextChannel(channel_id=101, guild_id=700), content="home server")
+    await adapter._handle_message(home)
+    adapter.handle_message.assert_awaited_once()
+
+    other = make_message(channel=FakeTextChannel(channel_id=202, guild_id=999), content="other server")
+    await adapter._handle_message(other)
+    assert adapter.handle_message.await_count == 1  # second message stayed mention-gated
+
+
+@pytest.mark.asyncio
+async def test_free_response_guilds_scopes_named_channel_entries(adapter, monkeypatch):
+    """Name-based free-response entries leak across servers without the guild gate."""
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "general")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_GUILDS", "700")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    # Same channel name in a non-listed guild must NOT be free-response.
+    other = make_message(
+        channel=FakeTextChannel(channel_id=303, name="general", guild_id=999),
+        content="leaked name on other server",
+    )
+    await adapter._handle_message(other)
+    adapter.handle_message.assert_not_awaited()
+
+    mine = make_message(
+        channel=FakeTextChannel(channel_id=304, name="general", guild_id=700),
+        content="home server general",
+    )
+    await adapter._handle_message(mine)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_free_response_guilds_allow_mention_everywhere(adapter, monkeypatch):
+    """Explicit @mention still works in a non-listed guild."""
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "*")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_GUILDS", "700")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    bot_user = adapter._client.user
+    mentioned = make_message(
+        channel=FakeTextChannel(channel_id=404, guild_id=999),
+        content=f"<@{bot_user.id}> hello from elsewhere",
+        mentions=[bot_user],
+    )
+    await adapter._handle_message(mentioned)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_free_response_guilds_unset_keeps_legacy_behaviour(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "*")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_GUILDS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    other = make_message(channel=FakeTextChannel(channel_id=505, guild_id=999), content="legacy wildcard")
+    await adapter._handle_message(other)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_free_response_guilds_admission_gate_honours_scope(adapter, monkeypatch):
+    """The admission path (third-party-mention branch) applies the guild scope too.
+
+    A mention of a non-bot makes ``ignore_no_mention`` fall through to the
+    free-response check; mentioning another bot is refused earlier and would
+    not exercise the gate.
+    """
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "*")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_GUILDS", "700")
+    adapter._is_allowed_user = lambda *a, **k: True
+    human = SimpleNamespace(id=555, bot=False)
+    msg = make_message(
+        channel=FakeTextChannel(channel_id=606, guild_id=999),
+        content="hey <@555>",
+        mentions=[human],
+    )
+    admitted, _ = adapter._discord_message_admission(msg, claim=False)
+    assert admitted is False
+
+    msg_home = make_message(
+        channel=FakeTextChannel(channel_id=607, guild_id=700),
+        content="hey <@555>",
+        mentions=[human],
+    )
+    admitted_home, _ = adapter._discord_message_admission(msg_home, claim=False)
+    assert admitted_home is True
+
+
+def test_free_response_guilds_yaml_bridge(adapter, monkeypatch):
+    """``discord.free_response_guilds`` seeds ``extra`` and bridges to the env var."""
+    assert not (discord_platform._apply_yaml_config({}, {}) or {}).get("free_response_guilds")
+    adapter.config.extra.pop("free_response_guilds", None)
+    seeded = discord_platform._apply_yaml_config({}, {"free_response_guilds": ["700", "999"]})
+    assert seeded is not None
+    assert seeded["free_response_guilds"] == "700,999"
+    assert os.environ["DISCORD_FREE_RESPONSE_GUILDS"] == "700,999"
+    assert adapter._get_free_response_guilds() == {"700", "999"}
+
+
+def test_free_response_guilds_ignores_non_numeric_entries(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_GUILDS", "700, not-an-id , 999")
+    assert adapter._get_free_response_guilds() == {"700", "999"}
 
 
 @pytest.mark.asyncio

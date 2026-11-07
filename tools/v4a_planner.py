@@ -610,16 +610,19 @@ def apply_whole(pieces, site, hunk, added, eol, consumed, ids):
     out = list(pieces[:site.start])
     idx = site.start
     added_at = 0
-    removed_eols: list[str] = []
     plus_count = sum(line.prefix == "+" for line in hunk.lines)
     minus_count = sum(line.prefix == "-" for line in hunk.lines)
+    removed_eols = [
+        pieces[site.start + offset].eol
+        for offset, line in enumerate(line for line in hunk.lines if line.prefix != "+")
+        if line.prefix == "-"
+    ]
     for line in hunk.lines:
         if line.prefix == " ":
             out.append(pieces[idx])
             idx += 1
         elif line.prefix == "-":
             piece = pieces[idx]
-            removed_eols.append(piece.eol)
             if piece.origin is not None:
                 consumed.add(piece.origin)
             idx += 1
@@ -629,6 +632,9 @@ def apply_whole(pieces, site, hunk, added, eol, consumed, ids):
             # a missing final newline. Extra inserted lines use the file ending.
             this_eol = removed_eols[0] if plus_count == minus_count == 1 and removed_eols else eol
             added_at += 1
+            if out and out[-1].eol == "":
+                last = out[-1]
+                out[-1] = Piece(last.kind, last.text, eol, last.origin, last.ins_id)
             out.append(Piece("ins", text, this_eol, None, next(ids)))
     out.extend(pieces[idx:])
     return out
@@ -677,33 +683,25 @@ def _append(pieces, added, eol, ids):
     return out + [Piece("ins", line, eol, None, next(ids)) for line in added]
 
 
-def _damage(before, after, span, hints, damaged):
-    if span is None:
-        return
+def _damage(before, after, hints, damaged):
+    """A later hunk's hint that occurs less often after this edit was changed by it."""
     for hint in hints:
-        if not hint or hint in damaged:
-            continue
-        old = _positions(before, hint)
-        if len(_positions(after, hint)) < len(old) and any(span[0] <= pos < span[1] for pos in old):
+        if hint and hint not in damaged and len(_positions(after, hint)) < len(_positions(before, hint)):
             damaged.add(hint)
 
 
-def _resolve(pieces, hunk, consumed, original, floor, floor_explicit, index, damaged):
+def _resolve(pieces, hunk, consumed, original, floor, floor_explicit, index):
     hint = hunk.context_hint or None
     label = _label(index, hint)
-    if hint in damaged:
-        return Refused("damaged", f"{label} is ambiguous: its @@ hint was changed by an earlier hunk")
     search, removed, added = _split(hunk)
     content = render(pieces)
-    if not search:
-        return _resolve_addition(pieces, hunk, hint, index, added, content)
     pattern = "\n".join(search)
     replacement = "\n".join(
         [line.content for line in hunk.lines if line.prefix != "-"]
     )
     pattern, replacement, note, drift = _correct(pattern, replacement, content)
     if drift:
-        return Refused("drift", f"{label}: {drift}")
+        return Refused("drift", f"{label}: {drift}"), note, search, added, replacement
     corrected_search = pattern.split("\n")
     if len(corrected_search) == len(search):
         search = corrected_search
@@ -726,7 +724,7 @@ def _resolve(pieces, hunk, consumed, original, floor, floor_explicit, index, dam
         return decision, note, search, added, replacement
     if _search_consumed(search, removed, original, consumed):
         if _written_only(pieces, search, removed, consumed):
-            return Refused("written", f"{label} not found — {_WRITTEN} — {_advice(hint)}")
+            return Refused("written", f"{label} not found — {_WRITTEN} — {_advice(hint)}"), note, search, added, replacement
         return Refused("not_found", _not_found(index, hint)), note, search, added, replacement
     parts = partial_sites(pieces, search, consumed, file_eol(pieces))
     if parts:
@@ -851,13 +849,8 @@ def plan_hunks(content: str, hunks: list, state: PlannerState | None = None,
             live = True
             continue
         resolved = _resolve(
-            pieces, hunk, consumed, state.original, floor, floor_explicit, index, damaged,
+            pieces, hunk, consumed, state.original, floor, floor_explicit, index,
         )
-        if isinstance(resolved, Refused):
-            errors.append(resolved.message)
-            continue
-        if not isinstance(resolved, tuple):
-            continue
         decision, note, search, added, replacement = resolved
         if isinstance(decision, _Unproven):
             deferred.append((decision, list(pieces)))
@@ -872,7 +865,7 @@ def plan_hunks(content: str, hunks: list, state: PlannerState | None = None,
             pieces = apply_span(
                 pieces, decision.site.partial, replacement, eol, consumed, ids,
             )
-            strategies.append("exact")
+            strategies.append("exact")  # the legacy chain's "exact" is a raw-substring match
         else:
             if decision.tier != "exact":
                 added = _carry_indent(pieces, decision.site, search, added)
@@ -884,7 +877,7 @@ def plan_hunks(content: str, hunks: list, state: PlannerState | None = None,
         after = render(pieces)
 
         later = [later.context_hint for later in hunks[index:] if later.context_hint]
-        _damage(before, after, (0, len(before)), later, damaged)
+        _damage(before, after, later, damaged)
     state.pieces = pieces
     state.floor = floor
     state.floor_explicit = floor_explicit

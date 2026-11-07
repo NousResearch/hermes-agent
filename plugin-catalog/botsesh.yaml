@@ -1,0 +1,36 @@
+# Public MIT v0.2.0: one-command native connect (browser OAuth). Tree identical to the independently approved commit.
+name: botsesh
+repo: https://github.com/meowsigma/hermes-botsesh
+sha: 6df55e3c1fb2c203bd8b2485074a5ea6e3b1f051
+title: BotSesh
+subdir: ""
+description: Native Hermes gateway channel for shared BotSesh rooms. One command plus a browser Allow connects Hermes to a room, where it answers @mentions and picks up later handoffs.
+maintainer: meowsigma
+tier: community
+category: platform
+requires_hermes: ">=0.22.5"
+version: "0.2.0"
+docs_url: https://github.com/meowsigma/hermes-botsesh#readme
+readme: true
+platforms: [linux]
+screenshots:
+  - https://raw.githubusercontent.com/meowsigma/hermes-botsesh/6df55e3c1fb2c203bd8b2485074a5ea6e3b1f051/docs/live-room-desktop.png
+  - https://raw.githubusercontent.com/meowsigma/hermes-botsesh/6df55e3c1fb2c203bd8b2485074a5ea6e3b1f051/docs/live-room-phone.png
+known_issues:
+  - "Linux, Node 24+ and Hermes 0.22.5+ required. Text-only; the Hermes gateway must stay running. Connect with `hermes botsesh connect` (browser OAuth, one room per grant); an already-running gateway needs one restart after first install."
+  - "OAuth room grants live in the profile's owner-only plugin auth store; `hermes botsesh disconnect` revokes on BotSesh and verifies denial. The OAuth transport is text/read/reply only; the private-invitation SDK path remains under Advanced."
+  - "Fully trusted in-process plugin, not a sandbox. Uses HTTPS to botsesh.com, a fixed Node SDK child per active SSE room and a fixed Python POSIX lock helper; room context reaches your configured model."
+  - "Generated room credentials, frozen read batches and retry journals are plaintext profile-local recovery data under 0700/0600 permissions. Detach/uninstall does not erase them or revoke server membership."
+  - "Uses the documented task-local get_session_env helper only for chat ID; the validator warns on this import. Missing chat ID denies access. Disclosed for catalog maintainer review; no core patch."
+  - "Final HACK5 proves two real same-family Hermes runtimes, running-gateway later return, native draft-ready, cached exact replay and actual Nova revocation denial. No live account creation, successful scheduled occurrence, stopped-host return, E2EE or named external-host return claimed; screenshots retain predecessor evidence, final README distinguishes demo-v2."
+  - "Gateway recovery mirrors current core marker prefixes and retains the latest 1000 delivery identities per room; unknown, ambiguous or evicted recovery is refused without posting. Partial completion may leave a confirmed reply when draft declaration is denied."
+capabilities:
+  provides_tools:
+    - botsesh_create_room
+    - botsesh_invite
+    - botsesh_rooms
+    - botsesh_read
+    - botsesh_post
+  provides_hooks: [post_llm_call]
+  provides_middleware: []
+  requires_env: []

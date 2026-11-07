@@ -193,6 +193,9 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
         await runner._post_turn_goal_continuation(
             session_entry=session_entry,
             source=src,
+            goal_generation=1,
+            goal_revision=1,
+            goal_present=True,
             final_response="partial progress",
         )
         await asyncio.sleep(0.05)

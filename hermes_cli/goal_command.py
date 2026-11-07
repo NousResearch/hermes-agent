@@ -20,6 +20,7 @@ class GoalCommandResult:
     prompt: str | None = None
     kickoff: bool = False
     clear_pending: str | None = None
+    previous_goal: str | None = None
     error: bool = False
 
 
@@ -36,11 +37,13 @@ def _show(mgr, arg, render):
 
 
 def _pause(mgr, arg, render):
+    previous = mgr.state.goal if getattr(mgr, "state", None) else None
     state = mgr.pause(reason="user-paused")
     return GoalCommandResult(
         render("gateway.goal.paused", "⏸ Goal paused: {goal}", goal=state.goal) if state
         else render("gateway.goal.no_goal_set", "No goal set."),
         clear_pending="pause" if state else None,
+        previous_goal=previous,
     )
 
 
@@ -53,10 +56,12 @@ def _resume(mgr, arg, render):
 
 
 def _clear(mgr, arg, render):
+    previous = mgr.state.goal if getattr(mgr, "state", None) else None
     had = mgr.has_goal()
     mgr.clear()
     return GoalCommandResult(render("gateway.goal_cleared", "✓ Goal cleared.") if had else
-                             render("gateway.no_active_goal", "No active goal."), clear_pending="clear")
+                             render("gateway.no_active_goal", "No active goal."), clear_pending="clear",
+                             previous_goal=previous)
 
 
 def _unwait(mgr, arg, render):
@@ -169,7 +174,13 @@ def _set(mgr, arg, *, drafting, last_user_message, render, progress):
         output += (f"\nAfter each turn, a judge model checks if the goal is done{against}. "
                    "Hermes keeps working until it is, you pause/clear it, or the budget is "
                    "exhausted. Use /goal status, /goal show, /goal pause, /goal resume, /goal clear.")
-    return GoalCommandResult(output, goals.goal_kick_prompt(state.goal, last_user_message), kickoff=True)
+    # Replacing a goal must not dispatch queued prompts for the previous one:
+    # adapters purge goal prompts for ``previous`` before enqueueing the kickoff.
+    return GoalCommandResult(
+        output, goals.goal_kick_prompt(state.goal, last_user_message), kickoff=True,
+        clear_pending="replace" if previous and previous != state.goal else None,
+        previous_goal=previous or None,
+    )
 
 
 def is_goal_control(arg: str) -> bool:

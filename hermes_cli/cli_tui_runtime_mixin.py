@@ -105,6 +105,13 @@ class CLITuiRuntimeMixin:
             return
         notification_preview = user_input if isinstance(user_input, TimelineNotification) else None
         self._status_bar_suppressed_after_resize = False  # input ends post-resize suppression
+        # Bind this turn to its goal generation (synthetic prompts only):
+        # evaluate_after_turn rejects outcomes from superseded generations.
+        try:
+            from hermes_cli.goals import synthetic_goal_generation
+            self._goal_turn_generation = synthetic_goal_generation(user_input)
+        except Exception:
+            self._goal_turn_generation = None
 
         submit_images = []
         if isinstance(user_input, tuple):

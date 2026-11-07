@@ -301,6 +301,8 @@ class GatewayGoalsMixin:
 
     async def _post_turn_goal_continuation(
         self, *, session_entry: Any, source: Any, final_response: str,
+        goal_generation: Optional[int] = None, goal_revision: Optional[int] = None,
+        goal_present: bool = False,
     ) -> None:
         """Run the goal judge after a gateway turn (AFTER delivery) and, if still active, enqueue a
         continuation through the adapter FIFO so a simultaneous real user message takes priority."""
@@ -324,12 +326,27 @@ class GatewayGoalsMixin:
         # judge_goal() is a synchronous aux-LLM HTTP call (10-40 s; would block Discord heartbeats).
         # _run_in_executor_with_context carries the profile secret scope / aux runtime contextvars
         # without which aux credential resolution fails under multiplexing.
+        # Bind identity to the admitted turn (captured before execution), not
+        # to whatever goal is current when this post-turn hook runs.
+        if goal_generation is None or goal_revision is None:
+            # Failed identity lookup: fail closed — never substitute the new goal.
+            return
+        _gen = int(goal_generation)
+        _rev = int(goal_revision)
+        if not goal_present:
+            # Verified absence at admission (distinguished from failed lookup
+            # above and from legacy 0/0 goals, which set goal_present=True).
+            return
+        if int(getattr(getattr(mgr, "state", None), "goal_generation", 0) or 0) != _gen or int(getattr(getattr(mgr, "state", None), "goal_revision", 0) or 0) != _rev:
+            return  # turn started under a superseded goal; do not judge it against the new one
         decision = await self._run_in_executor_with_context(
             lambda: mgr.evaluate_after_turn(
                 final_response or "", user_initiated=True, background_processes=_bg_procs,
-                active_delegations=_active_deleg,
+                active_delegations=_active_deleg, expected_generation=_gen, expected_revision=_rev,
             ),
         )
+        if decision.get("status") == "obsolete":
+            return
         msg = decision.get("message") or ""
         # Deferred until the visible final response is delivered, else "✓ Goal achieved" precedes it.
         if msg and source is not None:
@@ -357,6 +374,8 @@ class GatewayGoalsMixin:
 
     async def _run_post_turn_hooks(
         self, *, agent_result: Any, source: Any, is_internal: bool, event: Any = None,
+        goal_generation: Optional[int] = None, goal_revision: Optional[int] = None,
+        goal_present: bool = False,
     ) -> None:
         """Run goal and loop bookkeeping after an agent turn returns."""
         from gateway.session_authorities import active_authority
@@ -381,7 +400,11 @@ class GatewayGoalsMixin:
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
         for label, hook in hooks:
             try:
-                await hook(session_entry=session_entry, source=source, final_response="" if failed else final_text)
+                if label == "goal continuation":
+                    await hook(session_entry=session_entry, source=source, final_response="" if failed else final_text,
+                             goal_generation=goal_generation, goal_revision=goal_revision, goal_present=goal_present)
+                else:
+                    await hook(session_entry=session_entry, source=source, final_response="" if failed else final_text)
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
         await self._publish_local_control(source, only_if_present=True)

@@ -60,21 +60,27 @@ class GatewayGoalCommandsMixin:
         # executor hop; manager I/O must also stay off the messaging event loop.
         result = await self._run_in_executor_with_context(dispatch)
         if result.clear_pending:
-            self._clear_goal_continuations(event, result.clear_pending)
+            self._clear_goal_continuations(event, result.clear_pending, goal=result.previous_goal)
         if result.prompt:
-            self._enqueue_goal_turn(event, result.prompt, label="command enqueue", kickoff=result.kickoff)
+            gen = 0
+            try:
+                st = getattr(mgr, "state", None)
+                gen = int(getattr(st, "goal_generation", 0) or 0) if st is not None else 0
+            except Exception:
+                pass
+            self._enqueue_goal_turn(event, result.prompt, label="command enqueue", kickoff=result.kickoff, goal_generation=gen)
         return result.output
 
-    def _clear_goal_continuations(self, event: MessageEvent, verb: str) -> None:
+    def _clear_goal_continuations(self, event: MessageEvent, verb: str, goal: str | None = None) -> None:
         try:
             adapter, quick_key = self._adapter_and_key_for(event)
             if adapter and quick_key:
-                self._clear_goal_pending_continuations(quick_key, adapter)
+                self._clear_goal_pending_continuations(quick_key, adapter, goal)
         except Exception as exc:
             logger.debug("goal %s: pending continuation cleanup failed: %s", verb, exc)
 
     def _enqueue_goal_turn(
-        self, event: MessageEvent, text: str, *, label: str, kickoff: bool
+        self, event: MessageEvent, text: str, *, label: str, kickoff: bool, goal_generation: int = 0
     ) -> None:
         """Enqueue *text* as the next turn through the adapter FIFO (the post-turn judge's path).
 
@@ -100,6 +106,10 @@ class GatewayGoalCommandsMixin:
                     channel_prompt=event.channel_prompt if kickoff else None,
                     auto_skill=event.auto_skill if kickoff else None,
                     inherit_channel_pin=not kickoff,
+                    # Ownership proof: synthetic goal turns carry their
+                    # generation in metadata; user messages never do, so
+                    # replacement/pause/clear purge by tag, not by text.
+                    metadata={"goal_synthetic": True, "goal_kickoff": bool(kickoff), "goal_generation": int(goal_generation or 0)},
                 )
                 self._enqueue_fifo(quick_key, turn, adapter)
         except Exception as exc:

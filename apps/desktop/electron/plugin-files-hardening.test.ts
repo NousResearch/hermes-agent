@@ -119,9 +119,10 @@ describe('only plain files', () => {
     ).toMatchObject({ ok: false, error: 'not-a-file' })
   })
 
-  it.runIf(posix)('refuses a hard link, which may be a second name for Hermes data', async () => {
+  it('refuses to read, update or trash a hard link to Hermes data', async () => {
     const id = await grantVault()
-    fs.linkSync(path.join(hermesHome, 'config.yaml'), path.join(vault, 'notes', 'c.md'))
+    const alias = path.join(vault, 'notes', 'c.md')
+    fs.linkSync(path.join(hermesHome, 'config.yaml'), alias)
 
     expect(await files.run('plexus', { op: 'readText', folder: id, path: 'notes/c.md' })).toMatchObject({
       ok: false,
@@ -130,6 +131,11 @@ describe('only plain files', () => {
     expect(
       await files.run('plexus', { op: 'writeText', folder: id, path: 'notes/c.md', text: 'pwned' })
     ).toMatchObject({ ok: false, error: 'protected' })
+    expect(await files.run('plexus', { op: 'trash', folder: id, path: 'notes/c.md' })).toMatchObject({
+      ok: false,
+      error: 'protected'
+    })
+    expect(fs.statSync(alias).nlink).toBe(2)
     expect(fs.readFileSync(path.join(hermesHome, 'config.yaml'), 'utf8')).toBe('model: secret-config\n')
   })
 })
@@ -383,6 +389,31 @@ describe('rename, trash and list after a parent swap', () => {
     expect(listed).toMatchObject({ ok: false })
     expect(JSON.stringify(listed)).not.toContain('config.yaml')
   })
+})
+
+it('refuses to trash a file hard-linked after path resolution', async () => {
+  const id = await grantVault()
+  const entry = path.join(vault, 'notes', 'a.md')
+  const alias = path.join(hermesHome, 'late-link.md')
+  const original = fs.promises.lstat.bind(fs.promises) as (target: fs.PathLike) => Promise<fs.Stats>
+  let seen = 0
+
+  vi.spyOn(fs.promises, 'lstat').mockImplementation((async (target: fs.PathLike) => {
+    const stat = await original(target)
+
+    // The second stat is the snapshot returned by resolve().
+    if (String(target) === entry && ++seen === 2) {
+      fs.linkSync(entry, alias)
+    }
+
+    return stat
+  }) as never)
+
+  expect(await files.run('plexus', { op: 'trash', folder: id, path: 'notes/a.md' })).toMatchObject({
+    ok: false,
+    error: 'protected'
+  })
+  expect(fs.statSync(alias).nlink).toBe(2)
 })
 
 describe('Hermes data mounted inside a granted folder', () => {

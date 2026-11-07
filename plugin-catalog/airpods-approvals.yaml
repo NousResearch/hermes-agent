@@ -1,7 +1,7 @@
 name: airpods-approvals
 title: AirPods Approvals
 repo: https://github.com/cineglobe/hermes-airpods-approvals
-sha: 86df3a7145347967677b995820ca0c4f7ec099f2
+sha: bb43d9a6d3666a494522405c3a1c3590b91d109d
 description: >-
   Hear Hermes approvals and questions in your AirPods and answer with your head: nod to approve,
   shake to deny. Gestures are recognised by rhythm, with a tap in each ear as you go, and drive the
@@ -20,7 +20,9 @@ category: voice
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/cineglobe/hermes-airpods-approvals#readme
 version: "1.1.0"
-image: https://raw.githubusercontent.com/cineglobe/hermes-airpods-approvals/86df3a7145347967677b995820ca0c4f7ec099f2/docs/banner.png
+image: https://raw.githubusercontent.com/cineglobe/hermes-airpods-approvals/bb43d9a6d3666a494522405c3a1c3590b91d109d/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/cineglobe/hermes-airpods-approvals/bb43d9a6d3666a494522405c3a1c3590b91d109d/docs/settings.png
 platforms: [macos]
 capabilities:
   provides_tools: []

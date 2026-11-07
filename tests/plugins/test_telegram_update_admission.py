@@ -835,6 +835,32 @@ async def test_connect_builds_concurrent_update_processor(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_slow_topic_does_not_block_other_topic_in_same_private_chat():
+    """DM forum topics are independent lanes even though Telegram gives them one chat id."""
+    processor, order, gate = PerChatUpdateProcessor(32), [], asyncio.Event()
+
+    async def handler(name):
+        order.append(f"start {name}")
+        if name == "A":
+            await gate.wait()
+        order.append(f"end {name}")
+
+    def topic(thread_id):
+        return SimpleNamespace(
+            effective_chat=SimpleNamespace(id=42),
+            effective_message=SimpleNamespace(message_thread_id=thread_id),
+        )
+
+    first = asyncio.create_task(processor.process_update(topic(100), handler("A")))
+    await asyncio.sleep(0.01)
+    other = asyncio.create_task(processor.process_update(topic(200), handler("B")))
+    await asyncio.wait_for(other, timeout=1)
+    assert order == ["start A", "start B", "end B"]
+    gate.set()
+    await first
+
+
+@pytest.mark.asyncio
 async def test_slow_update_does_not_block_other_chats(monkeypatch):
     """End-to-end through the real PTB fetcher path (update_queue → __update_fetcher):
     while one chat's update is parked inside its handler chain, a different chat's

@@ -674,9 +674,30 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     return _reject(f"Model `{req.requested}` was not found in this provider's model listing.{match.suggestion_text}")
 
 
-def _validate_bedrock(req: _Request) -> Optional[dict[str, Any]]:
-    """Bedrock's runtime URL has no /models; discovery goes through the AWS control plane
-    (ListFoundationModels + ListInferenceProfiles). Any failure falls through (None)."""
+def _validate_bedrock(req: _Request) -> dict[str, Any]:
+    """Native Bedrock never exposes /models, including gateways with custom runtime URLs."""
+    from hermes_cli.config import load_config_readonly
+
+    entry = (load_config_readonly().get("providers") or {}).get("bedrock") or {}
+    configured = entry.get("models") or []
+    if isinstance(configured, dict):
+        configured_ids = list(configured)
+    elif isinstance(configured, list):
+        configured_ids = [item if isinstance(item, str) else item.get("id")
+                          for item in configured if isinstance(item, (str, dict))]
+    else:
+        configured_ids = []
+    configured_ids = [model for model in configured_ids if isinstance(model, str) and model]
+    match = _match_in_catalog(req.requested, configured_ids, suggest_cutoff=0.4)
+    if match.exact:
+        return _accept()
+    if entry.get("discover_models") is False:
+        # Preserve Bedrock's permissive unknown-model behavior, but do not claim recognition.
+        return _soft_accept(
+            f"Note: `{req.requested}` was not found in the configured Bedrock model catalog. "
+            "Model discovery is disabled; it may still work with custom inference profiles "
+            f"or cross-account access.{match.suggestion_text}"
+        )
     try:
         from agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_runtime_region
 
@@ -692,7 +713,8 @@ def _validate_bedrock(req: _Request) -> Optional[dict[str, Any]]:
             f"{match.suggestion_text}"
         )
     except Exception:
-        return None
+        # Do not fall through to generic custom/live probes after AWS discovery fails.
+        return _validate_catalog_fallback(req)
 
 
 def _validate_external_process(req: _Request) -> Optional[dict[str, Any]]:
@@ -754,13 +776,14 @@ def _for(*providers: str) -> Callable[[_Request], bool]:
 
 # (gate, branch): the branch runs when the gate passes; the first non-None verdict wins. ORDER IS
 # BEHAVIOR: moa → whitespace (skipped only for self-hosted providers and a user-configured
-# base_url) → OpenRouter preset parse → LM Studio → Ollama native → custom →
+# base_url) → OpenRouter preset parse → Bedrock → LM Studio → Ollama native → custom →
 # codex/xai static → MiniMax → managed local (staged library) → Anthropic native →
-# Anthropic Messages → external process → live listing → Bedrock → curated-catalog fallback (always decides).
+# Anthropic Messages → external process → live listing → curated-catalog fallback (always decides).
 _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[dict[str, Any]]]], ...] = (
     (_for("moa"), _validate_moa),
     (lambda req: True, _reject_whitespace),
     (_for("openrouter"), _parse_openrouter_preset),
+    (_for("bedrock"), _validate_bedrock),
     (_for("lmstudio"), _validate_lmstudio),
     (lambda req: True, _validate_ollama_native),
     (_is_custom, _validate_custom),
@@ -772,7 +795,6 @@ _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[d
     (lambda req: True, _validate_external_process),
     (lambda req: True, _validate_live_listing),
     # API unreachable — accept and persist, but warn so typos don't silently break things.
-    (_for("bedrock"), _validate_bedrock),
     (lambda req: True, _validate_catalog_fallback),
 )
 

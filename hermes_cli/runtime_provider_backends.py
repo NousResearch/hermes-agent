@@ -230,14 +230,26 @@ def _resolve_bedrock_runtime(requested_provider: str, model_cfg: dict[str, Any],
             "Or run 'aws configure' to set up credentials.",
             code="no_aws_credentials",
         )
-    bedrock_cfg = load_config().get("bedrock", {})
+    config = load_config()
+    bedrock_cfg = config.get("bedrock", {})
     # Region priority (config.yaml bedrock.region → env → us-east-1) lives in the adapter.
     region = resolve_bedrock_runtime_region({"bedrock": bedrock_cfg})
     auth_source = resolve_aws_auth_env_var() or "aws-sdk-default-chain"
     guardrail_config = bedrock_guardrail_config({"bedrock": bedrock_cfg})
     current_model = str(target_model or model_cfg.get("default") or "").strip()
-    has_bearer_token = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip())
-    runtime = rp._runtime("bedrock", "bedrock_converse", f"https://bedrock-runtime.{region}.amazonaws.com", "aws-sdk",
+    has_bearer_token = bool(resolve_bedrock_bearer_token())
+    # Report the effective user endpoint, not a regional placeholder. The scoped SDK
+    # uses AWS_ENDPOINT_URL_BEDROCK_RUNTIME, so that explicit override wins here too.
+    from hermes_constants import get_hermes_home_override
+    from agent.secret_scope import current_secret_scope
+    endpoint_env = os.environ if get_hermes_home_override() is None else (current_secret_scope() or {})
+    provider_config = (config.get("providers") or {}).get("bedrock") or {}
+    model_provider = str(model_cfg.get("provider") or "bedrock").strip().lower()
+    model_url = model_cfg.get("base_url") if model_provider in {"bedrock", "aws", "aws-bedrock", "amazon-bedrock", "amazon"} else None
+    runtime_url = str(endpoint_env.get("AWS_ENDPOINT_URL_BEDROCK_RUNTIME") or model_url
+                      or provider_config.get("api") or provider_config.get("base_url")
+                      or f"https://bedrock-runtime.{region}.amazonaws.com").strip()
+    runtime = rp._runtime("bedrock", "bedrock_converse", runtime_url, "aws-sdk",
                           source=auth_source, region=region, requested_provider=requested_provider)
     if bedrock_openai_uses_mantle(current_model):
         bearer = resolve_bedrock_bearer_token()

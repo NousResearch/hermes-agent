@@ -528,20 +528,26 @@ def build_anthropic_bedrock_client(region: str, timeout: float | None = None):
     A configured ``bedrock.guardrail`` rides as InvokeModel headers so every client built here
     (primary, auxiliary, per-request rebuild) enforces it. ``timeout`` is the resolved
     ``providers.bedrock`` request timeout; None keeps the 900s read / 10s connect default."""
-    from agent.bedrock_adapter import bedrock_guardrail_headers, scoped_aws_session_kwargs
+    from agent.bedrock_adapter import (
+        bedrock_guardrail_headers, bedrock_runtime_base_url, scoped_aws_session_kwargs, sigv4_sign_httpx_request,
+    )
     sdk = _require_sdk("the Bedrock provider")
     if not hasattr(sdk, "AnthropicBedrock"):
         raise ImportError("anthropic.AnthropicBedrock not available. Run: hermes pm repair")
-    # Routed multiplex profile: its own AWS_* from the secret scope (the SDK would otherwise read the
-    # launch profile's process env); unscoped passes nothing and keeps the default chain.
-    scoped = scoped_aws_session_kwargs()
-    aws_kwargs = {"aws_access_key": scoped.get("aws_access_key_id"), "aws_secret_key": scoped.get("aws_secret_access_key"),
-                  "aws_session_token": scoped.get("aws_session_token"), "aws_profile": scoped.get("profile_name")}
-    return sdk.AnthropicBedrock(
-        aws_region=region, timeout=_client_timeout(timeout), **{k: v for k, v in aws_kwargs.items() if v},
-        max_retries=0,  # retry belongs to hermes's outer loop (honors Retry-After)
-        default_headers={**_beta_header([*_COMMON_BETAS, _CONTEXT_1M_BETA]), **bedrock_guardrail_headers()},
-    )
+    common = dict(aws_region=region, timeout=_client_timeout(timeout),
+                  max_retries=0,  # retry belongs to hermes's outer loop (honors Retry-After)
+                  default_headers={**_beta_header([*_COMMON_BETAS, _CONTEXT_1M_BETA]), **bedrock_guardrail_headers()})
+    if not scoped_aws_session_kwargs():
+        return sdk.AnthropicBedrock(**common)  # unscoped: the SDK's default chain and env
+    # Served profile: the SDK reads AWS_BEARER_TOKEN_BEDROCK / ANTHROPIC_BEDROCK_BASE_URL from the
+    # launch env and resolves its own boto3 chain, which can fall through to the launch identity.
+    # Sign with the profile's own credentials and pin the URL instead.
+
+    class _ProfileScopedBedrock(sdk.AnthropicBedrock):
+        def _prepare_request(self, request):
+            sigv4_sign_httpx_request(request, self.aws_region)
+
+    return _ProfileScopedBedrock(base_url=bedrock_runtime_base_url(region), **common)
 
 
 def _normalize_to_mcp_wire(name: str) -> str:

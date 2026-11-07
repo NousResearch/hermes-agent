@@ -14,6 +14,7 @@ import os
 import re
 import time
 import traceback
+import threading
 from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
@@ -31,10 +32,18 @@ _bedrock_runtime_client_cache: dict[tuple[str, Optional[float]], Any] = {}
 _bedrock_control_client_cache: dict[tuple[str, Optional[float]], Any] = {}
 # Routed multiplex profiles: one client per (profile home, service, region, read_timeout). boto3 freezes
 # the credential chain into the client too, so a region-only slot would sign profile B's calls with A's keys.
-_bedrock_clients_by_home: dict[tuple[str, str, str, Optional[float]], Any] = {}
+_bedrock_clients_by_home: dict[tuple[str, str, str, Optional[float], str], Any] = {}
 # botocore's own connect default, set explicitly so a long read budget never stretches the TCP/TLS
 # connect wait: a 600s ``request_timeout_seconds`` is for slow generations, not unreachable endpoints.
 _BOTO_CONNECT_TIMEOUT_SECONDS = 60
+# Source objects serialize mint/expiry checks; the registry lock protects creation and client slots.
+_bedrock_cache_lock = threading.RLock()
+_bedrock_command_sources: dict[tuple[str, str], Any] = {}
+# Chain providers that read the launch process env, instance metadata or host-wide files instead
+# of the shared-config entry AWS_PROFILE names. A served profile whose entry has no credentials
+# would otherwise fall through to them and sign as the launch identity. (botocore already drops
+# ``env`` and the env half of web identity once a profile is set explicitly.)
+_AMBIENT_CREDENTIAL_PROVIDERS = ("env", "container-role", "iam-role", "ec2-credentials-file", "boto-config")
 
 # botocore session kwarg <- profile .env variable (the explicit sources of the default chain).
 _AWS_SCOPED_CREDENTIAL_VARS: tuple[tuple[str, str], ...] = (
@@ -128,39 +137,181 @@ def _require_boto3():
     return boto3
 
 
-def _new_client(factory: Any, service: str, region: str, read_timeout: Optional[float]):
-    """``factory.client(...)`` with botocore's own timeouts (60s read / 60s connect) unless a
-    request timeout is configured. The model-call client makes one attempt per call: Hermes's
-    retry loop owns retries and backoff (throttles classify as rate_limit there), and botocore's
-    default of 5 attempts re-sends a read timeout, so a hung call took ~5x the timeout to fail.
-    ``total_max_attempts`` counts the first request; ``max_attempts`` would count retries only."""
+def _new_client(factory: Any, service: str, region: str, read_timeout: Optional[float], *,
+                endpoint_url: Optional[str] = None, scoped_auth: Optional[str] = None):
     from botocore.config import Config
     config = Config(retries={"total_max_attempts": 1}) if service == "bedrock-runtime" else Config()
     if read_timeout is not None:
         config = config.merge(Config(read_timeout=read_timeout, connect_timeout=_BOTO_CONNECT_TIMEOUT_SECONDS))
-    return factory.client(service, region_name=region, config=config)
+    if scoped_auth is not None:
+        config = config.merge(Config(signature_version=scoped_auth, ignore_configured_endpoint_urls=True))
+    return factory.client(service, region_name=region, config=config, endpoint_url=endpoint_url)
+
+
+def _scoped_bedrock_endpoint(scope, service: str, *, required: bool) -> Optional[str]:
+    # Runtime project gateways and control-plane endpoints must be configured independently.
+    name = {"bedrock-runtime": "AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "bedrock": "AWS_ENDPOINT_URL_BEDROCK"}[service]
+    endpoint = (scope.get(name) or "").strip()
+    if not endpoint:
+        if required:
+            raise RuntimeError(f"Scoped Bedrock bearer auth requires its own {name}")
+        return None
+    parsed = urlparse(endpoint)
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username is not None
+            or parsed.password is not None or parsed.query or parsed.fragment):
+        raise RuntimeError("Scoped Bedrock endpoint must be HTTPS without credentials, query or fragment")
+    return endpoint.rstrip("/")
+
+
+def _scoped_boto3_session(bearer: str, kwargs: dict[str, str]):
+    boto3 = _require_boto3()
+    from botocore.session import Session
+    from botocore.tokens import FrozenAuthToken
+    frozen = FrozenAuthToken(bearer) if bearer else None
+
+    class ScopedSession(Session):
+        def get_auth_token(self, **_kwargs):
+            # Bypass both generic and signing-name ambient token provider chains.
+            return frozen
+
+        def get_credentials(self):
+            return None if frozen is not None else super().get_credentials()
+
+        def get_scoped_config(self):
+            return {} if frozen is not None else super().get_scoped_config()
+
+    botocore_session = ScopedSession()
+    session = boto3.Session(botocore_session=botocore_session, **kwargs)
+    if frozen is None and kwargs.get("profile_name") and not kwargs.get("aws_access_key_id"):
+        resolver = botocore_session.get_component("credential_provider")
+        for method in _AMBIENT_CREDENTIAL_PROVIDERS:
+            resolver.remove(method)
+    return session
+
+
+def _signing_session():
+    """Fresh boto3 session per signed request (Mantle, AnthropicBedrock), so credentials are
+    re-resolved every call. Unscoped: the default chain. Served profile: only its own credentials."""
+    kwargs = scoped_aws_session_kwargs()
+    return _scoped_boto3_session("", kwargs) if kwargs else _require_boto3().Session()
+
+
+def sigv4_sign_httpx_request(request, region: str, service: str = "bedrock") -> None:
+    """SigV4-sign an httpx request in place with the active profile's AWS credentials."""
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
+    credentials = _signing_session().get_credentials()
+    if credentials is None:
+        raise RuntimeError(
+            "No AWS credentials available for Bedrock. "
+            "Configure AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, AWS_PROFILE, SSO, or an instance/task role."
+        )
+    # SigV4 must own Authorization (drop any SDK placeholder bearer). A proxy may strip
+    # ``connection``, so it stays out of the signed set.
+    headers = {str(k): str(v) for k, v in request.headers.items()
+               if str(k).lower() not in {"authorization", "x-amz-date", "x-amz-security-token", "connection"}}
+    aws_request = AWSRequest(method=request.method, url=str(request.url), data=request.read() or b"", headers=headers)
+    SigV4Auth(credentials.get_frozen_credentials(), service, region).add_auth(aws_request)
+    request.headers.update(dict(aws_request.headers.items()))
+
+
+def bedrock_runtime_base_url(region: str) -> str:
+    """Runtime URL for SDK-built clients: a served profile's own AWS_ENDPOINT_URL_BEDROCK_RUNTIME,
+    else the regional AWS host. Never the launch env's ANTHROPIC_BEDROCK_BASE_URL."""
+    from agent.secret_scope import current_secret_scope
+    scope = current_secret_scope()
+    endpoint = _scoped_bedrock_endpoint(scope, "bedrock-runtime", required=False) if scope is not None else None
+    return endpoint or f"https://bedrock-runtime.{region}.amazonaws.com"
+
+
+def _bedrock_command_token_source():
+    """Read only this context's provider config; never reuse another profile's helper."""
+    from hermes_constants import hermes_home_key, get_hermes_home_override
+    from agent.secret_scope import current_secret_scope, current_secret_scope_home
+    from agent.command_token_source import build_command_token_provider, CommandTokenError
+    from hermes_cli.config import load_config_readonly
+
+    home = hermes_home_key()
+    scope_home = current_secret_scope_home()
+    if scope_home is not None and hermes_home_key(scope_home) != home:
+        raise CommandTokenError("Bedrock command config does not match the active secret profile")
+    if get_hermes_home_override() is not None and current_secret_scope() is None:
+        raise CommandTokenError("Scoped Bedrock command auth requires a bound profile secret scope")
+    entry = (load_config_readonly().get("providers") or {}).get("bedrock") or {}
+    command = str(entry.get("key_cmd") or "").strip()
+    key = (home, command)
+    with _bedrock_cache_lock:
+        # Removing/changing the command must not leave an old credential source reachable.
+        for stale in list(_bedrock_command_sources):
+            if stale[0] == home and stale != key:
+                _bedrock_command_sources.pop(stale, None)
+        if not command:
+            return None
+        source = _bedrock_command_sources.get(key)
+        if source is None:
+            source = build_command_token_provider(command, "bedrock")
+            if source is None:
+                raise CommandTokenError("Bedrock key_cmd did not create a token source")
+            _bedrock_command_sources[key] = source
+        return source
+
+
+def _command_bearer(source) -> str:
+    from agent.command_token_source import CommandTokenError
+    # Deliberately no fallback: a failed explicit helper must never use a stale env token.
+    token = source()
+    if not isinstance(token, str) or not token.strip():
+        raise CommandTokenError("Bedrock key_cmd produced no usable bearer token")
+    return token.strip()
+
+
+def _cached_explicit_bedrock_client(service, region, read_timeout, bearer, kwargs, endpoint):
+    from hermes_constants import hermes_home_key
+    from hashlib import sha256
+    signature = "bearer" if bearer else "v4"
+    identity = sha256(json.dumps([signature, bearer, kwargs, endpoint], sort_keys=True).encode()).hexdigest()
+    slot = (hermes_home_key(), service, region, read_timeout)
+    key = (*slot, identity)
+    with _bedrock_cache_lock:
+        client = _bedrock_clients_by_home.get(key)
+        if client is None:
+            client = _new_client(_scoped_boto3_session(bearer, kwargs), service, region, read_timeout,
+                                 endpoint_url=endpoint, scoped_auth=signature)
+            # Bound cache growth to one identity per profile/service/region/timeout slot.
+            # Do not close evicted clients: an in-flight request may still hold one.
+            for stale in list(_bedrock_clients_by_home):
+                if stale[:4] == slot:
+                    _bedrock_clients_by_home.pop(stale, None)
+            _bedrock_clients_by_home[key] = client
+        return client
 
 
 def _cached_client(cache: dict[tuple[str, Optional[float]], Any], service: str, region: str, *,
                    read_timeout: Optional[float] = None):
-    """Get or create a boto3 client per (region, read timeout). Unscoped: the default credential
-    chain. Routed profile: one client per (home, service, region, read timeout), built from that
-    profile's scoped ``AWS_*`` (falling back to the default chain only for what the profile does not set)."""
-    from hermes_constants import get_hermes_home_override, hermes_home_key
+    """Consult command expiry on every call, then cache by explicit credential identity."""
+    from hermes_constants import get_hermes_home_override
+    source = _bedrock_command_token_source()
     if get_hermes_home_override() is None:
+        if source is not None:
+            bearer = _command_bearer(source)
+            endpoint = _scoped_bedrock_endpoint(os.environ, service, required=True)
+            return _cached_explicit_bedrock_client(service, region, read_timeout, bearer, {}, endpoint)
         key = (region, read_timeout)
-        if key not in cache:
-            cache[key] = _new_client(_require_boto3(), service, region, read_timeout)
-        return cache[key]
-    home_key = (hermes_home_key(), service, region, read_timeout)
-    client = _bedrock_clients_by_home.get(home_key)
-    if client is None:
-        # Scope check first: a cred-less multiplex profile must hit the ambient-chain
-        # refusal, not a boto3 ImportError on hosts that lack the package.
-        kwargs = scoped_aws_session_kwargs()
-        client = _new_client(_require_boto3().Session(**kwargs), service, region, read_timeout)
-        _bedrock_clients_by_home[home_key] = client
-    return client
+        with _bedrock_cache_lock:
+            if key not in cache:
+                cache[key] = _new_client(_require_boto3(), service, region, read_timeout)
+            return cache[key]
+    from agent.secret_scope import current_secret_scope
+    scope = current_secret_scope()
+    if scope is None:
+        raise RuntimeError("Scoped Bedrock requires a bound profile secret scope")
+    bearer = _command_bearer(source) if source is not None else (scope.get("AWS_BEARER_TOKEN_BEDROCK") or "").strip()
+    kwargs = {} if bearer else scoped_aws_session_kwargs()
+    if not bearer and not ((kwargs.get("aws_access_key_id") and kwargs.get("aws_secret_access_key"))
+                           or kwargs.get("profile_name")):
+        raise RuntimeError("Scoped Bedrock requires its own bearer token or complete AWS credentials")
+    endpoint = _scoped_bedrock_endpoint(scope, service, required=bool(bearer))
+    return _cached_explicit_bedrock_client(service, region, read_timeout, bearer, kwargs, endpoint)
 
 
 def _get_bedrock_runtime_client(region: str, model: Optional[str] = None):
@@ -179,9 +330,11 @@ def _get_bedrock_control_client(region: str):
 
 def reset_client_cache():
     """Clear cached boto3 clients. Used in tests and profile switches."""
-    _bedrock_runtime_client_cache.clear()
-    _bedrock_control_client_cache.clear()
-    _bedrock_clients_by_home.clear()
+    with _bedrock_cache_lock:
+        _bedrock_runtime_client_cache.clear()
+        _bedrock_control_client_cache.clear()
+        _bedrock_clients_by_home.clear()
+        _bedrock_command_sources.clear()
     _inference_profile_model_cache.clear()
     _DEFAULT_WINDOW_WARNED.clear()
 
@@ -189,16 +342,16 @@ def reset_client_cache():
 def invalidate_runtime_client(region: str) -> bool:
     """Evict one region's cached ``bedrock-runtime`` clients, every read timeout (stale HTTP pool);
     True if any was evicted."""
-    from hermes_constants import get_hermes_home_override, hermes_home_key
-    if get_hermes_home_override() is not None:
-        cache: dict = _bedrock_clients_by_home
+    from hermes_constants import hermes_home_key
+    with _bedrock_cache_lock:
         prefix = (hermes_home_key(), "bedrock-runtime", region)
-    else:
-        cache, prefix = _bedrock_runtime_client_cache, (region,)
-    stale = [key for key in list(cache) if key[:len(prefix)] == prefix]
-    for key in stale:
-        cache.pop(key, None)
-    return bool(stale)
+        stale = [key for key in _bedrock_clients_by_home if key[:3] == prefix]
+        for key in stale:
+            _bedrock_clients_by_home.pop(key, None)
+        legacy = [key for key in _bedrock_runtime_client_cache if key[0] == region]
+        for key in legacy:
+            _bedrock_runtime_client_cache.pop(key, None)
+    return bool(stale or legacy)
 
 
 
@@ -266,6 +419,9 @@ def resolve_bedrock_bearer_token(env: Optional[dict[str, str]] = None) -> str:
     served profile never inherits the launch profile's bearer from the process env."""
     if env is not None:
         return (env.get("AWS_BEARER_TOKEN_BEDROCK", "") or "").strip()
+    source = _bedrock_command_token_source()
+    if source is not None:
+        return _command_bearer(source)
     from hermes_constants import get_hermes_home_override
     if get_hermes_home_override() is not None:
         from agent.secret_scope import get_secret
@@ -283,21 +439,7 @@ class BedrockOpenAISigV4Auth(httpx.Auth):
         self.service = service
 
     def auth_flow(self, request):  # pragma: no cover - exercised by live call
-        from botocore.auth import SigV4Auth
-        from botocore.awsrequest import AWSRequest
-        kwargs = scoped_aws_session_kwargs()
-        credentials = _require_boto3().Session(**kwargs).get_credentials()
-        if credentials is None:
-            raise RuntimeError(
-                "No AWS credentials available for Bedrock OpenAI Responses. "
-                "Configure AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, AWS_PROFILE, SSO, or an instance/task role."
-            )
-        # SigV4 must own Authorization: drop the SDK's placeholder bearer header.
-        headers = {str(k): str(v) for k, v in request.headers.items()
-                   if str(k).lower() not in {"authorization", "x-amz-date", "x-amz-security-token"}}
-        aws_request = AWSRequest(method=request.method, url=str(request.url), data=request.content or b"", headers=headers)
-        SigV4Auth(credentials.get_frozen_credentials(), self.service, self.region).add_auth(aws_request)
-        request.headers.update(dict(aws_request.headers.items()))
+        sigv4_sign_httpx_request(request, self.region, self.service)
         yield request
 
 
@@ -398,10 +540,22 @@ def resolve_aws_auth_env_var(
     env: Optional[dict[str, str]] = None, *, instance_metadata: bool = True,
 ) -> Optional[str]:
     """Name of the active AWS auth source: env vars first (no I/O), then ``"iam-role"`` via boto3's chain, else None."""
-    env = env if env is not None else os.environ
+    scoped = False
+    if env is None:
+        if _bedrock_command_token_source() is not None:
+            return "providers.bedrock.key_cmd"
+        from hermes_constants import get_hermes_home_override
+        scoped = get_hermes_home_override() is not None
+        if scoped:
+            from agent.secret_scope import current_secret_scope
+            env = dict(current_secret_scope() or {})
+        else:
+            env = os.environ
     for group in _AWS_AUTH_ENV_CHAIN:
         if all(env.get(var, "").strip() for var in group):
             return group[0]
+    if scoped:
+        return None  # Never probe the launch/default AWS chain for a served profile.
     return "iam-role" if _boto3_chain_has_credentials(instance_metadata=instance_metadata) else None
 
 

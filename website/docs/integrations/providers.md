@@ -1348,7 +1348,18 @@ providers:
 
 Works with any helper that prints a token — `databricks auth token`, `gcloud auth print-access-token`, `az account get-access-token`, `vault read`, or Claude Code-style `apiKeyHelper` scripts.
 
-The command must print **only** the token on stdout: either bare, or as JSON with an `access_token` field (`expires_in` is honored; absolute `expiry`/`expiresOn` ISO timestamps too). Multi-line output is rejected rather than guessed at. If no expiry is advertised, the token is re-minted on a bounded window.
+The command must print **only** the token on stdout: either bare, or as JSON with an `access_token` field. Hermes also reads `accessToken`, so `az account get-access-token -o json` works as is. For expiry it reads `expires_in`, then the epoch `expires_on`, then an ISO `expiry` or `expiresOn`. Multi-line output is rejected rather than guessed at. If no expiry is advertised, the token is re-minted on a bounded window.
+
+If your helper prints JSON with other field names, map them in the command. `key_cmd` runs in a shell, so you can pipe it through `jq`:
+
+```yaml
+# Helper prints {"token": "...", "ttl": 3600}
+key_cmd: "my-helper get | jq '{access_token: .token, expires_in: .ttl}'"
+# Helper prints an epoch deadline: {"jwt": "...", "exp": 1794060000}
+key_cmd: "my-helper get | jq '{access_token: .jwt, expires_in: (.exp - now | floor)}'"
+```
+
+Keep the expiry when you remap. A bare token works too, but Hermes then re-runs the helper on a fixed window instead of just before the token expires.
 
 Precedence: an explicit `--api-key` flag still wins; otherwise `key_cmd` beats a static `api_key`/`key_env` on the same entry. The minted credential applies to the main agent turn and to auxiliary tasks (title generation, compression, vision, embedding) alike.
 

@@ -4,8 +4,8 @@ Enterprise gateways (SSO/OIDC brokers, cloud IAM, auth proxies) issue SHORT-LIVE
 copied into ``.env`` goes stale within the hour. ``key_cmd`` names a command that PRINTS a token
 (the ``apiKeyHelper`` / ``gcloud auth print-access-token`` idiom). Both wire clients accept a
 callable API key and invoke it per request; the token is cached until shortly before expiry.
-Output contract: ONLY the token on stdout, bare or as JSON with an ``access_token`` field
-(``expires_in`` / ISO ``expiry`` honoured). Precedence: explicit ``--api-key`` wins (one-off
+Output contract: ONLY the token on stdout, bare or as JSON with an ``access_token`` field (Azure CLI's
+``accessToken`` too; ``expires_in``, epoch ``expires_on`` and ISO ``expiry`` / ``expiresOn`` honoured). Precedence: explicit ``--api-key`` wins (one-off
 recovery escape hatch); otherwise ``key_cmd`` beats a static ``api_key`` / ``key_env``.
 """
 
@@ -84,24 +84,7 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
         except json.JSONDecodeError:
             payload = None
         if isinstance(payload, dict):
-            token = str(payload.get("access_token") or "").strip()
-            if not token:
-                raise CommandTokenError(
-                    f"key_cmd for provider {label!r} returned JSON without an 'access_token' field"
-                )
-            ttl = payload.get("expires_in")
-            if isinstance(ttl, (int, float)) and ttl > 0:
-                return token, float(ttl)
-            # CLI helpers often print an absolute ISO 8601 deadline instead of OAuth's relative
-            # lifetime; honour it or the token 401s once past. Lazy import: hermes_cli.auth imports agent.*.
-            from hermes_cli.auth import _parse_iso_timestamp
-
-            for field in ("expiry", "expiresOn"):
-                deadline = _parse_iso_timestamp(payload.get(field))
-                remaining = deadline - time.time() if deadline is not None else 0
-                if remaining > 0:
-                    return token, remaining
-            return token, None
+            return _json_token(payload, label)
 
     # Bare token: stdout carries the token and nothing else. Do NOT keep one line of several — that
     # turns a misconfigured helper (banner, warning) into a corrupt-key 401 far harder to diagnose.
@@ -111,6 +94,34 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
             f"key_cmd for provider {label!r} printed multiple lines; it must "
             "print only the token (or JSON with an 'access_token' field)"
         )
+    return token, None
+
+
+def _json_token(payload: dict, label: str) -> tuple[str, Optional[float]]:
+    """``(token, ttl)`` from a JSON helper payload. `az account get-access-token` prints
+    ``accessToken`` plus an epoch ``expires_on``; its ``expiresOn`` is local time with no zone."""
+    token = str(payload.get("access_token") or payload.get("accessToken") or "").strip()
+    if not token:
+        raise CommandTokenError(
+            f"key_cmd for provider {label!r} returned JSON without an 'access_token' (or Azure CLI 'accessToken') field"
+        )
+    ttl = payload.get("expires_in")
+    if isinstance(ttl, (int, float)) and ttl > 0:
+        return token, float(ttl)
+    epoch = payload.get("expires_on")
+    if isinstance(epoch, str) and epoch.isdigit():
+        epoch = int(epoch)
+    if isinstance(epoch, (int, float)) and not isinstance(epoch, bool) and epoch > time.time():
+        return token, epoch - time.time()
+    # CLI helpers often print an absolute ISO 8601 deadline instead of OAuth's relative
+    # lifetime; honour it or the token 401s once past. Lazy import: hermes_cli.auth imports agent.*.
+    from hermes_cli.auth import _parse_iso_timestamp
+
+    for field in ("expiry", "expiresOn"):
+        deadline = _parse_iso_timestamp(payload.get(field))
+        remaining = deadline - time.time() if deadline is not None else 0
+        if remaining > 0:
+            return token, remaining
     return token, None
 
 

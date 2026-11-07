@@ -1665,6 +1665,56 @@ platform_toolsets:
 #     args: ["-y", "@modelcontextprotocol/server-github"]
 #     env:
 #       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+
+# Twilio — messaging / voice / SMS + phone-number avatar
+# Twilio MCP is docs-only today (mcp.twilio.com/docs); OAuth-authenticated
+# execute-ready tools are planned. Use this block once the OAuth endpoint lands.
+#   twilio:
+#     auth: oauth
+#     url: https://mcp.twilio.com/mcp
+#     enabled: true
+#
+# Oracle Cloud Infrastructure (VMs, networking, OCI)
+#   oracle-cloud:
+#     auth: oauth
+#     url: https://mcp.oraclecloud.com/mcp
+#     enabled: true
+#
+# LinkedIn
+#   linkedin:
+#     auth: oauth
+#     url: https://mcp.linkedin.com/mcp
+#     enabled: true
+#
+# X / Twitter
+#   x:
+#     auth: oauth
+#     url: https://mcp.x.com/mcp
+#     enabled: true
+#
+# General socials aggregator (LinkedIn, X, etc. unified)
+#   socials:
+#     auth: oauth
+#     url: https://mcp.socials.example/mcp
+#     enabled: true
+#
+# GitHub (remote, OAuth)
+#   github:
+#     auth: oauth
+#     url: https://api.githubcopilot.com/mcp/
+#     enabled: true
+#
+# Discord — bot + OAuth scopes
+#   discord:
+#     auth: oauth
+#     url: https://mcp.discord.com/mcp
+#     enabled: true
+#
+# Cloudflare (already present in the default config — re-confirming here)
+#   cloudflare:
+#     auth: oauth
+#     url: https://mcp.cloudflare.com/mcp
+#     enabled: true
 #
 # Sampling (server-initiated LLM requests) — enabled by default.
 # Per-server config under the 'sampling' key:

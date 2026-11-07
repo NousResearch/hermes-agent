@@ -65,12 +65,15 @@ vi.mock('@/store/profile', () => ({
   // `session-states` -> `preview` -> `layout` reaches this mock now that the
   // right rail is scoped per profile; layout.ts derives its grouping from it.
   $showAllProfiles,
+  $tileViewScope: activeGateway,
+  ALL_PROFILES: '__all__',
   normalizeProfileKey: (name: null | string | undefined) => (name ?? '').trim() || 'default',
   profileLabel: (profile: { display_name?: string; name: string }) =>
     (profile.display_name ?? '').trim() || profile.name,
   refreshProfiles: vi.fn(async () => [] as ProfileInfo[]),
   selectProfile: vi.fn(),
-  setActiveProfile: vi.fn()
+  setActiveProfile: vi.fn(),
+  setProfileViewRestore: vi.fn()
 }))
 
 // The one non-default profile these tests act on. Its name doubles as the row's

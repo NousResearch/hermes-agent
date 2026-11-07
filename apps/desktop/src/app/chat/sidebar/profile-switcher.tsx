@@ -77,6 +77,7 @@ import {
   $profiles,
   $profileScope,
   ALL_PROFILES,
+  enterAllProfilesView,
   normalizeProfileKey,
   prewarmProfilePick,
   profileLabel,
@@ -84,7 +85,6 @@ import {
   selectProfile,
   setProfileColor,
   setProfileOrder,
-  setShowAllProfiles,
   sortByProfileOrder
 } from '@/store/profile'
 import { $profileDotStateByScope, type ProfileDotSummary, profileDotSummaryFor } from '@/store/profile-dot-state'
@@ -547,7 +547,7 @@ export function ProfileRail() {
           active={isAll}
           glyph="layers"
           label={p.fleet.allOnGateway}
-          onSelect={() => setShowAllProfiles(true)}
+          onSelect={() => enterAllProfilesView()}
         />
       )}
 
@@ -564,11 +564,11 @@ export function ProfileRail() {
             connectionId={activeConnectionId ?? undefined}
             glyph={isAll ? 'layers' : 'home'}
             label={onDefault ? p.showAllProfiles : p.switchToProfile(profileLabel(homeProfile))}
-            onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(homeProfile.name))}
+            onSelect={() => (onDefault ? enterAllProfilesView() : selectProfile(homeProfile.name))}
             profile={homeProfile.name}
           />
         ) : (
-          <ProfilePill active={isAll} glyph="layers" label={p.allProfiles} onSelect={() => setShowAllProfiles(true)} />
+          <ProfilePill active={isAll} glyph="layers" label={p.allProfiles} onSelect={() => enterAllProfilesView()} />
         ))}
 
       {/* Single-profile: the active default's home icon next to the create +. */}

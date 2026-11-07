@@ -117,7 +117,9 @@ export const isAuxiliaryWindow = (): boolean => isSecondaryWindow() || isHudWind
 // Electron already has running. It is not an auxiliary/specialized renderer,
 // but it must not replay the primary window's app-launch source restoration
 // after boot and silently re-home itself to another registered gateway.
-export function isPeerInstanceWindow(search = typeof window === 'undefined' ? '' : window.location.search): boolean {
+export function isPeerInstanceWindow(
+  search = typeof window === 'undefined' ? '' : (window.location?.search ?? '')
+): boolean {
   try {
     return new URLSearchParams(search).get('peer') === '1'
   } catch {
@@ -133,7 +135,9 @@ export const isMainWindow = (): boolean => !isAuxiliaryWindow() && !isPeerInstan
 // ordinary ⌘⇧N peer also carries profile/connectionId (its boot seed) but not
 // this marker, so a later device/profile selection stays the New-session
 // default there (#115102).
-export function isProfilePinnedWindow(search = typeof window === 'undefined' ? '' : window.location.search): boolean {
+export function isProfilePinnedWindow(
+  search = typeof window === 'undefined' ? '' : (window.location?.search ?? '')
+): boolean {
   try {
     return new URLSearchParams(search).get('profileWindow') === '1'
   } catch {

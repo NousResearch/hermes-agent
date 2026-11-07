@@ -18,7 +18,7 @@ vi.hoisted(() => {
 })
 
 const selectProfile = vi.fn()
-const setShowAllProfiles = vi.fn()
+const enterAllProfilesView = vi.fn()
 
 vi.mock('react-router', () => ({ useNavigate: () => vi.fn() }))
 
@@ -70,7 +70,9 @@ vi.mock('@/store/profile', () => ({
   ]),
   $profileScope: atom('solo'),
   $showAllProfiles: atom(false),
+  $tileViewScope: atom('solo'),
   ALL_PROFILES: '__all__',
+  enterAllProfilesView: () => enterAllProfilesView(),
   normalizeProfileKey: (name: string) => name,
   prewarmProfilePick: vi.fn(),
   profileLabel: (profile: { name: string }) => profile.name,
@@ -78,7 +80,8 @@ vi.mock('@/store/profile', () => ({
   selectProfile: (name: string) => selectProfile(name),
   setProfileColor: vi.fn(),
   setProfileOrder: vi.fn(),
-  setShowAllProfiles: (value: boolean) => setShowAllProfiles(value),
+  setProfileViewRestore: vi.fn(),
+  setShowAllProfiles: vi.fn(),
   sortByProfileOrder: (profiles: unknown[]) => profiles
 }))
 
@@ -169,7 +172,7 @@ it("the rail's profile menu shows them the same way, and its home pill offers no
   // The home pill would switch to default, which this gateway refuses: it toggles the all-profiles view instead.
   fireEvent.click(await screen.findByRole('button', { name: 'All profiles' }))
   expect(screen.queryByRole('button', { name: 'Switch to default' })).toBeNull()
-  expect(setShowAllProfiles).toHaveBeenCalledWith(true)
+  expect(enterAllProfilesView).toHaveBeenCalled()
 
   await openMenu(screen.getByRole('button', { name: 'Profiles' }))
   await expectUnavailable('research')

@@ -37,12 +37,12 @@ import {
   $profiles,
   $showAllProfiles,
   ALL_PROFILES,
+  enterAllProfilesView,
   normalizeProfileKey,
   prewarmProfilePick,
   profileLabel,
   refreshActiveProfile,
   selectProfile,
-  setShowAllProfiles,
   sortByProfileOrder
 } from '@/store/profile'
 import { runImportProfileFlow } from '@/store/profile-share'
@@ -135,7 +135,7 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
     triggerHaptic('selection')
 
     if (name === ALL_PROFILES) {
-      setShowAllProfiles(true)
+      enterAllProfilesView()
     } else {
       selectProfile(name)
     }

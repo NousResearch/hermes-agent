@@ -232,15 +232,17 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
         _record_finished_child(batch, results[-1], honor_parent_interrupt)
     else:
         detached = _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
-    combined = _aggregate(batch, results, background=not honor_parent_interrupt)
+    # A detached batch is not complete until ``wait``/``surface_uncollected`` settles its last child.
+    combined = _aggregate(batch, results, background=not honor_parent_interrupt, completed=detached is None)
     if detached is not None:
         with _DETACHED_LOCK:
             vars(batch.parent_agent).setdefault("_detached_joins", []).append(detached)
         combined.update(_still_running(detached), note=_STEER_NOTE)
     return combined
 
-def _aggregate(batch: _Batch, results: list, *, background: bool = False) -> dict:
-    """Finalize ``results`` (all or some of the batch's children) and build the combined result dict."""
+def _aggregate(batch: _Batch, results: list, *, background: bool = False, completed: bool = True) -> dict:
+    """Finalize ``results`` (all or some of the batch's children) and build the combined result dict
+    (``completed=False``: children of the batch still run, so the live manifest stays open)."""
     from tools.delegation_live_log import update_manifest_statuses
     _finalize_child_results(results, batch.task_list, batch.children, batch.parent_agent)
     total_duration = round(time.monotonic() - batch.overall_start, 2)
@@ -254,7 +256,7 @@ def _aggregate(batch: _Batch, results: list, *, background: bool = False) -> dic
     if batch.refused:
         results.extend(batch.refused)
         results.sort(key=lambda r: r["task_index"])
-    update_manifest_statuses(batch.live_deleg_id, results, home=batch.live_home)
+    update_manifest_statuses(batch.live_deleg_id, results, home=batch.live_home, completed=completed)
     finish_delegation_unit(batch.task_list, results, background=background)
 
     combined: dict[str, Any] = {"results": results, "total_duration_seconds": total_duration}
@@ -330,7 +332,7 @@ def _settle_detached(d: _Detached, *, collect_all: bool, stop_reason: Optional[s
             entry["error"] = stop_reason
         results.append(entry)
     results.sort(key=lambda r: r["task_index"])
-    combined = _aggregate(d.batch, results) if results else {"results": []}
+    combined = _aggregate(d.batch, results, completed=not d.pending) if results else {"results": []}
     if d.pending:
         combined.update(_still_running(d))
     return combined
@@ -371,9 +373,20 @@ def surface_uncollected(helper: Any, entry: dict) -> dict:
         joins = (getattr(helper, "__dict__", None) or {}).pop("_detached_joins", None)
     if joins and isinstance(entry, dict):
         reason = "Stopped: the helper finished before collecting this sub-helper (delegate_task action='wait')."
+        before = _cost_of(helper)
         entry["uncollected_sub_results"] = [
             r for d in joins for r in _settle_detached(d, collect_all=True, stop_reason=reason)["results"]]
+        # Settling folded the sub-results' spend into the helper's session cost AFTER ``entry`` captured it.
+        added = _cost_of(helper) - before
+        if added > 0:
+            entry["_child_cost_usd"] = float(entry.get("_child_cost_usd") or 0.0) + added
+            if "cost_usd" in entry:
+                entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
     return entry
+
+def _cost_of(agent: Any) -> float:
+    cost = getattr(agent, "session_estimated_cost_usd", 0.0)
+    return float(cost) if isinstance(cost, (int, float)) else 0.0
 
 _SYNC_FALLBACK_NOTES = {
     "no_async": (

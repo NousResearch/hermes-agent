@@ -43,6 +43,9 @@ class _Agent(InterruptControlMixin):
         self._delegate_parent_ref = weakref.ref(parent) if parent is not None else None
 
 
+_REAL_FINALIZE = dispatch._finalize_child_results
+
+
 @pytest.fixture(autouse=True)
 def _no_finalize(monkeypatch):
     # Host finalization (hooks, memory, cost rollup) is covered elsewhere; these tests pin the join.
@@ -354,3 +357,59 @@ def test_grouped_batches_list_running_children_per_group_and_wait_collects_all(m
     got = _wait_json(helper)
     assert got["status"] == "completed"
     assert [[r["task_index"] for r in b["results"]] for b in got["batches"]] == [[1, 2], [0, 1]]
+
+
+def test_uncollected_grandchild_cost_reaches_the_root_through_real_finalization(monkeypatch):
+    """helper $1 + a finished, never-collected grandchild $2: the root's session cost must rise by $3."""
+    from tools.delegate_tool_results import _run_child_lifecycle
+    monkeypatch.setattr(dispatch, "_finalize_child_results", _REAL_FINALIZE)
+    root = SimpleNamespace(session_id="root-session", _active_children=[], session_estimated_cost_usd=0.0)
+    helper = _Agent(1, session_id="helper-session")
+    grand = _Kids(2)
+
+    def costly(i, task, child):
+        return {**grand.run(i, task, child), "_child_cost_usd": 2.0 if i == 0 else 0.0}
+
+    def helper_runs(**_kw):
+        b = grand.batch(helper)
+        b.run_child = costly
+        t, _ = _in_thread(_execute_and_aggregate, b)
+        assert grand.started[0].wait(3) and grand.started[1].wait(3)
+        _steer_and_time(helper, t)
+        helper._drain_pending_steer()
+        grand.release[0].set()  # finishes, but the helper ends without action='wait'
+        wait_until(lambda: _settled(helper, 0), timeout=3)
+        helper.session_estimated_cost_usd = 1.0  # the helper's own spend
+        return {"final_response": "helper done", "completed": True, "messages": [], "api_calls": 1}
+
+    helper.run_conversation = helper_runs
+    try:
+        entry = _run_child_lifecycle(0, "goal", child=helper, parent_agent=root)
+    finally:
+        for e in grand.release.values():
+            e.set()
+    assert {r["task_index"] for r in entry["uncollected_sub_results"]} == {0, 1}
+    assert entry["cost_usd"] == pytest.approx(3.0)
+    assert root.session_estimated_cost_usd == pytest.approx(3.0)
+
+
+def test_live_manifest_stays_open_until_the_detached_batch_settles(tmp_path, joined):
+    from tools.delegation_live_log import _manifest_path, _write_manifest
+    helper, kids = _Agent(1), _Kids(2, fast={0})
+    b = kids.batch(helper)
+    b.live_deleg_id, b.live_home = "deleg-x", tmp_path
+    _manifest_path("deleg-x", tmp_path).parent.mkdir(parents=True)
+    _write_manifest("deleg-x", kids.tasks, ["a.log", "b.log"], home=tmp_path)
+    manifest = lambda: json.loads(_manifest_path("deleg-x", tmp_path).read_text())
+    t, _ = _in_thread(_execute_and_aggregate, b)
+    assert kids.started[1].wait(3)
+    wait_until(lambda: joined == [0], timeout=3)
+    _steer_and_time(helper, t)
+    m = manifest()
+    assert "completed" not in m, "children still run: the delegation is not complete"
+    assert [x["status"] for x in m["tasks"]] == ["completed", "running"]
+    helper._drain_pending_steer()
+    kids.release[1].set()
+    assert _wait_json(helper)["status"] == "completed"
+    m = manifest()
+    assert "completed" in m and [x["status"] for x in m["tasks"]] == ["completed", "completed"]

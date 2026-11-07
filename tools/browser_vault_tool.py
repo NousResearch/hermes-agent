@@ -223,7 +223,8 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
     login page). Returns the origin when a tab was focused, else None (caller falls back to the current page).
     A plugin page backend's current page IS the tab the agent drove, so there is nothing to focus."""
-    if _page_backend(task_id) is not None:
+    if kind == "otp" or _page_backend(task_id) is not None:
+        # enter_code already selected a unique page before checking saved origins.
         return None
     try:
         supervisor = _ensure_supervisor(task_id)
@@ -374,8 +375,9 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
                       ensure_ascii=False)
 
 
-_TAB_PROBES["otp"] = _deep_probe("input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
-                                  "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]")
+from agent.vault_login_classifier import build_otp_probe_js
+
+_TAB_PROBES["otp"] = build_otp_probe_js()
 
 
 def _saved_login(handle: str) -> tuple[Any, Any]:
@@ -403,6 +405,18 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
     effective_task_id = task_id or "default"
+    page = _page_backend(effective_task_id)
+    if page is not None:
+        probe = _eval_js(effective_task_id, _TAB_PROBES["otp"])
+        if not probe.get("success") or _parse_json_result(probe.get("result")) is not True:
+            return json.dumps({"success": False, "error_type": "no_code_field",
+                               "error": "No unique one-time-code field on the current page; nothing was resolved or filled."})
+    supervisor = _ensure_supervisor(effective_task_id) if page is None else None
+    if supervisor is not None:
+        focused = supervisor.focus_page("", accept=_TAB_PROBES["otp"], unique=True)
+        if not focused.get("ok"):
+            return json.dumps({"success": False, "error_type": "no_code_field",
+                               "error": "No unique page with a one-time-code field; nothing was resolved or filled."})
     backend, meta = _saved_login(handle)
     if meta is not None:
         bound = _bound_page_origin(effective_task_id, meta, "otp")

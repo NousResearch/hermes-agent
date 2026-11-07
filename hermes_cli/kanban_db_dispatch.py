@@ -1637,20 +1637,20 @@ def check_respawn_guard(
             conn, "task_events", task_id, success, "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed')")):
         return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    #    Exception: a handoff AFTER the newest PR comment (operator reassign,
-    #    reviewer changes_requested, review reopen) names the profile that must
-    #    now work on THAT PR — a closer or the implementer finishing it, not a
-    #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
-    #    so the worker that opened the PR is still not re-spawned against it.
-    pr_times = [t for t, c in _rows_since(conn, "task_comments", task_id, now - _RESPAWN_GUARD_PR_WINDOW,
-                                          cols=", body", unreadable=now)  # duplicate-PR risk: fail closed
-                if _RESPAWN_GUARD_PR_URL_RE.search(_kb._lossy_text(c["body"]) or "")]
-    if pr_times:
+    # 4. A recent PR comment guards while any referenced PR might still be open; API failures fail closed.
+    pr_rows = [(t, _RESPAWN_GUARD_PR_URL_RE.findall(_kb._lossy_text(c["body"]) or ""))
+               for t, c in _rows_since(conn, "task_comments", task_id, now - _RESPAWN_GUARD_PR_WINDOW,
+                                        cols=", body", unreadable=now)]
+    pr_rows = [(t, urls) for t, urls in pr_rows if urls]
+    if pr_rows:
         # Strictly after: a same-second tie stays guarded (fail closed).
         if any(_is_handoff_event(e["kind"], e["payload"]) for _, e in _rows_since(
-                conn, "task_events", task_id, max(pr_times),
+                conn, "task_events", task_id, max(t for t, _ in pr_rows),
                 "AND kind IN ('assigned', 'changes_requested', 'review_reopened')", cols=", kind, payload", strict=True)):
+            return None
+        from hermes_cli.kanban_pr_acceptance import referenced_pr_is_active
+        urls = {url for _, row_urls in pr_rows for url in row_urls}
+        if all(referenced_pr_is_active(url) is False for url in urls):
             return None
         return "active_pr"
 

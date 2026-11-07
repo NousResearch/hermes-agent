@@ -13,11 +13,14 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from pathlib import Path
 from urllib.parse import quote
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)")
+_PR_STATE_CACHE_SECONDS = 300
+_pr_state_cache: dict[str, tuple[float, bool | None]] = {}
 
 
 def validate_contract(value: str | None) -> str:
@@ -102,6 +105,32 @@ def _assignee_profile_home(assignee: str | None) -> str | None:
         return resolve_profile_env(normalize_profile_name(assignee))
     except (FileNotFoundError, ValueError):
         raise _GateAuthError(f"assignee profile {assignee!r} cannot be resolved") from None
+
+
+def referenced_pr_is_active(url: str) -> bool | None:
+    """Whether ``url`` is open, or ``None`` when its state cannot be proven.
+
+    Cache both successful and failed reads so a dispatcher tick cannot turn an
+    unavailable GitHub API into one subprocess per guarded card per minute.
+    """
+    match = _PR.fullmatch(url)
+    if not match:
+        return None
+    now = time.monotonic()
+    cached = _pr_state_cache.get(url)
+    if cached is not None and now - cached[0] < _PR_STATE_CACHE_SECONDS:
+        return cached[1]
+    try:
+        current = _api(
+            f"repos/{match[1]}/pulls/{match[2]}",
+        )
+        state = current["state"]
+        active = state == "open" if state in {"open", "closed"} else None
+    except (_GateAuthError, OSError, subprocess.SubprocessError,
+            ValueError, KeyError, TypeError, IndexError):
+        active = None
+    _pr_state_cache[url] = (now, active)
+    return active
 
 
 def collect_acceptance(contract: str, published_pr: str | None,

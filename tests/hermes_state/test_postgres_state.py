@@ -609,3 +609,42 @@ def test_auxiliary_usage_by_task_returns_native_scalars(state_db):
                 "cache_write_tokens", "reasoning_tokens"):
         assert type(counters[key]) is int, key
     assert type(counters["estimated_cost_usd"]) is float
+
+
+def test_insert_or_replace_upsert_runs_on_both_dialects(state_db):
+    """retire_replaced_input's state_meta upsert (and the no-column-list form, which takes the
+    column-fallback branch of the rewrite) must parse and replace on both dialects. On
+    PostgreSQL the rewrite reads the table's primary key from the catalog over the raw psycopg
+    connection, which speaks pyformat: a SQLite ``?`` marker there raises ProgrammingError
+    before the converted statement ever runs (review findings 1)."""
+    state_db._write_sql("INSERT OR REPLACE INTO state_meta(key, value) VALUES (?, ?)",
+                        ("close_probe", "v1"))
+    assert state_db.get_meta("close_probe") == "v1"
+    state_db._write_sql("INSERT OR REPLACE INTO state_meta VALUES (?, ?)", ("close_probe", "v2"))
+    assert state_db.get_meta("close_probe") == "v2"
+
+
+def test_twin_insert_lastrowid_resolves_on_both_dialects(state_db):
+    """prune_rewrite's twin copy reads lastrowid off the INSERT...SELECT cursor and binds it
+    into the follow-up UPDATE ... WHERE id = ?; both dialects must resolve it to the row that
+    was actually inserted. On PostgreSQL the identity lookup runs over the raw psycopg
+    connection: the ``?`` marker and the oid-vs-text comparison in
+    pg_get_serial_sequence(...) both raised (masked by the except clause), so lastrowid was
+    always None and the follow-up update bound NULL (review finding 2)."""
+    session_id = state_db.create_session("lastrowid-probe", "cli")
+    message_id = state_db.append_message(session_id, "user", "Twin source row")
+    captured = {}
+
+    def probe(connection):
+        twin = ", ".join(column for column in state_db._message_column_names(connection)
+                         if column not in ("id", "active", "compacted", "display_order"))
+        cursor = connection.execute(
+            f"INSERT INTO messages ({twin}, active, compacted) "
+            f"SELECT {twin}, 0, 1 FROM messages WHERE id = ?", (message_id,))
+        captured["lastrowid"] = cursor.lastrowid
+        connection.execute("DELETE FROM messages WHERE session_id = ? AND id > ?",
+                           (session_id, message_id))
+
+    state_db._execute_write(probe)
+    assert captured["lastrowid"] is not None
+    assert captured["lastrowid"] > message_id

@@ -497,7 +497,7 @@ class PostgresConnection:
                 row = self._conn.execute(
                     "SELECT n.nspname, c.relname FROM pg_class c "
                     "JOIN pg_namespace n ON n.oid = c.relnamespace "
-                    "WHERE c.oid = pg_get_serial_sequence(?, 'id')", (table,)
+                    "WHERE c.oid = pg_get_serial_sequence(%s, 'id')::regclass", (table,)
                 ).fetchone()
             except psycopg.Error:
                 row = None  # no identity sequence on id: lastrowid stays None
@@ -509,10 +509,10 @@ class PostgresConnection:
         if table not in self._pk_cache:
             rows = self._conn.execute(
                 "SELECT a.attname FROM pg_index i "
-                "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
-                "JOIN pg_class c ON c.oid = i.indexrelid "
-                "JOIN pg_namespace n ON n.oid = c.relnamespace "
-                "WHERE n.nspname = current_schema() AND c.relname = ? AND i.indisprimary "
+                "JOIN pg_class t ON t.oid = i.indrelid "
+                "JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(i.indkey) "
+                "JOIN pg_namespace n ON n.oid = t.relnamespace "
+                "WHERE n.nspname = current_schema() AND t.relname = %s AND i.indisprimary "
                 "ORDER BY array_position(i.indkey, a.attnum)", (table,)
             ).fetchall()
             self._pk_cache[table] = tuple(row[0] for row in rows)
@@ -533,16 +533,18 @@ class PostgresConnection:
             rows = self._conn.execute(
                 "SELECT a.attname FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid "
                 "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = current_schema() "
-                "AND c.relname = ? AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum", (table,)
+                "AND c.relname = %s AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum", (table,)
             ).fetchall()
             columns = [row[0] for row in rows]
         if not columns:
             raise UnsupportedSQLError(f"cannot rewrite INSERT OR REPLACE into {table}: no columns")
         primary = self._primary_key_columns(table)
+        if not primary:
+            raise UnsupportedSQLError(f"cannot rewrite INSERT OR REPLACE into {table}: no primary key")
         non_pk = [c for c in columns if c not in primary]
         if not non_pk:
             raise UnsupportedSQLError(f"cannot rewrite INSERT OR REPLACE into {table}: no non-key columns")
-        on_conflict = " ON CONFLICT DO UPDATE SET " + ", ".join(
+        on_conflict = " ON CONFLICT ({}) DO UPDATE SET ".format(", ".join(primary)) + ", ".join(
             f"{c} = excluded.{c}" for c in non_pk)
         return re.sub(r"INSERT\s+OR\s+REPLACE\s+INTO", "INSERT INTO", converted, count=1) + on_conflict
 

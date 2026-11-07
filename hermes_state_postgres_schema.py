@@ -674,10 +674,12 @@ FOR EACH ROW WHEN (OLD.active = 1 OR OLD.compacted = 1)
 EXECUTE FUNCTION messages_display_identity_delete();
 
 -- Every row carries a message_uid, whoever wrote it: a build that predates the column binds
--- NULL, so the store mints one on its behalf.
+-- NULL, so the store mints one on its behalf. md5(random()::text) is a core function (pgcrypto's
+-- gen_random_bytes needs an extension nothing here installs) and yields the same
+-- 32-lowercase-hex format as SQLite's lower(hex(randomblob(16))).
 CREATE FUNCTION messages_message_uid_insert() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-    UPDATE messages SET message_uid = lower(encode(gen_random_bytes(16), 'hex'))
+    UPDATE messages SET message_uid = md5(random()::text)
     WHERE id = NEW.id;
     RETURN NULL;
 END

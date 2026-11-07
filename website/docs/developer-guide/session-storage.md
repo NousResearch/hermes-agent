@@ -736,12 +736,15 @@ fail) when the opt-in variable is unset, and fail when it is set but the
 server or driver is unavailable.
 
 ```bash
-HERMES_TEST_POSTGRES=1 scripts/run_tests.sh \
+HERMES_TEST_POSTGRES=1 \
+HERMES_TEST_POSTGRES_DSN='postgresql://hermes:hermes-test@127.0.0.1:55433/hermes_test' \
+scripts/run_tests.sh \
   tests/hermes_state/test_postgres_state.py \
   tests/hermes_state/test_postgres_migration.py \
   tests/hermes_state/test_postgres_search.py \
   tests/hermes_state/test_postgres_maintenance.py \
   tests/hermes_state/test_postgres_transactions.py \
+  tests/hermes_state/test_postgres_compression.py \
   tests/hermes_state/test_state_backend.py \
   tests/hermes_cli/test_postgres_session_readers.py \
   tests/tui_gateway/test_postgres_profile_sessions.py \

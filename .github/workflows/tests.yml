@@ -86,6 +86,7 @@ jobs:
             tests/agent/test_postgres_insights.py
         env:
           HERMES_TEST_POSTGRES: "1"
+          HERMES_TEST_POSTGRES_DSN: "postgresql://hermes:hermes-test@127.0.0.1:55433/hermes_test"
           HERMES_TEST_WORKERS: "4"
 
       - name: Check the checkout is clean

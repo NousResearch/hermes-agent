@@ -1,6 +1,7 @@
 """A SQLite conversation moves intact, or the destination remains untouched."""
 
 import json
+import re
 import sqlite3
 from contextlib import closing
 
@@ -160,3 +161,41 @@ def test_unknown_source_columns_refuse_migration_without_partial_copy(sqlite_sou
     assert postgres_db.session_count() == 0
     assert postgres_db._read_one("SELECT COUNT(*) FROM system_prompts")[0] == 0
     assert sqlite_source.read_bytes() == source_bytes
+
+
+def test_migration_backfills_legacy_null_message_uid(sqlite_source, postgres_db):
+    """A row written before the message_uid column existed binds NULL on copy; the destination
+    trigger must mint a 32-hex uid with core functions (md5(random()::text)) so the migration
+    cannot abort on pgcrypto's gen_random_bytes being absent (review finding 3)."""
+    with closing(sqlite3.connect(sqlite_source)) as raw:
+        raw.execute("UPDATE messages SET message_uid = NULL WHERE id = (SELECT MIN(id) FROM messages)")
+        raw.commit()
+
+    migrate_sqlite_to_postgres(sqlite_source, postgres_db)
+
+    with postgres_db._read_ctx() as connection:
+        uids = [row[0] for row in connection.execute("SELECT message_uid FROM messages")]
+    assert uids, "expected messages in the migrated destination"
+    assert all(re.fullmatch(r"[0-9a-f]{32}", uid) for uid in uids)
+
+
+def test_migration_replaces_only_the_topic_marker_on_a_fresh_destination(sqlite_source, postgres_db):
+    """A fresh writable destination open may have left the topic-migration marker in
+    state_meta; the marker-only branch accepts that destination, drops the marker, and still
+    copies the source's rows (previously untested)."""
+    with closing(sqlite3.connect(sqlite_source)) as raw:
+        # Keep the test able to tell "marker dropped" from "copied over": the source must not
+        # carry the marker key, so only the branch's DELETE can remove the seeded row.
+        raw.execute("DELETE FROM state_meta WHERE key = 'telegram_dm_topic_schema_version'")
+        raw.commit()
+        expected_meta = dict(raw.execute("SELECT key, value FROM state_meta").fetchall())
+    assert expected_meta, "the seeded source carries its own state_meta rows"
+
+    # Seed the destination with the marker a fresh writable open leaves behind.
+    postgres_db.set_meta("telegram_dm_topic_schema_version", "9")
+    counts = migrate_sqlite_to_postgres(sqlite_source, postgres_db)
+
+    assert counts["state_meta"] == len(expected_meta)
+    with postgres_db._read_ctx() as connection:
+        actual_meta = dict(connection.execute("SELECT key, value FROM state_meta").fetchall())
+    assert actual_meta == expected_meta

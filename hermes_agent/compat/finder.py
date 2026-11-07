@@ -89,6 +89,14 @@ class Finder(importlib.abc.MetaPathFinder):
             return None
         if self.strict:
             raise ImportError(f"{fullname} has moved: import {new}", name=fullname)
+        parent, _, child = fullname.rpartition(".")
+        moved_parent = current_name(parent, self.moves) if parent else None
+        displaced = f"{moved_parent}.{child}" if moved_parent is not None else None
+        # Old and current names share one parent package object, so binding the old child name would
+        # replace the real module of that name on it. That table entry cannot be served; say why.
+        if displaced not in (None, new) and importlib.machinery.PathFinder.find_spec(displaced, path) is not None:
+            raise ImportError(f"{fullname} cannot be served as {new}: the shared package {moved_parent} already "
+                              f"has a module {displaced}", name=fullname)
         spec = importlib.util.find_spec(new)
         if spec is None:
             raise ModuleNotFoundError(f"No module named {new!r}", name=new)

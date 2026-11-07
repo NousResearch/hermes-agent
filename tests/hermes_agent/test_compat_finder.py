@@ -115,20 +115,27 @@ def test_missing_current_module_keeps_its_import_error(tree, monkeypatch):
     assert raised.value.name == "compat_probe_tree.cli.missing"
 
 
-@pytest.mark.parametrize("swap", [
+@pytest.mark.parametrize("conflict", [
     {"compat_probe_old.a": "compat_probe_tree.cli.b", "compat_probe_old.b": "compat_probe_tree.cli.a"},
     {"compat_probe_old.a": "compat_probe_tree.cli.a.impl"},
 ], ids=["children-swapped", "child-into-its-own-subpackage"])
-def test_a_current_module_is_never_redirected_by_a_derived_child_name(tree, monkeypatch, swap):
+def test_an_old_child_name_that_would_displace_a_current_module_is_refused(tree, monkeypatch, conflict):
+    """Old and current names share one package object: an old child name bound to another module would
+    replace the current module of that name on it, so the finder refuses it and current imports stay right."""
     (tree.parent / "a").mkdir()
     (tree.parent / "a" / "__init__.py").write_text("NAME = 'a'\n", encoding="utf-8")
     (tree.parent / "a" / "impl.py").write_text("NAME = 'impl'\n", encoding="utf-8")
     (tree.parent / "b.py").write_text("NAME = 'b'\n", encoding="utf-8")
-    monkeypatch.setattr(sys, "meta_path", [Finder({**MOVES, **swap}), *sys.meta_path])
+    monkeypatch.setattr(sys, "meta_path", [Finder({**MOVES, **conflict}), *sys.meta_path])
 
-    for old, new in swap.items():
-        assert importlib.import_module(old) is importlib.import_module(new)
-    assert importlib.import_module("compat_probe_tree.cli.a").NAME == "a"
+    for old in conflict:
+        with pytest.raises(ImportError, match="already has a module compat_probe_tree.cli."):
+            importlib.import_module(old)
+    from compat_probe_tree.cli import a as canonical_from
+    import compat_probe_tree.cli.a as canonical_dotted
+
+    assert canonical_from is canonical_dotted is sys.modules["compat_probe_tree.cli.a"]
+    assert canonical_from.NAME == "a"
 
 
 @pytest.mark.parametrize("old_name", ["compat_probe_old", "compat_probe_old.entry"])

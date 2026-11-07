@@ -117,6 +117,14 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "\"findings\": [...]}. Surfaced to downstream "
                 "workers alongside ``summary``."
         )),
+        "published_pr": _prop("string", (
+                "Exact GitHub PR URL for a PR-backed task. Supply this on the "
+                "first successful completion when the task completion_contract "
+                "is OWNER/REPO (or an exact PR URL) so Hermes can bind the card "
+                "and verify required exact-head CI. This is the first-class "
+                "equivalent of metadata.published_pr; putting the PR only in "
+                "summary prose does not satisfy the acceptance gate."
+        )),
         "result": _prop("string", (
                 "Short result log line (legacy field, maps to "
                 "task.result). Use ``summary`` instead when "

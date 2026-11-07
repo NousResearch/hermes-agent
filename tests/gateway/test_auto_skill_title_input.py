@@ -98,9 +98,10 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
 
     runner._run_agent_bind_turn_wiring = run_without_delivery
     runner._run_agent = runner._run_agent_inner
+    generation = runner._begin_session_run_generation(entry.session_key)
     try:
         with pytest.raises(_TurnObserved):
-            await runner._handle_message_with_agent(event, source, entry.session_key, 1)
+            await runner._handle_message_with_agent(event, source, entry.session_key, generation)
         assert title_inputs == [question]
         assert title_requests == [question]
         # Both independent per-turn carriers must survive the gateway/facade/loop
@@ -137,5 +138,6 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
         assert title_inputs[-1] == "Original relay request"
         assert model_inputs[-1] == "Enriched relay request"
     finally:
+        runner._get_executor().shutdown(wait=True)
         agent.close()
         db.close()

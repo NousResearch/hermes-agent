@@ -60,9 +60,13 @@ def test_a_tree_without_a_declared_file_it_lists_is_refused_before_and_after_the
         update_cmd._rollback_if_pulled_syntax_error(["git"], pre)
     assert git("rev-parse", "HEAD") == pre
     # A declared list that is not a list of paths refuses too; it never falls back to the running list.
-    (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "x"\n\n[tool.hermes]\nupdate-startup-files = ["hermes_constants.py", 42]\n', encoding="utf-8")
-    assert commit.tree_syntax_error(tmp_path, running_list) == ("pyproject.toml", commit.INVALID_STARTUP_FILES)
+    for pyproject in ('[project]\nname = "x"\n\n[tool.hermes]\nupdate-startup-files = ["hermes_constants.py", 42]\n',
+                      '[project\n'):
+        (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+        assert commit.tree_syntax_error(tmp_path, running_list) == ("pyproject.toml", commit.INVALID_STARTUP_FILES)
+    # A pyproject whose tables have other types is read as declaring nothing, never a crash past the rollback.
+    (tmp_path / "pyproject.toml").write_text('project = 42\ntool = 42\n', encoding="utf-8")
+    assert commit.startup_files((tmp_path / "pyproject.toml").read_bytes(), running_list) == (tuple(running_list), False)
 
 
 def test_this_tree_declares_its_startup_files_and_has_every_one():

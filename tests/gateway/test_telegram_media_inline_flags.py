@@ -68,3 +68,41 @@ def test_event_passes_media_clause_after_attach():
     _attach(self, event, _cached())
 
     assert _media_clause(event) is None
+
+
+def test_album_merge_keeps_flags_aligned_for_documents():
+    """Album of two text documents: each item carries [True]; merging must not lose a flag."""
+    from gateway.session_envelope import _media_clause
+
+    def doc(i):
+        return MessageEvent(text=f"doc{i}", message_type=MessageType.DOCUMENT,
+                            media_urls=[f"/tmp/doc{i}.txt"], media_types=["text/plain"],
+                            media_text_inlined=[True])
+
+    pending: dict = {}
+    adapter = SimpleNamespace(_merge_caption=TelegramAdapter._merge_caption)
+    TelegramAdapter._merge_into_pending(adapter, pending, "album:1", doc(1))
+    TelegramAdapter._merge_into_pending(adapter, pending, "album:1", doc(2))
+    merged = pending["album:1"]
+
+    assert len(merged.media_urls) == 2
+    assert merged.media_text_inlined == [True, True]
+    assert _media_clause(merged) is None
+
+
+def test_album_merge_pads_flagless_first_item():
+    from gateway.session_envelope import _media_clause
+
+    pending: dict = {}
+    adapter = SimpleNamespace(_merge_caption=TelegramAdapter._merge_caption)
+    first = MessageEvent(text="", message_type=MessageType.PHOTO,
+                         media_urls=["/tmp/a.jpg"], media_types=["image/jpeg"], media_text_inlined=[])
+    second = MessageEvent(text="[Content of b.txt]:\nhi", message_type=MessageType.DOCUMENT,
+                          media_urls=["/tmp/b.txt"], media_types=["text/plain"],
+                          media_text_inlined=[True])
+    TelegramAdapter._merge_into_pending(adapter, pending, "album:2", first)
+    TelegramAdapter._merge_into_pending(adapter, pending, "album:2", second)
+    merged = pending["album:2"]
+
+    assert merged.media_text_inlined == [None, True]
+    assert _media_clause(merged) is None

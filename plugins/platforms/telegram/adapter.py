@@ -6661,8 +6661,17 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             pending[key] = event
             return
         existing.absorb_reply_expected(event)
+        prior_count = len(existing.media_urls)
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
+        # Keep media_text_inlined aligned with media_urls: album items (e.g. several documents, each
+        # with injected text -> [True]) would otherwise leave the merged event with fewer flags than
+        # urls, and native admission refuses the whole message (media_text_inlined_length).
+        if event.media_urls:
+            existing_flags = list(getattr(existing, "media_text_inlined", []) or [])
+            existing.media_text_inlined = existing_flags + [None] * (prior_count - len(existing_flags))
+            incoming_flags = list(getattr(event, "media_text_inlined", []) or [])
+            existing.media_text_inlined += incoming_flags + [None] * (len(event.media_urls) - len(incoming_flags))
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
 

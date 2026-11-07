@@ -134,13 +134,9 @@ def _client() -> httpx.Client:
 
 
 def _connection(connection_id: str) -> tuple[dict, str, dict]:
-    """``(entry, base url, extra headers)`` for an oauth-mode remote/cloud *connection_id*."""
-    entry = next((c for c in store.read_registry()["connections"] if c["id"] == connection_id), None)
-    if entry is None:
-        raise store.NoSuchConnection(f'No connection with id "{connection_id}".')
-    if entry.get("kind") not in ("remote", "cloud") or entry.get("authMode") != "oauth" or not entry.get("url"):
-        raise store.ConnectionStoreError(f'"{entry.get("label")}" does not sign in with OAuth.')
-    return entry, str(entry["url"]).rstrip("/"), store.connection_secret(connection_id)["headers"]
+    """``(entry, base url, extra headers)`` for an oauth-mode remote/cloud *connection_id*, from one read."""
+    snap = _snapshot(connection_id)
+    return snap["entry"], snap["url"], snap["headers"]
 
 
 def _post_json(url: str, body: dict, headers: dict) -> httpx.Response:
@@ -241,7 +237,14 @@ def complete_sign_in(*, code: str, state: str, error: str = "", error_descriptio
         raise OAuthSignInError(f"The gateway refused the sign-in: {error}{detail}")
     if not code:
         raise OAuthSignInError("The sign-in redirect carried no authorization code.")
-    headers = store.connection_secret(flight.connection_id)["headers"]
+    try:
+        snap = store.dial_snapshot(flight.connection_id)
+    except store.NoSuchConnection as exc:
+        raise OAuthSignInError("The connection changed while signing in; sign in again.") from exc
+    if snap["url"] != flight.base_url:
+        # Re-pointed while the browser was away: its headers now belong to the new address.
+        raise OAuthSignInError("The connection changed while signing in; sign in again.")
+    headers = snap["headers"]
     try:
         response = _post_json(_endpoint(flight.base_url, "/auth/native/token"),
                               {"code": code, "code_verifier": flight.verifier}, headers)
@@ -299,28 +302,52 @@ def _refresh_lock(connection_id: str) -> threading.Lock:
         return _refresh_locks.setdefault(connection_id, threading.Lock())
 
 
-def ensure_access_token(connection_id: str, *, rejected_token: str = "") -> str:
+@dataclass(frozen=True)
+class Grant:
+    """An access token with the gateway that issued it and the extra headers read with it: the
+    caller sends this token to ``base_url`` only."""
+    access_token: str
+    base_url: str
+    headers: dict
+
+
+def _snapshot(connection_id: str) -> dict:
+    snap = store.dial_snapshot(connection_id)
+    entry = snap["entry"]
+    if entry.get("kind") not in ("remote", "cloud") or entry.get("authMode") != "oauth" or not snap["url"]:
+        raise store.ConnectionStoreError(f'"{entry.get("label")}" does not sign in with OAuth.')
+    return snap
+
+
+def ensure_access_token(connection_id: str, *, rejected_token: str = "") -> Grant:
     """A usable access token for *connection_id*, refreshed when at/near expiry, or when
     *rejected_token* (the one the remote just answered 401 to) is still the stored one.
 
+    The token, its issuer URL and the headers come from one store read, so a re-point landing
+    meanwhile never pairs one gateway's address with another's sign-in.
+
     Raises :class:`NotSignedIn` when there is no sign-in or the remote rejects its refresh token
     (the sign-in is dropped), :class:`OAuthSignInError` when the remote cannot be reached (kept)."""
-    _entry, _base_url, headers = _connection(connection_id)
     with _refresh_lock(connection_id):
-        tokens = store.read_tokens(connection_id)
+        snap = _snapshot(connection_id)
+        tokens = snap["tokens"]
         if not tokens:
             raise NotSignedIn("Sign in to this gateway first.")
         forced = bool(rejected_token) and rejected_token == tokens.get("accessToken")
         if not forced and not token_needs_refresh(tokens):
-            return tokens["accessToken"]
+            return _grant(tokens, snap["headers"])
         if not tokens.get("refreshToken"):
             store.write_tokens(connection_id, None)
             raise NotSignedIn("The sign-in expired; sign in again.")
-        return _refresh(connection_id, headers, tokens)
+        return _refresh(connection_id, snap["headers"], tokens)
 
 
-def _refresh(connection_id: str, headers: dict, tokens: dict) -> str:
-    # The refresh token goes only to the gateway that issued it (``read_tokens`` hands out a set
+def _grant(tokens: dict, headers: dict) -> Grant:
+    return Grant(access_token=tokens["accessToken"], base_url=str(tokens["baseUrl"]).rstrip("/"), headers=dict(headers))
+
+
+def _refresh(connection_id: str, headers: dict, tokens: dict) -> Grant:
+    # The refresh token goes only to the gateway that issued it (the snapshot hands out a set
     # only while the entry still names that URL).
     base_url = str(tokens["baseUrl"]).rstrip("/")
     try:
@@ -335,19 +362,20 @@ def _refresh(connection_id: str, headers: dict, tokens: dict) -> str:
     if response.status_code != 200:
         raise OAuthSignInError(f"{base_url} could not renew the sign-in ({response.status_code}).")
     rotated = parse_token_response(response.json())
-    current = store.read_tokens(connection_id) or {}
-    if not current:
+    current = _snapshot(connection_id)
+    if not current["tokens"]:
         # Signed out, or re-pointed at another gateway meanwhile: this rotation belongs to neither.
         raise NotSignedIn("The connection changed while renewing its sign-in; sign in again.")
-    if current.get("accessToken") != tokens.get("accessToken"):
-        # A sign-in (Desktop's or a browser's) replaced the tokens meanwhile: it wins.
-        return current.get("accessToken") or rotated["accessToken"]
+    if current["tokens"].get("accessToken") != tokens.get("accessToken"):
+        # A sign-in (Desktop's or a browser's) replaced the tokens meanwhile: it wins, with the
+        # address it was issued by.
+        return _grant(current["tokens"], current["headers"])
     try:
         store.write_tokens(connection_id, rotated, issued_by=base_url)
     except (store.ConnectionStoreError, store.NoSuchConnection) as exc:
         # Re-pointed or removed while the remote answered: this rotation belongs to neither host.
         raise NotSignedIn("The connection changed while renewing its sign-in; sign in again.") from exc
-    return rotated["accessToken"]
+    return Grant(access_token=rotated["accessToken"], base_url=base_url, headers=dict(headers))
 
 
 def _drop_if_unchanged(connection_id: str, tokens: dict) -> None:

@@ -59,6 +59,7 @@ __all__ = [
     "DuplicateConnection",
     "NoSuchConnection",
     "connection_secret",
+    "dial_snapshot",
     "drop_tokens",
     "public_registry",
     "read_registry",
@@ -297,7 +298,10 @@ def _entry(connection_id: str) -> dict:
 
 def connection_secret(connection_id: str) -> dict:
     """``{"token": str | None, "headers": {name: value}}`` for dialing *connection_id* (the proxy)."""
-    entry = _entry(connection_id)
+    return _secret_of(_entry(connection_id))
+
+
+def _secret_of(entry: dict) -> dict:
     headers = {}
     for name, secret in (entry.get("headers") or {}).items():
         value = sanitize_header_value(_plain(secret))
@@ -335,7 +339,11 @@ def _bound_url(token_set: Any) -> Optional[str]:
 def read_tokens(connection_id: str) -> Optional[dict]:
     """The NativeTokenSet signed in for *connection_id*, or ``None``. A set issued by another URL
     than the entry names now (it was re-pointed) is never handed out: it reads as signed out."""
-    entry = _entry(connection_id)
+    return _tokens_of(_entry(connection_id))
+
+
+def _tokens_of(entry: dict) -> Optional[dict]:
+    connection_id = entry["id"]
     url = _entry_url(entry)
     doc, _corrupt, _exists = _token_doc(tokens_path())
     found = doc["tokens"].get(connection_id)
@@ -345,6 +353,18 @@ def read_tokens(connection_id: str) -> Optional[dict]:
     if not (isinstance(found, dict) and found.get("accessToken")) or url is None or _bound_url(found) != url:
         return None
     return found
+
+
+def dial_snapshot(connection_id: str) -> dict:
+    """Everything dialing *connection_id* needs, from ONE registry read: ``{entry, url, token,
+    headers, tokens}``. ``url`` is the normalized address (``None`` for local/ssh), and ``tokens``
+    is the OAuth set only when it was issued by that same ``url``. Callers dial ``url`` and nothing
+    else: credentials read by id in a second lookup can belong to an address the entry was
+    re-pointed to meanwhile."""
+    entry = _entry(connection_id)
+    secret = _secret_of(entry)
+    return {"entry": entry, "url": _entry_url(entry), "token": secret["token"], "headers": secret["headers"],
+            "tokens": _tokens_of(entry) if entry.get("authMode") == "oauth" else None}
 
 
 def write_tokens(connection_id: str, token_set: Optional[dict], *, issued_by: Optional[str] = None) -> None:

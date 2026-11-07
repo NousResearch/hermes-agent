@@ -17,20 +17,22 @@ from hermes_cli import gateway_connections as store
 _TIMEOUT_S = 8.0
 
 
-def _credential_headers(entry: dict) -> dict[str, str]:
-    secret = store.connection_secret(entry["id"])
-    headers = dict(secret["headers"])
-    if entry.get("authMode") == "oauth":
-        tokens = store.read_tokens(entry["id"])
-        if not tokens:
+def _credential_headers(connection_id: str) -> tuple[str, dict[str, str]]:
+    """``(url, headers)`` from one store read, so the credential always belongs to the URL probed."""
+    snap = store.dial_snapshot(connection_id)
+    headers = dict(snap["headers"])
+    if snap["entry"].get("authMode") == "oauth":
+        if not snap["tokens"]:
             raise store.ConnectionStoreError("This connection is not signed in. Sign in to it first.")
-        headers["Authorization"] = f"Bearer {tokens['accessToken']}"
-    elif secret["token"]:
-        headers["X-Hermes-Session-Token"] = secret["token"]
+        headers["Authorization"] = f"Bearer {snap['tokens']['accessToken']}"
+    elif snap["token"]:
+        headers["X-Hermes-Session-Token"] = snap["token"]
     else:
         raise store.ConnectionStoreError(
             "This connection has no saved session token. Edit the connection and paste one.")
-    return headers
+    if not snap["url"]:
+        raise store.ConnectionStoreError("This connection has no gateway address.")
+    return snap["url"], headers
 
 
 async def _probe(base_url: str, headers: dict[str, str]) -> dict[str, Any]:
@@ -67,7 +69,7 @@ async def probe_connection(connection_id: str) -> dict[str, Any]:
             return {"ok": True, "baseUrl": None, "version": __version__}
         if entry["kind"] == "ssh":
             raise store.ConnectionStoreError("Testing an SSH connection from the Webapp is not available yet.")
-        return await _probe(entry["url"], _credential_headers(entry))
+        return await _probe(*_credential_headers(entry["id"]))
     except store.NoSuchConnection as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except store.ConnectionStoreError as exc:

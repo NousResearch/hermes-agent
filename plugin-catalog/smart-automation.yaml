@@ -1,0 +1,24 @@
+name: smart-automation
+repo: https://github.com/buttercode101/smart-automation
+sha: 52c77d609cd52ab3df0b6b6652240c35feca5aaa
+description: >-
+  Visual dependency-aware automation timeline with optional calendar constraints on top of Hermes cron.
+  Manual chain-runner: jobs advance only via orchestrator_trigger_chain after verified success.
+  Read-only Desktop timeline; all mutations go through agent tools so approvals fire.
+  Disclosure — reads a user-selected local .ics file if configured; stores chain metadata in plugin SQLite data dir; creates dependency metadata for underlying cron jobs (Hermes cron manages the jobs themselves); no external network calls; Slack/Calendar in demo are stubbed/mock. Nearest neighbour cron-bulletin is a report inbox; this ships a visual graph + manual chain advancement.
+maintainer: buttercode101
+tier: community
+category: automation
+requires_hermes: ">=0.22.0"
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - orchestrator_create
+    - orchestrator_status
+    - orchestrator_graph
+    - orchestrator_trigger_chain
+  provides_hooks:
+    - post_tool_call
+    - on_session_start
+  provides_middleware: []
+  requires_env: []

@@ -42,6 +42,86 @@ def _redact_telegram_error_text(error: object) -> str:
         return "<telegram error redacted>"
 
 
+#: Backoff (seconds) before each subsequent attempt of a Telegram inbound-media download.
+#: A download is a pure read (``get_file`` resolves a path, ``download_as_bytearray`` fetches
+#: bytes) and mutates nothing, so replaying it can never duplicate a message — unlike the
+#: SEND paths, which must never be replayed.
+_TELEGRAM_FILE_FETCH_DELAYS = (2.0, 5.0)
+
+
+def _is_retryable_telegram_fetch_error(exc: BaseException) -> bool:
+    """True when a failed Telegram file fetch may be safely re-sent.
+
+    python-telegram-bot wraps every httpx timeout in ``telegram.error.TimedOut`` and every other
+    httpx failure in ``telegram.error.NetworkError``; the original httpx class survives only as
+    ``__cause__``. The cause chain is walked so a wrapped ``httpx.ReadTimeout`` still matches.
+
+    ``BadRequest`` is a permanent answer to what was asked for — a bad ``file_id``, an oversized
+    upload, a wrong method — and must NOT be retried: the same call would be rejected again.
+    PTB makes ``BadRequest`` a subclass of ``NetworkError`` (verified on PTB 22.8), so it has to be
+    excluded explicitly or every rejected request would burn three attempts.
+    """
+    from telegram.error import BadRequest, NetworkError
+
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    depth = 0
+    while cur is not None and depth < 12:
+        ident = id(cur)
+        if ident in seen:
+            break
+        seen.add(ident)
+        depth += 1
+        if isinstance(cur, BadRequest):
+            return False
+        if isinstance(cur, NetworkError):
+            return True
+        # httpx errors that PTB did not wrap (a bare ``httpx.ReadTimeout`` from the transport).
+        name = type(cur).__name__
+        if name in {
+            "ReadTimeout", "ReadError", "ConnectTimeout", "ConnectError",
+            "PoolTimeout", "RemoteProtocolError", "ServerDisconnectedError",
+        }:
+            # A pool timeout means the request was never sent; retrying on the same exhausted
+            # pool would just stall again.
+            if name == "PoolTimeout":
+                return False
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+async def _fetch_telegram_file(source: Any, what: str) -> tuple[Any, bytes]:
+    """Fetch and download one Telegram attachment as a single retried unit.
+
+    ``get_file()`` and the download that follows it are retried together: a half-downloaded file
+    is not resumable, so retrying only one of the two would leave a truncated payload behind.
+
+    The Bot API answers a ``getFile`` for a freshly uploaded file in well under a second
+    (measured: 174 ms-9.1 s over repeated calls on a real voice note), so a timeout on the first
+    attempt is a stalled socket rather than a slow API — and the next attempt succeeds. Before
+    this retry a single dropped connection lost the whole attachment, leaving the user with
+    nothing but a "could not be downloaded" note.
+    """
+    delays = list(_TELEGRAM_FILE_FETCH_DELAYS)
+    attempts = len(delays) + 1
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            file_obj = await source.get_file()
+            return file_obj, bytes(await file_obj.download_as_bytearray())
+        except Exception as exc:
+            if not delays or not _is_retryable_telegram_fetch_error(exc):
+                raise
+            delay = delays.pop(0)
+            logger.warning(
+                "[Telegram] %s: fetch failed on attempt %d/%d (%s), retrying in %ss",
+                what, attempt, attempts, _redact_telegram_error_text(exc), delay,
+            )
+            await asyncio.sleep(delay)
+
+
 def _consume_abandoned_task(task: asyncio.Task) -> None:
     """Observe a detached task's terminal exception to avoid noisy loop logs."""
     try:
@@ -6261,8 +6341,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         if not (0 < self._int_or_zero(file_size) <= getattr(self, "_max_doc_bytes", 20 * 1024 * 1024)):
             return "oversized", file_size
         try:
-            file_obj = await source.get_file()
-            data = bytes(await file_obj.download_as_bytearray())
+            file_obj, data = await _fetch_telegram_file(source, what)
             if not filename:
                 filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
             cached = await cache_media_bytes_async(data, filename=filename, mime_type=mime, default_kind=kind)
@@ -6706,8 +6785,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 logger.info("[Telegram] Skipped oversized user %s (size=%s)", kind, getattr(source, "file_size", None))
                 await self.handle_message(event)
                 return True
-            file_obj = await source.get_file()
-            data = await file_obj.download_as_bytearray()
+            file_obj, data = await _fetch_telegram_file(source, f"user {kind}")
             if kind == "video":
                 ext = self._ext_from_path(getattr(file_obj, "file_path", None), SUPPORTED_VIDEO_TYPES, ext)
                 cached_path = await cache_video_from_bytes_async(bytes(data), ext=ext)
@@ -6755,8 +6833,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                     event, f"The document is too large or its size could not be verified. Maximum: {self._max_doc_bytes // (1024 * 1024)} MB.")
             # Screenshots/photos sent as documents take the image cache + batching path.
             if ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/"):
-                file_obj = await doc.get_file()
-                image_bytes = await file_obj.download_as_bytearray()
+                _file_obj, image_bytes = await _fetch_telegram_file(doc, "image document")
                 image_ext = ext if ext in _TELEGRAM_IMAGE_EXTENSIONS else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")
                 try:
                     cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=image_ext)
@@ -6779,8 +6856,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                     image_mime_to_ext.setdefault(_mime, _ext)
                 ext = image_mime_to_ext.get(doc.mime_type, "")
             if ext in SUPPORTED_VIDEO_TYPES:
-                file_obj = await doc.get_file()
-                video_bytes = await file_obj.download_as_bytearray()
+                _file_obj, video_bytes = await _fetch_telegram_file(doc, "video document")
                 self._set_cached_media(
                     event, await cache_video_from_bytes_async(bytes(video_bytes), ext=ext), SUPPORTED_VIDEO_TYPES[ext], MessageType.VIDEO,
                     "[Telegram] Cached user video document at %s")
@@ -6788,8 +6864,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 return True
             # Any file type is accepted (authorization is the gate, not the extension); unknown types get
             # application/octet-stream. Image documents already returned above.
-            file_obj = await doc.get_file()
-            raw_bytes = bytes(await file_obj.download_as_bytearray())
+            _file_obj, raw_bytes = await _fetch_telegram_file(doc, "document")
             from gateway.platforms.base import cache_media_bytes_async
             cached = await cache_media_bytes_async(raw_bytes, filename=original_filename or f"document{ext or '.bin'}", mime_type=doc_mime)
             if cached is None:
@@ -6847,8 +6922,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         # Cache photo locally: Telegram's file URLs expire (~1 hour) before vision may run.
         if msg.photo:
             try:
-                file_obj = await msg.photo[-1].get_file()  # PhotoSize list sorted by size; largest last
-                image_bytes = await file_obj.download_as_bytearray()
+                file_obj, image_bytes = await _fetch_telegram_file(
+                    msg.photo[-1], "photo")  # PhotoSize list sorted by size; largest last
                 ext = self._ext_from_path(file_obj.file_path, [".png", ".webp", ".gif", ".jpeg", ".jpg"], ".jpg")
                 self._set_cached_media(
                     event, await cache_image_from_bytes_async(bytes(image_bytes), ext=ext), f"image/{ext.lstrip('.')}", event.message_type,
@@ -6911,8 +6986,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             return
         fallback = f"a sticker with emoji {emoji}" if emoji else "a sticker"
         try:
-            file_obj = await sticker.get_file()
-            image_bytes = await file_obj.download_as_bytearray()
+            _file_obj, image_bytes = await _fetch_telegram_file(sticker, "sticker")
             cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=".webp")
             logger.info("[Telegram] Analyzing sticker at %s", cached_path)
             from tools.vision_tools import vision_analyze_tool

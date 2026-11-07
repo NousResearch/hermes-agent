@@ -209,6 +209,61 @@ describe('new activity after the seed', () => {
     expect(markUnreadMock).toHaveBeenCalledWith('dm', 'dixie')
   })
 
+  it('marks the session whose activity moved, not the Bot Chat that stayed quiet', async () => {
+    // A busy bot advances a visible conversation (cron output, a scratch
+    // session, another bot's message) while its Bot Chat sits still. The roster
+    // row's dot reads the Bot Chat id, so marking the Bot Chat here would claim
+    // unread content it does not have — and opening the Bot Chat would clear a
+    // dot for content the user never read.
+    const { trackInboundActivity } = await loadActions()
+
+    const busyElsewhere = (visibleLastActive: number) =>
+      ({
+        canonical_session: { id: 'bot-chat', last_active: 100, preview: 'quiet all day' },
+        last_session: { id: 'visible-1', last_active: visibleLastActive, preview: 'cron output' },
+        name: 'worker'
+      }) as RosterRow
+
+    trackInboundActivity([busyElsewhere(5000)])
+    trackInboundActivity([busyElsewhere(6000)])
+
+    expect(markUnreadMock.mock.calls).toEqual([['visible-1', 'worker']])
+  })
+
+  it('still prefers the Bot Chat when both moved to the same instant', async () => {
+    // botActivitySession()'s own tie-break: the canonical chat wins, so a
+    // delivery that landed in both is read as the Bot Chat's.
+    const { trackInboundActivity } = await loadActions()
+
+    const tied = (lastActive: number) =>
+      ({
+        canonical_session: { id: 'bot-chat', last_active: lastActive, preview: 'reply' },
+        last_session: { id: 'visible-1', last_active: lastActive, preview: 'reply' },
+        name: 'worker'
+      }) as RosterRow
+
+    trackInboundActivity([tied(5000)])
+    trackInboundActivity([tied(6000)])
+
+    expect(markUnreadMock.mock.calls).toEqual([['bot-chat', 'worker']])
+  })
+
+  it('falls back to the visible session when an older gateway sends no canonical id', async () => {
+    const { trackInboundActivity } = await loadActions()
+
+    const noCanonicalId = (lastActive: number) =>
+      ({
+        canonical_session: { last_active: lastActive, preview: 'reply' },
+        last_session: { id: 'visible-1', last_active: 10, preview: 'older' },
+        name: 'worker'
+      }) as RosterRow
+
+    trackInboundActivity([noCanonicalId(5000)])
+    trackInboundActivity([noCanonicalId(6000)])
+
+    expect(markUnreadMock.mock.calls).toEqual([['visible-1', 'worker']])
+  })
+
   it('tracks two same-named bots on different connections independently', async () => {
     const { trackInboundActivity } = await loadActions()
 

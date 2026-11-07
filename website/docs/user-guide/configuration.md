@@ -2556,6 +2556,7 @@ Direct OpenAI API requests and custom proxy endpoints are unchanged.
 ```yaml
 stt:
   enabled: true                # Auto-transcribe inbound voice messages (default: true)
+  transcribe_audio_files: false  # Also transcribe audio file attachments; the file path stays available (default: false)
   echo_transcripts: true       # Post raw transcripts back to the chat as 🎙️ "..." (default: true)
   provider: "local"            # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra" | ...
   language: "en"               # Global hint; a nonempty provider language wins. Blank falls back to HERMES_LOCAL_STT_LANGUAGE, then auto-detect
@@ -2622,6 +2623,8 @@ Command backends have additional behavior. `local_command` uses `stt.local.langu
 `stt.openai.timeout` and `stt.openai.max_retries` shape the OpenAI-SDK transcription client that the `openai`, `groq` and `deepinfra` providers share (there are no per-provider siblings yet, and the SDK reads no environment variables for these). The defaults are `60` / `1` rather than the previous fixed 30 s / no retries because a self-hosted OpenAI-compatible endpoint can take longer than 30 s to load its model on the first request, which used to lose that voice message outright. The trade-off: an unreachable backend now holds a voice message for up to two attempts × the timeout before Hermes gives up; set `timeout: 30` and `max_retries: 0` for the old shape.
 
 Set `stt.echo_transcripts: false` when the gateway should transcribe voice notes for the agent but must not post the raw transcript back to the chat (for example, customer-facing WhatsApp bots).
+
+Audio attachments classified as files (such as `.m4a` or `.mp3` uploads, including some forwarded voice notes) skip STT by default: the agent gets the file path, because an audio file can be music or a sound effect rather than speech. Set `stt.transcribe_audio_files: true` in a profile to send them through the same STT path as voice notes (provider, size limits, long-file splitting, `echo_transcripts`). The agent still gets the file path next to the transcript, so skills that need the original file keep working. Native Slack and Weixin already treat audio files as voice notes, so their behavior is unchanged. For long recordings, consider `stt.echo_transcripts: false` so the full transcript is not posted back to the chat.
 
 Provider behavior:
 

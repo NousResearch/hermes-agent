@@ -10,10 +10,11 @@ _registry = HandlerRegistry()
 method = _registry.method
 _profile_scoped = _registry.profile_scoped
 
-_BUILTIN_AT_PREFIXES = frozenset({"file", "folder", "url", "git", "diff", "staged"})
+_BUILTIN_AT_PREFIXES = frozenset({"file", "folder", "url", "git", "diff", "staged", "session"})
 _AT_DIRECTIVE_HINTS = [
     ("@diff", "git diff"), ("@staged", "staged diff"), ("@file:", "attach file"),
-    ("@folder:", "attach folder"), ("@url:", "fetch url"), ("@git:", "git log")]
+    ("@folder:", "attach folder"), ("@url:", "fetch url"), ("@git:", "git log"),
+    ("@session:", "reference session")]
 def _item(text: str, meta: str, display: str | None = None) -> dict:
     return {"text": text, "display": display if display is not None else text, "meta": meta}
 

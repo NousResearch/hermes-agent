@@ -620,6 +620,8 @@ export interface GatewayConnectionsStore {
   file: string
   tokensFile: string
   read(): ConnectionRegistry
+  /** `read`, but a store that cannot be read throws instead of answering a local-only list. */
+  readStrict(): ConnectionRegistry
   write(registry: ConnectionRegistry): void
   invalidate(): void
   /** A NativeTokenStoreIo over the tokens file, keyed by connection id (unbound URLs fall back). */
@@ -927,6 +929,7 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
     file,
     tokensFile,
     read,
+    readStrict: () => (cache && cacheStamp === stampOf() ? cache : readFresh()),
     write,
     invalidate: () => {
       cache = null

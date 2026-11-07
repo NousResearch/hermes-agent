@@ -7,8 +7,8 @@ import { promisify } from 'node:util'
 
 import { afterEach, test } from 'vitest'
 
-import { removeConnection } from './connection-registry'
-import { forgetRemovedGlobalRoute } from './connection-registry-remove'
+import { normalizeRegistry, removeConnection } from './connection-registry'
+import { forgetRemovedGlobalRoute, globalRouteRemoved } from './connection-registry-remove'
 import { createDesktopGatewayConnectionsStore } from './gateway-connections-store'
 
 // #142906 / #150084: a saved gateway the user removed came back as primary on the
@@ -117,4 +117,45 @@ test('a gateway the Webapp removed stays removed for Desktop, and its stale rout
   fs.writeFileSync(m.v1File, JSON.stringify({ mode: 'ssh', remote: { host: 'box.lan', user: 'me' } }))
   assert.equal(forgetRemovedGlobalRoute(registry, io), false)
   assert.equal(writes.length, 1)
+})
+
+test('an SSH route is the same gateway only with the same remote profile', () => {
+  const registry = normalizeRegistry({
+    connections: [
+      { id: 'local', kind: 'local', label: 'This device' },
+      { id: 'box-coder', kind: 'ssh', label: 'Box coder', host: 'box.lan', user: 'me', remoteProfile: 'coder' }
+    ]
+  })
+
+  const route = (remoteProfile?: string) => ({
+    mode: 'ssh',
+    remote: { host: 'box.lan', user: 'me', port: 22, remoteProfile }
+  })
+  assert.equal(globalRouteRemoved(registry, route('coder')), false)
+  assert.equal(globalRouteRemoved(registry, route('writer')), true, 'the removed profile route survived on a sibling')
+  assert.equal(globalRouteRemoved(registry, { mode: 'local', remote: {} }), false)
+})
+
+test('an unreadable store never resets connection.json', () => {
+  // Mode 000 does not stop the owner reading on Windows, nor root anywhere.
+  if (process.platform === 'win32' || process.getuid?.() === 0) {
+    return
+  }
+
+  const m = machine()
+  m.launch().read()
+  const store = path.join(m.root, 'gateway-connections.json')
+  fs.chmodSync(store, 0)
+  const launch = m.launch()
+
+  try {
+    assert.throws(() => launch.readStrict())
+    assert.deepEqual(
+      launch.read().connections.map(c => c.id),
+      ['local'],
+      'read() still answers the local-only fallback'
+    )
+  } finally {
+    fs.chmodSync(store, 0o600)
+  }
 })

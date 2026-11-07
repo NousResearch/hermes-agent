@@ -36,3 +36,15 @@ def has_scaffolding_flag(message: dict) -> bool:
 def is_user_role_scaffolding(message: dict) -> bool:
     """A runtime row in the user role, by flag or opening text (nudges, task-list snapshots, single background-process completion and watch-match notices)."""
     return has_scaffolding_flag(message) or _message_text(message).strip().startswith(_SYNTHETIC_USER_PREFIXES)
+
+
+def _is_real_user_message(message: Any) -> bool:
+    """Distinguish human intent from user-role runtime scaffolding.
+    A compaction summary flipped to ``role="user"`` for alternation is scaffolding and must not short-circuit
+    anchor restoration."""
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return False
+    if is_user_role_scaffolding(message) or not _message_text(message).strip():
+        return False
+    from agent.context_compressor import ContextCompressor
+    return not ContextCompressor._is_synthetic_compression_user_turn(message)

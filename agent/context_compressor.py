@@ -4591,7 +4591,7 @@ Write only the summary body. Do not include any preamble or prefix."""
     def _is_real_user_turn(cls, message: dict[str, Any]) -> bool:
         """Actionable user turn that is not synthetic scaffolding — the row test both index scans share.
 
-        Weaker than ``agent.conversation_compression._is_real_user_message``, which also rejects
+        Weaker than ``agent.conversation_compression_scaffolding._is_real_user_message``, which also rejects
         metadata-flagged scaffolding this pair cannot see; use that one when the question is
         "is this a genuine inbound user message".
         """

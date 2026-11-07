@@ -19,6 +19,7 @@ def ssh_mock_env(monkeypatch):
     """Create an SSHEnvironment with mocked connection/sync."""
     monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
     monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
+    monkeypatch.setattr(ssh_env, "ssh_connect_timeout", lambda target: (["-o", "ConnectTimeout=30"], 30))
     monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/testuser")
     monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
     monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)

@@ -219,13 +219,12 @@ def _check_ssh_backend(issues: list[str]) -> None:
         return _fail_and_issue("SSH host not configured", "(needed for the 'ssh' terminal backend)",
                                "run `hermes setup terminal` and enter the SSH host and user.", issues)
     ssh_user, ssh_port, ssh_key = (os.getenv(f"TERMINAL_SSH_{k}") for k in ("USER", "PORT", "KEY"))
-    cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
-    if ssh_port:
-        cmd += ["-p", ssh_port]
-    if ssh_key:
-        cmd += ["-i", os.path.expanduser(ssh_key)]
-    cmd += [f"{ssh_user}@{ssh_host}" if ssh_user else ssh_host, "echo ok"]
-    _require(_run_ok(cmd, timeout=15, text=True, encoding='utf-8', errors='replace'),
+    from tools.environments.remote_common import ssh_connect_timeout
+    target = ([*(["-p", ssh_port] if ssh_port else []), *(["-i", os.path.expanduser(ssh_key)] if ssh_key else []),
+               f"{ssh_user}@{ssh_host}" if ssh_user else ssh_host])
+    connect_opts, connect_secs = ssh_connect_timeout(target)
+    cmd = ["ssh", *connect_opts, "-o", "BatchMode=yes", *target, "echo ok"]
+    _require(_run_ok(cmd, timeout=connect_secs + 15, text=True, encoding='utf-8', errors='replace'),
              f"SSH connection to {ssh_host}", (f"SSH connection to {ssh_host}", ""), f"Check SSH configuration for {ssh_host}", issues)
 
 

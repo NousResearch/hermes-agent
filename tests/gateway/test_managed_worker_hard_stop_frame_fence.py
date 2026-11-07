@@ -51,6 +51,7 @@ def test_worker_stop_hard_cancels_the_agent_before_and_after_construction(tmp_pa
             self.stopped, self.finish = threading.Event(), threading.Event()
             self.stopped.set()
             self.finish.set()
+        def close(self): pass
         def approval(self, data): pass
         def clarify(self, questions): pass
 

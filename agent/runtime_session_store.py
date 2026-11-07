@@ -336,7 +336,20 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             try:
                 while self.journal['pending']:
                     entry = self.journal['pending'][0]
-                    result = self.rpc('worker.persist', **self.scope, **entry)
+                    try:
+                        result = self.rpc('worker.persist', **self.scope, **entry)
+                    except Exception as exc:
+                        from websockets.exceptions import ConnectionClosed
+                        if not isinstance(exc, (TimeoutError, ConnectionClosed)):
+                            raise
+                        # The owner may have committed this durable journal entry before its ACK
+                        # was delayed or lost. Reconcile only this exact worker.persist receipt:
+                        # same scope, sequence, operation and frozen payload; the owner's receipt
+                        # digest either returns the prior result or rejects a conflict. Never
+                        # replay an arbitrary RPC or advance to a new sequence on uncertainty.
+                        logger.warning('worker.persist outcome unknown; reconciling exact receipt '
+                                       'operation=%s sequence=%s', entry.get('operation'), entry.get('sequence'))
+                        result = self.rpc('worker.persist', **self.scope, **entry)
                     candidate = dict(self.journal, pending=self.journal['pending'][1:])
                     candidate = self._compression_receipt_journal(candidate, result)
                     self._save(candidate)

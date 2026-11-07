@@ -29,6 +29,10 @@ slides), and research reports. It does not cover academic BibTeX pipelines —
 for conference papers use the `arxiv` skill, which this skill
 feeds (see `references/citation-formats.md`).
 
+The design rationale behind the numbered-ledger ids and the citation wording is
+in `references/grounding-rationale.md` — read it before changing those
+instructions.
+
 ## When to Use
 
 Use whenever an answer or artifact rests on information you fetched rather than

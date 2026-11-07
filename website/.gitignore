@@ -13,6 +13,10 @@ src/data/skills.json
 src/data/skills-meta.json
 static/llms.txt
 static/llms-full.txt
+# Bot Marketplace artifacts are regenerated from bot-catalog/ during prebuild.
+static/api/bots.json
+static/api/bots-meta.json
+static/api/bot-catalog.json
 
 # Misc
 .DS_Store

@@ -1,0 +1,100 @@
+.page {
+  --bot-accent: #7c6cff;
+}
+
+.botCard {
+  min-height: 270px;
+}
+
+.featuredCard {
+  border-color: rgba(124, 108, 255, 0.25);
+  background: linear-gradient(145deg, rgba(124, 108, 255, 0.08), transparent 60%);
+}
+
+.cardHeading {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  margin-bottom: 0.85rem;
+}
+
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 2.8rem;
+  height: 2.8rem;
+  flex: 0 0 auto;
+  border: 1px solid;
+  border-radius: 12px;
+  font-size: 1.45rem;
+}
+
+.cardIdentity {
+  flex: 1;
+  min-width: 0;
+}
+
+.catalogName {
+  display: block;
+  margin-top: 0.18rem;
+  color: var(--ifm-color-emphasis-500);
+  font: 0.66rem "JetBrains Mono", monospace;
+}
+
+.outcome {
+  margin: 0 0 0.5rem;
+  color: var(--ifm-font-color-base);
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.creator {
+  margin-top: 0.65rem;
+  color: var(--ifm-color-emphasis-600);
+  font-size: 0.76rem;
+}
+
+.cardActions {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.65rem;
+}
+
+.cardPick {
+  margin-top: 0;
+}
+
+.detailsLink {
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.error {
+  color: #f87171;
+  font-size: 0.9rem;
+}
+
+.catalogNote {
+  color: var(--ifm-color-emphasis-500);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+@media (max-width: 560px) {
+  .cardHeading {
+    flex-wrap: wrap;
+  }
+
+  .cardActions {
+    grid-template-columns: 1fr;
+  }
+
+  .detailsLink {
+    text-align: center;
+  }
+}

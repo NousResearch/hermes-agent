@@ -197,6 +197,11 @@ class GatewaySessionCommandsMixin:
         """Handle /new or /reset command."""
         source = event.source
         session_key = self._session_key_for_source(source)
+        # Fence turns already queued on this conversation's session lease (including alias routing
+        # keys) before the holder releases, so none resumes into the old transcript.
+        _reset_entry = self.session_store._entries.get(session_key)
+        self._invalidate_turn_lease_waiters(
+            session_key, session_id=str(getattr(_reset_entry, "session_id", "") or ""))
         await self._hm_stop_owner_turn(session_key)  # idle and confirmed resets too (N53)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
         # Evict the running-agent slot now that the generation is bumped: the in-flight run's own

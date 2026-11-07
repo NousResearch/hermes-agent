@@ -567,7 +567,10 @@ class ClientLifecycleMixin:
 
     def _adopt_openai_credentials(self, api_key: str, base_url: str, *, reason: str) -> bool:
         """Apply a fresh key/base_url to the OpenAI-style kwargs and rebuild the shared client."""
+        from agent.route_verdicts import reset_route_verdicts_if_moved
+        prior_base_url = self.base_url
         self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
+        reset_route_verdicts_if_moved(self, prior_base_url)
         self._sync_client_kwargs_credentials()
         return self._replace_primary_openai_client(reason=reason)
 
@@ -642,7 +645,10 @@ class ClientLifecycleMixin:
                 )
                 return False
         if self.api_mode == "anthropic_messages":
+            from agent.route_verdicts import reset_route_verdicts_if_moved
+            prior_base_url = self.base_url
             self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
+            reset_route_verdicts_if_moved(self, prior_base_url)
             self._anthropic_api_key, self._anthropic_base_url = self.api_key, self.base_url
             self._rebuild_anthropic_client()
             return True
@@ -826,7 +832,9 @@ class ClientLifecycleMixin:
         token, base_url = refreshed
         self.api_key = token
         if base_url:
-            self.base_url = base_url.rstrip("/")
+            from agent.route_verdicts import reset_route_verdicts_if_moved
+            prior_base_url, self.base_url = self.base_url, base_url.rstrip("/")
+            reset_route_verdicts_if_moved(self, prior_base_url)
         self._sync_client_kwargs_credentials()
         self._apply_client_headers_for_base_url(str(self.base_url or ""))
         return self._replace_primary_openai_client(reason=f"{profile.name}_credential_{reason}")

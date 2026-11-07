@@ -120,6 +120,8 @@ class GatewayTurnPrepareMixin:
         _override_state = self._peek_session_state(skey) if skey else None
         override = _override_state.conversation.model_override if _override_state else None
         if override:
+            from gateway.run_turn_oauth import refresh_xai_session_override
+            refresh_xai_session_override(override)
             override_model = override.get("model", model)
             override_runtime = {
                 k: override.get(k) for k in (

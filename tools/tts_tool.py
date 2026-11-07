@@ -425,7 +425,8 @@ def _text_to_speech_single(
         if command_provider_config is not None:
             logger.info("Generating speech with command TTS provider '%s'...", provider)
             file_str = _generate_command_tts(
-                text, file_str, provider, command_provider_config, tts_config)
+                text, file_str, provider, command_provider_config, tts_config,
+                instructions=instructions)
         # Plugin-registered TTS backend (issue #30398). Fires when the configured provider is neither a
         # built-in nor a command-type entry, AND a plugin is registered under that name. The walrus binds
         # `_plugin_path` only when the dispatcher returns a path (i.e. a plugin was actually found); a None

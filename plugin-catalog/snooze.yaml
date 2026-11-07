@@ -1,0 +1,22 @@
+name: snooze
+title: Snooze
+repo: https://github.com/AIverflow/hermes-snooze
+sha: 106edc0c9a361399fd22768773f55e16af6bb95f
+version: "0.1.0"
+description: "A reminder that repeats on your phone (Telegram, Discord, any chat platform Hermes reaches) until you confirm it with a word, an emoji or a Telegram reaction, then can hand a follow-up to the agent. Zero LLM calls per reminder. `/snooze Take my pill in 30m every 5m until 2h then close ticket 42` reads the text, a start time, an interval and a stop clause; the call is answered with an echo of what, when (in your time zone), how to stop it, where it goes and how to undo it. Disclosure: a timer task runs in the gateway and checks due reminders every 15 seconds, so reminders only go out while the gateway runs; two hooks (pre_gateway_dispatch, gateway_platform_event) see every inbound gateway message and Telegram reaction before the agent, read it only to catch the confirm word and `later`, and leave every other message untouched; reminders and status lines are sent by the plugin through Hermes's own send path to the chat the snooze was created in, with no LLM call and no third-party network calls of its own; data (snoozes.json and two lock files) is stored in the plugin data directory; it reads the Hermes pause flag, the gateway running state and the profile's home channel config, read-only; a then-action starts one agent turn only if the user sets allow_gateway_injection. No credentials, no shell commands, no telemetry. Uses two private core imports (tools.send_message_tool.send_message_tool to deliver a message with no LLM, agent.estop.is_engaged to stay quiet when the agent is paused); the validator warns about them (catalog rule 9) and there is no public seam for either today."
+maintainer: the023
+tier: community
+category: automation
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/AIverflow/hermes-snooze/blob/106edc0c9a361399fd22768773f55e16af6bb95f/README.md
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "The gateway must be running: the timer lives only in the gateway, so a CLI or Desktop session alone sends no reminders. `/snooze test` says so instead of pretending."
+  - "Not supported: voice-note confirms and WhatsApp Cloud API. Reaction confirms work on Telegram private chats only; anywhere else, answer with a word or an emoji as a message."
+  - "Linux and macOS only for now: the store locks snoozes.json with fcntl, so Windows does not load the plugin."
+capabilities:
+  provides_tools: [snooze_create]
+  provides_hooks: [pre_gateway_dispatch, gateway_platform_event]
+  provides_middleware: []
+  requires_env: []

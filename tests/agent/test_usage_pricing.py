@@ -924,3 +924,73 @@ def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
     result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
     assert result.amount_usd is None
     assert result.status == "unknown"
+
+
+# ── provider-reported cost ───────────────────────────────────────────────────────────────────
+#
+# A provider that bills the exact request reports the charge on the response itself: xAI puts
+# ``cost_in_usd_ticks`` (1e-10 USD) on every completion, and OpenAI-compatible relays often carry
+# ``cost`` / ``total_cost``. Those turns have no price table (grok has no row), so before this the
+# account's real spend was recorded as ``cost_status=unknown`` with a zero estimate.
+
+
+def _reported(usage: dict) -> CanonicalUsage:
+    return CanonicalUsage(input_tokens=1_000, output_tokens=100, raw_usage=usage)
+
+
+def test_provider_reported_cost_is_actual_spend_not_an_estimate():
+    # xAI ticks: 1234567890 * 1e-10 USD
+    result = estimate_usage_cost("grok-9-unpriced", _reported({"cost_in_usd_ticks": 1_234_567_890}), provider="xai")
+    assert result.status == "actual"
+    assert result.source == "provider_cost_api"
+    assert result.amount_usd == Decimal("0.1234567890")
+
+
+@pytest.mark.parametrize("usage,expected", [
+    ({"cost": 0.5}, Decimal("0.5")),
+    ({"total_cost": 1.25}, Decimal("1.25")),
+])
+def test_provider_reported_cost_reads_cost_and_total_cost(usage, expected):
+    result = estimate_usage_cost("grok-9-unpriced", _reported(usage), provider="xai")
+    assert result.status == "actual"
+    assert result.amount_usd == expected
+
+
+@pytest.mark.parametrize("usage", [
+    {}, {"cost_in_usd_ticks": True}, {"cost": -1}, {"cost": "0.5"}, {"cost": None},
+])
+def test_junk_reported_cost_falls_back_to_the_normal_route(usage):
+    # A boolean, a negative figure or a string is not a charge: the reply keeps whatever the
+    # pricing route decides (unknown for a model with no row) rather than inventing spend.
+    result = estimate_usage_cost("grok-9-unpriced", _reported(usage), provider="xai")
+    assert result.status != "actual"
+    assert result.source != "provider_cost_api"
+
+
+def test_the_shared_reader_accepts_a_mapping_and_an_object():
+    # Two call sites read the same table: ``estimate_usage_cost`` passes ``usage.raw_usage`` (a
+    # mapping) and ``agent.turn_usage`` passes the provider's response/usage object (attributes).
+    from agent.usage_pricing import _provider_reported_cost, provider_reported_cost
+
+    assert provider_reported_cost({"cost_in_usd_ticks": 1_000_000_000}) == Decimal("0.1")
+
+    class _ResponseUsage:
+        cost_in_usd_ticks = 2_000_000_000
+
+    assert provider_reported_cost(_ResponseUsage()) == Decimal("0.2")
+    assert provider_reported_cost(None) is None
+    # ... and the canonical path is exactly that reader applied to ``raw_usage``.
+    assert _provider_reported_cost(CanonicalUsage(raw_usage={"cost": 1.5})) == provider_reported_cost({"cost": 1.5})
+
+
+def test_a_reported_charge_wins_over_the_price_table():
+    # A provider that bills the exact request is more accurate than a table estimate, so the
+    # reported figure is used even for a model the tables DO have a row for (here Astra's whole-
+    # request price tier, which would also produce a number).
+    result = estimate_usage_cost(
+        "gpt-6-astra",
+        CanonicalUsage(input_tokens=1_000, output_tokens=100, raw_usage={"cost": 99.0}),
+        provider="openai",
+    )
+    assert (result.status, result.source) == ("actual", "provider_cost_api")
+    assert result.amount_usd == Decimal("99.0")

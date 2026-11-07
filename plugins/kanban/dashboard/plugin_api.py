@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
 from fastapi import (
-    APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status)
+    APIRouter, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect, status as http_status)
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -43,6 +43,80 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 _BOARD_Q = Query(None, description="Kanban board slug (omit for current)")
+
+
+# --- Attribution ------------------------------------------------------------
+
+def _dashboard_author(request: Request, client_author: Optional[str] = None) -> str:
+    """Author for a write made through the dashboard API.
+
+    A verified login wins over any client-supplied name: the dashboard auth
+    middleware puts the provider-verified ``Session`` on ``request.state.session``
+    for every authenticated request, and its display name / email / user id come
+    from the identity provider, not from the browser — so a shared self-hosted
+    dashboard can attribute comments, uploads and new tasks to whoever actually
+    signed in, and a client cannot spoof another user by sending a different
+    ``author``. Loopback mode (``auth_required`` False) has no interactive
+    identity: there the client-supplied name is kept as today, defaulting to
+    ``dashboard``.
+    """
+    session = getattr(request.state, "session", None)
+    if session is not None:
+        for attr in ("display_name", "email", "user_id"):
+            value = str(getattr(session, attr, "") or "").strip()
+            if value:
+                return value
+    return (client_author or "").strip() or "dashboard"
+
+
+def _local_account_author() -> str:
+    """The gateway host's own signed-in Nous Portal account label, or '' when
+    there is none. Loopback mode has no interactive session, so a client that
+    wants a human-readable ``author`` (the desktop app) asks for this instead of
+    hardcoding a placeholder. The account snapshot decodes the locally stored
+    Portal JWT — no network on the hot path, and nothing is exposed that the
+    gateway's own status surfaces don't already show to the local user."""
+    try:
+        from hermes_cli.nous_account import get_nous_portal_account_info
+
+        info = get_nous_portal_account_info()
+    except Exception:  # an unreadable auth store just means "no hint"
+        return ""
+    if info is None or not getattr(info, "logged_in", False):
+        return ""
+    claims = getattr(info, "raw_claims", None) or {}
+    for value in (getattr(info, "org_name", None), getattr(info, "email", None),
+                  # The local-JWT snapshot leaves ``email`` unset but keeps the
+                  # verified claims of the stored Portal token (hermes-cli tokens
+                  # carry ``email``).
+                  claims.get("name"), claims.get("email")):
+        value = str(value or "").strip()
+        # The raw NAS ids are what this whole change exists to avoid re-surfacing.
+        if value and not value.startswith("nas_"):
+            return value
+    return ""
+
+
+# --- Identity hint -----------------------------------------------------------
+
+@router.get("/me")
+def whoami(request: Request):
+    """The author label a client should send on writes it makes on a human's
+    behalf (the desktop app posts comments; loopback mode trusts the client's
+    ``author`` — see ``_dashboard_author``).
+
+    Gated mode: the verified login (the server would override a wrong client
+    claim anyway; the hint simply matches what will be recorded). Loopback mode:
+    the gateway's own Portal account, else ``""`` — the client keeps its own
+    fallback. Attribution hint only; no secrets, and auth posture unchanged."""
+    session = getattr(request.state, "session", None)
+    if session is not None:
+        for attr in ("display_name", "email", "user_id"):
+            value = str(getattr(session, attr, "") or "").strip()
+            if value:
+                return {"author": value}
+        return {"author": ""}
+    return {"author": _local_account_author()}
 
 
 # --- Connection / board helpers ---------------------------------------------
@@ -433,10 +507,11 @@ class CreateTaskBody(BaseModel):
 
 
 @router.post("/tasks")
-def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
+def create_task(payload: CreateTaskBody, request: Request, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn), _value_error_400():
         # CreateTaskBody field names match create_task's keyword parameters.
-        task_id = kanban_db.create_task(conn, created_by="dashboard", board=board, **payload.model_dump())
+        task_id = kanban_db.create_task(conn, created_by=_dashboard_author(request), board=board,
+                                        **payload.model_dump())
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(
             task, current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id)
@@ -471,6 +546,7 @@ def list_task_attachments(task_id: str, board: Optional[str] = Query(None)):
 @router.post("/tasks/{task_id}/attachments")
 async def upload_task_attachment(
     task_id: str,
+    request: Request,
     file: UploadFile = File(...),
     board: Optional[str] = Query(None),
     uploaded_by: Optional[str] = Form(None)):
@@ -497,7 +573,7 @@ async def upload_task_attachment(
             raise HTTPException(status_code=500, detail=f"failed to store attachment: {exc}")
         att_id = kanban_db.add_attachment(
             conn, task_id, filename=dest_path.name, stored_path=str(dest_path.resolve()),
-            content_type=file.content_type, size=total, uploaded_by=(uploaded_by or "dashboard"))
+            content_type=file.content_type, size=total, uploaded_by=_dashboard_author(request, uploaded_by))
         att = kanban_db.get_attachment(conn, att_id)
         return {"attachment": _attachment_dict(att) if att else None}
 
@@ -800,12 +876,12 @@ class CommentBody(BaseModel):
 
 
 @router.post("/tasks/{task_id}/comments")
-def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query(None)):
+def add_comment(task_id: str, payload: CommentBody, request: Request, board: Optional[str] = Query(None)):
     if not payload.body.strip():
         raise HTTPException(status_code=400, detail="body is required")
     with _board_conn(board) as (board, conn):
         _require_task(conn, task_id)
-        kanban_db.add_comment(conn, task_id, author=payload.author or "dashboard", body=payload.body)
+        kanban_db.add_comment(conn, task_id, author=_dashboard_author(request, payload.author), body=payload.body)
         return {"ok": True}
 
 

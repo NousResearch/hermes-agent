@@ -112,3 +112,29 @@ def test_fill_is_password_blind_and_redaction_registered(real_profile):
     assert result.get("success") is True or result.get("filled_fields") == 1 or "error" in result
     # The resolved password was registered with the redaction boundary before touching the page.
     assert _PASSWORD in registered, "resolved password was not registered for redaction"
+
+
+def test_resolve_refuses_wrong_account_on_multi_account_origin():
+    """A saved login carrying a username only yields its password when the browser autofilled THAT
+    username — otherwise a site with several saved accounts could hand back a different account's
+    password. The CDP read + autofill hop is mocked at the DOM-read boundary."""
+    from tools import browser_real_profile_logins as rpl
+
+    calls = {}
+
+    def fake_cdp_call(ws, mid, method, params=None):
+        if method == "Runtime.evaluate":
+            expr = (params or {}).get("expression", "")
+            if "getBoundingClientRect" in expr:
+                return {"result": {"value": '{"x": 1, "y": 1}'}}  # field-point read
+            return {"result": {"value": calls["read_value"]}}      # password/username value read
+        return {"result": {}}
+
+    with patch.object(rpl, "_page_cdp_url", return_value="ws://page"), \
+         patch("websockets.sync.client.connect"), \
+         patch.object(rpl, "_cdp_call", side_effect=fake_cdp_call), \
+         patch("time.sleep"):
+        calls["read_value"] = '{"password": "other-accts-pw", "username": "bob@example.com"}'
+        assert rpl.resolve_login_password("ws://b", "https://example.com", "alice@example.com") is None
+        calls["read_value"] = '{"password": "alice-pw", "username": "alice@example.com"}'
+        assert rpl.resolve_login_password("ws://b", "https://example.com", "alice@example.com") == "alice-pw"

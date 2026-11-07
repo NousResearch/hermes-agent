@@ -66,6 +66,9 @@ _LANGUAGE_ALIASES: dict[str, str] = {
 # (home, lang) -> merged catalog (packs over overlay over bundled). home -> supported tuple.
 _catalog_cache: dict[tuple[str, str], dict[str, str]] = {}
 _supported_cache: dict[str, tuple[str, ...]] = {}
+# Bundled catalog paths whose load already failed once. Those failures are retried on every lookup
+# (a transient one must heal), so the warning is emitted once per path instead of on every ``t()``.
+_bundled_failures_warned: set[str] = set()
 _catalog_lock = threading.Lock()
 
 
@@ -150,17 +153,29 @@ def _normalize_lang(value: Any, home: str | None = None) -> str:
     return resolve_language_id(value, home) or DEFAULT_LANGUAGE
 
 
-def _load_bundled(lang: str) -> dict[str, str]:
-    """One bundled locale YAML flattened to dotted keys (empty dict on any failure — never crashes)."""
+def _load_bundled(lang: str) -> dict[str, str] | None:
+    """One bundled locale YAML flattened to dotted keys — never crashes.
+
+    ``{}`` means the file is absent, which is cacheable (no later lookup can find it). ``None`` means a
+    present file failed to load: a transient failure such as a startup ``MemoryError``, so callers must
+    not memoise it — the next lookup retries instead of serving bare keys until the process restarts."""
     path = _locales_dir() / f"{lang}.yaml"
     if not path.is_file():
         logger.debug("i18n catalog missing for %s at %s", lang, path)
         return {}
     try:
-        return i18n_layers.parse_locale_file(path)
+        catalog = i18n_layers.parse_locale_file(path)
     except Exception as exc:
-        logger.warning("Failed to load i18n catalog %s: %s", path, exc)
-        return {}
+        # Name the type: ``str(MemoryError())`` is empty, so the value alone leaves the line blank.
+        message = "Failed to load i18n catalog %s (%s): %s"
+        if str(path) in _bundled_failures_warned:
+            logger.debug(message, path, type(exc).__name__, exc)
+        else:
+            _bundled_failures_warned.add(str(path))
+            logger.warning(message, path, type(exc).__name__, exc)
+        return None
+    _bundled_failures_warned.discard(str(path))
+    return catalog
 
 
 def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
@@ -169,18 +184,23 @@ def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
 
 
 def _load_catalog(lang: str, home: str | None = None) -> dict[str, str]:
-    """Merged catalog for ``lang`` in ``home`` (packs > overlay > bundled); cached per (home, lang)."""
+    """Merged catalog for ``lang`` in ``home`` (packs > overlay > bundled); cached per (home, lang).
+
+    A failed bundled load is served once but never cached (#149931): memoising it answered bare keys on
+    every later ``t()`` for the life of the process, though the file on disk was readable again."""
     home = home or _current_home()
     key = (home, lang)
     with _catalog_lock:
         cached = _catalog_cache.get(key)
         if cached is not None:
             return cached
-    merged = _load_bundled(lang)
+    bundled = _load_bundled(lang)
+    merged = dict(bundled or {})
     merged.update(i18n_layers.overlay_layer(home, lang))
     merged.update(i18n_layers.pack_layer(lang))
-    with _catalog_lock:
-        _catalog_cache[key] = merged
+    if bundled is not None:
+        with _catalog_lock:
+            _catalog_cache[key] = merged
     return merged
 
 
@@ -193,7 +213,7 @@ def surface_catalog(lang: str, surface: str = i18n_layers.CORE_SURFACE) -> dict[
     lang = _normalize_lang(lang)
     merged: dict[str, str] = {}
     if surface != i18n_layers.CORE_SURFACE:
-        merged.update(_load_bundled(f"{lang}.{surface}"))
+        merged.update(_load_bundled(f"{lang}.{surface}") or {})
     merged.update(i18n_layers.surface_catalog(_current_home(), lang, surface))
     return merged
 
@@ -225,6 +245,7 @@ def reset_language_cache() -> None:
     with _catalog_lock:
         _catalog_cache.clear()
         _supported_cache.clear()
+        _bundled_failures_warned.clear()
     i18n_layers.clear_cache()
 
 

@@ -191,6 +191,19 @@ reachable to refine.
 
 ### Trust model
 
+Catalog review approves a manifest for distribution; it does not freeze the
+behavior of a hosted service. Manifest version 2 supports an optional top-level
+`trust: untrusted` (or `trust: full`) field, which the installer writes into the
+server's runtime configuration. Version 1 entries remain supported; entries
+declaring `trust` must use version 2 so older clients reject them rather than
+silently dropping this security setting. Update Hermes before installing them.
+
+With `trust: untrusted`, tools whose discovered `readOnlyHint` is not exactly
+`true` require host approval before execution. These annotations are supplied by
+the remote server: this is not a sandbox or a guarantee against a server that
+mislabels a write as read-only. Omitted trust retains the existing `full` default.
+Reinstall an existing catalog entry after updating to apply its declared trust.
+
 Installing a catalog entry runs whatever the manifest specifies — `git clone`,
 the entry's `bootstrap` commands (`pip install`, `npm install`, etc.), and
 ultimately the MCP server's own code. Manifests are gated by PR review into
@@ -1014,6 +1027,20 @@ mcp_servers:
 - A malformed `tool_costs`, `spend_limit` or `cost_unit` skips the server with an error naming the key, so a budget you declared is never silently dropped. A `tool_costs` key the server does not offer (a typo, or Hermes' `mcp_<server>_` display prefix copied in) is named in a warning at connect time: use the server's own tool names.
 
 A [portable plugin package](../../developer-guide/plugins/index.md#portable-agent-plugins-v1-packages) can declare the same table for its server. If you add a same-name `mcp_servers` entry (for example to set `trust: full`), the package's `tool_costs`, `spend_limit` and `cost_unit` still apply unless your entry sets those keys itself; `spend_limit: 0` turns the package's limit off and `tool_costs: {}` drops its costs.
+
+### Approval on every call
+
+ClixRx's catalog entry installs `approval_policy: per_call` alongside `trust: untrusted`.
+This policy asks before every tool invocation, including tools annotated as read-only and
+calls made with YOLO or `approvals.mode: off`. The CLI and gateway offer only Once and Deny.
+Existing Session/Always grants are ignored without reading, clearing or updating those grants;
+a stale surface returning a broader choice still consents to just the current call.
+
+The server setting accepts `scoped` (the default) or `per_call`. With no setting, other
+integrations retain their existing trust tiers, read-only exemptions and per-tool Session/Always
+choices. Invalid explicit runtime values fail closed to `per_call`; invalid catalog values are
+rejected. Spend limits and cost accounting still apply, and over-limit consent covers one call.
+Where nobody can answer, calls requiring per-call approval are refused before dispatch.
 
 ## MCP Elicitation Support
 

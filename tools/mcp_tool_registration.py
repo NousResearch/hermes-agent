@@ -49,6 +49,14 @@ def _normalize_server_trust(value: Any) -> str:
     return _core._TRUST_UNTRUSTED
 
 
+def _normalize_approval_policy(value: Any) -> str:
+    """Unknown explicit policy data must never enable remembered consent."""
+    if value in ("scoped", "per_call"):
+        return value
+    logger.warning("MCP approval_policy: invalid value %r - treating as 'per_call'", value)
+    return "per_call"
+
+
 def _annotation_read_only_hint(mcp_tool: Any) -> bool:
     """True only when annotations (SDK object or cache dict) carry an exact ``True`` read-only hint;
     unknown = write-capable. mcp 2.x exposes the attribute as ``read_only_hint`` (camelCase is only a
@@ -82,6 +90,8 @@ def _record_tool_trust_metadata(server_name: str, config: dict, tools: list[Any]
         if key is None:
             key = _server_key(server_name)
         _core._server_trust_levels[key] = _normalize_server_trust((config or {}).get("trust"))
+        _core._server_approval_policies[key] = _normalize_approval_policy(
+            (config or {}).get("approval_policy", "scoped"))
         _record_cost_policy(server_name, config, key)
         hints = _core._tool_read_only_hints.setdefault(key, {})
         hints.update({t.name: _annotation_read_only_hint(t) for t in tools if getattr(t, "name", None)})
@@ -104,6 +114,8 @@ def _record_scope_trust(server_name: str, config: dict, scope: str) -> None:
     with _core._lock:
         key = _server_key(server_name, scope, current=False)
         _core._server_trust_levels[key] = _normalize_server_trust((config or {}).get("trust"))
+        _core._server_approval_policies[key] = _normalize_approval_policy(
+            (config or {}).get("approval_policy", "scoped"))
         _record_cost_policy(server_name, config, key)
 
 
@@ -178,6 +190,7 @@ def _remove_server_scope(key, scope: str) -> None:
         else:
             _core._server_tool_scopes.pop(key, None)
         _core._server_trust_levels.pop(_server_key(server_name, scope, current=False), None)
+        _core._server_approval_policies.pop(_server_key(server_name, scope, current=False), None)
         _core._server_cost_policies.pop(_server_key(server_name, scope, current=False), None)
     _restore_server_toolset_alias(key)
 

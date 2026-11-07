@@ -390,6 +390,26 @@ def _optional_float(value: Any) -> Optional[float]:
         return None
 
 
+def _pid_proven_gone(pid: int) -> bool:
+    """True only when psutil proves *pid* is not a live process.
+
+    ``gateway.status._pid_exists`` reports ACCESS_DENIED as "alive" — a live process owned by
+    another user looks identical to a dead pid whose kernel object still denies ``OpenProcess``.
+    ``NoSuchProcess`` is the one answer that settles it; every other failure stays unknowable.
+    """
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        return False
+    try:
+        psutil.Process(pid).create_time()
+    except psutil.NoSuchProcess:
+        return True
+    except Exception:
+        return False
+    return False
+
+
 def _pid_liveness(pid: Any, process_start_time: Any = None, *, lenient: bool = False) -> Optional[bool]:
     """True/False for live/dead, or None when unknowable. ``lenient`` never returns None:
     an unparseable pid or failed existence probe counts as dead, an unreadable start as alive."""
@@ -413,6 +433,12 @@ def _pid_liveness(pid: Any, process_start_time: Any = None, *, lenient: bool = F
         return True
     current_start = _own_start_time() if is_self else _process_start_time(pid_int)
     if current_start is None:
+        # The pid exists to OpenProcess (access denied) while psutil proves the process is
+        # gone: a recycled/lingering id, never a live writer. Left "unknowable" it strands
+        # that session's lease forever — every claim on it refuses, and the refusal blames a
+        # registry file that reads perfectly well.
+        if not is_self and _pid_proven_gone(pid_int):
+            return False
         return True if lenient else None
     return abs(current_start - expected_start) < 0.001
 
@@ -582,9 +608,10 @@ def try_acquire_active_session(
         )
         if loaded is None:
             return None, ActiveSessionRefusal(
-                "Hermes could not read the active-session registry at "
+                "Hermes could not verify the active-session registry at "
                 f"{state_path}, so it cannot prove this session has no other "
-                "live owner. Fix or remove that file and try again.",
+                "live owner. If that file is corrupt, fix or remove it; otherwise "
+                "restart the backend that owns this chat, then try again.",
                 SESSION_COORDINATION_UNAVAILABLE,
             )
         raw_entries, entries = loaded

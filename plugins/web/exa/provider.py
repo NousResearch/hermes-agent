@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
+from tools.web_result_cache import must_fetch_live
+
 from plugins.web._common import (
     BaseWebSearchProvider, cached_sdk_client, document, exa_crawl_status, keyless_extract, keyless_search, keyless_variant_schema,
     provider_env, run_extract, run_search, search_ok, use_keyless, vendor_error_entry, web_hit,
@@ -61,7 +63,9 @@ class ExaWebSearchProvider(BaseWebSearchProvider):
             if use_keyless("exa", provider_env("EXA_API_KEY")):
                 return keyless_extract("Exa", "exa", urls, logger)
             logger.info("Exa extract: %d URL(s)", len(urls))
-            response = _get_exa_client().get_contents(urls, text=True)
+            # Exa serves its cached copy unless asked; one URL that must come from the origin makes the call live.
+            fresh = {"max_age_hours": 0} if any(must_fetch_live(u) for u in urls) else {}
+            response = _get_exa_client().get_contents(urls, text=True, **fresh)
             results = [document(r.url or "", r.title or "", r.text or "") for r in response.results or []]
             # A URL Exa could not fetch is absent from ``results``; its reason is in ``statuses``.
             return results + [

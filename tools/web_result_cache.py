@@ -253,9 +253,16 @@ def _is_local_dev_url(url: str) -> bool:
         return True
 
 
+def must_fetch_live(url: str) -> bool:
+    """True for URLs that must come from the origin, never from a stored copy: local dev servers and
+    ``web.cache_exempt_hosts``. Hermes' own cache skips them (``_cacheable``), and extract backends that
+    keep a page cache of their own are asked for a live fetch of them too."""
+    return _is_local_dev_url(url) or _is_cache_exempt_host(url)
+
+
 def _cacheable(url: str) -> bool:
-    """Extract-cache gate: enabled, not a local-dev host, not user-exempted."""
-    return cache_enabled() and not (_is_local_dev_url(url) or _is_cache_exempt_host(url))
+    """Extract-cache gate: enabled, and not a URL that must be fetched live."""
+    return cache_enabled() and not must_fetch_live(url)
 
 
 def extract_cache_get(url: str, format: Optional[str] = None, provider: str = "") -> Optional[dict]:

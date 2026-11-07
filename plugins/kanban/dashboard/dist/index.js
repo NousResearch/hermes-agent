@@ -2992,7 +2992,7 @@
 
     const lanes = useMemo(function () {
       if (!props.laneByProfile || props.column.name !== "running") return null;
-      const byProfile = {};
+      const byProfile = Object.create(null);
       for (const tk of props.column.tasks) {
         const key = tk.assignee || "(unassigned)";
         (byProfile[key] = byProfile[key] || []).push(tk);

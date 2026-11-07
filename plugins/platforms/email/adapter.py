@@ -17,7 +17,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email.parser import BytesHeaderParser
-from email.utils import formatdate, parseaddr
+from email.utils import formataddr, formatdate, parseaddr
 from email import encoders
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -46,6 +46,18 @@ _AUTOMATED_HEADERS = {"Auto-Submitted": lambda v: v.lower() != "no",
                       "X-Auto-Response-Suppress": lambda v: bool(v), "List-Unsubscribe": lambda v: bool(v)}
 MAX_MESSAGE_LENGTH = 50_000  # Gmail-safe max length per email body
 SMTP_CONNECT_TIMEOUT = 30
+# One source for the From display name (review #91746, item 3): a rename or localisation must not need four
+# synchronised edits. formataddr() quotes it when it contains specials, instead of emitting an invalid header.
+_EMAIL_DISPLAY_NAME = "Hermes Agent"
+# Gmail applies a 24-33s security delay to LOGIN/FETCH from datacenter IPs; a 30s socket timeout turns every slow
+# poll into a reconnect that also stalls the event loop (review #91746, item 5).
+_IMAP_TIMEOUT_S = 90
+# Poll pacing when the mailbox itself fails: exponential 30s..300s instead of a fixed interval (item 1).
+_BACKOFF_MIN_S, _BACKOFF_MAX_S = 30.0, 300.0
+# A mailbox that stays broken (expired app password, IMAP disabled) must surface, not degrade silently (item 2).
+_DEGRADED_AFTER_FAILURES = 10
+# Only Gmail documents the per-op delay, so only Gmail gets the slower default cadence (item 4).
+_GMAIL_DEFAULT_POLL_INTERVAL_S = 60
 _TRUTHY = {"true", "1", "yes"}
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 # Charset labels seen in the wild that Python's codec registry doesn't know: "unknown-8bit"/"x-unknown" are
@@ -478,7 +490,11 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
         self._smtp_security = _normalize_security(setting("EMAIL_SMTP_SECURITY", "smtp_security"), default="tls" if self._smtp_port == 465 else "starttls")
         self._smtp_tls_verify = tls_verify("EMAIL_SMTP_TLS_VERIFY", "smtp_tls_verify")
-        self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
+        _slow_mailbox = any(h in (self._imap_host or "").lower() for h in ("gmail", "googlemail"))
+        self._poll_interval = _esecret_int(
+            "EMAIL_POLL_INTERVAL", _GMAIL_DEFAULT_POLL_INTERVAL_S if _slow_mailbox else 15)
+        self._poll_backoff = 0.0        # >0 while the mailbox is failing; grows 30 -> 60 -> ... -> 300
+        self._consecutive_failures = 0  # resets on a successful check and after the DEGRADED warning
         self._skip_attachments = extra.get("skip_attachments", False)  # platforms.email.skip_attachments
         # Require an authenticated From: domain (SPF/DKIM/DMARC) before trusting it for authorization
         # (GHSA-rxqh-5572-8m77). Default ON; opt out via require_authenticated_sender: false / EMAIL_TRUST_FROM_HEADER=true.
@@ -513,8 +529,8 @@ class EmailAdapter(BasePlatformAdapter):
     def _connect_imap(self) -> imaplib.IMAP4:
         """Create an IMAP connection using implicit TLS, STARTTLS, or plaintext."""
         if self._imap_security == "tls":
-            return imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30, ssl_context=_tls_context(self._imap_tls_verify, self._imap_host))
-        imap = imaplib.IMAP4(self._imap_host, self._imap_port, timeout=30)
+            return imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=_IMAP_TIMEOUT_S, ssl_context=_tls_context(self._imap_tls_verify, self._imap_host))
+        imap = imaplib.IMAP4(self._imap_host, self._imap_port, timeout=_IMAP_TIMEOUT_S)
         if self._imap_security == "starttls":
             try:
                 imap.starttls(ssl_context=_tls_context(self._imap_tls_verify, self._imap_host))
@@ -610,7 +626,11 @@ class EmailAdapter(BasePlatformAdapter):
             message = f"Not configured — missing {', '.join(missing)}. Set it via `hermes gateway setup` (env) or platforms.email in config.yaml."
             # Non-retryable: a blank-but-present env var used to drive an indefinite retry loop that leaked until OOM.
             return self._fail("[Email] %s", message, "email_missing_configuration", message, retryable=False)
-        if not self._probe_imap(is_reconnect) or not self._probe_smtp():
+        # Both probes do blocking network I/O, and a Gmail login from a datacenter IP can take 25-33s: run them
+        # off the event loop so a slow mailbox cannot stall delivery for the other platforms on this gateway.
+        if not await asyncio.to_thread(self._probe_imap, is_reconnect):
+            return False
+        if not await asyncio.to_thread(self._probe_smtp):
             return False
         if self._require_authenticated_sender and not self._authserv_id and self._address not in EmailAdapter._missing_pin_warned:
             EmailAdapter._missing_pin_warned.add(self._address)
@@ -629,18 +649,56 @@ class EmailAdapter(BasePlatformAdapter):
         logger.info("[Email] Disconnected.")
 
     async def _poll_loop(self) -> None:
-        """Poll IMAP for new messages at regular intervals."""
+        """Poll IMAP; pace the next check by the mailbox's health instead of a fixed interval.
+
+        A failing mailbox is retried with exponential backoff (30s..300s) and keeps polling, so one slow IMAP
+        operation no longer escalates through the fatal-error hook and stalls the other platforms sharing the
+        gateway connection (review #91746, items 1 and 2). Permanently broken mailboxes still surface, via a
+        DEGRADED error after _DEGRADED_AFTER_FAILURES consecutive failures.
+        """
         while self._running:
             try:
-                await self._check_inbox()
+                healthy = await self._check_inbox()
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                # Generic poll errors (dispatch, thread pool) are paced like IMAP failures.
                 logger.error("[Email] Poll error: %s", e)
-            await asyncio.sleep(self._poll_interval)
+                healthy = False
+            await asyncio.sleep(self._record_poll_result(healthy))
 
-    async def _check_inbox(self) -> None:
-        """Check INBOX for unseen messages and dispatch them."""
+    def _record_poll_result(self, healthy: bool) -> float:
+        """Fold one poll result into the backoff state and return the delay before the next check.
+
+        Healthy: reset the streak, poll at the configured interval. Failing: double the delay (30s..300s) and,
+        at _DEGRADED_AFTER_FAILURES, log one DEGRADED error per outage — so a permanently broken mailbox is
+        visible in the logs without tearing the gateway connection down.
+        """
+        if healthy:
+            if self._consecutive_failures:
+                logger.info("[Email] IMAP check healthy again after %d failed attempt(s), backoff reset",
+                            self._consecutive_failures)
+            self._poll_backoff, self._consecutive_failures = 0.0, 0
+            return float(self._poll_interval)
+        self._consecutive_failures += 1
+        self._poll_backoff = (_BACKOFF_MIN_S if not self._poll_backoff
+                              else min(_BACKOFF_MAX_S, self._poll_backoff * 2))
+        logger.warning("[Email] IMAP check failed %d time(s) in a row, next attempt in %.0fs",
+                       self._consecutive_failures, self._poll_backoff)
+        if self._consecutive_failures >= _DEGRADED_AFTER_FAILURES:
+            logger.error("[Email] DEGRADED: %d consecutive IMAP fetch failures (%s). Polling continues with "
+                         "backoff; check EMAIL_PASSWORD and that IMAP is enabled.",
+                         self._consecutive_failures, self._last_fetch_error or "no detail")
+            self._consecutive_failures = 0  # warn once per outage, keep the backoff
+        return self._poll_backoff
+
+    async def _check_inbox(self) -> bool:
+        """Check INBOX for unseen messages, dispatch them, and report whether the check itself succeeded.
+
+        An empty inbox is a success. A failed fetch returns False so the poll loop can pace the next attempt
+        with backoff; the failure is deliberately NOT escalated through the fatal-error hook, which on a slow
+        mailbox pushed the adapter into the gateway's reconnect queue and stalled the other platforms (#80016).
+        """
         loop = asyncio.get_running_loop()
 
         async def authorize_on_loop(msg_data: dict[str, Any]) -> bool:
@@ -655,17 +713,15 @@ class EmailAdapter(BasePlatformAdapter):
             return fut is not None and fut.result()
 
         messages = await asyncio.to_thread(self._fetch_new_messages, gate)
-        # Dispatch partial results BEFORE escalating a failure — a mid-batch exception returns what was fetched (already marked seen).
+        # Dispatch partial results BEFORE reporting a failure — a mid-batch exception returns what was fetched
+        # (already marked seen). The verdict is returned instead of escalated: the poll loop backs off and keeps
+        # polling, so one slow IMAP operation cannot stall delivery for the other platforms sharing the gateway
+        # connection (#80016). A mailbox that stays broken still surfaces — see the DEGRADED log in _poll_loop.
         for msg_data in messages:
             await self._dispatch_message(msg_data)
-        if self._last_fetch_failed:
-            # The IMAP check itself failed (not an empty inbox): route through the fatal-error hook so the gateway's
-            # reconnect/backoff re-establishes the mailbox. The handler runs detached (gateway/run.py), so awaiting it is safe.
-            # The handler runs in a detached task (gateway/run.py), so awaiting it from our own poll task is
-            # safe even though teardown cancels this task. See #80016.
-            self._last_fetch_failed = False
-            self._set_fatal_error("email_imap_fetch_failed", self._last_fetch_error or "IMAP fetch failed", retryable=True)
-            await self._notify_fatal_error()
+        failed = self._last_fetch_failed
+        self._last_fetch_failed = False
+        return not failed
 
     def _mark_uid_consumed(self, imap: imaplib.IMAP4, uid: Any) -> None:
         """Remember a rejected UID and mark it seen without fetching its MIME body."""
@@ -863,13 +919,13 @@ class EmailAdapter(BasePlatformAdapter):
                    attach_empty_body: bool = False) -> tuple[MIMEMultipart, str, str]:
         """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
         msg, ctx = MIMEMultipart(), self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
+        subject = ctx.get("subject", _EMAIL_DISPLAY_NAME)
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         original_msg_id = reply_to_msg_id or ctx.get("message_id")
         threading = (("In-Reply-To", original_msg_id), ("References", original_msg_id)) if original_msg_id else ()
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
-        for key, value in (("From", self._address), ("To", to_addr), ("Subject", subject), *threading,
+        for key, value in (("From", formataddr((_EMAIL_DISPLAY_NAME, self._address))), ("To", to_addr), ("Subject", subject), *threading,
                            ("Date", formatdate(localtime=True)), ("Message-ID", msg_id)):
             msg[key] = value
         if body or attach_empty_body:
@@ -975,7 +1031,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return send_error("Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)")
     try:
         msg = MIMEText(message, "plain", "utf-8")
-        for key, value in (("From", address), ("To", chat_id), ("Subject", t("platform.email.standalone_subject")), ("Date", formatdate(localtime=True))):
+        for key, value in (("From", formataddr((_EMAIL_DISPLAY_NAME, address))), ("To", chat_id), ("Subject", t("platform.email.standalone_subject")), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
         server.login(address, password)

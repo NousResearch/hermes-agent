@@ -586,6 +586,57 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.billing
         assert result.retryable is False
 
+    def test_429_zhipu_exhausted_balance_code_is_billing(self):
+        """Z.AI/Zhipu report an exhausted prepaid balance as HTTP 429 with a
+        structured numeric code, not as a throttling phrase. The generic 429
+        handler has no billing wording to match, so it fell through to
+        rate_limit and the exhausted key was retried until the call timed out
+        (the real cause -- "余额不足" -- was lost).
+
+        The code is decisive here, exactly like LiteLLM's
+        ``terminal_quota_exhausted`` above."""
+        e = MockAPIError(
+            "request failed", status_code=429,
+            body={"error": {"code": "1113", "message": "余额不足或无可用资源包,请充值。"}},
+        )
+        result = classify_api_error(e, provider="zhipu")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_429_zhipu_arrears_code_is_billing(self):
+        """1112 ("账户余额不足") is the arrears twin of 1113."""
+        e = MockAPIError(
+            "request failed", status_code=429,
+            body={"error": {"code": "1112", "message": "账户余额不足,请充值。"}},
+        )
+        result = classify_api_error(e, provider="zai")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_429_zhipu_genuine_rate_limit_stays_rate_limit(self):
+        """Guard: Zhipu's real throttling code (1302, "请求过于频繁") must keep
+        rotating the credential -- only the balance codes become billing."""
+        e = MockAPIError(
+            "request failed", status_code=429,
+            body={"error": {"code": "1302", "message": "请求过于频繁,请稍后再试"}},
+        )
+        result = classify_api_error(e, provider="zhipu")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+
+    def test_429_numeric_balance_code_from_other_provider_stays_rate_limit(self):
+        """Guard: "1112"/"1113" are bare numeric codes that other backends
+        reuse for unrelated meanings, so the billing verdict is
+        provider-scoped."""
+        e = MockAPIError(
+            "request failed", status_code=429,
+            body={"error": {"code": "1113", "message": "slow down"}},
+        )
+        result = classify_api_error(e, provider="openai")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+
     # ── 5xx that are actually request-validation errors ──
     # Some OpenAI-compatible gateways (e.g. codex.nekos.me) return
     # request-validation failures with a 5xx status. These are

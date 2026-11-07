@@ -5,11 +5,37 @@ import { stripAnsi } from '@hermes/shared/ansi'
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
-import { fmtMsgTimestamp, MessageLine } from '../components/messageLine.js'
+import { fmtMsgTimestamp, MessageLine, StreamingResponseBody } from '../components/messageLine.js'
 import { MAX_HISTORY } from '../config/limits.js'
 import { toTranscriptMessages } from '../domain/messages.js'
 import { appendTranscriptMessage, capTranscriptHistory, upsert } from '../lib/messages.js'
 import { DEFAULT_THEME } from '../theme.js'
+
+const renderToText = (element: React.ReactElement) => {
+  const stdout = new PassThrough()
+  const stdin = new PassThrough()
+  const stderr = new PassThrough()
+  let output = ''
+
+  Object.assign(stdout, { columns: 80, isTTY: false, rows: 24 })
+  Object.assign(stdin, { isTTY: false })
+  Object.assign(stderr, { isTTY: false })
+  stdout.on('data', chunk => {
+    output += chunk.toString()
+  })
+
+  const instance = renderSync(element, {
+    patchConsole: false,
+    stderr: stderr as NodeJS.WriteStream,
+    stdin: stdin as NodeJS.ReadStream,
+    stdout: stdout as NodeJS.WriteStream
+  })
+
+  instance.unmount()
+  instance.cleanup()
+
+  return stripAnsi(output)
+}
 
 describe('toTranscriptMessages', () => {
   it('preserves assistant tool-call rows so resume does not drop prior turns', () => {
@@ -100,6 +126,32 @@ describe('toTranscriptMessages', () => {
 })
 
 describe('MessageLine', () => {
+  it('lets users expand a truncated live response without changing the safe default', () => {
+    const plain = `response-start\n${'x'.repeat(16_100)}\nresponse-end`
+
+    for (const text of [plain, `\u001b[31m${plain}\u001b[0m`]) {
+      const props = {
+        cols: 72,
+        onToggle: () => {},
+        t: DEFAULT_THEME,
+        text
+      }
+
+      const collapsed = renderToText(
+        React.createElement(MessageLine, { cols: 72, isStreaming: true, msg: { role: 'assistant', text }, t: DEFAULT_THEME })
+      )
+
+      const expanded = renderToText(React.createElement(StreamingResponseBody, { ...props, expanded: true }))
+
+      expect(collapsed).toContain('Show full live response')
+      expect(collapsed).toContain('response-end')
+      expect(collapsed).not.toContain('response-start')
+      expect(expanded).toContain('Collapse live response')
+      expect(expanded).toContain('response-start')
+      expect(expanded).toContain('response-end')
+    }
+  })
+
   it('preserves a separator after compound user prompt glyphs in transcript rows', () => {
     const stdout = new PassThrough()
     const stdin = new PassThrough()

@@ -428,6 +428,16 @@ def _sniff_mime_from_bytes(raw: bytes) -> Optional[str]:
     return "image/svg+xml" if head.startswith((b"<?xml", b"<svg")) and b"<svg" in head else None
 
 
+def _sniff_mime_from_base64(data: str) -> Optional[str]:
+    """Magic-byte MIME sniffed from the head of a base64 payload; None if unrecognised or that head isn't
+    valid base64. Identification only: the rest of the payload is neither decoded nor validated."""
+    head = data[:684]  # 513 bytes: covers the 512-byte window _sniff_mime_from_bytes searches for <svg
+    try:
+        return _sniff_mime_from_bytes(base64.b64decode(head[:len(head) - len(head) % 4], validate=True))
+    except ValueError:  # binascii.Error (junk, whitespace) or non-ASCII text
+        return None
+
+
 # Formats every major vision provider accepts natively. Anything else is transcoded
 # to PNG before declaring media_type or the provider returns HTTP 400 and the turn
 # fails; chat platforms freely accept AVIF (Chromium screenshots), HEIC (iPhone),

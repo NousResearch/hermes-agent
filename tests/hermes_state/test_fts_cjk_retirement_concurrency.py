@@ -216,3 +216,25 @@ def test_repair_heals_base_fts_damage_beside_the_retired_index(cjk_db, monkeypat
     assert repair._db_opens_cleanly(cjk_db) is None
     with sqlite3.connect(cjk_db) as raw:
         assert raw.execute("SELECT content FROM messages").fetchall() == [("东京都",)]
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes read-only files")
+def test_a_copy_that_turns_read_only_is_not_reported_as_damage(cjk_db, monkeypatch):
+    copy = repair._copy_database_snapshot
+    frozen = []
+
+    def copy_then_freeze(source, destination, **kwargs):
+        copy(source, destination, **kwargs)
+        destination.chmod(0o400)
+        destination.parent.chmod(0o500)
+        frozen.append(destination.parent)
+
+    monkeypatch.setattr(repair, "_copy_database_snapshot", copy_then_freeze)
+    try:
+        reason = repair._db_opens_cleanly(cjk_db)
+    finally:
+        for probe_dir in frozen:
+            if probe_dir.exists():
+                probe_dir.chmod(0o700)
+    assert isinstance(reason, repair.HealthCheckUnavailable), reason

@@ -293,7 +293,7 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
         mounts = None
-        # Official Codex backend only: zstd request bodies when the stdlib codec exists (None otherwise).
+        # Official Codex backend only: zstd is available when explicitly enabled.
         from agent.codex_headers import codex_request_compression_hooks
         hooks = codex_request_compression_hooks(base_url, async_mode=async_mode)
         if hooks:

@@ -59,3 +59,12 @@ Errors stay visible, and no failed gateway group chat action falls back to Deskt
 ## Contract tests
 
 `canonical-group-contract-test-utils.ts` wraps each canonical group test's request double and, after each test, checks every `groups.*` request it captured against the generated gateway contract (`apps/shared/src/gateway-contract.openrpc.json`, the gateway's own `x-canonical-methods` entry before the shared one): a method the gateway does not list, an unknown parameter or a missing required one fails the test. The `groups.capabilities` fixtures for both surfaces are data, checked against the same contract when they load. `canonical-groups-contract.test.ts` covers the check itself.
+
+## Files
+
+The header offers **Files** only when the gateway explicitly lists `groups.attachment.list`. It reuses the workspace’s capability read. The dialog lists eight versions per page, newest first, with file name, sharer, time, type and size. Search matches names and sharers in the reader’s language. Sparse searches can have an empty page with an **Older files** action; each request examines at most 256 log entries and never reads file bytes.
+
+A cursor pins the group chat, authority, filters and first page’s log position. New shares do not shift older pages; **Show latest** or Refresh starts a fresh list. Download addresses the exact event and attachment, checks the returned metadata, byte count and SHA-256, then uses the existing browser download. Closing the dialog, leaving the page or hiding the group chat retires pending downloads. Missing bytes stay listed as unavailable; failed verification saves nothing.
+
+
+Closing Files with Escape or its close button restores focus to its available opener.

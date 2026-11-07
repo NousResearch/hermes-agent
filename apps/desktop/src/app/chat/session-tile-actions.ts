@@ -12,11 +12,12 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { isUndeliveredCorrectionRefusal } from '@hermes/shared'
 import { useCallback, useMemo, useRef } from 'react'
 
-import type { ClientSessionState } from '@/app/types'
+import type { ClientSessionState, SessionRedirectResponse } from '@/app/types'
 import type { WorkspaceMode } from '@/contrib/types'
 import { useI18n } from '@/i18n'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { isSlashCommandText } from '@/lib/chat-runtime'
+import { notifyCorrectionQueued, queuedCorrectionJoinsLiveTurn } from '@/lib/correction-receipt'
 import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
@@ -469,7 +470,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           sessionId,
           storedIdRef.current,
           liveId =>
-            requestSessionGateway<{ status?: string }>(mode === 'steer' ? 'session.steer' : 'session.redirect', {
+            requestSessionGateway<SessionRedirectResponse>(mode === 'steer' ? 'session.steer' : 'session.redirect', {
               session_id: liveId,
               text
             }),
@@ -491,13 +492,15 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         }
 
         if (result?.status === 'queued') {
-          // A redirect queued in the build window is the next turn; an
-          // accepted steer joins this one after its running tool.
-          if (mode === 'steer') {
+          // An accepted steer joins this turn after its running tool; a
+          // correction queued for the next turn (build window, compaction)
+          // keeps the live stream running and says where it went.
+          if (queuedCorrectionJoinsLiveTurn(result, mode)) {
             flushStreamDeltas(sessionId)
             mutate(state => sealAcceptedCorrection(state, messageId, { keepRunningTools: true }))
           } else {
             moveOptimisticMessageToEnd()
+            notifyCorrectionQueued(result)
           }
 
           triggerHaptic('submit')

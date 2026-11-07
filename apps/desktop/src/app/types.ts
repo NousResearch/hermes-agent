@@ -93,6 +93,10 @@ export interface SessionSteerResponse {
 export interface SessionRedirectResponse {
   status?: 'redirected' | 'queued' | 'rejected'
   text?: string
+  /** Where a `queued` correction went: the live turn's steer slot, or the next-turn queue.
+   *  Absent from older backends (and the canonical reply), which name no destination. */
+  disposition?: 'steer' | 'queue' | null
+  reason?: string | null
   /** TUI-26: the text was a bare stop phrase that ended the LOCAL voice chat; no turn saw it. */
   voice_stopped?: boolean
 }

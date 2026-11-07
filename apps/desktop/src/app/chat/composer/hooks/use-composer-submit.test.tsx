@@ -521,6 +521,20 @@ describe('useComposerSubmit busy-turn routing', () => {
     await waitFor(() => expect(loadIntoComposer).toHaveBeenCalledWith('keep me', []))
   })
 
+  it('says so when a refused steer is queued for the next turn instead', async () => {
+    $notifications.set([])
+    const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'join this turn' })
+    onSteer.mockResolvedValueOnce(false)
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['join this turn']))
+    expect($notifications.get()).toMatchObject([{ id: 'composer-steer-queued', kind: 'info' }])
+    clearQueuedPrompts('stored-session')
+  })
+
   it('queues a steer whose redirect RPC fails instead of losing it', async () => {
     const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'still here' })
     onSteer.mockRejectedValueOnce(new Error('request timed out: session.redirect'))

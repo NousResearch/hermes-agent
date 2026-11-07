@@ -72,3 +72,29 @@ async def test_a_live_agents_refusal_is_not_marked_undelivered(tmp_path, monkeyp
         assert reply['status'] == 'rejected' and 'delivered' not in reply, reply
         release.set()
         await asyncio.wait_for(authority.sessions['s'].task, 5)
+
+
+@pytest.mark.asyncio
+async def test_a_redirect_between_model_requests_joins_the_live_turn_as_a_steer(tmp_path, monkeypatch):
+    """The live agent has no model request to cancel (between iterations): the words take the steer
+    boundary of the running turn instead of a refusal the client queues behind it (#141973)."""
+    import threading
+
+    from agent.interrupt_control import InterruptControlMixin
+
+    agent = InterruptControlMixin()
+    agent._model_request_active = threading.Event()  # never set: between two model requests
+    db, authority = _authority(tmp_path, monkeypatch)
+    connection = SimpleNamespace(authority=authority, actor=ACTOR)
+    with db:
+        release = await _claim_without_agent(authority, monkeypatch)
+        generation = authority._handle(REF).execution_generation
+        _wire_turn_agent(authority, generation, agent)
+
+        reply = await correct(connection, REF, {'session_id': 's', 'text': 'join this turn',
+                                               'execution_generation': generation}, verb='redirect')
+
+        assert reply['status'] == 'queued', reply
+        assert agent._drain_pending_steer() == 'join this turn'
+        release.set()
+        await asyncio.wait_for(authority.sessions['s'].task, 5)

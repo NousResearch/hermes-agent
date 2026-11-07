@@ -3004,6 +3004,11 @@ export interface Translations extends NoticeTranslations {
     terminalSelectionMissingTitle: string
     terminalSelectionMissingBody: string
     queuedTerminalSelectionExpiredBody: string
+    queueSteerRefusedTitle: string
+    queueSteerRefusedBody: string
+    steerQueuedTitle: string
+    steerQueuedBody: string
+    steerQueuedCompressionBody: string
     previewUnavailable: string
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string

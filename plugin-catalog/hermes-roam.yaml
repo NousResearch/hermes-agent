@@ -1,6 +1,6 @@
 name: hermes-roam
 repo: https://github.com/vcruz305/hermes-roam
-sha: aca19a4a4c1ba742a63961fcf4709ccf737a3c00
+sha: d6d0c2f2289bfc41264f803928314acb59fb60cc
 description: >-
   Encrypted, host-scoped sync of the Hermes Agent home between your own machines:
   an AES-256-GCM sealed bundle of the shared home (config.yaml minus host-scoped
@@ -11,6 +11,9 @@ description: >-
   apply only on explicit user action (the agent cannot apply by default);
   conflicts are detected with a signed compare-and-swap head, never merged.
   Every pushed version stays recoverable (hermes roam history / restore).
+  Works across profiles and bots: one store carries every profile (each
+  profile's identity, SOUL, memories, skills and shared config), from any
+  profile context; a profile can be excluded per device.
   Opt-in, off by default: a read-only, encrypted archive of session
   transcripts (exported with hermes sessions export --redact) that other
   devices can list and read, and cron job definitions.
@@ -18,7 +21,7 @@ description: >-
   S3/R2, the git CLI for the git backend) and only when a roam command, tool,
   slash verb or session hook actually runs; the git backend also runs git as
   local subprocesses, and the opt-in session archive runs hermes sessions
-  export as a local subprocess; the shared ROAM_ARCHIVE_KEY and S3 credentials come only
+  export as a local subprocess once per profile; the shared ROAM_ARCHIVE_KEY and S3 credentials come only
   through Hermes's secret scope, never from files; session hooks run bounded
   daemon threads; no telemetry, no self-update.
 maintainer: Victor Cruz
@@ -28,7 +31,7 @@ title: "Hermes Roam"
 docs_url: https://github.com/vcruz305/hermes-roam#readme
 readme: true
 requires_hermes: ">=0.22.0"
-version: "0.4.1"
+version: "0.5.0"
 known_issues:
   - >-
     The git backend is unsuitable for large homes: git hosts cap file sizes

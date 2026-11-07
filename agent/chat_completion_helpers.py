@@ -3532,7 +3532,7 @@ class _StreamingCall(StreamingWaitMonitor):
             # session (streaming is off from here on).
             self.agent._emit_warning(
                 "⚠️ Provider stream returned an empty keepalive frame — retrying this turn "
-                "without streaming (streaming stays off for this session).")
+                "without streaming (streaming stays off on this route).")
             return
         from agent.anthropic_adapter import _is_stream_unavailable_error
         if not _is_stream_unavailable_error(e):

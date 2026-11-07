@@ -68,13 +68,14 @@ describe('message.reaction bridge session scope', () => {
 
     const updater = vi.mocked(setMessages).mock.calls[0][0]
 
-    if (typeof updater !== 'function') {throw new Error('expected an updater function')}
+    if (typeof updater !== 'function') {
+      throw new Error('expected an updater function')
+    }
+
     const optimistic = { id: 'm1', role: 'assistant', rowId: undefined }
     const next = updater([optimistic] as never)
 
-    expect(next).toEqual([
-      { ...optimistic, rowId: 4242, reactions: AGENT_THUMBS_UP }
-    ])
+    expect(next).toEqual([{ ...optimistic, rowId: 4242, reactions: AGENT_THUMBS_UP }])
     expect(recordAgentReaction).toHaveBeenCalledWith(4242, AGENT_THUMBS_UP, 'conn:conn-a::default')
   })
 
@@ -83,7 +84,10 @@ describe('message.reaction bridge session scope', () => {
 
     const updater = vi.mocked(setMessages).mock.calls[0][0]
 
-    if (typeof updater !== 'function') {throw new Error('expected an updater function')}
+    if (typeof updater !== 'function') {
+      throw new Error('expected an updater function')
+    }
+
     const durable = { id: 'm1', role: 'assistant', rowId: 4242 }
     const optimistic = { id: 'm2', role: 'assistant', rowId: undefined }
     const next = updater([durable, optimistic] as never)

@@ -33,6 +33,13 @@ def test_shipped_catalog_entries_are_all_valid_and_pinned():
     assert all(e.install_identifier.startswith(e.repo) for e in entries)
 
 
+
+def test_verified_tier_survives_load_and_unknown_tier_is_rejected(tmp_path):
+    """``tier`` is official/verified/community (Nous-granted badges); anything else skips the entry."""
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry("vendor", tier="verified")))
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump(_entry("bogus", tier="platinum")))
+    assert {e.name: e.tier for e in pc.load_catalog(tmp_path)} == {"vendor": "verified"}
+
 def test_category_defaults_to_other_and_unknown_category_is_rejected(tmp_path):
     """``category`` is the browse shelf: absent → ``desktop``; a value outside CATALOG_CATEGORIES is an
     invalid entry (skipped with a warning) so a typo cannot create a phantom shelf on the site."""
@@ -224,7 +231,7 @@ def test_in_tree_catalog_time_does_not_lazy_fetch_on_treeless_clones(tmp_path, m
 
     def local_object_types(repo):
         out = sp.run(["git", "cat-file", "--batch-all-objects", "--batch-check"], cwd=repo,
-                     capture_output=True, text=True, env=env)
+                     capture_output=True, text=True, env=env, check=False)
         return {line.split()[1] for line in out.stdout.splitlines() if line}
 
     dst = tmp_path / "treeless"
@@ -269,7 +276,7 @@ def test_treeless_checkout_still_outranks_a_doc_fetched_before_the_bump(tmp_path
 
     def local_object_types(repo):
         out = sp.run(["git", "cat-file", "--batch-all-objects", "--batch-check"], cwd=repo,
-                     capture_output=True, text=True, env=env)
+                     capture_output=True, text=True, env=env, check=False)
         return {line.split()[1] for line in out.stdout.splitlines() if line}
 
     dst = tmp_path / "treeless"
@@ -282,7 +289,7 @@ def test_treeless_checkout_still_outranks_a_doc_fetched_before_the_bump(tmp_path
     # pathspec'd probe keeps failing — while the worktree files (and their mtimes) land.
     sp.run(["git", "-C", str(dst), "checkout", "-q"], check=True, env=env)
     probe = sp.run(["git", "-C", str(dst), "log", "-1", "--format=%ct", "--", "plugin-catalog"],
-                   capture_output=True, env={**env, "GIT_NO_LAZY_FETCH": "1"})
+                   capture_output=True, env={**env, "GIT_NO_LAZY_FETCH": "1"}, check=False)
     assert probe.returncode != 0  # the probe really is blind on this layout, like a real update
 
     old, new = SHA, "a" * 40

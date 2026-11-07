@@ -6,6 +6,8 @@
  * live `screen` displays.
  */
 
+import type { WindowSizeMode } from './window-size-types'
+
 const MIN_WIDTH = 400
 const MIN_HEIGHT = 620
 
@@ -112,10 +114,29 @@ interface WorkArea {
   height: number
 }
 
-function firstLaunchSize(workArea: WorkArea): WindowOptions {
+// Share of the display's work area, clamped. Normal is the working app — the
+// first window and a layout pick in the setup chat. Onboarding is the setup
+// chat alone, before a layout exists; its floor keeps the chat readable at the
+// 110% default zoom.
+const WINDOW_SIZES: Record<WindowSizeMode, { share: WorkArea; min: WorkArea; max: WorkArea }> = {
+  normal: {
+    share: { width: 0.88, height: 0.88 },
+    min: { width: 1280, height: 820 },
+    max: { width: 1760, height: 1100 }
+  },
+  onboarding: {
+    share: { width: 0.5, height: 0.85 },
+    min: { width: 760, height: 760 },
+    max: { width: 960, height: 1000 }
+  }
+}
+
+function windowSize(mode: WindowSizeMode, workArea: WorkArea): WindowOptions {
+  const { share, min, max } = WINDOW_SIZES[mode]
+
   return {
-    width: Math.min(clamp(Math.round(workArea.width * 0.75), 1220, 1600), workArea.width),
-    height: Math.min(clamp(Math.round(workArea.height * 0.8), 800, 1000), workArea.height)
+    width: Math.min(clamp(Math.round(workArea.width * share.width), min.width, max.width), workArea.width),
+    height: Math.min(clamp(Math.round(workArea.height * share.height), min.height, max.height), workArea.height)
   }
 }
 
@@ -210,9 +231,11 @@ function computeWindowOptions(state: WindowOptions, displays, platform = process
   // layouts from tiling WMs or user placement on macOS/Linux. This early return
   // intentionally omits stale x/y so Electron centers the recovered window.
   const staleWorkArea = platform === 'win32' ? staleFullscreenWorkArea(state, displays) : null
+
   if (staleWorkArea) {
     opts.width = clamp(Math.round(staleWorkArea.width * RECOVERED_WINDOW_RATIO), MIN_WIDTH, staleWorkArea.width)
     opts.height = clamp(Math.round(staleWorkArea.height * RECOVERED_WINDOW_RATIO), MIN_HEIGHT, staleWorkArea.height)
+
     return opts
   }
 
@@ -276,11 +299,11 @@ export {
   bindGeometryPersistence,
   computeWindowOptions,
   debounce,
-  firstLaunchSize,
   GEOMETRY_EVENTS,
   matchingWorkArea,
   MIN_HEIGHT,
   MIN_VISIBLE,
   MIN_WIDTH,
-  sanitizeWindowState
+  sanitizeWindowState,
+  windowSize
 }

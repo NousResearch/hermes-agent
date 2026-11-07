@@ -22,7 +22,7 @@ description: "通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Emai
 | Signal | — | ✅ | ✅ | — | — | ✅ | ✅ |
 | SMS | — | — | — | — | — | — | — |
 | Email | — | ✅ | ✅ | ✅ | — | — | — |
-| Home Assistant | — | — | — | — | — | — | — |
+| Home Assistant（插件） | — | — | — | — | — | — | — |
 | Mattermost | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
@@ -32,7 +32,7 @@ description: "通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Emai
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
-| Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| Yuanbao（Labs 插件） | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | Microsoft Teams | — | ✅ | — | ✅ | — | ✅ | — |
 | LINE | — | ✅ | ✅ | — | — | ✅ | — |
 | ntfy | — | — | — | — | — | — | — |
@@ -63,7 +63,7 @@ flowchart TB
     wx[Weixin]
     bb[BlueBubbles]
     qq[QQ]
-    yb[Yuanbao]
+    yb["Yuanbao (plugin)"]
     ms[Microsoft Teams]
     api["API Server<br/>(OpenAI-compatible)"]
     wh[Webhooks]
@@ -434,7 +434,7 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 | Signal | `hermes-signal` | 完整工具，包括终端 |
 | SMS | `hermes-sms` | 完整工具，包括终端 |
 | Email | `hermes-email` | 完整工具，包括终端 |
-| Home Assistant | `hermes-homeassistant` | 完整工具 + HA 设备控制（ha_list_entities、ha_get_state、ha_call_service、ha_list_services） |
+| Home Assistant（插件） | `hermes-homeassistant` | 完整工具 + HA 设备控制（ha_list_entities、ha_get_state、ha_call_service、ha_list_services），由插件目录中的 `homeassistant` 插件提供 |
 | Mattermost | `hermes-mattermost` | 完整工具，包括终端 |
 | Matrix | `hermes-matrix` | 完整工具，包括终端 |
 | DingTalk | `hermes-dingtalk` | 完整工具，包括终端 |
@@ -444,7 +444,7 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 | Weixin | `hermes-weixin` | 完整工具，包括终端 |
 | BlueBubbles | `hermes-bluebubbles` | 完整工具，包括终端 |
 | QQBot | `hermes-qqbot` | 完整工具，包括终端 |
-| Yuanbao | `hermes-yuanbao` | 完整工具，包括终端 |
+| Yuanbao（Labs 插件） | `hermes-yuanbao` | 完整工具，外加 `yuanbao` Hermes Labs 插件提供的 `yb_*` 群组/私聊/贴纸工具 |
 | Microsoft Teams | `hermes-teams` | 完整工具，包括终端 |
 | API Server | `hermes-api-server` | 完整工具（去除 `clarify`、`send_message`、`text_to_speech`——程序化访问没有交互用户） |
 | Webhooks | `hermes-webhook` | 完整工具，包括终端 |
@@ -552,7 +552,7 @@ display:
 - [Signal 配置](signal.md)
 - [SMS 配置（Twilio）](sms.md)
 - [Email 配置](email.md)
-- [Home Assistant 集成](homeassistant.md)
+- [Home Assistant 集成](homeassistant.md)（插件目录）
 - [Mattermost 配置](mattermost.md)
 - [Matrix 配置](matrix.md)
 - [DingTalk 配置](dingtalk.md)
@@ -562,7 +562,7 @@ display:
 - [Weixin 配置（微信）](weixin.md)
 - [BlueBubbles 配置（iMessage）](bluebubbles.md)
 - [QQBot 配置](qqbot.md)
-- [Yuanbao 配置](yuanbao.md)
+- [Yuanbao](yuanbao.md)（Hermes Labs 插件）
 - [Microsoft Teams 配置](teams.md)
 - [Teams 会议流水线](teams-meetings.md)
 - [Open WebUI + API Server](open-webui.md)

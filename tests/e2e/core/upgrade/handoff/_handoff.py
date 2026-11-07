@@ -17,6 +17,7 @@ Every process (gateway, dashboard, cron ticker, kanban dispatcher, the updater) 
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
 import functools
 import json
 import os
@@ -41,8 +42,15 @@ from tests.e2e.core.upgrade.handoff._nshost import NamespaceHost
 
 TRACEBACK = I.TRACEBACK
 UPDATE_TIMEOUT = 1500
+# ``agent.restart_after_turn_timeout`` in every cell: a gateway that will not drain is forced to stop
+# after this instead of holding the update for the 30-minute default.
+RESTART_WAIT_CAP_S = 120
 API_KEY = "e2e-handoff-api-server-key"
 NEXT_MARKER = "docs/e2e-handoff-next-marker.txt"
+# NEXT moves a module the gateway imports at boot and rewrites its importer, as a layout change does;
+# the relaunched gateway can serve a turn only from the moved file.
+NEXT_MOVE = ("gateway/run_background.py", "gateway/run_turn_background.py")
+NEXT_MOVE_IMPORTER = ("gateway/run_turn.py", "from gateway.run_background import", "from gateway.run_turn_background import")
 
 
 # -- refs ---------------------------------------------------------------------------------------
@@ -57,14 +65,11 @@ class Refs:
 
 @functools.cache
 def refs() -> Refs:
-    """HEAD and release N-1, resolved on first use (collection runs no git)."""
+    """HEAD and the start version (``_install_helpers.upgrade_base``), resolved on first use
+    (collection runs no git)."""
     head = I.head_sha()
-    try:
-        tag = os.environ.get("HERMES_E2E_UPGRADE_BASE") or I.git(
-            "describe", "--tags", "--match", "v20[0-9][0-9].*", "--abbrev=0", "HEAD~1", cwd=H.WORKTREE)
-        return Refs(head, tag, I.git("rev-parse", f"{tag}^{{commit}}", cwd=H.WORKTREE))
-    except AssertionError:  # shallow checkout without tags
-        return Refs(head, "", "")
+    base = I.upgrade_base()
+    return Refs(head, base.ref, base.commit) if base else Refs(head, "", "")
 
 
 def free_port() -> int:
@@ -163,7 +168,10 @@ def _user_uv(env: dict[str, str], hermes_home: Path) -> None:
 
 
 def stage_n1(root: Path) -> Install:
-    """A git install at release N-1 with its own venv, as the N-1 installer left it."""
+    """A git install at release N-1 as the N-1 installer left it: a release that ships PM through its
+    own installer (PM provisions node for the dashboard build), an older one as a venv from its uv.lock."""
+    if I.updater_generation(refs().base) == "by-path":
+        return _install_with_installer(root, "n1", refs().base)
     root.mkdir(parents=True, exist_ok=True)
     origin = I.make_origin(root, refs().base)
     sb = I.new_sandbox(root / "sb", origin)
@@ -183,7 +191,7 @@ def stage_n1(root: Path) -> Install:
     uv_env = {k: v for k, v in os.environ.items() if k not in ("VIRTUAL_ENV", "UV_NO_CONFIG", "UV_CONFIG_FILE")}
     uv_env.update(UV_PROJECT_ENVIRONMENT=str(checkout / "venv"), XDG_CONFIG_HOME=str(no_cfg), XDG_CONFIG_DIRS=str(no_cfg))
     cp = subprocess.run([I.real_uv(), "sync", "-q", "--locked", "--extra", "all", "--managed-python", "--python",
-                         base_python], cwd=str(checkout), env=uv_env, capture_output=True, text=True, timeout=1800)
+                         base_python], cwd=str(checkout), env=uv_env, capture_output=True, text=True, timeout=1800, check=False)
     assert cp.returncode == 0, f"N-1 venv install from its uv.lock failed:\n{cp.stderr[-4000:]}"
     local_bin = sb.home / ".local" / "bin"
     local_bin.mkdir(parents=True, exist_ok=True)
@@ -195,16 +203,22 @@ def stage_n1(root: Path) -> Install:
 
 def stage_head(root: Path) -> Install:
     """HEAD's installer into an empty HOME (the HEAD -> NEXT column)."""
+    return _install_with_installer(root, "head", refs().head)
+
+
+def _install_with_installer(root: Path, column: str, ref: str) -> Install:
+    """``ref``'s own installer into an empty HOME, installing ``ref``."""
     root.mkdir(parents=True, exist_ok=True)
-    origin = I.make_origin(root, refs().head)
+    origin = I.make_origin(root, ref)
     # Serve partial clones as GitHub does: the installer asks for ``--filter=blob:none``.
     I.git("config", "uploadpack.allowFilter", "true", cwd=origin)
     I.git("config", "uploadpack.allowAnySHA1InWant", "true", cwd=origin)
     sb = I.new_sandbox(root / "sb", origin)
-    cp = I.run_installer(sb)
-    assert cp.returncode == 0 and TRACEBACK not in cp.stdout + cp.stderr, "HEAD install failed:\n" + I.describe(cp)
+    cp = I.run_installer(sb, ref=None if column == "head" else ref)
+    assert cp.returncode == 0 and TRACEBACK not in cp.stdout + cp.stderr, f"{column} install failed:\n" + I.describe(cp)
+    assert I.git("rev-parse", "HEAD", cwd=sb.checkout) == ref, f"the {column} installer did not install {ref[:12]}"
     sb.env["PATH"] = os.pathsep.join([str(sb.home / ".local" / "bin"), sb.env["PATH"]])
-    return Install("head", root, origin, sb.env)
+    return Install(column, root, origin, sb.env)
 
 
 def stage(column: str, root: Path) -> Install:
@@ -212,13 +226,17 @@ def stage(column: str, root: Path) -> Install:
 
 
 def publish_target(inst: Install) -> str:
-    """Upstream moves: N-1 -> HEAD, HEAD -> NEXT (a child commit adding a marker file)."""
+    """Upstream moves: N-1 -> HEAD, HEAD -> NEXT (a child commit that moves a module, see ``NEXT_MOVE``)."""
     if inst.column == "n1":
         I.git("update-ref", "refs/heads/main", refs().head, cwd=inst.origin)
         inst.target = refs().head
     else:
+        importer, old, new = NEXT_MOVE_IMPORTER
+        source = I.git("show", f"{refs().head}:{importer}", cwd=H.WORKTREE)
+        assert source.count(old) == 1, f"premise: {importer} imports {NEXT_MOVE[0]} once"
         inst.target = I.publish_commit(inst.origin, inst.root, "release: e2e handoff NEXT",
-                                       {NEXT_MARKER: f"NEXT above {refs().head}\n"})
+                                       {NEXT_MARKER: f"NEXT above {refs().head}\n", importer: source.replace(old, new) + "\n"},
+                                       moves=dict([NEXT_MOVE]))
     return inst.target
 
 
@@ -235,7 +253,7 @@ def write_config(home: Path, provider_url: str, *, port: int | None = None, extr
     home.mkdir(parents=True, exist_ok=True)
     cfg: dict = {
         "model": {"provider": "custom", "base_url": provider_url, "default": "fake-model", "context_length": 128000},
-        "agent": {"api_max_retries": 1},
+        "agent": {"api_max_retries": 1, "restart_after_turn_timeout": RESTART_WAIT_CAP_S},
         "compression": {"enabled": False},
     }
     if port is not None:
@@ -408,6 +426,36 @@ def receipt(inst: Install) -> dict:
     return read_json(inst.hermes_home / "logs" / "update_receipts" / "latest.json") or {}
 
 
+_LOG_TIME = r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3}) "
+_WAIT_OPENED = re.compile(_LOG_TIME + r".*Restart requested with \d+ active work unit\(s\); deferring stop\(\)", re.MULTILINE)
+_WAIT_CLOSED = re.compile(_LOG_TIME + r".*(Restart deferred wait complete|Restart after-turn wait timed out"
+                          r"|Restart deferred wait: \d+ excluded work unit)", re.MULTILINE)
+_WAIT_HOLDERS = re.compile(r"Restart deferred: waiting on .*?: (\[.*\])$", re.MULTILINE)
+
+
+def _log_time(stamp: str) -> dt.datetime:
+    return dt.datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S,%f")
+
+
+def restart_wait_verdict(inst: Install, slack_s: float = 15.0) -> str:
+    """'' when every restart wait the gateway logged closed within ``RESTART_WAIT_CAP_S``; otherwise
+    how long the first failing wait held and the work units the gateway last named while it held."""
+    log = inst.hermes_home / "logs" / "gateway.log"
+    text = log.read_text(errors="replace") if log.exists() else ""
+    starts = [m.start() for m in _WAIT_OPENED.finditer(text)]
+    for begin, end in zip(starts, [*starts[1:], len(text)]):
+        wait = text[begin:end]  # one wait, up to the next one's opening
+        opened = _log_time(_WAIT_OPENED.match(wait).group(1))
+        close = _WAIT_CLOSED.search(wait)
+        held = ((_log_time(close.group(1)) if close else dt.datetime.now()) - opened).total_seconds()
+        if close is None or held > RESTART_WAIT_CAP_S + slack_s:
+            holders = _WAIT_HOLDERS.findall(wait[:close.start()] if close else wait)
+            return (f"the gateway's restart wait held {held:.0f}s against its {RESTART_WAIT_CAP_S}s cap "
+                    f"({'never closed' if close is None else 'closed late'}); last named holders: "
+                    f"{holders[-1] if holders else 'none'}")
+    return ""
+
+
 def settle_gateway(inst: Install, old_pid: int, *, timeout: float = 180) -> dict | None:
     """Wait for a gateway serving ``inst.target`` under a new PID; None if none shows up."""
     def serving():
@@ -492,7 +540,7 @@ class FileWatch:
                 last = cur
             self._stop.wait(self.interval)
 
-    def __enter__(self) -> "FileWatch":
+    def __enter__(self) -> FileWatch:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         return self

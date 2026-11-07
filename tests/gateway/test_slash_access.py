@@ -53,7 +53,6 @@ class TestPolicyFromExtra:
         # Admin lists are scope-specific. DM admin must not auto-promote in groups.
         extra = {"allow_admin_from": ["111"]}
         dm = policy_from_extra(extra, "dm")
-        gp = policy_from_extra(extra, "group")
         assert dm.is_admin("111") is True
         # Group has no admin list set → gating disabled in groups → "111"
         # gets unrestricted access, but that's the backward-compat fallback,

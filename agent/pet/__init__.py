@@ -14,4 +14,4 @@ effect on prompt caching.
 from agent.pet.constants import DEFAULT_SCALE, FRAME_H, FRAME_W, FRAMES_PER_STATE, LOOP_MS, STATE_ROWS, PetState
 from agent.pet.state import derive_pet_state
 
-__all__ = ["DEFAULT_SCALE", "FRAME_H", "FRAME_W", "FRAMES_PER_STATE", "LOOP_MS", "STATE_ROWS", "PetState", "derive_pet_state"]
+__all__ = ["DEFAULT_SCALE", "FRAMES_PER_STATE", "FRAME_H", "FRAME_W", "LOOP_MS", "STATE_ROWS", "PetState", "derive_pet_state"]

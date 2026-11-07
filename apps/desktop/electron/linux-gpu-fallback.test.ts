@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  createLinuxGpuBootWindow,
   decideLinuxGpuLaunch,
   disableGpuSwitchNeededForReason,
+  LINUX_GPU_DEATH_WITNESS_GRACE_MS,
   linuxGpuChildDeathPath,
   linuxGpuFallbackMarker,
+  linuxGpuFallbackReasonForDeath,
   linuxGpuMarkerAfterSuccessfulBoot,
   parseLinuxGpuMarker,
   shouldEngageSilentGpuRetryFallback,
@@ -23,9 +26,11 @@ const LINUX = {
 
 describe('parseLinuxGpuMarker', () => {
   it('accepts a well-formed fallback marker', () => {
-    expect(
-      parseLinuxGpuMarker({ state: 'fallback', reason: 'gpu-launch-failure', version: '0.21.5' })
-    ).toEqual({ state: 'fallback', reason: 'gpu-launch-failure', version: '0.21.5' })
+    expect(parseLinuxGpuMarker({ state: 'fallback', reason: 'gpu-launch-failure', version: '0.21.5' })).toEqual({
+      state: 'fallback',
+      reason: 'gpu-launch-failure',
+      version: '0.21.5'
+    })
   })
 
   it('rejects garbage', () => {
@@ -120,9 +125,7 @@ describe('decideLinuxGpuLaunch', () => {
   it('stays off when software rendering is already forced', () => {
     expect(decideLinuxGpuLaunch({ ...LINUX, remoteDisplayReason: 'ssh-session' }).enable).toBe(false)
     expect(decideLinuxGpuLaunch({ ...LINUX, nvidiaFallbackActive: true }).enable).toBe(false)
-    expect(
-      decideLinuxGpuLaunch({ ...LINUX, argv: ['--disable-gpu'] }).reason
-    ).toBe('already-enabled')
+    expect(decideLinuxGpuLaunch({ ...LINUX, argv: ['--disable-gpu'] }).reason).toBe('already-enabled')
   })
 })
 
@@ -163,12 +166,8 @@ describe('shouldRelaunchForLinuxGpuCrash', () => {
   it('ignores non-GPU deaths and clean exits', () => {
     const base = { platform: 'linux' as const, alreadySoftware: false, relaunchAttempted: false }
 
-    expect(
-      shouldRelaunchForLinuxGpuCrash({ ...base, details: { type: 'renderer', reason: 'crashed' } })
-    ).toBe(false)
-    expect(
-      shouldRelaunchForLinuxGpuCrash({ ...base, details: { type: 'GPU', reason: 'clean-exit' } })
-    ).toBe(false)
+    expect(shouldRelaunchForLinuxGpuCrash({ ...base, details: { type: 'renderer', reason: 'crashed' } })).toBe(false)
+    expect(shouldRelaunchForLinuxGpuCrash({ ...base, details: { type: 'GPU', reason: 'clean-exit' } })).toBe(false)
     expect(shouldRelaunchForLinuxGpuCrash({ ...base, details: null })).toBe(false)
   })
 
@@ -198,9 +197,11 @@ describe('linuxGpuMarkerAfterSuccessfulBoot', () => {
   })
 
   it('keeps the sticky fallback after a software-rendered boot', () => {
-    expect(
-      linuxGpuMarkerAfterSuccessfulBoot({ fallbackActive: true, appVersion: '0.21.5' })
-    ).toEqual({ state: 'fallback', reason: 'gpu-launch-failure', version: '0.21.5' })
+    expect(linuxGpuMarkerAfterSuccessfulBoot({ fallbackActive: true, appVersion: '0.21.5' })).toEqual({
+      state: 'fallback',
+      reason: 'gpu-launch-failure',
+      version: '0.21.5'
+    })
   })
 
   it('round-trips the fallback marker helper', () => {
@@ -267,9 +268,7 @@ describe('linuxGpuChildDeathPath', () => {
   })
 
   it('ignores non-GPU deaths and other platforms', () => {
-    expect(
-      linuxGpuChildDeathPath({ platform: 'linux', details: { type: 'Renderer', reason: 'crashed' } })
-    ).toBeNull()
+    expect(linuxGpuChildDeathPath({ platform: 'linux', details: { type: 'Renderer', reason: 'crashed' } })).toBeNull()
     expect(linuxGpuChildDeathPath({ platform: 'darwin', details: SIGTERM_DEATH })).toBeNull()
     expect(linuxGpuChildDeathPath({ platform: 'linux' })).toBeNull()
   })
@@ -305,15 +304,15 @@ describe('disableGpuSwitchNeededForReason', () => {
 
 describe('shouldEngageSilentGpuRetryFallback', () => {
   it('engages only on Linux, after the grace window, with no GPU child, not already software', () => {
-    expect(
-      shouldEngageSilentGpuRetryFallback({ platform: 'linux', gpuChildPresent: false, graceElapsed: true })
-    ).toBe(true)
-    expect(
-      shouldEngageSilentGpuRetryFallback({ platform: 'linux', gpuChildPresent: true, graceElapsed: true })
-    ).toBe(false)
-    expect(
-      shouldEngageSilentGpuRetryFallback({ platform: 'linux', gpuChildPresent: false, graceElapsed: false })
-    ).toBe(false)
+    expect(shouldEngageSilentGpuRetryFallback({ platform: 'linux', gpuChildPresent: false, graceElapsed: true })).toBe(
+      true
+    )
+    expect(shouldEngageSilentGpuRetryFallback({ platform: 'linux', gpuChildPresent: true, graceElapsed: true })).toBe(
+      false
+    )
+    expect(shouldEngageSilentGpuRetryFallback({ platform: 'linux', gpuChildPresent: false, graceElapsed: false })).toBe(
+      false
+    )
     expect(
       shouldEngageSilentGpuRetryFallback({
         platform: 'linux',
@@ -322,8 +321,40 @@ describe('shouldEngageSilentGpuRetryFallback', () => {
         alreadySoftware: true
       })
     ).toBe(false)
-    expect(
-      shouldEngageSilentGpuRetryFallback({ platform: 'darwin', gpuChildPresent: false, graceElapsed: true })
-    ).toBe(false)
+    expect(shouldEngageSilentGpuRetryFallback({ platform: 'darwin', gpuChildPresent: false, graceElapsed: true })).toBe(
+      false
+    )
+  })
+})
+
+describe("Electron's real GPU launch-failure reason", () => {
+  // Electron emits `launch-failed`; the recovery matched only `launch-failure`,
+  // so a GPU child that never launched left Chromium's retry loop spinning (#134888).
+  it('takes the bounded --disable-gpu step and records a launch failure', () => {
+    const details = { type: 'GPU', reason: 'launch-failed', exitCode: 1002 }
+
+    expect(linuxGpuChildDeathPath({ platform: 'linux', details })).toBe('disable-gpu')
+    expect(shouldRelaunchForLinuxGpuCrash({ platform: 'linux', details })).toBe(true)
+    expect(linuxGpuFallbackReasonForDeath(details.reason)).toBe('gpu-launch-failure')
+  })
+})
+
+describe('Linux GPU boot window on a host without an NVIDIA driver', () => {
+  // Mesa/AMD/Intel: the witness window gated only the NVIDIA ladder, so a GPU crash
+  // hours after a healthy boot relaunched with --disable-gpu and pinned software forever.
+  it('a crash long after the first reveal takes no --disable-gpu relaunch; a crash during boot still does', () => {
+    let clock = 1_000
+    const bootWindow = createLinuxGpuBootWindow({ platform: 'linux', now: () => clock })
+    const details = { type: 'GPU', reason: 'crashed', exitCode: 139 }
+
+    const path = () =>
+      linuxGpuChildDeathPath({ platform: 'linux', details, runtimeDeath: bootWindow.afterBootWindow() })
+
+    expect(path()).toBe('disable-gpu')
+    bootWindow.revealed()
+    clock += 5_000
+    expect(path()).toBe('disable-gpu')
+    clock += LINUX_GPU_DEATH_WITNESS_GRACE_MS
+    expect(path()).toBeNull()
   })
 })

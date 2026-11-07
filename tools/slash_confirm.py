@@ -18,7 +18,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 logger = logging.getLogger(__name__)
 
 # session_key -> {"confirm_id", "command", "handler", "created_at"}
-_pending: Dict[str, Dict[str, Any]] = {}
+_pending: dict[str, dict[str, Any]] = {}
 _lock = threading.RLock()
 
 # Older pending confirms are discarded when the session's next message arrives (buttons live
@@ -34,7 +34,7 @@ def register(session_key: str, confirm_id: str, command: str,
                                  "handler": handler, "created_at": time.time()}
 
 
-def get_pending(session_key: str) -> Optional[Dict[str, Any]]:
+def get_pending(session_key: str) -> Optional[dict[str, Any]]:
     """Return a copy of the pending confirm dict for a session, or None."""
     with _lock:
         entry = _pending.get(session_key)
@@ -47,7 +47,7 @@ def clear(session_key: str) -> None:
         _pending.pop(session_key, None)
 
 
-def _is_stale(entry: Dict[str, Any], timeout: float) -> bool:
+def _is_stale(entry: dict[str, Any], timeout: float) -> bool:
     return time.time() - float(entry.get("created_at", 0) or 0) > timeout
 
 

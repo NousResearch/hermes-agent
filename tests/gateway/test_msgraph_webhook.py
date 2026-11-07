@@ -191,6 +191,7 @@ class TestMSGraphNotifications:
     @pytest.mark.anyio
     async def test_resource_patterns_accept_leading_slash(self):
         adapter = _make_adapter(accepted_resources=["/communications/onlineMeetings"])
+        adapter.set_notification_scheduler(lambda notification, event: None)
         payload = {
             "value": [
                 {
@@ -230,6 +231,7 @@ class TestMSGraphSourceIPAllowlist:
     async def test_loopback_bind_without_allowlist_still_accepts_local_requests(self):
         """Loopback-only listeners may rely on local proxying/tunnels instead of CIDRs."""
         adapter = _make_adapter(host="127.0.0.1", allowed_source_cidrs=[])
+        adapter.set_notification_scheduler(lambda notification, event: None)
         payload = {
             "value": [
                 {

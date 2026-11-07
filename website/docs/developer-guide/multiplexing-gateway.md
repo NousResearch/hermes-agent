@@ -54,7 +54,7 @@ is documented as a known limitation at the end of this document.
   a plain module global, not a contextvar: it describes the deployment mode,
   not a per-task value. Its only job is to arm the fail-closed behavior in
   `get_secret()`.
-- The dashboard/Desktop backend (`hermes serve`) has no such flag, so
+- The dashboard / remote-Desktop backend (`hermes serve`) has no such flag, so
   `hermes_cli/web_server.py::start_server` calls
   `tui_gateway.launch_profile_policy.activate_multi_profile_hosting_eagerly()`
   as its LAST boot step: the host arms the guard when the machine has more than

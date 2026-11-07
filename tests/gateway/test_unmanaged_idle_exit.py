@@ -91,6 +91,75 @@ async def test_queued_work_clients_adapters_and_cron_each_keep_it_up(tmp_path, m
         db.close()
 
 
+@pytest.mark.asyncio
+async def test_launch_home_deleted_underneath_does_not_hold_it_up(tmp_path, monkeypatch):
+    """The client deletes its throwaway home while the gateway it auto-started is still running. The
+    deleted-WAL guard then refuses every new SessionDB for that home, so the store gates read busy
+    forever, and its queued rows can never run: neither may hold the gateway up."""
+    import os
+    real_store_gates = run_idle_exit._store_gates_busy
+    runner, home, db, stops = _runner(tmp_path, monkeypatch)
+    monkeypatch.setattr(run_idle_exit, "_store_gates_busy", real_store_gates)
+    try:
+        db.create_session("s", source="cli")
+        epoch = begin_runtime_epoch(db, instance_id="owner")
+        admit_session_input(db, epoch=epoch, principal_id="p", session_id="s", request_id="r",
+                            payload={"text": "queued before teardown"})
+        for sidecar in ("state.db-wal", "state.db-shm"):
+            os.unlink(home / sidecar)
+        await asyncio.wait_for(run_idle_exit.unmanaged_idle_exit_watcher(runner), 5)
+        await runner._idle_exit_stop_task
+        assert stops == [True]
+    finally:
+        db.close()
+
+
+@pytest.mark.requires_wal  # a deleted generation exists only for a recorded WAL/SHM pair
+def test_retired_home_probe_never_poisons_a_cleanly_closing_store(tmp_path, monkeypatch):
+    """The watcher's worker thread probes each store's generation while that store may be closing
+    cleanly; the probe must see the settled state, never the teardown window."""
+    import threading
+    runner, _home, db, _stops = _runner(tmp_path, monkeypatch)
+    conn, lock, close, guard = db._conn, db._lock, db._close_connection_quietly, db._raise_if_db_replaced
+    closed, probing = threading.Event(), threading.Event()
+
+    class ObservedLock:
+        def __enter__(self):
+            if threading.current_thread().name == "probe":
+                probing.set()
+            lock.acquire()
+
+        def __exit__(self, *args):
+            lock.release()
+
+    def observed_guard():
+        try:
+            return guard()
+        finally:
+            probing.set()
+
+    def paused_close(connection):
+        close(connection)
+        if connection is conn:  # WAL and SHM are gone; the generation identity is not cleared yet
+            closed.set()
+            probing.wait(10)
+
+    monkeypatch.setattr(db, "_lock", ObservedLock())
+    monkeypatch.setattr(db, "_close_connection_quietly", paused_close)
+    monkeypatch.setattr(db, "_raise_if_db_replaced", observed_guard)
+    retired = []
+    closer = threading.Thread(target=db.close)
+    prober = threading.Thread(target=lambda: retired.append(run_idle_exit._retired_homes(runner)), name="probe")
+    closer.start()
+    assert closed.wait(10)
+    prober.start()
+    prober.join(15)
+    closer.join(15)
+    assert not prober.is_alive() and not closer.is_alive()
+    assert retired == [set()]
+    assert not db._db_wal_generation_lost
+
+
 def test_a_profile_still_starting_leaves_the_served_ledgers_readable(tmp_path, monkeypatch):
     """Hot-serve reserves a starting profile's registry slot before its authority exists. The probe
     still reads every built profile's ledger meanwhile, instead of failing on the slot."""

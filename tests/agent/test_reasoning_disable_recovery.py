@@ -61,10 +61,10 @@ def _settle(disable_drop_attempted):
     assert classified.reason == FailoverReason.reasoning_mandatory
     retry = SimpleNamespace(
         reasoning_mandatory_retry_attempted=disable_drop_attempted, image_shrink_retry_attempted=False,
-        copilot_stale_cred_retry_attempted=False, primary_recovery_attempted=False,
+        provider_stale_refresh_attempted=False, primary_recovery_attempted=False,
         restart_with_redirected_messages=False,
     )
-    with patch("agent.conversation_loop._is_copilot_provider", lambda a: False), patch(
+    with patch("agent.conversation_loop._credential_refresh_profile", lambda a: None), patch(
         "agent.conversation_loop._arm_fallback_restart", lambda agent, msgs, prompt, retry: prompt
     ), patch("agent.turn_api_error.compute_error_backoff", lambda *a, **k: 0), patch(
         "agent.turn_api_error.interruptible_backoff_sleep", lambda *a, **k: None

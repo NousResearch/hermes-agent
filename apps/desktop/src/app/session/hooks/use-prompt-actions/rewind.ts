@@ -10,6 +10,7 @@
  */
 
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
+import { JsonRpcGatewayError } from '@hermes/shared'
 
 import type { ClientSessionState } from '@/app/types'
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
@@ -343,28 +344,57 @@ export async function runRewindSubmit(
     }
   }
 
-  const submitFor = (targetId: string) =>
-    requestGateway<PromptSubmitResult>(
-      'prompt.submit',
-      {
-        session_id: targetId,
-        text,
-        ...truncateSubmitParams(resolvedOrdinal, resolvedMessageId, resolvedRowId, confirmDeepTruncate),
-        // A first-turn rewind resolves to an empty transcript, which the
-        // gateway additionally gates behind confirm_empty_truncate. In
-        // resolved-row-id mode the tail-local ordinal was dropped (see
-        // above). The durable target is authoritative, so explicitly allow a
-        // first-active-tip cut; the gateway ignores this when the prefix is
-        // non-empty.
-        ...(resolvedOrdinal === undefined && (resolvedRowId !== undefined || truncateOrdinal === 0)
-          ? { confirm_empty_truncate: true }
-          : {}),
-        ...(rebindRowIds?.length
-          ? { rebind_survivor_row_ids: [...new Set(rebindRowIds.filter(Number.isInteger))] }
-          : {})
-      },
-      PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
-    )
+  // Set once a backend rejected confirm_deep_truncate: the later sends of this submit (busy retries,
+  // a resumed runtime) leave it out instead of paying a rejected round trip each.
+  let deepConfirmUnsupported = false
+
+  const submitFor = async (targetId: string) => {
+    const params = {
+      session_id: targetId,
+      text,
+      ...truncateSubmitParams(
+        resolvedOrdinal,
+        resolvedMessageId,
+        resolvedRowId,
+        confirmDeepTruncate && !deepConfirmUnsupported
+      ),
+      // A first-turn rewind resolves to an empty transcript, which the
+      // gateway additionally gates behind confirm_empty_truncate. In
+      // resolved-row-id mode the tail-local ordinal was dropped (see
+      // above). The durable target is authoritative, so explicitly allow a
+      // first-active-tip cut; the gateway ignores this when the prefix is
+      // non-empty.
+      ...(resolvedOrdinal === undefined && (resolvedRowId !== undefined || truncateOrdinal === 0)
+        ? { confirm_empty_truncate: true }
+        : {}),
+      ...(rebindRowIds?.length ? { rebind_survivor_row_ids: [...new Set(rebindRowIds.filter(Number.isInteger))] } : {})
+    }
+
+    try {
+      return await requestGateway<PromptSubmitResult>('prompt.submit', params, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+    } catch (error) {
+      // Desktop and backend can update independently. Backends predating #133716
+      // reject this one new field at contract admission (4000, handler never runs).
+      // The user already confirmed client-side, so retry once without only that
+      // field; never strip any other rejected param.
+      const message = error instanceof Error ? error.message : String(error)
+
+      const rejectedDeepConfirm =
+        error instanceof JsonRpcGatewayError &&
+        error.code === 4000 &&
+        'confirm_deep_truncate' in params &&
+        message.includes('invalid params for prompt.submit: confirm_deep_truncate:')
+
+      if (!rejectedDeepConfirm) {
+        throw error
+      }
+
+      deepConfirmUnsupported = true
+      const { confirm_deep_truncate: _unsupported, ...compatible } = params
+
+      return requestGateway<PromptSubmitResult>('prompt.submit', compatible, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+    }
+  }
 
   const submit = async () => {
     const { result, sessionId: usedId } = await withSessionNotFoundResume(
@@ -821,8 +851,9 @@ export function revalidateEditPlan<P extends EditPlan>(
  * Edit's plan step around the deep-cut confirm. Returns the plan and the transcript it is aimed at,
  * null when there is nothing to send (declined, nothing changed, or the confirm was answered after
  * the session switched away), or 'moved' when the edited turn moved during the confirm.
- * *answeredFor* is the transcript a 4033 confirm already covered: the re-run forces the deep cut
- * only while the transcript is still exactly that one.
+ * *answeredFor* is the transcript an earlier answer already covers (a 4033 re-run, or a stale-target
+ * retry whose refresh kept the same later turns): the deep cut is forced only while *planning* is
+ * still exactly that transcript.
  */
 export async function planEditAfterConfirm(opts: {
   answeredFor?: ChatMessage[]
@@ -851,8 +882,7 @@ export async function planEditAfterConfirm(opts: {
 
 /**
  * A stale-target retry re-addresses the same turn after a history refresh. The user's deep-cut
- * answer covers the later turns they saw; if the refresh shows more, the retry goes unconfirmed and
- * the server gate decides.
+ * answer covers the later turns they saw; if the refresh shows more, the retry asks again.
  */
 export function retryKeepsDeepConfirm(
   plan: EditPlan & { confirmDeepTruncate: boolean },

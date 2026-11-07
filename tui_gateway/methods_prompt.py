@@ -271,12 +271,15 @@ def _typed_stop_phrase_response(rid, text, sid=None):
 _HOSTED_TASK_FIELDS = {"room_id", "task_id", "thread_id", "turn_id", "execution_generation", "member_id"}
 
 
-def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback):
-    """Validate the hosted-room turn proof carried by an internal submit."""
+def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback, hosted_images=None):
+    """Validate the hosted-room turn proof carried by an internal submit. ``hosted_images`` are the
+    member's event-bound images, already materialized under the image cache by the room worker."""
     if session.get("source") != "bot_room":
         return _err(rid, 4120, "hosted room turns require a bot_room session")
     valid = (
         isinstance(hosted_task, dict) and callable(hosted_terminal_callback)
+        and (hosted_images is None or (isinstance(hosted_images, list)
+                                       and all(isinstance(p, str) and p for p in hosted_images)))
         and set(hosted_task) == _HOSTED_TASK_FIELDS
         and all(isinstance(hosted_task.get(f), str) and hosted_task[f]
                 for f in _HOSTED_TASK_FIELDS - {"execution_generation"})
@@ -669,7 +672,8 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
 
 
 def _run_after_agent_ready(
-    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None
+    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None,
+    hosted_images=None,
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
@@ -700,7 +704,7 @@ def _run_after_agent_ready(
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        image_paths=hosted_images, terminal_callback=hosted_terminal_callback, turn_author=turn_author)
 
 
 _TRUNCATION_PARAMS = (
@@ -846,9 +850,11 @@ def _(rid, params: dict) -> dict:
     turn_author = raw_author.author if raw_author is not None else None
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
-    internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
+    hosted_images = params.get("_hosted_images")
+    internal_hosted_submit = (
+        hosted_task is not None or hosted_terminal_callback is not None or hosted_images is not None)
     err = (
-        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback)
+        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback, hosted_images)
         if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
     if err is not None:
         return err
@@ -958,7 +964,8 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author),
+            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
+            hosted_images),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread

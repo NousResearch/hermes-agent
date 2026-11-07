@@ -82,11 +82,13 @@ def test_jsonl_backup_refuses_a_session_over_max_export_messages(tmp_path, monke
                         lambda self, *a, **kw: scans.append(1) or real_search(self, *a, **kw))
 
     backup = tmp_path / "backup.jsonl"
-    _export(monkeypatch, backup, *selection)
-
     if disabled:
+        _export(monkeypatch, backup, *selection)
         assert backup.exists() and len(scans) == 1
         return
+    with pytest.raises(SystemExit) as refused:
+        _export(monkeypatch, backup, *selection)
+    assert refused.value.code == 1
     assert not backup.exists()
     out = capsys.readouterr().out
     assert SID in out and "max_export_messages" in out

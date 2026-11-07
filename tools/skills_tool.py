@@ -738,7 +738,7 @@ SKILL_VIEW_SCHEMA = {
         "properties": {
             "name": {
                 "type": "string",
-                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form '<plugin>:<skill>' (e.g. 'superpowers:writing-plans').",
+                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill'.",
             },
             "file_path": {
                 "type": "string",

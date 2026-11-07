@@ -16,7 +16,7 @@ A **desktop plugin** is a single ESM file that default-exports a `HermesPlugin`.
 It imports one module — `@hermes/plugin-sdk` — and gets everything: the app's
 live state, the gateway JSON-RPC door, a scoped REST/socket backend namespace,
 React Query, and the app's own UI kit so plugin UI looks native by default. No
-repo clone, no `npm run build`, no patching app source. Drop the file in
+repo clone, no `pnpm run build`, no patching app source. Drop the file in
 `$HERMES_HOME/desktop-plugins/<id>/plugin.js` and the app loads it within seconds
 and hot-reloads every save.
 
@@ -1072,8 +1072,25 @@ attribute is fully privileged. `loading="lazy"` and
 containment: guest content cannot reach the app, its storage, or the preload
 bridge.
 
+*Webapp (browser tab):* the page's Content-Security-Policy would also bind a
+`data:` document, so a `data:text/html` src is rendered through the gateway's
+guest shell (`/assets/webapp-guest.html`, its own policy, same opaque origin
+and sandbox tokens) instead of being navigated to directly. Scripts run as on
+native Desktop; messages the guest posts to `parent` arrive with
+`event.source === ref.current.contentWindow`, messages posted to that window
+reach the guest, and `onLoad` fires when the guest document has loaded (the
+shell announces that with one `{type: 'hermes-guest-loaded'}` message from the
+same window, so filter guest messages by type). Post
+to `parent`, not `top`: the shell sits between them. Changing `sandbox` after
+mount gives the Webapp a fresh frame (a new `ref.current`, the guest restarts
+with the new tokens, `onLoad` fires again), so read `ref.current` when you need
+the frame rather than keeping the first one. A direct frame on native Desktop
+keeps the element and its current document, and the new tokens apply from its
+next navigation.
+
 *Teardown:* it is a plain React element — unmounting your pane/page removes the
-frame and its realm; nothing is registered app-side.
+frame and its realm; nothing is registered app-side for it (the Webapp routes
+guest shells through one shared listener that holds frames only weakly).
 
 Migration for **rss-reader** (#115972): replace the stubbed `/preview` → 501 →
 `host.openWorkspace('rss-browser')` → empty `RssBrowserFrame` → `ctx.os.openExternal`
@@ -2033,7 +2050,7 @@ host.i18n.languageOptions(): LanguageOption[]   // bundled ∪ registered ∪ ba
 Where English has a **function** entry (``results: n => `${n} results` ``), a pack
 gives a plain string with POSITIONAL placeholders — `{0}`, `{1}` in argument
 order — and the merge wraps it into the same call shape. The full key set is
-published in `locales/_keys.desktop.json` (regenerate with `npm run i18n:keys`
+published in `locales/_keys.desktop.json` (regenerate with `pnpm run i18n:keys`
 in `apps/desktop` and commit it; CI pins the file to `en.ts`), which is what `hermes plugins
 validate` checks a pack's `<lang>.desktop.yaml` against.
 
@@ -2133,6 +2150,11 @@ pipeline as the standalone disk door (hot reload included):
 
 The `desktop/plugin.js` half is an ordinary disk plugin — same contract, same
 imports, same `ctx.rest('/…')` reaching the `plugin_api.py` sitting beside it.
+A `plugin.js` at the package root works too, as it does for a standalone
+install: the root `plugin.js` wins over `desktop/plugin.js`, and the whole
+package folder is copied as the desktop half (without `.git` and
+`__pycache__`). It must hold no symlinks and stay under 64 MB, or nothing is
+copied.
 Installing, sharing, or removing the feature is one folder: the app-root copy
 is refreshed when the source `plugin.js` changes (`hermes plugins update`, or
 **Rescan**) and removed when the package folder disappears. The copy is what

@@ -260,6 +260,39 @@ describe('submissionCore.submitPrompt — voice marker ownership', () => {
   })
 })
 
+describe('submissionCore.submitPrompt — clarify batch declaration', () => {
+  beforeEach(() => {
+    resetUiState()
+    patchUiState({ sid: 'sess-1' })
+  })
+
+  it('a prompt declares clarify_batch to an owner advertising it; a busy correction does not', async () => {
+    const request = vi.fn(async (_method: string, _params: Record<string, unknown>) => ({ status: 'accepted' }))
+    const gw = { clarifyBatch: true, isCanonical: true, request } as unknown as GatewayClient
+
+    submitPrompt('fix it', makeDeps(gw), true, undefined, {
+      behindTurn: true,
+      queueItem: { controlMethod: 'session.redirect', executionGeneration: 3, submissionId: 'c1', text: 'fix it' } as never
+    })
+    submitPrompt('ask me', makeDeps(gw))
+    await vi.waitFor(() => expect(request.mock.calls.map(([method]) => method)).toEqual(['session.redirect', 'prompt.submit']))
+
+    expect(request.mock.calls[0]?.[1]).not.toHaveProperty('clarify_batch')
+    expect(request.mock.calls[1]?.[1]).toMatchObject({ clarify_batch: true })
+  })
+
+  it('an owner without clarify-batch-v1 never sees the key (its closed submit params would refuse it)', async () => {
+    const request = vi.fn(async (_method: string, _params: Record<string, unknown>) => ({ status: 'accepted' }))
+    const gw = { clarifyBatch: false, isCanonical: true, request } as unknown as GatewayClient
+
+    submitPrompt('ask me', makeDeps(gw))
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+
+    expect(request.mock.calls[0]?.[0]).toBe('prompt.submit')
+    expect(request.mock.calls[0]?.[1]).not.toHaveProperty('clarify_batch')
+  })
+})
+
 describe('submissionCore.submitPrompt — typed voice stop on the shared gateway (TUI-26)', () => {
   beforeEach(() => {
     resetUiState()

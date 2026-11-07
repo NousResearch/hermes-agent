@@ -2,7 +2,7 @@
  * Tests for electron/connection-config.ts.
  *
  * Run with: node --test electron/connection-config.test.ts
- * (Wire into npm test:desktop:platforms in package.json.)
+ * (Wire into pnpm run test:desktop:platforms in package.json.)
  *
  * These are the pure helpers behind the remote-gateway connection settings:
  * URL normalization, WS-URL construction (token vs OAuth ticket), auth-mode
@@ -1280,6 +1280,18 @@ test('cookiesHaveSession handles non-arrays', () => {
   assert.equal(cookiesHaveSession(null), false)
   assert.equal(cookiesHaveSession(undefined), false)
   assert.equal(cookiesHaveSession([]), false)
+})
+
+test('a gateway Webapp signs in with cookies named for its gateway, and they count as a session', () => {
+  // Cookies are not scoped to a port, so the gateway's Webapp names its login cookies
+  // hermes_session_at_<gateway> and hermes_session_rt_<gateway>; the dashboard keeps the bare names.
+  const gateway = '0123456789abcdef'
+  assert.equal(cookiesHaveSession([{ name: `hermes_session_at_${gateway}`, value: 'x' }]), true)
+  assert.equal(cookiesHaveSession([{ name: `__Host-hermes_session_at_${gateway}`, value: 'x' }]), true)
+  assert.equal(cookiesHaveSession([{ name: `hermes_session_rt_${gateway}`, value: 'x' }]), false)
+  assert.equal(cookiesHaveLiveSession([{ name: `__Secure-hermes_session_rt_${gateway}`, value: 'x' }]), true)
+  assert.equal(cookiesHaveSession([{ name: 'hermes_session_at_other', value: 'x' }]), false)
+  assert.equal(cookiesHaveLiveSession([{ name: `hermes_webapp_signin_${gateway}`, value: 'x' }]), false)
 })
 
 // --- cookiesHaveLiveSession (AT or RT — the connectivity check) ---

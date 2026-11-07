@@ -283,9 +283,56 @@ describe('the reasoning-effort badge (#51833)', () => {
   })
 })
 
+describe('the Daybreak switch', () => {
+  const codexCatalog = {
+    providers: [
+      {
+        name: 'OpenAI Codex',
+        slug: 'openai-codex',
+        models: ['gpt-6-sol', 'gpt-6.1-sol'],
+        capabilities: {
+          'gpt-6-sol': { fast: true, reasoning: false, daybreak: true },
+          'gpt-6.1-sol': { fast: true, reasoning: false }
+        }
+      }
+    ]
+  }
+
+  const rowTexts = async () => {
+    await waitFor(() =>
+      expect(screen.queryAllByRole('menuitem').some(row => row.textContent?.includes('6.1'))).toBe(true)
+    )
+
+    return screen
+      .queryAllByRole('menuitem')
+      .map(row => row.textContent ?? '')
+      .filter(text => /gpt-6/i.test(text))
+  }
+
+  it('labels only the models the account catalog lists while the profile switch is on', async () => {
+    getGlobalModelOptions.mockResolvedValue(codexCatalog)
+    renderMenu({}, { daybreak: { on: true, set: vi.fn() } })
+
+    const rows = await rowTexts()
+
+    expect(rows.filter(text => text.includes('Daybreak'))).toHaveLength(1)
+    expect(rows.find(text => text.includes('Daybreak'))).toMatch(/gpt-6-sol/i)
+  })
+
+  it('never labels a row while the switch is off or on a surface without it', async () => {
+    getGlobalModelOptions.mockResolvedValue(codexCatalog)
+    renderMenu({}, { daybreak: { on: false, set: vi.fn() } })
+    expect((await rowTexts()).some(text => text.includes('Daybreak'))).toBe(false)
+    cleanup()
+
+    renderMenu()
+    expect((await rowTexts()).some(text => text.includes('Daybreak'))).toBe(false)
+  })
+})
+
 // A minimal controller — these tests are about the CATALOG's own behaviour
 // (what it lists, what it offers), not about what any host does with a pick.
-function renderMenu(current: Partial<ModelMenuController['current']> = {}) {
+function renderMenu(current: Partial<ModelMenuController['current']> = {}, host: Partial<ModelMenuController> = {}) {
   const select = vi.fn()
 
   const controller: ModelMenuController = {
@@ -293,7 +340,8 @@ function renderMenu(current: Partial<ModelMenuController['current']> = {}) {
     current: { effort: '', fast: false, model: '', provider: '', ...current },
     presetFor: () => ({}),
     select,
-    setOptions: vi.fn()
+    setOptions: vi.fn(),
+    ...host
   }
 
   const client: QueryClient = queryClient

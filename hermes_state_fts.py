@@ -536,13 +536,33 @@ class SessionFtsSetupMixin:
 
     # ── Chunked FTS rebuild engine (v23 opt-in optimize) ──
     # One blocking rebuild held the write lock ~16 min on a 25 GB DB, so the
-    # backfill runs in small chunks (each its own short transaction, resumable from
-    # fts_rebuild_progress, claimed by CAS). A greedy loop starved other writers:
-    # a pause of max(MIN_PAUSE, chunk cost x DUTY_FACTOR) caps the duty cycle
-    # cross-process, unlike any same-process activity stamp.
-    _FTS_REBUILD_CHUNK_ROWS = 500
-    _FTS_REBUILD_DUTY_FACTOR = 4.0      # sleep >= 4x chunk cost (≤20% duty)
-    _FTS_REBUILD_MIN_PAUSE = 0.2        # seconds — floor between chunks
+    # backfill and teardown run in chunks: each its own bounded transaction (WAL
+    # growth stays small), resumable from its marker (claimed by CAS), and a
+    # progress tick. They run back to back with no pause while no other process
+    # holds state.db: the foreground `hermes sessions optimize-storage` refuses to
+    # start under a holder (held_store_refusal, #110054), and a fixed 0.2 s pause
+    # after each few-ms chunk was >95% of the wall time. Chunk size (in ROWS, never
+    # an id span: a pruned store has id gaps) adapts toward TARGET seconds, since
+    # rows cost ~1000x more in trigram_data than in docsize. A side thread re-runs
+    # the holder scan every _HOLDER_SCAN_INTERVAL_S (`--force` past a holder, or a
+    # writer that opens the store mid-run): while one is there the duty cycle comes
+    # back — chunks near PACED_TARGET, a pause of max(MIN_PAUSE, cost x
+    # DUTY_FACTOR) after each — so that holder's writes are not starved.
+    _FTS_REBUILD_CHUNK_ROWS = 500       # first chunk of every phase and trash table; later ones adapt
+    _FTS_REBUILD_CHUNK_MIN_ROWS = 50
+    _FTS_REBUILD_CHUNK_MAX_ROWS = 100_000
+    _FTS_REBUILD_CHUNK_TARGET_S = 0.25
+    _FTS_REBUILD_PACED_TARGET_S = 0.05
+    _FTS_REBUILD_DUTY_FACTOR = 4.0      # paced: sleep >= 4x chunk cost (≤20% duty)
+    _FTS_REBUILD_MIN_PAUSE = 0.2        # paced: seconds — floor between chunks
+    _fts_chunk_rows = _FTS_REBUILD_CHUNK_ROWS  # rows per step; optimize's drive loop adapts it per instance
+
+    def _next_chunk_rows(self, rows: int, cost_s: float, target_s: float) -> int:
+        """Rows for the next chunk so it costs about *target_s*; at most doubles or halves per
+        step so one noisy chunk (a cold page, a checkpoint) can't swing it."""
+        scale = target_s / max(cost_s, 1e-4)
+        rows = int(rows * min(2.0, max(0.5, scale)))
+        return min(self._FTS_REBUILD_CHUNK_MAX_ROWS, max(self._FTS_REBUILD_CHUNK_MIN_ROWS, rows))
 
     # Demoted v22 FTS shadow tables awaiting teardown: DROP of a multi-GB vtable
     # blocks for minutes, so the v23 migration renames the orphaned shadow tables

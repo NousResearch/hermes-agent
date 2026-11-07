@@ -151,3 +151,28 @@ def _wait_for_log(home: Path, needle: str, timeout: int = 90) -> str:
         assert time.monotonic() < deadline, f'{needle!r} never logged: {_log(home)}'
         time.sleep(0.1)
     return _log(home)
+
+
+def _hold_against_writers(path: Path) -> int:
+    """Open ``path`` the way a scanner or a .NET reader does: read access, shared for reading only,
+    so every append fails with a sharing violation until the handle closes."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                     wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    generic_read, file_share_read, open_existing = 0x80000000, 0x1, 3
+    handle = kernel32.CreateFileW(str(path), generic_read, file_share_read, None, open_existing, 0, None)
+    assert handle not in (None, wintypes.HANDLE(-1).value), ctypes.get_last_error()
+    return handle
+
+
+def _release(handle: int) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    assert kernel32.CloseHandle(handle)

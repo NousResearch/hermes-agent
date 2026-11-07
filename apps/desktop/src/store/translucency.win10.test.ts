@@ -40,13 +40,14 @@ describe('Win10 translucency defaults (regression for #90824)', () => {
   it('resolves an untouched profile to the WINDOWS defaults, not the mac ones', () => {
     // Untouched profile: no persisted book, so the store falls through to the
     // platform defaults. The store's initial appearance is dark.
-    expect($translucency.get()).toEqual({ ...WINDOWS_DARK, mode: 'clear' })
+    // Clear does not inherit glass's tint: Win10 must not start faded.
+    expect($translucency.get()).toEqual({ ...WINDOWS_DARK, intensity: 0, mode: 'clear' })
 
     expect($translucency.get().material).not.toBe(defaultTranslucencyValues('dark', false).material)
 
     // Light appearance must resolve the windows light table too.
     setAppearance('light')
-    expect($translucency.get()).toEqual({ ...WINDOWS_LIGHT, mode: 'clear' })
+    expect($translucency.get()).toEqual({ ...WINDOWS_LIGHT, intensity: 0, mode: 'clear' })
     expect($translucency.get().material).not.toBe(defaultTranslucencyValues('light', false).material)
   })
 
@@ -62,6 +63,6 @@ describe('Win10 translucency defaults (regression for #90824)', () => {
     $translucencyBook.set({ mode: 'clear', base: {}, light: {}, dark: {} })
     setAppearance('dark')
 
-    expect($translucency.get()).toEqual({ ...WINDOWS_DARK, mode: 'clear' })
+    expect($translucency.get()).toEqual({ ...WINDOWS_DARK, intensity: 0, mode: 'clear' })
   })
 })

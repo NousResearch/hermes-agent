@@ -66,9 +66,7 @@ describe('background terminal input guidance (#108233)', () => {
 
 describe('terminal close-chord markers', () => {
   it('marks a user PTY as interactive so the close chord reaches the shell', () => {
-    const { container } = render(
-      <TerminalInstance active cwd="/tmp" id="terminal-1" onAddSelectionToChat={vi.fn()} />
-    )
+    const { container } = render(<TerminalInstance active cwd="/tmp" id="terminal-1" onAddSelectionToChat={vi.fn()} />)
 
     const terminal = container.firstElementChild
 

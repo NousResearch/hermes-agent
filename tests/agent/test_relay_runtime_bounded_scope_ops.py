@@ -143,7 +143,7 @@ def _fast_scope_timeout(monkeypatch):
     The production constant is generous (healthy ops are microseconds);
     tests only need 'bounded', not the specific bound.
     """
-    monkeypatch.setattr(relay_runtime, "_SCOPE_OP_TIMEOUT", 1.0)
+    monkeypatch.setattr(relay_runtime, "SCOPE_OP_TIMEOUT", 1.0)
 
 def _acquire(coordinator, runtime, session_id="sess-1", monkeypatch=None):
     """Acquire a conversation lease against the fake runtime."""

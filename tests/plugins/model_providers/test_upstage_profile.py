@@ -18,7 +18,7 @@ def upstage_profile():
     Upstage profile. Going through ``get_provider_profile`` keeps the test
     honest about the actual registration path (name + alias resolution).
     """
-    import model_tools  # noqa: F401
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("upstage")

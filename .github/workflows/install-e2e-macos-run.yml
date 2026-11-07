@@ -20,6 +20,10 @@ name: install-e2e macos leg
 on:
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       install-method:
         description: 'How OLD gets installed. Supported: installer-script, installer-script+desktop (curl | bash one-liner, optionally with --include-desktop) and desktop-installer@latest (the published Hermes-Setup.dmg).'
         required: true
@@ -62,7 +66,7 @@ on:
         type: string
         default: ''
       bundle-arch:
-        description: 'Architecture of the bundled pair: arm64 (macos-15) or x64 (macos-15-intel).'
+        description: 'Architecture of the bundled pair. Only arm64 (macos-15) runs: there is no Intel macOS leg.'
         required: false
         type: string
         default: arm64
@@ -75,6 +79,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # A stable run is on the default branch, so GITHUB_SHA is not the commit under test.
+  HERMES_TESTED_COMMIT: ${{ inputs.commit || github.sha }}
+
 jobs:
   # ---- arm 1: script installs (the shared OS-agnostic driver) --------------
   e2e:
@@ -86,13 +94,14 @@ jobs:
         || (contains(fromJSON('["installer-script+desktop", "hermes-desktop-app-update"]'), inputs.update-method) && inputs.tag-has-desktop))
     uses: ./.github/workflows/install-e2e-run.yml
     with:
+      commit: ${{ inputs.commit }}
       install-method: ${{ inputs.install-method }}
       update-method: ${{ inputs.update-method }}
       install-ref: ${{ inputs.install-ref }}
       update-ref: ${{ inputs.update-ref }}
       tag-has-desktop: ${{ inputs.tag-has-desktop }}
       leg-id: ${{ inputs.leg-id }}
-      runner: macos-latest
+      runner: blacksmith-6vcpu-macos-latest
       timeout-minutes: ${{ inputs.timeout-minutes }}
 
   # ---- arm 2: the published dmg, then Playwright drives the app ------------
@@ -103,15 +112,15 @@ jobs:
     if: >-
       inputs.install-method == 'desktop-installer@latest' && inputs.tag-has-desktop
       && contains(fromJSON('["open-app-update", "hermes-desktop-app-update", "hermes-update", "installer-script", "installer-script+desktop"]'), inputs.update-method)
-    runs-on: macos-latest
+    runs-on: blacksmith-12vcpu-macos-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     steps:
       # Full history: the driver bare-clones this checkout as the repo the
       # installer/updater talk to.
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.commit || github.sha }}
           fetch-depth: 0
 
       - name: Set up driver tools only
@@ -125,7 +134,7 @@ jobs:
 
       - name: Install locked chat driver dependencies
         shell: bash
-        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
+        run: pnpm install --frozen-lockfile --filter "{./tests-js}..." --prod --ignore-scripts
 
       - name: Start screen recording
         uses: ./.github/actions/e2e-screen-record
@@ -155,6 +164,7 @@ jobs:
           HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
 
       - name: Update ${{ inputs.install-ref }} -> ${{ inputs.update-ref }} (${{ inputs.update-method }})
+        id: update
         run: |
           set -euo pipefail
           tests/install/macos-desktop-e2e.sh --phase update \
@@ -163,6 +173,17 @@ jobs:
             --dmg-url '${{ inputs.dmg-url }}'
         env:
           HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+
+      # Only the classifier's receipt (tests/install/KNOWN_FAILURES.md) turns
+      # a failed update into a non-red known-failure cell in the report.
+      - name: Upload known-failure receipt
+        if: steps.update.outputs.known_failure != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: install-e2e-known-${{ steps.update.outputs.known_failure }}--${{ inputs.leg-id }}
+          path: ${{ runner.temp }}/e2e-logs/known-failure.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Stop screen recording
         if: always()
@@ -204,13 +225,25 @@ jobs:
   bundled-e2e:
     name: packaged bundle (open-app-update)
     if: inputs.install-method == 'packaged-app' && inputs.update-method == 'open-app-update'
-    runs-on: ${{ inputs.bundle-arch == 'x64' && 'macos-15-intel' || 'macos-15' }}
+    runs-on: macos-15
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     steps:
+      # The runner is Apple Silicon and no Intel macOS bundle ships, so an x64
+      # pair would only reach app launch (or Rosetta) before failing.
+      - name: Reject an unsupported bundle architecture
+        shell: bash
+        env:
+          BUNDLE_ARCH: ${{ inputs.bundle-arch }}
+        run: |
+          if [ "$BUNDLE_ARCH" != arm64 ]; then
+            echo "::error::unsupported macOS bundle architecture '$BUNDLE_ARCH': only arm64 bundles are built and tested"
+            exit 1
+          fi
+
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.commit || github.sha }}
 
       - name: Set up driver tools only
         uses: ./.github/actions/setup-pm
@@ -223,7 +256,7 @@ jobs:
 
       - name: Install locked chat driver dependencies
         shell: bash
-        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
+        run: pnpm install --frozen-lockfile --filter "{./tests-js}..." --prod --ignore-scripts
 
       - name: Start screen recording
         uses: ./.github/actions/e2e-screen-record

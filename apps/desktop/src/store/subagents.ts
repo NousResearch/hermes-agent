@@ -336,8 +336,8 @@ export function clearSessionSubagents(sid: string) {
  * from the display while background subagents that outlived the spawning turn
  * remain visible (and still accept late progress/complete events).
  *
- * Distinct from `clearSessionSubagents` (used by the Stop action, which
- * genuinely cancels running subagents and so should drop them all) and from
+ * Also what the Stop action uses: Stop ends the turn, not the background
+ * subagents it spawned. Distinct from `clearSessionSubagents` (drops every row) and from
  * `pruneDelegateFallbackSubagents` (which filters by id prefix to remove
  * placeholder rows once the real native event arrives).
  */
@@ -399,7 +399,15 @@ export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMi
 
 // Statuses that end a subagent run. The store's asStatus normalizes the last
 // three to failed/interrupted, so the event path treats them as terminal too.
-const SUBAGENT_TERMINAL_STATUSES = new Set(['completed', 'failed', 'interrupted', 'timeout', 'error', 'cancelled', 'canceled'])
+const SUBAGENT_TERMINAL_STATUSES = new Set([
+  'completed',
+  'failed',
+  'interrupted',
+  'timeout',
+  'error',
+  'cancelled',
+  'canceled'
+])
 
 /** True only for a `subagent.complete` carrying a status that ends the run —
  *  the one event the interrupted-session guard in the message-stream must let

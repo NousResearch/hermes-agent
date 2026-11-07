@@ -25,11 +25,10 @@ _STT_SUMMARY_DEFAULT = ("Local Whisper", "faster_whisper", "run 'hermes tools' �
 
 # Browser "missing" hint keyed by the configured provider; anything else gets the generic hint.
 _BROWSER_MISSING_HINTS = {
-    "Browserbase": "npm install -g agent-browser and set BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID",
-    "Browser Use": "npm install -g agent-browser and set BROWSER_USE_API_KEY",
-    "Camofox": "CAMOFOX_URL",
-    "Local browser": "hermes pm install agent-browser"}
-_BROWSER_MISSING_DEFAULT = "npm install -g agent-browser, set CAMOFOX_URL, or configure Browser Use or Browserbase"
+    "Browserbase": "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID",
+    "Browser Use": "BROWSER_USE_API_KEY",
+    "Local browser": "Chromium: run 'hermes pm install chromium'"}
+_BROWSER_MISSING_DEFAULT = "Chromium (run 'hermes pm install chromium'), or configure Browser Use or Browserbase"
 _WEB_MISSING = ("EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, TAVILY_API_KEY, "
                 "PERPLEXITY_API_KEY, KEENABLE_API_KEY, or SEARXNG_URL")
 
@@ -64,7 +63,7 @@ def _voice_provider_status(kind: str, provider: str, rows: dict, default: tuple)
     return (f"{kind} ({label} — not installed)", False, hint)
 
 
-def _first_available_plugin_provider(registry: str, skip: str = None):
+def _first_available_plugin_provider(registry: str, skip: str | None = None):
     """display_name of the first plugin-registered provider in ``agent.<registry>`` that reports
     available (fail-soft: any error means none), skipping ``skip``."""
     try:
@@ -112,7 +111,7 @@ def _web_row(config, feats):
 
 
 def _browser_row(config, feats):
-    # Browser tools (local Chromium, Camofox, Browserbase, Browser Use, or Firecrawl)
+    # Browser tools (local Chromium, Lightpanda, Browserbase, Browser Use, or Firecrawl)
     hint = _BROWSER_MISSING_HINTS.get(feats.browser.current_provider, _BROWSER_MISSING_DEFAULT)
     return _managed_or_provider_row(feats.browser, "Browser Automation", "Nous Browser Use", hint)
 
@@ -167,22 +166,6 @@ def _modal_row(config, feats):
     return None
 
 
-def _home_assistant_row(config, feats):
-    return ("Smart Home (Home Assistant)", True, None) if _setup.get_env_value("HASS_TOKEN") else None
-
-
-def _spotify_row(config, feats):
-    # OAuth via hermes auth spotify — check auth.json, not env vars
-    try:
-        from hermes_cli.auth import get_provider_auth_state
-        state = get_provider_auth_state("spotify") or {}
-        if state.get("access_token") or state.get("refresh_token"):
-            return ("Spotify (PKCE OAuth)", True, None)
-    except Exception:
-        pass
-    return None
-
-
 def _skills_hub_row(config, feats):
     ok = bool(_setup.get_env_value("GITHUB_TOKEN"))
     return ("Skills Hub (GitHub)", ok, None if ok else "GITHUB_TOKEN")
@@ -196,7 +179,7 @@ def _always_on_rows(config, feats):
 
 _TOOL_ROW_BUILDERS = (
     _vision_row, _web_row, _browser_row, _image_gen_row, _video_gen_row, _tts_row, _stt_row,
-    _modal_row, _home_assistant_row, _spotify_row, _skills_hub_row, _always_on_rows)
+    _modal_row, _skills_hub_row, _always_on_rows)
 
 
 def _print_cmd_rows(rows):
@@ -271,4 +254,4 @@ def _print_setup_summary(config: dict, hermes_home):
     print()
 
 
-import hermes_cli.setup as _setup  # noqa: E402  (bottom: hermes_cli.setup imports this module)
+import hermes_cli.setup as _setup

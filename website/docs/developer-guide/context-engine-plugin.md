@@ -315,6 +315,13 @@ def clone_for_agent(self):
 
 `on_session_reset()` is called on `/new` or `/reset` to clear per-session state without a full shutdown.
 
+Manual `/compress` on every surface (classic CLI, TUI, Desktop, messaging, ACP) calls your
+engine's `compress()` with `force=True` and the optional focus topic, never the built-in
+compressor. Once the compacted history is committed, the engine receives
+`on_session_start(session_id, boundary_reason="compression", old_session_id=...)` (the same id
+twice for in-place compaction). A session with no live agent may get a fresh engine instance
+for that compression, which then also receives `on_session_end()`.
+
 ## Configuration
 
 Users select your engine via `hermes plugins` → Provider Plugins → Context Engine, or by editing `config.yaml`:

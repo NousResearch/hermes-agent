@@ -91,7 +91,7 @@ def test_find_delete_over_own_venv_is_detected(fake_runtime):
     # the interpreter itself, and a filtered one still deletes protected files.
     assert rsp.command_deletes_runtime(f"find '{fake_runtime['venv']}' -delete") is not None
     assert rsp.command_deletes_runtime(f"find '{fake_runtime['venv']}' -name __pycache__ -delete") is not None
-    assert rsp.command_deletes_runtime(f"find /tmp -name __pycache__ -delete") is None
+    assert rsp.command_deletes_runtime("find /tmp -name __pycache__ -delete") is None
 
 
 def test_rm_of_unrelated_venv_is_allowed(fake_runtime, tmp_path):

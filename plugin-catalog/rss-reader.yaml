@@ -9,6 +9,8 @@ category: desktop
 docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/rss-reader
 version: "1.1.0"
 image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/30d6dc6311bfce951c10ed120c878dc3f28a7ced/public/rss-reader/docs/hero.png
+screenshots:
+- https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/30d6dc6311bfce951c10ed120c878dc3f28a7ced/public/rss-reader/docs/screenshot.png
 platforms: []
 capabilities:
   provides_tools: 

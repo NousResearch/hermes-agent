@@ -1,0 +1,18 @@
+name: found
+title: FOUND
+repo: https://github.com/Utkarshkapil/found-hermes-plugin
+sha: 525b2bbfd02f5703253b260d2e1ac3af9c370e00
+version: "1.0.1"
+description: "FOUND, the AI SDR for LinkedIn and email, through FOUND's hosted MCP server (Streamable HTTP at https://app.foundtofind.com/mcp, OAuth sign-in, no keys in config): warm leads found from buying signals with the reason for each, pipeline and campaign numbers, account research, new companies and the right contact at a company, work emails, drafted messages, lists, and paused campaigns with their sequences. Bundles the found-outreach workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to FOUND's hosted server (app.foundtofind.com) and acts on the user's FOUND account; the tool set is served by that server at runtime and is not covered by the pinned sha. Sign-in runs the pinned mcp-remote@0.1.49 through npx (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth. Some tools spend FOUND credits (FOUND states they quote the price first and spend only on a confirming second call), and FOUND states campaigns created from Hermes start paused; the package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: FOUND
+tier: community
+category: tools
+docs_url: https://github.com/Utkarshkapil/found-hermes-plugin#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

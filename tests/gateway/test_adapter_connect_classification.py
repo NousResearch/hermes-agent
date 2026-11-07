@@ -33,19 +33,19 @@ from gateway.run import (
 # ── Telegram: type-based auth classification ───────────────────────────
 
 
-class InvalidToken(Exception):  # noqa: N818 — name-matched stand-in
+class InvalidToken(Exception):
     pass
 
 
-class Forbidden(Exception):  # noqa: N818
+class Forbidden(Exception):
     pass
 
 
-class NetworkError(Exception):  # noqa: N818
+class NetworkError(Exception):
     pass
 
 
-class TimedOut(Exception):  # noqa: N818
+class TimedOut(Exception):
     pass
 
 

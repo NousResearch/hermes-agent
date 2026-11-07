@@ -70,6 +70,34 @@ def test_fallback_candidate_call_uses_entry_timeout():
     assert seen.get("timeout") == 240.0
 
 
+def test_entry_timeout_equal_to_primary_remains_explicit():
+    """Equality must not make an explicit entry timeout look implicit."""
+    seen = {}
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            seen.update(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+            )
+
+    fb_client = SimpleNamespace(
+        base_url="https://example.invalid/v1",
+        chat=SimpleNamespace(completions=_FakeCompletions()),
+    )
+    chain = [{"provider": "custom", "timeout": 60}]
+    with _patch_task_config(chain):
+        _call_fallback_candidate_sync(
+            fb_client, "model", "fallback_chain[0](custom)",
+            task="compression", messages=[{"role": "user", "content": "hi"}],
+            temperature=None, max_tokens=None, tools=None,
+            effective_timeout=60.0,
+            effective_extra_body={}, reasoning_config=None,
+        )
+
+    assert seen.get("timeout") == 60.0
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -128,5 +156,4 @@ def test_non_timeout_transient_errors_keep_flat_cooldown():
 
     # And it does not advance the timeout streak.
     assert getattr(c, "_consecutive_timeout_failures", 0) == 0
-
 

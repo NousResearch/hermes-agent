@@ -59,7 +59,9 @@ CLI `show --json` and `kanban_show` expose the persisted contract.
 The shared `complete_task` boundary covers worker tools, CLI, review approval and
 dashboard completion. It reads classic branch protection and active ruleset
 required contexts, paginates exact-head check runs and legacy statuses, then
-re-reads the PR head/base. Optional failed/skipped telemetry does not veto accepted
+re-reads the PR head/base. A context pinned to a GitHub App also accepts a commit
+status that app created (its `<slug>[bot]` user), never anyone else's. Optional
+failed/skipped telemetry does not veto accepted
 required checks. Missing, pending, failed, cancelled, timed-out, stale, skipped or
 neutral **required** evidence cannot complete the card. Neither can zero-run
 acceptance, unreadable policy or GitHub API failures. A repository without required

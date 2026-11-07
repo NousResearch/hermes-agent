@@ -152,12 +152,16 @@ def collect_acceptance(contract: str, published_pr: str | None,
         statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100",
                                                        paginate=True, profile_home=profile_home) for s in page]
         outcomes = []
+        app_ids: dict[str, int] = {}
         for context, app_id in sorted(required, key=str):
-            matching = [r for r in runs if r["name"] == context and
-                        (app_id in (None, -1) or r["app"]["id"] == app_id)]
-            # A legacy status can satisfy an unpinned context, but never a check pinned to an app.
-            legacy = [s for s in statuses if s["context"] == context] if app_id in (None, -1) else []
-            selected = matching + ([max(legacy, key=lambda s: s["id"])] if legacy else [])
+            pinned = app_id not in (None, -1)
+            matching = [r for r in runs if r["name"] == context and (not pinned or r["app"]["id"] == app_id)]
+            legacy = [s for s in statuses if s["context"] == context]
+            latest = max(legacy, key=lambda s: s["id"]) if legacy else None
+            # A check pinned to an app accepts that app's own commit status, as GitHub does.
+            if latest and pinned and _status_app_id(latest, app_ids, profile_home) != app_id:
+                latest = None
+            selected = matching + ([latest] if latest else [])
             if not selected:
                 outcomes.append("missing")
                 receipt["checks"].append({"name": context, "classification": "missing", "head_sha": sha})
@@ -188,6 +192,19 @@ def collect_acceptance(contract: str, published_pr: str | None,
         # Never persist gh stderr (credentials/host details); the failed phase is actionable.
         receipt.update(classification="infra", detail="GitHub acceptance evidence unavailable or incomplete; check gh authentication/API access and retry.")
         return receipt
+
+
+def _status_app_id(status: dict, app_ids: dict[str, int], profile_home: str | None) -> int | None:
+    """Id of the GitHub App that created a commit status, or None for a user.
+    An app posts as the bot ``<slug>[bot]``; ``apps/<slug>`` gives its id."""
+    creator = status.get("creator") or {}
+    login = creator.get("login") or ""
+    if creator.get("type") != "Bot" or not login.endswith("[bot]"):
+        return None
+    slug = login.removesuffix("[bot]")
+    if slug not in app_ids:
+        app_ids[slug] = _api(f"apps/{quote(slug, safe='')}", profile_home=profile_home)["id"]
+    return app_ids[slug]
 
 
 def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:

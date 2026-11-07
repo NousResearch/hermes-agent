@@ -102,5 +102,17 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
     memberRollbackFailed: (connection, bot) =>
       `Miembros no guardados, y el cambio ya hecho para ${bot} en ${connection} no se pudo deshacer: puede que ${connection} todavía lo tenga. La sala muestra lo último que informó ${connection}; vuelve a conectarlo y revisa los miembros.`,
     selectionElsewhere: connection => `Todos estos bots están en ${connection}. Añade un bot de esta conexión o cambia a ${connection} para crear un grupo con sus bots.`
+  },
+  cs: {
+    desktopDriven:
+      'Běží, dokud je tento Desktop otevřený: boti na ostatních počítačích odpovídají přes své vlastní brány a tento Desktop přenáší zprávy mezi nimi.',
+    groupsOffline: (connection, bot) => `${connection} je offline — pro změnu skupin bota ${bot} se znovu připojte.`,
+    memberOffline: (connection, bot) => `${connection} je offline — pro odebrání bota ${bot} se znovu připojte.`,
+    memberSaveFailed: (connection, bot) =>
+      `Členové nebyli uloženi: ${connection} nepřevzal změnu pro bota ${bot}. Nic se nezměnilo; zkuste to znovu, až bude dostupný.`,
+    memberRollbackFailed: (connection, bot) =>
+      `Členové nebyli uloženi a již provedenou změnu pro bota ${bot} na ${connection} se nepodařilo vrátit: ${connection} ji může stále mít. Místnost zobrazuje poslední stav, který ${connection} nahlásil; připojte jej znovu a zkontrolujte členy.`,
+    selectionElsewhere: connection =>
+      `Všichni tito boti jsou na ${connection}. Přidejte bota z tohoto připojení, nebo přejděte na ${connection} a vytvořte skupinu z jeho botů.`
   }
 } satisfies Record<string, CrossGatewayGroupMessages>

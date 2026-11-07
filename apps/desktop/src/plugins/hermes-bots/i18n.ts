@@ -1798,7 +1798,8 @@ export const BOTS_LOCALES: PluginLocaleBundles = {
   ru: { canonical: CANONICAL_GROUP_LOCALES.ru, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.ru },
   fr: { canonical: CANONICAL_GROUP_LOCALES.fr, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.fr },
   de: { canonical: CANONICAL_GROUP_LOCALES.de, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.de },
-  es: { canonical: CANONICAL_GROUP_LOCALES.es, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.es }
+  es: { canonical: CANONICAL_GROUP_LOCALES.es, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.es },
+  cs: { canonical: CANONICAL_GROUP_LOCALES.cs, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.cs }
 }
 
 export type BotsText = Bound<BotsMessages>

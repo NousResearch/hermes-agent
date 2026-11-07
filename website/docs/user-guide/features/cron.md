@@ -1117,6 +1117,24 @@ Before this rule, a pinned job whose provider failed could run on the first work
 
 A single rate-limited key therefore does not fail a run that has another credential for the same provider, and unpinned jobs still survive a provider outage when a chain is configured.
 
+### Optional subscription-capacity preflight (cron only)
+
+For **new unpinned cron runs**, opt in to choosing a fallback *before* inference when the primary Anthropic or `openai-codex` subscription's binding usage window is near exhaustion:
+
+```yaml
+cron:
+  capacity_preflight:
+    enabled: true              # default: false
+    threshold_percent: 95      # used percentage, (0, 100]; default: 95
+fallback_providers:
+  - provider: openai-codex
+    model: gpt-6-sol
+```
+
+Set these values with `hermes config set cron.capacity_preflight.enabled true` and `hermes config set cron.capacity_preflight.threshold_percent 95`. This does not change interactive/gateway sessions, existing agents, explicitly pinned jobs, or global model configuration. The existing runtime fallback chain still handles provider errors. It selects a **provider and model together** from the configured chain, only if the candidate has known healthy session **and** weekly account windows. Anthropic Opus/Sonnet weekly windows apply only to the matching model family, not the whole account. Missing, stale, partial, nonnumeric, or failed usage is **unknown**, never evidence that a candidate is healthy; if no candidate qualifies the original route runs. A credential pool also leaves the original route in place, since the eventual account selected by the agent is not known at this point.
+
+The read-only upstream account-usage API has a two-second per-provider preflight deadline and attempts (including failures) are cached per profile, credential fingerprint, provider, and endpoint for two minutes. No `hermes usage` subprocess or model request is made. This is a conservative routing hint, not a quota guarantee; usage can change after the snapshot. It does not proactively reroute gateway conversations, whose cached session context and routing continuity need separate validation.
+
 ## Run failures (`last_error`)
 
 A failed agent run records a concise `last_error`, visible in job listings and `/cron list`

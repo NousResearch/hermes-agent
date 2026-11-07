@@ -34,6 +34,7 @@ describe('setSessionTodos finished-list auto-clear', () => {
   })
 
   it('drops the list shortly after every item completes', () => {
+    setSessionTodos('s1', [todo('a', 'in_progress'), todo('b', 'pending')])
     setSessionTodos('s1', [todo('a', 'completed'), todo('b', 'cancelled')])
 
     expect($todosBySession.get().s1).toHaveLength(2)
@@ -82,6 +83,7 @@ describe('clearActiveSessionTodos (turn-end cleanup)', () => {
   })
 
   it('leaves a finished list to its normal linger instead of clearing immediately', () => {
+    setSessionTodos('s1', [todo('a', 'in_progress')])
     setSessionTodos('s1', [todo('a', 'completed')])
 
     clearActiveSessionTodos('s1')

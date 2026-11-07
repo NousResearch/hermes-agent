@@ -9,6 +9,7 @@ import pytest
 
 import hermes_yaml as yaml
 from tests.gateway.test_surface_admission import _authority
+from tests.waiting import async_wait_until
 
 _PLUGIN = '''
 import threading
@@ -254,7 +255,6 @@ async def test_plugin_frontend_gets_schema_checked_json_from_its_own_task_with_i
     the plugin's code runs in the plugin host and the same calls answer the same way."""
     import contextvars
     import sys
-    import time
     from gateway import run_api
     from gateway.session_controls import AuthorityConnection
     from hermes_cli import plugins
@@ -289,12 +289,6 @@ async def test_plugin_frontend_gets_schema_checked_json_from_its_own_task_with_i
             {'id': 1, 'method': 'plugin.chart-demo.chart.write', 'params': params}), 20)
         return reply.get('result', reply.get('error'))
 
-    async def until(check):
-        deadline = time.monotonic() + 20
-        while not check() and time.monotonic() < deadline:
-            await asyncio.sleep(0.02)
-        return check()
-
     start = threading.Thread.start
     try:
         assert (await write(text='no session'))['data']['reason'] == 'plugin_rpc_failed'
@@ -309,15 +303,17 @@ async def test_plugin_frontend_gets_schema_checked_json_from_its_own_task_with_i
             monkeypatch.setattr(threading.Thread, 'start', start)
         jobs = [(await write(session_id='s', text=f'revenue by month, key {secret}'))['job'] for _ in range(4)]
         # All four answered while their model calls are still held: none waits on the model.
-        assert await until(lambda: len(model.requests) == 4) and not model.release.is_set()
+        await async_wait_until(lambda: len(model.requests) == 4, timeout=20, what='the four held model calls')
+        assert not model.release.is_set()
         assert (await write(session_id='s', text='fifth'))['data']['reason'] == 'plugin_rpc_failed'
         assert written == []
         model.release.set()
-        assert await until(lambda: len(written) == 4), written
+        await async_wait_until(lambda: len(written) == 4, timeout=20, what='four chart.written events')
         assert sorted(event['job'] for event in written) == sorted(jobs)
         assert all(event['chart'] == {'kind': 'line'} for event in written), written
         sixth = (await write(session_id='s', text='sixth'))['job']
-        assert await until(lambda: len(written) == 5) and written[-1] == {'job': sixth, 'chart': {'kind': 'line'}}
+        await async_wait_until(lambda: len(written) == 5, timeout=20, what='the sixth chart.written event')
+        assert written[-1] == {'job': sixth, 'chart': {'kind': 'line'}}
         hosted = not any('chart' in name for name in sys.modules)
     finally:
         monkeypatch.setattr(threading.Thread, 'start', start)

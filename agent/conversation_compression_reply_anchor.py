@@ -186,10 +186,12 @@ def _reply_insertion_index(followers: list, compressed: list, *, reused_ids: fro
 
     ``followers`` are the ORIGINAL rows after the reply (the next user turn, its
     tool rounds, ...). The slot is just before the surviving row that originally
-    followed it: the LAST match in ``compressed`` on role + normalized text
-    (a first-match scan binds to an older identical "ok"/"thanks" twin and
-    resurfaces the reply mid-history; raw ``==`` misses a follower the engine
-    re-rendered from a parts list). When no follower survives but the original
+    followed it. The first matching text follower uses its LAST match in
+    ``compressed`` (a first-match scan binds to an older identical "ok"/"thanks"
+    twin and resurfaces the reply
+    mid-history; raw ``==`` misses a follower the engine re-rendered from a
+    parts list), but an unambiguous tool or durable-row identity clamps that
+    tentative slot to its earliest surviving position. When no follower survives but the original
     had a real user turn after the reply, the reply must still never land after
     a trailing REAL user row — that is the turn the loop is about to answer, and
     an ``assistant`` tail would present the old reply as its answer — so it goes
@@ -199,27 +201,40 @@ def _reply_insertion_index(followers: list, compressed: list, *, reused_ids: fro
     (idle/maintenance compaction right after the reply) → the reply is genuinely
     the tail.
 
-    Tool rounds whose ids the transcript reuses (``reused_ids``) are not usable
-    anchors: the id would bind to whichever round happens to sit last and put the
-    reply mid-chain. Such followers are passed over in favour of the remaining
-    real followers; when none locates the slot and a reused-id round survives in
-    ``compressed``, the placement is unknown and ``None`` is returned (skip).
+    Tool rounds whose pairing ids the transcript reuses (``reused_ids``) need a
+    matching durable identity to serve as anchors: the pairing id alone would
+    bind to the wrong round and put the reply mid-chain. When no follower
+    locates the slot and a reused-id round survives in ``compressed``, the
+    placement is unknown and ``None`` is returned (skip).
     """
     from agent.conversation_compression import _is_real_user_message, _message_text
 
     def _row_ids(message: dict) -> frozenset:
         return _tool_call_ids(message) | frozenset(filter(None, (_tool_result_id(message),)))
 
+    def _stable_row_identities(message: dict) -> dict[str, int | str]:
+        identities = {}
+        row_id = message.get("_row_id")
+        if isinstance(row_id, int) and not isinstance(row_id, bool) and row_id > 0:
+            identities["row"] = row_id
+        message_uid = message.get("message_uid")
+        if isinstance(message_uid, str) and message_uid:
+            identities["uid"] = message_uid
+        return identities
+
     followers = [f for f in followers if isinstance(f, dict)]
     ambiguous = False
+    text_match = None
+    earliest_identified_match = None
     for follower in followers:
         follower_role, follower_text = follower.get("role"), _message_text(follower).strip()
         follower_call_ids = _tool_call_ids(follower)
-        if _row_ids(follower) & reused_ids:
+        follower_identities = _stable_row_identities(follower)
+        follower_reuses_ids = bool(_row_ids(follower) & reused_ids)
+        if follower_reuses_ids:
             ambiguous = ambiguous or any(
                 isinstance(m, dict) and _row_ids(m) & reused_ids for m in compressed
             )
-            continue
         for pos in range(len(compressed) - 1, -1, -1):
             message = compressed[pos]
             if not isinstance(message, dict) or message.get("role") != follower_role:
@@ -229,16 +244,42 @@ def _reply_insertion_index(followers: list, compressed: list, *, reused_ids: fro
             # such row sits LAST (mid-turn compaction keeps the whole current tool chain).
             # The call ids are unique per round; match on those instead.
             message_call_ids = _tool_call_ids(message)
+            message_identities = _stable_row_identities(message)
+            # Engines may strip either field. Compare every shared identity so a
+            # matching row id cannot hide a conflicting uid (or vice versa).
+            # Without shared fields, retain the tool-id/text fallback.
+            shared_keys = follower_identities.keys() & message_identities.keys()
+            if shared_keys:
+                if all(follower_identities[key] == message_identities[key] for key in shared_keys):
+                    earliest_identified_match = (
+                        pos if earliest_identified_match is None else min(earliest_identified_match, pos)
+                    )
+                continue
+            # Reused pairing ids cannot locate a round, but must not suppress
+            # a durable identity match above. One-sided metadata is insufficient.
+            if follower_reuses_ids:
+                continue
             if follower_call_ids or message_call_ids:
                 if message_call_ids == follower_call_ids:
-                    return pos
+                    earliest_identified_match = (
+                        pos if earliest_identified_match is None else min(earliest_identified_match, pos)
+                    )
                 continue
             if follower_role == "tool" and (_tool_result_id(follower) or _tool_result_id(message)):
                 if _tool_result_id(message) == _tool_result_id(follower):
-                    return pos
+                    earliest_identified_match = (
+                        pos if earliest_identified_match is None else min(earliest_identified_match, pos)
+                    )
                 continue
-            if _same_visible_content(message, follower, follower_text):
-                return pos
+            # A text twin without metadata must not hide an earlier identity match.
+            if text_match is None and _same_visible_content(message, follower, follower_text):
+                text_match = pos
+    if earliest_identified_match is not None:
+        return min(text_match, earliest_identified_match) if text_match is not None else earliest_identified_match
+    if text_match is not None:
+        return text_match
+    # Reused tool ids cannot invalidate a slot established by another follower;
+    # they only prevent guessing a slot when no reliable follower survived.
     if ambiguous:
         return None
     if (

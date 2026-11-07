@@ -60,3 +60,8 @@ def test_a_published_move_renames_the_file_in_the_new_release(tmp_path):
                               moves={"gateway/run_background.py": "gateway/run_turn_background.py"})
     status = I.git("diff", "--name-status", "-M", f"{target}~1", target, cwd=origin)
     assert "R100\tgateway/run_background.py\tgateway/run_turn_background.py" in status.splitlines()
+
+
+def test_a_scenario_generation_wins_over_the_suite_override(monkeypatch):
+    monkeypatch.setenv("HERMES_E2E_UPGRADE_BASE", "by-path")
+    assert I.updater_generation(I.upgrade_base("handoff").ref) == "handoff"

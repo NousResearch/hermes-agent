@@ -91,12 +91,13 @@ class UpgradeBase:
 def upgrade_base(generation: str | None = None) -> UpgradeBase | None:
     """The start version of the upgrade suites; None when no release is reachable (a tagless checkout).
 
-    ``HERMES_E2E_UPGRADE_BASE`` picks it: a tag, a commit, or an updater generation name
-    (``by-path``, ``handoff``, ``pre-handoff``: the newest release that ships that updater). Unset, it
-    is ``generation``'s newest release when a scenario only exists for that updater, else N-1, the
-    newest release before HEAD. ``HERMES_E2E_N1_REF`` is an older name for the same knob.
+    ``generation`` is for a scenario that only exists for one updater (``by-path``, ``handoff``,
+    ``pre-handoff``): the newest release that ships it. Otherwise ``HERMES_E2E_UPGRADE_BASE`` picks
+    it: a tag, a commit, or a generation name. Unset, it is N-1, the newest release before HEAD.
+    ``HERMES_E2E_N1_REF`` is an older name for the same variable.
     """
-    chosen = os.environ.get("HERMES_E2E_UPGRADE_BASE") or os.environ.get("HERMES_E2E_N1_REF") or generation or ""
+    override = os.environ.get("HERMES_E2E_UPGRADE_BASE") or os.environ.get("HERMES_E2E_N1_REF") or ""
+    chosen = generation or override
     generations = {name for name, _ in UPDATER_GENERATIONS}
     if chosen and chosen not in generations:
         return UpgradeBase(chosen, git("rev-parse", f"{chosen}^{{commit}}", cwd=H.WORKTREE))
@@ -104,8 +105,8 @@ def upgrade_base(generation: str | None = None) -> UpgradeBase | None:
     if chosen:
         tags = [t for t in tags if updater_generation(t) == chosen]
     if not tags:
-        if chosen:
-            raise AssertionError(f"HERMES_E2E_UPGRADE_BASE={chosen}: no release before HEAD ships that updater")
+        if chosen and release_tags("HEAD~1"):
+            raise AssertionError(f"{chosen}: no release before HEAD ships that updater")
         return None
     return UpgradeBase(tags[0], git("rev-parse", f"{tags[0]}^{{commit}}", cwd=H.WORKTREE))
 

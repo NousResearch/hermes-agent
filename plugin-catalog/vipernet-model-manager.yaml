@@ -1,0 +1,97 @@
+# Entrada de catalogo do Vipernet Model Manager.
+#
+# Esta copia vive no repositorio do plugin para que o que se publica seja
+# versionado com o codigo. O ficheiro que se submete no PR e' este, tal como
+# esta' no commit de topo do `main`.
+#
+# DECISAO DO DONO (2026-11-07): o catalogo publico e' servido pelo repositorio
+# PUBLICO no GitHub (regra 2: URL https que qualquer pessoa clone). O Gitea
+# interno continua a ser onde o trabalho acontece; o `main` de la' e' empurrado
+# por push mirror para o `main` do GitHub, preservando o sha.
+#
+# Esquema lido de `hermes_cli/plugin_catalog.py` (dataclass PluginCatalogEntry,
+# 19 campos): o loader recusa `repo` sem https://, `sha` que nao seja 40 hex,
+# `tier` fora de official/verified/community e `category` fora de
+# desktop/memory/platform/web/tools/voice/automation/models/general. Verificado
+# com o parser do proprio core (`hermes_yaml`) — 19 campos, zero chaves
+# descartadas em silencio.
+#
+# ---------------------------------------------------------------------------
+# ESTADO MEDIDO 2026-11-07 23:01 WET
+# ---------------------------------------------------------------------------
+# Pin: commit que junta duas coisas sobre a 3.47.6 do PR #14: as tres capturas
+#   do painel em `assets/` (com a seccao de capturas nos dois README) e a
+#   correccao dos documentos de catalogo que ainda davam lacunas ja fechadas.
+#   Codigo identico ao pin anterior: `63c2e4be..54aef209` sao imagens, prosa e
+#   esta entrada — nenhum `.py` no diff.
+#
+# Regra 2 (repo clonavel por https, anonimamente): OK no GitHub.
+#   Provado por clone anonimo, nao pelo auto-relato do espelho:
+#     env -i HOME=<vazio> GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone
+#       https://github.com/ptv1p3r/vipernet-model-manager  -> rc 0
+#   e o `main` do GitHub estava neste sha. Entrypoints no pin: `plugin.yaml`,
+#   `__init__.py`, `dashboard/manifest.json`, `README.md`.
+#
+# Regra 9 (so superficies publicas): OK, sem excecao. `seams.py` usa
+#   `agent.credential_pool.load_pool` desde a 3.47.0; `hermes plugins validate`
+#   responde `no core override` e nao assinala nenhum import nem chamada privada.
+#
+# Pagina de documentacao: e' construida a partir do `README.md` DESTE commit
+#   (`readme: true`), e a seccao «Public catalogue readiness» ja' diz o estado
+#   medido — nao ha ressalva pendente.
+#
+# `screenshots:` — tres capturas do painel na versao pinada, tiradas de uma
+#   instalacao viva (v3.47.6, separador Model Manager), guardadas em `assets/`
+#   e servidas por `raw.githubusercontent.com` no sha do pin. O nome completo do
+#   dono sai substituido pelo handle publico (`proldan`) nas imagens, e a
+#   substituicao esta declarada nos dois README.
+#
+# NOTA DE CONSTRUCAO: o `sha` do campo nao pode conter o proprio commit (um
+#   ficheiro nao se cita a si mesmo). O commit que acrescenta esta versao do
+#   ficheiro ao `main` vem depois na linhagem e difere so' neste ficheiro —
+#   medido com `git diff --stat 54aef209 <esse commit>`, 1 ficheiro. O pin
+#   submetido no PR e' o `sha` do campo: 54aef209, cuja arvore tem o codigo da
+#   3.47.6, as tres capturas e os documentos de catalogo ja' corrigidos.
+# ---------------------------------------------------------------------------
+
+name: vipernet-model-manager
+repo: https://github.com/ptv1p3r/vipernet-model-manager.git
+
+# Commit EXATO do catalogo, 40 hex — resolvido por `git rev-parse` nos dois
+# lados (Gitea e GitHub), nunca completado de memoria. Capturas e documentos
+# de catalogo no `main`, 2026-11-07.
+sha: "54aef209e84c3f549a2032fe63bea6655766b476"
+
+description: >-
+  Picks the provider and model for each turn from the profile's own catalog,
+  based on the kind of work detected in the message: declared task associations
+  first, then an automatic complexity analysis. Keeps the choice stable for the
+  whole session, records every decision in an append-only ledger and degrades to
+  the next route instead of failing when a route has no credential.
+
+maintainer: proldan
+tier: community
+category: models
+requires_hermes: ">=0.22.0"
+version: "3.47.6"
+title: Vipernet Model Manager
+readme: true
+
+# Galeria de /docs/plugins/vipernet-model-manager. URLs no sha do pin: um bump
+# de pin obriga a re-pinar as imagens (regra 4).
+screenshots:
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/54aef209e84c3f549a2032fe63bea6655766b476/assets/01-visao-geral.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/54aef209e84c3f549a2032fe63bea6655766b476/assets/02-configuracao.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/54aef209e84c3f549a2032fe63bea6655766b476/assets/03-registo.png
+
+# Capacidades = o que o plugin regista de facto em `__init__.py`. O validador
+# confirma-as no pin (`declared hooks/middleware — matches registrations`).
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_api_request
+    - api_request_error
+    - post_tool_call
+  provides_middleware:
+    - llm_request
+  requires_env: []

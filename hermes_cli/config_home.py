@@ -1,6 +1,8 @@
 """Directory initialization and storage diagnostics for the active Hermes home."""
 
+import contextvars
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from hermes_dir_acl import make_user_dir
 
@@ -53,10 +55,39 @@ def _ensure_directory(path: Path, *, create: bool, secure: bool, home: Path) -> 
         ) from exc
 
 
+_read_only_depth: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "hermes_home_read_only_depth", default=0)
+
+
+@contextmanager
+def read_only_home():
+    """Read-only probes (the desktop's source check) must not seed SOUL.md or the home skeleton.
+
+    Importing ``hermes_cli.config`` loads the config at module import and so initializes the
+    home; inside this context :func:`initialize_home` creates the home directory only, and
+    records nothing, so the next real command still runs the full initialization (#131026).
+
+    A contextvar, not a module global: the probe runs through ``asyncio.to_thread``
+    (``web_routers/actions.py``) and on startup threads, so a process-wide counter would
+    downgrade a *concurrent real* initialization on another thread to this no-op path and
+    lose its memo. Same shape as ``plugins_discovery.suppress_plugin_discovery`` — a
+    contextvar, not an env flag, because it must not leak to other threads or outlive the read.
+    """
+    token = _read_only_depth.set(_read_only_depth.get() + 1)
+    try:
+        yield
+    finally:
+        _read_only_depth.reset(token)
+
+
 def initialize_home(home: Path, subdirs: tuple[str, ...], ensured: set[str]) -> None:
     from hermes_cli.config import _ensure_default_soul_md, is_managed
 
     managed = is_managed()
+    if _read_only_depth.get():
+        # A probe's cache file hangs off the home, so the directory itself may exist; nothing else.
+        _ensure_directory(home, create=not managed, secure=False, home=home)
+        return
     old_umask = os.umask(0o007) if managed else None
     try:
         _ensure_directory(home, create=not managed, secure=not managed, home=home)

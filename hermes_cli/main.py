@@ -469,10 +469,10 @@ def _under_gateway_supervisor(argv: list) -> bool:
     no supervisor claim). XPC_SERVICE_NAME is deliberately NOT consulted:
     interactive macOS terminals set it too.
     """
-    if os.environ.get("HERMES_SUPERVISED_CHILD") or os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
-        return True
-    is_gateway_cmd = next((a for a in argv if not a.startswith("-")), None) == "gateway"
-    if is_gateway_cmd and os.environ.get("INVOCATION_ID"):
+    if not _argv_is_gateway_run(argv):  # one-shots keep the sticky profile (#113206)
+        return False
+    if any(os.environ.get(n) for n in
+           ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD", "INVOCATION_ID")):
         return True
     return any(os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
                for name in ("HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "HERMES_GATEWAY_PROFILE_PIN"))

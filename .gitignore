@@ -215,7 +215,9 @@ docs/superpowers/*
 /cron/*.db.*
 /cron/jobs.json
 /cron/.jobs.lock
+/cron/.tick.lock
 /cron/ticker_heartbeat
+/cron/ticker_last_success
 /cron/output/
 /cron.pid
 /gateway.lock
@@ -223,6 +225,15 @@ docs/superpowers/*
 /gateway_state.json
 /gateway-starts.log
 /processes.json
+/processes.json.lock
+/spawn-ledger.json
+/install_id
+/.install_id.lock
+/.restart_pending.json
+/.backup.lock
+/.update_exit_code
+/.hermes-update-in-progress*
+/.hermes-update-paused-gateways*
 /.update_check
 /.clean_shutdown
 /active_profile
@@ -231,6 +242,10 @@ docs/superpowers/*
 /hook_outputs/
 /hooks/
 /cache/
+/runtime/
+/state/
+/source-checks/
+/plugin-update-checks/
 /checkpoints/
 /pending_messages/
 /plugin-data/
@@ -260,6 +275,21 @@ docs/superpowers/*
 /backups/
 /vault.key
 /vault.json.enc
+/weixin/
+/skills/.bundled_manifest*
+/skills/.usage.json*
+
+# A flat install's PM store must survive untracked autostash, especially the
+# running interpreter's stdlib. Keep ordinary tools/ source files visible.
+/installs/
+/tools/*-*-win32-*/
+/tools/*-*-linux-*/
+/tools/*-*-darwin-*/
+/tools/chromium-[0-9]*/
+/tools/fetch-*/
+/tools/.staging-*/
+/tools/.install.lock
+/tools/facts.json
 
 # Persistent dev sandbox dir (scripts/dev-sandbox.sh --persistent)
 .hermes-sandbox/

@@ -1462,6 +1462,7 @@ host.layout.swapPanes(paneA, paneB)        // chat panes only (workspace, sessio
 host.layout.closePane(paneId)              // chat panes only; like the tab's ✕, the sibling takes the space → boolean
 host.layout.arrangeSessions(spec)          // re-tile every chat zone at once; sidebar and rails stay put → boolean
 host.layout.newChatTile({ pane?, pos? })   // fresh chat as a new tile (default right of main) → boolean
+host.layout.redirectNewSessionTab(fn)      // take over a chat strip's "+": fn(chatPane) → true if handled → disposer
 host.skills.list(profile?)                 // every skill for the scope (Capabilities endpoints)
 host.skills.setEnabled(name, on, profile?)  // enable/disable a skill — the Capabilities toggle
 host.toolsets.list(profile?)               // toolsets + enabled state
@@ -1681,6 +1682,17 @@ host.layout.arrangeSessions({
 
 `host.layout.newChatTile({ pane, pos })` opens a fresh chat as a tile, using the
 same create path as dragging "New session" onto a pane's edge.
+
+`host.layout.redirectNewSessionTab(fn)` lets a tiling plugin decide what the
+"+" after a chat zone's tabs does. `fn` gets that zone's chat pane and returns
+`true` once it has handled the click, typically by opening a new tile there:
+
+```js
+ctx.onDispose(host.layout.redirectNewSessionTab(pane => host.layout.newChatTile({ pane, pos: 'right' })))
+```
+
+Return `false` (or throw) and the stock new tab opens. Only one handler is
+active, the most recent; ⌘T and the "+" of other tab kinds are unaffected.
 
 To make a plugin's shortcuts editable on its own settings page, render
 `KeybindEditor` for each `KEYBINDS_AREA` action id. It shows the same row as

@@ -815,6 +815,11 @@ export function treePanesWithPrefix(prefix: string): string[] {
  *  An atom so the strip re-renders when the action becomes available. */
 export const $newSessionTabAction = atom<(() => void) | null>(null)
 
+/** A plugin's takeover of a chat strip's "+" (`host.layout.redirectNewSessionTab`):
+ *  called with the zone's chat pane; returning true means it handled the click,
+ *  false falls through to `$newSessionTabAction`. Null when nobody redirects. */
+export const $newSessionTabRedirect = atom<((anchorPane: string) => boolean) | null>(null)
+
 /** Where a new chat tile lands: an edge (or the center, as a tab) of a pane. */
 export interface NewSessionTilePlacement {
   pane: string

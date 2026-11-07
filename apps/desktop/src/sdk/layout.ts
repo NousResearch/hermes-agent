@@ -17,6 +17,7 @@ import type { ChatArrangement, LayoutNode, Orientation } from '@/components/pane
 import {
   $activeTreeGroup,
   $layoutTree,
+  $newSessionTabRedirect,
   $newSessionTileAction,
   arrangeTreeChat,
   closeTabPane,
@@ -144,5 +145,32 @@ export const layoutHost = {
     closeTabPane(paneId)
 
     return true
+  },
+
+  /** Take over the "+" at the end of a chat zone's tab strip (stock: stack a
+   *  new session tab there). `handler` gets that zone's chat pane and returns
+   *  true when it handled the click (e.g. `newChatTile({ pane })`), false to
+   *  let the stock tab open. One handler at a time, the latest wins; ⌘T and
+   *  other "+" buttons are untouched. Returns a disposer; call it on unload. */
+  redirectNewSessionTab: (handler: (anchorPane: string) => boolean): (() => void) => {
+    if (typeof handler !== 'function') {
+      return () => {}
+    }
+
+    const own = (anchorPane: string): boolean => {
+      try {
+        return isChatPaneId(anchorPane) && handler(anchorPane) === true
+      } catch {
+        return false
+      }
+    }
+
+    $newSessionTabRedirect.set(own)
+
+    return () => {
+      if ($newSessionTabRedirect.get() === own) {
+        $newSessionTabRedirect.set(null)
+      }
+    }
   }
 }

@@ -538,6 +538,8 @@ While the gateway is still draining (a `hermes gateway stop`/`restart` or SIGTER
 
 Server-Sent Events stream of the run's tool-call progress, token deltas, and lifecycle events. Designed for dashboards and thick clients that want to attach/detach without losing state.
 
+Every event carries `seq`, which is also its SSE `id`. Several clients can follow one run. A new subscription first replays the retained events, then follows the run live; resume after the last event you saw with the `Last-Event-ID` header or `?last_seq=<seq>`. The events stay replayable for the whole run and for 10 minutes after it ends, so a closed tab or a phone that slept through the run can still catch up. The retained backlog is bounded; a `replay.truncated` event says when the oldest events are gone.
+
 Mid-turn assistant commentary — the `openai-codex` backend's `phase="commentary"` progress
 preambles, or text a model writes alongside its tool calls — arrives as `message.interim`
 (`text`, `already_streamed`), the same contract the TUI gateway uses. `already_streamed: true`

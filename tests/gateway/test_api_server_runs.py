@@ -1190,8 +1190,8 @@ class TestSteerRun:
 class TestRunLifecycleSweep:
 
     @pytest.mark.asyncio
-    async def test_expired_live_run_drops_transport_but_keeps_control_state(self, adapter):
-        """Stream TTL bounds buffering without detaching a live run."""
+    async def test_live_run_past_stream_ttl_keeps_transport_and_control_state(self, adapter):
+        """A live run outlasting the stream TTL stays resumable for a client that lost its SSE."""
         app = _create_runs_app(adapter)
         adapter._max_concurrent_runs = 1
 
@@ -1228,8 +1228,8 @@ class TestRunLifecycleSweep:
 
                 assert adapter._active_run_tasks[run_id] is task
                 assert adapter._active_run_agents[run_id] is mock_agent
-                assert run_id not in adapter._run_streams
-                assert run_id not in adapter._run_streams_created
+                assert run_id in adapter._run_streams
+                assert run_id in adapter._run_streams_created
                 assert adapter._run_approval_sessions[run_id] == run_id
 
                 limited = adapter._concurrency_limited_response()

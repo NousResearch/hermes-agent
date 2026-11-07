@@ -47,7 +47,7 @@ def _make_fake_agent():
     "incoming_api_mode",
     ["codex_responses", "anthropic_messages", "chat_completions", ""],
 )
-def test_switch_to_moa_pins_chat_completions(monkeypatch, incoming_api_mode):
+def test_switch_to_moa_pins_chat_completions(monkeypatch, tmp_path, incoming_api_mode):
     """Switching to provider=moa must force api_mode=chat_completions.
 
     No matter what transport the resolver/aggregator implies for the preset,
@@ -56,6 +56,9 @@ def test_switch_to_moa_pins_chat_completions(monkeypatch, incoming_api_mode):
     .responses.create against the moa://local placeholder.
     """
     from agent import agent_runtime_helpers as arh
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("moa:\n  presets:\n    frontier: {}\n")
 
     # Neutralize the post-swap machinery that needs a real AIAgent (credential
     # pool reload, context-compressor refresh, primary-runtime bookkeeping).

@@ -117,3 +117,16 @@ def test_retirement_rechecks_after_acquiring_the_write_lock(cjk_db):
         assert not drop_retired_cjk_index(first.cursor(factory=InterleavedCursor))
         assert not first.in_transaction
     assert _cjk_residue(cjk_db) == []
+
+
+def test_a_full_temporary_volume_is_not_reported_as_damage(cjk_db, monkeypatch):
+    """The probe judges a copy of the store; a copy that does not fit says nothing about the store itself."""
+    before = _store_snapshot(cjk_db)
+
+    def full_volume(*args, **kwargs):
+        raise sqlite3.OperationalError("database or disk is full")
+
+    monkeypatch.setattr(repair, "_copy_database_snapshot", full_volume)
+    assert repair._db_opens_cleanly(cjk_db) is None
+    assert _store_snapshot(cjk_db) == before
+

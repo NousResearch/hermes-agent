@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 from hermes_startup_watchdog import report_startup_progress
+from hermes_state_errors import is_disk_full_error
 from hermes_state_holders import read_only_db_uri
 from hermes_state_common import (
     _acquire_db_flock, _clear_lock_holder_record, _describe_lock_holder, _read_lock_holder_record,
@@ -767,6 +768,29 @@ def state_db_has_structural_damage(db_path: Path) -> bool:
         itertools.chain.from_iterable(line.splitlines() for line in lines), master_rows)
 
 
+def _retired_cjk_snapshot_health(db_path: Path, conn: sqlite3.Connection) -> Optional[str]:
+    """``_db_opens_cleanly`` for a store that still holds the retired CJK index, judged on a disposable copy
+    with the index retired. A copy that cannot be made (a full temporary volume) is not damage to the store:
+    the next open retires the index in place, so the probe reports nothing rather than routing it to repair."""
+    from hermes_state_fts import drop_retired_cjk_index
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes-cjk-probe-") as tmp:
+            snapshot = Path(tmp) / "state.db"
+            _copy_database_snapshot(db_path, snapshot, source_connection=conn)
+            with _repair_conn(snapshot) as probe:
+                drop_retired_cjk_index(probe.cursor())
+            reason = _db_opens_cleanly(snapshot)
+    except (sqlite3.Error, OSError) as exc:
+        if not is_disk_full_error(exc):
+            raise
+        reason = str(exc)
+    if reason is not None and is_disk_full_error(reason):
+        logger.warning("state.db health check skipped (%s): the retired CJK index is removed at the next open", reason)
+        return None
+    return reason
+
+
 def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     """Probe a DB on a fresh connection. Returns None if healthy, else a reason.
 
@@ -789,12 +813,7 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
             conn.execute("PRAGMA journal_mode").fetchone()
             # Retirement must not hold the live write lock across a full integrity scan.
             if retired_cjk_index_present(conn.cursor()):
-                with tempfile.TemporaryDirectory(prefix="hermes-cjk-probe-") as tmp:
-                    snapshot = Path(tmp) / "state.db"
-                    _copy_database_snapshot(db_path, snapshot, source_connection=conn)
-                    with _repair_conn(snapshot) as probe:
-                        drop_retired_cjk_index(probe.cursor())
-                    return _db_opens_cleanly(snapshot)
+                return _retired_cjk_snapshot_health(db_path, conn)
             rows = conn.execute("PRAGMA integrity_check").fetchall()
             problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
             if problems:

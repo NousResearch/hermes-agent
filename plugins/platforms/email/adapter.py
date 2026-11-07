@@ -946,6 +946,11 @@ class EmailAdapter(BasePlatformAdapter):
         logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
         return msg_id
 
+    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
+                         reply_to: Optional[str] = None, **kwargs) -> SendResult:
+        """Send audio as a plain email attachment (mail has no voice notes) — #24922."""
+        return await self.send_document(chat_id, audio_path, caption, reply_to=reply_to, **kwargs)
+
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
                             file_name: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
         """Send a file as an email attachment."""

@@ -426,7 +426,10 @@ The contract is deliberately narrow:
   rendered after memory/profile context and before session metadata; plugins
   cannot reorder or replace core prompt content.
 - A callable receives a read-only mapping with `session_id`, `conversation_id`,
-  `model`, `provider`, `platform`, `profile_name`, and `cwd`. It runs **once for a new
+  `model`, `provider`, `platform`, `profile_name`, `cwd`, `client` and `client_version`
+  (`client`/`client_version`: the name and version the creating client declared on
+  `session.create`, `""` when it sent none; a self-declared label, so never grant
+  anything on it). It runs **once for a new
   session**. Its rendered bytes are frozen on compression and recovered from
   the already-persisted full system prompt after a process restart/resume;
   plugin state is not re-read for an existing session.

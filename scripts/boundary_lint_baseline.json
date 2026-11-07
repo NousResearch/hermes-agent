@@ -636,15 +636,6 @@
     "plugins/platforms/whatsapp_cloud/gateway_env.py gateway.platform_env.EnvCred": 1,
     "plugins/platforms/whatsapp_cloud/gateway_env.py gateway.platform_env.INT": 1,
     "plugins/platforms/whatsapp_cloud/gateway_env.py gateway.platform_env.home_step": 1,
-    "plugins/platforms/yuanbao/adapter.py agent.i18n.t": 1,
-    "plugins/platforms/yuanbao/adapter.py gateway.pairing.PairingStore": 1,
-    "plugins/platforms/yuanbao/adapter.py gateway.session_transcript.TranscriptReadError": 1,
-    "plugins/platforms/yuanbao/adapter.py hermes_cli.version_info.get_version_info": 1,
-    "plugins/platforms/yuanbao/gateway_env.py gateway.platform_env.EnvCred": 1,
-    "plugins/platforms/yuanbao/gateway_env.py gateway.platform_env.strip_lower": 1,
-    "plugins/platforms/yuanbao/register.py gateway.platforms.send_targets.NOT_EXPLICIT": 1,
-    "plugins/platforms/yuanbao/register.py gateway.platforms.send_targets.StandaloneSendPolicy": 1,
-    "plugins/platforms/yuanbao/register.py hermes_cli.gateway": 2,
     "plugins/teams_pipeline/cli.py tools.microsoft_graph_auth.MicrosoftGraphConfigError": 1,
     "plugins/teams_pipeline/cli.py tools.microsoft_graph_auth.MicrosoftGraphTokenProvider": 1,
     "plugins/teams_pipeline/meetings.py tools.microsoft_graph_client.MicrosoftGraphAPIError": 1,
@@ -809,8 +800,6 @@
     "tools/send_message_senders.py plugins.platforms.telegram.telegram_ids": 1,
     "tools/web_tools.py plugins.web.firecrawl.provider": 1,
     "tools/web_tools_rescue.py plugins.web.firecrawl.provider": 1,
-    "tools/xai_video_tools.py plugins.video_gen.xai": 1,
-    "tools/yuanbao_tools.py plugins.platforms.yuanbao.adapter": 1,
-    "tools/yuanbao_tools.py plugins.platforms.yuanbao.yuanbao_sticker": 2
+    "tools/xai_video_tools.py plugins.video_gen.xai": 1
   }
 }

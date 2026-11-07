@@ -1484,7 +1484,6 @@ platform_toolsets:
   slack: [hermes-slack]
   signal: [hermes-signal]
   qqbot: [hermes-qqbot]
-  yuanbao: [hermes-yuanbao]
   # Plugin platforms (teams, google_chat, ...) need no row: they default to hermes-<platform> once loaded.
 
 # =============================================================================

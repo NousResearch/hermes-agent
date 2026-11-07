@@ -752,7 +752,7 @@ class PluginContext(PluginCapabilityCtxMixin):
     def register_session_env(self, names, resolver: Callable[[str], Any]) -> PluginRegistration:
         """Each session's tool subprocesses get ``resolver(session_id)``'s ``names``, resolved at spawn."""
         from hermes_cli.plugins_session_env import register_session_env
-        release = register_session_env(self._manager.scope_key, names, resolver)
+        release = register_session_env(self._manager.scope_key, names, resolver, owner=self.plugin_id)
         return self._track("session_env", getattr(resolver, "__qualname__", "resolver"), release)
 
     def _track_callback(

@@ -31,8 +31,8 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False, ve
     from pm import ensure
     from pm.environments import project_python, running_from_selected_environment
     from pm.packages import pnpm_env
+    from pm.index_config import hermes_npmrc, user_npmrc
     from pm.paths import repo_root
-    from hermes_constants import get_hermes_home
 
     # The historical update runs on store Python with the selected environment
     # activated in-process. Icon generation starts an isolated child, which needs
@@ -48,45 +48,36 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False, ve
     if vc_runtime.is_file():
         env["HERMES_VC_RUNTIME"] = str(vc_runtime)
     env.pop("ESBUILD_BINARY_PATH", None)
-    hermes_npmrc = get_hermes_home() / "npmrc"
-    if hermes_npmrc.is_file():
-        env.setdefault("NPM_CONFIG_USERCONFIG", str(hermes_npmrc))
-    # The file npm itself would read: an explicit userconfig (any case), else Hermes's, else ~/.npmrc.
-    userconfig = next((value for name, value in env.items() if name.upper() == "NPM_CONFIG_USERCONFIG"), "")
-    npmrc = Path(userconfig).expanduser() if userconfig else Path.home() / ".npmrc"
-    if npmrc.is_file():
-        # pnpm reads that file only for its registry and auth. npm also handed every
-        # other key to dependency install scripts as npm_config_<key>, which is how
-        # node-pre-gyp finds a binary mirror (node_get_windows_binary_host_mirror).
-        inherited = {name.upper() for name in env}
-        for key, value in _npmrc_script_settings(npmrc, env):
-            name = f"npm_config_{key.replace('-', '_')}"
-            if name.upper() not in inherited:  # an explicit setting wins, in any case
-                env[name] = value
+    npmrc = user_npmrc(env)
+    if npmrc == hermes_npmrc():
+        env.setdefault("NPM_CONFIG_USERCONFIG", str(npmrc))
+    # pnpm reads the npmrc that user_npmrc selects (an explicit userconfig, else Hermes's, else
+    # ~/.npmrc) only for its registry and auth. npm also handed every other key to the processes it
+    # spawned as npm_config_<key>; keep doing that, since it is how node-pre-gyp (run by
+    # stage-native-deps.mjs) finds a binary mirror (node_get_windows_binary_host_mirror).
+    inherited = {name.upper() for name in env}
+    for key, value in _npmrc_script_settings(npmrc, env):
+        name = f"npm_config_{key.replace('-', '_').lower()}"
+        if name.upper() not in inherited:  # an explicit setting wins, in any case
+            env[name] = value
     return ensure("pnpm", base_env=pnpm_env(env), explicit=explicit, verify=verify).env
 
 
 _NPMRC_SETTING = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
-_NPMRC_ENV_REF = re.compile(r"\$\{([^}]+)\}")
+# A one-time password and the deprecated inline client TLS key and certificate are credentials,
+# whatever npm itself exported.
+_NPMRC_SECRETS = frozenset({"otp", "key", "cert"})
 
 
 def _npmrc_script_settings(npmrc: Path, env: dict) -> list[tuple[str, str]]:
-    """``key=value`` lines of an npmrc that name a plain setting, with npm's ``${VAR}``
-    references expanded from ``env`` and surrounding quotes removed, as npm reads them.
-    Skipped: comments, credentials (``//host/:_authToken``, ``_auth``), scoped registries
-    (``@scope:registry``), array keys (``key[]``) and lines referring to an unset variable."""
-    settings = []
-    for line in npmrc.read_text(encoding="utf-8-sig").splitlines():
-        line = line.strip()
-        if not line or line.startswith(("#", ";")) or "=" not in line:
-            continue
-        key, value = (part.strip() for part in line.split("=", 1))
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        if not _NPMRC_SETTING.fullmatch(key) or not all(ref in env for ref in _NPMRC_ENV_REF.findall(value)):
-            continue
-        settings.append((key, _NPMRC_ENV_REF.sub(lambda ref: env[ref.group(1)], value)))
-    return settings
+    """The npmrc's plain settings (``pm.index_config.read_npmrc``) that may reach install
+    scripts. Skipped: credentials (``//host/:_authToken``, ``_auth``, ``otp``, ``key``,
+    ``cert``) and scoped registries (``@scope:registry``)."""
+    from pm.index_config import read_npmrc
+
+    settings = read_npmrc(npmrc, env)
+    return [(key, value) for key, value in settings.items()
+            if _NPMRC_SETTING.fullmatch(key) and key.lower() not in _NPMRC_SECRETS]
 
 
 def run_in_custody(project_root: Path, command: list, label: str, **kwargs):

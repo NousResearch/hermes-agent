@@ -20,7 +20,7 @@ from .groups_bot_relay import (
     GroupsPeerInviteResult, GroupsPeerRegisterResult, GroupsPeerRevokeResult, RoomParams, RoomTaskReceipt,
 )
 from .prompt_voice import ClarifyLockParams, ClarifyLockResult
-from .registry import canonical_method, method
+from .registry import canonical_method, canonical_namespace, method
 
 # ── admissions ────────────────────────────────────────────────────────────────────────────────
 
@@ -178,6 +178,13 @@ class SessionInventoryFields(Result):
     usage: Usage | None = None
 
 
+class CanonicalClientLabel(Result):
+    """The client a session's creator declared itself as (``session.create`` ``client``)."""
+
+    name: str
+    version: str | None = None
+
+
 class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
     """``gateway/session_local_inventory.py::snapshot_info``: ``local_session_info`` + the inventory."""
 
@@ -191,6 +198,8 @@ class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
     # An ACP session's edit approval policy (``session.mutate edit_policy``): ask / workspace_session / session.
     edit_approval_policy: Literal["ask", "workspace_session", "session"] | None = None
     launch_request: dict[str, JsonValue] | None = None
+    # The creator's self-declared client; absent when it sent none. A label, never a grant.
+    client: CanonicalClientLabel | None = None
     reasoning_effort: str | None = None
     reasoning_effort_wire: str | None = None
     service_tier: str | None = None
@@ -358,6 +367,21 @@ class RuntimeDescribeResult(Result):
 
 canonical_method("runtime.describe", params=RuntimeDescribeParams, result=RuntimeDescribeResult,
                  doc="Owner identity and the canonical capabilities a client may rely on.")
+
+
+class PluginRpcParams(Params):
+    """Open: the plugin's handler owns every other key. ``session_id`` names the session the call
+    acts in and passes that session's authorization first."""
+
+    model_config = Params.model_config | {"extra": "allow"}
+    session_id: str | None = None
+
+
+canonical_namespace("plugin.{plugin_id}.{name}", prefix="plugin.", capability="plugin-rpc-v1",
+                    params=PluginRpcParams,
+                    doc="A method a loaded plugin registered with ctx.register_rpc; the result is its handler's "
+                        "JSON value. With plugin-rpc-v1 in runtime.describe, -32601 means that plugin method is "
+                        "not loaded; without plugin-rpc-v1, clients must not assume plugin RPC is supported.")
 
 
 class ClarifyRespondParams(Params):
@@ -626,4 +650,4 @@ canonical_method("groups.peer.register", params=CanonicalGroupsPeerRegisterParam
 
 
 # Shared-name overrides load after the authority-only value shapes above.
-from . import canonical_sessions, canonical_projections
+from . import canonical_sessions, canonical_projections, canonical_stored_reads

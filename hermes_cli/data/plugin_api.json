@@ -126,6 +126,18 @@
       "entries": [
         "gateway.session_context:get_session_env"
       ]
+    },
+    {
+      "source": "plugin-llm-access.md § From the plugin's frontend: a plugin RPC method (`force=True` where secrets must never leave)",
+      "entries": [
+        "agent.redact:redact_sensitive_text"
+      ]
+    },
+    {
+      "source": "user-guide/features/plugins.md § Plugin code inside the gateway: which client created the session",
+      "entries": [
+        "hermes_cli.plugin_session:session_client"
+      ]
     }
   ]
 }

@@ -623,6 +623,12 @@ not substitutes for an installed application's update mechanism.
 | `pm install --target TARGET NAME...` | Stage explicit cross-target packages without recording them as the host's installed runtime. The win32 `git` target pins a self-extracting PortableGit archive: staging it runs the vendor extractor and therefore requires a Windows host. |
 | `pm bundle --out DIR [--ref REF]` | Stage a source snapshot, native tools, facts, and Python dependencies. It does not produce a signed desktop installer. |
 
+The Nix flake pins the pnpm store that `pnpm-lock.yaml` resolves to with one
+fixed-output hash, `nix/pnpm-deps-hash`. `pm update --pnpm` does not refresh it:
+after any change to `pnpm-lock.yaml`, run `nix run .#update-pnpm-lockfile`
+([Nix setup](../getting-started/nix-setup.md#updating-the-pnpm-lockfile)) or
+copy the hash the `nix` workflow's `pnpm-deps-hash` job reports.
+
 The complete desktop builder also builds the JavaScript surfaces, generates
 launchers, and invokes native packaging. Maintainers can read
 [Building the Desktop Installers](https://github.com/NousResearch/hermes-agent/blob/main/apps/desktop/BUILDING.md).
@@ -684,7 +690,7 @@ trust the committed lock.
 PM's own npm-hosted tools (pnpm and npm) are pinned to `registry.npmjs.org`
 URLs in `pm/lock.json`, but PM downloads them from your npm registry:
 `npm_config_registry`, else `registry=` in the npmrc that `npm_config_userconfig`
-names, else `~/.npmrc`. That registry may be plain `http://` (a LAN Verdaccio or
+names, else `$HERMES_HOME/npmrc` when it exists, else `~/.npmrc`. That registry may be plain `http://` (a LAN Verdaccio or
 Nexus). The bytes must match the lock's SHA256 before PM uses them, a plain-http
 download over 256 MiB is abandoned, and a plain-http redirect must stay on the
 registry's host. When the registry is unreachable, lacks the file, sends too much

@@ -5,7 +5,9 @@
 import { EventEmitter } from 'node:events'
 
 import { CircularBuffer } from '../circular-buffer.js'
-import { canonicalEvent, canonicalRequest, canonicalResult, type CreationContract } from '../gateway-canonical.js'
+import {
+  canonicalEvent, canonicalRequest, canonicalResult, type ClientIdentity, type CreationContract, type LaunchSource
+} from '../gateway-canonical.js'
 import type { GatewayEvent } from '../gateway-events.js'
 import { type GatewayText, gatewayText } from '../gateway-text.js'
 import type { AnyGatewayEvent } from '../gateway-types.js'
@@ -68,6 +70,14 @@ export interface GatewayClientOptions {
   text?: GatewayText
   /** The WebSocket implementation when the runtime has no global `WebSocket` (Node < 22). */
   fallbackWebSocket?: typeof WebSocket
+  /** The `session.create` policy label (default `'tui'`, the terminal-client policy). The gateway must
+   *  list it in `runtime.describe` `session_create.sources`, or session.create is refused. Canonical
+   *  gateways only: a non-canonical `attachUrl` listener gets session.create without it. */
+  source?: LaunchSource
+  /** The client's own name on `session.create`, sent only when the gateway lists `client` in
+   *  `session_create.parameters` (never to a non-canonical `attachUrl` listener). A label for
+   *  attribution: the gateway never grants anything on it. */
+  client?: ClientIdentity
 }
 
 const truncateLine = (line: string) =>
@@ -946,7 +956,9 @@ export class GatewayClient extends EventEmitter {
   private requestCanonical<T>(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T> {
     return (async () => {
       if (method === 'session.create' && !this.creationContract) { await this.describeRuntime() }
-      const request = canonicalRequest(method, params, this.creationContract, this.text)
+
+      const request = canonicalRequest(method, params, this.creationContract, this.text,
+        { client: this.options.client, source: this.options.source })
 
       if (request.method === 'session.create') { return this.createCanonical<T>(request.params, timeoutMs) }
       const value = await this.requestOverWebSocket<T>(request.method, request.params, timeoutMs)

@@ -44,13 +44,6 @@
     "node": ">=26",
     "pnpm": "^12"
   },
-  "devEngines": {
-    "packageManager": {
-      "name": "pnpm",
-      "version": "12.15.0",
-      "onFail": "warn"
-    }
-  },
   "dependencies": {
     "js-yaml": "4.3.2",
     "semver": "7.7.4"

@@ -1,33 +1,63 @@
 /** `hermes-gateway-v1` request/result translation for a client written against the stdio-era
  *  method names (Ink, and clients built on `./node/gateway-client`). Browser-safe. */
+import type { CanonicalCreateParams } from './gateway-contract.generated.js'
 import { type GatewayText, gatewayText } from './gateway-text.js'
+import { randomUuid } from './session-http-mutations.js'
 
 export interface SharedControl { session_id: string; execution_generation: number; prompt_id: string }
 export const sharedControlParams = (prompt?: { sharedControl?: SharedControl } | null) => prompt?.sharedControl ?? {}
 
 export interface CreationContract { sources: string[]; parameters: string[] }
 
+/** A `session.create` policy label the gateway may offer (`runtime.describe` `session_create.sources`). */
+export type LaunchSource = NonNullable<CanonicalCreateParams['source']>
+
+/** How a client names itself on `session.create`: a label for attribution, never a grant. A gateway that takes
+ *  it refuses `session.create` unless `name` is 1-64 characters of a-z, 0-9, `.`, `_` or `-` starting with a
+ *  letter or digit, `version` (optional) is 1-64 printable ASCII characters without spaces, and there are no
+ *  other keys. */
+export interface ClientIdentity { name: string; version?: string }
+
+/** Who is launching: the policy label (default `'tui'`, the terminal-client policy) and, optionally,
+ *  the client's own name. */
+export interface LaunchIdentity { source?: LaunchSource; client?: ClientIdentity }
+
 export function canonicalRequest(
   method: string,
   original: Record<string, unknown>,
   contract?: CreationContract,
-  text: GatewayText = gatewayText
+  text: GatewayText = gatewayText,
+  identity: LaunchIdentity = {}
 ) {
   const params = { ...original }
 
   if (method === 'session.create') {
+    const source = identity.source ?? 'tui'
+    // Ink launches as 'tui' with no client name and keeps its TUI wording; any other launch reads neutral.
+    const neutral = source !== 'tui' || identity.client !== undefined
     delete params.cols
-    params.source = 'tui'
-    params.request_id ??= crypto.randomUUID()
+    params.source = source
+    params.request_id ??= randomUuid()
 
-    if (!contract?.sources.includes('tui')) { throw new Error(text('canonical.launch.noTuiPolicy')) }
+    if (!contract?.sources.includes(source)) {
+      throw new Error(neutral ? text('canonical.launch.noSourcePolicy', source) : text('canonical.launch.noTuiPolicy'))
+    }
 
     // The shell's environment is context, not a launch option: a gateway predating it runs the session
     // with its own environment, as before.
     if (!contract.parameters.includes('client_env')) { delete params.client_env }
+
+    // The client's name is attribution, not a launch option: sent only to a gateway that takes it.
+    if (identity.client) {
+      if (contract.parameters.includes('client')) { params.client = { ...identity.client } } else { delete params.client }
+    }
+
     const unsupported = Object.keys(params).filter(key => !contract.parameters.includes(key))
 
-    if (unsupported.length) { throw new Error(text('canonical.launch.unsupportedOptions', unsupported.join(', '))) }
+    if (unsupported.length) {
+      throw new Error(text(neutral ? 'canonical.launch.unsupportedSessionOptions' : 'canonical.launch.unsupportedOptions',
+        unsupported.join(', ')))
+    }
   }
 
   if (['prompt.submit', 'session.steer', 'session.redirect'].includes(method) && params.submission_id) {

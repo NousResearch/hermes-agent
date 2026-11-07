@@ -2442,6 +2442,7 @@ export interface SubagentSnapshot {
   tool_count?: number | null
   last_tool?: string | null
   accepting_steer?: boolean | null
+  child_session_id?: string | null
 }
 /** Lifecycle of one delegated child (``tools/delegate_tool_child_run.py``); ``failed`` / ``error`` / ``timeout`` / ``interrupted`` / ``completed`` are terminal. */
 export type SubagentStatus = 'queued' | 'running' | 'completed' | 'failed' | 'error' | 'timeout' | 'interrupted'
@@ -3755,7 +3756,7 @@ export interface SessionEventsStatsResult {
   max_bytes_per_session: number
   max_bytes_process: number
 }
-/** Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model. ``task`` is a built-in auxiliary slot or a plugin-registered one (unknown keys are refused); ``schema`` (a JSON Schema) makes the reply carry ``parsed``; ``redact`` masks secrets in ``input``. */
+/** Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model. */
 export interface LlmOneshotParams {
   profile?: string | null
   template?: string | null
@@ -3766,12 +3767,9 @@ export interface LlmOneshotParams {
   temperature?: number | null
   max_tokens?: number | null
   session_id?: string | null
-  schema?: Record<string, unknown> | null
-  redact?: boolean | null
 }
 export interface LlmOneshotResult {
   text: string
-  parsed?: unknown | null
 }
 export interface SystemBatteryParams {
   profile?: string | null
@@ -4832,6 +4830,7 @@ export interface CanonicalSessionInfo {
   cwd?: string | null
   edit_approval_policy?: 'ask' | 'workspace_session' | 'session' | null
   launch_request?: Record<string, unknown> | null
+  client?: CanonicalClientLabel | null
   reasoning_effort?: string | null
   reasoning_effort_wire?: string | null
   service_tier?: string | null
@@ -4846,6 +4845,11 @@ export interface CanonicalSessionInfo {
   credential_hint?: string | null
   config_warning?: string | null
   [key: string]: unknown
+}
+/** The client a session's creator declared itself as (``session.create`` ``client``). */
+export interface CanonicalClientLabel {
+  name: string
+  version?: string | null
 }
 export interface SessionStatsParams {
   session_id: string
@@ -5117,6 +5121,12 @@ export interface CanonicalCreateParams {
   run_budget?: number | null
   verbose?: boolean
   client_env?: Record<string, string> | null
+  client?: CanonicalClientIdentity | null
+}
+/** A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64 printable ASCII without spaces. Attribution only (owners advertising ``session-client-v1``). */
+export interface CanonicalClientIdentity {
+  name: string
+  version?: string | null
 }
 export interface CanonicalSnapshot {
   session_id: string
@@ -5191,6 +5201,7 @@ export interface CanonicalSnapshotInfo {
   cwd?: string | null
   edit_approval_policy?: 'ask' | 'workspace_session' | 'session' | null
   launch_request?: Record<string, unknown> | null
+  client?: CanonicalClientLabel | null
   reasoning_effort?: string | null
   reasoning_effort_wire?: string | null
   service_tier?: string | null
@@ -5225,6 +5236,8 @@ export interface CanonicalListParams {
   limit?: number
   title?: string | null
   include_hidden?: boolean
+  workspace?: string | null
+  picker?: boolean
 }
 export interface CanonicalListResult {
   sessions: CanonicalSessionListRow[]
@@ -5241,6 +5254,13 @@ export interface CanonicalSessionListRow {
   model?: string | null
   resolved_id?: string | null
   root_title?: string | null
+  preview?: string | null
+  last_reply?: string | null
+  cwd?: string | null
+  git_branch?: string | null
+  workspace?: string | null
+  last_active_at?: number | null
+  pinned?: boolean | null
 }
 export interface CanonicalControlParams {
   profile?: string | null
@@ -5485,6 +5505,50 @@ export interface CanonicalBotCancelResult {
   delivery_id: string
   status: 'cancelled' | 'stopping' | 'finished'
   receipt_status: string
+}
+export interface StoredTranscriptParams {
+  profile?: string | null
+  session_id: string
+  subagent_id?: string | null
+  cursor?: string | null
+  limit?: number
+  order?: 'oldest' | 'latest'
+  inline_images?: boolean
+}
+export interface StoredTranscriptResult {
+  session_id: string
+  rows: StoredTranscriptRow[]
+  next_cursor: string | null
+  reset: boolean
+  subagent_id?: string | null
+  available?: boolean | null
+  running?: boolean | null
+  child_session_id?: string | null
+}
+/** ``row_kind: 'message'`` is a ``session.resume`` ``display_messages`` row. ``row_kind: 'compaction'`` is a compaction handoff at its position: ``role: 'system'``, ``text`` the summary a reader sees (not the parts written for the model), ``compacted_messages``, ``timestamp`` and the stored ``row_id``. */
+export interface StoredTranscriptRow {
+  role: string
+  text?: string | null
+  content?: unknown | null
+  tool_call_id?: string | null
+  timestamp?: number | null
+  row_id?: number | null
+  display_kind?: string | null
+  display_metadata?: unknown | null
+  name?: string | null
+  context?: string | null
+  args?: Record<string, unknown> | null
+  labels?: ToolLabel[] | null
+  reasoning?: string | null
+  row_kind: 'message' | 'compaction'
+  compacted_messages?: number | null
+  truncated?: boolean | null
+  [key: string]: unknown
+}
+/** Open: the plugin's handler owns every other key. ``session_id`` names the session the call acts in and passes that session's authorization first. */
+export interface PluginRpcParams {
+  session_id?: string | null
+  [key: string]: unknown
 }
 /** ``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped). */
 export interface ClarifyRequestParams {
@@ -7052,6 +7116,8 @@ export interface CanonicalRpcMethods {
   /** The session.usage dict on demand: what main's classic CLI read off its agent. */
   'session.stats': { params: SessionStatsParams; result: SessionStats }
   'session.steer': { params: CanonicalCorrectionParams; result: CanonicalCorrectionResult }
+  /** One page of a stored conversation's display rows across its compression lineage (live rows and rows a compaction archived, each logical message once, and each compaction handoff as a `row_kind: 'compaction'` row at its position), from the oldest or the newest. Never attaches the caller. A page holds at most `limit` (1-500) rows, compaction rows included, plus up to 64 tool results of the call at its edge, and at most 2 MiB of JSON, cut between tool groups (a single larger row keeps only its role, kind, time, ids and the head of its text, and carries `truncated`). Oldest order: read on until a page is empty, then poll with the same `next_cursor` for the rows written since; `reset: true` means the rows the cursor covered changed shape, so the reply starts again from the first page. Latest order: read on until `next_cursor` is null; its cursor stays valid across later compactions and turns. A rotated lineage past `sessions.max_resume_messages` pages only its current segment (a cursor from before it crossed, or a latest-order cursor from before a compaction rotated that segment, answers `reset: true`). With `subagent_id`: a delegated child of the session (running: through the parent's roster; finished: through its stored row, when its ancestry reaches this conversation); a foreign or unknown child is `available: false`. Refusals: invalid_params (a cursor issued for another session, child or order, or not by this read), not_found, permission_denied, profile_mismatch. */
+  'session.transcript': { params: StoredTranscriptParams; result: StoredTranscriptResult }
   /** Ink ``!cmd`` / ``{!cmd}`` on the shared owner: one safe command for a local session, in its frozen launch cwd (``gateway/session_shell.py``). */
   'shell.exec': { params: CanonicalShellExecParams; result: ShellExecResult }
   /** Adopt a registered execution after verifying the live producer claim. */
@@ -7111,11 +7177,19 @@ export const CANONICAL_RPC_METHODS = [
   'session.resume',
   'session.stats',
   'session.steer',
+  'session.transcript',
   'shell.exec',
   'worker.adopt',
   'worker.persist',
   'worker.register'
 ] as const satisfies readonly CanonicalRpcMethod[]
+
+// ── Canonical method namespaces: member names exist only at runtime (gate on `capability`) ──
+export interface CanonicalRpcNamespaces {
+  /** A method a loaded plugin registered with ctx.register_rpc; the result is its handler's JSON value. With plugin-rpc-v1 in runtime.describe, -32601 means that plugin method is not loaded; without plugin-rpc-v1, clients must not assume plugin RPC is supported. */
+  'plugin.{plugin_id}.{name}': { method: `plugin.${string}`; capability: 'plugin-rpc-v1'; params: PluginRpcParams; result: unknown }
+}
+export type CanonicalRpcNamespace = keyof CanonicalRpcNamespaces
 
 // ── Server→client requests ──
 export interface ServerRequestMap {

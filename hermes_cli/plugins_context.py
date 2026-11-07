@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional
 
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
 from hermes_cli.plugins_dispatch import DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS
-from hermes_cli.plugins_ledger import PluginRegistration
+from hermes_cli.plugins_ledger import PluginRegistration, undo_abandoned_registration
 from hermes_cli.plugins_loader import _serialized_replacement
 from hermes_cli.plugins_manifest import PluginManifest
 from hermes_cli.plugins_registrars import register_scoped_provider, scoped_provider_registrar
@@ -876,9 +876,7 @@ class PluginContext(PluginCapabilityCtxMixin):
 
 
 def _ignore_after_abandoned_load(method):
-    """Turn a registrar into a no-op once the context's load timed out: the abandoned worker thread may
-    still be executing register(), and a late registration would land in registries that the failure
-    path already swept (#108139)."""
+    """No-op a registrar once its load timed out, and undo one that was running when that happened (#108139, #149326)."""
     @_facade().wraps(method)
     def wrapped(self, *args, **kwargs):
         if getattr(self, "_load_abandoned", False):
@@ -887,7 +885,10 @@ def _ignore_after_abandoned_load(method):
                 method.__name__,
             )
             return None
-        return method(self, *args, **kwargs)
+        handle = method(self, *args, **kwargs)
+        if getattr(self, "_load_abandoned", False):
+            return undo_abandoned_registration(self, method.__name__)
+        return handle
 
     return wrapped
 

@@ -120,3 +120,27 @@ def test_a_package_the_checkout_moved_leaves_no_directory_behind(monkeypatch, tm
     assert not (repo / "pkg").exists()
     assert (repo / "notes" / "mine.txt").is_file()
     assert (repo / "src" / "pkg" / "sub" / "__init__.py").is_file()
+
+
+def test_a_sweep_that_cannot_list_dropped_files_keeps_the_old_fingerprint(monkeypatch, tmp_path):
+    """A failed ``git diff`` used to count as "nothing to prune", and the new fingerprint then hid the
+    old commit from every later sweep. The old fingerprint stays, so the next launch retries."""
+    import subprocess
+
+    from hermes_cli import main_web_build as build
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@e.invalid", "-c", "user.name=T", "commit", "-q",
+                    "--allow-empty", "-m", "c"], cwd=repo, check=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True,
+                          text=True).stdout.strip()
+    recorded = f"git:refs/heads/main:{head}"
+    (repo / build._BYTECODE_FINGERPRINT_FILE).write_text(recorded, encoding="utf-8")
+    (repo / ".git" / "refs" / "heads" / "main").write_text("b" * 40 + "\n", encoding="utf-8")
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
+
+    hermes_main._sweep_stale_bytecode_if_checkout_changed()
+
+    assert (repo / build._BYTECODE_FINGERPRINT_FILE).read_text(encoding="utf-8") == recorded

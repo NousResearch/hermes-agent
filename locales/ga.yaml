@@ -701,6 +701,8 @@ gateway:
     cron_session_read_only: "⚠️ Baineann an comhrá seo le jab sceidealaithe agus ní ritheann sé ach an jab sin, mar sin níor ritheadh do theachtaireacht. Tosaigh comhrá nua chun í a sheoladh."
     workspace_unavailable: "⚠️ Níl fillteán oibre an chomhrá seo ann a thuilleadh ({path}), mar sin níor ritheadh do theachtaireacht. Athchruthaigh an fillteán, nó bog an comhrá go ceann eile (`/worktree new` sa CLI, “Move to project” san aip deisce), agus ansin seol do theachtaireacht arís."
     launch_credentials_unavailable: "⚠️ Ní féidir leis an gcomhrá seo an eochair API ar tosaíodh leis a úsáid a thuilleadh{detail}, mar sin ní féidir aon rud a rith ann. Ní athraíonn comhrá oscailte go heochair eile as a stuaim féin, mar sin teipeann ar /retry ar an mbealach céanna. Úsáid /new chun comhrá nua a thosú le d'eochair reatha."
+    model_fallback: "⚠️ Fálonn samhnóide: {old_model} trí {old_provider} ar fáil ({reason}) ({reason}); {new_model} trí {new_provider}."
+    model_fallback_retry: " Atosaigh an príomhbhealaigh i gceang ~{remaining} s; ní ráthúil an aisghaireamh."
   skills:
     disabled: "Tá an scil **{name}** suiteáilte ach díchumasaithe.\nCumasaigh í le: `hermes skills config`"
     not_installed: "Tá an scil **{name}** ar fáil ach níl sí suiteáilte.\nSuiteáil í le: `hermes skills install {install_name}`"

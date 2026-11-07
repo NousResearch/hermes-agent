@@ -2083,12 +2083,14 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
             fb_model = agent.model  # normalized by the binder
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
-            notice = (
-                f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
-                f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}.")
+            from agent.i18n import t
+            notice = t("gateway.errors.model_fallback",
+                       old_model=old_model, old_provider=old_provider,
+                       reason=_fallback_reason_text(reason),
+                       new_model=fb_model, new_provider=fb_provider)
             if cooldown_seconds is not None:
                 remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
-                notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."
+                notice += t("gateway.errors.model_fallback_retry", remaining=remaining)
             _buffer_fallback_notice(agent, notice)
             # ``_fallback_activated`` is also reused by `/model --once` restoration; separate
             # provenance so the restore path only emits a recovery notice after a real fallback.

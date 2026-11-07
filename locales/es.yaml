@@ -701,6 +701,8 @@ gateway:
     cron_session_read_only: "⚠️ Este chat pertenece a una tarea programada y solo ejecuta esa tarea, así que tu mensaje no se ejecutó. Empieza un chat nuevo para enviarlo."
     workspace_unavailable: "⚠️ La carpeta de trabajo de este chat ya no existe ({path}), así que tu mensaje no se ejecutó. Vuelve a crear la carpeta o mueve el chat a otra (`/worktree new` en la CLI, «Mover a proyecto» en la app de escritorio) y vuelve a enviar tu mensaje."
     launch_credentials_unavailable: "⚠️ Este chat ya no puede usar la clave de API con la que se inició{detail}, así que ya no se puede ejecutar nada en él. Un chat abierto nunca cambia por sí solo a otra clave, así que /retry falla de la misma forma. Usa /new para empezar un chat nuevo con tu clave actual."
+    model_fallback: "⚠️ Respaldo de modelo: {old_model} vía {old_provider} no disponible ({reason}); usando {new_model} vía {new_provider}."
+    model_fallback_retry: " Reintento al principal posible en ~{remaining} s; la recuperación no está garantizada."
   skills:
     disabled: "La skill **{name}** está instalada pero desactivada.\nActívala con: `hermes skills config`"
     not_installed: "La skill **{name}** está disponible pero no instalada.\nInstálala con: `hermes skills install {install_name}`"

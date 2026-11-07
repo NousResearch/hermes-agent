@@ -1,0 +1,24 @@
+name: opencode-sync
+title: OpenCode Session Sync
+repo: https://github.com/cryptobredda/hermes-opencode-sync
+sha: 6fcc8284e1f4b573565e23b55f34d4feaaee9fd9
+subdir: ""
+description: "Manually import and refresh local OpenCode conversations without overwriting Hermes edits. Disclosure — Reads source history and imported Hermes transcripts; writes guarded owner-side history, private backups, run state and attachment artifacts. Uses loopback native-owner API calls and undocumented storage helpers; primary profile/in-process backend only. No historical tool execution, external network calls, provider credentials or automatic sync."
+maintainer: cryptobredda
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+version: "1.0.0"
+docs_url: https://github.com/cryptobredda/hermes-opencode-sync#readme
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - Uses undocumented native owner/storage helpers; catalog validation emits private-import warnings. Maintainer review of a stable public update seam is required, and compatibility can break on a Hermes update.
+  - Requires the gateway primary profile and plugins.isolation in_process; isolated or secondary owner contexts are refused rather than opening another writer.
+  - Transcript backups and attachment artifacts can contain incidental secrets pasted into chats. Keep them private; no credential/account tables are read from OpenCode.
+  - Independently edited Hermes histories are preserved and reported as conflicts, not automatically merged; an open chat may need to be reselected after sync.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

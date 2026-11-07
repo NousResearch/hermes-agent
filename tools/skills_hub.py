@@ -127,10 +127,41 @@ def _ssrf_safe_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
 
 
 def _guarded_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
-                      headers: Optional[dict[str, str]] = None) -> Optional[httpx.Response]:
+                      headers: Optional[dict[str, str]] = None,
+                      max_bytes: Optional[int] = None) -> Optional[httpx.Response]:
     """Fetch a URL with SSRF and redirect-target validation (each hop re-checked).
 
-    *headers* are plain request headers (no credentials) and are sent on every hop."""
+    *headers* are plain request headers (no credentials) and are sent on every hop.
+    When *max_bytes* is set, stream the body and stop before buffering more than
+    that limit.  Redirects remain policy-checked by ``_guarded_http_stream``."""
+    if max_bytes is not None:
+        with _guarded_http_stream(url, timeout=timeout, headers=headers) as response:
+            if response is None:
+                return None
+            if response.status_code != 200:
+                return httpx.Response(response.status_code, headers=response.headers)
+            declared = response.headers.get("content-length")
+            if declared:
+                try:
+                    if int(declared) > max_bytes:
+                        logger.warning("Skills Hub response exceeds %d-byte limit for %s", max_bytes, url)
+                        return None
+                except (TypeError, ValueError):
+                    pass
+            body = bytearray()
+            for chunk in response.iter_bytes(chunk_size=64 * 1024):
+                body.extend(chunk)
+                if len(body) > max_bytes:
+                    logger.warning("Skills Hub response exceeds %d-byte limit for %s", max_bytes, url)
+                    return None
+            copied_headers = dict(response.headers)
+            # iter_bytes() returns decoded representation bytes.  Keeping the
+            # original wire encoding header would make the copied response try
+            # to decode the already-decoded body a second time.
+            copied_headers.pop("content-encoding", None)
+            copied_headers.pop("content-length", None)
+            return httpx.Response(response.status_code, headers=copied_headers, content=bytes(body))
+
     from tools.url_safety import SSRFConnectionBlocked
 
     current_url = url
@@ -174,6 +205,7 @@ def _guarded_http_stream(
     *,
     params: Optional[dict[str, str]] = None,
     timeout: int = _DEFAULT_HTTP_TIMEOUT,
+    headers: Optional[dict[str, str]] = None,
 ) -> Iterator[Optional[httpx.Response]]:
     """Stream one response with bounded, policy-checked redirects."""
     from tools.url_safety import SSRFConnectionBlocked, create_ssrf_safe_client
@@ -207,7 +239,7 @@ def _guarded_http_stream(
                     create_ssrf_safe_client(timeout=timeout, follow_redirects=False)
                 )
                 response = stack.enter_context(
-                    client.stream("GET", current_url, params=current_params)
+                    client.stream("GET", current_url, params=current_params, headers=headers)
                 )
             except (SSRFConnectionBlocked, httpx.HTTPError) as exc:
                 logger.debug("Skills Hub stream failed for %s: %s", current_url, exc)

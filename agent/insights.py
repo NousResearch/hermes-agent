@@ -525,7 +525,7 @@ class InsightsEngine:
             lines.append(f"  Active time:       ~{format_duration_compact(o['total_hours'] * 3600):<11}  Avg session:     ~{format_duration_compact(o['avg_session_duration'])}")
         lines += [f"  Avg msgs/session:  {o['avg_messages_per_session']:.1f}", ""]
         # Cost buckets: show included/unknown sessions instead of collapsing to $0.
-        cost_lines = self._cost_lines(o, ("  Estimated:          {}", "  Included:           {} session(s) (subscription — no provider invoice)",
+        cost_lines = self._cost_lines(o, ("  Estimated:          {} (list-price proxy; plan meters are authoritative)", "  Included:           {} session(s) (subscription — no provider invoice)",
                                           "  Unknown:            {} session(s) (no pricing data)"))
         if cost_lines:
             lines += self._section("💰 Cost") + cost_lines + [""]
@@ -584,7 +584,7 @@ class InsightsEngine:
         if o["total_hours"] > 0:
             lines.append(f"**Active time:** ~{format_duration_compact(o['total_hours'] * 3600)} | **Avg session:** ~{format_duration_compact(o['avg_session_duration'])}")
         lines.append("")
-        cost_parts = self._cost_lines(o, ("{} estimated", "{} included (subscription)", "{} unknown"))
+        cost_parts = self._cost_lines(o, ("{} estimated (list-price proxy)", "{} included (subscription)", "{} unknown"))
         if cost_parts:
             lines += [f"**Cost:** {' | '.join(cost_parts)}", ""]
         if report["models"]:

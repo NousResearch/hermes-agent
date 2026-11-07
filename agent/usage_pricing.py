@@ -34,6 +34,8 @@ _SUBCENT_THRESHOLD = Decimal("0.01")
 # Attached to every CostResult with status="included" so consumers can
 # distinguish "free because subscription" from "free because $0 pricing".
 _INCLUDED_NOTE = "subscription-included; no provider invoice for usage"
+# Attached to every estimated CostResult: a rate-card computation, not what a plan or invoice meters.
+_LIST_PRICE_NOTE = "list-price proxy; the provider or plan meter is the authoritative cost"
 
 
 def format_cost_label(amount: Decimal) -> str:
@@ -757,6 +759,8 @@ def estimate_usage_cost(
 
     if route.provider == "openrouter":
         notes.append("OpenRouter cost is estimated from the models API until reconciled.")
+    if status == "estimated":
+        notes.append(_LIST_PRICE_NOTE)
 
     return CostResult(
         amount_usd=amount, status=status, source=entry.source, label=label,

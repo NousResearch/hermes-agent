@@ -7,6 +7,7 @@ import logging
 import asyncio
 import base64
 import copy
+import contextlib
 import hashlib
 import json
 import os
@@ -55,6 +56,13 @@ def _provider_model_key(agent: Any) -> tuple[str, str]:
         (getattr(agent, "provider", "") or "").strip().lower(),
         (getattr(agent, "model", "") or "").strip(),
     )
+
+
+def _reset_computer_use_dedup(agent: Any, tool_name: str = "computer_use") -> None:
+    if tool_name == "computer_use" and (session_id := getattr(agent, "session_id", None)):
+        with contextlib.suppress(Exception):
+            from tools.computer_use.tool import reset_screenshot_dedup
+            reset_screenshot_dedup(session_id)
 
 
 class VisionMessagePrepMixin:
@@ -223,6 +231,7 @@ class VisionMessagePrepMixin:
                     "content — sending text summary",
                     tool_name, getattr(self, "provider", ""),
                 )
+                _reset_computer_use_dedup(self, tool_name)
                 return _multimodal_text_summary(result)
             key = _provider_model_key(self)
             if key in (getattr(self, "_no_list_tool_content_models", None) or ()):
@@ -231,11 +240,13 @@ class VisionMessagePrepMixin:
                     "content this session — sending text summary",
                     tool_name, key[0], key[1],
                 )
+                _reset_computer_use_dedup(self, tool_name)
                 return _multimodal_text_summary(result)
             return content
 
         summary = _multimodal_text_summary(result)
         if tool_name == "computer_use":
+            _reset_computer_use_dedup(self, tool_name)
             return json.dumps({
                 "error": (
                     "computer_use returned screenshot/image content, but the active "
@@ -291,6 +302,8 @@ class VisionMessagePrepMixin:
             )
             changed = True
 
+        if changed:
+            _reset_computer_use_dedup(self)
         return changed
 
     def _anthropic_preserve_dots(self) -> bool:

@@ -330,6 +330,48 @@ def test_bind_refused_for_other_reasons_still_fails(short_home: Path, monkeypatc
     assert not (home / "gateway.sock.path").exists()
 
 
+def test_home_answering_eperm_listens_on_private_fallback(short_home: Path, monkeypatch):
+    """sshfs bind mount (colima, #144696): bind() on the in-home path fails with EPERM. Bootstrap
+    treats a missing listener as fatal, so the server must move to the temp-dir socket + pointer."""
+    from hermes_cli.gateway_runtime_discovery import query_identify
+
+    home = short_home.resolve()
+    attempts = _refusing_start_unix_server(monkeypatch, refuse_under=home, err=errno.EPERM)
+
+    async def scenario():
+        server = GatewayControlServer(home, verb_handlers={"identify": lambda: {"pid": 12}})
+        assert await server.start()
+        try:
+            target = Path((home / "gateway.sock.path").read_text(encoding="utf-8"))
+            assert server._bind_path == target and target.name == "control.sock"
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, lambda: query_identify(home, timeout=3))
+        finally:
+            await server.stop()
+
+    assert _run(scenario()) == {"pid": 12}
+    assert attempts[0] == str(home / "gateway.sock") and attempts[-1].endswith("/control.sock")
+    assert not (home / "gateway.sock.path").exists()
+
+
+def test_socket_owned_by_another_user_does_not_fall_back(short_home: Path, monkeypatch):
+    # The ownership refusal is a PermissionError without an errno: a foreign inode at the socket
+    # name is a collision to report, not a filesystem that cannot hold sockets.
+    import os
+
+    home = short_home.resolve()
+    (home / "gateway.sock").touch()
+    attempts = _refusing_start_unix_server(monkeypatch, refuse_under=home, err=errno.EPERM)
+    monkeypatch.setattr(os, "getuid", lambda: os.stat(home).st_uid + 1)
+
+    async def scenario():
+        return await GatewayControlServer(home).start()
+
+    assert _run(scenario()) is False
+    assert attempts == []
+    assert not (home / "gateway.sock.path").exists()
+
+
 def test_long_home_end_to_end_via_pointer(tmp_path: Path):
     deep = tmp_path / ("p" * 120) / ".hermes"
     deep.mkdir(parents=True)

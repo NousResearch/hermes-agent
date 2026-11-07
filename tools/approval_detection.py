@@ -13,6 +13,7 @@ import re
 import shlex
 import tempfile
 import unicodedata
+from tools.shell_comment_context import ShellCommentContext, ShellSubstitutionDepth
 
 logger = logging.getLogger("tools.approval")
 
@@ -984,7 +985,7 @@ def _shell_tokens_with_spans(segment: str, start: int):
     for kind, i, _, _ in _scan_shell(segment, start):
         ch = segment[i]
         if kind == "char" and not quote:
-            if ch.isspace() and ch != "\n":
+            if ch in " \t":
                 if token_start is not None:
                     flush(i)
                     value, token_start = [], None
@@ -1258,7 +1259,7 @@ def _execution_flag_findings(command: str):
 
 
 def _skip_shell_whitespace(command: str, pos: int) -> int:
-    while pos < len(command) and command[pos].isspace():
+    while pos < len(command) and command[pos] in " \t\n":
         pos += 1
     return pos
 
@@ -1280,15 +1281,17 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
     escaped (the quoted-prose masker's historical behavior)."""
     n = len(text) if end is None else end
     quote: str | None = None
+    ansi = False  # inside $'...' ANSI-C quoting, where backslash escapes apply
+    context = ShellCommentContext()
     i = start
     while i < n:
         ch = text[i]
         kind, j = "char", i + 1
-        if comments and quote is None and _is_shell_comment_start(text, i):
+        if comments and quote is None and ch == "#" and context.starts_comment():
             kind, j = "comment", text.find("\n", i, n)
             if j < 0:
                 j = n
-        elif quote != "'" and ch == "\\" and i + 1 < n:
+        elif (quote != "'" or ansi) and ch == "\\" and i + 1 < n:
             kind, j = "esc", i + 2
         elif ch == quote or (quote is None and ch in "'\""):
             kind = "quote"
@@ -1307,19 +1310,23 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
                 yield ("subst", i, None, quote)
                 return
         yield (kind, i, j, quote)
+        ansi_open = ch == "'" and context.previous == "$"
+        context.advance(text, kind, i, j, quote)
         if kind == "quote":
-            quote = None if quote else ch
+            if quote:
+                quote, ansi = None, False
+            else:
+                ansi = ansi_open
+                quote = ch
         i = j
 
 
 def _scan_dollar_paren_end(command: str, start: int) -> int | None:
     """Return the offset after a balanced ``$(...)`` command substitution."""
-    depth = 1
-    for kind, i, _, quote in _scan_shell(command, start + 2):
-        if kind == "char" and not quote:
-            depth += command.startswith("$(", i) - (command[i] == ")")
-            if depth == 0:
-                return i + 1
+    context = ShellSubstitutionDepth()
+    for kind, i, j, quote in _scan_shell(command, start + 2, subst="uq", brace=True, comments=True):
+        if context.advance(command, kind, i, j, quote):
+            return j
     return None
 
 
@@ -1333,7 +1340,7 @@ def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
     """Read one shell word without executing expansions."""
     start = end = _skip_shell_whitespace(command, pos)
     for kind, i, j, quote in _scan_shell(command, start, subst="u", brace=True):
-        if kind == "char" and quote is None and (command[i].isspace() or command[i] in ";&|<>()"):
+        if kind == "char" and quote is None and command[i] in " \t\n;&|<>()":
             break
         end = j
     return (start, end, command[start:end])
@@ -1399,8 +1406,17 @@ def _deobfuscate_shell_word_for_detection(word: str) -> str:
 
 
 def _is_shell_comment_start(command: str, index: int) -> bool:
-    return command[index] == "#" and (index == 0 or command[index - 1].isspace()
-                                      or command[index - 1] in ";&|()<>")
+    """Use the same lexical decision for callers inspecting an individual word.
+
+    The scanner maintains its own state; this query is only needed at candidate
+    command/word starts, never once per character in the hot scanning loop.
+    """
+    if command[index] != "#":
+        return False
+    for kind, start, end, _ in _scan_shell(command, comments=True, subst="uq", brace=True):
+        if start <= index < end:
+            return kind == "comment" and start == index
+    return False
 
 
 def _iter_shell_command_starts(command: str):
@@ -1419,7 +1435,7 @@ def _iter_shell_command_starts(command: str):
                 # `{` opens a brace group only as its own word (after whitespace or a separator): `${IFS}`
                 # is a parameter expansion and `-{delete,print}` a brace-expansion word, and a start
                 # marked inside either splits the word the flat patterns need to see intact.
-                if command[i] in "(;\n" or (command[i] == "{" and (i == 0 or command[i - 1].isspace()
+                if command[i] in "(;\n" or (command[i] == "{" and (i == 0 or command[i - 1] in " \t\n"
                                                                    or command[i - 1] in "(;&|)")):
                     starts.append(i + 1)
                 elif command[i] in "&|":
@@ -1641,7 +1657,7 @@ def _deny_command_variants(command: str):
             # Collapse only unquoted inter-word whitespace; quoted prose is data.
             parts = []
             for kind, i, j, quote in _scan_shell(tail):
-                if kind == "char" and quote is None and tail[i].isspace():
+                if kind == "char" and quote is None and tail[i] in " \t\n":
                     if not parts or parts[-1] != " ":
                         parts.append(" ")
                 else:

@@ -96,7 +96,8 @@ def test_validate_workdir_still_blocks_metachars_in_unicode_paths():
 def test_literal_sudo_executables_receive_password_stdin(monkeypatch):
     monkeypatch.setenv("SUDO_PASSWORD", "testpass")
     for prefix in ("", "VAR='a b' ", "env ", "'/usr/bin/env' -i -u UNUSED X=1 ",
-                   "env --unset=UNUSED --chdir /tmp -- X=1 ", "env -uUNUSED -C/tmp "):
+                   "env --unset=UNUSED --chdir /tmp -- X=1 ", "env -uUNUSED -C/tmp ",
+                   "printf SAFE\r#x; ", "printf SAFE\u00a0#x; "):
         for executable in ("sudo", "/usr/bin/sudo", "'/opt/my tools/sudo'", '"/usr/bin/sudo"'):
             command = prefix + executable + " -u root true"
             rewritten, stdin = terminal_tool_sudo._transform_sudo_command(command)

@@ -7744,7 +7744,7 @@ def _ladder_provider_fallback(failure: aux_errors.Failure, route: _LadderRoute, 
 
 
 def _aux_recovery_ladder(
-    first_err: Exception, *, client: Any, kwargs: dict[str, Any], task: Optional[str],
+    first_err: Exception | aux_errors.Failure, *, client: Any, kwargs: dict[str, Any], task: Optional[str],
     async_mode: bool, base_info: str, resolved_provider: str, resolved_model: Optional[str],
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], final_model: Optional[str], max_tokens: Optional[int],

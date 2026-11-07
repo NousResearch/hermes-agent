@@ -6,6 +6,7 @@ provider-specific work lives in build_kwargs (max_tokens, reasoning, extra_body)
 
 import hashlib
 import json
+import logging
 import re
 import string
 from typing import Any
@@ -16,11 +17,16 @@ from agent.reasoning_effort import (
     clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
 from agent.message_metadata import DATA_USE, MESSAGE_UID, data_use_requirement
-from agent.message_sanitization import coalesce_tool_call_id, normalize_finish_reason as _normalize_finish_reason
+from agent.message_sanitization import (
+    coalesce_tool_call_id, normalize_finish_reason as _normalize_finish_reason, tool_call_id_variants,
+    tool_result_id_variants,
+)
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+
+logger = logging.getLogger(__name__)
 
 # xAI reserves ``tool_search`` for its server-side tool (HTTP 400 on client
 # declarations); aliased on the wire, mapped back in normalize_response.
@@ -451,6 +457,67 @@ def _mistral_tool_id(key: str) -> str:
     return "".join(chars)
 
 
+# Some chat templates render at most one tool call per assistant turn. gpt-oss (Harmony) infers a tool
+# result's function from "the most recent assistant tool call", and Azure AI Foundry's gpt-oss deployments
+# reject a history where one assistant message carries several calls: HTTP 400 "Message has tool role, but
+# there was no previous assistant message with a tool call!". That breaks a fallback to such a model after a
+# primary that made parallel calls (the whole turn is lost). ``agent.single_tool_call_models`` (default
+# empty, i.e. unchanged) lists model-name markers whose wire copy gets each parallel batch split into one
+# assistant message per call, each followed by its own result. Stored history is untouched.
+def _single_tool_call_models() -> tuple[str, ...]:
+    """``agent.single_tool_call_models`` as lower-case markers. Read live; empty on any error."""
+    try:
+        from hermes_cli.config import load_config
+
+        markers = (load_config().get("agent") or {}).get("single_tool_call_models") or []
+        if isinstance(markers, str):
+            markers = [markers]
+        return tuple(str(m).strip().lower() for m in markers if str(m).strip())
+    except Exception:  # an unreadable config keeps the request unchanged
+        logger.warning("agent.single_tool_call_models: config not readable; batches not split", exc_info=True)
+        return ()
+
+
+def _route_requires_single_tool_calls(model: str | None) -> bool:
+    markers = _single_tool_call_models()
+    model_lower = (model or "").lower()
+    return bool(markers) and any(marker in model_lower for marker in markers)
+
+
+def _split_parallel_tool_calls(messages: list[Any]) -> list[Any]:
+    """Wire copy where every assistant message carries at most one tool call, each call immediately
+    followed by its result(s). The first split keeps the original message's content and reasoning; the
+    others are bare ``{"role": "assistant", "content": ""}`` calls. Results are matched alias-aware;
+    one that answers none of the calls stays at the end of the run, where it was."""
+    out: list[Any] = []
+    changed = False
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        calls = msg.get("tool_calls") if isinstance(msg, dict) and msg.get("role") == "assistant" else None
+        if not isinstance(calls, list) or len(calls) < 2:
+            out.append(msg)
+            i += 1
+            continue
+        j = i + 1
+        results = []
+        while j < len(messages) and isinstance(messages[j], dict) and messages[j].get("role") == "tool":
+            results.append(messages[j])
+            j += 1
+        for idx, tc in enumerate(calls):
+            head = dict(msg) if idx == 0 else {"role": "assistant", "content": ""}
+            head["tool_calls"] = [tc]
+            out.append(head)
+            variants = tool_call_id_variants(tc) if isinstance(tc, dict) else frozenset()
+            for res in [r for r in results if variants & tool_result_id_variants(r.get("tool_call_id"))]:
+                out.append(res)
+                results.remove(res)
+        out.extend(results)
+        changed = True
+        i = j
+    return out if changed else messages
+
+
 def _sanitize_message(
     msg: Any, strip_extra_content: bool, strip_reasoning: frozenset = frozenset(),
     native_reasoning_details_type: str | None = None, *, mistral_tool_ids: bool = False,
@@ -554,9 +621,11 @@ class ChatCompletionsTransport(ProviderTransport):
         sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning, native_type,
                                                  mistral_tool_ids=mistral_ids))
                            for m in messages]
-        if all(s is None for _, s in sanitized_pairs):
-            return messages
-        return [m if s is None else s for m, s in sanitized_pairs]
+        converted = (messages if all(s is None for _, s in sanitized_pairs)
+                     else [m if s is None else s for m, s in sanitized_pairs])
+        if _route_requires_single_tool_calls(kwargs.get("model")):
+            converted = _split_parallel_tool_calls(converted)
+        return converted
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Tools are already in OpenAI format — identity."""

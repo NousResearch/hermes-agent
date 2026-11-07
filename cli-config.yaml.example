@@ -1233,6 +1233,12 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 500
 
+  # Model-name markers for models whose chat template takes one tool call per
+  # assistant turn (gpt-oss). For a matching model, each parallel batch in the
+  # request is sent as one assistant message per call, each followed by its
+  # result. Stored history is unchanged. Default: [] (requests unchanged).
+  # single_tool_call_models: ["gpt-oss"]
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

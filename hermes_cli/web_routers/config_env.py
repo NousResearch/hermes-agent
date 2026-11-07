@@ -634,6 +634,14 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
         "name": name, "base_url": base_url, "model": model,
         "discover_models": bool(body.discover_models),
     })
+    # The runtime resolves the endpoint as ``api`` or ``url`` or ``base_url``
+    # (``agent.agent_init``), so a pre-v12 entry's stale ``api``/``url`` would
+    # keep outranking the ``base_url`` just saved — while the panel displays
+    # ``base_url`` first, so the UI shows the new host and requests still go
+    # to the old one. ``base_url`` is required on every save, so dropping
+    # both legacy spellings here is always safe. See #150116.
+    entry.pop("api", None)
+    entry.pop("url", None)
     # A Responses-only or Anthropic-compatible host 404s on the runtime's
     # Chat Completions default, so the panel pins the transport the same way
     # ``hermes model`` does (``api_mode``; the runtime also reads the v12

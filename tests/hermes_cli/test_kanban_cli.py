@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import pytest
 from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_transfer as kt
 
 
 @pytest.fixture
@@ -38,6 +40,84 @@ def kanban_home(tmp_path, monkeypatch):
 # run_slash smoke tests (end-to-end via the same entry both CLI and gateway use)
 # ---------------------------------------------------------------------------
 
+
+
+def test_local_board_activations_update_pin_after_persistence(kanban_home, monkeypatch, capsys):
+    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+    current = kanban_home / "kanban" / "current"
+    kb.create_board("old-board")
+    kb.create_board("next-board")
+    kb.set_current_board("old-board")
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "old-board")
+
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    kc.build_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(["kanban", "boards", "switch", "next-board"])
+    assert kc.kanban_command(args) == 0
+    assert os.environ["HERMES_KANBAN_BOARD"] == "next-board"
+    assert current.read_text(encoding="utf-8") == "next-board\n"
+    assert capsys.readouterr().out == "Active board is now 'next-board'.\n"
+
+    handler = CLICommandsMixin()
+    handler._handle_kanban_command("/kanban boards create created --switch")
+    assert os.environ["HERMES_KANBAN_BOARD"] == "created"
+    assert current.read_text(encoding="utf-8") == "created\n"
+    assert "Switched to 'created'." in capsys.readouterr().out
+
+    kb.create_board("portable")
+    with kbc.connect_closing(board="portable"):
+        pass
+    archive = kt.export_board("portable", str(kanban_home / "portable"))["archive"]
+    handler._handle_kanban_command(
+        f"/kanban boards import {json.dumps(archive)} --as imported --switch"
+    )
+    assert os.environ["HERMES_KANBAN_BOARD"] == "imported"
+    assert current.read_text(encoding="utf-8") == "imported\n"
+    assert "Active board is now 'imported'." in capsys.readouterr().out
+
+
+def test_shared_and_failed_board_activations_preserve_pin(kanban_home, monkeypatch):
+    current = kanban_home / "kanban" / "current"
+    kb.create_board("old-board")
+    kb.create_board("next-board")
+    kb.create_board("portable")
+    with kbc.connect_closing(board="portable"):
+        pass
+    archive = kt.export_board("portable", str(kanban_home / "portable"))["archive"]
+    kb.set_current_board("old-board")
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "old-board")
+
+    kb.set_current_board("next-board")
+    assert os.environ["HERMES_KANBAN_BOARD"] == "old-board"
+    assert current.read_text(encoding="utf-8") == "next-board\n"
+    kb.set_current_board("old-board")
+
+    gateway_commands = (
+        ("boards switch next-board", "next-board"),
+        ("boards create created --switch", "created"),
+        (f"boards import {json.dumps(archive)} --as imported --switch", "imported"),
+    )
+    for command, persisted in gateway_commands:
+        kb.set_current_board("old-board")
+        kc.run_slash(command)
+        assert os.environ["HERMES_KANBAN_BOARD"] == "old-board"
+        assert current.read_text(encoding="utf-8") == f"{persisted}\n"
+
+    kb.set_current_board("old-board")
+    output = kc.run_slash("boards switch missing-board", update_process_env=True)
+    assert "does not exist" in output
+    assert os.environ["HERMES_KANBAN_BOARD"] == "old-board"
+    assert current.read_text(encoding="utf-8") == "old-board\n"
+
+    def _fail(_slug):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(kb, "set_current_board", _fail)
+    output = kc.run_slash("boards switch next-board", update_process_env=True)
+    assert output == "error: disk full"
+    assert os.environ["HERMES_KANBAN_BOARD"] == "old-board"
+    assert current.read_text(encoding="utf-8") == "old-board\n"
 
 
 def test_kanban_list_json_includes_session_id(kanban_home):

@@ -7,6 +7,7 @@ any actual MCP servers or API keys.
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -236,6 +237,87 @@ class TestMcpAdd:
         assert srv["env"] == {
             "MY_API_KEY": "secret123",
             "DEBUG": "true",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Tests: cmd_mcp_configure
+# ---------------------------------------------------------------------------
+
+class TestMcpConfigure:
+
+    def test_selecting_all_preserves_tool_settings_and_allowlist(self, tmp_path, monkeypatch):
+        """Selecting every currently discovered tool must not widen future access or reset utilities."""
+        _seed_config(tmp_path, {
+            "demo": {
+                "command": "/bin/true",
+                "tools": {
+                    "include": ["search_tasks", "get_task"],
+                    "prompts": False,
+                    "resources": False,
+                },
+            },
+        })
+        monkeypatch.setattr(sys, "stdin", type("Stdin", (), {"isatty": lambda self: True})())
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, cfg: [
+                ("search_tasks", "read"),
+                ("get_task", "read"),
+                ("create_task", "write"),
+            ],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.curses_ui.curses_checklist",
+            lambda title, labels, pre_selected: set(range(len(labels))),
+        )
+
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_config import cmd_mcp_configure
+
+        cmd_mcp_configure(_make_args(name="demo"))
+
+        tools = load_config()["mcp_servers"]["demo"]["tools"]
+        assert tools == {
+            "include": ["search_tasks", "get_task", "create_task"],
+            "prompts": False,
+            "resources": False,
+        }
+
+    def test_clearing_exclude_keeps_other_tool_settings(self, tmp_path, monkeypatch):
+        """Removing the last exclude must leave prompt and resource switches intact."""
+        _seed_config(tmp_path, {
+            "demo": {
+                "command": "/bin/true",
+                "tools": {
+                    "exclude": ["create_task"],
+                    "prompts": False,
+                    "resources": False,
+                },
+            },
+        })
+        monkeypatch.setattr(sys, "stdin", type("Stdin", (), {"isatty": lambda self: True})())
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, cfg: [
+                ("search_tasks", "read"),
+                ("get_task", "read"),
+                ("create_task", "write"),
+            ],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.curses_ui.curses_checklist",
+            lambda title, labels, pre_selected: set(range(len(labels))),
+        )
+
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_config import cmd_mcp_configure
+
+        cmd_mcp_configure(_make_args(name="demo"))
+
+        assert load_config()["mcp_servers"]["demo"]["tools"] == {
+            "prompts": False,
+            "resources": False,
         }
 
 

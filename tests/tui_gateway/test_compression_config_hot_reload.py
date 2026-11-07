@@ -7,10 +7,37 @@ the already-open session kept the computed threshold from agent creation.
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 from agent.context_compressor import ContextCompressor
+from agent.context_engine import ContextEngine
 from tui_gateway import server
+
+
+class _RealAbcEngine(ContextEngine):
+    """A REAL ContextEngine ABC implementor (not a SimpleNamespace): the E2E shape
+    of a plugin engine like LCM — satisfies the ABC, inherits nothing from
+    ContextCompressor. If the sync reaches into any compressor internals this
+    raises AttributeError, exactly like the field bug."""
+
+    def __init__(self):
+        self.threshold_tokens = 100_000
+        self.threshold_percent = 0.65
+        self.model_thresholds = {}
+
+    @property
+    def name(self) -> str:
+        return "lcm"
+
+    def update_from_response(self, usage) -> None:
+        return None
+
+    def should_compress(self, prompt_tokens=None) -> bool:
+        return False
+
+    def compress(self, messages, current_tokens=None, focus_topic=None, force=False, memory_context=""):
+        return list(messages)
 
 
 def _session_with_compressor(**compression_ctor):
@@ -326,3 +353,162 @@ def test_apply_live_compression_config_is_self_contained():
     _apply_live_compression_config(agent, {"compression": {"enabled": True}})
     assert agent.compression_enabled is True
     assert agent.codex_responses_native_compaction is False
+
+
+def test_external_context_engine_skips_compressor_hot_reload(monkeypatch, caplog):
+    """External engines (e.g. LCM) own compaction policy: live sync must leave
+    them alone. Regression: the god-file extraction assumed ContextCompressor
+    and logged ``'LCMEngine' object has no attribute
+    '_coerce_threshold_tokens_cap'`` on every config change."""
+    import logging
+
+    plugin_calls: list = []
+    engine = SimpleNamespace(
+        name="lcm",
+        threshold_tokens=100_000,
+        threshold_percent=0.65,
+        model_thresholds={},
+        update_model=lambda *a, **k: plugin_calls.append((a, k)),
+    )
+    agent = SimpleNamespace(
+        model="m",
+        provider="p",
+        context_compressor=engine,
+        compression_enabled=True,
+        compression_idle_compact_after_seconds=0,
+        codex_responses_native_compaction=False,
+        codex_responses_compact_threshold=200_000,
+    )
+    session = {"agent": agent, "session_key": "session-external-engine"}
+    with caplog.at_level(logging.WARNING):
+        _sync_with_cfg(
+            monkeypatch,
+            session,
+            {"compression": {"threshold_tokens": 50_000, "tail_mode": "legacy"}},
+        )
+    assert "Could not apply live compression config" not in caplog.text
+    assert engine.threshold_tokens == 100_000
+    assert not hasattr(engine, "tail_mode")
+    assert plugin_calls == []
+
+
+def test_external_context_engine_still_adopts_the_context_length_pin(monkeypatch):
+    """``model.context_length`` is an AGENT-level pin, so an external engine must not
+    strand it: the guard that skips compressor internals used to return before the pin
+    block, leaving a live session reporting its construction-time window forever."""
+    engine = SimpleNamespace(
+        name="lcm",
+        threshold_tokens=100_000,
+        threshold_percent=0.65,
+        model_thresholds={},
+        update_model=lambda *a, **k: None,
+    )
+    agent = SimpleNamespace(
+        model="pin-test-model",
+        provider="",
+        base_url="",
+        context_compressor=engine,
+        compression_enabled=True,
+        compression_idle_compact_after_seconds=0,
+        codex_responses_native_compaction=False,
+        codex_responses_compact_threshold=200_000,
+        _config_context_length=1_000_000,  # the construction-time pin
+    )
+    session = {"agent": agent, "session_key": "session-external-pin"}
+
+    _sync_with_cfg(
+        monkeypatch,
+        session,
+        {"model": {"default": "pin-test-model", "context_length": 400_000}, "compression": {}},
+    )
+
+    assert agent._config_context_length == 400_000
+    # The engine keeps owning its own policy: no compressor internals written on it.
+    assert not hasattr(engine, "tail_mode")
+    assert engine.threshold_tokens == 100_000
+
+
+def test_removing_context_length_clears_the_pin_on_an_external_engine(monkeypatch):
+    """The mirror half of the two-copy contract: dropping the key must stop the agent
+    claiming a ceiling the user removed, on an external engine too."""
+    engine = SimpleNamespace(
+        name="lcm",
+        threshold_tokens=100_000,
+        threshold_percent=0.65,
+        model_thresholds={},
+        update_model=lambda *a, **k: None,
+    )
+    agent = SimpleNamespace(
+        model="pin-test-model",
+        provider="",
+        base_url="",
+        context_compressor=engine,
+        compression_enabled=True,
+        compression_idle_compact_after_seconds=0,
+        codex_responses_native_compaction=False,
+        codex_responses_compact_threshold=200_000,
+        _config_context_length=1_000_000,
+    )
+    session = {"agent": agent, "session_key": "session-external-pin-unset"}
+
+    _sync_with_cfg(monkeypatch, session, {"model": {}, "compression": {}})
+
+    assert agent._config_context_length is None
+
+
+def test_failed_apply_retries_next_turn_instead_of_latching(monkeypatch):
+    """A failed live-apply must not latch ``config_compression_seen``: the same
+    config must be retried next turn, so a transient failure recovers instead of
+    silencing itself for the life of the session."""
+    session, _ = _neutral_session()
+    cfg = {"model": {"context_length": 600_000}, "compression": {}}
+
+    calls = []
+    real_apply = server._apply_live_compression_config
+
+    def flaky_apply(agent, apply_cfg):
+        calls.append(apply_cfg)
+        if len(calls) == 1:
+            raise RuntimeError("transient")
+        return real_apply(agent, apply_cfg)
+
+    monkeypatch.setattr(server, "_apply_live_compression_config", flaky_apply)
+
+    _sync_with_cfg(monkeypatch, session, cfg)
+    assert "config_compression_seen" not in session
+
+    _sync_with_cfg(monkeypatch, session, cfg)
+    assert session["config_compression_seen"] == server._tui_compression_config_signature(cfg)
+    assert len(calls) == 2
+
+
+def test_live_sync_against_a_real_abc_engine(monkeypatch, caplog):
+    """E2E shape of a plugin engine like LCM: a REAL ContextEngine ABC implementor
+    (no ContextCompressor inheritance) through the real sync entrypoint. The live
+    apply must skip compressor internals without warning, still adopt the
+    agent-level pin, and latch the signature."""
+    engine = _RealAbcEngine()
+    assert not isinstance(engine, ContextCompressor)
+    agent = SimpleNamespace(
+        model="pin-test-model",
+        provider="",
+        base_url="",
+        context_compressor=engine,
+        compression_enabled=True,
+        compression_idle_compact_after_seconds=0,
+        codex_responses_native_compaction=False,
+        codex_responses_compact_threshold=200_000,
+    )
+    session = {"agent": agent, "session_key": "session-real-abc-engine"}
+    cfg = {"model": {"context_length": 400_000}, "compression": {"tail_mode": "legacy"}}
+
+    with caplog.at_level(logging.WARNING):
+        _sync_with_cfg(monkeypatch, session, cfg)
+
+    assert "Could not apply live compression config" not in caplog.text
+    assert agent._config_context_length == 400_000
+    assert engine.threshold_tokens == 100_000
+    assert engine.threshold_percent == 0.65
+    assert engine.model_thresholds == {}
+    assert not hasattr(engine, "tail_mode")
+    assert session["config_compression_seen"] == server._tui_compression_config_signature(cfg)

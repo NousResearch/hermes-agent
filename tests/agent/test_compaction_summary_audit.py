@@ -9,6 +9,12 @@ budget, #96603, is unchanged), redaction-safe, and telemetry-visible.
 
 from __future__ import annotations
 
+# Pin the entry-point bootstrap before pytest's per-test real-home guard installs:
+# _generate_summary lazily imports agent.conversation_loop, whose import chain runs
+# hermes_bootstrap's import-time interrupted-update check (a stat under the checkout's
+# git dir) — refused if that first import happens inside a test on a dev box whose
+# checkout lives under the real home (pattern: test_codex_happy_eyeballs.py).
+import hermes_bootstrap
 from unittest.mock import MagicMock, patch
 
 from agent.compaction_summary_audit import (

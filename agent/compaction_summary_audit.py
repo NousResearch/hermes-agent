@@ -18,12 +18,12 @@ raw form is intentionally absent from the summary, so it is excluded rather than
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable, Sequence, Tuple
+from typing import Any, Iterable, Sequence
 
 # Identifier classes the lean anchor index does not cover: dashed UUIDs and
 # host:port endpoints (its "commits" class is undashed hex only, its "urls" class
 # requires a scheme).
-EXTRA_AUDIT_PATTERNS: list[Tuple[str, re.Pattern[str], int]] = [
+EXTRA_AUDIT_PATTERNS: list[tuple[str, re.Pattern[str], int]] = [
     ("uuids", re.compile(r"\b[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\b"), 40),
     ("hosts", re.compile(r"\b(?:[A-Za-z0-9-]+\.)+[a-zA-Z]{2,}:\d{2,5}\b"), 30),
     ("hexids", re.compile(r"\b(?:0x)?[0-9a-f]{24,64}\b"), 30),
@@ -42,8 +42,8 @@ REPAIR_HEADING = "## Recovered Identifiers (verbatim audit)"
 
 
 def harvest_identifiers(
-    region_text: str, patterns: Iterable[Tuple[str, re.Pattern[str], int]]
-) -> list[Tuple[str, int]]:
+    region_text: str, patterns: Iterable[tuple[str, re.Pattern[str], int]]
+) -> list[tuple[str, int]]:
     """``(identifier, frequency)`` ranked most-frequent-first, deduplicated."""
     counts: dict[str, int] = {}
     for _label, pattern, _cap in patterns:
@@ -57,7 +57,7 @@ def harvest_identifiers(
 def find_missing_identifiers(
     region_text: str,
     summary_text: str,
-    patterns: Sequence[Tuple[str, re.Pattern[str], int]],
+    patterns: Sequence[tuple[str, re.Pattern[str], int]],
 ) -> list[str]:
     """Identifiers present in the region but absent from the summary, verbatim.
 
@@ -79,7 +79,7 @@ def find_missing_identifiers(
 def audit_and_repair_summary(
     summary: str,
     region_text: str,
-    patterns: Sequence[Tuple[str, re.Pattern[str], int]],
+    patterns: Sequence[tuple[str, re.Pattern[str], int]],
     *,
     pending_ask: str | None = None,
 ) -> tuple[str, dict[str, Any]]:

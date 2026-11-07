@@ -12,7 +12,15 @@ logged as a recovery (#112387 review caveat).
 
 from __future__ import annotations
 
+import json
 import os
+
+# Pin run_agent (and its hermes_bootstrap chain) before pytest's per-test real-home
+# guard installs: run_agent's module body repeats the interrupted-update restore
+# (a stat under the checkout's git dir) — refused if that first import happens inside
+# a test on a dev box whose checkout lives under the real home (pattern:
+# test_codex_happy_eyeballs.py). CI checkouts live outside the home either way.
+import run_agent  # noqa: F401
 import threading
 import time
 from pathlib import Path

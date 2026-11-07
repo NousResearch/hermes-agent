@@ -54,7 +54,7 @@ import {
   useGroupCapability
 } from './canonical-group-capabilities'
 import type { GroupCreationEngine } from './canonical-group-capabilities'
-import { createGroupAcrossConnections, type GroupCreationIntent, usePeerTargets } from './canonical-group-peers'
+import { createGroupAcrossConnections, type GroupCreationIntent, peerSetupText, usePeerTargets } from './canonical-group-peers'
 import { refreshGatewayGroupRooms, registerCanonicalGroup } from './canonical-group-registry'
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
 import { canonicalGroupCreateError, createCanonicalGroup } from './canonical-groups'
@@ -1365,7 +1365,7 @@ function GroupEngineNote({ connectionId, engine, selected, reason, owner, ownerC
       {engine === 'gateway-peer' ? b.crossGateway.gatewayPeer(owner, localOwner) : engine === 'checking' ? b.crossGateway.checkingPeers :
         engine === 'unavailable' ? (reason === 'unreachable' ? b.crossGateway.peerCheckFailed(owner, localOwner) : b.canonical.driverUnavailable) : engine === 'elsewhere' ? b.crossGateway.selectionElsewhere(connectionName(selected[0])) : b.crossGateway.desktopDriven}
       {desktopDriven && reason === 'default_profile_required' && <span> {b.crossGateway.namedProfileFallback}</span>}
-      {desktopDriven && reason && !['peer_owner_unavailable', 'default_profile_required'].includes(reason) && <span> {b.canonical.peerTargetSetup.replace('{connection}', localOwner ? b.bot.thisDevice : owner).replace('{reason}', reason)}</span>}
+      {desktopDriven && reason && !['peer_owner_unavailable', 'default_profile_required'].includes(reason) && <span> {peerSetupText(reason, localOwner ? b.bot.thisDevice : owner, b.canonical)}</span>}
     </p>
   )
 }

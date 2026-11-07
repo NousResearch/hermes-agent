@@ -174,6 +174,84 @@ class TestWriteToSandbox:
         ]
         assert _write_to_sandbox("data", "/tmp/hermes-results/np.txt", env) is True
 
+
+class TestHostSpilloverPermissions:
+    """The host spill path must be owner-only, like the sandbox path.
+
+    A spill file holds raw tool output. The output of ``cat``, ``env`` or an
+    MCP call can carry a live credential, so the archive must not be readable
+    by other local accounts. ``write_bytes`` applies the process umask at
+    create time, which under the default 0022 leaves the file 0644 in a 0755
+    directory.
+    """
+
+    def test_spill_file_is_not_world_readable(self, tmp_path, monkeypatch):
+        import stat
+
+        from tools.tool_result_storage import _write_to_spillover
+
+        monkeypatch.setattr(
+            "tools.tool_result_storage.get_spillover_dir",
+            lambda: tmp_path / "cache" / "spillover",
+        )
+        path = _write_to_spillover("payload", "tc_perm.txt")
+        assert path is not None
+
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+        assert mode == 0o600, f"spill file mode {oct(mode)} is not 0600"
+        assert not (mode & stat.S_IROTH), "spill file is readable by other users"
+
+    def test_spill_dir_is_owner_only(self, tmp_path, monkeypatch):
+        import stat
+
+        from tools.tool_result_storage import _write_to_spillover
+
+        monkeypatch.setattr(
+            "tools.tool_result_storage.get_spillover_dir",
+            lambda: tmp_path / "cache" / "spillover",
+        )
+        path = _write_to_spillover("payload", "tc_perm_dir.txt")
+        assert path is not None
+
+        dir_mode = stat.S_IMODE(os.stat(os.path.dirname(path)).st_mode)
+        assert dir_mode == 0o700, f"spill dir mode {oct(dir_mode)} is not 0700"
+
+    def test_pre_existing_permissive_dir_is_repaired(self, tmp_path, monkeypatch):
+        """A dir left 0755 by an earlier release is tightened on the next write."""
+        import stat
+
+        from tools.tool_result_storage import _write_to_spillover
+
+        spill_dir = tmp_path / "cache" / "spillover"
+        spill_dir.mkdir(parents=True)
+        os.chmod(spill_dir, 0o755)
+        monkeypatch.setattr(
+            "tools.tool_result_storage.get_spillover_dir",
+            lambda: spill_dir,
+        )
+        path = _write_to_spillover("payload", "tc_perm_repair.txt")
+        assert path is not None
+
+        dir_mode = stat.S_IMODE(os.stat(spill_dir).st_mode)
+        assert dir_mode == 0o700, f"spill dir mode {oct(dir_mode)} was not repaired"
+
+    def test_content_survives_private_mode(self, tmp_path, monkeypatch):
+        """Tightening the mode must not alter the archived bytes: the model is
+        pointed at this path and reads it back, so a truncated or re-encoded
+        archive is a silent data loss."""
+        from tools.tool_result_storage import _write_to_spillover
+
+        monkeypatch.setattr(
+            "tools.tool_result_storage.get_spillover_dir",
+            lambda: tmp_path / "cache" / "spillover",
+        )
+        payload = "héllo wörld ✓\x00binary" * 10
+        path = _write_to_spillover(payload, "tc_perm_bytes.txt")
+        assert path is not None
+        with open(path, "rb") as fh:
+            assert fh.read() == payload.encode("utf-8")
+
+
 class TestResolveStorageDir:
     def test_defaults_to_storage_dir_without_env(self):
         assert _resolve_storage_dir(None) == STORAGE_DIR

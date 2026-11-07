@@ -16,6 +16,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+from contextlib import suppress
 
 from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAULT_BUDGET
 
@@ -196,13 +197,33 @@ def _write_to_spillover(content: str, filename: str):
     The write is size-verified before the caller tells the model "Full output saved":
     a partially-flushed file (quota, ENOSPC race) fails closed to the bounded inline
     truncation instead of referencing an archive that silently lost bytes.
+
+    The archive is owner-only (dir 0700, file 0600). A spill file holds raw tool
+    output — the output of ``cat``, ``env``, or an MCP call can carry a live
+    credential — and the sandbox path already writes owner-only
+    (``_write_to_sandbox`` uses ``_private_dirs_cmd``). The host path was the
+    odd one out: ``write_bytes`` applies the process umask at create time, so
+    under the default 0022 every host spill file was 0644 in a 0755 directory,
+    readable by every local account. The mode is set on the fd rather than with
+    a later chmod, because a later chmod leaves a read window.
     """
     data = content.encode("utf-8", errors="replace")
     try:
         spill_dir = get_spillover_dir()
         spill_dir.mkdir(parents=True, exist_ok=True)
+        # mkdir() applies the umask; tighten the dir itself so a pre-existing
+        # permissive dir is repaired on the next write.
+        with suppress(OSError):
+            os.chmod(spill_dir, 0o700)
         path = spill_dir / filename
-        path.write_bytes(data)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+        except BaseException:
+            with suppress(OSError):
+                path.unlink()
+            raise
         persisted_size = os.stat(path).st_size
     except OSError as exc:
         logger.warning("Spillover write failed for %s: %s", filename, exc)

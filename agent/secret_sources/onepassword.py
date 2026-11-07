@@ -37,7 +37,7 @@ _DEFAULT_TOKEN_ENV = "OP_SERVICE_ACCOUNT_TOKEN"
 # holds every provider credential). OP_SESSION_* and the token are added
 # dynamically in _op_child_env().
 _OP_ENV_ALLOWLIST = (
-    "PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SystemRoot",
+    "PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SYSTEMROOT",
     "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "OP_CONFIG_DIR",
     "OP_ACCOUNT", "OP_CONNECT_HOST", "OP_CONNECT_TOKEN",
     # Lets a user skip op's desktop-app integration probe (which can hang with

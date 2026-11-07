@@ -191,7 +191,7 @@ App = Callable[[Request], Response]
 @dataclass
 class Hit:
     host: str
-    kind: str  # "request" | "refused" | "eof" | "auth-required" | "tls-rejected" | "tunnel"
+    kind: str  # "request" | "refused" | "eof" | "auth-required" | "tls-rejected" | "tunnel" | "tunnel-failed"
     method: str = ""
     path: str = ""
     status: int = 0
@@ -459,7 +459,12 @@ class EdgeProxy:
             app = self.routes.get(host)
             if app is None and self.tunnel_unrouted and method == "CONNECT":
                 port = int(target.rsplit(":", 1)[1]) if ":" in target else 443
-                upstream = socket.create_connection((host, port), timeout=30)
+                try:
+                    upstream = socket.create_connection((host, port), timeout=30)
+                except OSError as exc:
+                    self.hits.append(Hit(host, "tunnel-failed", method, target, 502, str(exc)[:200]))
+                    sock.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    return
                 self.hits.append(Hit(host, "tunnel", method, target, 200))
                 sock.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
                 sock.settimeout(None)

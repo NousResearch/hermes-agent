@@ -22,6 +22,7 @@ from tests.e2e.core.upgrade.network import _netedge as N
 from tests.e2e.core.upgrade.network import _seed as S
 
 pytestmark = [
+    pytest.mark.allow_network,  # the edge tunnels the hosts it does not fake to the real ones
     pytest.mark.platforms("linux"),
     # Every `hermes update` here targets a throwaway sandboxed install, never the real checkout.
     pytest.mark.live_system_guard_bypass,
@@ -59,6 +60,8 @@ def test_stable_update_from_the_previous_release_lands_on_the_next_release(inst)
     landed = inst.head()
     assert landed != tip, "stable subscriber was moved to the unreleased main tip\n" + r.report(inst)
     assert landed == head, f"stable update landed on {landed}, not the released {head}\n" + r.report(inst)
+    failed = [str(h) for h in edge.proxy.hits if h.kind == "tunnel-failed"]
+    assert not failed, f"the edge could not reach a real host the update needed: {failed}\n" + r.report(inst)
     reads = [h.path for h in edge.proxy.requests(S.GITHUB_API)]
     assert LATEST in reads, f"the latest release was not read through the proxy: {reads}\n" + r.report(inst)
     v = inst.version_works()

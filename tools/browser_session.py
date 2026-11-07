@@ -6,10 +6,11 @@ CDP override (live ``/browser connect`` > ``BROWSER_CDP_URL`` > ``browser.cdp_ur
 sidecar (private URL, never the real profile) > cloud provider (``create_session``; on failure a LOCAL
 session marked ``fallback_from_cloud``) > local.
 
-The local branch is NOT itself a fallback chain. It serves the consented real profile when
-``browser.use_real_profile`` is on, else a fresh browser on the configured engine: the packaged Chromium
-by default, or Lightpanda only when ``browser.engine: lightpanda`` is set. Lightpanda is a configured
-engine choice, never a rung tried automatically.
+The local branch is NOT itself a fallback chain. It tries the consented real profile when
+``browser.use_real_profile`` is on, and otherwise (consent off, the profile can't load, or a
+no-profile engine like Lightpanda) runs a fresh signed-out browser on the configured engine: the
+packaged Chromium by default, or Lightpanda only when ``browser.engine: lightpanda`` is set.
+Lightpanda is a configured engine choice, never a rung tried automatically.
 
 State lives here; sibling modules (``browser_session_*``) late-import this module inside functions.
 """

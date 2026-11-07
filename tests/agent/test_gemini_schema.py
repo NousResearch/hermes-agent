@@ -238,3 +238,61 @@ class TestAdapterWireShape:
         v1 = decl("https://generativelanguage.googleapis.com/v1")
         assert "parametersJsonSchema" not in v1
         assert v1["parameters"]["properties"]["g"]["anyOf"]  # legacy translator still applied
+
+    def test_legacy_requests_inline_refs_without_losing_argument_shape(self):
+        from agent.gemini_native_adapter import GeminiNativeClient
+
+        for base_url in (
+            "https://generativelanguage.googleapis.com/v1",
+            "https://aiplatform.googleapis.com/v1beta1/publishers/google",
+        ):
+            for definitions_key in ("$defs", "definitions"):
+                params = {
+                    "type": "object",
+                    "properties": {"task": {
+                        "$ref": f"#/{definitions_key}/Task~1Model", "description": "Tool-specific task",
+                    }},
+                    "required": ["task"],
+                    definitions_key: {"Task/Model": {
+                        "type": "object", "description": "Generic task",
+                        "properties": {"title": {"$ref": f"#/{definitions_key}/Title"}},
+                        "required": ["title"],
+                    }, "Title": {"type": "string"}},
+                }
+                original = copy.deepcopy(params)
+                client = GeminiNativeClient(api_key="test", base_url=base_url)
+                captured = {}
+                client._http = type("H", (), {"post": lambda self, url, json, headers, timeout: captured.update(json) or
+                                      type("R", (), {"status_code": 200, "json": lambda self: {"candidates": []}})()})()
+                client._create_chat_completion(
+                    model="gemini-2.5-flash", messages=[{"role": "user", "content": "hi"}],
+                    tools=[{"type": "function", "function": {"name": "task", "parameters": params}}],
+                )
+                declaration = captured["tools"][0]["functionDeclarations"][0]
+                assert "parametersJsonSchema" not in declaration
+                assert declaration["parameters"] == {
+                    "type": "object", "required": ["task"], "properties": {"task": {
+                        "type": "object", "description": "Tool-specific task",
+                        "properties": {"title": {"type": "string"}}, "required": ["title"],
+                    }},
+                }
+                assert params == original
+
+    def test_legacy_recursive_and_unsupported_refs_preserve_resolvable_siblings(self):
+        params = {
+            "type": "object", "properties": {
+                "node": {"$ref": "#/$defs/Node"},
+                "external": {"$ref": "https://example.com/schema", "description": "External"},
+            },
+            "$defs": {"Node": {"type": "object", "properties": {
+                "name": {"type": "string"},
+                "child": {"$ref": "#/$defs/Node", "description": "Recursive child"},
+            }}},
+        }
+        cleaned = sanitize_gemini_tool_parameters(params)
+        assert cleaned["properties"]["node"]["properties"] == {
+            "name": {"type": "string"},
+            "child": {"type": "object", "description": "Recursive child"},
+        }
+        assert cleaned["properties"]["external"] == {"description": "External"}
+        assert prepare_gemini_tool_parameters(params) == params

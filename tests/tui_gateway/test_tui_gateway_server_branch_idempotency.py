@@ -56,6 +56,8 @@ def test_session_branch_idempotency_key_dedupes_retry(monkeypatch, tmp_path):
     lost must not leave two children behind. The hit answers the SAME result
     shape (title, parent, message_count) without re-copying the transcript."""
 
+    calls = {"birth": 0, "copy": 0}
+
     class ProfileDB:
         def __init__(self, db_path=None):
             pass
@@ -66,10 +68,14 @@ def test_session_branch_idempotency_key_dedupes_retry(monkeypatch, tmp_path):
         def get_next_title_in_lineage(self, current):
             return f"{current} (branch)"
 
+        def _create_fresh_session(self, new_key, **kwargs):
+            return self.create_session(new_key, **kwargs)
+
         def create_session(self, new_key, **kwargs):
-            pass
+            calls["birth"] += 1
 
         def append_messages_batch(self, session_id, messages, **kwargs):
+            calls["copy"] += 1
             return list(range(1, len(messages) + 1))
 
         def set_session_title(self, key, title):
@@ -130,6 +136,7 @@ def test_session_branch_idempotency_key_dedupes_retry(monkeypatch, tmp_path):
         assert second["result"]["stored_session_id"] == first_key
         assert second["result"]["title"] == "forked"
         assert second["result"]["parent"] == "parent-key"
+        assert calls == {"birth": 1, "copy": 1}
 
         # Only ONE child runtime exists besides the parent.
         children = [sid for sid, s in server._sessions.items() if sid != "parent"]

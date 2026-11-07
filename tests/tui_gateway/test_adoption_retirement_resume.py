@@ -413,3 +413,49 @@ def test_seed_compensation_preserves_fresh_retry_intent(gateway, monkeypatch, mo
     finally:
         if sibling is not None:
             sibling.close()
+
+
+@pytest.mark.parametrize('mode', ['success', 'collision', 'compensate'])
+def test_named_profile_real_registry_branch_fresh_contract(gateway, monkeypatch, mode):
+    from tests.tui_gateway.test_protocol import _stub_session_create_dependencies
+
+    mod, launch_db, profile_home = gateway
+    profile_path = profile_home / 'state.db'
+    with SessionDB(profile_path) as setup:
+        setup.create_session('named-parent', 'cli')
+        setup.append_message('named-parent', 'user', 'profile history')
+        if mode == 'collision':
+            setup.create_session('named-child', 'cli')
+            setup.append_message('named-child', 'user', 'unrelated')
+    launch_before = [tuple(row) for row in launch_db._conn.execute('SELECT * FROM sessions ORDER BY id')]
+    with SessionDB(profile_path) as before_db:
+        before = [[tuple(row) for row in before_db._conn.execute('SELECT * FROM ' + table + ' ORDER BY rowid')]
+                  for table in ('sessions', 'messages')]
+    seed = mod._seed_branch_row
+    _stub_session_create_dependencies(mod, monkeypatch)
+    monkeypatch.setattr(mod, '_seed_branch_row', seed)
+    monkeypatch.setattr(mod, '_profile_home', lambda profile: profile_home if profile == 'developer' else None)
+    monkeypatch.setattr(mod, '_new_session_key', lambda: 'named-child')
+    if mode == 'compensate':
+        original = SessionDB.append_messages_batch
+        def fail_named(self, session_id, messages, **kwargs):
+            if self.db_path == profile_path and session_id == 'named-child':
+                raise RuntimeError('named seed failure')
+            return original(self, session_id, messages, **kwargs)
+        monkeypatch.setattr(SessionDB, 'append_messages_batch', fail_named)
+    response = mod.handle_request({'id': 'named-branch', 'method': 'session.branch_stored',
+        'params': {'parent_session_id': 'named-parent', 'profile': 'developer', 'source': 'desktop'}})
+    with SessionDB(profile_path) as verified:
+        rows = [[tuple(row) for row in verified._conn.execute('SELECT * FROM ' + table + ' ORDER BY rowid')]
+                for table in ('sessions', 'messages')]
+        if mode == 'success':
+            assert not response.get('error'), response
+            assert [msg['content'] for msg in verified.get_messages('named-child')] == ['profile history']
+        elif mode == 'collision':
+            assert response.get('error'), response
+            assert rows == before
+        else:
+            assert not response.get('error'), response
+            assert verified.get_session('named-child') is None
+            assert rows == before
+    assert [tuple(row) for row in launch_db._conn.execute('SELECT * FROM sessions ORDER BY id')] == launch_before

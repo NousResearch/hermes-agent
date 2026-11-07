@@ -16,6 +16,27 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+def _hoist_misplaced_required(schema: Any) -> Any:
+    """Move a ``required`` list the model nested inside ``properties`` up to its object.
+
+    ``{"properties": {"a": {...}, "required": ["a"]}}`` is a common model slip; left as is,
+    jsonschema rejects the whole schema and the delegate_task call fails before any child runs."""
+    if isinstance(schema, list):
+        return [_hoist_misplaced_required(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    repaired = {key: _hoist_misplaced_required(value) for key, value in schema.items()}
+    properties = repaired.get("properties")
+    if isinstance(properties, dict):
+        nested = properties.get("required")
+        if isinstance(nested, list) and all(isinstance(name, str) for name in nested):
+            properties = {key: value for key, value in properties.items() if key != "required"}
+            repaired["properties"] = properties
+            existing = repaired.get("required") if isinstance(repaired.get("required"), list) else []
+            repaired["required"] = existing + [name for name in nested if name not in existing]
+    return repaired
+
+
 def coerce_output_schema(raw: Any) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """``(schema, None)`` when usable, ``(None, error)`` when not; ``None`` input
     passes through as ``(None, None)`` (no schema requested)."""
@@ -31,6 +52,7 @@ def coerce_output_schema(raw: Any) -> tuple[Optional[dict[str, Any]], Optional[s
             return None, "output_schema must be a JSON Schema object."
     if not isinstance(raw, dict):
         return None, f"output_schema must be a JSON Schema object, got {type(raw).__name__}."
+    raw = _hoist_misplaced_required(raw)
     try:
         from jsonschema.validators import validator_for  # type: ignore[import-untyped]
         validator_for(raw).check_schema(raw)

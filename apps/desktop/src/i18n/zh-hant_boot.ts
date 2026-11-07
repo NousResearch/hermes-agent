@@ -354,6 +354,10 @@ export const zhHantBoot = {
     setupSlowTitle: '設定花費的時間比平常久。',
     setupSlowBody: 'Hermes 仍在背景中啟動。',
     continueWithoutSetup: '略過設定並繼續'
+  },
+  sessionPins: {
+    pinFailed: '無法釘選工作階段',
+    unpinFailed: '無法取消釘選工作階段'
   }
 } satisfies Pick<
   TranslationOverrides,
@@ -365,4 +369,5 @@ export const zhHantBoot = {
   | 'updates'
   | 'install'
   | 'onboarding'
+  | 'sessionPins'
 >

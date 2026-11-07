@@ -98,6 +98,7 @@ export const arOverrides = {
   butterbar: arBoot.butterbar,
   promptNotices: arBoot.promptNotices,
   keepAwakeOffer: arBoot.keepAwakeOffer,
+  sessionPins: arBoot.sessionPins,
   titlebar: arChrome.titlebar,
   keybinds: arChrome.keybinds,
   language: arSettings.language,

@@ -26,7 +26,7 @@ from pathlib import Path
 from tools.binary_extensions import has_binary_extension
 from agent.file_safety import get_write_denied_error
 from tools.file_operations_common import (
-    ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
+    ExecuteResult, PatchResult, ReadResult, ReplacePlan, SearchResult, WritePlan, WriteResult,
     _UTF8_BOM, _detect_line_ending, _has_bom, _normalize_line_endings, _strip_bom,
     _strip_terminal_fence_leaks, normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_lint import LINTERS_INPROC, LintMixin, _FAIL_CLOSED_INPROC_EXTS
@@ -1513,19 +1513,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             pass
         return None, None
 
-    def write_file(self, path: str, content: str, pre_content: Optional[str] = None) -> WriteResult:
-        """Write content atomically, creating parent directories as needed.
-
-        Order: deny list → lone-surrogate refusal → fail-closed syntax gate on the
-        CANDIDATE content (JSON/YAML/TOML) → one compound on-disk probe
-        (pre-content when wanted, CRLF, BOM; see ``_probe_write_target``) →
-        JSON NaN/Infinity refusal when the write introduces one → CRLF/BOM
-        preservation → atomic write (content rides stdin: no ARG_MAX limit) →
-        sha256 verification → lint delta → LSP check when syntax is clean
-        (non-blocking; the pre-edit content is its baseline, see ``_maybe_lsp_diagnostics``). ``pre_content``: pre-edit content the
-        caller already has (skips the read); BOM detection always probes disk.
-        """
-        started = time.monotonic()
+    def plan_write(self, path: str, content: str, pre_content: Optional[str] = None, *,
+                   want_pre: Optional[bool] = None) -> WritePlan | WriteResult:
+        """The pre-write half of :meth:`write_file`: refusals (a ``WriteResult``) or the exact
+        content it will write. ``want_pre`` forces the pre-content read (the approval preview
+        diffs against it); by default only lint/LSP extensions read it."""
         path = self._expand_path(path)
         denied = get_write_denied_error(path)
         if denied:
@@ -1540,7 +1532,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
         # Pre-content is read only for extensions in the UNION of in-process lint and
         # LSP coverage (keeps the hot path fast for binaries).
-        want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
+        if want_pre is None:
+            want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
         has_bom, pre_content, original_ending = self._probe_write_target(path, pre_content, want_pre)
         if ext == ".json":
             refused = _refuse_introduced_json_constant(path, content, pre_content)
@@ -1552,6 +1545,26 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             content = _normalize_line_endings(content, "\r\n")
         if has_bom and not _has_bom(content):
             content = _UTF8_BOM + content
+        return WritePlan(path=path, content=content, pre_content=pre_content,
+                         line_ending=original_ending, bom=has_bom)
+
+    def write_file(self, path: str, content: str, pre_content: Optional[str] = None) -> WriteResult:
+        """Write content atomically, creating parent directories as needed.
+
+        Order: deny list → lone-surrogate refusal → fail-closed syntax gate on the
+        CANDIDATE content (JSON/YAML/TOML) → one compound on-disk probe
+        (pre-content when wanted, CRLF, BOM; see ``_probe_write_target``) →
+        JSON NaN/Infinity refusal when the write introduces one → CRLF/BOM
+        preservation → atomic write (content rides stdin: no ARG_MAX limit) →
+        sha256 verification → lint delta → LSP check when syntax is clean
+        (non-blocking; the pre-edit content is its baseline, see ``_maybe_lsp_diagnostics``). ``pre_content``: pre-edit content the
+        caller already has (skips the read); BOM detection always probes disk.
+        """
+        started = time.monotonic()
+        plan = self.plan_write(path, content, pre_content)
+        if isinstance(plan, WriteResult):
+            return plan
+        path, content, pre_content = plan.path, plan.content, plan.pre_content
         # ``dirs_created`` means "parent dirs ensured" (mkdir -p is folded into
         # _atomic_write; its failure surfaces as the atomic-write error below).
         dirs_created = bool(os.path.dirname(path))
@@ -1622,10 +1635,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 "The patch did not persist. Re-read the file and try again."))
         return None
 
-    def patch_replace(self, path: str, old_string: str, new_string: str,
-                      replace_all: bool = False) -> PatchResult:
-        """Replace text in a file using fuzzy matching (``old_string`` must be
-        unique unless ``replace_all``). Returns a PatchResult with diff + lint."""
+    def plan_patch_replace(self, path: str, old_string: str, new_string: str,
+                           replace_all: bool = False) -> ReplacePlan | PatchResult:
+        """The pre-write half of :meth:`patch_replace`: a failed read / match (a
+        ``PatchResult``) or the exact replacement it will write."""
         path = self._expand_path(path)
         denied = get_write_denied_error(path)
         if denied:
@@ -1640,8 +1653,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         raw_content = data.decode("utf-8", "surrogateescape")
         content, _ = _strip_bom(raw_content)
 
-        from tools.fuzzy_match import boundary_note, fuzzy_find_and_replace
-        correction_notes = []
+        from tools.fuzzy_match import fuzzy_find_and_replace
+        correction_notes: list[str] = []
         new_content, match_count, strategy, error = fuzzy_find_and_replace(
             content, old_string, new_string, replace_all, correction_notes=correction_notes)
         if error or match_count == 0:
@@ -1651,6 +1664,21 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         file_ending = _detect_line_ending(content)
         if file_ending:
             new_content = _normalize_line_endings(new_content, file_ending)
+        return ReplacePlan(path=path, data=data, raw_content=raw_content, content=content,
+                           new_content=new_content, match_count=match_count, strategy=strategy,
+                           correction_notes=correction_notes, line_ending=file_ending)
+
+    def patch_replace(self, path: str, old_string: str, new_string: str,
+                      replace_all: bool = False) -> PatchResult:
+        """Replace text in a file using fuzzy matching (``old_string`` must be
+        unique unless ``replace_all``). Returns a PatchResult with diff + lint."""
+        from tools.fuzzy_match import boundary_note
+        plan = self.plan_patch_replace(path, old_string, new_string, replace_all)
+        if isinstance(plan, PatchResult):
+            return plan
+        path, data, raw_content, content, new_content = (
+            plan.path, plan.data, plan.raw_content, plan.content, plan.new_content)
+        strategy, correction_notes = plan.strategy, plan.correction_notes
         write_result = self.write_file(path, new_content, pre_content=raw_content)
         if write_result.error:
             return PatchResult(error=f"Failed to write changes: {write_result.error}")

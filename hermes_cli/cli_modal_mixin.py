@@ -1071,8 +1071,9 @@ class CLIModalMixin:
     def _approval_callback(self, command: str, description: str,
                            *, allow_permanent: bool = True,
                            allow_session: bool = True,
-                           smart_denied: bool = False) -> str:
-        """Dangerous-command approval through the prompt_toolkit UI (agent thread).
+                           smart_denied: bool = False, title: str | None = None) -> str:
+        """Dangerous-command approval through the prompt_toolkit UI (agent thread); ``title`` replaces
+        the dangerous-command header for other approvals (a full-scope tool-call prompt).
 
         Choices: once / session / always / deny (see ``_approval_choices``), plus 'view' for long
         commands. ``_approval_lock`` serializes concurrent requests (parallel delegation subtasks)
@@ -1086,6 +1087,7 @@ class CLIModalMixin:
             self._approval_state = {
                 "command": command,
                 "description": description,
+                "title": title,
                 "choices": self._approval_choices(
                     command,
                     allow_permanent=allow_permanent,

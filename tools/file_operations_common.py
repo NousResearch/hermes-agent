@@ -97,6 +97,32 @@ class PatchResult:
 
 
 @dataclass
+class WritePlan:
+    """What ``write_file`` will put on disk, decided before the write (refusals come back as a
+    ``WriteResult`` instead). The approval preview renders this same plan."""
+    path: str
+    content: str                  # final text: CRLF / BOM of the existing file preserved
+    pre_content: Optional[str]    # current content when it was read (None: absent, empty or not read)
+    line_ending: Optional[str]
+    bom: bool
+
+
+@dataclass
+class ReplacePlan:
+    """What ``patch_replace`` will write, decided before the write (a failed match comes back as
+    a ``PatchResult`` instead). The approval preview renders this same plan."""
+    path: str
+    data: bytes                   # exact bytes read
+    raw_content: str              # decoded, BOM kept: write_file's pre_content
+    content: str                  # BOM-stripped text the match ran on
+    new_content: str              # replaced text, line endings normalized to the file's
+    match_count: int
+    strategy: Optional[str]
+    correction_notes: list[str]
+    line_ending: Optional[str]
+
+
+@dataclass
 class SearchMatch:
     """A single search match."""
     path: str

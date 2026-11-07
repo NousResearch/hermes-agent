@@ -1,5 +1,7 @@
 approval:
   dangerous_header: "⚠️  COMANDO PERICOLOSO: {description}"
+  tool_title: "🔐 Approvazione strumento: {tool}"
+  command_title: "🔐 Approvazione comando"
   choose_long: "      [o]una volta  |  [s]essione  |  [a]sempre  |  [d]nega"
   choose_short: "      [o]una volta  |  [s]essione  |  [d]nega"
   prompt_long: "      Scelta [o/s/a/D]: "

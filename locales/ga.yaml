@@ -1,5 +1,7 @@
 approval:
   dangerous_header: "⚠️  ORDÚ CONTÚIRTEACH: {description}"
+  tool_title: "🔐 Ceadú uirlise: {tool}"
+  command_title: "🔐 Ceadú ordaithe"
   choose_long: "      [o]uair amháin  |  [s]eisiún  |  [a]i gcónaí  |  [d]iúltaigh"
   choose_short: "      [o]uair amháin  |  [s]eisiún  |  [d]iúltaigh"
   prompt_long: "      Rogha [o/s/a/D]: "

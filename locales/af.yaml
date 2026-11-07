@@ -1,5 +1,7 @@
 approval:
   dangerous_header: "⚠️  GEVAARLIKE OPDRAG: {description}"
+  tool_title: "🔐 Gereedskapgoedkeuring: {tool}"
+  command_title: "🔐 Opdraggoedkeuring"
   choose_long: "      [o]eenmalig  |  [s]sessie  |  [a]altyd  |  [d]weier"
   choose_short: "      [o]eenmalig  |  [s]sessie  |  [d]weier"
   prompt_long: "      Keuse [o/s/a/D]: "

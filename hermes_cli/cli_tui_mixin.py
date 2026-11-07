@@ -162,7 +162,7 @@ class CLITuiMixin:
         choices = state["choices"]
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)
-        title = t("cli.tui.approval_title")
+        title = state.get("title") or t("cli.tui.approval_title")
 
         preview_lines = wrap(description, 60)
         preview_lines.extend(wrap(command, 60))

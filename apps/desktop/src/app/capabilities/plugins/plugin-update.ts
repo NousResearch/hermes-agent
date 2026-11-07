@@ -12,6 +12,14 @@ import { notify, notifyError } from '@/store/notifications'
 
 type PluginsCopy = Translations['skills']['plugins']
 
+/** What the Update button moves to: the catalog's version label or short pin, else a git install's target. */
+export const updateTargetLabel = (agent: Pick<AgentPluginRow, 'catalog_sha' | 'catalog_version' | 'update_target'>) =>
+  agent.catalog_version ?? agent.catalog_sha?.slice(0, 8) ?? shortTarget(agent.update_target)
+
+/** A full commit shortens to 8 characters; a feed version stays as it is. */
+const shortTarget = (target?: string) =>
+  target && /^[0-9a-f]{40}$/i.test(target) ? target.slice(0, 8) : (target ?? '')
+
 const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low']
 
 const severityRank = (severity: string) => {
@@ -68,9 +76,10 @@ export async function runPluginUpdate(
     if (outcome.kind === 'scan' && outcome.verdict === 'caution' && !options.force) {
       const ok = await confirm({
         confirmLabel: p.updateScanConfirm,
-        description: [p.updateScanBody(name, outcome.findings.length), ...scanFindingLines(outcome.findings, p.updateScanMore)].join(
-          '\n'
-        ),
+        description: [
+          p.updateScanBody(name, outcome.findings.length),
+          ...scanFindingLines(outcome.findings, p.updateScanMore)
+        ].join('\n'),
         destructive: true,
         title: p.updateScanTitle(name)
       })

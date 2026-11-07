@@ -10,11 +10,16 @@ import {
 } from '@hermes/shared'
 import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { type ReactElement, useMemo, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import {
+  cachedProfileModelOptions,
+  catalogProviderMatches,
+  modelOptionsQueryKey,
+  requestModelOptions
+} from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { foldIncludes, normalize } from '@/lib/text'
@@ -92,8 +97,11 @@ export function ModelPickerDialog({
   const [slugEntry, setSlugEntry] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
 
+  const queryClient = useQueryClient()
+
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
+    placeholderData: () => cachedProfileModelOptions(queryClient, profile, ownerConnectionId),
     queryFn: () => requestModelOptions({ gateway: gw, profile, request, sessionId }),
     enabled: open
   })

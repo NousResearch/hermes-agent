@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import pathlib
 import threading
 import time
 from unittest.mock import MagicMock, patch
 
 from gateway.shutdown_watchdog import (
+    _write_watchdog_dump,
+    get_shutdown_watchdog_dump_path,
     loop_heartbeat_forever,
     start_loop_liveness_watchdog,
 )
@@ -67,6 +70,113 @@ def test_loop_liveness_death_leaves_its_stacks_in_the_dump_file(tmp_path, monkey
     assert '"event": "loop_liveness_watchdog_fired"' in dump
     assert "most recent call first" in dump
     assert exit_codes == [75]
+
+
+def test_loop_liveness_dump_names_the_monitored_loop_thread(tmp_path, monkeypatch):
+    """The dump must say WHICH thread runs the loop, and lead with that thread's own stack."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    exit_codes, ref, handle_ready = [], {}, threading.Event()
+    starter_ident = threading.get_ident()
+
+    def exit_and_stop(code: int) -> None:
+        assert handle_ready.wait(timeout=2.0)
+        exit_codes.append(code)
+        ref["handle"].stop()
+
+    with patch("gateway.shutdown_watchdog._hard_exit", side_effect=exit_and_stop), \
+            patch("gateway.shutdown_watchdog._mark_exited_quietly"):
+        # A spec'd mock carries no ``_thread_id``, so the arming thread is the identity - here the
+        # test's own thread, whose frames the dump then has to show.
+        ref["handle"] = handle = start_loop_liveness_watchdog(
+            MagicMock(spec=asyncio.AbstractEventLoop), probe_interval=0.01, probe_timeout=0.01,
+            max_strikes=1)
+        handle_ready.set()
+        handle.join(timeout=5.0)
+
+    dump = get_shutdown_watchdog_dump_path(tmp_path).read_text(encoding="utf-8-sig")
+    header = json.loads(dump.splitlines()[0])
+    assert header["monitored_loop_thread_id"] == starter_ident
+    assert header["monitored_loop_thread_name"] == threading.current_thread().name
+    assert "--- monitored gateway loop thread stack ---" in dump
+    assert "test_loop_liveness_dump_names_the_monitored_loop_thread" in dump, (
+        "the dump must contain the monitored loop thread's own frame"
+    )
+    assert dump.index("monitored gateway loop thread stack") < dump.index("faulthandler dump (all")
+    assert exit_codes == [75]
+
+
+def test_loop_liveness_dump_identifies_a_loop_on_another_thread(tmp_path, monkeypatch):
+    """A real loop on a non-caller thread is named, with its frozen frame ahead of the rest."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    state: dict[str, object] = {}
+    frozen, release, fired = threading.Event(), threading.Event(), threading.Event()
+
+    def drive_loop() -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        state["loop"], state["ident"] = loop, threading.get_ident()
+
+        def block_loop() -> None:  # a frozen loop cannot run the queued probe callbacks
+            frozen.set()
+            state["released"] = release.wait(timeout=10.0)
+
+        loop.call_soon(lambda: start_loop_liveness_watchdog(
+            loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=1))
+        loop.call_soon(block_loop)
+        loop.run_forever()
+        loop.close()
+
+    thread = threading.Thread(target=drive_loop, name="test-gateway-loop", daemon=True)
+    with patch("gateway.shutdown_watchdog._hard_exit",
+               side_effect=lambda code: (state.__setitem__("exit_code", code), fired.set())), \
+            patch("gateway.shutdown_watchdog._mark_exited_quietly"):
+        thread.start()
+        assert frozen.wait(timeout=5.0), "the loop thread never reached its frozen callback"
+        assert fired.wait(timeout=5.0), "the watchdog never dumped"
+        release.set()
+        state["loop"].call_soon_threadsafe(state["loop"].stop)
+        thread.join(timeout=5.0)
+
+    assert not thread.is_alive()
+    assert state["released"] is True
+    dump = get_shutdown_watchdog_dump_path(tmp_path).read_text(encoding="utf-8-sig")
+    header = json.loads(dump.splitlines()[0])
+    assert header["monitored_loop_thread_id"] == state["ident"]
+    assert header["monitored_loop_thread_name"] == "test-gateway-loop"
+    leading = dump.split("--- faulthandler dump (all threads) ---")[0]
+    assert "--- monitored gateway loop thread stack ---" in leading
+    assert "block_loop" in leading, "the frozen loop thread's frame must be in the dump"
+    assert state["exit_code"] == 75
+
+
+def test_watchdog_dump_without_a_live_loop_thread_keeps_a_usable_dump(tmp_path):
+    """An exited or unmonitored loop thread costs its own stack section, never the all-threads dump."""
+    dump_path = tmp_path / "logs" / "gateway-shutdown-watchdog.log"
+    gone = threading.Thread(target=lambda: None, name="test-exited-loop")
+    gone.start()
+    gone.join()
+
+    with patch("gateway.shutdown_watchdog.faulthandler.dump_traceback"):
+        _write_watchdog_dump(dump_path, delay_s=1.0, snapshot={"strikes": 3},
+                             event="loop_liveness_watchdog_fired", loop_thread_id=gone.ident)
+
+    dump = dump_path.read_text(encoding="utf-8-sig")
+    header = json.loads(dump.splitlines()[0])
+    assert header["monitored_loop_thread_id"] == gone.ident
+    assert header["monitored_loop_thread_name"] is None
+    assert header["snapshot"] == {"strikes": 3}
+    assert "(monitored loop thread stack unavailable" in dump
+    assert "--- faulthandler dump (all threads) ---" in dump
+    assert "--- end dump ---" in dump
+
+    # The shutdown watchdog never passes a loop thread: its dump keeps exactly the shape it had.
+    with patch("gateway.shutdown_watchdog.faulthandler.dump_traceback"):
+        _write_watchdog_dump(dump_path, delay_s=2.0, snapshot=None)
+
+    unmonitored = dump_path.read_text(encoding="utf-8-sig")
+    headers = [json.loads(line) for line in unmonitored.splitlines() if line.startswith("{")]
+    assert "monitored_loop_thread_id" not in headers[-1]
+    assert unmonitored.count("monitored gateway loop thread stack") == 1
 
 
 def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():

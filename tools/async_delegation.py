@@ -58,6 +58,11 @@ _MAX_COMPLETION_REPLAY_AGE_S = 48 * 3600.0
 # A delivery claim older than this is abandoned and may be re-claimed.
 _CLAIM_LEASE_S = 300.0
 _DB_LOCK = threading.Lock()
+# Database path -> PRAGMA schema_version this process last reconciled it at: replaying the idempotent
+# SCHEMA_SQL once per (file, schema) is enough. Per connection it ran ~30 PRAGMA table_info plus the DDL on
+# every ledger call, three times per 30 s orphan sweep (after #135351).
+_SCHEMA_READY: dict[str, int] = {}
+_SCHEMA_READY_LOCK = threading.Lock()
 
 # ── Orphaned-completion sweep ────────────────────────────────────────────────
 # Startup replay runs once per process, so a completion whose owner died while THIS process was
@@ -145,6 +150,16 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     # Preserve the journal mode SessionDB configured on state.db: forcing WAL from
     # every short-lived connection collides with live transcript/FTS writers.
     apply_durability_barriers(conn)
+    # Reconcile once per (file, schema): PRAGMA schema_version is a header read that SQLite bumps on every
+    # DDL, so a file deleted, recreated (even onto a recycled inode), restored from an older backup, or
+    # migrated by another writer reads a different value and is reconciled again; an unchanged file skips
+    # the full replay. In-memory / unnamed databases (tests) always reconcile.
+    row = conn.execute("PRAGMA database_list").fetchone()
+    key = os.path.normcase(os.path.abspath(row[2])) if row and row[2] else None
+    version = conn.execute("PRAGMA schema_version").fetchone()[0]
+    with _SCHEMA_READY_LOCK:
+        if key is not None and _SCHEMA_READY.get(key) == version:
+            return
     # Single durable-shape authority: the canonical SCHEMA_SQL drives both
     # table creation and column backfill (reconcile_state_schema replays the
     # canonical DDL and reuses SessionDB's declarative reconciliation). This
@@ -153,6 +168,9 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     # nullability/defaults depending on which authority touched the database
     # first (#94691).
     reconcile_state_schema(conn)
+    if key is not None:
+        with _SCHEMA_READY_LOCK:  # the version AFTER the replay (its DDL bumps it), so the next open matches
+            _SCHEMA_READY[key] = conn.execute("PRAGMA schema_version").fetchone()[0]
 
 
 def _transaction():
@@ -1465,3 +1483,5 @@ def _reset_for_tests() -> None:
         _reoffered_at.clear()
     with _held_lock:
         _held_copies.clear()
+    with _SCHEMA_READY_LOCK:
+        _SCHEMA_READY.clear()

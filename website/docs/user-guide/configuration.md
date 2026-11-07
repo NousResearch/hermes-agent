@@ -120,10 +120,12 @@ database:
   # Use delete on filesystems where WAL is unsafe (network mounts). On
   # virtiofs/9p bind mounts (Docker Desktop, Podman on macOS, OrbStack)
   # Hermes detects the mount and creates fresh databases in delete mode
-  # automatically. Note: an existing on-disk WAL database is never
-  # live-downgraded — Hermes keeps WAL and logs an error telling you the
+  # automatically. On Linux NFS/CIFS/SMB/sshfs mounts, a fresh database
+  # also starts in delete mode unless this key is set (set `wal` to force
+  # WAL there). Note: an existing on-disk WAL database is never
+  # live-downgraded — Hermes keeps WAL and logs a warning telling you the
   # configured delete did not apply (or that the WAL database sits on a
-  # cross-VM mount). To convert an existing database, stop
+  # cross-VM or network mount). To convert an existing database, stop
   # every process using it and run
   # `hermes sessions set-journal-mode delete` (see Sessions).
   journal_mode: wal

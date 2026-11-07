@@ -1,0 +1,40 @@
+name: hermes-windows-network
+repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
+sha: 456770252176e9c8a0e46f26b24c38b183386ee3
+subdir: windows-network
+description: >-
+  Answer "is this machine's network healthy, and which adapter is the problem" on Windows:
+  lists every visible network adapter with its state (up, disconnected, disabled, not
+  present), its link speed as a number, its MAC, whether it is virtual (Hyper-V, VPN,
+  virtual switch) or physical, and its driver version and date; adapters that are only a
+  ghost of an old dock or USB device are hidden unless asked for. Details one adapter's
+  IPv4/IPv6 addresses with prefixes and origins (DHCP, manual, self-assigned 169.254.x.x),
+  default gateways, DNS servers, and a plain-word diagnosis - link-local means DHCP never
+  answered, an address without a gateway cannot leave its subnet, no DNS means names will
+  not resolve; a disconnected adapter with a stale static DNS says all three on the
+  writing machine. Use it for "why is there no internet", for "which of these adapters is
+  actually in use", and for reading what DHCP left on an interface. Read-only: the
+  NetAdapter and NetTCPIP cmdlets are queried, nothing is enabled, renewed, reconfigured
+  or released; no network calls of its own, no file writes, no elevation. Adapter names
+  are localized data and are passed through as-is; states travel as enum names, which a
+  Chinese-language Windows 11 was verified not to translate. The whole table answers in
+  under a second and one adapter's detail in about two and a half, each a single
+  PowerShell session; the plugin declares no Python dependencies. Windows only.
+  Disclosure - the tools report adapter names and descriptions, addresses, MACs, gateways,
+  DNS servers and driver versions, to the model; treat the output like the machine's own
+  adapter settings page.
+maintainer: Yicheng-Mark
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/Yicheng-Mark/hermes-windows-plugins/tree/main/windows-network
+version: "0.1.0"
+platforms:
+- windows
+capabilities:
+  provides_tools:
+  - win_adapter_table
+  - win_adapter_detail
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

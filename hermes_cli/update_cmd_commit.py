@@ -363,25 +363,32 @@ def settle_failed_tree_move(root: Path) -> bool:
     return not marker.is_file()
 
 
-def _pyproject_tables(pyproject: bytes | str | None) -> dict:
+def _pyproject_tables(pyproject: bytes | str | None) -> dict | None:
+    """The parsed pyproject ({} when there is none), None when it is not valid TOML."""
     if not pyproject:
         return {}
     import tomllib
 
     try:
         return tomllib.loads(pyproject.decode("utf-8") if isinstance(pyproject, bytes) else pyproject)
-    except (TypeError, ValueError):  # TOMLDecodeError is a ValueError
-        return {}
+    except (UnicodeDecodeError, ValueError):  # TOMLDecodeError is a ValueError
+        return None
+
+
+def _table(tables: dict | None, *keys: str) -> dict:
+    for key in keys:
+        tables = tables.get(key) if isinstance(tables, dict) else None
+    return tables if isinstance(tables, dict) else {}
 
 
 def _requires_python_spec(pyproject: bytes | str | None) -> str | None:
     """The target's ``requires-python`` specifier, None when absent or unreadable."""
-    spec = _pyproject_tables(pyproject).get("project", {}).get("requires-python")
+    spec = _table(_pyproject_tables(pyproject), "project").get("requires-python")
     return spec if isinstance(spec, str) else None
 
 
 MISSING_STARTUP_FILE = "the tree lists this startup file in [tool.hermes] update-startup-files but does not contain it"
-INVALID_STARTUP_FILES = "[tool.hermes] update-startup-files must be a list of relative file paths"
+INVALID_STARTUP_FILES = "pyproject.toml must be valid TOML whose [tool.hermes] update-startup-files is a list of file paths"
 
 
 def startup_files(pyproject: bytes | str | None, undeclared) -> tuple[tuple[str, ...], bool] | None:
@@ -391,9 +398,13 @@ def startup_files(pyproject: bytes | str | None, undeclared) -> tuple[tuple[str,
     that relocates a startup file edits that list and an update to it is judged by the new paths. A
     declared file the tree lacks refuses the update. A tree that declares none (a release before the
     declaration) is judged by ``undeclared`` with absent files skipped, so a rollback to it still works.
-    None: the tree declares a list that is not one, which refuses (never the older-release fallback).
+    None: the pyproject is not valid TOML or declares a list that is not one, which refuses (never
+    the older-release fallback).
     """
-    declared = _pyproject_tables(pyproject).get("tool", {}).get("hermes", {})
+    tables = _pyproject_tables(pyproject)
+    if tables is None:
+        return None
+    declared = _table(tables, "tool", "hermes")
     if "update-startup-files" not in declared:
         return tuple(undeclared), False
     listed = declared["update-startup-files"]

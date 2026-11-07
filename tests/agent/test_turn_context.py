@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.prompt_builder import steer_user_row
 from agent.turn_context import (
     PreflightCompressionTimedOut,
     TurnContext,
@@ -276,6 +277,77 @@ def test_turn_author_is_normalized_then_reaches_on_turn_start_and_the_agent_stas
     assert (kwargs["author_id"], kwargs["author_name"], kwargs["author_is_bot"]) == ("bot:alpha", "Alpha", True)
     # The end-of-turn sync reads this back off the agent.
     assert agent._turn_author == {"id": "bot:alpha", "name": "Alpha", "is_bot": True}
+
+
+_PREVIOUS = "Add the ShapeIndex encoder."
+_PRIOR_TURN = [{"role": "user", "content": _PREVIOUS}, {"role": "assistant", "content": "Done."}]
+
+
+def _carrier(ask: str = "Round-trip the ShapeIndex.") -> str:
+    """A compaction summary flipped into the user role, with the live ask merged after its end marker."""
+    from agent.context_compressor import HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER
+
+    return f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nold task\n\n{_SUMMARY_END_MARKER}" + (f"\n\n{ask}" if ask else "")
+
+
+def _compaction_returning_history(history_for):
+    """A turn-start compaction that hands back what ``conversation_history_after_compression`` does."""
+    from agent.turn_context_compaction import CompactionOutcome
+
+    def run(agent, *, messages, active_system_prompt, current_turn_user_idx, **_):
+        return CompactionOutcome(
+            messages=messages, active_system_prompt=active_system_prompt,
+            conversation_history=history_for(messages), current_turn_user_idx=current_turn_user_idx,
+        )
+    return run
+
+
+@pytest.mark.parametrize(
+    "history, compaction, expected",
+    [
+        (_PRIOR_TURN, None, _PREVIOUS),
+        # In place, the flush baseline already ends in this turn's own message.
+        (_PRIOR_TURN, _compaction_returning_history(list), _PREVIOUS),
+        # Rotation hands back no baseline at all.
+        (_PRIOR_TURN, _compaction_returning_history(lambda _messages: None), _PREVIOUS),
+        (None, None, ""),
+        ([{"role": "user", "content": [{"type": "text", "text": _PREVIOUS},
+                                       {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]},
+          {"role": "assistant", "content": "Done."}], None, _PREVIOUS),
+        (_PRIOR_TURN + [{"role": "user", "content": "[System: Your previous response was truncated. Continue."}],
+         None, _PREVIOUS),
+        (_PRIOR_TURN + [{"role": "user", "content": "1. [ ] encode", "_todo_snapshot_synthetic": True}],
+         None, _PREVIOUS),
+        (_PRIOR_TURN + [{"role": "user", "content": _carrier()}, {"role": "assistant", "content": "Done."}],
+         None, "Round-trip the ShapeIndex."),
+        (_PRIOR_TURN + [{"role": "user", "content": _carrier(ask="")}], None, _PREVIOUS),
+        (_PRIOR_TURN + [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]},
+                        {"role": "assistant", "content": "Done."}], None, ""),
+        # Gateway replay renders a timestamp prefix and drops the steer row's display_kind.
+        ([{"role": "user", "content": f"[Thu 2026-11-05 10:00:00 IST] {_PREVIOUS}"}, {"role": "assistant", "content": "Done."}],
+         None, _PREVIOUS),
+        (_PRIOR_TURN + [{"role": "user", "content": steer_user_row("use zstd")["content"]}, {"role": "assistant", "content": "Ok."}],
+         None, _PREVIOUS),
+        (_PRIOR_TURN + [{"role": "user", "content": "[Thu 2026-11-05 10:01:00 IST] " + steer_user_row("use zstd")["content"]},
+                        {"role": "assistant", "content": "Ok."}], None, _PREVIOUS),
+        (_PRIOR_TURN + [{"role": "user", "content": [{"type": "text", "text": "\n\n" + steer_user_row("use zstd")["content"]}]},
+                        {"role": "assistant", "content": "Ok."}], None, _PREVIOUS),
+    ],
+    ids=["no-compaction", "in-place-compaction", "rotation", "first-turn", "multimodal", "skips-scaffolding",
+         "skips-flagged-scaffolding", "compaction-carrier-ask", "skips-bare-summary", "image-only-stops-search",
+         "strips-gateway-timestamp", "skips-replayed-steer", "skips-timestamped-steer", "skips-steer-text-part"],
+)
+def test_providers_get_what_the_person_last_asked(history, compaction, expected, monkeypatch):
+    """A resumed process must tell providers what the last turn asked: a live process may have keyed
+    end-of-turn recall on it, and a provider may save no transcript of its own. Turn-start compaction
+    rebinds the history after this turn's message is appended, so the value has to be read before it."""
+    if compaction is not None:
+        monkeypatch.setattr("agent.turn_context_compaction.run_turn_start_compaction", compaction)
+    agent, mm = _agent_with_memory_manager()
+
+    _build(agent, user_message="Now decode it back.", conversation_history=history)
+
+    assert mm.on_turn_start.call_args.kwargs["previous_message"] == expected
 
 
 def test_turn_without_author_clears_previous_bot_author():

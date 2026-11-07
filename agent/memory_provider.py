@@ -177,9 +177,14 @@ class MemoryProvider(ABC):
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Per-turn tick. kwargs may include remaining_tokens, model, platform, tool_count, author_id, author_name,
-        author_is_bot. ``model`` is the turn's primary model id at turn start ("" when unset; a preset name
-        under mixture-of-agents). The author trio names who wrote THIS turn (None, None, False without one): a shared session
-        carries several participants, so a provider keying durable state on identity must read it per turn."""
+        author_is_bot, previous_message. ``model`` is the turn's primary model id at turn start ("" when unset; a
+        preset name under mixture-of-agents). The author trio names who wrote THIS turn (None, None, False without
+        one): a shared session carries several participants, so a provider keying durable state on identity must read
+        it per turn. ``previous_message`` is the secret-scrubbed text of the person's last message before this turn
+        ("" on a first turn or an image-only one), from the transcript Hermes holds, so a resumed process can redo
+        what a live one queued at the end of that turn. Best-effort: known runtime user-role rows and /steer messages
+        are skipped, but a notice a gateway replays after a restart (cron delivery, process heartbeat, watch-disabled
+        notice) can come through."""
 
     def identity_signature(self) -> dict[str, Any]:
         """Identity-mapping values that must bust a cached gateway agent when they change (writer identity, alias

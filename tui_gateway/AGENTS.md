@@ -61,6 +61,9 @@ parameter keys return `4001 invalid_params`. Reuse a standalone model only when 
 identical: shared method names can carry different snapshots, admission receipts and producer
 results. The same generator emits `CanonicalRpcMethods` and OpenRPC `x-canonical-methods` without
 widening `RpcMethods`. `tests/gateway/test_canonical_wire_contract.py` checks handler coverage.
+A method family whose names exist only at runtime (`plugin.<plugin_id>.<name>`) is one
+`canonical_namespace(...)` entry in `CANONICAL_NAMESPACES` instead: a pattern, a prefix, open params and the
+`runtime.describe` capability clients gate on (`CanonicalRpcNamespaces` / OpenRPC `x-canonical-namespaces`).
 New question for the user = `_ask("<method>", sid, params, timeout)` in the emitter, a handler in
 `apps/desktop/.../gateway-event/server-requests.ts` and `ui-tui/src/app/createServerRequestHandler.ts`,
 and a `server_request(...)` in `contracts/server_requests.py`.
@@ -126,7 +129,9 @@ on their existing poll and avoid updates when unchanged.
 existing transcript. Poll only the selected detail. Missing/finished/foreign
 children return an unavailable empty snapshot; no client-supplied path is opened.
 This is live-only, not persisted completion history. Invalid session/transport
-returns error 4001. `subagent.steer({session_id, subagent_id, text})` remains the
+returns error 4001. The child's stored rows (live or finished, polled from a cursor)
+are the canonical owner's `session.transcript` with `subagent_id`; list rows name the
+child's `child_session_id` on both transports. `subagent.steer({session_id, subagent_id, text})` remains the
 shared control: `status: queued` acknowledges acceptance, not delivery; final
 boundary races are reported by the existing runtime as `missed_steer`.
 `subagent.interrupt({session_id, subagent_id})` requires the same exact live

@@ -146,21 +146,22 @@ def _claim(db, conn, session_id, payload, *, execution_id):
 _DELIVERY_UPDATES = {
     'ack': "delivery_state='delivered',delivered_at=:now",
     'drop': "delivery_state='dropped'",
-    'defer': 'delivery_attempts=MAX(0,delivery_attempts-1)',
+    'defer': None,  # DEFER_ASSIGNMENTS: shared with the owner path in tools.async_delegation
     'release': "delivery_state=CASE WHEN delivery_attempts>=:cap THEN 'dropped' ELSE delivery_state END",
 }
 
 
 def _delivery(db, conn, session_id, payload, *, execution_id, action):
-    from tools.async_delegation import _MAX_DELIVERY_ATTEMPTS
+    from tools.async_delegation import DEFER_ASSIGNMENTS, _MAX_COMPLETION_REPLAY_AGE_S, _MAX_DELIVERY_ATTEMPTS
     _shape(payload, {'delegation_id', 'claim_id'})
     _owned(conn, session_id, execution_id, payload['delegation_id'])
     _text(payload['claim_id'])
+    now = time.time()
     # Only constant, closed statement fragments enter this query.
-    changed = conn.execute('UPDATE async_delegations SET ' + _DELIVERY_UPDATES[action] +
+    changed = conn.execute('UPDATE async_delegations SET ' + (_DELIVERY_UPDATES[action] or DEFER_ASSIGNMENTS) +
         ",updated_at=:now,delivery_claim=NULL,delivery_claimed_at=NULL WHERE delegation_id=:delegation_id "
         "AND delivery_state='pending' AND delivery_claim=:claim_id",
-        payload | {'now': time.time(), 'cap': _MAX_DELIVERY_ATTEMPTS}).rowcount
+        payload | {'now': now, 'cap': _MAX_DELIVERY_ATTEMPTS, 'replay_cutoff': now - _MAX_COMPLETION_REPLAY_AGE_S}).rowcount
     return {'value': changed == 1}
 
 

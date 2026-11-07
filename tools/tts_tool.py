@@ -210,13 +210,14 @@ def _run_edge_tts(text: str, file_str: str, tts_config: dict[str, Any]) -> None:
 
 def _select_builtin_engine(provider: str) -> tuple:
     """SDK check -> ``(engine, None)`` or ``(provider, error_json)``. Unknown names take the Edge
-    default; without edge-tts NeuTTS is the fallback (engine != provider)."""
+    default and are reported as ``edge``; without edge-tts NeuTTS is the fallback. The returned
+    engine is the backend that actually runs, so callers must report it (not *provider*)."""
     entry = _BUILTIN_DISPATCH.get(provider)
     if entry is not None:
         available, _label, _generator, missing_error = entry
         return provider, (_error_json(missing_error) if available is not None and not available() else None)
     if _importable(_import_edge_tts):
-        return provider, None  # Edge default; the reported provider stays as configured
+        return DEFAULT_PROVIDER, None  # Edge default; report the backend that actually runs
     if _check_neutts_available():
         logger.info("Edge TTS not available, falling back to NeuTTS (local)...")
         return "neutts", None
@@ -420,7 +421,10 @@ def _text_to_speech_single(
 
     Command providers resolve BEFORE built-in dispatch, but built-in names short-circuit so
     ``tts.providers.openai.command`` can't shadow OpenAI. Plugins fire only for names that are
-    neither; a None return falls through to built-in dispatch (unknown -> Edge default)."""
+    neither; a None return falls through to built-in dispatch (unknown -> Edge default). That
+    fallback is reported truthfully: ``provider`` names the backend that ran and ``fallback_from``
+    carries the unknown configured name."""
+    fallback_from: Optional[str] = None
     try:
         if command_provider_config is not None:
             logger.info("Generating speech with command TTS provider '%s'...", provider)
@@ -437,9 +441,12 @@ def _text_to_speech_single(
         ) is not None:
             file_str = _plugin_path
         else:
-            provider, error = _select_builtin_engine(provider)
+            engine, error = _select_builtin_engine(provider)
             if error:
                 return error
+            if provider not in BUILTIN_TTS_PROVIDERS:
+                fallback_from = provider
+            provider = engine
             _synthesize_builtin(provider, text, file_str, tts_config, instructions)
         if not os.path.exists(file_str) or os.path.getsize(file_str) == 0:
             return _error_json(f"TTS generation produced no output (provider: {provider})")
@@ -449,10 +456,13 @@ def _text_to_speech_single(
         file_str, voice_compatible = _finalize_voice_delivery(
             file_str, provider, command_provider_config, want_opus)
         logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{os.path.getsize(file_str):,}", provider)
-        return json.dumps({
+        response = {
             "success": True, "file_path": file_str, "media_tag": _media_tag([file_str], voice_compatible),
             "provider": provider, "voice_compatible": voice_compatible,
-        }, ensure_ascii=False)
+        }
+        if fallback_from is not None:
+            response["fallback_from"] = fallback_from
+        return json.dumps(response, ensure_ascii=False)
     except ValueError as e:
         return _tool_failure("TTS configuration error", provider, e)
     except FileNotFoundError as e:
@@ -551,7 +561,7 @@ def text_to_speech_tool(
             encoded_paths, str(delivery_base), delivery_profile, voice_compatible=voice_compatible)
         for path in final_paths:
             logger.info("TTS audio saved: %s (%s bytes, provider: %s)", path, f"{os.path.getsize(path):,}", provider)
-        return json.dumps({
+        response = {
             "success": True, "file_path": final_paths[0], "file_paths": final_paths,
             "media_tag": _media_tag(final_paths, voice_compatible),
             "provider": chunk_results[0].get("provider", provider), "voice_compatible": voice_compatible,
@@ -560,7 +570,10 @@ def text_to_speech_tool(
             "delivery_profile": {
                 "platform": delivery_profile.platform, "max_file_bytes": delivery_profile.max_file_bytes,
                 "target_file_bytes": delivery_profile.target_file_bytes},
-        }, ensure_ascii=False)
+        }
+        if chunk_results[0].get("fallback_from"):
+            response["fallback_from"] = chunk_results[0]["fallback_from"]
+        return json.dumps(response, ensure_ascii=False)
     except _ChunkFailed as exc:
         return tool_error(str(exc), success=False)
     except ValueError as exc:

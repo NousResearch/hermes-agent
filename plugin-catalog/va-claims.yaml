@@ -1,6 +1,6 @@
 name: va-claims
 repo: https://github.com/lEWFkRAD/va-claims-hermes-plugin
-sha: 061af055d3b1dcf6aebe6b3e37533cfc214de37d
+sha: 37d3d8dfa18e66876bb5bf36a0fbe2e46291ba1e
 title: VA Benefits
 description: >-
   File and track VA disability claims (21-526EZ) the way 38 CFR actually works,

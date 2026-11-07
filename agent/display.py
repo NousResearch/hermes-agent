@@ -364,7 +364,7 @@ _FALLBACK_PREVIEW_KEYS = ("query", "text", "command", "path", "name", "prompt", 
 def _delegate_action_preview(args: dict) -> str | None:
     """Shared ``list/steer/stop <id>`` preview for delegate_task, or None for spawn calls."""
     action = str(args.get("action") or "").strip().lower()
-    if action in ("list", "steer", "stop"):
+    if action in ("list", "steer", "stop", "wait"):
         return f"{action} {str(args.get('subagent_id') or '').strip()}".strip()
     return None
 

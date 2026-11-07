@@ -275,8 +275,16 @@ def partial_sites(
     search: list[str],
     consumed: set[int],
     eol: str,
+    removed: list[bool],
 ) -> list[Site]:
     if not search or not any(search):
+        return []
+    if len(search) > 1 and (
+        (removed[0] and not canon(search[0])) or (removed[-1] and not canon(search[-1]))
+    ):
+        # A removed blank (empty or whitespace-only) edge line is a whole
+        # physical blank line (whole tier). As a substring edge it would match a
+        # neighbour's terminator or indentation across the line break.
         return []
     content = render(pieces)
     pattern = "\n".join(search)
@@ -449,7 +457,7 @@ def _search_consumed(search: list[str], removed: list[bool],
         )
     return any(
         any(lines[index].origin in consumed for index in range(site.start, site.end))
-        for site in partial_sites(lines, search, set(), file_eol(lines))
+        for site in partial_sites(lines, search, set(), file_eol(lines), removed)
     )
 
 
@@ -751,7 +759,7 @@ def _resolve(pieces, hunk, consumed, original, floor, index):
         if _written_only(pieces, search, removed, consumed):
             return Refused("written", f"{label} not found — {_WRITTEN} — {_advice(hint)}"), note, search, added, replacement
         return Refused("not_found", _not_found(index, hint)), note, search, added, replacement
-    parts = partial_sites(pieces, search, consumed, file_eol(pieces))
+    parts = partial_sites(pieces, search, consumed, file_eol(pieces), removed)
     if parts:
         decision = choose_tier(
             parts, pieces, search, removed, consumed, hint, floor, index, content,

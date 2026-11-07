@@ -31,13 +31,13 @@ class TurnRetryState:
 
     # Format / payload recovery guards
     thinking_sig_retry_attempted: bool = False
-    # Route-scoped one-shot repairs: the endpoint (``route_verdicts.route_endpoint``) each was spent on.
-    # A move to another endpoint re-arms them, since its verdicts were reset too.
-    invalid_encrypted_content_retry_endpoint: str | None = None
+    # Route-scoped one-shot repairs: the route visit (``route_verdicts.route_visit``) each was spent on.
+    # A route change resets the verdicts and starts a new visit, which re-arms them.
+    invalid_encrypted_content_retry_visit: int | None = None
     native_compaction_reject_retry_attempted: bool = False
     image_shrink_retry_attempted: bool = False
     multimodal_tool_content_retry_attempted: bool = False
-    reasoning_mandatory_retry_endpoint: str | None = None
+    reasoning_mandatory_retry_visit: int | None = None
     oauth_1m_beta_retry_attempted: bool = False
     llama_cpp_grammar_retry_attempted: bool = False
 

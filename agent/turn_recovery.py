@@ -34,7 +34,7 @@ from agent.turn_failure_copy import (
     CONTENT_POLICY_NEXT_STEPS, content_policy_copy, exhausted_copy, limit_reset_copy, nonretryable_copy,
     provider_label_for, site_copy, stamp_failure,
 )
-from agent.route_verdicts import route_endpoint
+from agent.route_verdicts import route_visit
 from agent.turn_retry_state import TurnRetryState
 from agent.turn_recovery_codex import _codex_soft_failure_error, _is_codex_token_expired, _recover_stale_codex_reasoning
 from hermes_constants import display_hermes_home
@@ -741,9 +741,9 @@ def recover_after_classification(
     # refresh so the guard is right next time (no-op for providers without a catalog), retry.
     if (
         classified.reason == FailoverReason.reasoning_mandatory
-        and _retry.reasoning_mandatory_retry_endpoint != route_endpoint(agent)
+        and _retry.reasoning_mandatory_retry_visit != route_visit(agent)
     ):
-        _retry.reasoning_mandatory_retry_endpoint = route_endpoint(agent)
+        _retry.reasoning_mandatory_retry_visit = route_visit(agent)
         sent = getattr(agent, "_wire_reasoning_config", None)
         if isinstance(sent, dict) and sent.get("enabled") is not False and sent.get("effort") not in (None, "none"):
             # The rejected request carried an ENABLED config: the route refuses that reasoning

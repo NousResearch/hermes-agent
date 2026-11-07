@@ -249,15 +249,28 @@ def _idle_s(authority, session_id):
     return time.time() - row[0] if row and row[0] else 0.0
 
 
+def _pinned(authority, session_id):
+    """Blocking: the open segment is pinned, or continues a pinned one. The boot sweep this path
+    replaced spared those (``exclude_pinned``, #60609); the predicate is the same one."""
+    from hermes_state_maintenance import _not_pinned_sql
+    target = _physical_target(authority, session_id)  # before the read context, as in ``_idle_s``
+    with authority.db._read_ctx() as conn:
+        row = conn.execute(f'SELECT {_not_pinned_sql("s")} FROM sessions s WHERE s.id = ?',
+                           (target,)).fetchone()
+    return bool(row) and not row[0]
+
+
 def arm_startup_orphan_closes(authority, session_ids):
     """Boot, after the stored closes are re-armed: the previous owner stopped under these sessions
     (idle, or with input it left queued), so no viewer is left to close them (#143547 LC-37). One
     that reattaches keeps it open; a fired close still waits for the queued input to settle.
     An idle classic CLI only redials on its next call, so a session idle less than the legacy
-    sweep's TTL waits out the rest of it, as that sweep did, before its grace starts to count."""
+    sweep's TTL waits out the rest of it, as that sweep did, before its grace starts to count.
+    A pinned conversation stays open, as it did under that sweep."""
     grace = orphan_close_grace(authority, startup=True)
     for session_id in session_ids:
-        if grace and session_id not in authority.pending_closes and orphan_candidate(authority, session_id):
+        if (grace and session_id not in authority.pending_closes and orphan_candidate(authority, session_id)
+                and not _pinned(authority, session_id)):
             delay = max(grace, STARTUP_IDLE_S - _idle_s(authority, session_id))
             arm_orphan_close(authority, session_id, 'startup_orphan_reap', delay)
 

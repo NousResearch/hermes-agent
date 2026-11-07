@@ -1,0 +1,21 @@
+name: plugin_foundry
+repo: https://github.com/julian-saint-work/hermes-plugin-foundry
+sha: ab0756dd72603284ab625a9734cab51daf4d90aa
+description: 'Turn a narrow plugin request into a native Hermes plugin: manifest, entry point, tool, SQLite state, tests, static scan and catalog draft. Two archetypes (folder watcher and JSON API poller). Generated code is reviewed before install or catalog submission; nothing is auto-merged.'
+maintainer: julian-saint-work
+tier: community
+category: automation
+requires_hermes: ">=0.21.5"
+version: "0.1.0"
+docs_url: https://github.com/julian-saint-work/hermes-plugin-foundry
+platforms: []
+capabilities:
+  provides_tools:
+    - foundry_plan
+    - foundry_build
+    - foundry_test
+    - foundry_list
+    - foundry_catalog
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

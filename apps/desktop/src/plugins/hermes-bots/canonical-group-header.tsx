@@ -1,5 +1,5 @@
 import { Button, Codicon, ConfirmDialog, Input, Tip } from '@hermes/plugin-sdk'
-import { useState } from 'react'
+import { type ReactNode, useState } from 'react'
 
 import { type CanonicalDriverStatus, CanonicalGroupAttention, CanonicalGroupRoster } from './canonical-group-activity'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
@@ -14,6 +14,7 @@ interface CanonicalGroupHeaderProps {
   canStop: boolean
   detailsOpen: boolean
   driver?: CanonicalDriverStatus
+  files?: ReactNode
   onBack?: () => void
   onDetails: () => void
   onDisband: () => Promise<void>
@@ -26,7 +27,7 @@ interface CanonicalGroupHeaderProps {
 }
 
 /** Title (opens the details panel), each member's live chip, and quiet icon actions. */
-export function CanonicalGroupHeader({ busy, canDisband, canRename, canStop, detailsOpen, driver, onBack, onDetails, onDisband, onRename, onStop, room, statuses, stopping, working }: CanonicalGroupHeaderProps) {
+export function CanonicalGroupHeader({ busy, canDisband, canRename, canStop, detailsOpen, driver, files, onBack, onDetails, onDisband, onRename, onStop, room, statuses, stopping, working }: CanonicalGroupHeaderProps) {
   const labels = useCanonicalGroupLabels()
   const [renaming, setRenaming] = useState<null | string>(null)
   const [ending, setEnding] = useState(false)
@@ -47,6 +48,7 @@ export function CanonicalGroupHeader({ busy, canDisband, canRename, canStop, det
   return <>
     <RoomHeader backLabel={labels.back} onBack={onBack} onStop={canStop ? onStop : undefined} onTitle={onDetails}
       stopDisabled={stopping} stopLabel={labels.stopGroup} title={room?.name || labels.loadingGroup} titleExpanded={detailsOpen} titleLabel={labels.groupDetails} trailing={<>
+        {files}
         {canRename && action(labels.rename, 'edit', () => setRenaming(room?.name ?? ''), busy || !room)}
         {canDisband && action(labels.disband, 'trash', () => setEnding(true), busy || !room)}
       </>}

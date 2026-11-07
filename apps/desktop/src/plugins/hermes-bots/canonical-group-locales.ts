@@ -1,4 +1,24 @@
 export interface CanonicalGroupMessages {
+  files: string
+  searchFiles: string
+  filesLoading: string
+  filesError: string
+  filesExpired: string
+  filesUnavailable: string
+  filesAccess: string
+  filesEmpty: string
+  filesPageEmpty: string
+  filesNoResults: string
+  filesClearSearch: string
+  olderFiles: string
+  newerFiles: string
+  showLatest: string
+  refreshFiles: string
+  filesYou: string
+  fileVersionUnavailable: string
+  fileDownloadFailed: string
+  fileVerificationFailed: string
+  fileTimeout: string
   members: string
   roomStopped: string
   roomDisbanded: string
@@ -117,6 +137,26 @@ export interface CanonicalGroupMessages {
 
 export const CANONICAL_GROUP_LOCALES = {
   en: {
+    files: 'Files',
+    searchFiles: 'Search files',
+    filesLoading: 'Loading files',
+    filesError: 'Files could not be loaded.',
+    filesExpired: 'This list is out of date. Show the latest files to continue.',
+    filesUnavailable: 'Files are temporarily unavailable.',
+    filesAccess: 'Files are unavailable for this group chat.',
+    filesEmpty: 'No files shared yet.',
+    filesPageEmpty: 'No files on this page.',
+    filesNoResults: 'No matching files.',
+    filesClearSearch: 'Clear search',
+    olderFiles: 'Older files',
+    newerFiles: 'Newer files',
+    showLatest: 'Show latest',
+    refreshFiles: 'Refresh list',
+    filesYou: 'You',
+    fileVersionUnavailable: 'This version can no longer be downloaded.',
+    fileDownloadFailed: 'This file could not be downloaded.',
+    fileVerificationFailed: 'This file couldn’t be verified. Nothing was downloaded.',
+    fileTimeout: 'The download timed out.',
     roomStopped: 'Group stopped',
     roomDisbanded: 'Group disbanded',
     authorityLost: 'Group ownership changed',
@@ -233,6 +273,26 @@ export const CANONICAL_GROUP_LOCALES = {
     earlierMessages: 'Earlier messages, read only. They stay on this Desktop and aren’t copied into a new group.'
   },
   ja: {
+    files: 'ファイル',
+    searchFiles: 'ファイルを検索',
+    filesLoading: 'ファイルを読み込み中',
+    filesError: 'ファイルを読み込めませんでした。',
+    filesExpired: 'この一覧は最新ではありません。続けるには最新のファイルを表示してください。',
+    filesUnavailable: 'ファイルを一時的に利用できません。',
+    filesAccess: 'このグループチャットのファイルを利用できません。',
+    filesEmpty: '共有されたファイルはまだありません。',
+    filesPageEmpty: 'このページにファイルはありません。',
+    filesNoResults: '一致するファイルはありません。',
+    filesClearSearch: '検索をクリア',
+    olderFiles: '古いファイル',
+    newerFiles: '新しいファイル',
+    showLatest: '最新を表示',
+    refreshFiles: '一覧を更新',
+    filesYou: 'あなた',
+    fileVersionUnavailable: 'このバージョンはダウンロードできなくなりました。',
+    fileDownloadFailed: 'このファイルをダウンロードできませんでした。',
+    fileVerificationFailed: 'このファイルを検証できませんでした。何もダウンロードされていません。',
+    fileTimeout: 'ダウンロードがタイムアウトしました。',
     roomStopped: 'グループが停止しました',
     roomDisbanded: 'グループが解散しました',
     authorityLost: 'グループの管理元が変更されました',
@@ -349,6 +409,26 @@ export const CANONICAL_GROUP_LOCALES = {
     earlierMessages: '以前のメッセージ（閲覧のみ）。この Desktop に残り、新しいグループにはコピーされません。'
   },
   zh: {
+    files: '文件',
+    searchFiles: '搜索文件',
+    filesLoading: '正在加载文件',
+    filesError: '无法加载文件。',
+    filesExpired: '此列表已过时。请显示最新文件以继续。',
+    filesUnavailable: '文件暂时不可用。',
+    filesAccess: '此群聊的文件不可用。',
+    filesEmpty: '尚未共享任何文件。',
+    filesPageEmpty: '此页没有文件。',
+    filesNoResults: '没有匹配的文件。',
+    filesClearSearch: '清除搜索',
+    olderFiles: '较早的文件',
+    newerFiles: '较新的文件',
+    showLatest: '显示最新内容',
+    refreshFiles: '刷新列表',
+    filesYou: '你',
+    fileVersionUnavailable: '此版本已无法下载。',
+    fileDownloadFailed: '无法下载此文件。',
+    fileVerificationFailed: '无法验证此文件。未下载任何内容。',
+    fileTimeout: '下载超时。',
     roomStopped: '群组已停止',
     roomDisbanded: '群组已解散',
     authorityLost: '群组管理端已更改',
@@ -465,6 +545,26 @@ export const CANONICAL_GROUP_LOCALES = {
     earlierMessages: '之前的消息（只读）。它们保留在此 Desktop 上，不会复制到新群组。'
   },
   'zh-hant': {
+    files: '檔案',
+    searchFiles: '搜尋檔案',
+    filesLoading: '正在載入檔案',
+    filesError: '無法載入檔案。',
+    filesExpired: '此清單已過時。請顯示最新檔案以繼續。',
+    filesUnavailable: '檔案暫時無法使用。',
+    filesAccess: '此群組聊天的檔案無法使用。',
+    filesEmpty: '尚未共享任何檔案。',
+    filesPageEmpty: '此頁沒有檔案。',
+    filesNoResults: '找不到相符的檔案。',
+    filesClearSearch: '清除搜尋',
+    olderFiles: '較舊的檔案',
+    newerFiles: '較新的檔案',
+    showLatest: '顯示最新內容',
+    refreshFiles: '重新整理清單',
+    filesYou: '您',
+    fileVersionUnavailable: '此版本已無法下載。',
+    fileDownloadFailed: '無法下載此檔案。',
+    fileVerificationFailed: '無法驗證此檔案。未下載任何內容。',
+    fileTimeout: '下載逾時。',
     roomStopped: '群組已停止',
     roomDisbanded: '群組已解散',
     authorityLost: '群組管理端已變更',
@@ -581,6 +681,26 @@ export const CANONICAL_GROUP_LOCALES = {
     earlierMessages: '先前的訊息（唯讀）。它們會保留在此 Desktop 上，不會複製到新群組。'
   },
   ar: {
+    files: 'الملفات',
+    searchFiles: 'البحث في الملفات',
+    filesLoading: 'جارٍ تحميل الملفات',
+    filesError: 'تعذر تحميل الملفات.',
+    filesExpired: 'هذه القائمة لم تعد محدّثة. اعرض أحدث الملفات للمتابعة.',
+    filesUnavailable: 'الملفات غير متاحة مؤقتاً.',
+    filesAccess: 'الملفات غير متاحة لهذه المحادثة الجماعية.',
+    filesEmpty: 'لم تتم مشاركة أي ملفات بعد.',
+    filesPageEmpty: 'لا توجد ملفات في هذه الصفحة.',
+    filesNoResults: 'لا توجد ملفات مطابقة.',
+    filesClearSearch: 'مسح البحث',
+    olderFiles: 'ملفات أقدم',
+    newerFiles: 'ملفات أحدث',
+    showLatest: 'عرض الأحدث',
+    refreshFiles: 'تحديث القائمة',
+    filesYou: 'أنت',
+    fileVersionUnavailable: 'لم يعد بالإمكان تنزيل هذا الإصدار.',
+    fileDownloadFailed: 'تعذر تنزيل هذا الملف.',
+    fileVerificationFailed: 'تعذر التحقق من هذا الملف. لم يتم تنزيل أي شيء.',
+    fileTimeout: 'انتهت مهلة التنزيل.',
     roomStopped: 'أُوقفت المجموعة',
     roomDisbanded: 'حُلّت المجموعة',
     authorityLost: 'تغيّر مالك المجموعة',
@@ -697,6 +817,26 @@ export const CANONICAL_GROUP_LOCALES = {
     earlierMessages: 'الرسائل السابقة، للقراءة فقط. تبقى على Desktop هذا ولن تُنسخ إلى مجموعة جديدة.'
   },
   ru: {
+    files: 'Файлы',
+    searchFiles: 'Поиск файлов',
+    filesLoading: 'Загрузка файлов',
+    filesError: 'Не удалось загрузить файлы.',
+    filesExpired: 'Этот список устарел. Чтобы продолжить, покажите последние файлы.',
+    filesUnavailable: 'Файлы временно недоступны.',
+    filesAccess: 'Файлы недоступны для этого группового чата.',
+    filesEmpty: 'Файлами ещё не делились.',
+    filesPageEmpty: 'На этой странице нет файлов.',
+    filesNoResults: 'Подходящие файлы не найдены.',
+    filesClearSearch: 'Очистить поиск',
+    olderFiles: 'Более старые файлы',
+    newerFiles: 'Более новые файлы',
+    showLatest: 'Показать последние',
+    refreshFiles: 'Обновить список',
+    filesYou: 'Вы',
+    fileVersionUnavailable: 'Эту версию больше нельзя скачать.',
+    fileDownloadFailed: 'Не удалось скачать этот файл.',
+    fileVerificationFailed: 'Не удалось проверить этот файл. Ничего не скачано.',
+    fileTimeout: 'Время ожидания скачивания истекло.',
     roomStopped: 'Группа остановлена',
     roomDisbanded: 'Группа распущена',
     authorityLost: 'Владелец группы изменился',
@@ -816,6 +956,26 @@ export const CANONICAL_GROUP_LOCALES = {
     earlierMessages: 'Прежние сообщения, только для чтения. Они остаются в этом Desktop и не копируются в новую группу.'
   },
   fr: {
+    files: 'Fichiers',
+    searchFiles: 'Rechercher des fichiers',
+    filesLoading: 'Chargement des fichiers',
+    filesError: 'Impossible de charger les fichiers.',
+    filesExpired: 'Cette liste n’est plus à jour. Affichez les derniers fichiers pour continuer.',
+    filesUnavailable: 'Les fichiers sont temporairement indisponibles.',
+    filesAccess: 'Les fichiers ne sont pas disponibles pour ce groupe.',
+    filesEmpty: 'Aucun fichier partagé pour l’instant.',
+    filesPageEmpty: 'Aucun fichier sur cette page.',
+    filesNoResults: 'Aucun fichier correspondant.',
+    filesClearSearch: 'Effacer la recherche',
+    olderFiles: 'Fichiers plus anciens',
+    newerFiles: 'Fichiers plus récents',
+    showLatest: 'Afficher les plus récents',
+    refreshFiles: 'Actualiser la liste',
+    filesYou: 'Vous',
+    fileVersionUnavailable: 'Cette version ne peut plus être téléchargée.',
+    fileDownloadFailed: 'Impossible de télécharger ce fichier.',
+    fileVerificationFailed: 'Impossible de vérifier ce fichier. Rien n’a été téléchargé.',
+    fileTimeout: 'Le téléchargement a expiré.',
     roomStopped: 'Groupe arrêté',
     roomDisbanded: 'Groupe dissous',
     authorityLost: 'Gestionnaire du groupe modifié',
@@ -934,6 +1094,26 @@ export const CANONICAL_GROUP_LOCALES = {
     earlierMessages: 'Messages précédents, en lecture seule. Ils restent sur ce Desktop et ne sont pas copiés dans un nouveau groupe.'
   },
   de: {
+    files: 'Dateien',
+    searchFiles: 'Dateien durchsuchen',
+    filesLoading: 'Dateien werden geladen',
+    filesError: 'Dateien konnten nicht geladen werden.',
+    filesExpired: 'Diese Liste ist nicht mehr aktuell. Zeigen Sie die neuesten Dateien an, um fortzufahren.',
+    filesUnavailable: 'Dateien sind vorübergehend nicht verfügbar.',
+    filesAccess: 'Für diese Gruppe sind keine Dateien verfügbar.',
+    filesEmpty: 'Noch keine Dateien geteilt.',
+    filesPageEmpty: 'Keine Dateien auf dieser Seite.',
+    filesNoResults: 'Keine passenden Dateien.',
+    filesClearSearch: 'Suche löschen',
+    olderFiles: 'Ältere Dateien',
+    newerFiles: 'Neuere Dateien',
+    showLatest: 'Neueste anzeigen',
+    refreshFiles: 'Liste aktualisieren',
+    filesYou: 'Sie',
+    fileVersionUnavailable: 'Diese Version kann nicht mehr heruntergeladen werden.',
+    fileDownloadFailed: 'Diese Datei konnte nicht heruntergeladen werden.',
+    fileVerificationFailed: 'Diese Datei konnte nicht überprüft werden. Es wurde nichts heruntergeladen.',
+    fileTimeout: 'Der Download hat zu lange gedauert.',
     roomStopped: 'Gruppe angehalten',
     roomDisbanded: 'Gruppe aufgelöst',
     authorityLost: 'Gruppenverwaltung gewechselt',
@@ -1053,6 +1233,26 @@ export const CANONICAL_GROUP_LOCALES = {
     earlierMessages: 'Frühere Nachrichten, nur lesbar. Sie bleiben auf diesem Desktop und werden nicht in eine neue Gruppe kopiert.'
   },
   es: {
+    files: 'Archivos',
+    searchFiles: 'Buscar archivos',
+    filesLoading: 'Cargando archivos',
+    filesError: 'No se pudieron cargar los archivos.',
+    filesExpired: 'Esta lista ya no está actualizada. Muestra los archivos más recientes para continuar.',
+    filesUnavailable: 'Los archivos no están disponibles temporalmente.',
+    filesAccess: 'Los archivos no están disponibles para este grupo.',
+    filesEmpty: 'Aún no se han compartido archivos.',
+    filesPageEmpty: 'No hay archivos en esta página.',
+    filesNoResults: 'No hay archivos que coincidan.',
+    filesClearSearch: 'Borrar búsqueda',
+    olderFiles: 'Archivos más antiguos',
+    newerFiles: 'Archivos más recientes',
+    showLatest: 'Mostrar lo más reciente',
+    refreshFiles: 'Actualizar lista',
+    filesYou: 'Tú',
+    fileVersionUnavailable: 'Esta versión ya no se puede descargar.',
+    fileDownloadFailed: 'No se pudo descargar este archivo.',
+    fileVerificationFailed: 'No se pudo verificar este archivo. No se descargó nada.',
+    fileTimeout: 'La descarga tardó demasiado.',
     roomStopped: 'Grupo detenido',
     roomDisbanded: 'Grupo disuelto',
     authorityLost: 'Propietario del grupo cambiado',

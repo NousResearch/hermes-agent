@@ -43,6 +43,12 @@ MAX_ROOM_UNCOMMITTED_COUNT = 64
 MAX_TASK_ATTACHMENTS = 16
 MAX_TASK_ATTACHMENT_BYTES = 50_000_000
 UNCOMMITTED_TTL_SECONDS = 60 * 60
+# Upload ids a Bot's shared files stage under (gateway.hosted_room_outputs); no client upload may
+# use them. Such an upload is held, not expired, until the room publishes or releases it.
+OUTPUT_UPLOAD_PREFIX = "out:"
+# Private directory beside ``blobs/`` where such a file pushed from another profile arrives in
+# chunks; ``prune`` drops a partial file left longer than the uncommitted-upload expiry.
+INCOMING_DIR = "incoming"
 DISBANDED_GRACE_SECONDS = 15 * 60
 CLASSIC_ATTACHMENT_TTL_SECONDS = 7 * 24 * 60 * 60
 
@@ -314,6 +320,7 @@ class HostedRoomAttachmentStore:
         self.db_path = Path(db_path)
         self.root = Path(root or default_attachment_root(self.db_path))
         self.blob_root = self.root / "blobs"
+        self.incoming_root = self.root / INCOMING_DIR
         self.clock = clock
         self.room_quota_bytes = max(1, int(room_quota_bytes))
         self.gateway_quota_bytes = max(1, int(gateway_quota_bytes))
@@ -520,9 +527,13 @@ class HostedRoomAttachmentStore:
         name: Any,
         mime: Any,
         data: bytes,
+        output: bool = False,
     ) -> dict[str, Any]:
         room_id = _identifier(room_id, label="room_id")
         upload_id = _identifier(upload_id, label="upload_id")
+        # Checked on the normalized id, the one stored: only a Bot's staging enters its namespace.
+        if upload_id.startswith(OUTPUT_UPLOAD_PREFIX) != output:
+            raise AttachmentError(f"upload ids starting {OUTPUT_UPLOAD_PREFIX!r} are reserved for files a bot shares")
         kind = _kind(kind)
         name = _name(name)
         mime = _mime(mime)
@@ -635,7 +646,7 @@ class HostedRoomAttachmentStore:
                     blob_id,
                     now,
                     now,
-                    now + UNCOMMITTED_TTL_SECONDS,
+                    None if output else now + UNCOMMITTED_TTL_SECONDS,
                 ),
             )
             row = conn.execute(
@@ -668,6 +679,61 @@ class HostedRoomAttachmentStore:
                 sha256=str(row["sha256"]),
             )
             return self._metadata(row, idempotent=True)
+
+    def staged_uploads(
+        self, *, room_id: Any, upload_prefix: str, event_id: Any = None,
+    ) -> list[dict[str, Any]]:
+        """Held uploads whose id starts with ``upload_prefix``, in upload order: those still
+        uncommitted, plus those already committed to ``event_id`` when one is given."""
+
+        room_id = _identifier(room_id, label="room_id")
+        event_id = _identifier(event_id, label="event_id") if event_id is not None else None
+        with self._transaction() as conn:
+            rows = conn.execute(
+                """SELECT * FROM hosted_room_attachments
+                    WHERE room_id=? AND upload_id>=? AND upload_id<? AND expires_at IS NULL
+                      AND (state='uploaded' OR (state='committed' AND event_id=?))
+                    ORDER BY created_at, upload_id""",
+                (room_id, upload_prefix, upload_prefix + "\uffff", event_id),
+            ).fetchall()
+        return [{**self._metadata(row), "upload_id": str(row["upload_id"])} for row in rows]
+
+    def logged_manifest(self, *, room_id: Any, event_id: Any) -> list[dict[str, Any]] | None:
+        """The attachment manifest of a room-log event, or None when the log does not hold it."""
+
+        room_id = _identifier(room_id, label="room_id")
+        event_id = _identifier(event_id, label="event_id")
+        with self._transaction() as conn:
+            owner = _owner_event(conn, room_id, event_id)
+        return None if owner is None else list(json.loads(owner["payload_json"]).get("attachments", []))
+
+    def release_staged(self, *, room_id: Any, upload_prefix: str) -> int:
+        """End the hold on a prefix's uploads that no room-log event carries: those still
+        uncommitted, and those committed to an event the log does not hold (a reply that was
+        never published). Released rows return to ordinary uncommitted uploads that ``prune``
+        reclaims."""
+
+        room_id = _identifier(room_id, label="room_id")
+        now = float(self.clock())
+        with self._lock, self._transaction(immediate=True) as conn:
+            rows = conn.execute(
+                """SELECT attachment_id, state, event_id FROM hosted_room_attachments
+                    WHERE room_id=? AND upload_id>=? AND upload_id<? AND expires_at IS NULL
+                      AND state IN ('uploaded', 'committed')""",
+                (room_id, upload_prefix, upload_prefix + "\uffff"),
+            ).fetchall()
+            released = [
+                str(row["attachment_id"]) for row in rows
+                if row["state"] == "uploaded" or _owner_event(conn, room_id, str(row["event_id"] or "")) is None
+            ]
+            conn.executemany(
+                """UPDATE hosted_room_attachments
+                      SET state='uploaded', event_id=NULL, recipient_member_ids_json='[]', viewer_access=0,
+                          expires_at=?, updated_at=?
+                    WHERE attachment_id=?""",
+                ((now, now, attachment_id) for attachment_id in released),
+            )
+        return len(released)
 
     def commit_message(
         self,
@@ -1013,7 +1079,7 @@ class HostedRoomAttachmentStore:
                                  WHERE room.room_id=hosted_room_attachments.room_id
                               ),
                               updated_at=?
-                        WHERE state='committed' AND EXISTS (
+                        WHERE (state='committed' OR (state='uploaded' AND expires_at IS NULL)) AND EXISTS (
                             SELECT 1 FROM hosted_rooms AS room
                              WHERE room.room_id=hosted_room_attachments.room_id
                                AND room.disbanded_at IS NOT NULL
@@ -1056,7 +1122,21 @@ class HostedRoomAttachmentStore:
         for blob_id in removed_blob_ids:
             self._blob_path(blob_id).unlink(missing_ok=True)
         self._sweep_orphans()
+        self._sweep_incoming(now)
         return removed
+
+    def _sweep_incoming(self, now: float) -> None:
+        """Drop chunked transfers abandoned for longer than the uncommitted-upload expiry."""
+        try:
+            parts = tuple(self.incoming_root.glob("*.part"))
+        except OSError:
+            return
+        for part in parts:
+            try:
+                if part.stat(follow_symlinks=False).st_mtime < now - UNCOMMITTED_TTL_SECONDS:
+                    part.unlink(missing_ok=True)
+            except OSError:
+                continue
 
     def _sweep_orphans(self) -> None:
         quarantined: list[Path] = []

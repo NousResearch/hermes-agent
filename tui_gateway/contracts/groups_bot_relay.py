@@ -301,7 +301,8 @@ class GroupsSendResult(Result):
 
 
 method("groups.send", params=GroupsSendParams, result=GroupsSendResult,
-       doc="Append one inert message.user event idempotently; the actor is server-owned.")
+       doc="Append one inert message.user event idempotently; the actor is server-owned. "
+           "A payload without thread_id starts its own thread.")
 
 
 class GroupsRenameParams(RoomParams):

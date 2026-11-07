@@ -118,7 +118,9 @@ _CREATED_ROW_SQL = "SELECT parent_session_id, created_source FROM sessions WHERE
 # A parent that did not end by compression (a reset or branch source) is not a chain edge, so an
 # unset row behind one does not send every write down that walk.
 # CROSS JOIN keeps ``up`` the outer loop: without ANALYZE stats SQLite otherwise scans sessions
-# and probes ``up`` for each row, a full-table read on every stamped write.
+# and probes ``up`` for each row, a full-table read on every stamped write. (PostgreSQL's
+# converter rewrites the ``CROSS JOIN ... ON`` to a plain inner join: it rejects ON there, and
+# its cost planner holds the same driving side.)
 _UNSET_ANCESTOR_SQL = """
     WITH RECURSIVE up(pid, n) AS (
         SELECT parent_session_id, 1 FROM sessions WHERE id = ?

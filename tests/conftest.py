@@ -29,6 +29,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import uuid
 from pathlib import Path
 
 import pytest
@@ -1683,3 +1684,57 @@ def real_bash() -> str:
             if candidate.exists():
                 return str(candidate)
     return found or "bash"
+
+
+@pytest.fixture
+def postgres_home(tmp_path, monkeypatch):
+    """A temporary profile using one isolated schema in the local test database."""
+    if os.environ.get("HERMES_TEST_POSTGRES") != "1":
+        pytest.skip("set HERMES_TEST_POSTGRES=1 to run PostgreSQL integration tests")
+
+    import psycopg
+    from psycopg import sql
+
+    # The DSN comes from the environment: CI injects the service container's, a local run
+    # defaults to the documented test container (the fixture's schema is created and dropped
+    # around each test, so the default credentials are never a shared secret).
+    database_url = os.environ.get(
+        "HERMES_TEST_POSTGRES_DSN", "postgresql://hermes:***@127.0.0.1:55433/hermes_test"
+    )
+    schema = f"test_{uuid.uuid4().hex}"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_DATABASE_URL", raising=False)
+    state_module = sys.modules.get("hermes_state")
+    if state_module is not None:
+        monkeypatch.setattr(state_module, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    (tmp_path / "config.yaml").write_text(
+        f"database:\n  backend: postgres\n  schema: {schema}\n", encoding="utf-8"
+    )
+    (tmp_path / ".env").write_text(f"HERMES_DATABASE_URL={database_url}\n", encoding="utf-8")
+
+    with psycopg.connect(database_url, autocommit=True, connect_timeout=5) as connection:
+        try:
+            yield tmp_path
+        finally:
+            connection.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema)))
+
+
+@pytest.fixture
+def postgres_db(postgres_home):
+    from hermes_state import SessionDB
+
+    # The first hook dispatch in a fresh process runs plugin discovery, which loads the
+    # profile config and bootstraps the home directory skeleton once (backend-agnostic).
+    # Warm it up under this home so tests that snapshot the profile filesystem cover store
+    # behavior, not a one-time process-bootstrap side effect landing mid-test.
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+
+        invoke_hook("on_session_delete", session_id="fixture-warmup", reason="test")
+    except Exception:
+        pass  # fail-open, same posture as emit_session_deleted
+
+    with SessionDB(postgres_home / "state.db") as database:
+        assert database.backend == "postgres"
+        yield database
+    assert not (postgres_home / "state.db").exists()

@@ -157,3 +157,65 @@ async def test_forced_channel_wake_checks_still_apply(adapter):
     adapter.handle_message.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_authentication_records_bot_id_alias(adapter):
+    client = AsyncMock()
+    client.auth_test.return_value = {
+        "team_id": "T1",
+        "team": "Example",
+        "user_id": BOT_USER_ID,
+        "bot_id": "B_BOT",
+        "user": "testbot",
+    }
+    adapter._new_web_client = MagicMock(return_value=client)
+    adapter._team_clients = {}
+    adapter._team_bot_user_ids = {}
+    adapter._team_bot_names = {}
+    adapter._bot_user_id = None
+    adapter._bot_display_name = None
+
+    await adapter._authenticate_workspace("xoxb-test", None)
+
+    assert adapter._team_bot_ids == {"T1": "B_BOT"}
+    assert adapter._bot_id == "B_BOT"
+
+
+@pytest.mark.asyncio
+async def test_bot_id_mentioned_parent_wakes_followup_after_restart(adapter):
+    adapter._team_bot_user_ids = {"T1": BOT_USER_ID}
+    adapter._team_bot_ids = {"T1": "B_BOT"}
+    adapter._channel_team[CHANNEL_ID] = "T1"
+    adapter._fetch_thread_parent_text = AsyncMock(return_value="<@B_BOT> original ask")
+
+    await adapter._handle_slack_message(
+        _event("follow-up", ts="103.000", thread_ts="100.000")
+    )
+
+    adapter.handle_message.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_other_workspace_bot_id_does_not_wake_channel_message(adapter):
+    adapter._bot_id = "B_PRIMARY"
+    adapter._team_bot_user_ids = {"T1": BOT_USER_ID}
+    adapter._team_bot_ids = {"T1": "B_TEAM"}
+    adapter._channel_team[CHANNEL_ID] = "T1"
+
+    await adapter._handle_slack_message(_event("<@B_PRIMARY> not you", ts="102.500"))
+
+    adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bot_id_mention_wakes_channel_message(adapter):
+    """Slack can encode an app mention with auth.test's bot_id instead of user_id."""
+    adapter._team_bot_user_ids = {"T1": BOT_USER_ID}
+    adapter._team_bot_ids = {"T1": "B_BOT"}
+    adapter._channel_team[CHANNEL_ID] = "T1"
+
+    await adapter._handle_slack_message(_event("<@B_BOT> help", ts="102.000"))
+
+    adapter.handle_message.assert_called_once()
+    assert adapter.handle_message.call_args.args[0].text == "help"
+
+

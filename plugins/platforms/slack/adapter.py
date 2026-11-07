@@ -1031,12 +1031,14 @@ class SlackAdapter(BasePlatformAdapter):
         self._app: Optional[Any] = None
         self._handler: Optional[Any] = None
         self._socket_mode_task: Optional[asyncio.Task] = None
-        # Bot identity per workspace (team_id → WebClient / bot_user_id / display name), so the
+        # Bot identity per workspace (team_id → WebClient / bot user ID / bot ID / display name), so the
         # agent never mistakes a human's mention for itself; primary workspace identity separate.
         self._bot_user_id: Optional[str] = None
+        self._bot_id: Optional[str] = None
         self._bot_display_name: Optional[str] = None
         self._team_clients: dict[str, Any] = {}
         self._team_bot_user_ids: dict[str, str] = {}
+        self._team_bot_ids: dict[str, str] = {}
         self._team_bot_names: dict[str, str] = {}
         # User/channel IDs are workspace-local: name/is_bot caches key by (team_id, id) so
         # multi-workspace processes never reuse another tenant's names (is_bot catches peer-agent
@@ -1748,13 +1750,18 @@ class SlackAdapter(BasePlatformAdapter):
         auth_response = await client.auth_test()
         team_id = auth_response.get("team_id", "")
         bot_user_id = auth_response.get("user_id", "")
+        bot_id = auth_response.get("bot_id", "")
         bot_name = auth_response.get("user", "unknown")
         team_name = auth_response.get("team", "unknown")
         self._team_clients[team_id] = client
         self._team_bot_user_ids[team_id] = bot_user_id
+        if bot_id:
+            self._team_bot_ids[team_id] = bot_id
         self._team_bot_names[team_id] = bot_name
         if self._bot_user_id is None:
             self._bot_user_id = bot_user_id
+        if self._bot_id is None:
+            self._bot_id = bot_id or None
         if self._bot_display_name is None:
             self._bot_display_name = bot_name
         logger.info(
@@ -1801,8 +1808,9 @@ class SlackAdapter(BasePlatformAdapter):
             self._app_token = app_token
             self._proxy_url = proxy_url
             # Reset so a reconnect with dropped/rotated tokens carries no stale identities.
-            self._bot_user_id = self._bot_display_name = None
-            self._team_clients, self._team_bot_user_ids, self._team_bot_names = {}, {}, {}
+            self._bot_user_id = self._bot_id = self._bot_display_name = None
+            self._team_clients, self._team_bot_user_ids = {}, {}
+            self._team_bot_ids, self._team_bot_names = {}, {}
             self._app = AsyncApp(
                 token=bot_tokens[0], client=self._new_web_client(bot_tokens[0], proxy_url),
                 before_authorize=_slack_per_request_proxy_middleware(proxy_url))
@@ -1902,8 +1910,8 @@ class SlackAdapter(BasePlatformAdapter):
             await self._stop_native_task_card_stream(key, stream)
         await self._stop_socket_mode_handler()
         await self._close_workspace_clients()
-        self._app = self._app_token = self._proxy_url = self._bot_user_id = None
-        self._team_clients, self._team_bot_user_ids = {}, {}
+        self._app = self._app_token = self._proxy_url = self._bot_user_id = self._bot_id = None
+        self._team_clients, self._team_bot_user_ids, self._team_bot_ids = {}, {}, {}
         self._channel_team, self._dm_conversation_cache = {}, {}
         self._release_platform_lock()
         logger.info("[Slack] Disconnected")
@@ -4112,11 +4120,12 @@ class SlackAdapter(BasePlatformAdapter):
         # "run" in that thread is addressed to the bot even though the reply itself carries no mention.
         if is_thread_reply:
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-            if bot_uid:
+            mention_ids = self._self_mention_ids(team_id, bot_uid)
+            if mention_ids:
                 parent_text = await self._fetch_thread_parent_text(
                     channel_id=channel_id, thread_ts=event_thread_ts, team_id=team_id,
                     strip_bot_mention=False)
-                if parent_text and f"<@{bot_uid}>" in parent_text:
+                if self._slack_message_mentions_self(parent_text, mention_ids):
                     # Remember so later replies skip the fetch.
                     if not self._slack_strict_mention():
                         self._register_mentioned_thread(event_thread_ts)
@@ -4177,7 +4186,7 @@ class SlackAdapter(BasePlatformAdapter):
         if allowed_channels and channel_id not in allowed_channels:
             logger.debug("[Slack] Ignoring message in non-allowed channel: %s", channel_id)
             return False
-        self_uids = {u for u in (bot_uid, self._bot_user_id) if u}
+        self_uids = self._self_mention_ids(team_id, bot_uid)
         if (
             self._slack_ignore_other_user_mentions() and not is_mentioned
             and not self._slack_message_mentions_self(routing_text, self_uids)
@@ -4532,15 +4541,33 @@ class SlackAdapter(BasePlatformAdapter):
         allow_bots = self._slack_allow_bots()
         return allow_bots == "none" or (allow_bots == "mentions" and not is_mentioned)
 
+    def _self_mention_ids(self, team_id: str, bot_uid: Optional[str] = None) -> set[str]:
+        """Slack may encode an app mention with either its bot user ID or bot ID."""
+        team_user_ids = getattr(self, "_team_bot_user_ids", {})
+        team_bot_ids = getattr(self, "_team_bot_ids", {})
+        if team_id and team_id in team_user_ids:
+            values = (team_user_ids[team_id], team_bot_ids.get(team_id))
+        else:
+            values = (
+                bot_uid,
+                getattr(self, "_bot_user_id", None),
+                getattr(self, "_bot_id", None),
+            )
+        return {value for value in values if value}
+
     def _apply_bot_mention(
         self, text: str, original_text: str, command_probe_text: str, is_command_text: bool,
-        bot_uid: str, thread_ts: Optional[str], team_id: str) -> tuple[str, str, str, bool]:
+        mention_ids: set[str], thread_ts: Optional[str], team_id: str) -> tuple[str, str, str, bool]:
         """Strip our mention, re-probe for a command hidden behind it, remember the thread.
         Returns updated ``(text, original_text, command_probe_text, is_command_text)``."""
-        text = text.replace(f"<@{bot_uid}>", "").strip()
+        mention_stripped = original_text
+        for mention_id in mention_ids:
+            text = text.replace(f"<@{mention_id}>", "")
+            mention_stripped = mention_stripped.replace(f"<@{mention_id}>", "")
+        text = text.strip()
         # Re-probe commands on the canonical text (block-augmented text would leak quoted text
         # into arguments): handles ``@bot !cmd`` / ``@bot /cmd``.
-        mention_stripped = original_text.replace(f"<@{bot_uid}>", "").strip()
+        mention_stripped = mention_stripped.strip()
         command_text = (
             mention_stripped
             if mention_stripped.startswith("/")
@@ -4610,11 +4637,12 @@ class SlackAdapter(BasePlatformAdapter):
         if self._early_reject_unauthorized(user_id, channel_id, is_dm, thread_id=thread_ts):
             return
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+        mention_ids = self._self_mention_ids(team_id, bot_uid)
         # Mentions may live only in Block Kit blocks.
         # See #52387.
         routing_text = _slack_mention_detection_text(event) or original_text or ""
         is_mentioned = bool(
-            (bot_uid and f"<@{bot_uid}>" in routing_text)
+            self._slack_message_mentions_self(routing_text, mention_ids)
             or self._slack_message_matches_mention_patterns(routing_text))
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
@@ -4639,7 +4667,7 @@ class SlackAdapter(BasePlatformAdapter):
             self._remember_processed_message_ts(_claim_ts)
         if is_mentioned:
             text, original_text, command_probe_text, is_command_text = self._apply_bot_mention(
-                text, original_text, command_probe_text, is_command_text, bot_uid, thread_ts,
+                text, original_text, command_probe_text, is_command_text, mention_ids, thread_ts,
                 team_id)
         # Thread history stays out of ``text``: prepending would push a command off char zero.
         (

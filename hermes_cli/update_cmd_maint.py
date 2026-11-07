@@ -475,9 +475,9 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str, snapshot_id: str
             return
         try:
             if snap_state.stat().st_mtime < state_path.stat().st_mtime:
-                from datetime import datetime, timezone
-                snap_time = datetime.fromtimestamp(snap_state.stat().st_mtime, timezone.utc).isoformat()
-                live_time = datetime.fromtimestamp(state_path.stat().st_mtime, timezone.utc).isoformat()
+                from datetime import UTC, datetime
+                snap_time = datetime.fromtimestamp(snap_state.stat().st_mtime, UTC).isoformat()
+                live_time = datetime.fromtimestamp(state_path.stat().st_mtime, UTC).isoformat()
                 print(f"  ⚠ Snapshot predates live state.db: snapshot={snap_time}, live={live_time}")
             outcome = _restore_state_db_from_snapshot(state_path, snap_state)
             if outcome is True:

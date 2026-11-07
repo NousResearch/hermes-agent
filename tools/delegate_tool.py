@@ -43,9 +43,9 @@ from tools.delegate_tool_progress import (
 )
 from tools.delegate_tool_registry import (
     _CONTROL_ACTIONS, _active_subagents, _active_subagents_lock, _capture_gateway_steer_authority,
-    _handle_control_action, _is_descendant_of, _owns_subagent_record, _register_subagent, _unregister_subagent,
-    get_subagent_attribution, interrupt_subagent, is_spawn_paused, list_active_subagents, set_spawn_paused,
-    steer_subagent,
+    _handle_control_action, _is_descendant_of, _oneshot_budget_lock, _owns_subagent_record, _register_subagent,
+    _unregister_subagent, get_subagent_attribution, interrupt_subagent, is_spawn_paused, list_active_subagents,
+    set_spawn_paused, steer_subagent,
 )
 from tools.delegate_tool_tasks import (
     _MAX_TASK_IMAGES, _coerce_task_images, _coerce_task_schemas, _normalize_task_images, _normalize_task_list,
@@ -486,12 +486,20 @@ def _build_children(
                 model=route.creds["model"], max_iterations=max_iterations, task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **_route_overrides(route),
             )
-        except ValueError as exc:
-            # An owner refusal can land mid-batch: the siblings built so far hold reservations.
+        except BaseException as exc:
+            # An owner refusal (ValueError) can land mid-batch: the siblings built so far hold
+            # reservations. Partially-built children never run: close them so their dedicated
+            # SessionDB handles (acquired per child in _build_child_agent), task resources and
+            # parent attachments do not leak. Events/hooks already emitted (spawn_requested,
+            # subagent_start) cannot be retracted. BaseException, not just ValueError: a
+            # KeyboardInterrupt mid-build must not leak the already-appended children either
+            # (same scope as the session-db release inside _build_child_agent).
             for _, _, built in children:
                 _detach_child(parent_agent, built)
                 _close_child(built, "Failed to close child after a refused sibling")
-            return [], str(exc)
+            if isinstance(exc, ValueError):
+                return [], str(exc)
+            raise
         pin_child_service_tier(child, route.creds)
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
@@ -552,15 +560,26 @@ def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:
     cap = _get_oneshot_max_children()
     if cap <= 0:
         return None
-    spent = getattr(parent_agent, "_oneshot_children_spawned", 0)
-    if spent + requested > cap:
-        return (
-            f"Delegation budget for this one-shot run is exhausted ({spent}/{cap} subagents used; "
-            f"delegation.oneshot_max_children). Do the remaining work yourself in this session — reviewing "
-            f"your own diff and running the tests inline is expected here, not a delegated review."
-        )
-    parent_agent._oneshot_children_spawned = spent + requested
+    with _oneshot_budget_lock:
+        spent = getattr(parent_agent, "_oneshot_children_spawned", 0)
+        if spent + requested > cap:
+            return (
+                f"Delegation budget for this one-shot run is exhausted ({spent}/{cap} subagents used; "
+                f"delegation.oneshot_max_children). Do the remaining work yourself in this session — reviewing "
+                f"your own diff and running the tests inline is expected here, not a delegated review."
+            )
+        parent_agent._oneshot_children_spawned = spent + requested
     return None
+
+
+def _refund_oneshot_spawn_budget(parent_agent: Any, requested: int) -> None:
+    """Give back a charged-but-never-run spawn count. The budget is charged up front (atomic check-and-charge
+    against concurrent delegate_task calls); when batch construction fails before any child runs, the charge
+    must be rolled back or a failed spawn permanently eats the one-shot run's delegation budget."""
+    with _oneshot_budget_lock:
+        spent = getattr(parent_agent, "_oneshot_children_spawned", None)
+        if isinstance(spent, int) and spent >= requested:
+            parent_agent._oneshot_children_spawned = spent - requested
 
 
 def delegate_task(
@@ -670,6 +689,10 @@ def delegate_task(
         live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
     )
     if err:
+        # No child was built or run: the one-shot budget charged above must not stick.
+        # Refund exactly what was charged — len(runnable), the refused routes' tasks were
+        # never charged, and over-refunding would erase siblings' prior spend.
+        _refund_oneshot_spawn_budget(parent_agent, len(runnable))
         return tool_error(err)
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,

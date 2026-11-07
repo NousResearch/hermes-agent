@@ -24,6 +24,7 @@ required) and review the diff exactly like the base snapshot::
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 from pathlib import Path
@@ -166,7 +167,7 @@ def _stream_delta(provider: str, model: str, base_url: str, attrs: dict[str, Any
     client = MagicMock()
     client.chat.completions.create.side_effect = create
     agent._create_request_openai_client = lambda **_kwargs: client
-    call = _StreamingCall(agent, dict(built), None)
+    call = _StreamingCall(agent, copy.deepcopy(built), None)
     with pytest.raises(_Sent):
         call._call_chat_completions(call.stream_attempt_state["current"])
     added = {k: v for k, v in sent.items() if k not in built or built[k] != v}

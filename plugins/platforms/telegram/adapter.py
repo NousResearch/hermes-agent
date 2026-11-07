@@ -182,6 +182,7 @@ _MEDIA_KIND_KEYS = {
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
+from plugins.platforms.telegram.telegram_sibling_media import TelegramSiblingMediaMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
@@ -516,7 +517,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramSiblingMediaMixin, TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -640,6 +641,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         self._text_batch_split_delay_seconds = self._env_float_clamped(
             "HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS", self._TEXT_BATCH_DEFAULT_SPLIT_DELAY_S,
             min_value=self._text_batch_delay_seconds, max_value=self._TEXT_BATCH_MAX_SPLIT_DELAY_S)
+        # Session+sender → in-flight media-handler count. A text flush waits
+        # on a claimed download so the comment and the attachment share one turn.
+        self._media_inflight: dict[str, int] = {}
+        self._media_inflight_generation = 0
         self._drop_delayed_deliveries = False
         # Held across disconnect: PTB advances the offset before our drop-guard runs, so Telegram won't
         # redeliver — dropping is permanent loss (see _hold_inbound_event).
@@ -3339,6 +3344,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             self._media_group_tasks, self._media_group_events, self._pending_photo_batch_tasks,
             self._pending_photo_batches, self._pending_text_batch_tasks, self._pending_text_batches):
             d.clear()
+        inflight = getattr(self, "_media_inflight", None)
+        if inflight is not None:
+            inflight.clear()
+        self._release_sibling_media_waits()
+        self._media_inflight_generation = getattr(self, "_media_inflight_generation", 0) + 1
         self._clear_task_attrs_except(
             current_task, "_polling_error_task", "_polling_progress_verifier_task", "_held_inbound_redispatch_task")
 
@@ -6568,76 +6578,25 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         self._apply_topic_recovery(event)
         return super()._text_batch_key(event)
 
-    def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """Buffer a text chunk, or hold it while delayed delivery must be dropped."""
-        if self._should_drop_delayed_delivery():
-            self._hold_inbound_event(event, where="text-enqueue")
-            return
-        super()._enqueue_text_event(event)
-        self._accept_update()
+    def _inbound_sender_id(self, event: MessageEvent) -> str:
+        """Stable per-message sender id for sibling-media pairing (not the session key).
 
-    async def _flush_buffered(self, pending: dict, tasks: dict, key: str, delay: float, where: str, log_fn=None) -> None:
-        """Shared delayed-flush body: sleep, pop, hold if teardown started, else dispatch. A cancel after
-        the pop but before durable dispatch re-holds the event (never lose it)."""
-        current_task = asyncio.current_task()
-        committed = self.__dict__.setdefault("_committed_flush_tasks", {})
-        event = None
-        try:
-            await asyncio.sleep(delay)
-            # Superseded flush (a newer chunk re-armed the timer while our sleep was already done):
-            # CancelledError only lands at the next await, so check synchronously before the pop.
-            owner = tasks.get(key)
-            if owner is not None and owner is not current_task:
-                return
-            event = pending.pop(key, None)
-            if not event:
-                return
-            # Committed: leave the per-key slot so a newer chunk re-arms without cancelling this
-            # dispatch mid-flight (e.g. during a root-DM createForumTopic, whose ID would be lost).
-            tasks.pop(key, None)
-            prior = committed.get((where, key))
-            committed[(where, key)] = current_task
-            if prior is not None and not prior.done():
-                await asyncio.wait({prior})  # dispatch in order, after the earlier batch settles
-            if self._should_drop_delayed_delivery():
-                self._hold_inbound_event(event, where=f"{where}-flush")
-                event = None
-                return
-            if log_fn is not None:
-                log_fn(event)
-            await self.handle_message(event)
-            event = None
-        except asyncio.CancelledError:
-            if event is not None:
-                self._hold_inbound_event(event, where=f"{where}-flush-cancelled")
-            raise
-        finally:
-            if committed.get((where, key)) is current_task:
-                committed.pop((where, key), None)
-            if tasks.get(key) is current_task:
-                tasks.pop(key, None)
-
-    def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
-        """Adaptive delay: near-split-point last chunk → long delay (continuation almost certain);
-        short/medium totals → capped fast delays; else configured cap (all min()'d with the operator cap)."""
-        last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-        total_len = len(getattr(pending, "text", "") or "") if pending else 0
-        if last_len >= self._SPLIT_THRESHOLD:
-            return self._text_batch_split_delay_seconds
-        if total_len <= self._TEXT_BATCH_FAST_LEN:
-            return min(self._text_batch_delay_seconds, self._TEXT_BATCH_FAST_DELAY_S)
-        if total_len <= self._TEXT_BATCH_SHORT_LEN:
-            return min(self._text_batch_delay_seconds, self._TEXT_BATCH_SHORT_DELAY_S)
-        return self._text_batch_delay_seconds
-
-    async def _flush_text_batch(self, key: str) -> None:
-        """Telegram keeps its own flush body: a cancel after the pop must HOLD the event and re-raise
-        (PTB already acked the update; the hold queue redispatches after reconnect) rather than shield
-        the dispatch — teardown must be able to stop a flush from reaching a torn-down session."""
-        await self._flush_buffered(
-            self._pending_text_batches, self._pending_text_batch_tasks, key,
-            self._text_batch_delay_for(self._pending_text_batches.get(key)), "text",
-            lambda ev: logger.info("[Telegram] Flushing text batch %s (%d chars)", key, len(ev.text or "")))
+        Group-observe attribution strips ``source.user_id``; fall back to
+        ``raw_message.from_user`` so the same person still matches.
+        """
+        source = getattr(event, "source", None)
+        if source is not None:
+            sender = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
+            if sender:
+                return str(sender)
+        raw = getattr(event, "raw_message", None)
+        user = getattr(raw, "from_user", None) if raw is not None else None
+        uid = getattr(user, "id", None) if user is not None else None
+        if uid:
+            return str(uid)
+        if source is not None and getattr(source, "chat_type", None) in {"dm", "private"} and getattr(source, "chat_id", None):
+            return f"dm:{source.chat_id}"
+        return ""
 
     # -- Photo batching --
 
@@ -6666,6 +6625,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
 
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
         """Merge photo events into a pending batch and schedule flush."""
+        self._absorb_pending_text_into_media_event(event)
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="photo-enqueue")
             return
@@ -6704,7 +6664,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             if not allowed:
                 event.text = self._append_observed_note(event.text, note or "")
                 logger.info("[Telegram] Skipped oversized user %s (size=%s)", kind, getattr(source, "file_size", None))
-                await self.handle_message(event)
+                await self._dispatch_media_event(event)
                 return True
             file_obj = await source.get_file()
             data = await file_obj.download_as_bytearray()
@@ -6725,7 +6685,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
     async def _dispatch_with_text(self, event: MessageEvent, text: str) -> bool:
         """Replace the event text with a user-facing note and dispatch it; returns True (handled)."""
         event.text = text
-        await self.handle_message(event)
+        await self._dispatch_media_event(event)
         return True
 
     @staticmethod
@@ -6784,7 +6744,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 self._set_cached_media(
                     event, await cache_video_from_bytes_async(bytes(video_bytes), ext=ext), SUPPORTED_VIDEO_TYPES[ext], MessageType.VIDEO,
                     "[Telegram] Cached user video document at %s")
-                await self.handle_message(event)
+                await self._dispatch_media_event(event)
                 return True
             # Any file type is accepted (authorization is the gate, not the extension); unknown types get
             # application/octet-stream. Image documents already returned above.
@@ -6819,7 +6779,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         return False
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming media messages, downloading images to local cache."""
+        """Download media, and merge a pending same-sender comment into that event.
+
+        When the event has a source, snapshot the pending comment and mark the
+        download in flight before the first await. The text flush then waits
+        for that claimed download and one turn sees both.
+        """
         msg = update.message
         if not msg:
             return
@@ -6838,12 +6803,32 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         if msg.caption:
             from plugins.platforms.telegram.telegram_context import group_trigger_text
             event.text = group_trigger_text(self, msg, expand_link_entities(msg))
-        # Stickers: _handle_sticker overwrites event.text with its vision description, so observe attribution must run after it.
+        # Text batches are attributed on enqueue. Attribute a view first so the
+        # snapshot key matches, then pin before any await. Stickers overwrite
+        # event.text with a vision description, so observe attribution must run
+        # after _handle_sticker (copied via _copy_sibling_pending).
+        attributed = self._apply_telegram_group_observe_attribution(event)
+        inflight_key = None
+        generation = None
+        if getattr(attributed, "source", None) is not None:
+            self._mark_sibling_absorb_eligibility(attributed)
+            inflight_key = self._sibling_media_key(attributed)
+            generation = self._begin_media_inflight(inflight_key)
+        try:
+            await self._deliver_inbound_media(msg, event, attributed)
+        finally:
+            if inflight_key is not None:
+                self._end_media_inflight(inflight_key, generation)
+
+    async def _deliver_inbound_media(self, msg, event, attributed):
+        """Cache and dispatch one media message. The caller owns the inflight mark."""
         if msg.sticker:
             await self._handle_sticker(msg, event)
-            await self.handle_message(self._apply_telegram_group_observe_attribution(event))
+            event = self._copy_sibling_pending(
+                attributed, self._apply_telegram_group_observe_attribution(event))
+            await self._dispatch_media_event(event)
             return
-        event = self._apply_telegram_group_observe_attribution(event)
+        event = attributed
         # Cache photo locally: Telegram's file URLs expire (~1 hour) before vision may run.
         if msg.photo:
             try:
@@ -6874,11 +6859,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         if media_group_id:
             await self._queue_media_group_event(str(media_group_id), event)
             return
-        await self.handle_message(event)
+        await self._dispatch_media_event(event)
 
     async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
         """Debounce album items (shared media_group_id) into one MessageEvent so the second image isn't
         treated as a new message interrupting the first."""
+        self._absorb_pending_text_into_media_event(event)
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="media-group-enqueue")
             return

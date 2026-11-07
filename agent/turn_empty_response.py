@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent import empty_response_guard as _empty_guard
+from agent.agent_runtime_helpers_placeholders import _ECHOED_PLACEHOLDER_NUDGE, is_interrupt_placeholder_echo
 from agent.message_metadata import append_message
 from agent.message_sanitization import _sanitize_surrogates
 from agent.turn_context_compaction import _refund_api_call
@@ -215,15 +216,21 @@ def recover_empty_response(
         final_response = final
         return _verdict("break")
 
-    # Post-tool-call empty (no prior content, or only mid-task narration): nudge once.
+    # Post-tool-call empty (no prior content, or only mid-task narration) or an echoed
+    # interrupt placeholder (#150052): nudge once.
+    _echoed_placeholder = is_interrupt_placeholder_echo(agent._strip_think_blocks(final_response or ""))
+    if _echoed_placeholder:
+        final_response = ""
+        assistant_message.content = ""
+        agent._current_streamed_assistant_text = ""
     _prior_was_tool = any(m.get("role") == "tool" for m in messages[-5:])
     # Ollama puts <think> in content, not reasoning_content, so _has_structured misses
     # it; detect here to route to prefill.
     _has_inline_thinking = bool(_INLINE_THINK_RE.search(final_response or ""))
     if (
-        _prior_was_tool
+        (_prior_was_tool or _echoed_placeholder)
         and not getattr(agent, "_post_tool_empty_retried", False)
-        and not _has_inline_thinking  # thinking model still working — let prefill handle
+        and (not _has_inline_thinking or _echoed_placeholder)  # thinking model still working — let prefill handle
     ):
         agent._post_tool_empty_retried = True
         # Clear stale narration so it doesn't resurface on a later empty response.
@@ -237,7 +244,9 @@ def recover_empty_response(
         _nudge_msg["_empty_recovery_synthetic"] = True
         append_message(messages, _nudge_msg)
         append_message(messages, {
-            "role": "user", "content": _EMPTY_TOOL_RESPONSE_NUDGE, "_empty_recovery_synthetic": True
+            "role": "user",
+            "content": _EMPTY_TOOL_RESPONSE_NUDGE if _prior_was_tool else _ECHOED_PLACEHOLDER_NUDGE,
+            "_empty_recovery_synthetic": True,
         })
         return _verdict("continue")
 

@@ -20,6 +20,7 @@ import {
   queuedPromptAwaitsNextTurn,
   reasoningPart,
   renderMediaTags,
+  repairGluedMarkdownBlockBoundaries,
   sealOpenToolParts,
   toolEventOwnerMessageId,
   upsertToolPart
@@ -672,7 +673,7 @@ export function useMessageStream({
           return state
         }
 
-        const authoritativeText = renderMediaTags(text).trim()
+        const authoritativeText = renderMediaTags(repairGluedMarkdownBlockBoundaries(text)).trim()
 
         if (!authoritativeText) {
           return state
@@ -805,7 +806,7 @@ export function useMessageStream({
         }
 
         const streamId = state.streamId ?? state.heartbeatSettledStreamId ?? null
-        const finalText = renderMediaTags(text).trim()
+        const finalText = renderMediaTags(repairGluedMarkdownBlockBoundaries(text)).trim()
         // Structured failure from the terminal frame wins over the legacy text
         // heuristic ("Error: <provider detail>" texts don't match the regexes).
         const completionError = failure?.error ?? completionErrorText(finalText)

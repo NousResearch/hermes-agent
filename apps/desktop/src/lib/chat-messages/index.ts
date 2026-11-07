@@ -16,6 +16,7 @@ export {
   reasoningPart,
   reasoningTextFromDetails,
   renderMediaTags,
+  repairGluedMarkdownBlockBoundaries,
   textPart
 } from './parts'
 export type { UnspokenTurnSpeech } from './parts'

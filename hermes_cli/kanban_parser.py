@@ -38,6 +38,16 @@ def _json_flag(**kw):
     return _arg("--json", action="store_true", **kw)
 
 
+def _board_override():
+    """Accept ``--board`` after a task action without erasing a global value."""
+    return _arg(
+        "--board",
+        default=argparse.SUPPRESS,
+        metavar="<slug>",
+        help="Board slug to operate on (also accepted before the action).",
+    )
+
+
 def _reason(help: str):
     return _arg("--reason", help=help)
 
@@ -159,6 +169,7 @@ _SPECS = [
          )),
     _cmd("create", [
         _arg("title", help="Task title"),
+        _board_override(),
         _arg("--body", help="Optional opening post"),
         _arg("--body-file", metavar="PATH",
              help="Read the opening post from a file ('-' = stdin), so bodies with embedded "

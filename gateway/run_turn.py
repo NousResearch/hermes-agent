@@ -1082,8 +1082,9 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             if source.scope_id:
                 _progress_metadata.setdefault("recipient_team_id", source.scope_id)
                 _progress_metadata.setdefault("slack_team_id", source.scope_id)
-            if source.user_id:
-                _progress_metadata.setdefault("recipient_user_id", source.user_id)
+            recipient_user = _progress_metadata.get("user_id")
+            if recipient_user:
+                _progress_metadata.setdefault("recipient_user_id", recipient_user)
         # Buzz has no native thread_id: thread via reply-to unless the user opted out.
         _progress_reply_to = (
             event_message_id

@@ -5678,8 +5678,11 @@ class TestNonConversationalSubtypeAllowlist:
     @pytest.mark.asyncio
     async def test_conversational_subtypes_still_pass(self, adapter):
         adapter.config.extra["allow_bots"] = "all"
+        adapter._users_info_payload = AsyncMock(return_value={
+            "ok": True, "user": {"id": "U_HUMAN", "is_bot": False}})
         events = [self._event(s) for s in (None, "file_share", "thread_broadcast", "me_message",
                                            "document_mention")]
+        adapter.config.extra["allowed_bots"] = "B_OTHER"
         events.append(self._event("bot_message", bot_id="B_OTHER"))
         for event in events:
             accepted = await adapter._prefilter_inbound(event, None)

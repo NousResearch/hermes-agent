@@ -54,6 +54,29 @@ def test_concurrent_turns_carry_their_own_identity():
     assert meta_bob["user_id"] == "U_BOB"
 
 
+def test_bot_authorization_identity_is_not_slack_stream_recipient():
+    runner = object.__new__(GatewayRunner)
+    source = _slack_source("B_TRUSTED")
+    source.is_bot = True
+    source.user_id_alt = "U_BOTUSER"
+    metadata = runner._thread_metadata_for_source(source)
+    assert metadata["user_id"] == "U_BOTUSER"
+
+
+def test_bot_without_user_identity_never_borrows_another_turns_recipient():
+    runner = object.__new__(GatewayRunner)
+    source = _slack_source("B_TRUSTED")
+    source.is_bot = True
+    source.user_id_alt = None
+    metadata = runner._thread_metadata_for_source(source)
+    assert metadata["user_id"] == ""
+    from gateway.relay.adapter import RelayAdapter
+    adapter = object.__new__(RelayAdapter)
+    adapter._scope_by_chat = {"C_SHARED": "T_CACHED"}
+    adapter._dm_user_by_chat = {"C_SHARED": "U_OTHER"}
+    assert adapter._with_scope("C_SHARED", metadata)["user_id"] == ""
+
+
 def test_relay_with_scope_does_not_override_per_turn_identity():
     """_with_scope must be fill-only: a turn that already carries user_id /
     scope_id keeps them even when the per-chat cache holds another user

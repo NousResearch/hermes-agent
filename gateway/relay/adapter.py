@@ -1127,6 +1127,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             ("scope_id", self._scope_by_chat), ("user_id", self._dm_user_by_chat),
             ("profile", getattr(self, "_profile_by_chat", {})),
         ):
+            if key == "user_id" and meta.get("slack_no_recipient"):
+                continue
             if not meta.get(key):
                 value = cache.get(str(chat_id))
                 if value:

@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 import io
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -137,6 +138,99 @@ def _project_name(source: Path) -> str:
             raise InstallError("venv", f"{source / 'pyproject.toml'} has no [project].name")
         return match.group(1)
     return tomllib.loads(text)["project"]["name"]
+
+
+_LOCK_REGISTRY = re.compile(r'registry\s*=\s*"([^"]+)"')
+
+
+def _normalised_index(url: str) -> str:
+    return url.strip().rstrip("/").lower()
+
+
+def locked_registries(lock: Path) -> frozenset[str]:
+    """The registry URLs ``lock`` records for its packages.
+
+    A regex rather than tomllib: the root lock is >1 MB and only the source
+    lines matter here. ``source = { registry = "https://pypi.org/simple" }``
+    appears once per registry, not once per package.
+    """
+    try:
+        text = lock.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return frozenset()
+    return frozenset(_normalised_index(m) for m in _LOCK_REGISTRY.findall(text))
+
+
+def configured_indexes(env: Mapping[str, str]) -> frozenset[str]:
+    """The indexes uv will use for *env*, after the pip-mirror bridge."""
+    from pm.index_config import bridged_index_settings
+
+    settings = bridged_index_settings(env)
+    urls: set[str] = set()
+    for key in ("UV_INDEX_URL", "UV_DEFAULT_INDEX"):
+        value = (settings.get(key) or "").strip()
+        if value:
+            urls.add(value)
+    # UV_INDEX is a space/comma separated list of `name=url` or bare URLs.
+    for entry in (settings.get("UV_INDEX") or "").replace(",", " ").split():
+        urls.add(entry.split("=", 1)[-1])
+    return frozenset(_normalised_index(url) for url in urls if url.strip())
+
+
+def mirror_diverges_from_lock(lock: Path, env: Mapping[str, str]) -> bool:
+    """A configured index that the lock was not resolved against.
+
+    `uv sync --frozen` installs the absolute artifact URLs recorded in the
+    lock, so a mirror that differs from the lock's registry is never consulted
+    (see `sync`). No configured index, or one that *is* the lock's registry,
+    keeps the frozen path.
+    """
+    registries = locked_registries(lock)
+    indexes = configured_indexes(env)
+    return bool(indexes) and bool(registries) and indexes.isdisjoint(registries)
+
+
+def requirement_lines(requirements: Path) -> list[str]:
+    """Requirements with continuation lines joined, so one line is one pin."""
+    pending = ""
+    lines: list[str] = []
+    for raw in requirements.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.endswith("\\"):
+            pending += stripped[:-1].strip() + " "
+            continue
+        lines.append((pending + stripped).strip())
+        pending = ""
+    if pending:
+        lines.append(pending.strip())
+    return lines
+
+
+def requirements_hash_complete(requirements: Path) -> bool:
+    """True when every requirement that applies to this interpreter carries a hash.
+
+    `uv pip install --require-hashes` rejects the whole file if any *applicable*
+    line lacks one, and path/git sources export without hashes. When that
+    happens the caller keeps the frozen path instead of downgrading the check.
+    """
+    from packaging.markers import Marker, default_environment
+
+    environment = default_environment()
+    for line in requirement_lines(requirements):
+        _, _, marker = line.partition(" ; ")
+        if marker:
+            try:
+                applies = Marker(marker).evaluate(environment)
+            except Exception:
+                # Cannot tell whether it applies: require the hash either way.
+                applies = True
+            if not applies:
+                continue
+        if "--hash=" not in line:
+            return False
+    return True
 
 
 def prune_site_pth(venv_dir: Path) -> None:
@@ -420,6 +514,15 @@ class PythonEnvironment:
         """
         if not frozen:
             self.lock(source, timeout=timeout)
+        if (not locked and not self.no_config
+                and mirror_diverges_from_lock(source / "uv.lock", self.env)
+                and self._sync_via_hashed_export(
+                    source, extras=extras, groups=groups, all_extras=all_extras,
+                    no_default_groups=no_default_groups, timeout=timeout)):
+            # `--frozen` installs the lock's absolute artifact URLs and never
+            # consults the configured index, so a mirror would be bypassed
+            # entirely (#122888): every download goes to files.pythonhosted.org.
+            return
         # Locking members alone is insufficient: plain sync only installs root deps.
         # uv writes no __pycache__ (pip does): without --compile-bytecode the first import
         # of every module in the foreground of a user request compiles it (#100461).
@@ -446,6 +549,56 @@ class PythonEnvironment:
             "sync", lambda: self._sync_attempt(command, cwd=source, timeout=timeout))
         if result.returncode:
             raise classify_uv_failure("sync", result.returncode, result.stderr or result.stdout)
+
+    def _sync_via_hashed_export(self, source: Path, *, extras: Sequence[str] = (),
+                                groups: Sequence[str] = (), all_extras: bool = False,
+                                no_default_groups: bool = False,
+                                timeout: int = 1800) -> bool:
+        """Install the locked graph through the configured index.
+
+        Exporting ``uv.lock`` to a hash-pinned requirements file keeps both the
+        resolved graph and its integrity checks while moving the transport to
+        the mirror: ``uv pip install --require-hashes`` looks the artifacts up
+        on the configured index and verifies them against the lock's hashes.
+        The lock is never rewritten, so the checkout stays clean.
+
+        Returns False when the graph contains an applicable requirement without
+        a hash (a path or git source): the caller then keeps ``--frozen``.
+        """
+        with tempfile.TemporaryDirectory(prefix="pm-mirror-sync-") as temporary:
+            requirements = Path(temporary) / "requirements.txt"
+            command = ["export", "--frozen", "--all-packages", "--python", str(self.python),
+                       "--format", "requirements-txt", "--output-file", str(requirements),
+                       "--no-emit-project", "--no-annotate", "--no-header"]
+            if no_default_groups:
+                command.append("--no-default-groups")
+            if all_extras:
+                from pm.features import opt_in_extras
+
+                command.append("--all-extras")
+                for extra in opt_in_extras(source):
+                    command += ["--no-extra", extra]
+            for extra in sorted(set(extras)):
+                command += ["--extra", extra]
+            for group in sorted(set(groups)):
+                command += ["--group", group]
+            result = self._run(command, cwd=source, timeout=timeout)
+            if result.returncode:
+                raise classify_uv_failure("export", result.returncode,
+                                          result.stderr or result.stdout)
+            if not requirements_hash_complete(requirements):
+                return False
+            # One pin per line: `uv pip install` cannot parse hash lines that
+            # continue past the requirement they belong to.
+            flat = Path(temporary) / "requirements-flat.txt"
+            flat.write_text("\n".join(requirement_lines(requirements)) + "\n", encoding="utf-8")
+            # --no-deps: the export is already the complete closure, and
+            # re-resolving it would fight the lock's manifest overrides
+            # (pillow/cryptography) and fail before installing anything.
+            self._install_requirements_file(
+                flat, timeout=timeout, require_hashes=True,
+                compile_bytecode=True, no_deps=True)
+            return True
 
     def _sync_attempt(self, command: list[str], *, cwd: Path, timeout: int) -> subprocess.CompletedProcess:
         result = self._run(command, cwd=cwd, timeout=timeout)
@@ -569,7 +722,10 @@ class PythonEnvironment:
             self._install_requirements_file(requirements_file, wheelhouse=wheelhouse, lock=lock)
 
     def _install_requirements_file(self, requirements: Path, *, wheelhouse: Path | None = None,
-                                   lock: Path | None = None, timeout: int = 1800) -> None:
+                                   lock: Path | None = None, timeout: int = 1800,
+                                   require_hashes: bool = False,
+                                   compile_bytecode: bool = False,
+                                   no_deps: bool = False) -> None:
         """Install *requirements*; *lock* is the uv.lock they were exported from.
 
         `uv pip install` re-resolves the export, so the lock's manifest overrides
@@ -577,6 +733,16 @@ class PythonEnvironment:
         """
         command = ["pip", "install", "--no-config", "--python", str(self.executable),
                    "--requirements", str(requirements)]
+        if require_hashes:
+            # A hash-pinned export installs the lock's graph from whichever index
+            # is configured: same artifacts, same digests, mirror transport.
+            command.append("--require-hashes")
+        if compile_bytecode:
+            command.append("--compile-bytecode")
+        if no_deps:
+            # The file already is the complete closure: resolving it again
+            # would apply the manifest overrides differently and fail.
+            command.append("--no-deps")
         if lock is not None:
             from pm.pip_check import override_requirements
 

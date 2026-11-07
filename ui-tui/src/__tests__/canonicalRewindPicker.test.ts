@@ -166,6 +166,29 @@ describe('/rewind picker (#21910)', () => {
     )
   })
 
+  it('does not open while a compressor runs: shows the compressing wording and makes no resume call', async () => {
+    patchUiState({ compacting: true })
+    const { request, slash, sys } = harness()
+
+    slash('/rewind')
+    await flush()
+
+    expect($overlayState.get().rewind).toBeNull()
+    expect(request.mock.calls.some(([method]) => method === 'session.resume')).toBe(false)
+    expect(sys.mock.calls.map(([text]) => String(text)).join('\n')).toContain('a /compress is running')
+  })
+
+  it('opens again once the compaction has finished', async () => {
+    patchUiState({ compacting: false })
+    const { slash } = harness()
+
+    slash('/rewind')
+    await flush()
+
+    const picker = $overlayState.get().rewind
+    expect(picker?.targets.map(target => target.rowId)).toEqual([11, 15])
+  })
+
   it('does not open while a turn runs', async () => {
     patchUiState({ busy: true })
     const { request, slash } = harness()

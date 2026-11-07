@@ -528,7 +528,8 @@ def _ensure_default_soul_md(home: Path) -> None:
     """Seed DEFAULT_SOUL_MD on first run; upgrade a legacy comment-only scaffold in place.
     A SOUL.md the user actually customized is never touched."""
     soul_path = home / "SOUL.md"
-    if soul_path.exists():
+    upgrading = soul_path.exists()
+    if upgrading:
         try:
             existing = soul_path.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError):
@@ -537,15 +538,14 @@ def _ensure_default_soul_md(home: Path) -> None:
             return
     try:
         soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
-    except OSError:
+    except OSError as exc:
         if not soul_path.is_symlink():
+            if upgrading:  # optional upgrade: a read-only scaffold boots as it did before
+                logger.warning("Legacy SOUL.md scaffold left in place, cannot upgrade: %s", exc)
+                return
             raise
-        # A symlink the seed cannot write through — cyclic (``SOUL.md -> SOUL.md``, ELOOP) or
-        # dangling into a missing directory (ENOENT) — can never hold an identity file, and the
-        # OSError became HomeInitializationError on EVERY boot (launchd exit-75 relaunch storm,
-        # #114592). Seed the default IN PLACE OF the link, never through it; mkstemp + replace
-        # keeps concurrent gateway boots off one shared path. A working link is never reached
-        # here: the write above succeeds through it.
+        # A cyclic (ELOOP) or dangling (ENOENT) link can never hold an identity file and failed every
+        # boot (#114592): seed the default IN PLACE OF the link via mkstemp + replace.
         fd, tmp_name = tempfile.mkstemp(prefix=".SOUL.md.", suffix=".seed", dir=str(home))
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:

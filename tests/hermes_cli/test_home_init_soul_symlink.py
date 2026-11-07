@@ -7,6 +7,9 @@ now replaces such a link with the default identity file; a link that resolves is
 wiring and stays a link.
 """
 
+import os
+import stat
+
 import pytest
 
 from hermes_cli.config import DEFAULT_SOUL_MD, _ensure_default_soul_md
@@ -43,3 +46,24 @@ def test_soul_symlink_to_customized_file_is_left_alone(tmp_path):
 
     assert soul.is_symlink()
     assert soul.read_text(encoding="utf-8") == "custom identity\n"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes through 0444")
+def test_initialize_home_keeps_read_only_legacy_scaffold(tmp_path):
+    """A read-only legacy scaffold (0444 from early hosted provisioning) cannot be upgraded.
+
+    The upgrade is optional, so home init must leave it in place instead of failing every
+    gateway start (v0.23.0 Webapp listener crash loop).
+    """
+    from hermes_cli.default_soul import _LEGACY_TEMPLATE_SOULS
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    soul = home / "SOUL.md"
+    soul.write_text(_LEGACY_TEMPLATE_SOULS[0], encoding="utf-8")
+    soul.chmod(0o444)
+
+    initialize_home(home, _SUBDIRS, set())
+
+    assert soul.read_text(encoding="utf-8") == _LEGACY_TEMPLATE_SOULS[0]
+    assert stat.S_IMODE(soul.stat().st_mode) == 0o444

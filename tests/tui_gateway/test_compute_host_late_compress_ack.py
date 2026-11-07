@@ -14,6 +14,7 @@ import types
 
 import pytest
 
+from tests.waiting import wait_until
 from tui_gateway import server
 from tui_gateway.host_supervisor import HostSupervisor
 
@@ -118,6 +119,30 @@ def test_host_crash_fails_outstanding_late_ack_handlers():
     assert fired[0]["type"] == "control.error"
     assert fired[0]["request_id"] == sent[0]["request_id"]
     assert sup._late_control_handlers == {}
+
+
+def test_host_crash_answers_controls_still_waiting():
+    """A control or respond call blocked on the host's reply returns an error as soon as the host
+    exits, instead of waiting out its whole timeout for a child that is gone."""
+    sup, sent = _supervisor()
+    replies: list = []
+    callers = [
+        threading.Thread(target=lambda: replies.append(sup.control(
+            "sid", route_name="session.compress", wait=True, timeout=30))),
+        threading.Thread(target=lambda: replies.append(sup.respond("sid", {"cancel": {}}, timeout=30))),
+        threading.Thread(target=lambda: replies.append(sup.reload_mcp("sid"))),
+    ]
+    for caller in callers:
+        caller.start()
+    assert wait_until(lambda: len(sup._pending_controls) == 3, timeout=5)
+
+    sup._fail_pending_turns(reason="crash", message="compute host exited with code 1")
+    for caller in callers:
+        caller.join(timeout=5)
+
+    assert sorted(r["type"] for r in replies) == ["control.error", "control.error", "respond.error"]
+    assert {r["request_id"] for r in replies} == {f["request_id"] for f in sent}
+    assert all(r["message"] == "compute host exited with code 1" for r in replies)
 
 
 # ── session.compress RPC: pending answer + late adoption ────────────────────
@@ -243,3 +268,19 @@ def test_compress_wait_budget_follows_config_ceiling(monkeypatch):
     assert server._compute_host_compress_wait_seconds(
         {"compression": {"context_total_ceiling_seconds": 99999}}
     ) == server._COMPUTE_HOST_COMPRESS_WAIT_CAP_SECS
+
+
+def test_reload_mcp_reports_a_host_crash_as_an_error(compute_host_gateway):
+    """A crash answers the waiting reload with control.error; the RPC must not report "reloaded"."""
+    sup, _sent, _emitted, _session = compute_host_gateway
+    replies: list = []
+    caller = threading.Thread(target=lambda: replies.append(server.handle_request(
+        {"id": "9", "method": "reload.mcp", "params": {"session_id": "sid", "confirm": True}})))
+    caller.start()
+    assert wait_until(lambda: sup._pending_controls, timeout=5)
+
+    sup._fail_pending_turns(reason="crash", message="compute host exited with code 1")
+    caller.join(timeout=5)
+
+    assert replies[0]["error"]["code"] == 5019
+    assert "compute host exited with code 1" in replies[0]["error"]["message"]

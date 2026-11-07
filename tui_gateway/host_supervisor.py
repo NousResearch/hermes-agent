@@ -168,7 +168,8 @@ class HostSupervisor:
         self._stopped_respawning = False
         self._restart_times: list[float] = []
         self._pending_turns: dict[str, tuple[str, Callable[[dict], None] | None]] = {}
-        self._pending_controls: dict[str, queue.Queue[dict]] = {}
+        # request_id -> (reply queue, the error frame type that answers it if the host exits).
+        self._pending_controls: dict[str, tuple[queue.Queue[dict], str]] = {}
         # request_id -> (registered_at, handler) for control waiters that timed out while their
         # host work still runs, so the eventual control.ack is not silently dropped.
         # The host emits its control.ack whenever it finishes; without this the ack matched no queue and was
@@ -273,7 +274,7 @@ class HostSupervisor:
         """Send ``frame`` and block for the host reply carrying ``request_id``."""
         q: queue.Queue[dict] = queue.Queue(maxsize=1)
         with self._lock:
-            self._pending_controls[request_id] = q
+            self._pending_controls[request_id] = (q, "respond.error" if frame["type"] == "respond" else "control.error")
         try:
             self._send_frame(frame)
             return q.get(timeout=timeout)
@@ -329,7 +330,7 @@ class HostSupervisor:
 
     def _deliver_control_frame(self, request_id: str, frame: dict[str, Any]) -> None:
         with self._lock:
-            q = self._pending_controls.get(request_id)
+            q = self._pending_controls.get(request_id, (None, ""))[0]
             late = None if q is not None else self._late_control_handlers.pop(request_id, None)
         if q is not None:
             with contextlib.suppress(queue.Full):
@@ -463,11 +464,16 @@ class HostSupervisor:
             if cb is not None:
                 frame = {"type": "turn.error", "sid": sid, "request_id": request_id, **failure}
                 _call_logged(cb, frame, "compute host error callback failed")
-        # A crashed host never emits the late acks timed-out control waiters still expect; fail
-        # them too so the client's "still running" notice can't hang.
+        # A crashed host never answers controls still waiting or the late acks timed-out waiters
+        # expect; fail both so neither the caller nor the client's "still running" notice hangs.
         with self._lock:
+            waiting = self._pending_controls
+            self._pending_controls = {}
             late = self._late_control_handlers
             self._late_control_handlers = {}
+        for request_id, (q, error_type) in waiting.items():
+            with contextlib.suppress(queue.Full):
+                q.put_nowait({"type": error_type, "request_id": request_id, **failure})
         for request_id, (_registered_at, handler) in late.items():
             frame = {"type": "control.error", "request_id": request_id, **failure}
             _call_logged(handler, frame, "compute host late control error handler failed")

@@ -10,6 +10,7 @@ import posixpath
 
 import re
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
@@ -296,6 +297,14 @@ def _fail_closed(errors: list[str]) -> PatchResult:
         error="Patch validation failed (no files were modified):\n" + detail)
 
 
+def _read_raw(file_ops: Any, path: str) -> Any:
+    """Backend read for planning; a raised exception is a fixed-code read error, never its text."""
+    try:
+        return file_ops.read_file_raw(path)
+    except Exception:  # health: allow BLE001 -- plan-read boundary: exception text can hold paths or secrets
+        return SimpleNamespace(error="READ_ERROR", content=None, not_found=False)
+
+
 class _Overlay:
     """In-memory file state shared by one plan. Disk reads are snapshotted; nothing is written."""
 
@@ -317,7 +326,7 @@ class _Overlay:
             return self.pending[key], None, self.shas.get(key)
         if key in self.removed:
             return None, "file not found", None
-        result = self.file_ops.read_file_raw(path)
+        result = _read_raw(self.file_ops, path)
         _note_disk_read(self.snaps, key, path, result)
         sha = getattr(result, "_content_sha256", None)
         return (None, "READ_ERROR", None) if result.error else (result.content, None, sha)
@@ -334,7 +343,7 @@ class _Overlay:
             return "exists"
         if key in self.removed:
             return None
-        result = self.file_ops.read_file_raw(path)
+        result = _read_raw(self.file_ops, path)
         _note_disk_read(self.snaps, key, path, result)
         if not result.error:
             return "exists"

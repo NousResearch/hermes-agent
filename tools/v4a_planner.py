@@ -687,7 +687,11 @@ def apply_span(pieces, span, replacement, eol, consumed, ids):
     else:
         made.append(Piece("ins", prefix + lines[0], eol, None, next(ids)))
         made.extend(Piece("ins", line, eol, None, next(ids)) for line in lines[1:-1])
-        made.append(Piece("ins", lines[-1] + suffix, suffix_eol or eol, None, next(ids)))
+        if lines[-1] == "" and not suffix and not suffix_eol:
+            # The replacement ended with the line break the match already consumed.
+            made[-1] = Piece("ins", made[-1].text, suffix_eol or eol, None, made[-1].ins_id)
+        else:
+            made.append(Piece("ins", lines[-1] + suffix, suffix_eol or eol, None, next(ids)))
     return pieces[:first] + made + pieces[last + 1:]
 
 
@@ -838,6 +842,7 @@ def plan_hunks(content: str, hunks: list, state: PlannerState | None = None,
 
     if state is None:
         state = PlannerState.from_content(content)
+    state.floor = None  # an anchor scopes the hunks of its own Update block only
     pieces = state.pieces
     consumed = state.consumed
 

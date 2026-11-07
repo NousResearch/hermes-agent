@@ -41,3 +41,29 @@ def test_anchor_cursor_follows_lines_removed_above_it():
     result = apply_v4a_operations(ops, store)
     assert not result.success
     assert store.files["f"] == src and not store.writes
+
+
+@pytest.mark.parametrize("source, expected", [
+    ("foo\nbar\n", "baz\nbar\n"),
+    ("foo\n", "baz\n"),
+    ("foo\r\nbar\r\n", "baz\r\nbar\r\n"),
+])
+def test_trailing_blank_context_line_adds_no_blank_line(source, expected):
+    result, store = _apply(source, "-foo\n+baz\n \n")
+    assert result.success, result.error
+    assert store.files["f"] == expected
+
+
+def test_a_raising_backend_read_is_a_fixed_code_not_its_text():
+    from tools.patch_parser import apply_v4a_operations, parse_v4a_patch
+
+    class Boom:
+        def read_file_raw(self, path):
+            raise RuntimeError("SYNTHETIC_SECRET_9XYZ")
+
+    star = "*" * 3
+    ops, err = parse_v4a_patch(f"{star} Begin Patch\n{star} Update File: f\n@@\n-a\n+b\n{star} End Patch\n")
+    assert err is None
+    result = apply_v4a_operations(ops, Boom())
+    assert not result.success and "SYNTHETIC_SECRET_9XYZ" not in repr(result)
+    assert "READ_ERROR" in result.error

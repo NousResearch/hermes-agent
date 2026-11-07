@@ -1,5 +1,6 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, and fallbacks."""
 
+import copy
 import json
 import re
 import sqlite3
@@ -3555,6 +3556,51 @@ class TestPreLlmFeasibilityCheck:
         assert len(result) > 0
         mock_gen.assert_not_called()
 
+
+    @pytest.mark.parametrize("shortcut", ["feasibility", "fallback_streak"])
+    @pytest.mark.parametrize("summary", [None, "A successful summary"])
+    def test_abort_mode_bypasses_prellm_shortcuts(self, compressor, shortcut, summary):
+        compressor.abort_on_summary_failure = True
+        if shortcut == "feasibility":
+            compressor._ineffective_compression_count = 1
+        else:
+            compressor._fallback_compression_streak = 2
+        msgs = self._make_messages()
+        original = copy.deepcopy(msgs)
+
+        with patch.object(compressor, "_generate_summary", return_value=summary) as generate:
+            result = compressor.compress(msgs, force=False)
+
+        generate.assert_called_once()
+        assert compressor._last_feasibility_skip is False
+        assert compressor._prellm_skip_count == 0
+        assert compressor._last_summary_fallback_used is False
+        if summary is None:
+            assert compressor._last_compress_aborted is True
+            assert result == original
+            assert msgs == original
+        else:
+            assert compressor._last_compress_aborted is False
+            assert result != original
+
+    @pytest.mark.parametrize("shortcut", ["feasibility", "fallback_streak"])
+    def test_abort_mode_attempts_llm_and_preserves_transcript_on_failure(self, compressor, shortcut):
+        compressor.abort_on_summary_failure = True
+        if shortcut == "feasibility":
+            compressor._ineffective_compression_count = 1
+        else:
+            compressor._fallback_compression_streak = 2
+        msgs = self._make_messages()
+        original = copy.deepcopy(msgs)
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("model failed")) as call:
+            result = compressor.compress(msgs, force=False)
+
+        call.assert_called()
+        assert compressor._last_compress_aborted is True
+        assert compressor._last_summary_fallback_used is False
+        assert result == original
+        assert msgs == original
 
     def test_no_skip_when_force_true(self, compressor):
         """force=True (manual /compress) must bypass the feasibility check."""

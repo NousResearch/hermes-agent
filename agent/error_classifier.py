@@ -132,6 +132,7 @@ _ACCOUNT_WALL_PATTERNS = _BILLING_PATTERNS + _QUOTA_WINDOW_PATTERNS + (
     "key limit exceeded", "spending limit", "budget limit", "requires a subscription", "upgrade for access")
 _WALL_WORDS = _ACCOUNT_WALL_PATTERNS + ("quota", "billing", "free tier", "free-tier")
 _RESOURCE_EXHAUSTED_PATTERNS = ("resource exhausted", "resource_exhausted", "resource-exhausted", "resourceexhausted")
+_403_404_WALL_PATTERNS = _ACCOUNT_WALL_PATTERNS + _RESOURCE_EXHAUSTED_PATTERNS
 
 # Not proof of exhaustion: Anthropic returns the same "out of extra usage" body
 # for a content-filter rejection (#82154). Verdict stays ``billing`` but is
@@ -712,7 +713,7 @@ _OVERFLOW_AS_5XX_RULES = (
 # 404: Nous API surfaces credit depletion as a paid model vanishing from the
 # Free Tier (billing, not missing model); policy block before model_not_found.
 _404_RULES = (
-    (_ACCOUNT_WALL_PATTERNS + _RESOURCE_EXHAUSTED_PATTERNS, _V_BILLING), (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED),
+    (_403_404_WALL_PATTERNS, _V_BILLING), (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED),
     (_MODEL_NOT_FOUND_PATTERNS, _V_MODEL_NOT_FOUND),
 )
 
@@ -1210,7 +1211,7 @@ def _status_403(c: _Ctx) -> Verdict:
         return _V_OVERLOADED
     # OpenRouter 403 "key limit exceeded" and similar plan/credit exhaustion are billing.
     xai_spend = c.provider_slug == "xai-oauth" and c.code == _XAI_SPENDING_LIMIT_ERROR_CODE
-    billing = xai_spend or any(p in c.msg for p in _ACCOUNT_WALL_PATTERNS + _RESOURCE_EXHAUSTED_PATTERNS)
+    billing = xai_spend or any(p in c.msg for p in _403_404_WALL_PATTERNS)
     if billing:
         return _V_BILLING
     # A WAF/CDN in front of the provider answered, not the provider: the credential never

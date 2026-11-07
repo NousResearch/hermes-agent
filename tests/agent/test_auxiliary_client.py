@@ -1552,8 +1552,8 @@ class TestStaleFallbackCandidateSkip:
     """
 
     def _timeout_err(self):
-        # Class name carries "Timeout" — matches _is_connection_error's
-        # type-name detection, like the real Codex stream-deadline error.
+        # Class name carries "Timeout": the classifier's type-name timeout
+        # detection, like the real Codex stream-deadline error.
         class _AuxStreamTimeoutError(Exception):
             pass
         return _AuxStreamTimeoutError(
@@ -2025,7 +2025,7 @@ def test_resolve_api_key_provider_skips_unconfigured_copilot(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _is_connection_error coverage
+# transient transport retry coverage
 # ---------------------------------------------------------------------------
 
 
@@ -2036,8 +2036,8 @@ class TestTransientTransportRetry:
     Salvaged from PR #16587 (@ARegalado1). The original fixed only the
     context-compression caller; this lives in call_llm so every auxiliary
     task (compression, memory flush, title-gen, session-search, vision)
-    gets the same same-target retry, and the gate reuses the canonical
-    _is_connection_error detector.
+    gets the same same-target retry, and the gate reads the shared
+    classifier's transport verdict.
     """
 
     def _patches(self, client):
@@ -5039,6 +5039,7 @@ class TestAsynchronousFallbackCachePlans:
             effective_timeout=30.0,
             effective_extra_body={},
             reasoning_config=None,
+            classify_as="anthropic",
         )
 
         wire_tools = client.chat.completions.create.call_args.kwargs["tools"]

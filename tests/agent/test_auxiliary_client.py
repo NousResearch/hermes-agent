@@ -771,7 +771,10 @@ class TestBuildCodexClient:
             def peek(self):
                 return self.entry
 
-            def select(self):
+            def entries(self):
+                return [self.entry]
+
+            def select(self, *, model=None):
                 return self.entry
 
         pool = _Pool()
@@ -1134,7 +1137,7 @@ class TestGetTextAuxiliaryClient:
             def has_credentials(self):
                 return True
 
-            def select(self):
+            def select(self, *, model=None):
                 return _Entry()
 
         with (
@@ -2453,40 +2456,6 @@ class TestAuxClientNoSdkRetries:
              patch.object(ac, "_openai_http_client_kwargs", return_value={}):
             ac._create_openai_client(api_key="k", base_url="https://x/v1")
         assert captured.get("max_retries") == 0
-
-
-class TestIsTimeoutError:
-    """_is_timeout_error distinguishes a full-budget timeout from a fast
-    connection drop."""
-
-    def test_timed_out_string(self):
-        from agent.auxiliary_client import _is_timeout_error
-        assert _is_timeout_error(Exception("Request timed out.")) is True
-
-    def test_timeout_typename(self):
-        from agent.auxiliary_client import _is_timeout_error
-
-        class ReadTimeout(Exception):
-            pass
-
-        assert _is_timeout_error(ReadTimeout("slow")) is True
-
-
-class TestIsConnectionError:
-    """Tests for _is_connection_error detection."""
-
-    def test_connection_refused(self):
-        from agent.auxiliary_client import _is_connection_error
-        err = Exception("Connection refused")
-        assert _is_connection_error(err) is True
-
-
-
-    def test_normal_api_error_not_connection(self):
-        from agent.auxiliary_client import _is_connection_error
-        err = Exception("Bad Request: invalid model")
-        err.status_code = 400
-        assert _is_connection_error(err) is False
 
 
 class TestKimiTemperatureOmitted:

@@ -96,3 +96,23 @@ def test_yield_request_without_steer_leaves_foreground_wait_alone():
     finally:
         interrupt_mod.consume_yield(threading.current_thread().ident)
         env.cleanup()
+
+
+def test_carried_over_yield_lets_a_quick_command_finish(tmp_path, monkeypatch):
+    """A redirect's yield now carries to later tools in the batch, so it is already pending when a
+    command starts. A sub-second command must still return its output, not a background handle."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    res = {}
+
+    def worker():
+        interrupt_mod.request_yield(threading.current_thread().ident)
+        try:
+            res["result"] = json.loads(terminal_tool("sleep 0.3; echo quick", task_id="yield-grace", timeout=30))
+        finally:
+            interrupt_mod.consume_yield(threading.current_thread().ident)
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(timeout=30)
+    assert res["result"].get("status") != "yielded_to_background", res["result"]
+    assert res["result"]["exit_code"] == 0 and "quick" in res["result"]["output"]

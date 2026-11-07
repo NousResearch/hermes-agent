@@ -31,6 +31,11 @@ from hermes_cli.config_backend import require_file_tooling, supports_file_toolin
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
 
+from hermes_cli.backup_cron_store import (
+    _CRON_JOBS_REL,
+    _copy_with_cron_pairs_locked,
+    restore_cron_jobs_if_emptied,
+)
 from hermes_cli.backup_restore import (
     _count_cron_jobs,
     _count_session_rows,
@@ -508,22 +513,28 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
 
 
 def _write_zip_entries(
-    zf: zipfile.ZipFile, files_to_add: list[tuple[Path, Path]], out_path: Path,
+    zf: zipfile.ZipFile, files_to_add: list[tuple[Path, Path]], out_path: Path, root: Path,
     *, on_db_failure, on_error, on_progress, track_bytes: bool) -> int:
-    """Add every ``(abs_path, rel_path)`` to *zf*, WAL-safe for ``*.db``; return bytes archived.
+    """Add every ``(abs_path, rel_path)`` (relative to *root*) to *zf*, WAL-safe for ``*.db``;
+    return bytes archived. Each cron store's jobs.json + runtime.db are archived as one pair under
+    that store's lock (``_copy_with_cron_pairs_locked``).
 
     ``on_db_failure(rel_path)`` runs when a SQLite snapshot fails (may raise to abort);
     ``on_error(rel_path, exc)`` records a read failure; ``on_progress(i)`` fires every 500 files;
     ``track_bytes`` stats plain files for the size total.
     """
     total_bytes = 0
-    for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
+    written = 0
+
+    def _add(abs_path: Path, rel_path: Path) -> None:
+        nonlocal total_bytes, written
+        written += 1
         try:
             if abs_path.suffix == ".db":
                 size = _zip_sqlite_snapshot(zf, abs_path, rel_path, out_path)
                 if size is None:
                     on_db_failure(rel_path)
-                    continue
+                    return
                 total_bytes += size
             else:
                 _write_zip_file(zf, abs_path, str(rel_path))
@@ -531,9 +542,11 @@ def _write_zip_entries(
                     total_bytes += abs_path.stat().st_size
         except (PermissionError, OSError, ValueError) as exc:
             on_error(rel_path, exc)
-            continue
-        if i % 500 == 0:
-            on_progress(i)
+            return
+        if written % 500 == 0:
+            on_progress(written)
+
+    _copy_with_cron_pairs_locked(root, files_to_add, _add)
     return total_bytes
 
 
@@ -643,7 +656,7 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
     with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
             archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         total_bytes = _write_zip_entries(
-            zf, files_to_add, out_path, on_progress=_progress, track_bytes=True,
+            zf, files_to_add, out_path, hermes_root, on_progress=_progress, track_bytes=True,
             on_db_failure=lambda rel: errors.append(f"{rel}: SQLite safe copy failed"),
             on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"))
         # External memory-provider state never includes ``.db`` files in practice, so no
@@ -1105,6 +1118,9 @@ def _revive_gateway_after_import(hermes_root: Path) -> None:
 # outside state.db, so it is listed explicitly — ``hermes update`` snapshots this set (#15733).
 _QUICK_STATE_FILES = (
     "state.db", "config.yaml", ".env", "auth.json", "cron/jobs.json", "cron/executions.db",
+    # Scheduler state split out of jobs.json (cron/runtime_state.py); a snapshot that took the
+    # definitions without it would restore every job with forgotten run history and repeat progress.
+    "cron/runtime.db",
     "gateway_state.json", "channel_directory.json", "channel_aliases.json", "processes.json",
     "gateway/discord_message_recovery.db",  # Discord reconnect replay ledger
     # Per-profile user stores, destroyed if the update flow replaces the file and the post-update
@@ -1137,7 +1153,6 @@ def _newest_first(root: Path, keep_entry) -> list[Path]:
 
 
 # Kept in sync with ``_QUICK_STATE_FILES`` and ``cron/jobs.py``'s ``JOBS_FILE``.
-_CRON_JOBS_REL = "cron/jobs.json"
 
 
 def _prune_oldest(newest_first: list[Path], keep: int, remove, what: str) -> int:
@@ -1321,10 +1336,12 @@ def _create_quick_snapshot_locked(
     # recoverable database.
     oversized_skipped: list[str] = []
 
-    for rel in _QUICK_STATE_FILES:
-        src = home / rel
+    # cron/jobs.json and cron/runtime.db are one store split in two files: the helper copies them
+    # back to back under that store's lock, and every other entry (state.db, cron/executions.db)
+    # without it.
+    def _snapshot_entry(src: Path, rel: str) -> None:
         if not src.exists():
-            continue
+            return
 
         if src.is_dir():
             # Walk the directory and record each file individually in the
@@ -1367,15 +1384,15 @@ def _create_quick_snapshot_locked(
                     manifest[sub_rel] = dst.stat().st_size
                 except (OSError, PermissionError) as exc:
                     logger.warning("Could not snapshot %s: %s", sub_rel, exc)
-            continue
+            return
 
         if not src.is_file():
-            continue
+            return
 
         if _too_large(src, rel):
             if src.suffix == ".db":
                 oversized_skipped.append(rel)
-            continue
+            return
 
         dst = staging_dir / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1393,12 +1410,15 @@ def _create_quick_snapshot_locked(
                             f"  ⚠ Snapshot: {rel} looks ZEROED "
                             f"(no SQLite header; {src.stat().st_size} bytes)"
                         )
-                    continue
+                    return
             else:
                 shutil.copy2(src, dst)
             manifest[rel] = dst.stat().st_size
         except (OSError, PermissionError) as exc:
             logger.warning("Could not snapshot %s: %s", rel, exc)
+
+    _copy_with_cron_pairs_locked(
+        home, [(home / rel, rel) for rel in _QUICK_STATE_FILES], _snapshot_entry)
 
     if failed_dbs:
         # Critical: update path used to log-and-continue with exit 0, so a
@@ -1674,82 +1694,6 @@ def _restore_quick_snapshot_exclusive(snapshot_id: str, home: Path) -> bool:
 
     logger.info("Restored %d files from snapshot %s", restored, snapshot_id)
     return restored > 0 and not auth_restore_failed
-
-
-def restore_cron_jobs_if_emptied(
-    snapshot_id: str,
-    hermes_home: Optional[Path] = None,
-) -> Optional[dict[str, Any]]:
-    """Safety net for silent cron-job loss across ``hermes update``.
-
-    Config-version migrations have been observed to leave ``cron/jobs.json``
-    valid-but-empty after an update, silently dropping every scheduled job
-    (issue #34600). The desktop scheduler can also overwrite the file with its
-    own small set of internally-tracked crons, causing partial loss (issue
-    #52144).
-
-    This compares the *current* job count against the pre-update snapshot. If
-    the live file now has **fewer** jobs than the snapshot, the snapshot copy
-    of ``cron/jobs.json`` is restored in place.
-
-    The check is deliberately conservative — it only ever restores when there
-    is unambiguous evidence of loss (snapshot had more jobs than live file),
-    so a user who genuinely deleted jobs during/after the update is never
-    second-guessed, and an unreadable live file (count ``None``) is left
-    untouched so real corruption still surfaces.
-
-    Args:
-        snapshot_id: The pre-update quick-snapshot id (from
-            :func:`create_quick_snapshot`).
-        hermes_home: Override for the Hermes home directory (tests).
-
-    Returns:
-        ``None`` when no action was taken (the common, healthy path). On a
-        successful restore, a dict ``{"restored": True, "job_count": N,
-        "snapshot_id": ...}`` so the caller can warn the user.
-    """
-    if not snapshot_id:
-        return None
-
-    home = hermes_home or get_hermes_home()
-    live_path = home / _CRON_JOBS_REL
-
-    live_count = _count_cron_jobs(live_path)
-    # ``None`` (missing or unparseable) is intentionally left alone — that's a
-    # different failure mode the user should see rather than have papered over.
-    if live_count is None:
-        return None
-
-    snap_path = _quick_snapshot_root(home) / snapshot_id / _CRON_JOBS_REL
-    snap_count = _count_cron_jobs(snap_path)
-    if not snap_count:  # None or 0 — nothing worth restoring
-        return None
-
-    # Restore when live has FEWER jobs than the pre-update snapshot.
-    # Catches both total loss (0 vs N) and partial loss (1 vs 19) — the
-    # desktop scheduler can overwrite jobs.json with its own small set of
-    # internally-tracked crons after an update/restart.
-    if live_count >= snap_count:
-        return None
-
-    try:
-        live_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(snap_path, live_path)
-    except (OSError, PermissionError) as exc:
-        logger.error(
-            "Cron jobs were emptied during update but auto-restore failed: %s", exc
-        )
-        return None
-
-    logger.warning(
-        "Restored %d cron job(s) from pre-update snapshot %s "
-        "(live file had %d job(s), snapshot had %d — jobs were lost during migration)",
-        snap_count,
-        snapshot_id,
-        live_count,
-        snap_count,
-    )
-    return {"restored": True, "job_count": snap_count, "snapshot_id": snapshot_id}
 
 
 def _sibling_profile_homes(invoking_home: Path) -> list[tuple[str, Path]]:
@@ -2105,7 +2049,8 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
         with _atomic_output_path(out_path, _publish_path) as archive_path, zipfile.ZipFile(
                 archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             _write_zip_entries(
-                zf, files_to_add, out_path, on_db_failure=_db_failure, track_bytes=False,
+                zf, files_to_add, out_path, hermes_root, on_db_failure=_db_failure,
+                track_bytes=False,
                 on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"),
                 on_progress=lambda i: logger.info(
                     "automatic backup phase=archive status=progress completed=%d total=%d", i, len(files_to_add)))

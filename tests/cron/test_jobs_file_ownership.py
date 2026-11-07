@@ -81,7 +81,7 @@ class TestSaveJobsOwnershipPreservation:
 
         jobs.save_jobs([{"id": "seed", "prompt": "updated"}])
 
-        assert chown_calls == [(str(jobs_file), 1000, 1000)], (
+        assert [c for c in chown_calls if c[0] == str(jobs_file)] == [(str(jobs_file), 1000, 1000)], (
             "root rewrite must hand jobs.json back to the previous owner "
             "(uid/gid 1000) instead of leaving it root:600 (#68483)"
         )

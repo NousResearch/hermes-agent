@@ -286,8 +286,10 @@ export async function createRoomWithIntent(
   makePayload: () => NonNullable<GroupCreationIntent['payload']>
 ): Promise<CanonicalRoom> {
   if (intent.key !== key || !intent.payload) {
+    // Built before the intent changes, so a payload that cannot be made leaves the last one in place.
+    const fresh = makePayload()
     intent.key = key
-    intent.payload = makePayload()
+    intent.payload = fresh
     delete intent.uncertain
   }
 
@@ -336,7 +338,8 @@ export async function createRoomWithIntent(
   return room
 }
 
-/** What makes two creation attempts the same request: the route, the entered name and the Bots
+/** What makes two creation attempts the same request: the route, the name as entered (empty when
+ *  the person left it blank) and the Bots
  *  picked, each by its connection and profile. Display data (titles, labels, a generated "Team 2")
  *  is computed once inside the frozen payload, so a retry after a lost reply resends that payload
  *  instead of making a second room. */
@@ -345,20 +348,25 @@ export function groupCreationKey(route: CanonicalGroupRoute, name: string, membe
     members.map(member => [member.route?.connectionId ?? member.connectionId ?? '', member.route?.targetProfile ?? member.targetProfile ?? member.name])])
 }
 
+export function requireGroupName(name: string): string {
+  if (!name.trim()) {
+    throw new Error('A group chat needs a name')
+  }
+
+  return name
+}
+
 export async function createCanonicalGroup(
   route: CanonicalGroupRoute,
   name: string,
   members: GroupMember[],
   intent: GroupCreationIntent = {},
-  /** The room name sent, from the entered one (New group chat makes it unique among this Desktop's). */
+  /** The room name sent, from the entered one, once per request (New group chat fills a blank one
+   *  from the Bots' names and makes it unique among this Desktop's). */
   sentName: (name: string) => string = entered => entered
 ): Promise<{ binding: CanonicalGroupBinding; room: CanonicalRoom }> {
   requireRoute(route)
   const checked = canonicalGroupRoster(route, members)
-
-  if (!name.trim()) {
-    throw new Error('A group chat needs a name')
-  }
 
   if ('problem' in checked) {
     throw Object.assign(new Error('A group chat hosted on this gateway needs two to six different bots on this connection'),
@@ -366,7 +374,7 @@ export async function createCanonicalGroup(
   }
 
   const room = await createRoomWithIntent(route, intent, groupCreationKey(route, name, members),
-    () => ({ room_id: randomUuid(), name: sentName(name), members: checked.roster }))
+    () => ({ room_id: randomUuid(), name: requireGroupName(sentName(name)), members: checked.roster }))
 
   return { binding: { ...route, roomId: room.room_id }, room }
 }

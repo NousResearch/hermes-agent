@@ -1402,9 +1402,9 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }
     setNotice('')
 
     try {
-    const base = (name.trim() || placeholder).slice(0, 64)
+    const entered = name.trim().slice(0, 64)
 
-    if (selected.length < 2 || !base) {
+    if (selected.length < 2) {
       return
     }
 
@@ -1424,11 +1424,14 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }
 
     const members = durableGroupChatMembers(selected)
 
-    // Keyed on the entered name: the unique name is chosen once, inside the frozen request.
+    // Keyed on the name as entered, blank included: the Bots' names that fill a blank one change
+    // with the roster, so the sent name is chosen once, inside the frozen request.
+    const fallback = placeholder.slice(0, 64)
+
     const created = fresh.engine === 'gateway-peer'
-      ? await createGroupAcrossConnections(route, base, members, freshTargets, intent.current)
-      : { ...await createCanonicalGroup(route, base, members, intent.current,
-        entered => uniqueGroupChatName(entered, new Set(liveGroupChatNames()))), unjoined: [] }
+      ? await createGroupAcrossConnections(route, entered, members, freshTargets, intent.current, typed => typed || fallback)
+      : { ...await createCanonicalGroup(route, entered, members, intent.current,
+        typed => uniqueGroupChatName(typed || fallback, new Set(liveGroupChatNames()))), unjoined: [] }
 
     // Creation already succeeded; leave it on its owner without adopting a stale result.
     if (!sourceCurrent()) {return}

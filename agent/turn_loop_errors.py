@@ -52,6 +52,11 @@ def handle_outer_loop_error(
             _turn_exit_reason=_turn_exit_reason, failed=failed, final_response=final_response,
         )
 
+    from agent.content_steering import ContentSteerPersistenceError
+    if isinstance(e, ContentSteerPersistenceError):
+        _turn_exit_reason, final_response, failed = "session_persistence_failed", "", True
+        return _verdict("break")
+
     # Count every escaped exception before classification so permanent failures
     # terminate even with an unlimited turn budget.
     _outer_error_count += 1

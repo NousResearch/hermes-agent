@@ -103,6 +103,17 @@ def _absorb_continuation_fragments(final_response: Any, parts: Any, messages: An
     return _join_truncated_parts([*parts, (final_response, False)]), True
 
 
+def _pop_final_scaffolding(messages):
+    # Pop prefill / empty-retry scaffolding before the final response or
+    # verification follow-up; it must not become durable transcript.
+    while (
+        messages
+        and isinstance(messages[-1], dict)
+        and any(messages[-1].get(flag) for flag in _EPHEMERAL_SCAFFOLDING_FLAGS)
+    ):
+        messages.pop()
+
+
 def finish_text_response(
     agent: Any, *, assistant_message: Any, response: Any, finish_reason: Any, messages: Any,
     api_messages: Any, conversation_history: Any, api_call_count: Any, user_message: Any,
@@ -363,14 +374,7 @@ def finish_text_response(
     # Genuine turn end (no dropped-tool-call mismatch): clear stall budget.
     agent._dropped_toolcall_retries = 0
 
-    # Pop prefill / empty-retry scaffolding before the final response or
-    # verification follow-up; it must not become durable transcript.
-    while (
-        messages
-        and isinstance(messages[-1], dict)
-        and any(messages[-1].get(flag) for flag in _EPHEMERAL_SCAFFOLDING_FLAGS)
-    ):
-        messages.pop()
+    _pop_final_scaffolding(messages)
 
     _sg = apply_stop_gates(
         agent, final_msg, final_response=final_response, messages=messages,
@@ -381,6 +385,11 @@ def finish_text_response(
     _pending_verification_response = _sg.pending_verification_response
     _pending_verification_response_previewed = _sg.pending_verification_response_previewed
     if _sg.continue_turn:
+        final_response = None
+        return _verdict("continue")
+
+    from agent.content_steering import finish_content_candidate
+    if finish_content_candidate(agent, messages, conversation_history, final_msg, api_call_count):
         final_response = None
         return _verdict("continue")
 

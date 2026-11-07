@@ -583,6 +583,19 @@ def _commit_one(commit: _Commit, file_ops: Any) -> tuple[ApplyResult, str, str]:
     return handler(op, file_ops), verb, bucket
 
 
+# Backend denials that name the policy knob, not source text. Anything else is IO_ERROR.
+_KNOWN_IO_DENIALS = {"HERMES_WRITE_SAFE_ROOT": "WRITE_DENIED (HERMES_WRITE_SAFE_ROOT)"}
+
+
+def _io_code(backend_error: Any) -> str:
+    """Fixed code for a backend write failure; the backend text itself is never echoed."""
+    text = backend_error if isinstance(backend_error, str) else ""
+    for marker, code in _KNOWN_IO_DENIALS.items():
+        if marker in text:
+            return code
+    return "IO_ERROR"
+
+
 def _commit_resolved(commits: list[_Commit], file_ops: Any) -> PatchResult:
     """Write planned bytes in order. An I/O failure is not a selection refusal and is not rolled back."""
     errors: list[str] = []
@@ -602,7 +615,8 @@ def _commit_resolved(commits: list[_Commit], file_ops: Any) -> PatchResult:
             verb, bucket = "process", "modified"
         if not ok:
             prefix = f"Failed to {verb}" if ok is False else "Error processing"
-            errors.append(f"{prefix} {op.file_path}: {'INTERNAL_ERROR' if ok is None else 'IO_ERROR'}")
+            code = 'INTERNAL_ERROR' if ok is None else _io_code(payload)
+            errors.append(f"{prefix} {op.file_path}: {code}")
             continue
         is_move = op.operation is OperationType.MOVE
         files[bucket].append(f"{op.file_path} -> {op.new_path}" if is_move else op.file_path)

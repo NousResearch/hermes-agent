@@ -95,7 +95,8 @@ export function buildRestGroups({
       connectionId: connection.id,
       kind: connection.kind,
       label: connection.label,
-      reachable: source?.reachable ?? true,
+      // Deferred sources have not been probed; keep their entry neutral until a dial fails.
+      reachable: source?.error === 'connect-on-demand' || (source?.reachable ?? true),
       ...(source?.error && source.error !== 'connect-on-demand' ? { error: source.error } : {}),
       ...(source?.needsSignIn ? { needsSignIn: true } : {}),
       defaultAgent: toAgent(DEFAULT_PROFILE, defaultRow?.handle),

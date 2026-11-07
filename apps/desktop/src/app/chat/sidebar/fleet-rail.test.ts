@@ -56,6 +56,20 @@ const roster: DesktopAgentRoster = {
 }
 
 describe('buildRestGroups', () => {
+  it.each(['local', 'vps'])('keeps deferred source %s selectable without an unreachable warning', connectionId => {
+    const deferred: DesktopAgentRoster = {
+      agents: [],
+      sources: [{ connectionId, kind: connectionId === 'local' ? 'local' : 'ssh', label: connectionId,
+        reachable: false, error: 'connect-on-demand' }]
+    }
+
+    const groups = buildRestGroups({ activeConnectionId: 'pandora', connections, roster: deferred })
+    const group = groups.find(candidate => candidate.connectionId === connectionId)
+
+    expect(group).toMatchObject({ reachable: true, defaultAgent: { connectionId, profile: 'default' } })
+    expect(group?.error).toBeUndefined()
+  })
+
   it('lists every gateway except the active one, in switcher order, regardless of which is active', () => {
     const fromPandora = buildRestGroups({ activeConnectionId: 'pandora', connections, roster })
     const fromLocal = buildRestGroups({ activeConnectionId: 'local', connections, roster })

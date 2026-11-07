@@ -8,6 +8,7 @@ import logging
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -35,6 +36,8 @@ def _fake_docker(monkeypatch, security_options: str, fail: str = ""):
     except ImportError:
         pass
     calls: list[tuple[list[str], bytes]] = []
+    created: dict[str, object] = {}  # name/image of the sandbox `docker run -d`
+    created_labels: dict[str, str] = {}  # its --label-file runtime labels
 
     def _inspect() -> str:  # like `docker inspect` of the creating run: user, labels, caps, every -v
         run = next(argv for argv, _ in calls if argv[1:3] == ["run", "-d"])
@@ -46,6 +49,28 @@ def _fake_docker(monkeypatch, security_options: str, fail: str = ""):
         return json.dumps([{"Config": {"User": (flag("--user") or [""])[0], "Labels": labels}, "HostConfig": host,
                             "Image": "sha256:img", "Mounts": mounts}])
 
+    def _inspect_record() -> dict:
+        """One inspect record answering every --format the reuse/ownership probes use."""
+        record = json.loads(_inspect())[0]
+        labels = {**record["Config"].get("Labels", {}), **created_labels}
+        return {**record, "Id": "fake-cid", "Name": "/" + str(created.get("name", "hermes-fake")),
+                "Config": {**record["Config"], "Labels": labels, "Image": created.get("image", "")},
+                "State": {"Running": False, "FinishedAt": "2020-01-01T00:00:00Z"}}
+
+    def _inspect_formatted(fmt: str) -> str:
+        record = _inspect_record()
+        if fmt == "{{json .}}":
+            return json.dumps(record)
+        if fmt.startswith('{{index .Config.Labels "'):
+            return str(record["Config"]["Labels"].get(fmt.split('"')[1], ""))
+        if fmt == "{{.Config.Image}}":
+            return str(record["Config"]["Image"])
+        if fmt == "{{.HostConfig.NetworkMode}}":
+            return "bridge"
+        if "FinishedAt" in fmt:
+            return "2020-01-01T00:00:00Z"
+        return json.dumps(record["Mounts"])
+
     def _run(cmd, **kwargs):
         argv = [str(a) for a in cmd]
         calls.append((argv, kwargs.get("input") or b""))
@@ -56,11 +81,19 @@ def _fake_docker(monkeypatch, security_options: str, fail: str = ""):
         if "/usr/bin/xargs" in argv and fail == "chown":
             rc = 1  # e.g. a container without CAP_CHOWN
         out = {"run": "fake-cid\n", "info": security_options}.get(sub, "")
+        if sub == "run" and "--label-file" in argv:
+            # Only the sandbox create carries --label-file (throwaways do not):
+            # capture its name, image and runtime label for later inspects.
+            created["name"] = argv[argv.index("--name") + 1]
+            created["image"] = argv[-3]  # <all_run_args> <image> sleep infinity
+            label_file = Path(argv[argv.index("--label-file") + 1])
+            for pair in label_file.read_text(encoding="utf-8").splitlines():
+                key, _, value = pair.partition("=")
+                created_labels[key] = value
         if sub == "ps" and "status=exited" in argv:  # the orphan sweep finds the detached container
             out = "fake-cid\n"
         if sub == "inspect" and argv[-1] == "fake-cid":
-            out = _inspect() if len(argv) == 3 else "2020-01-01T00:00:00Z" if "FinishedAt" in argv[3] else json.dumps(
-                json.loads(_inspect())[0]["Mounts"])
+            out = _inspect() if "--format" not in argv else _inspect_formatted(argv[argv.index("--format") + 1])
         if "--mount" in argv and fail == "strip":
             rc = 1  # e.g. an image without find
         elif "/usr/bin/find" in argv and "-user" in argv and "-print0" in argv:

@@ -1,0 +1,28 @@
+manifest_version: 1
+
+name: segwise
+description: 'Segwise advertising analytics: creative performance, ROAS, and fatigue.'
+source: https://github.com/SegwiseHQ/segwise-mcp
+
+transport:
+  type: http
+  url: https://mcp.segwise.ai/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - segwise
+  hosts:
+    - segwise.ai
+
+post_install: |
+  Requires a Segwise account with access to an eligible organization and
+  connected analytics data. Run `hermes mcp login segwise` to sign in and
+  approve analytics access, then restart your session so tools load.
+
+  Start by asking: "List the Segwise organizations I can access."
+  Choose an organization, then ask about creative performance, ROAS,
+  or creative fatigue. Segwise provides analytics and recommendations;
+  it cannot modify campaigns, budgets, or creative assets.

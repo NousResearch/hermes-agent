@@ -178,7 +178,12 @@ def _restore(_worktree_gc, repo_root: str, args) -> int:
     return 0
 
 
-_ACTIONS = {"list": _list, "prune": _prune, "restore": _restore}
+def _merge(worktree_gc, repo_root: str, args) -> int:
+    from hermes_cli.worktree_merge import cmd_merge
+    return cmd_merge(worktree_gc, repo_root, args)
+
+
+_ACTIONS = {"list": _list, "prune": _prune, "restore": _restore, "merge": _merge}
 
 
 def cmd_worktree(args) -> int:

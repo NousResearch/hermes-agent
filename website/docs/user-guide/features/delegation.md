@@ -729,7 +729,7 @@ With isolation on:
   edits.
 - When a child finishes, its result entry gains a `worktree` field reporting
   `path`, `branch`, `commits` (ahead of the base), and `dirty`. The parent
-  reviews or merges each branch (`git log <branch>`, `git merge <branch>`).
+  reviews each branch and merges it with `hermes worktree merge` (below).
 - A worktree left with **no commits and a clean tree is pruned automatically**
   (`pruned: true`); anything holding work is kept.
 - Pruning requires proof. If a git inspection probe fails — or finalization
@@ -737,6 +737,44 @@ With isolation on:
   `inspection_failed: true` plus a `note` — `commits`/`dirty` are then
   defaults, not measurements, so inspect the worktree rather than assuming
   the child produced nothing.
+
+### Merging a child's branch
+
+`hermes worktree merge <branch>` checks a branch before merging it into the
+current worktree. A failed check refuses without changing anything:
+
+```bash
+hermes worktree merge hermes-subagent/subagent-<id> \
+  --allow src/auth/ --allow tests/auth/ \
+  --tested <sha the child reported> \
+  --gate "scripts/run_tests.sh tests/auth/"
+```
+
+- `--allow PATH` (repeatable): every file the branch changes, counting both
+  sides of a rename, must be that path or under that directory.
+- `--tested SHA`: the commit the child says it verified. Each child is told to
+  report it. It must be the branch tip; commits after it refuse the merge.
+- `--gate CMD`: runs in the worktree after the merge commit; running past
+  `--gate-timeout` (default 1800 s) kills the gate's process tree (a process
+  that daemonizes into its own session is not tracked). A failing gate does
+  **not** roll back: the merge commit is kept, the command exits non-zero,
+  and the result names the `git reset --keep <sha>` that undoes it, or tells
+  you to review `git log` first if the gate itself moved HEAD.
+- It refuses before merging when tracked files have uncommitted changes
+  (including ones hidden by assume-unchanged or skip-worktree), or when a file
+  the branch writes already exists here untracked or git-ignored. A conflict
+  aborts the merge and lists the conflicting files. `--json` prints the full
+  result.
+- Conflicts and the exact set of paths the merge will write are computed with
+  `git merge-tree` before anything changes (git 2.38 or newer). The merge
+  itself is an ordinary `git merge --no-ff` of the checked commit, so hooks,
+  signing and merge config apply; if the result differs from the prediction
+  (for example `branch.<name>.mergeOptions`), it is reported and the gate is
+  not run.
+
+A useful pattern for a fan-out: commit shared scaffolding (types, stubs,
+tests) first, so every child branches from it, then merge each child's branch
+as it comes back and start the next wave from the merged result.
 
 Scope: opt-in, git-only, and local-terminal-backend-only. In a non-git
 directory, on docker/ssh/modal backends, or if worktree creation fails, the

@@ -1058,3 +1058,92 @@ class TestNonConversationalTrackerOffload:
         assert sorted(writes[-1]) == ["1", "2"]
 
 
+
+
+# ── Empty-payload events (no text, no media, no attachments) ────────────────
+# A DM / free-response message whose content is empty (sticker-only, poll,
+# embed-only shell, or a guild message seen without the message-content
+# intent) carries nothing the agent can answer. It must be dropped at the
+# adapter rather than dispatched as a "(no text content)" turn that reaches
+# authorization, pairing, hooks and the agent.
+
+
+@pytest.mark.asyncio
+async def test_discord_drops_empty_dm_with_no_payload(adapter, monkeypatch):
+    message = make_message(channel=FakeDMChannel(channel_id=655), content="")
+
+    handled = await adapter._handle_message(message)
+
+    assert handled is False
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_drops_whitespace_free_response_message(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    message = make_message(channel=FakeTextChannel(channel_id=656), content="   \n\t")
+
+    handled = await adapter._handle_message(message)
+
+    assert handled is False
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_media_only_dm_still_dispatches(adapter, monkeypatch):
+    """Attachment-only messages are real payloads and must keep flowing."""
+
+    async def _fake_collect(_attachments):
+        return ["/tmp/photo.png"], ["image/png"], [False], None
+
+    monkeypatch.setattr(adapter, "_collect_attachment_media", _fake_collect)
+    message = make_message(channel=FakeDMChannel(channel_id=657), content="")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.media_urls == ["/tmp/photo.png"]
+
+
+@pytest.mark.asyncio
+async def test_discord_skipped_attachment_dm_still_dispatches(adapter, monkeypatch):
+    """An attachment that yields no cached media (oversize/failed) is still a user payload."""
+
+    async def _fake_collect(_attachments):
+        return [], [], [], None
+
+    monkeypatch.setattr(adapter, "_collect_attachment_media", _fake_collect)
+    message = make_message(channel=FakeDMChannel(channel_id=659), content="")
+    message.attachments = [SimpleNamespace(filename="too_big.bin", content_type=None, size=1 << 30)]
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_bare_mention_with_backfill_context_still_dispatches(adapter, monkeypatch):
+    """A bare mention with history-backfill context is a "catch me up" turn."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_HISTORY_BACKFILL", "true")
+
+    async def _fake_context(*_a, **_kw):
+        return "[Recent channel messages]\nbob: anyone seen the deploy?"
+
+    monkeypatch.setattr(adapter, "_fetch_channel_context", _fake_context)
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=658),
+        content=f"<@{bot_user.id}>",
+        mentions=[bot_user],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.channel_context

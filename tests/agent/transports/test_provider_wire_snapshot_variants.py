@@ -16,10 +16,10 @@ reaches are recorded too:
   per provider x reasoning setting, including the max_tokens forwarding / key choice and the
   caller- and task-level ``extra_body.reasoning`` merge.
 
-Cells live in ``tests/fixtures/provider_wire_snapshot_variants.json``; regenerate (``-n0`` is
-required) and review the diff exactly like the base snapshot::
+Cells live in ``tests/fixtures/provider_wire_snapshot_variants.json``; regenerate and review the
+diff exactly like the base snapshot::
 
-    HERMES_UPDATE_WIRE_SNAPSHOT=1 .venv/bin/python -m pytest -n0 tests/agent/transports/test_provider_wire_snapshot_variants.py
+    HERMES_UPDATE_WIRE_SNAPSHOT=1 .venv/bin/python -m pytest tests/agent/transports/test_provider_wire_snapshot_variants.py
 """
 
 from __future__ import annotations

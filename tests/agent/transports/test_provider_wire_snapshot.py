@@ -11,10 +11,10 @@ provider fails ``test_snapshot_covers_every_provider`` until its wire is reviewe
 
 Intentional wire changes: regenerate and review the JSON diff in the same PR::
 
-    HERMES_UPDATE_WIRE_SNAPSHOT=1 .venv/bin/python -m pytest -n0 tests/agent/transports/test_provider_wire_snapshot.py
+    HERMES_UPDATE_WIRE_SNAPSHOT=1 .venv/bin/python -m pytest tests/agent/transports/test_provider_wire_snapshot.py
 
-Regeneration is a read-merge-write of one JSON file per cell, so it refuses to run under xdist
-(``-n0`` is required) and rewrites the file with only the cells that still exist.
+Regeneration is a read-merge-write of one JSON file per cell and rewrites the file with only the
+cells that still exist.
 """
 
 from __future__ import annotations
@@ -227,8 +227,6 @@ def _check(key: str, actual: dict[str, Any], meta: dict[str, Any], snapshot: Pat
     Under HERMES_UPDATE_WIRE_SNAPSHOT the cell is written instead, and entries outside *cell_keys*
     (the snapshot's current cells) are dropped."""
     if UPDATE:
-        if os.environ.get("PYTEST_XDIST_WORKER"):
-            pytest.fail("HERMES_UPDATE_WIRE_SNAPSHOT rewrites one shared file per cell; run it with -n0")
         golden = {k: v for k, v in _load(snapshot).items() if k in cell_keys}
         golden[key] = {**meta, **actual}
         snapshot.write_text(json.dumps(dict(sorted(golden.items())), indent=1, sort_keys=True) + "\n",

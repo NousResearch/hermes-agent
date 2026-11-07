@@ -401,3 +401,57 @@ def test_yaml_bridge_respects_scope_and_existing_env(monkeypatch, existing, seco
         if token is not None:
             reset_secret_scope(token)
         set_multiplex_active(False)
+
+
+# ---------------------------------------------------------------------------
+# MATRIX_MENTION_STRICT — pill-form-only body-text matching (#148132)
+
+
+def _strict_adapter():
+    adapter = _make_adapter()
+    adapter._mention_strict = True
+    return adapter
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (True, True), ("true", True), ("1", True), (False, False), ("false", False), ("off", False),
+])
+def test_mention_strict_config_parsing(raw, expected):
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    cfg = PlatformConfig(enabled=True, token="t", extra={
+        "homeserver": "https://matrix.example.org", "user_id": "@hermes:example.org",
+        "mention_strict": raw,
+    })
+    assert MatrixAdapter(cfg)._mention_strict is expected
+
+
+def test_default_bare_localpart_still_summons():
+    """Default (non-strict) behavior is unchanged: name-as-word is a mention (bridge compatibility)."""
+    adapter = _make_adapter()
+    assert adapter._mention_strict is False
+    assert adapter._is_bot_mentioned("how does hermes handle threads in general") is True
+
+
+def test_strict_bare_localpart_and_emails_do_not_summon():
+    adapter = _strict_adapter()
+    assert adapter._is_bot_mentioned("how does hermes handle threads in general") is False
+    assert adapter._is_bot_mentioned("Hhermes: what kernel CVEs are open") is False
+    assert adapter._is_bot_mentioned("email bob@hermes.example for details") is False
+
+
+def test_strict_pill_form_mxid_and_m_events_still_summon():
+    adapter = _strict_adapter()
+    assert adapter._is_bot_mentioned("@hermes search the web") is True
+    assert adapter._is_bot_mentioned("hey @HERMES, status?") is True
+    assert adapter._is_bot_mentioned("@hermes:example.org status") is True
+    assert adapter._is_bot_mentioned("a word", mention_user_ids=["@hermes:example.org"]) is True
+
+
+def test_yaml_bridge_carries_mention_strict(monkeypatch):
+    from plugins.platforms.matrix.adapter import _apply_yaml_config
+    monkeypatch.delenv("MATRIX_MENTION_STRICT", raising=False)
+    config = {"mention_strict": True}
+    assert _apply_yaml_config({"matrix": config}, config) == config
+    import os
+    assert os.environ.get("MATRIX_MENTION_STRICT") == "true"
+    monkeypatch.delenv("MATRIX_MENTION_STRICT", raising=False)

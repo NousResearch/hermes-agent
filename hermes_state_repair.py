@@ -773,6 +773,20 @@ def state_db_has_structural_damage(db_path: Path) -> bool:
 _TEMPORARY_FILE_FAILURE_CODES = frozenset({3, 8, 10, 13, 14})
 
 
+class _ProbeFailure(str):
+    """A ``_db_opens_cleanly`` reason raised by SQLite, keeping its result code so a caller probing a disposable
+    copy can tell the copy's file failures from the store's state."""
+
+    def __new__(cls, text: str, exc: BaseException):
+        reason = super().__new__(cls, text)
+        reason.sqlite_errorcode = getattr(exc, "sqlite_errorcode", 0)
+        return reason
+
+
+def _is_temporary_file_failure(failure) -> bool:
+    return (getattr(failure, "sqlite_errorcode", 0) & 0xFF) in _TEMPORARY_FILE_FAILURE_CODES or is_disk_full_error(failure)
+
+
 class HealthCheckUnavailable(str):
     """A ``_db_opens_cleanly`` reason meaning the probe could not run, not that the store is damaged: callers
     must neither report the store healthy nor route it to repair."""
@@ -802,14 +816,14 @@ def _retired_cjk_snapshot_health(db_path: Path, conn: sqlite3.Connection) -> Opt
                 except sqlite3.Error as exc:
                     # Retiring is what the next open runs, so a failure is the store's state (a damaged base
                     # FTS index trips the rename's trigger validation) unless the temporary file itself failed.
-                    if (getattr(exc, "sqlite_errorcode", 0) & 0xFF) in _TEMPORARY_FILE_FAILURE_CODES:
+                    if _is_temporary_file_failure(exc):
                         return HealthCheckUnavailable(f"the probe copy failed ({exc})")
                     return str(exc)
             reason = _db_opens_cleanly(snapshot)
     except OSError as exc:  # the temporary directory or the copy, not the store (includes the copy timeout)
         return HealthCheckUnavailable(f"could not make the probe copy ({exc})")
-    if reason is not None and is_disk_full_error(reason):
-        return HealthCheckUnavailable(f"no room for the probe copy ({reason})")
+    if reason is not None and _is_temporary_file_failure(reason):
+        return HealthCheckUnavailable(f"the probe copy failed ({reason})")
     return reason
 
 
@@ -856,7 +870,7 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                         # This is the corruption class #66724 actually wants caught: partial shadow-table
                         # damage where MATCH / snippet / rank queries raise DatabaseError("database disk
                         # image is malformed") while reads of the FTS5 table itself parse fine.
-                        return f"fts5 read probe failed on {fts_table}: {exc}"
+                        return _ProbeFailure(f"fts5 read probe failed on {fts_table}: {exc}", exc)
             # FTS write probe: drive a row through the messages_fts* triggers in a transaction that is always
             # rolled back. The trigger INSERT alone only buffers the row in FTS5's in-memory segment; the
             # ``flush`` command writes that segment to ``<fts>_idx``/``_data`` exactly as a committed append
@@ -883,13 +897,13 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                 # Missing messages/sessions tables = brand new file mid-init, not corruption.
                 if _schema_not_built(exc):
                     return None
-                return f"fts5 write probe failed: {exc}"
+                return _ProbeFailure(f"fts5 write probe failed: {exc}", exc)
             finally:
                 with contextlib.suppress(sqlite3.Error):
                     conn.execute("ROLLBACK")
             return None
     except (sqlite3.DatabaseError, OSError) as exc:
-        return str(exc)
+        return _ProbeFailure(str(exc), exc)
 
 
 def _live_writer_holds_db(db_path: Path) -> bool:

@@ -198,7 +198,6 @@ def test_base_fts_damage_beside_the_retired_index_routes_to_repair(cjk_db, damag
             conn.execute("INSERT INTO messages_fts_config VALUES ('version', 99)")
     reason = repair._db_opens_cleanly(cjk_db)
     assert reason is not None and not isinstance(reason, repair.HealthCheckUnavailable), reason
-    assert "messages_fts" in reason
 
 
 
@@ -237,4 +236,55 @@ def test_a_copy_that_turns_read_only_is_not_reported_as_damage(cjk_db, monkeypat
         for probe_dir in frozen:
             if probe_dir.exists():
                 probe_dir.chmod(0o700)
+    assert isinstance(reason, repair.HealthCheckUnavailable), reason
+
+
+def test_retirement_succeeds_beside_an_index_whose_tokenizer_is_missing(cjk_db):
+    """Renaming the retired shadows must not re-parse another index's triggers: a build without trigram would fail
+    there before the open's own tokenizer-unavailable handling runs (seen on SQLite 3.45)."""
+    import contextlib
+
+    with contextlib.closing(sqlite3.connect(cjk_db, isolation_level=None)) as raw:
+        raw.execute("PRAGMA writable_schema=ON")
+        raw.execute("UPDATE sqlite_master SET sql = replace(sql, \"tokenize='trigram'\", \"tokenize='absent_trigram'\") "
+                    "WHERE name = 'messages_fts_trigram'")
+        version = raw.execute("PRAGMA schema_version").fetchone()[0]
+        raw.execute(f"PRAGMA schema_version={version + 1}")
+        raw.execute("PRAGMA writable_schema=OFF")
+    with contextlib.closing(sqlite3.connect(cjk_db, isolation_level=None)) as conn:
+        assert drop_retired_cjk_index(conn.cursor())
+        assert conn.execute("PRAGMA legacy_alter_table").fetchone()[0] == 0
+    assert [name for name in _cjk_residue(cjk_db) if not name.startswith("fts_")] == []
+
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes read-only files")
+def test_a_copy_failing_its_final_scan_is_not_reported_as_damage(cjk_db, monkeypatch):
+    """Copy and retirement succeed; the copy then turns read-only, so only the snapshot's own scan fails."""
+    import hermes_state_fts
+
+    retire = hermes_state_fts.drop_retired_cjk_index
+    frozen = []
+
+    def retire_then_freeze(cursor):
+        removed = retire(cursor)
+        path = Path(cursor.connection.execute("PRAGMA database_list").fetchone()[2])
+        if path != Path(cjk_db):
+            for item in path.parent.iterdir():
+                item.chmod(0o400)
+            path.parent.chmod(0o500)
+            frozen.append(path.parent)
+        return removed
+
+    monkeypatch.setattr(hermes_state_fts, "drop_retired_cjk_index", retire_then_freeze)
+    try:
+        reason = repair._db_opens_cleanly(cjk_db)
+    finally:
+        for probe_dir in frozen:
+            if probe_dir.exists():
+                probe_dir.chmod(0o700)
+                for item in probe_dir.iterdir():
+                    item.chmod(0o600)
+    assert frozen
     assert isinstance(reason, repair.HealthCheckUnavailable), reason

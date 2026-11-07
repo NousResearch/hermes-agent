@@ -211,10 +211,16 @@ def _stage_retired_cjk_index(cursor: sqlite3.Cursor) -> bool:
     cursor.execute("PRAGMA writable_schema=ON")
     cursor.execute("DELETE FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts_cjk'")
     cursor.execute("PRAGMA writable_schema=RESET")
-    for suffix in _FTS5_SHADOW_SUFFIXES:
-        shadow = f"messages_fts_cjk_{suffix}"
-        if cursor.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (shadow,)).fetchone():
-            cursor.execute(f"ALTER TABLE {shadow} RENAME TO {SessionFtsSetupMixin._FTS_TRASH_PREFIX}{shadow}")
+    # Nothing references the shadow tables once the triggers and view are gone, so the rename need not re-parse
+    # the schema; the modern rename does, and fails on another index whose tokenizer this build lacks (trigram).
+    cursor.execute("PRAGMA legacy_alter_table=ON")
+    try:
+        for suffix in _FTS5_SHADOW_SUFFIXES:
+            shadow = f"messages_fts_cjk_{suffix}"
+            if cursor.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (shadow,)).fetchone():
+                cursor.execute(f"ALTER TABLE {shadow} RENAME TO {SessionFtsSetupMixin._FTS_TRASH_PREFIX}{shadow}")
+    finally:
+        cursor.execute("PRAGMA legacy_alter_table=OFF")
     return True
 
 

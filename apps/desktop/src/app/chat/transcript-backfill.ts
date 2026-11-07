@@ -84,6 +84,18 @@ export function transcriptBackfillAvailable(
 }
 
 /**
+ * Whether a page copy of an already-held row restores display the held copy
+ * drops. The held copy of a compaction-hidden row converts to an empty shell
+ * (no parts — nothing paints), while the #96875 origin fetch re-sends the same
+ * row with its hidden stamp removed and the greeting in its parts. Only the
+ * empty-to-painted direction restores anything; a held copy that already
+ * paints is never replaced by a page copy.
+ */
+function pageRestoresHeldDisplay(held: ChatMessage, page: ChatMessage): boolean {
+  return held.parts.length === 0 && page.parts.length > 0
+}
+
+/**
  * Merge a fetched page into the in-memory transcript, deduplicating rows
  * the store already holds (offset drift makes overlap normal — see module doc).
  * A page with no shared row is presumed older; overlapping pages use their
@@ -128,6 +140,7 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
   // beyond its end. Position fresh rows by the shared anchors, not by the
   // page's requested direction.
   const insertions = new Map<number, ChatMessage[]>()
+  const replacements = new Map<number, ChatMessage>()
   let pending: ChatMessage[] = []
   let lastAnchor = -1
 
@@ -162,6 +175,21 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
       continue
     }
 
+    // Identity match is a duplicate only when the held copy paints the same
+    // display. The #96875 origin fetch re-sends the opening user row with its
+    // compaction-hidden stamp removed: the held copy of that row converted to
+    // an empty shell (no parts) while the page copy carries the greeting, so
+    // discarding the page copy on identity alone left the unhiding dead — the
+    // row rendered as an empty node and the opening turn never became
+    // readable. Replace a held copy that paints NOTHING with the page copy of
+    // the same row that paints something; the reverse (held copy has the
+    // content, page copy is stripped) keeps the held copy untouched.
+    const held = existing[anchor]
+
+    if (held !== message && !replacements.has(anchor) && pageRestoresHeldDisplay(held, message)) {
+      replacements.set(anchor, message)
+    }
+
     if (pending.length) {
       insertions.set(anchor, [...(insertions.get(anchor) ?? []), ...pending])
       pending = []
@@ -175,7 +203,7 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
     insertions.set(position, [...(insertions.get(position) ?? []), ...pending])
   }
 
-  if (insertions.size === 0) {
+  if (insertions.size === 0 && replacements.size === 0) {
     return existing
   }
 
@@ -189,7 +217,7 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
     }
 
     if (index < existing.length) {
-      merged.push(existing[index])
+      merged.push(replacements.get(index) ?? existing[index])
     }
   }
 

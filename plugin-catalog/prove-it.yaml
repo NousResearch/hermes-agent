@@ -1,0 +1,21 @@
+name: prove-it
+repo: https://github.com/MikeGibbsOnyx/hermes-prove-it
+sha: f892dc005f49e54b889569edb6d3410b8abb7ef7
+description: "Checks an agent's completion claims against local read-only probes before you read the reply: HEAD vs the remote-tracking ref for a push, git cat-file for a commit, a file stat for a write, observable output for tests pass. No model in the check. The footer says ✓ verified, ✗ contradicted, ⚠ could not verify, or ⏸ blocked on an approval; /proveit explain shows the claim, the probe and the raw output. Disclosure — runs local read-only git commands (rev-parse, merge-base, log, cat-file) in the repository the agent worked in this turn, with fsmonitor and ext protocols disabled and no stdin; never contacts a remote or authenticates; stats absolute file paths named in the agent's reply; makes no probe when the terminal backend is not local; stores a bounded ledger (arguments and output only for terminal, file-write, code-execution and delegation calls, truncated, secrets pattern-redacted, deleted after 7 days) plus checked claims and approval pattern/description (never command text) in plugin-data/prove-it/data.db; every probe has a 2 s timeout and the footer a 4 s budget; a plugin error never withholds the reply in footer mode; no telemetry"
+maintainer: MikeGibbsOnyx
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/MikeGibbsOnyx/hermes-prove-it
+version: "0.1.0"
+title: prove-it
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - post_tool_call
+  - transform_llm_output
+  - pre_approval_request
+  - post_approval_response
+  provides_middleware: []
+  requires_env: []

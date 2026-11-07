@@ -159,7 +159,8 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
         # The config was rendered at load time (a lazy server's at boot): re-render under the
         # owner's fresh scope so a ref left literal before its secret source answered resolves
         # now, and refuse to send one that still does not.
-        config = _config._require_rendered_remote(name, _config._interpolate_env_vars(config))
+        config = _config._require_rendered_remote(
+            name, _config._interpolate_mcp_server_config(config))
         await server.start(config)
     except asyncio.CancelledError:
         raise  # start() already reaps server._task; shutdown() here could swallow the cancel
@@ -784,7 +785,8 @@ def restart_mcp_servers_with_new_inputs(names: set[str]) -> list[str]:
                 if config is None or recorded is None or not mcp_server_enabled(config):
                     continue
                 # Render as the connect path does (plugin servers join the config after load's render pass).
-                if _registration._adopter_identity_digest(name, _config._interpolate_env_vars(config)) != recorded:
+                if _registration._adopter_identity_digest(
+                        name, _config._interpolate_mcp_server_config(config)) != recorded:
                     (owned if key == _server_key(name, scope, current=False) else borrowed).append((name, key))
         if not owned and not borrowed:
             return []

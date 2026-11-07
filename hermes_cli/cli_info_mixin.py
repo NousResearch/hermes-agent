@@ -888,7 +888,10 @@ class CLIInfoMixin:
         # deep-merged + expanded config); otherwise any save_config_value() rewrite of an
         # unrelated key would false-positive on "${POWERMEM_API_KEY}" vs its expanded value.
         from hermes_cli.config import _expand_env_vars
-        new_mcp = _expand_env_vars(new_cfg.get("mcp_servers") or {})
+        # Keep the top-level wrapper: _expand_env_vars keys off ``mcp_servers`` to preserve escaped
+        # stdio args, so the shape must match the init snapshot.
+        new_mcp = _expand_env_vars(
+            {"mcp_servers": new_cfg.get("mcp_servers") or {}})["mcp_servers"]
         if new_mcp == self._config_mcp_servers:
             return  # some other section was edited
 

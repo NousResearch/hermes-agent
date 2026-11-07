@@ -105,3 +105,4 @@ def forget(connection_id: str) -> None:
 
     ssh.disconnect(connection_id)
     oauth.cancel_sign_in(connection_id)
+    store.drop_tokens([connection_id])

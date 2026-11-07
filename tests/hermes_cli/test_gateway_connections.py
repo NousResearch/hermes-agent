@@ -143,12 +143,13 @@ def test_oauth_token_sets_are_keyed_by_connection_and_fall_back_to_an_unbound_ur
     first = {"accessToken": "a1", "refreshToken": "r1", "expiresAt": 1, "provider": "p", "userId": "u"}
     store.tokens_path().write_text(json.dumps({"version": 1, "revision": 1, "tokens": {},
                                               "unbound": {"https://gw.example": first}}))
-    assert store.read_tokens("gw") == first
+    assert store.read_tokens("gw") == {**first, "baseUrl": "https://gw.example"}
 
     second = dict(first, accessToken="a2")
     store.write_tokens("gw", second)
     doc = json.loads(store.tokens_path().read_text())
-    assert doc["tokens"] == {"gw": second} and doc["unbound"] == {} and doc["revision"] == 2
+    assert doc["tokens"] == {"gw": {**second, "baseUrl": "https://gw.example"}}
+    assert doc["unbound"] == {} and doc["revision"] == 2
     store.write_tokens("gw", None)
     assert store.read_tokens("gw") is None
 

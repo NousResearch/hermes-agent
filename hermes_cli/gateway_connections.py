@@ -17,6 +17,9 @@ to plain on its next write once its keychain answers.
 OAuth sign-ins for oauth-mode entries live in ``<root>/gateway-connection-tokens.json`` under the same
 lock contract: ``{"version": 1, "revision": N, "tokens": {<connection id>: NativeTokenSet},
 "unbound": {<base url>: NativeTokenSet}}`` (``unbound`` holds sign-ins for a URL no entry names yet).
+Each set carries the ``baseUrl`` it was issued by: a set read for an entry that names another URL now
+reads as signed out, and a registry write that removes an entry or changes its ``url``/``authMode``
+drops that entry's set.
 """
 
 from __future__ import annotations
@@ -56,6 +59,7 @@ __all__ = [
     "DuplicateConnection",
     "NoSuchConnection",
     "connection_secret",
+    "drop_tokens",
     "public_registry",
     "read_registry",
     "read_tokens",
@@ -133,6 +137,13 @@ def read_registry(path: Optional[Path] = None) -> dict:
     return {**normalize_registry(doc), "revision": _revision(doc)}
 
 
+def _signed_in_ids_gone(before: dict, after: dict) -> list[str]:
+    """Ids whose sign-in no longer belongs to them: removed, or re-pointed (``url``/``authMode``)."""
+    now = {c["id"]: c for c in after["connections"]}
+    return [c["id"] for c in before["connections"]
+            if c["id"] not in now or any(c.get(k) != now[c["id"]].get(k) for k in ("url", "authMode"))]
+
+
 def _mutate(change: Callable[[dict], Any], path: Optional[Path] = None) -> tuple[dict, Any]:
     """Apply *change* to the fresh registry under the lock and land the result; *change* returns
     ``(registry, extra)``. An unchanged registry writes nothing."""
@@ -143,11 +154,15 @@ def _mutate(change: Callable[[dict], Any], path: Optional[Path] = None) -> tuple
         updated, extra = change(current)
         updated = normalize_registry(updated)
         revision = _revision(doc)
+        gone: list[str] = []
         if updated != current or doc is None:
             revision += 1
             carried = {k: doc[k] for k in _CARRIED_KEYS if doc and k in doc}
             _replace(path, {"version": 2, "revision": revision, **carried,
                             **{k: updated[k] for k in _REGISTRY_KEYS if k in updated}}, corrupt, still_ours)
+            gone = _signed_in_ids_gone(current, updated)
+    # After the store lock (one process cannot hold both); read_tokens' URL binding covers the gap.
+    drop_tokens(gone, path.parent)
     return {**updated, "revision": revision}, extra
 
 
@@ -300,30 +315,60 @@ def _entry_url(entry: dict) -> Optional[str]:
         return None
 
 
+def _bound_url(token_set: Any) -> Optional[str]:
+    try:
+        return normalize_remote_base_url(token_set["baseUrl"]) if isinstance(token_set.get("baseUrl"), str) else None
+    except ConnectionStoreError:
+        return None
+
+
 def read_tokens(connection_id: str) -> Optional[dict]:
-    """The NativeTokenSet signed in for *connection_id*, or ``None``."""
+    """The NativeTokenSet signed in for *connection_id*, or ``None``. A set issued by another URL
+    than the entry names now (it was re-pointed) is never handed out: it reads as signed out."""
     entry = _entry(connection_id)
+    url = _entry_url(entry)
     doc, _corrupt, _exists = _token_doc(tokens_path())
     found = doc["tokens"].get(connection_id)
-    if found is None and _entry_url(entry):
-        found = doc["unbound"].get(_entry_url(entry))
-    return found if isinstance(found, dict) and found.get("accessToken") else None
+    if found is None and url:
+        found = doc["unbound"].get(url)
+        found = {**found, "baseUrl": url} if isinstance(found, dict) else None
+    if not (isinstance(found, dict) and found.get("accessToken")) or url is None or _bound_url(found) != url:
+        return None
+    return found
 
 
 def write_tokens(connection_id: str, token_set: Optional[dict]) -> None:
-    """Store (or with ``None`` drop) *connection_id*'s sign-in."""
+    """Store (or with ``None`` drop) *connection_id*'s sign-in, bound to the URL it names now."""
     entry = _entry(connection_id)
     if token_set is not None and not (isinstance(token_set, dict) and token_set.get("accessToken")):
         raise ConnectionStoreError("A token set needs an accessToken.")
+    url = _entry_url(entry)
+    if token_set is not None and url is None:
+        raise ConnectionStoreError(f'"{entry.get("label")}" has no gateway address to sign in to.')
     path = tokens_path()
     with _locked(path) as still_ours:
         doc, corrupt, _exists = _token_doc(path)
-        url = _entry_url(entry)
         if url:
             doc["unbound"].pop(url, None)
         if token_set is None:
             doc["tokens"].pop(connection_id, None)
         else:
-            doc["tokens"][connection_id] = token_set
+            doc["tokens"][connection_id] = {**token_set, "baseUrl": url}
+        doc["revision"] += 1
+        _replace(path, doc, corrupt, still_ours)
+
+
+def drop_tokens(connection_ids: list[str], root: Optional[Path] = None) -> None:
+    """Forget the sign-ins kept under *connection_ids* (entries removed or re-pointed); no entry
+    lookup, so it works after the entry is gone."""
+    path = tokens_path(root)
+    if not connection_ids or not path.exists():
+        return
+    with _locked(path) as still_ours:
+        doc, corrupt, _exists = _token_doc(path)
+        if not any(i in doc["tokens"] for i in connection_ids):
+            return
+        for connection_id in connection_ids:
+            doc["tokens"].pop(connection_id, None)
         doc["revision"] += 1
         _replace(path, doc, corrupt, still_ours)

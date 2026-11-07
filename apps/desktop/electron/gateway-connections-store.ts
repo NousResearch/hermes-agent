@@ -21,8 +21,11 @@
  * as its original envelope and is named in `importNotices`, never dropped.
  *
  * OAuth sign-ins: `<root>/gateway-connection-tokens.json`
- * `{version: 1, revision, tokens: {<connection id>: NativeTokenSet},
+ * `{version: 1, revision, tokens: {<connection id>: BoundTokenSet},
  *   unbound: {<base url>: NativeTokenSet}, undecrypted: {<base url>: envelope}}`.
+ * A connection's set carries the `baseUrl` that issued it: it is handed out
+ * only while the entry still names that URL, and a write that removes the
+ * entry or changes its url/authMode drops it (ids are recycled label slugs).
  * `unbound` holds a sign-in for a URL no saved entry names yet (a pre-save
  * login, the v1 global remote); `undecrypted` keeps imported blobs the keychain
  * would not open.
@@ -95,10 +98,13 @@ interface StoreDoc extends Record<string, unknown> {
   importedFrom?: Record<string, { at: number }>
 }
 
+/** A connection's sign-in, bound to the gateway URL that issued it. */
+export type BoundTokenSet = NativeTokenSet & { baseUrl: string }
+
 interface TokensDoc {
   version: 1
   revision: number
-  tokens: Record<string, NativeTokenSet>
+  tokens: Record<string, BoundTokenSet>
   unbound: Record<string, NativeTokenSet>
   undecrypted: Record<string, SecretEnvelope>
 }
@@ -516,6 +522,32 @@ export function decryptLegacyTokens(
   )
 }
 
+/** The ids whose sign-in no longer belongs to them: removed, or re-pointed (url/authMode). */
+export function signedInIdsGone(before: ConnectionRegistry, after: ConnectionRegistry): string[] {
+  const now = new Map(after.connections.map(c => [c.id, c]))
+
+  return before.connections
+    .filter(c => {
+      const next = now.get(c.id)
+
+      return !next || next.url !== c.url || next.authMode !== c.authMode
+    })
+    .map(c => c.id)
+}
+
+/** A connection's set as main's loader reads it, or null when it was issued for another URL. */
+function boundSet(set: BoundTokenSet, entryUrl: unknown): NativeTokenSet | null {
+  const key = safeUrl(entryUrl)
+
+  if (!key || safeUrl(set?.baseUrl) !== key) {
+    return null
+  }
+
+  const { baseUrl: _baseUrl, ...rest } = set
+
+  return rest
+}
+
 function importLegacyTokens(
   legacy: Record<string, LegacyTokenEntry>,
   registry: ConnectionRegistry,
@@ -533,7 +565,8 @@ function importLegacyTokens(
     if (!set) {
       tokens.undecrypted[baseUrl] = secret
     } else if (id) {
-      tokens.tokens[id] = set
+      // main's file was keyed by this URL: the set keeps it, so the sign-in still works here.
+      tokens.tokens[id] = { ...set, baseUrl: safeUrl(baseUrl)! }
     } else {
       tokens.unbound[baseUrl] = set
     }
@@ -729,10 +762,35 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
 
     withStoreLockSync(file, stillOurs => {
       const { corrupt, doc } = readDoc<StoreDoc>(file)
+      const disk = normalizeRegistry(doc)
       const moved = revisionOf(doc) !== baseRevision && base
-      const next = moved ? rebaseRegistry(base, plain, normalizeRegistry(doc)) : normalizeRegistry(plain)
+      const next = moved ? rebaseRegistry(base, plain, disk) : normalizeRegistry(plain)
 
-      land(doc, corrupt, stillOurs, next)
+      const stored = land(doc, corrupt, stillOurs, next)
+      dropTokens(signedInIdsGone(disk, stored))
+    })
+  }
+
+  /** Forget the sign-ins kept under `ids` (store lock, then tokens lock: the import's order). */
+  function dropTokens(ids: string[]): void {
+    if (!ids.length || !fs.existsSync(tokensFile)) {
+      return
+    }
+
+    withStoreLockSync(tokensFile, stillOurs => {
+      const { corrupt, doc: raw } = readDoc<TokensDoc>(tokensFile)
+      const doc = emptyTokens(raw)
+
+      if (!ids.some(id => id in doc.tokens)) {
+        return
+      }
+
+      for (const id of ids) {
+        delete doc.tokens[id]
+      }
+
+      doc.revision += 1
+      replaceDoc(tokensFile, doc, corrupt, stillOurs)
     })
   }
 
@@ -756,10 +814,11 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
 
       for (const [id, set] of Object.entries(doc.tokens)) {
         const url = registry.connections.find(c => c.id === id)?.url
-        const key = url && safeUrl(url)
+        const key = safeUrl(url)
+        const usable = boundSet(set, url)
 
-        if (key) {
-          out[key] = { encoding: 'plain', value: JSON.stringify(set) }
+        if (key && usable) {
+          out[key] = { encoding: 'plain', value: JSON.stringify(usable) }
         }
       }
 
@@ -808,7 +867,7 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
               if (!set) {
                 doc.undecrypted[url] = wanted[url]
               } else if (id) {
-                doc.tokens[id] = set
+                doc.tokens[id] = { ...set, baseUrl: safeUrl(url)! }
               } else {
                 doc.unbound[url] = set
               }

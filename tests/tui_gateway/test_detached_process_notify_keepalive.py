@@ -236,12 +236,17 @@ def test_notice_held_after_stop_does_not_pin_session(server, registry, detached)
     assert server._session_is_reapable(sid, session)
 
 
-def test_recovered_process_whose_pid_died_releases_session(server, registry, detached, monkeypatch):
-    """A checkpoint-recovered process has no reader thread to observe its exit; a dead PID must not pin its owner."""
+def test_recovered_process_whose_pid_died_keeps_session_until_lost_notice_is_routed(server, registry, detached, monkeypatch):
+    """No exit status was collected, but the lost wake still needs its owning poller."""
     sid, session, _ = detached
     _spawn(registry, session["session_key"], notify_on_complete=True, detached=True, pid=12345)
     monkeypatch.setattr(registry, "_detached_host_fate", lambda *_: "gone")
 
+    assert not server._session_is_reapable(sid, session)  # refresh observed gone; sweeper still owes the wake
+    registry._sweep_detached_once()
+    assert not server._session_is_reapable(sid, session)
+    event = registry.completion_queue.get_nowait()
+    assert event["completion_reason"] == "lost" and event["exit_code"] is None
     assert server._session_is_reapable(sid, session)
 
 

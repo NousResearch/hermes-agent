@@ -58,11 +58,26 @@ export interface PreviewGuestAttachPrefs {
   preload?: string
 }
 
+// Every preview-family session the attach gate has admitted. A webview's
+// `webContents.session` is the memoized `session.fromPartition(partition)`, so
+// recording that object here lets the ACTIVITY gate accept any sibling preview
+// jar by identity — without reading a partition name off a Session (Electron
+// exposes none) and without widening to arbitrary partitions.
+const previewGuestSessions = new WeakSet<Session>()
+
+/** True when `session` is a preview-family jar the attach gate admitted (#150283 F1).
+ *  The guest's own session is authoritative: a named profile rides a sibling jar,
+ *  not the default one, so the activity gate must accept it. */
+export function isPreviewGuestSession(session: Session | undefined): boolean {
+  return Boolean(session && previewGuestSessions.has(session))
+}
+
 /** Keep the preload partition-scoped; idle guests use Chromium's throttling. */
 export function applyPreviewGuestAttachPrefs(
   webPreferences: PreviewGuestAttachPrefs,
   partition: string | undefined,
-  preloadPath: string
+  preloadPath: string,
+  resolveSession?: (partition: string) => Session
 ): void {
   if (!isPreviewPartition(partition)) {
     return
@@ -70,6 +85,12 @@ export function applyPreviewGuestAttachPrefs(
 
   webPreferences.preload = preloadPath
   webPreferences.backgroundThrottling = true
+
+  // Remember the resolved preview jar so the activity gate recognizes this
+  // guest's own (possibly non-default) session later.
+  if (resolveSession && partition) {
+    previewGuestSessions.add(resolveSession(partition))
+  }
 }
 
 let nextLease = 0
@@ -95,7 +116,6 @@ const activeGuests = new WeakMap<WebContents, Set<number>>()
 export function beginPreviewGuestActivity(
   owner: WebContents,
   guest: undefined | WebContents,
-  previewSession: Session,
   holdOwner: () => () => void
 ): number {
   if (
@@ -105,7 +125,7 @@ export function beginPreviewGuestActivity(
     guest.isDestroyed() ||
     guest.getType() !== 'webview' ||
     guest.hostWebContents !== owner ||
-    guest.session !== previewSession
+    !isPreviewGuestSession(guest.session)
   ) {
     throw new Error('Preview guest does not belong to this window')
   }

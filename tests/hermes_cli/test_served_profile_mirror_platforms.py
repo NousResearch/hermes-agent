@@ -70,6 +70,51 @@ def test_served_profile_projects_the_default_listener_mirrors_with_their_url(ser
     assert "ingress_url" not in profile_platforms_from_multiplexer(live.runtime, "default").get("api_server", {})
 
 
+@pytest.mark.parametrize("mux_error", [False, True])
+def test_remote_health_remains_live_without_a_proven_local_host(tmp_path, monkeypatch, mux_error):
+    from gateway import status
+
+    def no_host(home):
+        if mux_error:
+            raise OSError("host rendezvous unavailable")
+
+    monkeypatch.setattr(status, "multiplexer_liveness_for_profile", no_host)
+    body = {"pid": 1234, "gateway_state": "running"}
+    result = status.resolve_gateway_liveness(
+        profile_dir=tmp_path, pid_probe=lambda *a: None,
+        health_probe=lambda: (True, body))
+    assert result.running is True
+    assert result.pid == 1234
+    assert result.health_body == body
+    assert result.runtime is None
+
+
+@pytest.mark.parametrize("pid_found", [True, False])
+@pytest.mark.parametrize("scoped", [True, False])
+def test_status_health_probe_does_not_shadow_served_profile_runtime(served_root, monkeypatch, scoped, pid_found):
+    """A healthy shared listener must not revive a dead standalone record's platform states."""
+    import asyncio
+    from hermes_cli.web_routers import status as route
+
+    alpha = served_root / "profiles" / "alpha"
+    stale = {"pid": 999999999, "gateway_state": "draining",
+             "updated_at": "2026-09-22T20:57:59+00:00",
+             "platforms": {"telegram": {"state": "disconnected"}}}
+    (alpha / "gateway_state.json").write_text(json.dumps(stale), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(alpha))
+    monkeypatch.setattr(route, "get_running_pid_cached", lambda *a: os.getpid() if pid_found else None)
+    monkeypatch.setattr(route, "_bounded_health_probe", lambda: (True, {"pid": os.getpid()}))
+    monkeypatch.setattr(route, "_load_configured_gateway_platforms", lambda: {"telegram"})
+
+    result = asyncio.run(route._resolve_gateway_status(alpha if scoped else None, "http://shared/health"))
+
+    assert result["gateway_running"] is True
+    assert result["gateway_state"] == "running"
+    assert result["gateway_platforms"]["telegram"]["state"] == "connected"
+    assert result["gateway_shared_with"] == ["default", "alpha", "beta"]
+    assert json.loads((alpha / "gateway_state.json").read_text()) == stale
+
+
 def test_default_profile_keeps_its_flat_adapters_when_rekeyed(served_root):
     """The default's own adapters are the record's FLAT keys (only secondaries get the
     ``<profile>:`` prefix), so re-keying the multiplexer record for ``default`` must keep them:

@@ -2411,6 +2411,7 @@ cli:
     footer_roster_compact: "↑↓ · Enter open · Ctrl+T close"
     footer_detail: "Esc roster · PgUp/PgDn tail{steer} · x stop"
     footer_roster: "↑/↓ select · Enter open · t tail · m master{steer} · x stop · q/Ctrl+T close"
+    count_finished: "{count} finished"
     finished_status: "done"
     not_live_status: "not running"
 

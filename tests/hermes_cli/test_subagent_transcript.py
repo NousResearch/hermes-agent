@@ -110,6 +110,28 @@ def test_timeline_events_are_shown_with_their_text():
     assert [(b.kind, b.title) for b in blocks] == [("event", "Subagent finished: Update the docs")]
 
 
+def test_a_steer_shows_the_text_that_was_sent():
+    from agent.prompt_builder import steer_user_row
+    from hermes_cli.subagent_transcript import build_blocks, render
+
+    blocks = build_blocks([{"role": "user", "content": "Do the task"}, steer_user_row("Also print the date")],
+                          subagent=True)
+
+    assert blocks[-1].kind == "event"
+    text = _text(render(blocks, width=80, expanded=set(), subagent=True))
+    assert "Also print the date" in text
+    assert "OUT-OF-BAND" not in text
+
+
+def test_a_failed_turn_shows_its_notice():
+    from hermes_cli.subagent_transcript import build_blocks, render
+
+    history = [{"role": "assistant", "content": "This turn did not complete.", "display_kind": "failed_turn"}]
+
+    assert "This turn did not complete." in _text(render(build_blocks(history, subagent=True), width=80,
+                                                         expanded=set(), subagent=True))
+
+
 def test_hidden_and_system_rows_are_skipped():
     from hermes_cli.subagent_transcript import build_blocks
 

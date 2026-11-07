@@ -226,6 +226,10 @@ def test_keys_switch_views_send_and_return_to_the_list(setup):
             assert monitor.viewer.current == "docs-child"
             await send("\x1b[Z")  # Shift+Tab: back
             assert monitor.viewer.current == "tests-child"
+            await send("\x1b[1;3C")  # Alt+Right (xterm): next view, not the Esc binding
+            assert monitor.viewer is not None and monitor.viewer.current == "docs-child"
+            await send("\x1b[1;3D")  # Alt+Left: back
+            assert monitor.viewer is not None and monitor.viewer.current == "tests-child"
             await send("\x1b")  # Esc: back to the list
             assert monitor.viewer is None
             pipe.send_text("\x14")  # Ctrl+T closes

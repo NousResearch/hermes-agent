@@ -198,6 +198,16 @@ class SubagentMonitor:
             parts.append(t('cli.subagents.count_queued', count=len(self.queued)))
         return ' · '.join(parts)
 
+    def list_title(self):
+        """The full-screen list's heading: live and finished subagents, then processes."""
+        subagents = bool(self.entries or self.finished)
+        title = (t('cli.subagents.title_live_work') if subagents and self.processes
+                 else t('cli.subagents.title_subagents') if subagents else t('cli.subagents.title_processes'))
+        parts = [self._counts(session=False)] if (self.entries or self.processes) else []
+        if self.finished:
+            parts.append(t('cli.subagents.count_finished', count=len(self.finished)))
+        return ' · '.join([title, *[part for part in parts if part]])
+
     def _title(self):
         if self.entries and self.processes:
             return t('cli.subagents.title_live_work')
@@ -409,7 +419,7 @@ def build_monitor_application(monitor, **kwargs):
 
     def header():
         row = monitor.selected
-        title = f"{monitor._title()} · {monitor._counts(session=False)}"
+        title = monitor.list_title()
         if monitor.detail and row:
             title += f" · {monitor._key(row)} · {row.get('goal') or row.get('command') or ''}"
         return [('class:subagent-dock.heading', _clip(title, app.output.get_size().columns))]
@@ -532,7 +542,9 @@ def build_monitor_application(monitor, **kwargs):
     def focus_home():
         app.layout.focus(viewer_entry if monitor.viewer else tail if monitor.detail else roster)
 
-    @kb.add('escape', eager=True)
+    # Eager everywhere but the viewer, where Alt+Left/Right arrive as Esc + arrow and must win.
+    @kb.add('escape', eager=True, filter=~viewing)
+    @kb.add('escape', filter=viewing)
     def back(event):
         if state['steering'] or state['confirm']:
             state['steering'] = state['confirm'] = False

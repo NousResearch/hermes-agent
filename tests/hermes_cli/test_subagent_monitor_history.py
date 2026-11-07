@@ -44,6 +44,24 @@ def test_the_list_keeps_finished_subagents_after_live_ones(monitor):
     assert finished["child_session_id"] == "finished-child"
 
 
+def test_the_list_heading_counts_live_and_finished_subagents(monitor):
+    from agent.i18n import t
+
+    heading = monitor.list_title()
+
+    assert heading.startswith(t("cli.subagents.title_subagents"))
+    assert t("cli.subagents.count_live", count=1) in heading
+    assert t("cli.subagents.count_finished", count=1) in heading
+
+
+def test_a_list_of_only_finished_subagents_is_headed_subagents(monitor):
+    from agent.i18n import t
+
+    monitor.entries = []
+
+    assert monitor.list_title().startswith(t("cli.subagents.title_subagents"))
+
+
 def test_a_live_subagent_is_listed_once_with_its_stored_session(monitor):
     live = monitor.roster[0]
 

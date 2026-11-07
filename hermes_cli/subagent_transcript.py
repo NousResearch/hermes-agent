@@ -57,6 +57,21 @@ def _user_text(content: Any) -> str:
     return _clean(content).strip()
 
 
+_EVENT_BODY_CHARS = 1200
+
+
+def _event_body(kind: str, message: dict) -> str:
+    """What a timeline event says: a steer's own text (without the delivery marker), otherwise
+    the row's stored text, capped. Events that only carry a display line have no body."""
+    from agent.prompt_builder import STEER_DISPLAY_KIND, STEER_MARKER_CLOSE, STEER_MARKER_OPEN
+    text = _user_text(message.get("content"))
+    if kind == STEER_DISPLAY_KIND:
+        text = text.replace(STEER_MARKER_OPEN, "").replace(STEER_MARKER_CLOSE, "").strip()
+    if len(text) > _EVENT_BODY_CHARS:
+        text = text[:_EVENT_BODY_CHARS].rstrip() + "…"
+    return text
+
+
 def _loads(value: Any, depth: int = 3) -> Any:
     """Decode stored JSON that may have been encoded more than once (delegate_task results are)."""
     while isinstance(value, str) and depth:
@@ -174,7 +189,7 @@ def build_blocks(messages: list[dict], *, subagent: bool) -> list[Block]:
         if kind:
             metadata = message.get("display_metadata") or {}
             text = _clean(metadata.get("display_text") or kind.replace("_", " ")).strip()
-            blocks.append(Block("event", title=" ".join(text.split())))
+            blocks.append(Block("event", title=" ".join(text.split()), body=_event_body(kind, message)))
         elif role == "user":
             first = subagent and not any(b.kind == "brief" for b in blocks)
             blocks.append(Block("brief" if first else "user", body=_user_text(message.get("content"))))
@@ -268,9 +283,9 @@ def render(blocks: list[Block], *, width: int, expanded: set, cursor: Optional[i
             style += " class:subagent-view.cursor"
         for line in wrap(header, width):
             rendered.lines.append([(style, line)])
-        show_body = block.kind in _TEXT_KINDS or (block.collapsible and is_open)
+        show_body = block.kind in _TEXT_KINDS or block.kind == "event" or (block.collapsible and is_open)
         if show_body and block.body:
-            indent = "  " if block.kind in _TEXT_KINDS else "    "
+            indent = "    " if block.collapsible else "  "
             body_style = "class:subagent-view.body" if block.kind in _TEXT_KINDS else "class:subagent-view.detail"
             for line in wrap(block.body, width - len(indent)):
                 rendered.lines.append([(body_style, indent + line)])

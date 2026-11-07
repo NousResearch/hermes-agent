@@ -124,3 +124,35 @@ def known_reasoning_floor(
         task or "call", _route_key(provider, base_url) or "provider", model or "model", REASONING_FLOOR_EFFORT,
     )
     return floor_reasoning_config(reasoning_config)
+
+
+def codex_responses_reasoning(
+    reasoning_cfg: Any, model: Any, host: Any, *, is_codex_backend: bool, is_xai: bool,
+) -> dict[str, Any]:
+    """Responses ``reasoning``/``include`` fields for an aux call's ``extra_body.reasoning`` (Codex adapter).
+
+    Shared per-model vocabulary with the main transport ("max" only where the model publishes it; "minimal"/"ultra"
+    clamp to a listed level; ``()`` = the model takes no ``reasoning`` field at all — gpt-4o/4.1 on api.openai.com,
+    #76255). ``enabled: False`` goes on the wire as ``effort: none`` where the vocabulary has it, since an omitted
+    field leaves the model's default effort on (#75227). Where it has no ``none`` (gpt-6.1-sol, Astra) the disable is
+    lifted to ``REASONING_FLOOR_EFFORT`` up front: this adapter never sends the field that 400s, so the learned floor
+    above cannot learn from the omitted disable, and the call would run at the provider default.
+    """
+    if not isinstance(reasoning_cfg, dict):
+        return {}
+    from agent.reasoning_effort import clamp_effort
+    from agent.transports.codex import _codex_efforts_for_route
+
+    supported = _codex_efforts_for_route(model, host, is_codex_backend=is_codex_backend)
+    if not supported:
+        return {}
+    if reasoning_cfg.get("enabled") is not False:
+        # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default.
+        effort = clamp_effort(reasoning_cfg.get("effort") or "medium", supported)
+    elif is_xai:
+        return {}
+    elif "none" in supported:
+        return {"reasoning": {"effort": "none"}}
+    else:
+        effort = clamp_effort(REASONING_FLOOR_EFFORT, supported)
+    return {"reasoning": {"effort": effort, "summary": "auto"}, "include": ["reasoning.encrypted_content"]}

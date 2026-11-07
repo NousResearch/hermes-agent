@@ -146,3 +146,173 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
     assert calls == []
     with closing(connect(board='owned')) as conn:
         assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='owner_admitted'", (task_id,)).fetchone()[0] == 0
+
+
+class _TurnAgent:
+    """The least agent _run_task_turns needs: a session id and one recorded conversation."""
+
+    session_id = 's1'
+
+    def __init__(self):
+        self.calls = []
+
+    def run_conversation(self, message, conversation_history=None):
+        self.calls.append((message, conversation_history))
+        return {'final_response': 'checked', 'messages': []}
+
+
+def test_worker_restores_lane_bundled_skill_deleted_from_profile(tmp_path, monkeypatch):
+    """A review-lane worker whose profile lacks bundled sdlc-review (a manual delete or curator
+    prune the seed sync deliberately never re-adds) restores it from the bundled source like the
+    connector catalog does. Without the restore the worker died before its first model call and
+    the dispatcher could only book "execution unknown"."""
+    from gateway import session_kanban
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'home'))
+    probes, restored = [], []
+
+    def probe(identifiers, task_id=None, **kwargs):
+        probes.append(list(identifiers))
+        return ('', [], ['sdlc-review']) if len(probes) == 1 else ('skill: sdlc-review', ['sdlc-review'], [])
+
+    monkeypatch.setattr('agent.skill_commands.build_preloaded_skills_prompt', probe)
+    monkeypatch.setattr('tools.skills_sync_bundled_ops.ensure_bundled_skill',
+                        lambda name: restored.append(name) or {'ok': True, 'action': 'restored',
+                                                                'path': None, 'message': ''})
+    recovered = []
+    monkeypatch.setattr('agent.kanban_turn_recovery.recover_failed_kanban_turns',
+                        lambda recover_fn, get_result, **kwargs: recovered.append(kwargs) or 0)
+    agent = _TurnAgent()
+    context = {'skills': ['sdlc-review'], 'context': '', 'goal_mode': False, 'task_id': 't1',
+               'run_id': 1, 'claim_lock': 'lock', 'db': 'unused'}
+    result = session_kanban._run_task_turns(agent, {'text': 'review it'}, [], context)
+    assert result['final_response'] == 'checked'
+    assert restored == ['sdlc-review'] and len(probes) == 2
+    assert 'skill: sdlc-review' in agent.calls[0][0]
+    assert recovered and recovered[0]['task_id'] == 't1'
+
+
+def test_worker_still_refuses_missing_unbundled_skill(tmp_path, monkeypatch):
+    """Only bundled names revive: a card-listed skill with no bundled source keeps the hard
+    refusal, so a worker never claims a task whose instructions it could not load."""
+    from gateway import session_kanban
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'home'))
+    monkeypatch.setattr('agent.skill_commands.build_preloaded_skills_prompt',
+                        lambda identifiers, task_id=None, **kwargs: ('', [], ['owned-skill']))
+    ensured = []
+    monkeypatch.setattr('tools.skills_sync_bundled_ops.ensure_bundled_skill',
+                        lambda name: ensured.append(name) or {'ok': False, 'action': 'not_restored'})
+    context = {'skills': ['owned-skill'], 'context': '', 'goal_mode': False, 'task_id': 't1',
+               'run_id': 1, 'claim_lock': 'lock', 'db': 'unused'}
+    with pytest.raises(ValueError, match='kanban_skills_unavailable'):
+        session_kanban._run_task_turns(SimpleNamespace(session_id='s1'), {'text': 'work'}, [], context)
+    assert ensured == []
+
+
+def test_worker_restores_lane_skill_even_when_other_skills_load(tmp_path, monkeypatch):
+    """The restore gate is `missing`, not `missing and not loaded`: when a card skill loads but
+    the lane's sdlc-review is out of the profile, the review must not silently run without the
+    lane-required skill - the contract build_kanban_policy states when it injects sdlc-review."""
+    from gateway import session_kanban
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'home'))
+    probes, restored = [], []
+
+    def probe(identifiers, task_id=None, **kwargs):
+        probes.append(list(identifiers))
+        return (('skill: owned-skill', ['owned-skill'], ['sdlc-review']) if len(probes) == 1
+                else ('skill: both', ['owned-skill', 'sdlc-review'], []))
+
+    monkeypatch.setattr('agent.skill_commands.build_preloaded_skills_prompt', probe)
+    monkeypatch.setattr('tools.skills_sync_bundled_ops.ensure_bundled_skill',
+                        lambda name: restored.append(name) or {'ok': True, 'action': 'restored',
+                                                                'path': None, 'message': ''})
+    monkeypatch.setattr('agent.kanban_turn_recovery.recover_failed_kanban_turns',
+                        lambda recover_fn, get_result, **kwargs: 0)
+    agent = _TurnAgent()
+    context = {'skills': ['owned-skill', 'sdlc-review'], 'context': '', 'goal_mode': False, 'task_id': 't1',
+               'run_id': 1, 'claim_lock': 'lock', 'db': 'unused'}
+    result = session_kanban._run_task_turns(agent, {'text': 'review it'}, [], context)
+    assert result['final_response'] == 'checked'
+    assert restored == ['sdlc-review'] and len(probes) == 2
+    assert 'skill: both' in agent.calls[0][0]
+
+
+def test_worker_still_refuses_when_bundled_restore_fails(tmp_path, monkeypatch):
+    """A bundled restore that cannot write the profile keeps the deterministic pre-model refusal
+    instead of half-claiming the task - and re-probes nothing after a failed restore."""
+    from gateway import session_kanban
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'home'))
+    probes, ensured = [], []
+
+    def probe(identifiers, task_id=None, **kwargs):
+        probes.append(list(identifiers))
+        return '', [], ['sdlc-review']
+
+    monkeypatch.setattr('agent.skill_commands.build_preloaded_skills_prompt', probe)
+    monkeypatch.setattr('tools.skills_sync_bundled_ops.ensure_bundled_skill',
+                        lambda name: ensured.append(name) or {'ok': False, 'action': 'not_restored',
+                                                               'path': None, 'message': 'blocked'})
+    context = {'skills': ['sdlc-review'], 'context': '', 'goal_mode': False, 'task_id': 't1',
+               'run_id': 1, 'claim_lock': 'lock', 'db': 'unused'}
+    with pytest.raises(ValueError, match='kanban_skills_unavailable'):
+        session_kanban._run_task_turns(_TurnAgent(), {'text': 'review it'}, [], context)
+    assert ensured == ['sdlc-review'] and len(probes) == 1
+
+
+def test_safe_worker_skips_bundled_restore(tmp_path, monkeypatch):
+    """The safe worker reports every listed skill missing; it must not mutate the profile trying
+    to revive them. The refusal stays, and no restore is attempted."""
+    from gateway import session_kanban
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'home'))
+    monkeypatch.setattr('agent.safe_worker_policy.safe_worker_enabled', lambda: True)
+    monkeypatch.setattr('agent.skill_commands.build_preloaded_skills_prompt',
+                        lambda identifiers, task_id=None, **kwargs: ('', [], list(identifiers)))
+    ensured = []
+    monkeypatch.setattr('tools.skills_sync_bundled_ops.ensure_bundled_skill',
+                        lambda name: ensured.append(name) or {'ok': True, 'action': 'restored',
+                                                                'path': None, 'message': ''})
+    context = {'skills': ['sdlc-review'], 'context': '', 'goal_mode': False, 'task_id': 't1',
+               'run_id': 1, 'claim_lock': 'lock', 'db': 'unused'}
+    with pytest.raises(ValueError, match='kanban_skills_unavailable'):
+        session_kanban._run_task_turns(SimpleNamespace(session_id='s1'), {'text': 'review it'}, [], context)
+    assert ensured == []
+
+
+def test_restore_makes_real_probe_reload_in_same_process(tmp_path, monkeypatch):
+    """Pins the unmocked chain under a real scratch home: the probe misses, the restore lands on
+    disk, and the SAME probe then loads it. A probe-level cache that ignored the restore would
+    silently turn every revive back into the pre-model crash."""
+    from gateway import session_kanban
+    from agent.skill_commands import build_preloaded_skills_prompt
+    from tools import skill_usage
+    from tools.skills_sync_bundled_ops import bundled_skill_for_install, ensure_bundled_skill
+    home = tmp_path / 'home'
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    p1, l1, m1 = build_preloaded_skills_prompt(['sdlc-review'])
+    assert m1 == ['sdlc-review'] and not l1
+    assert bundled_skill_for_install('sdlc-review') == 'sdlc-review'
+    assert ensure_bundled_skill('sdlc-review')['ok']
+    assert (skill_usage._skills_dir() / 'devops' / 'sdlc-review' / 'SKILL.md').is_file()
+    p2, l2, m2 = build_preloaded_skills_prompt(['sdlc-review'])
+    assert l2 == ['sdlc-review'] and not m2 and 'sdlc-review' in p2
+
+
+def test_operator_disabled_bundled_skill_keeps_the_refusal(tmp_path, monkeypatch):
+    """An operator skills.disabled bundled skill reports as missing but stays disabled after the
+    restore, so the worker keeps the refusal: the disable is the operator's choice to honor."""
+    from gateway import session_kanban
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'home'))
+    probes, ensured = [], []
+
+    def probe(identifiers, task_id=None, **kwargs):
+        probes.append(list(identifiers))
+        return '', [], ['sdlc-review']  # disabled_as_missing: stays missing after any restore
+
+    monkeypatch.setattr('agent.skill_commands.build_preloaded_skills_prompt', probe)
+    monkeypatch.setattr('tools.skills_sync_bundled_ops.ensure_bundled_skill',
+                        lambda name: ensured.append(name) or {'ok': True, 'action': 'present',
+                                                                'path': None, 'message': ''})
+    context = {'skills': ['sdlc-review'], 'context': '', 'goal_mode': False, 'task_id': 't1',
+               'run_id': 1, 'claim_lock': 'lock', 'db': 'unused'}
+    with pytest.raises(ValueError, match='kanban_skills_unavailable'):
+        session_kanban._run_task_turns(SimpleNamespace(session_id='s1'), {'text': 'review it'}, [], context)
+    assert ensured == ['sdlc-review'] and len(probes) == 2

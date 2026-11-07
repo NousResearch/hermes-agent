@@ -93,11 +93,11 @@ def dock_argv(exe: str, user_data_dir: str, *, sandbox_bypass: Optional[bool] = 
     """Command the dock's Browser icon runs. ``--remote-debugging-port=0`` makes a human-started
     instance attachable (Chromium writes the chosen port to ``<user-data-dir>/DevToolsActivePort``);
     first-run / default-browser dialogs would sit between the human and the bot's tabs. The sandbox policy
-    is the launcher's (root, Docker, AppArmor userns): the human's Browser is the bot's browser."""
-    from tools.browser_launcher import CHROMIUM_SANDBOX_BYPASS_ARGS, needs_chromium_sandbox_bypass
+    is the launcher's for this binary (root, Docker, AppArmor userns): the human's Browser is the bot's browser."""
+    from tools.browser_launcher import CHROMIUM_SANDBOX_BYPASS_ARGS, sandbox_bypass_for
     return [exe, f"--user-data-dir={user_data_dir}", "--remote-debugging-port=0", "--no-first-run",
             "--no-default-browser-check", *SHARED_PROFILE_ARGS,
-            *(CHROMIUM_SANDBOX_BYPASS_ARGS if (needs_chromium_sandbox_bypass() if sandbox_bypass is None
+            *(CHROMIUM_SANDBOX_BYPASS_ARGS if (sandbox_bypass_for(exe) if sandbox_bypass is None
                                               else sandbox_bypass) else ())]
 
 

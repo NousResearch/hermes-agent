@@ -121,13 +121,73 @@ def running_in_docker() -> bool:
         return False
 
 
+def _host_forces_sandbox_bypass() -> bool:
+    """Root or Docker: Chromium's own sandbox cannot start there, whatever the binary."""
+    return (hasattr(os, "geteuid") and os.geteuid() == 0) or running_in_docker()
+
+
 def needs_chromium_sandbox_bypass() -> bool:
-    """True when Chromium needs --no-sandbox to start reliably (root, Docker, AppArmor userns)."""
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        return True
-    if running_in_docker():
-        return True
-    return apparmor_restricts_unprivileged_userns()
+    """True when Chromium may need --no-sandbox on this host (root, Docker, AppArmor userns);
+    :func:`sandbox_bypass_for` answers it for one binary."""
+    return _host_forces_sandbox_bypass() or apparmor_restricts_unprivileged_userns()
+
+
+_SANDBOX_PROBE_TIMEOUT_S = 30
+_UNUSABLE_SANDBOX = b"No usable sandbox"
+# Per process, keyed by the path as given: a snap's realpath is /usr/bin/snap, shared by every snap app. The
+# probe lock is held across the probe: launches on two keys must not probe one binary in one dir at once.
+_sandbox_verdicts: dict[str, bool] = {}
+_sandbox_probe_lock = threading.Lock()
+
+
+def sandbox_bypass_for(executable: str, env: Optional[dict] = None) -> bool:
+    """Whether ``executable`` gets ``CHROMIUM_SANDBOX_BYPASS_ARGS`` on this host: always as root or in Docker.
+    Under the AppArmor userns restriction only a binary without a ``userns`` grant (the PM/Playwright build)
+    cannot sandbox; one with a grant (the chromium snap, Google Chrome under Ubuntu's ``/etc/apparmor.d/chrome``)
+    keeps its sandbox, so that arm asks the binary (:func:`chromium_sandbox_works`)."""
+    if not needs_chromium_sandbox_bypass():
+        return False
+    return _host_forces_sandbox_bypass() or not chromium_sandbox_works(executable, env)
+
+
+def chromium_sandbox_works(executable: str, env: Optional[dict] = None) -> bool:
+    """Whether ``executable`` starts with its sandbox on this host: one short headless run per binary per
+    process. Chromium sets the sandbox up before loading anything, so a binary the restriction blocks aborts at
+    once with ``No usable sandbox!``. A run that cannot start or does not finish counts as blocked, which keeps
+    the bypass every binary got before."""
+    key = os.path.abspath(executable)
+    with _sandbox_probe_lock:
+        if key not in _sandbox_verdicts:
+            _sandbox_verdicts[key] = _probe_sandbox(executable, env)
+        return _sandbox_verdicts[key]
+
+
+def _probe_sandbox(executable: str, env: Optional[dict]) -> bool:
+    if not os.access(executable, os.X_OK):
+        return False
+    from hermes_constants import hermes_home_key
+    if env is None:
+        from tools.browser_session import build_browser_env
+        env = build_browser_env()
+    # A throwaway profile where real launches put theirs (a snap browser can write there; the reaper owns it),
+    # one per binary so two probes never share a dir.
+    udd = _default_user_data_dir(f"sandbox-probe:{os.path.abspath(executable)}", hermes_home_key())
+    argv = [executable, f"--user-data-dir={udd}", *_BASE_FLAGS, *_PACKAGED_ONLY_FLAGS, "--headless=new",
+            "--dump-dom", "about:blank"]
+    try:
+        _prepare_dir(udd, ephemeral=True)
+        done = subprocess.run(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.PIPE, timeout=_SANDBOX_PROBE_TIMEOUT_S, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.info("browser: sandbox probe of %s failed (%s); starting it with %s", executable, exc,
+                    " ".join(CHROMIUM_SANDBOX_BYPASS_ARGS))
+        return False
+    finally:
+        shutil.rmtree(udd, ignore_errors=True)
+    works = done.returncode == 0 and _UNUSABLE_SANDBOX not in done.stderr
+    logger.info("browser: %s %s", executable, "starts with its sandbox on this host" if works else
+                f"cannot start its sandbox on this host; starting it with {' '.join(CHROMIUM_SANDBOX_BYPASS_ARGS)}")
+    return works
 
 
 def _chromium_missing_hint() -> str:
@@ -228,12 +288,13 @@ def _configured_chromium_args() -> list[str]:
 
 
 def build_chromium_argv(executable: str, user_data_dir: str, *, packaged: bool, headed: bool,
-                        sandbox_bypass: bool, extra_args=()) -> list[str]:
-    """The launch argv (pure in its inputs + host sandbox facts + ``browser.chromium_args``).
+                        sandbox_bypass: bool, extra_args=(), env: Optional[dict] = None) -> list[str]:
+    """The launch argv (its inputs + host sandbox facts + ``browser.chromium_args``).
 
-    ``sandbox_bypass`` lets the host policy (root, Docker, AppArmor userns) add
-    ``CHROMIUM_SANDBOX_BYPASS_ARGS``; it is False for the user's own browser binary, which is never
-    started without its sandbox."""
+    ``sandbox_bypass`` lets the host policy (:func:`sandbox_bypass_for`: root, Docker, or a binary the AppArmor
+    userns restriction blocks) add ``CHROMIUM_SANDBOX_BYPASS_ARGS``; it is False for the user's own browser
+    binary, which is never started without its sandbox. ``env`` is the launch's environment, for the one
+    sandbox probe a binary may need."""
     argv = [executable, "--remote-debugging-port=0", f"--user-data-dir={user_data_dir}", *_BASE_FLAGS]
     if packaged:
         argv += _PACKAGED_ONLY_FLAGS
@@ -242,7 +303,7 @@ def build_chromium_argv(executable: str, user_data_dir: str, *, packaged: bool, 
     if not headed:
         argv.append("--headless=new")
     configured = _configured_chromium_args()
-    if sandbox_bypass and needs_chromium_sandbox_bypass():
+    if sandbox_bypass and sandbox_bypass_for(executable, env):
         argv += [flag for flag in CHROMIUM_SANDBOX_BYPASS_ARGS if flag not in configured]
     argv += [str(a) for a in extra_args]
     argv += configured
@@ -611,7 +672,7 @@ def _launch_owned(key: str, executable: str, udd: str, *, ephemeral: bool, packa
     except OSError as exc:
         return None, f"Could not create the browser profile directory {udd}: {exc}"
     argv = build_chromium_argv(executable, udd, packaged=packaged, headed=_resolve_headed(headed, env),
-                               sandbox_bypass=sandbox_bypass, extra_args=extra_args)
+                               sandbox_bypass=sandbox_bypass, extra_args=extra_args, env=env)
     try:
         proc = _spawn(argv, env, udd)
     except (OSError, subprocess.SubprocessError) as exc:

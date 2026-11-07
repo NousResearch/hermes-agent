@@ -1458,8 +1458,13 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     _qwen_meta = {"sessionId": agent.session_id or "hermes", "promptId": str(uuid.uuid4())} if _is_qwen else None
     _profile = None
     with contextlib.suppress(Exception):
-        from providers import get_provider_profile
-        _profile = get_provider_profile(agent.provider)
+        # Named custom providers resolve to the bare billing class "custom"
+        # (see _custom_runtime()), so get_provider_profile(agent.provider)
+        # lands on the bundled CustomProfile and its per-provider quirks
+        # (e.g. extra_body.think) are silently applied to providers that
+        # reject them. The resolver falls back to the persistent config
+        # slug in agent.requested_provider in that case.
+        _profile = _resolve_agent_profile_for_test(agent)
 
     _ephemeral_out = _consume_ephemeral_max_output(agent)
     from agent.reasoning_carriers import shape_wire_carriers
@@ -1498,6 +1503,48 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         profile_endpoint=_profile_endpoint, endpoint_reasoning=agent._endpoint_reasoning_payload() if _profile_endpoint else None,
         provider_name=agent.provider,
     )
+
+
+def _resolve_agent_profile_for_test(agent):
+    """Resolve the provider profile for *agent* (test-visible seam).
+
+    Production path: ``_profile = get_provider_profile(agent.provider)`` with
+    the named-custom fallback below. Kept as a module-level function so the
+    fallback semantics can be unit-tested without building a full agent.
+    """
+    try:
+        from providers import get_provider_profile
+    except Exception:
+        return None
+    _profile = get_provider_profile(agent.provider)
+    if not _profile_is_provider_specific(_profile):
+        _requested = str(getattr(agent, "requested_provider", "") or "").strip()
+        if _requested and _requested != "custom":
+            _named = get_provider_profile(_requested)
+            if _named is not None:
+                _profile = _named
+    return _profile
+
+
+def _profile_is_provider_specific(profile) -> bool:
+    """True when *profile* is a real, non-generic provider profile.
+
+    The generic billing-class ``custom`` profile (bundled CustomProfile)
+    does not carry a named provider's quirks, so it must not satisfy the
+    lookup. Matched by module-qualified type identity so test doubles
+    (which replace ``providers.get_provider_profile`` wholesale) behave
+    the same way: anything that is not the bundled CustomProfile class
+    counts as provider-specific.
+    """
+    if profile is None:
+        return False
+    try:
+        from providers import CustomProfile
+        if isinstance(profile, CustomProfile):
+            return False
+    except Exception:
+        pass
+    return type(profile).__name__ != "CustomProfile"
 
 
 def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:

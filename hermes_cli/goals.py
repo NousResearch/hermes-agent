@@ -113,14 +113,22 @@ CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE = (
 JUDGE_SYSTEM_PROMPT = (
     "You are a strict judge evaluating whether an autonomous agent has "
     "achieved a user's stated goal. You receive the goal text, the agent's "
-    "most recent response, and — when present — a list of background "
+    "most recent response, the tool activity the host observed (when "
+    "present), and — when present — a list of background "
     "processes the agent has running. Decide one of four verdicts.\n\n"
     "DONE — the goal is fully satisfied:\n"
     "- The response explicitly confirms the goal was completed, OR\n"
     "- The response clearly shows the final deliverable was produced.\n"
     "DONE requires the deliverable to actually exist. If the response only "
     "explains why the goal cannot be reached, the verdict is BLOCKED, not "
-    "DONE.\n\n"
+    "DONE.\n"
+    "Observed tool activity is fact; the response is the agent's claim. When "
+    "the response says tests, a build, a check or CI passed, the observed "
+    "activity must show that check running after the last file edit and "
+    "exiting 0. If it shows no such check, or the check failed, the claim is "
+    "unverified: never return DONE; return CONTINUE and name the check to "
+    "run. The same holds for a file the response says it wrote when the "
+    "observed write FAILED.\n\n"
     "BLOCKED — the goal cannot be satisfied as stated:\n"
     "- The response explains the goal is genuinely unachievable (impossible, "
     "out of scope, no valid path to the deliverable), or refuses to "
@@ -900,6 +908,7 @@ def judge_goal(
     background_processes: Optional[list[dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
     active_delegations: int = 0,
+    tool_activity: str = "",
 ) -> tuple[str, str, bool, Optional[dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
@@ -927,7 +936,8 @@ def judge_goal(
     common = dict(
         goal=_truncate(goal, 2000),
         response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
-        background_block=_render_background_block(background_processes)
+        background_block=(tool_activity or "")
+        + _render_background_block(background_processes)
         + (JUDGE_DELEGATIONS_BLOCK_TEMPLATE.format(count=active_delegations) if active_delegations > 0 else ""),
         current_time=safe_strftime(datetime.now(tz=UTC).astimezone(), "%Y-%m-%d %H:%M:%S %Z"),
     )
@@ -1489,6 +1499,8 @@ class GoalManager:
         """Run gates + judge and update state. Return a decision dict (``status``, ``should_continue``,
         ``continuation_prompt``, ``verdict``, ``reason``, ``message``). Both real user prompts and our
         own continuations increment ``turns_used`` — both consume model budget."""
+        from hermes_cli.goals_evidence import gather_tool_activity as _gather_tool_activity
+
         state = self._state
         if state is None or state.status != "active":
             return _decision(state.status if state else None, False, None, "inactive", "no active goal", "")
@@ -1511,6 +1523,7 @@ class GoalManager:
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None, background_processes=background_processes,
             contract=state.contract if state.has_contract() else None, active_delegations=active_delegations,
+            tool_activity=_gather_tool_activity(self.session_id),
         )
         state.last_verdict = verdict
         state.last_reason = reason

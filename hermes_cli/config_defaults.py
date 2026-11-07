@@ -195,9 +195,8 @@ DEFAULT_CONFIG = {
         # stable system block — project-wide workflow rules, e.g. "Don't run tsc/lint until I
         # approve." Cache-safe: takes effect next session.
         "coding_instructions": "",
-        # When verify-on-stop finds edits without fresh verification evidence, add guidance for
-        # creative UI work (no broad tsc/lint/test before visual approval) and clean-diff
-        # expectations. false = keep the evidence nudge terse.
+        # When verify-on-stop finds edits without fresh verification evidence, add guidance for creative UI
+        # work (no broad tsc/lint/test before visual approval) and clean-diff expectations. false = terse.
         "verify_guidance": True,
         # Max consecutive `pre_verify` "continue" nudges per turn (hooks can't trap the loop).
         "max_verify_nudges": 3,
@@ -207,6 +206,7 @@ DEFAULT_CONFIG = {
         # force on everywhere; "auto" = on for interactive coding surfaces and programmatic callers,
         # off for messaging surfaces. Doc/markdown/skill-only edits never fire.
         "verify_on_stop": False,
+        "todo_stop_gate": False,  # one nudge when an answer leaves todos open (extra model call)
         # Inactivity warning (seconds), once per run before gateway_timeout; no interrupt. 0 = off.
         "gateway_timeout_warning": 900,
         # Max seconds any surface (CLI, TUI/Desktop, messaging gateway) blocks an agent awaiting a

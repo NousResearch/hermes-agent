@@ -1,13 +1,13 @@
 name: completion-proof
 repo: https://github.com/yuanshen101/completion-proof
-sha: "9e56131c2329cf081efde52d0e5751da3d20ecec"
+sha: "4876d2b887ab113f6ad9d7c5c410c216beffc611"
 subdir: completion-proof
 description: "Revision-bound receipts for operator-configured checks; changed source, tests or artifacts make earlier passes stale."
 maintainer: yuanshen101
 tier: community
 category: tools
 requires_hermes: ">=0.22.7"
-version: "0.1.4"
+version: "0.1.5"
 platforms: [linux]
 readme: true
 known_issues:

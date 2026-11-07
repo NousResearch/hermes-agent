@@ -37,7 +37,7 @@ import {
   setVisibleModels,
   toggleModelVisibility
 } from '@/store/model-visibility'
-import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
+import { useProviderCollapse } from '@/store/provider-collapse'
 import { ambientRequestFor } from '@/store/session-gone-latch'
 import { sessionOwnerIsKnown } from '@/store/session-owner-resolution'
 import { knownOwnerForSession, requestForOwnedSession } from '@/store/session-states'
@@ -80,7 +80,6 @@ export function ModelVisibilityDialog({
   const copy = t.modelVisibility
   const [search, setSearch] = useState('')
   const stored = useStore($visibleModels)
-  const collapsedProviders = useStore($collapsedProviders)
   const customModels = useStore($customModels)
 
   const modelOptions = useQuery({
@@ -125,6 +124,7 @@ export function ModelVisibilityDialog({
   }
 
   const q = normalize(search)
+  const providerCollapse = useProviderCollapse(q !== '')
 
   const matches = (provider: ModelOptionProvider, model: string) =>
     !q || foldIncludes(`${model} ${provider.name} ${provider.slug} ${displayModelName(model)}`, q)
@@ -178,14 +178,14 @@ export function ModelVisibilityDialog({
 
               const checkState = onCount === 0 ? false : onCount === allFamilies.length ? true : 'indeterminate'
 
-              const collapsed = collapsedProviders.includes(provider.slug) && !q
+              const collapsed = providerCollapse.collapsed.includes(provider.slug)
 
               return (
                 <div className="py-0.5" key={provider.slug}>
                   <div className="flex items-center gap-2 px-3 pb-0.5 pt-1">
                     <button
                       className="group/label flex w-full items-center gap-1 pb-0.5 pt-0.5 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-secondary) hover:bg-transparent"
-                      onClick={() => toggleCollapsedProvider(provider.slug)}
+                      onClick={() => providerCollapse.toggle(provider.slug)}
                       type="button"
                     >
                       <span className="min-w-0 truncate">

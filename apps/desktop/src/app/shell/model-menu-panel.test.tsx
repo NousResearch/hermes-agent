@@ -434,6 +434,64 @@ describe('ModelMenuPanel provider collapse', () => {
     expect(content.queryByText('DeepSeek V4 Pro')).toBeNull()
   })
 
+  const modelRow = (label: string) =>
+    screen.queryByText(
+      (_, element) =>
+        element?.tagName === 'SPAN' && !element.querySelector('span') && (element.textContent ?? '').startsWith(label)
+    )
+
+  it('folds a provider while searching without changing the stored collapse', async () => {
+    const { content } = renderPanel()
+    await content.findByText('DeepSeek')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.change(input, { target: { value: 'pro' } })
+    await vi.waitFor(() => expect(modelRow('DeepSeek V4 Pro')).not.toBeNull())
+
+    fireEvent.click(content.getByText('DeepSeek'))
+
+    await vi.waitFor(() => expect(modelRow('DeepSeek V4 Pro')).toBeNull())
+    expect(modelRow('Gemini 3.1 Pro')).not.toBeNull()
+    expect($collapsedProviders.get()).toEqual([])
+
+    fireEvent.change(input, { target: { value: '' } })
+    await vi.waitFor(() => expect(modelRow('DeepSeek V4 Pro')).not.toBeNull())
+  })
+
+  it('restores the stored collapse once the search clears', async () => {
+    $collapsedProviders.set(['deepseek'])
+    const { content } = renderPanel()
+    await content.findByText('DeepSeek')
+    expect(modelRow('DeepSeek V4 Pro')).toBeNull()
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.change(input, { target: { value: 'pro' } })
+    await vi.waitFor(() => expect(modelRow('DeepSeek V4 Pro')).not.toBeNull())
+
+    fireEvent.change(input, { target: { value: '' } })
+    await vi.waitFor(() => expect(modelRow('DeepSeek V4 Pro')).toBeNull())
+    expect($collapsedProviders.get()).toEqual(['deepseek'])
+  })
+
+  it('commits the first match outside a provider folded mid-search', async () => {
+    const { content, onSelectModel } = renderPanel()
+    await content.findByText('DeepSeek')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.change(input, { target: { value: 'pro' } })
+    await vi.waitFor(() => expect(modelRow('DeepSeek V4 Pro')).not.toBeNull())
+
+    fireEvent.click(content.getByText('DeepSeek'))
+    await vi.waitFor(() => expect(modelRow('DeepSeek V4 Pro')).toBeNull())
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await vi.waitFor(() => {
+      expect(onSelectModel).toHaveBeenCalledWith(expect.objectContaining({ provider: 'google' }))
+    })
+    expect(onSelectModel).not.toHaveBeenCalledWith(expect.objectContaining({ provider: 'deepseek' }))
+  })
+
   // The collapsed-providers set is a global presentation preference
   // (`hermes.desktop.collapsed-providers`), but the catalog the picker renders
   // is profile-scoped (`getGlobalModelOptions` routes through

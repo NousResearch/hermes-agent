@@ -71,7 +71,7 @@ import {
   seedKnownModels,
   setModelVisibilityOpen
 } from '@/store/model-visibility'
-import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
+import { useProviderCollapse } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalModelLoadProgress, LocalRuntimeJob } from '@/types/hermes'
 
@@ -265,7 +265,7 @@ export function ModelCatalogMenu({
   // type. Typing a slug without this works too; the row just makes it findable.
   const [slugEntry, setSlugEntry] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
-  const collapsedProviders = useStoreCollapsed()
+  const providerCollapse = useProviderCollapse(search !== '')
   const defaultEffort = useDefaultEffort()
   // Which models the user curated in Edit Models. Read HERE rather than taken
   // as a prop: it's one global preference, so every surface that shows a
@@ -502,7 +502,7 @@ export function ModelCatalogMenu({
         provider
       })),
       ...groups.flatMap(group =>
-        collapsedProviders.includes(group.provider.slug) && !search
+        providerCollapse.collapsed.includes(group.provider.slug)
           ? []
           : group.families.map((family): KbRow => ({
               family,
@@ -521,7 +521,7 @@ export function ModelCatalogMenu({
           }))
         : [])
     ],
-    [favoriteRows, groups, collapsedProviders, search, shownMoaPresets, customSlug, customProviders]
+    [favoriteRows, groups, providerCollapse.collapsed, shownMoaPresets, customSlug, customProviders]
   )
 
   // The row the arrows (or a Shift+Enter star) last put the highlight on,
@@ -796,9 +796,8 @@ export function ModelCatalogMenu({
           {groups.map(group => {
             const slug = group.provider.slug
 
-            // Collapsed when the user stored it (and not while searching, which
-            // spans every model regardless of collapse state).
-            const collapsed = collapsedProviders.includes(slug) && !search
+            // A search opens every group; folding one mid-search lasts for that search only.
+            const collapsed = providerCollapse.collapsed.includes(slug)
 
             return (
               <DropdownMenuGroup className="py-0.5" key={slug}>
@@ -809,7 +808,7 @@ export function ModelCatalogMenu({
                   )}
                   onSelect={event => {
                     event.preventDefault()
-                    toggleCollapsedProvider(slug)
+                    providerCollapse.toggle(slug)
                   }}
                   textValue=""
                 >
@@ -1486,10 +1485,6 @@ function sectionTitle(
 }
 
 // Small hooks kept at the bottom so the component reads top-down.
-function useStoreCollapsed(): string[] {
-  return useStore($collapsedProviders)
-}
-
 function useDefaultEffort(): string {
   return useStore($defaultReasoningEffort) || DEFAULT_REASONING_EFFORT
 }

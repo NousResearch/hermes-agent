@@ -98,6 +98,33 @@ def has_live_connection(path: Path | str) -> bool:
         return _live_main_key(_key(path)) is not None
 
 
+def live_connection_count(path: Path | str) -> int:
+    """Number of live sqlite3 connections this process holds to *path*.
+
+    The registry is keyed by canonical path, so any spelling of the same
+    database (URI form, symlinked, relative) resolves to the same entry.
+    This is the cheap, cross-platform analogue of counting ``/proc/self/fd``
+    entries for the database file: gateway housekeeping uses it as the
+    #96027 leak guard — a long-lived process whose count keeps growing (or
+    exceeds any legitimate configuration's ceiling) is leaking connections
+    long before EMFILE.
+    """
+    with _live_lock:
+        return _live_connections.get(_key(path), 0)
+
+
+def live_connection_counts() -> dict[str, int]:
+    """Snapshot of the live-connection registry: canonical path -> count.
+
+    A multiplex gateway serves one ``state.db`` per profile from a single
+    process, so the #96027 housekeeping guard watches every path in this
+    snapshot — a count looked up for one path (the launch profile) cannot see
+    257 per-profile stores walking the process into EMFILE (#98573).
+    """
+    with _live_lock:
+        return dict(_live_connections)
+
+
 class _TrackingMixin:
     """Untrack-on-close behaviour, mixable into any Connection subclass.
 

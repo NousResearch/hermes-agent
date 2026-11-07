@@ -768,6 +768,11 @@ def state_db_has_structural_damage(db_path: Path) -> bool:
         itertools.chain.from_iterable(line.splitlines() for line in lines), master_rows)
 
 
+# SQLite primary result codes for a file that cannot be written or read back (SQLITE_PERM, SQLITE_READONLY,
+# SQLITE_IOERR, SQLITE_FULL, SQLITE_CANTOPEN): on the probe's own copy these are the temporary volume's failure.
+_TEMPORARY_FILE_FAILURE_CODES = frozenset({3, 8, 10, 13, 14})
+
+
 class HealthCheckUnavailable(str):
     """A ``_db_opens_cleanly`` reason meaning the probe could not run, not that the store is damaged: callers
     must neither report the store healthy nor route it to repair."""
@@ -784,20 +789,21 @@ def _retired_cjk_snapshot_health(db_path: Path, conn: sqlite3.Connection) -> Opt
             snapshot = Path(tmp) / "state.db"
             try:
                 _copy_database_snapshot(db_path, snapshot, source_connection=conn)
+                probe = _connect_repair_durable(snapshot)
             except sqlite3.Error as exc:
                 # The copy touches the source only to read it: corruption there is the store's, every other
                 # failure (cannot open, read-only, I/O, full) is the temporary copy's.
                 if getattr(exc, "sqlite_errorname", None) in ("SQLITE_CORRUPT", "SQLITE_NOTADB"):
                     raise
                 return HealthCheckUnavailable(f"could not make the probe copy ({exc})")
-            with _repair_conn(snapshot) as probe:
+            with contextlib.closing(probe):
                 try:
                     drop_retired_cjk_index(probe.cursor())
                 except sqlite3.Error as exc:
-                    # The retirement is what the next open runs: failing on the copy is the store's state,
-                    # e.g. a damaged base FTS index that the rename's trigger validation trips over.
-                    if is_disk_full_error(exc):
-                        return HealthCheckUnavailable(f"no room for the probe copy ({exc})")
+                    # Retiring is what the next open runs, so a failure is the store's state (a damaged base
+                    # FTS index trips the rename's trigger validation) unless the temporary file itself failed.
+                    if (getattr(exc, "sqlite_errorcode", 0) & 0xFF) in _TEMPORARY_FILE_FAILURE_CODES:
+                        return HealthCheckUnavailable(f"the probe copy failed ({exc})")
                     return str(exc)
             reason = _db_opens_cleanly(snapshot)
     except OSError as exc:  # the temporary directory or the copy, not the store (includes the copy timeout)

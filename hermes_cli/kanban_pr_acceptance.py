@@ -29,7 +29,7 @@ def validate_contract(value: str | None) -> str:
 
 
 def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
-         profile_home: str | None = None):
+         profile_home: str | None = None, soft_deny: bool = False):
     command = ["gh", "api", endpoint, "--hostname", "github.com"]
     if query is not None:
         command += ["-f", "query=" + query]
@@ -45,6 +45,11 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         # code + endpoint, never gh's stderr (credentials/host details).
         denied = re.search(r"HTTP (40[134])", exc.stderr or "")
         if denied:
+            # Rulesets are a plan feature. A collaborator who can read the PR
+            # still gets 401/403/404 on repos/.../rules/branches. That is an
+            # empty rules contribution, not an identity failure.
+            if soft_deny:
+                return None
             raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
         if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
             raise _GateAuthError(f"gh has no login for {endpoint.split('?')[0]}") from None
@@ -121,7 +126,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
         repo, number = match[1], int(match[2])
         receipt["pr_url"] = url
         owner, name = repo.split("/")
-        query = f'{{repository(owner:{json.dumps(owner)},name:{json.dumps(name)}){{pullRequest(number:{number:d}){{headRefOid baseRefName state\n            baseRef{{branchProtectionRule{{requiredStatusChecks{{context app{{databaseId}}}}}}}}}}}}}}'
+        query = f'{{repository(owner:{json.dumps(owner)},name:{json.dumps(name)}){{pullRequest(number:{number:d}){{headRefOid baseRefName state mergeStateStatus\n            baseRef{{branchProtectionRule{{requiredStatusChecks{{context app{{databaseId}}}}}}}}}}}}}}'
         repository = _api("graphql", query=query, profile_home=profile_home)["data"]["repository"]
         if repository is None:
             # A private repo the login cannot read resolves to null, not an error.
@@ -134,14 +139,17 @@ def collect_acceptance(contract: str, published_pr: str | None,
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
         rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
-        for page in rules:
+                     paginate=True, profile_home=profile_home, soft_deny=True)
+        rules_unreadable = rules is None
+        for page in rules or []:
             for rule in page:
                 if rule["type"] == "required_status_checks":
                     required.update((r["context"], r.get("integration_id"))
                                     for r in rule["parameters"]["required_status_checks"])
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
         if not required:
+            if rules_unreadable:
+                return _accept_from_merge_state(receipt, pr, repo, number, branch, sha, profile_home)
             receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
             return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
@@ -188,6 +196,39 @@ def collect_acceptance(contract: str, published_pr: str | None,
         # Never persist gh stderr (credentials/host details); the failed phase is actionable.
         receipt.update(classification="infra", detail="GitHub acceptance evidence unavailable or incomplete; check gh authentication/API access and retry.")
         return receipt
+
+
+_MERGE_STATE_CLASS = {
+    "CLEAN": "success",
+    "BLOCKED": "blocked",
+    "UNSTABLE": "unstable",
+    "DIRTY": "dirty",
+    "BEHIND": "behind",
+    "DRAFT": "draft",
+    "HAS_HOOKS": "blocked",
+    "UNKNOWN": "infra",
+    "UNMERGEABLE": "blocked",
+}
+
+
+def _accept_from_merge_state(receipt, pr, repo, number, branch, sha, profile_home):
+    """Required contexts were not listable. GitHub's mergeStateStatus is the
+    collaborator-readable summary of whether required checks are satisfied."""
+    status = pr.get("mergeStateStatus") or ""
+    receipt["fallback"] = "mergeStateStatus"
+    current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home)
+    if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
+        receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
+        return receipt
+    classification = _MERGE_STATE_CLASS.get(status, "missing")
+    receipt["classification"] = classification
+    receipt["ok"] = classification == "success"
+    if classification == "success":
+        receipt["detail"] = "Acceptance used mergeStateStatus fallback."
+    else:
+        shown = status or "absent"
+        receipt["detail"] = f"mergeStateStatus is {shown}; required checks were not listable."
+    return receipt
 
 
 def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:

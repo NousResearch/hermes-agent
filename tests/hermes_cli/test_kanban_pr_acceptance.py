@@ -230,3 +230,47 @@ def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, m
             "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
     assert receipt["classification"] == "auth"
     assert "'ghost'" in receipt["detail"] and "cannot be resolved" in receipt["detail"]
+
+
+def test_rules_forbidden_clean_merge_state_accepts(tmp_path, monkeypatch):
+    """Private repos on plans without rulesets return HTTP 403 for rules/branches
+    while collaborators can still read the PR. Empty required checks plus
+    mergeStateStatus CLEAN is acceptance. A non-CLEAN status is that status,
+    not an auth failure."""
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    gh = shim / "gh"
+    gh.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "endpoint = sys.argv[2]\n"
+        "if '/rules/branches/' in endpoint:\n"
+        "    sys.stderr.write('HTTP 403\\n')\n"
+        "    sys.exit(1)\n"
+        "sha = 'a' * 40\n"
+        "if endpoint == 'graphql':\n"
+        "    print(json.dumps({'data': {'repository': {'pullRequest': {\n"
+        "        'headRefOid': sha, 'baseRefName': 'main', 'state': 'OPEN',\n"
+        "        'mergeStateStatus': os.environ['MERGE_STATE'],\n"
+        "        'baseRef': {'branchProtectionRule': None}}}}}))\n"
+        "elif '/pulls/' in endpoint:\n"
+        "    print(json.dumps({'head': {'sha': sha}, 'base': {'ref': 'main'}, 'state': 'open'}))\n"
+        "else:\n"
+        "    sys.stderr.write('unexpected ' + endpoint + '\\n')\n"
+        "    sys.exit(1)\n"
+    )
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
+    from hermes_cli.kanban_pr_acceptance import collect_acceptance
+
+    monkeypatch.setenv("MERGE_STATE", "CLEAN")
+    receipt = collect_acceptance("acme/repo", "https://github.com/acme/repo/pull/7")
+    assert receipt["ok"] is True, receipt
+    assert receipt["classification"] == "success"
+    assert receipt.get("fallback") == "mergeStateStatus"
+
+    monkeypatch.setenv("MERGE_STATE", "BLOCKED")
+    blocked = collect_acceptance("acme/repo", "https://github.com/acme/repo/pull/7")
+    assert blocked["ok"] is False
+    assert blocked["classification"] == "blocked"
+    assert "credential" not in (blocked.get("detail") or "").lower()

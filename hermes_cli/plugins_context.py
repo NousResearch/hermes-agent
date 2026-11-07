@@ -765,6 +765,8 @@ class PluginContext(PluginCapabilityCtxMixin):
                                      key, ", ".join(sorted(valid)))
         mapping.setdefault(key, []).append(callback)
         handle = self._track(kind, key, lambda: self._manager._remove_callback(mapping, key, callback))
+        if kind == "hook":
+            handle.hook_callback = callback
         _facade().logger.debug("Plugin %s registered %s: %s", self.manifest.name, kind, key)
         return handle
 

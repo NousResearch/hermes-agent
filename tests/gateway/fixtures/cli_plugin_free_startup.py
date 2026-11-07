@@ -16,7 +16,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from agent import skill_commands
-from hermes_cli import plugins
+from hermes_cli import plugins, plugins_discovery
 
 calls = []
 
@@ -31,10 +31,11 @@ def _spy(module, name):
     setattr(module, name, spy)
 
 
-for _name in ('discover_plugins', 'start_background_plugin_discovery', 'fire_pre_command_hook', 'invoke_hook',
+for _name in ('discover_plugins', 'fire_pre_command_hook', 'invoke_hook',
               'get_plugin_manager', 'get_plugin_toolset_keys_nowait', 'get_portable_mcp_server_names_nowait',
               'get_plugin_toolsets', 'get_plugin_commands'):
     _spy(plugins, _name)
+_spy(plugins_discovery, 'start_background_plugin_discovery')
 _spy(skill_commands, 'get_plugin_skill_commands')
 
 

@@ -77,7 +77,9 @@ def test_doctor_routes_structural_damage_to_recover_not_fts_rebuild(tmp_path, mo
     assert "FTS write corruption" not in issue and "restore from the backup" not in issue
     assert not list(tmp_path.glob("state.db.malformed-backup-*"))
 
-    fts_path = tmp_path / "fts" / "state.db"
+    fts_home = tmp_path / "fts"
+    monkeypatch.setenv("HERMES_HOME", str(fts_home))
+    fts_path = fts_home / "state.db"
     fts_db = SessionDB(db_path=fts_path)
     fts_db.create_session("s1", source="cli")
     for i in range(40):

@@ -44,6 +44,16 @@ class SshOwner(HostOwner):
                 and selected[1] == self.store_path and _profile(ws) == self.profile)
 
 
+def warm_tunnel(ws: WebSocket) -> None:
+    """Dial before the registry's spawn lock: a cold connect would hold up every new terminal.
+
+    The dial inside ``prepare_shell`` then takes the reuse path and keeps its fingerprint re-check."""
+    from hermes_cli.gateway_connections_ssh import ensure_tunnel
+
+    connection, path = ws.state.ssh_terminal
+    ensure_tunnel(connection, root=path.parent)
+
+
 def prepare_shell(ws: WebSocket, identity: tuple[str, str]):
     from hermes_cli.gateway_connections_ssh import interactive_shell_argv
     from hermes_cli.web_host_terminal import resolve_argv

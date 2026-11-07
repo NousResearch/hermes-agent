@@ -156,6 +156,9 @@ class HostTerminalRegistry(PtySessionRegistry):
                 rows=query_dimension(ws.query_params.get("rows"), 24, 1000))
             return bridge
 
+        if getattr(ws.state, "ssh_terminal", None) is not None:
+            from hermes_cli.web_host_terminal_ssh import warm_tunnel
+            await asyncio.to_thread(warm_tunnel, ws)
         session, _ = await self.attach_or_spawn(token, spawn=spawn)
         assert owner is not None  # spawn completed
         self.owners[token] = owner

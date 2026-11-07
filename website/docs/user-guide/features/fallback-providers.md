@@ -49,6 +49,20 @@ fallback:
 | Key | Default | Effect |
 |-----|---------|--------|
 | `fallback.min_switch_reset_seconds` | `0` (off) | A rate-limited primary whose declared reset is sooner than this many seconds is not swapped for a fallback; the retry backoff waits out the window instead. |
+| `fallback.outage_cooldown_seconds` | `300` | After a failover for an outage (overloaded, server error, timeout, auth failure, unknown model, or an unclassified error that used up the retries), later turns stay on the fallback this long (or until a longer provider-declared reset). The first turn after it ends is a probe: the primary gets one attempt, and if it is still down the turn moves to the fallback at once and the cooldown starts again. Capped at 4 hours; `0` retries the primary on every turn. |
+
+### Reasoning effort on a fallback
+
+A fallback carries the reasoning effort the session was running (a `/reasoning` choice, a delegated task's effort, or `agent.reasoning_effort`), clamped to the nearest weaker level the fallback route accepts. Two settings outrank it: a `reasoning_effort` on the fallback entry itself, then `agent.reasoning_overrides.<fallback model>`. An effort that only applies because of the primary model's own `reasoning_overrides` entry is not carried; the fallback uses `agent.reasoning_effort` instead. When the primary comes back it runs at its own effort again, unless you picked a new one with `/reasoning` while the fallback was serving.
+
+```yaml
+fallback_providers:
+  - provider: deepseek
+    model: deepseek-v4-flash
+    reasoning_effort: low   # optional; none/minimal/low/medium/high/xhigh/max
+```
+
+The fallback notice names an effort change, for example `Reasoning effort: high → medium.`
 
 Gemini fallback entries accept `gemini`, `google`, `google-gemini`, and
 `google-ai-studio`. On Google's native API endpoint, all use the native Gemini

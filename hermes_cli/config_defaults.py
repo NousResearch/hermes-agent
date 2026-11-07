@@ -22,10 +22,10 @@ DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
     "fallback_providers": [],
-    # min_switch_reset_seconds: opt-in (0 = off). When a rate-limited primary declares a reset
-    # sooner than this many seconds, stay on it (the retry backoff rides out the window) instead
-    # of switching the turn to a fallback model.
-    "fallback": {"min_switch_reset_seconds": 0},
+    # min_switch_reset_seconds (0 = off): a rate-limited primary resetting sooner stays (backoff waits it
+    # out) instead of switching to a fallback. outage_cooldown_seconds: after an outage failover (overloaded,
+    # 5xx, timeout, auth, unknown model) keep the fallback this long, then probe the primary (0 = every turn).
+    "fallback": {"min_switch_reset_seconds": 0, "outage_cooldown_seconds": 300},
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on

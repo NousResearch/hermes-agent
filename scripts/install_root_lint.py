@@ -86,24 +86,44 @@ def climb(node: ast.AST) -> int | None:
     return None
 
 
+def _script_only_branches(test: ast.expr) -> tuple[str, str] | None:
+    """For ``__name__ == "__main__"`` / ``!=``: which If branch runs only as a script, and which at import."""
+    if (isinstance(test, ast.Compare) and len(test.ops) == 1 and len(test.comparators) == 1
+            and {ast.unparse(test.left), ast.unparse(test.comparators[0])} == {"__name__", "'__main__'"}):
+        if isinstance(test.ops[0], ast.Eq):
+            return "body", "orelse"
+        if isinstance(test.ops[0], ast.NotEq):
+            return "orelse", "body"
+    return None
+
+
 def _module_level(body: list[ast.stmt]):
-    """Statements that run at import: into if/try/with/loops, not into defs or the __main__ block."""
+    """Statements that run at import: into if/try/with/loops/match and class bodies, not into defs or a
+    script-only ``__main__`` branch."""
     for stmt in body:
-        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        if isinstance(stmt, ast.If) and "__main__" in ast.unparse(stmt.test):
-            yield from _module_level(stmt.orelse)
+        if isinstance(stmt, ast.If) and (branches := _script_only_branches(stmt.test)) is not None:
+            yield from _module_level(getattr(stmt, branches[1]))
             continue
         yield stmt
         for field in ("body", "orelse", "finalbody", "handlers"):
             yield from _module_level(getattr(stmt, field, []))
+        for case in getattr(stmt, "cases", []):
+            yield from _module_level(case.body)
+
+
+_SYS_PATH_METHODS = {f"sys.path.{m}" for m in ("insert", "append", "extend", "remove", "pop", "clear")}
 
 
 def _edits_sys_path(stmt: ast.stmt) -> bool:
-    """``sys.path.insert(...)``/``.append``/``.extend``, or an assignment to ``sys.path`` or a slice of it."""
+    """A ``sys.path`` list method call, ``del`` of it or a slice, or an assignment to it or a slice."""
     if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
-        return ast.unparse(stmt.value.func) in {"sys.path.insert", "sys.path.append", "sys.path.extend"}
-    targets = stmt.targets if isinstance(stmt, ast.Assign) else [getattr(stmt, "target", None)]
+        return ast.unparse(stmt.value.func) in _SYS_PATH_METHODS
+    if isinstance(stmt, ast.Delete):
+        targets = stmt.targets
+    else:
+        targets = stmt.targets if isinstance(stmt, ast.Assign) else [getattr(stmt, "target", None)]
     return any(target is not None and ast.unparse(target).split("[")[0] == "sys.path" for target in targets)
 
 

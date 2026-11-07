@@ -1,0 +1,49 @@
+name: hermes-ark
+repo: https://github.com/medomohamed22/hermes-ark
+sha: f2d5378724134dd62010df4def48ad2e0dad761e
+description: >-
+  Encrypted, versioned backups of your whole Hermes — memory, SOUL, skills, config, cron, sessions and
+  every profile — with item-level restore. Snapshots happen automatically before every memory/skill write
+  and after sessions; a health guard tells the agent (and you) when memory or skills suddenly shrink, with
+  the exact /ark restore command that undoes it. Off-site copies to any S3-compatible storage (AWS, R2, B2,
+  MinIO) or a folder, new-machine recovery (hermes ark pull), and hermes ark verify to prove every snapshot
+  restores. AES-256-GCM, deduplicated, retention pruning; a Hermes Desktop page with timeline, diffs and
+  one-click restore. Self-defense: a prompt-injected agent cannot prune, delete, reconfigure or switch off
+  Ark. Commands: hermes ark …, /ark …; tool: ark_checkpoint.
+  Disclosure — reads the Hermes home and its profiles; credential files (.env, auth.json, vault, pairing,
+  browser logins, Webapp session token) are skipped unless the user enables include_secrets on an
+  encrypted repository; ARK_PASSPHRASE and the S3 keys come only through the secret scope and are never
+  stored. Writes snapshots to the configured repository folder (default
+  $HERMES_HOME/plugin-data/hermes-ark/repo) and restores into the Hermes home only on an explicit user
+  command or Desktop confirmation (the agent has no restore tool). tool_execution middleware on every tool
+  call: snapshots before memory/skill writes and adds a note when the guard fires; refuses tool calls that
+  would delete, rewrite or reconfigure Ark's backups or settings or disable it, and refuses again a call
+  that already damaged Ark (allow_agent_admin lifts this). After an agent tool call changed Ark, it writes
+  back only Ark's own settings/enabled state (via the config API), its repository key file and its own
+  plugin files to their previous values; never secrets. Background threads: periodic snapshot/auto-push
+  after sessions, and a 10-second watchdog in the agent process. One subprocess, only after Ark was
+  disabled while the agent was active: `python -m hermes_cli.main plugins enable hermes-ark` (fixed argv,
+  no shell). Network only to the user-configured S3 endpoint (HTTPS; plain http only for localhost). No
+  telemetry, no self-updater.
+maintainer: medomohamed22
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/medomohamed22/hermes-ark#readme
+version: "0.6.2"
+image: https://raw.githubusercontent.com/medomohamed22/hermes-ark/f2d5378724134dd62010df4def48ad2e0dad761e/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/medomohamed22/hermes-ark/f2d5378724134dd62010df4def48ad2e0dad761e/docs/media/restore-preview.png
+  - https://raw.githubusercontent.com/medomohamed22/hermes-ark/f2d5378724134dd62010df4def48ad2e0dad761e/docs/media/chat-guard.png
+platforms: []
+capabilities:
+  provides_tools:
+  - ark_checkpoint
+  provides_hooks:
+  - on_session_end
+  provides_middleware:
+  - tool_execution
+  requires_env:
+  - ARK_PASSPHRASE
+  - ARK_S3_ACCESS_KEY_ID
+  - ARK_S3_SECRET_ACCESS_KEY

@@ -1192,9 +1192,14 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         normalized_error = _normalize_error_context(error_context)
         # Permanent OAuth failures become STATUS_DEAD, not STATUS_EXHAUSTED:
         # otherwise a revoked credential re-enters rotation every hour and
-        # fails immediately until the user removes it (#32849); a row whose
-        # refresh grant just went DEAD stays DEAD on the 401 that follows.
-        terminal = entry.last_status == STATUS_DEAD or self._is_terminal_auth_failure(status_code, normalized_error)
+        # fails immediately until the user removes it (#32849). A row whose
+        # refresh grant just went DEAD stays DEAD on the 401 THAT FOLLOWS —
+        # and only there: making any later status sticky-terminal re-marks a
+        # revived credential DEAD on an ordinary 429 (cooldown denied), which
+        # loops singleton-seeded rows through spurious re-auth (#148164).
+        terminal = (
+            entry.last_status == STATUS_DEAD and status_code == 401
+        ) or self._is_terminal_auth_failure(status_code, normalized_error)
         # Carry the classifier's verdict so the cooldown is sized by what
         # actually failed (a billing 403 must not get the sole-credential
         # transient cooldown); absent a classification, clear a stale one.

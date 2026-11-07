@@ -212,6 +212,7 @@ import {
 import type { RegistryConnection } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
 import { forgetRemovedGlobalRoute, removeSavedConnection } from './connection-registry-remove'
+import { buildRemoteBlock } from './connection-remote-block'
 import { liveWindowState, overlayWindowState } from './connection-window-state'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
@@ -8732,66 +8733,6 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   }
 }
 
-// Build + validate a `{ url, authMode, token }` remote block. OAuth gateways
-// authenticate via the login-window session cookie (verified at connect time in
-// resolveRemoteBackend), so only token-auth remotes require a saved token.
-// `org` (optional) is the Hermes Cloud org slug/id the instance was discovered
-// under — persisted so Settings can reopen into the same org; omitted from the
-// block when empty so plain remote connections stay unchanged.
-function buildRemoteBlock(
-  remoteUrl,
-  authMode,
-  token,
-  org?: string,
-  headers?: object,
-  name?: string,
-  remoteProfile?: string
-) {
-  if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
-    throw new Error('Remote gateway session token is required.')
-  }
-
-  const block: {
-    url: string
-    authMode: string
-    token: object
-    headers?: object
-    org?: string
-    name?: string
-    remoteProfile?: string
-  } = {
-    url: normalizeRemoteBaseUrl(remoteUrl),
-    authMode,
-    token
-  }
-
-  const remoteHeaders = normalizeRemoteHeaders(headers)
-
-  if (Object.keys(remoteHeaders).length > 0) {
-    block.headers = remoteHeaders
-  }
-
-  const nameValue = typeof name === 'string' ? name.trim() : ''
-
-  if (nameValue) {
-    block.name = nameValue
-  }
-
-  const orgValue = typeof org === 'string' ? org.trim() : ''
-
-  if (orgValue) {
-    block.org = orgValue
-  }
-
-  const remoteProfileName = normalizeRemoteProfileName(remoteProfile)
-
-  if (remoteProfileName) {
-    block.remoteProfile = remoteProfileName.remoteProfile
-  }
-
-  return block
-}
-
 function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopConnectionConfig(), options: any = {}) {
   const persistToken = options.persistToken !== false
   const key = connectionScopeKey(input.profile)
@@ -8876,7 +8817,7 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
     if (remoteLike) {
       profiles[key] = {
         mode,
-        ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName, input.remoteProfile)
+        ...buildRemoteBlock(decryptDesktopSecret, remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName, input.remoteProfile)
       }
     } else {
       const localEntry = localProfileEntry(rawExistingBlock)
@@ -8896,7 +8837,7 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   }
 
   const nextRemote = remoteLike
-    ? buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName)
+    ? buildRemoteBlock(decryptDesktopSecret, remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName)
     : existingMode === 'ssh'
       ? rawExistingBlock
       : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }

@@ -51,6 +51,7 @@ export async function removeSavedConnection(
   writers: ConnectionRemovalWriters
 ): Promise<ConnectionRegistry> {
   const nextRegistry = removeConnection(registry, id)
+
   // Use the reader's identity policy: clear only a global legacy route that
   // this deletion would cause it to re-import. An unrelated removal, a route
   // still represented by another entry, and pre-existing drift stay untouched.

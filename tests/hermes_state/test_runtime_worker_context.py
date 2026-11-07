@@ -68,6 +68,16 @@ def test_worker_constructor_restores_persisted_compressor_guards(tmp_path):
             assert compressor._proactive_prune_rearm_tokens == 1234
             assert store.get_compression_failure_cooldown_row('owned') == db.get_compression_failure_cooldown_row('owned')
             assert store.get_compression_failure_cooldown('owned')['cooldown_until'] == deadline
+            assert compressor._fallback_streak_skip({}) is True
+            assert compressor._fallback_probe_at > 0.0
+            assert db.get_session_model_config_value('owned', '_fallback_probe_at') == compressor._fallback_probe_at
+            assert store.failure is None
+            rebound = ContextCompressor(model='fixture', config_context_length=100000, quiet_mode=True)
+            rebound.bind_session_state(store, 'owned')
+            assert rebound._fallback_probe_at == compressor._fallback_probe_at
+            compressor._set_fallback_probe_at(0.0)
+            assert db.get_session_model_config_value('owned', '_fallback_probe_at') is None
+            assert store.flush_token_counts() is True
             db.set_session_title('owned', 'retained-title')
             assert store.get_session_title('owned') == db.get_session_title('owned')
         finally:

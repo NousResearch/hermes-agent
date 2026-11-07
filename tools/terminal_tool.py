@@ -1640,7 +1640,7 @@ TERMINAL_SCHEMA = {
             },
             "pty": {
                 "type": "boolean",
-                "description": "With background=true: pseudo-terminal for interactive CLIs (REPLs, coding agents); drive it with process_manage write/submit. Local backend only.",
+                "description": "Implies background=true: pseudo-terminal for interactive CLIs (REPLs, coding agents); drive it with process_manage write/submit. Local backend only.",
                 "default": False
             },
             "notify": {
@@ -1670,6 +1670,14 @@ TERMINAL_SCHEMA = {
 }
 
 
+def _effective_background(args: dict):
+    """``background`` as the terminal call will run it. A PTY is only useful as a tracked session, so
+    ``pty=true`` with ``background`` omitted means background; an explicit foreground request stays."""
+    if args.get("pty", False) and "background" not in args:
+        return True
+    return args.get("background", False)
+
+
 def _handle_terminal(args, **kw):
     from agent.terminal_approval_batch import validate_prepared_terminal
     validate_prepared_terminal(args)
@@ -1697,7 +1705,8 @@ def _handle_terminal(args, **kw):
     persist_on_release = bool(args.get("persist_on_release", False))
     if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:
         return tool_error("heartbeat must be a whole number of seconds (0 disables; positive values are clamped to min 60).")
-    if not args.get("background", False):
+    background = _effective_background(args)
+    if not background:
         if notify or watch_patterns or notify_on_complete:
             return tool_error(
                 "notify only applies to background commands (foreground "
@@ -1734,7 +1743,7 @@ def _handle_terminal(args, **kw):
         notify_on_complete = True  # the heartbeat rides the completion delivery path
     return terminal_tool(
         command=args.get("command"),
-        background=args.get("background", False),
+        background=background,
         timeout=args.get("timeout"),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),

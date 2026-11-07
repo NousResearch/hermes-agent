@@ -55,3 +55,102 @@ def test_terminal_background_keeps_pty_for_regular_interactive_commands(monkeypa
 
     assert captured["use_pty"] is True
     assert "pty_note" not in result
+
+
+def test_terminal_handler_infers_background_when_pty_dependency_is_omitted(monkeypatch):
+    captured = {}
+
+    def fake_terminal_tool(**kwargs):
+        captured.update(kwargs)
+        return '{"ok":true}'
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", fake_terminal_tool)
+
+    result = json.loads(
+        terminal_tool_module._handle_terminal(
+            {
+                "command": "hermes auth add openai-codex --type oauth --no-browser",
+                "pty": True,
+                "timeout": 900,
+            },
+            task_id="test",
+        )
+    )
+
+    assert result == {"ok": True}
+    assert captured["background"] is True
+    assert captured["pty"] is True
+    assert captured["timeout"] == 900
+
+
+def test_terminal_handler_rejects_explicit_foreground_pty(monkeypatch):
+    called = False
+
+    def fake_terminal_tool(**_kwargs):
+        nonlocal called
+        called = True
+        return '{"ok":true}'
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", fake_terminal_tool)
+
+    result = json.loads(
+        terminal_tool_module._handle_terminal(
+            {"command": "python3", "background": False, "pty": True},
+            task_id="test",
+        )
+    )
+
+    assert "background=true" in result["error"]
+    assert called is False
+
+
+def test_terminal_handler_inferred_pty_background_keeps_background_modifiers(monkeypatch):
+    captured = {}
+
+    def fake_terminal_tool(**kwargs):
+        captured.update(kwargs)
+        return '{"ok":true}'
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", fake_terminal_tool)
+
+    result = json.loads(
+        terminal_tool_module._handle_terminal(
+            {"command": "python3", "pty": True, "notify": True, "heartbeat": 120, "persist_on_release": True},
+            task_id="test",
+        )
+    )
+
+    assert result == {"ok": True}
+    assert captured["background"] is True
+    assert captured["notify_on_complete"] is True
+    assert captured["heartbeat"] == 120
+    assert captured["persist_on_release"] is True
+
+
+def test_prepared_approval_keys_on_the_inferred_background(monkeypatch, tmp_path):
+    """Desktop batch preparation must key the guard on the command the handler will check: a pty
+    call without ``background`` runs as a background process, so its trailing ``&`` stays."""
+    import threading
+
+    from agent import terminal_approval_batch as tab
+
+    config = _base_config(tmp_path)
+    monkeypatch.setattr(terminal_tool_module, "_get_env_config", lambda: config)
+    monkeypatch.setattr(terminal_tool_module, "_docker_has_host_access", lambda _c: False)
+    checked = []
+    monkeypatch.setattr(terminal_tool_module, "_check_all_guards",
+                        lambda *key: checked.append(key) or {"approved": True})
+    batch = SimpleNamespace(cancelled=threading.Event(), task_id="t",
+                            agent=SimpleNamespace(_interrupt_requested=False, session_id="s"))
+
+    def prepared_command(args):
+        slot = tab._TerminalSlot(batch, parsed=None, index=0)
+        slot.release.set()
+        slot.prepare(SimpleNamespace(args=args, call_id="c1"))
+        return slot.guard_key[0]
+
+    assert prepared_command({"command": "sleep 5 &", "pty": True}) == "sleep 5 &"
+    assert prepared_command({"command": "sleep 5 &", "pty": True, "background": True}) == "sleep 5 &"
+    assert prepared_command({"command": "sleep 5 &"}) == "sleep 5"
+    assert prepared_command({"command": "sleep 5 &", "pty": False}) == "sleep 5"
+    assert [key[0] for key in checked] == ["sleep 5 &", "sleep 5 &", "sleep 5", "sleep 5"]

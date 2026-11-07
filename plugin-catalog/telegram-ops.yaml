@@ -1,0 +1,27 @@
+name: telegram-ops
+repo: https://github.com/brukmars/hermes-telegram-ops
+sha: 88c8855dde4fd4bb5dfb7f6130720a48a8b172af
+version: "0.1.0"
+title: Telegram Operations Protocol
+description: >-
+  Executive 3-line micro-cards with native expandable drawers, 1-Tap interactive mobile action gates,
+  and forum topic operations for Hermes Agent on Telegram. Enforces the 3-line micro-card standard
+  (Status Pill + #TAG + Metric, Core Result, Owner + Action + Deadline) with HTML sanitization, tucks
+  heavy data tables and logs into native expandable drawers, and provides pattern-scoped callback query
+  handlers for 1-Tap inline action buttons with Telegram user ID authorization.
+maintainer: brukmars
+tier: community
+category: platform
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/brukmars/hermes-telegram-ops#readme
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - telegram_ops_create_topic
+    - telegram_ops_pin
+    - telegram_ops_send_card
+    - telegram_ops_update_card
+  provides_hooks:
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

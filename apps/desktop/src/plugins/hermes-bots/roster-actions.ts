@@ -35,6 +35,13 @@ import type { RosterRow } from './types'
 // fresh mount doesn't mark ancient history unread.
 let watermarksSeeded = false
 
+// The same watermark, but over each bot's OWN canonical Bot Chat. An open bot
+// chat is re-resolved on this advance only: botActivitySession also follows
+// last_session (the profile's newest VISIBLE session), which any other running
+// session bumps every few seconds, and re-resolving on that re-shows the chat's
+// finished todo list and pays an activate RPC per poll (#147825).
+const canonicalWatermarks = new Map<string, number>()
+
 /** User pref: toast on every new bot activity. Default OFF — a busy roster
  *  (cron runs, bot-to-bot chatter) turns the toasts into a firehose, and the
  *  unread badge already carries the signal. Persisted via ctx.storage. */
@@ -71,6 +78,9 @@ export function trackInboundActivity(roster: RosterRow[]) {
     const ts = activity?.last_active || 0
     const prev = rosterWatermarks.get(key) || 0
     rosterWatermarks.set(key, Math.max(prev, ts))
+    const ownTs = bot.canonical_session?.last_active || 0
+    const prevOwn = canonicalWatermarks.get(key) || 0
+    canonicalWatermarks.set(key, Math.max(prevOwn, ownTs))
 
     if (seeding || ts <= prev) {
       // Seed (or refresh) the last-toasted preview so a fresh mount, or a row
@@ -83,9 +93,13 @@ export function trackInboundActivity(roster: RosterRow[]) {
     }
 
     // Activity in the exact bot owner the user is currently looking at is
-    // already visible — never badge the open chat or its same-named twin.
+    // already visible — never badge the open chat or its same-named twin. Only
+    // the Bot Chat's own advance can change what that chat shows; a bare
+    // last_session advance is another session in the profile (#147825).
     if ($selectedBot.get() === key) {
-      refreshOpenBotChat(bot)
+      if (!bot.canonical_session || ownTs > prevOwn) {
+        refreshOpenBotChat(bot)
+      }
 
       continue
     }

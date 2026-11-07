@@ -5,7 +5,7 @@ closing, and every teardown path lives on the CLIENT. A laptop that sleeps mid-s
 reconnects the tunnel, spawns a backend, sleeps again) therefore leaves a backend behind every
 cycle — each one an extra writer on ``state.db``. The server needs its own liveness signal.
 
-Two pieces, both scoped to the SSH-isolated case (a session token was handed over via
+Three pieces, all scoped to the SSH-isolated case (a session token was handed over via
 ``--ssh-session-token-file``):
 
 * An ASGI wrapper counts accepted WebSocket connections (every dashboard WS route: /api/ws,
@@ -13,6 +13,9 @@ Two pieces, both scoped to the SSH-isolated case (a session token was handed ove
   handlers. When the count has been zero for the grace window and no agent turn is running, the
   watchdog asks uvicorn to exit gracefully (WAL checkpoint, exit 0). An indeterminate turn probe
   fails closed: the backend stays up.
+* The same watchdog detects a checkout update even while a client remains connected. It asks
+  the process-owned retirement fence for an exclusive, provably-idle permit before exiting;
+  in-flight work and unanswered human prompts keep the old backend alive until they finish.
 * Loopback normally disables uvicorn's WS ping (a dead local client sends FIN/RST). Across an SSH
   tunnel the local socket is healthy while the far end is asleep, so pings are the only way to notice
   a half-open tunnel; the isolated backend keeps a slow ping with a long timeout so a GIL-holding
@@ -152,17 +155,49 @@ def should_exit_idle(tracker: IdleClientTracker, grace_s: float,
 
 def start_idle_watchdog(server, tracker: IdleClientTracker, *, grace_s: float = DEFAULT_IDLE_GRACE_S,
                         poll_s: float = 15.0, probe: Callable[[], Optional[bool]] = turn_in_flight) -> threading.Thread:
-    """Daemon thread that sets ``server.should_exit`` once :func:`should_exit_idle` holds."""
+    """Retire an orphaned SSH backend, or a code-skewed one once work is provably idle."""
+    from gateway.code_skew import detect_code_skew
+    from hermes_cli.backend_retirement import retirement
+
+    # Load the idle proof and its ledger readers from the boot revision, before
+    # an update can mix freshly imported modules with this process's old ones.
+    try:
+        from hermes_cli.web_server_idle_proof import idle_proof
+        idle_proof()
+    except Exception:
+        _log.warning("SSH-isolated retirement probes could not be primed; retrying at idle", exc_info=True)
 
     poll_s = min(poll_s, max(0.5, grace_s / 4))
 
     def _loop() -> None:
+        skewed = False
+        probe_error_logged = False
         while not getattr(server, "should_exit", False):
             if should_exit_idle(tracker, grace_s, probe):
                 _log.warning("SSH-isolated backend idle for %.0fs with no client and no running turn; exiting.",
                              tracker.idle_for())
                 server.should_exit = True
                 return
+            # Attached clients keep the old idle-exit path asleep. A code update must
+            # instead use the same admission fence as Desktop's cooperative retirement:
+            # a sampled idle verdict could race a new turn or an approval prompt.
+            try:
+                skewed = skewed or detect_code_skew() is not None
+                if skewed:
+                    permit = retirement.prepare()
+                    if permit.get("ok"):
+                        token = permit["token"]
+                        if retirement.commit(token).get("ok"):
+                            _log.warning("SSH-isolated backend code changed on disk; idle work fenced; exiting.")
+                            server.should_exit = True
+                            return
+                        retirement.cancel(token)
+            except Exception:
+                # A newly pulled module may fail its first lazy import against old
+                # sys.modules. Never let that stop the original orphan idle reaper.
+                if not probe_error_logged:
+                    probe_error_logged = True
+                    _log.warning("SSH-isolated code-skew retirement probe failed; will retry", exc_info=True)
             time.sleep(poll_s)
 
     thread = threading.Thread(target=_loop, daemon=True, name="ssh-isolated-idle-watchdog")

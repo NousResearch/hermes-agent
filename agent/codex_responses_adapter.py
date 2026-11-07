@@ -12,6 +12,7 @@ import unicodedata
 import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
+from urllib.parse import quote, urlsplit
 
 from agent.message_sanitization import coerce_tool_name, deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
@@ -1123,16 +1124,129 @@ def _text_chunks(parts: Any, types: Optional[set] = None) -> list[str]:
     return [text for text in (getattr(part, "text", None) for part in selected) if _nonempty_str(text)]
 
 
-def _extract_responses_message_text(item: Any) -> str:
-    """Assistant text from a Responses message output item. A ``refusal`` part carries the
-    model's explanation in ``refusal`` instead of ``text``; it is message text too, otherwise a
-    refusal-only turn reads as an empty response (sibling of chat_completions ``message.refusal``)."""
+_INTERNAL_RESPONSES_CITATION_RE = re.compile(r"\ue200cite\ue202[^\ue201\r\n]*\ue201")
+_ENCODED_INTERNAL_REF_RE = re.compile(r"\ue002REF[A-Za-z0-9_+/=-]+\ue003")
+_INTERNAL_CITATION_TOKEN_PATTERN = (
+    f"(?:{_INTERNAL_RESPONSES_CITATION_RE.pattern}|{_ENCODED_INTERNAL_REF_RE.pattern})"
+)
+_INTERNAL_CITATION_RUN_RE = re.compile(
+    r"(?P<left>[ \t])?"
+    + _INTERNAL_CITATION_TOKEN_PATTERN
+    + r"(?:[ \t]*" + _INTERNAL_CITATION_TOKEN_PATTERN + r")*"
+    + r"(?P<right>[ \t])?"
+)
+
+
+def _strip_internal_citation_markers(text: str, *, strip: bool = True) -> str:
+    """Remove opaque provider citation tokens while preserving unrelated whitespace."""
+    def replace_marker(match: re.Match[str]) -> str:
+        source = match.string
+        left_space = match.group("left") or ""
+        right_space = match.group("right") or ""
+        token_start = match.start() + len(left_space)
+        line_start = source.rfind("\n", 0, token_start) + 1
+
+        # Preserve indentation when a marker is the first non-space item on a line.
+        if not source[line_start:token_start].strip():
+            return left_space
+
+        left = source[match.start() - 1] if match.start() else ""
+        right = source[match.end()] if match.end() < len(source) else ""
+        if not left or not right or right in ",.;:!?)]}":
+            return ""
+        if left_space or right_space or (left.isalnum() and right.isalnum()):
+            return " "
+        return ""
+
+    cleaned = _INTERNAL_CITATION_RUN_RE.sub(replace_marker, text)
+    return cleaned.strip() if strip else cleaned
+
+
+def _responses_url_citation(annotation: Any) -> Optional[tuple[str, str]]:
+    """Validate a structured Responses ``url_citation`` and return its plain title and URL."""
+    citation = _field(annotation, "url_citation") or annotation
+    url_value = _field(citation, "url")
+    if not _nonblank(url_value):
+        return None
+    url = url_value.strip()
+    try:
+        parsed = urlsplit(url)
+        parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or "\\" in url
+        or any(ch.isspace() for ch in url)
+    ):
+        return None
+
+    title_value = _field(citation, "title")
+    title = title_value.strip() if isinstance(title_value, str) else ""
+    title = re.sub(r"[\r\n\t]+", " ", title)
+    title = re.sub(r"[\[\]\\_*`~|]+", " ", title)
+    title = re.sub(r"[ \t]{2,}", " ", title).strip()
+    # Parentheses and brackets are Markdown link delimiters; encode them in the destination.
+    safe_url = quote(url, safe=":/?#@!$&'*+,;=%-._~")
+    return (title or parsed.netloc, safe_url)
+
+
+def _render_url_citations(text: str, annotations: Any) -> str:
+    """Render validated citation links at annotated spans; preserve invalid spans visibly."""
+    edits = []
+    for annotation in _as_list(annotations):
+        nested = _field(annotation, "url_citation")
+        if _lower_or_none(_field(annotation, "type")) != "url_citation" and nested is None:
+            continue
+        citation = nested or annotation
+        start, end = _field(annotation, "start_index"), _field(annotation, "end_index")
+        title_value = _field(citation, "title")
+        title = title_value.strip() if isinstance(title_value, str) else ""
+        if not isinstance(start, int) or not isinstance(end, int) or start < 0 or end < start or end >= len(text):
+            logger.debug("Ignoring Responses URL citation with invalid span")
+            continue
+        source = _responses_url_citation(annotation)
+        visible = text[start:end + 1]
+        if source is None:
+            replacement = title or visible
+        else:
+            source_title, url = source
+            label = source_title if _INTERNAL_CITATION_RUN_RE.fullmatch(visible) else visible
+            label = re.sub(r"[\r\n\t]+", " ", label).strip()
+            label = label.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+            replacement = f"[{label}]({url})"
+        edits.append((start, end + 1, replacement))
+
+    if not edits:
+        return _strip_internal_citation_markers(text)
+    edits.sort(key=lambda edit: (edit[0], edit[1]))
+    pieces = []
+    cursor = 0
+    for start, end, replacement in edits:
+        if start < cursor:
+            logger.debug("Ignoring overlapping Responses URL citation span")
+            continue
+        pieces.append(_strip_internal_citation_markers(text[cursor:start], strip=False))
+        pieces.append(replacement)
+        cursor = end
+    pieces.append(_strip_internal_citation_markers(text[cursor:], strip=False))
+    return "".join(pieces).strip()
+
+
+def _extract_responses_message_text(item: Any, *, issuer_kind: Optional[str] = None) -> str:
+    """Assistant text from a Responses message; Codex URL citations become inline links."""
     chunks = []
     for part in _as_list(_field(item, "content")):
         ptype = _field(part, "type")
         text = _field(part, "refusal") if ptype == "refusal" else (_field(part, "text") if ptype in _OUTPUT_TEXT_TYPES else None)
         if _nonempty_str(text):
-            chunks.append(text)
+            if issuer_kind == "codex_backend" and ptype in _OUTPUT_TEXT_TYPES:
+                chunks.append(_render_url_citations(text, _field(part, "annotations")))
+            else:
+                chunks.append(text)
     return "".join(chunks).strip()
 
 
@@ -1218,7 +1332,7 @@ class _OutputScan:
                 self.has_incomplete_items = True
                 self.saw_streaming_or_item_incomplete = True
             if item_type == "message":
-                self._message(item, item_status)
+                self._message(item, item_status, issuer_kind)
             elif item_type in {"reasoning", "compaction"}:
                 if item_type == "reasoning":
                     self.saw_reasoning_item = True
@@ -1237,12 +1351,12 @@ class _OutputScan:
             elif item_type == "custom_tool_call" or (item_type == "function_call" and item_status not in _INCOMPLETE_STATUSES):
                 self.tool_calls.append(_response_tool_call(item, item_type, len(self.tool_calls)))
 
-    def _message(self, item: Any, item_status: Optional[str]) -> None:
+    def _message(self, item: Any, item_status: Optional[str], issuer_kind: Optional[str]) -> None:
         normalized_phase = _lower_or_none(getattr(item, "phase", None))
         is_commentary_phase = normalized_phase in {"commentary", "analysis"}
         self.saw_commentary_phase = self.saw_commentary_phase or is_commentary_phase
         self.saw_final_answer_phase = self.saw_final_answer_phase or normalized_phase in {"final_answer", "final"}
-        message_text = _extract_responses_message_text(item)
+        message_text = _extract_responses_message_text(item, issuer_kind=issuer_kind)
         if not message_text:
             return
         # commentary/analysis text is mid-turn narration, never the final answer: route it
@@ -1301,6 +1415,8 @@ def _normalize_codex_response(
     if not final_text and (scan.saw_final_answer_phase or not scan.saw_commentary_phase):
         out_text = getattr(response, "output_text", "")
         final_text = out_text.strip() if isinstance(out_text, str) else final_text
+    if issuer_kind == "codex_backend":
+        final_text = _strip_internal_citation_markers(final_text)
     # Tool-call leak recovery: gpt-5.x sometimes emits the intended ``function_call`` as plain Harmony text
     # (``to=functions.foo {json}``) or Codex-CLI shell JSON (``{"cmd": ...}``). Treat as incomplete so the
     # continuation re-elicits a real call; clear the garbage.

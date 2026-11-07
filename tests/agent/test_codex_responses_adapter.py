@@ -9,6 +9,7 @@ from agent.codex_responses_adapter import (
     _classify_responses_issuer,
     _normalize_codex_response,
     _neutralize_harmony_tokens,
+    _strip_internal_citation_markers,
     _preflight_codex_api_kwargs,
     _preflight_codex_input_items,
 )
@@ -395,6 +396,150 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
     assert assistant_message.content == ""
     assert assistant_message.reasoning == "still thinking"
     assert assistant_message.codex_reasoning_items is None
+
+
+def test_codex_response_renders_url_citations_and_persists_clean_text():
+    marker = "\ue200cite\ue202turn9search9\ue201"
+    text = f"The claim is supported. {marker}"
+    annotation = SimpleNamespace(
+        type="url_citation",
+        start_index=text.index(marker),
+        end_index=text.index(marker) + len(marker) - 1,
+        title="Example Source",
+        url="https://example.com/a_(b)?x=1&y=2",
+    )
+    response = SimpleNamespace(
+        status="completed",
+        output=[SimpleNamespace(
+            type="message", role="assistant", status="completed",
+            content=[
+                SimpleNamespace(
+                    type="output_text",
+                    text=text,
+                    annotations=[annotation],
+                )
+            ],
+        )],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="codex_backend"
+    )
+
+    expected = "The claim is supported. [Example Source](https://example.com/a_%28b%29?x=1&y=2)"
+    assert finish_reason == "stop"
+    assert assistant_message.content == expected
+    assert marker not in repr(assistant_message.codex_message_items)
+
+
+def test_codex_response_strips_unresolved_internal_citation_markers():
+    marker = "\ue200cite\ue202turn9search9\ue201"
+    encoded_marker = "\ue002REF7oiAY2l0Ze6IgnR1cm4wc2VhcmNoMO6IgQ\ue003"
+    text = f"A claim {marker} and another {encoded_marker} end."
+    response = SimpleNamespace(
+        status="completed",
+        output=[SimpleNamespace(
+            type="message", role="assistant", status="completed",
+            content=[SimpleNamespace(type="output_text", text=text)],
+        )],
+    )
+
+    assistant_message, _ = _normalize_codex_response(
+        response, issuer_kind="codex_backend"
+    )
+
+    assert assistant_message.content == "A claim and another end."
+    assert "turn9search9" not in repr(assistant_message.codex_message_items)
+    assert "REF7oiAY" not in repr(assistant_message.codex_message_items)
+
+
+def test_codex_response_output_text_fallback_strips_internal_citation_markers():
+    marker = "\ue200cite\ue202turn9search9\ue201"
+    response = SimpleNamespace(
+        status="completed",
+        output=[SimpleNamespace(type="reasoning", summary=[])],
+        output_text=f"The claim is supported. {marker}",
+    )
+
+    assistant_message, _ = _normalize_codex_response(
+        response, issuer_kind="codex_backend"
+    )
+
+    assert assistant_message.content == "The claim is supported."
+
+
+def test_codex_response_strips_citation_markers_without_changing_code_indentation():
+    marker = "\ue200cite\ue202turn9search9\ue201"
+    response = SimpleNamespace(
+        status="completed",
+        output=[SimpleNamespace(
+            type="message", role="assistant", status="completed",
+            content=[SimpleNamespace(
+                type="output_text",
+                text=f"""```python
+    {marker} value = 1
+```""",
+            )],
+        )],
+    )
+
+    assistant_message, _ = _normalize_codex_response(
+        response, issuer_kind="codex_backend"
+    )
+
+    assert assistant_message.content == """```python
+    value = 1
+```"""
+
+
+def test_codex_response_omits_non_http_url_citation_annotations():
+    marker = "\ue200cite\ue202turn9search9\ue201"
+    text = f"The claim is supported. {marker}"
+    annotation = SimpleNamespace(
+        type="url_citation",
+        start_index=text.index(marker),
+        end_index=text.index(marker) + len(marker) - 1,
+        title="Untrusted source",
+        url="javascript:alert(1)",
+    )
+    response = SimpleNamespace(
+        status="completed",
+        output=[SimpleNamespace(
+            type="message", role="assistant", status="completed",
+            content=[
+                SimpleNamespace(
+                    type="output_text",
+                    text=text,
+                    annotations=[annotation],
+                )
+            ],
+        )],
+    )
+
+    assistant_message, _ = _normalize_codex_response(
+        response, issuer_kind="codex_backend"
+    )
+
+    assert assistant_message.content == "The claim is supported. Untrusted source"
+    assert "javascript:" not in assistant_message.content
+
+
+def test_citation_cleanup_does_not_consume_literal_t_backslash_or_tab():
+    marker = "\ue200cite\ue202turn1search1\ue201"
+    slash = chr(92)
+    tab = chr(9)
+    assert _strip_internal_citation_markers(f"startt{marker}tail") == "startt tail"
+    assert _strip_internal_citation_markers(f"left{tab}{marker}{tab}right") == "left right"
+    assert _strip_internal_citation_markers(f"left{slash}{marker}{slash}right") == f"left{slash}{slash}right"
+
+
+def test_responses_other_issuer_keeps_opaque_tokens_unchanged():
+    marker = "\ue200cite\ue202turn1search1\ue201"
+    response = _final_text_response(f"Provider text {marker}")
+
+    message, _ = _normalize_codex_response(response, issuer_kind="xai_responses")
+
+    assert message.content == f"Provider text {marker}"
 
 
 # ---------------------------------------------------------------------------

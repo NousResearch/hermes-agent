@@ -1,4 +1,4 @@
-"""Tests for ``gateway.run._build_replay_entry``.
+"""Tests for ``gateway.replay_entries._build_replay_entry``.
 
 The gateway rebuilds ``agent_history`` from the persisted transcript on every
 turn (unlike the CLI, which keeps the live in-memory message list).  When a
@@ -17,7 +17,7 @@ These tests pin the expanded whitelist so it doesn't regress.
 from __future__ import annotations
 
 
-from gateway.run import _build_replay_entry
+from gateway.replay_entries import _build_replay_entry
 
 
 class TestBuildReplayEntry:

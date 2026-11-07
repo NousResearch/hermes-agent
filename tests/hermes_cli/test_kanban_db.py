@@ -469,6 +469,60 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+def test_request_review_clears_stale_rate_limit_failure(kanban_home, monkeypatch):
+    """A prior rate-limited run must not permanently trap a card that later
+    succeeds into review.
+
+    Before the fix, ``request_review`` left ``last_failure_error``
+    untouched, so a stale "exited rate-limited (quota wall)" string from an
+    earlier retry kept matching ``_RESPAWN_BLOCKER_RE`` forever and
+    ``check_respawn_guard`` returned ``blocker_auth`` on every tick — even
+    though the latest run was a clean ``review_requested`` success and the
+    card was legitimately waiting for a reviewer to be dispatched.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="stale-rl", assignee="a")
+
+        # Simulate an earlier rate-limited run that stamped the task row.
+        kb.claim_task(conn, tid)
+        rl_run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='rate_limited', status='rate_limited', "
+            "ended_at=? WHERE id=?",
+            (5_000_000, rl_run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "consecutive_failures=1, "
+            "last_failure_error=? WHERE id=?",
+            ("pid 1 exited rate-limited (quota wall) — requeued", tid),
+        )
+        conn.commit()
+
+        # The implementer retries and succeeds this time, requesting review.
+        claimed = kb.claim_task(conn, tid)
+        assert kb.request_review(
+            conn, tid, summary="done", reviewer="r",
+            expected_run_id=claimed.current_run_id,
+        )
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "review"
+        assert task.last_failure_error is None
+        # The circuit-breaker counter is a separate concern: only
+        # complete_task's success path resets it (see
+        # test_review_transitions_preserve_consecutive_failures). A review
+        # handoff must not reset it either, just the stale guard text.
+        assert task.consecutive_failures == 1
+
+        # The review-lane respawn guard must now admit a reviewer dispatch,
+        # not park the card on the stale rate-limit text forever.
+        assert kbd.check_respawn_guard(conn, tid, lane="review") is None
+
+
 @pytest.mark.parametrize(
     "error_text, expected",
     [

@@ -185,7 +185,7 @@
   "aux_options": {
    "extra_body": {
     "reasoning": {
-     "effort": "xhigh"
+     "effort": "ultra"
     }
    }
   },
@@ -193,7 +193,7 @@
   "high": {
    "extra_body": {
     "reasoning": {
-     "effort": "xhigh"
+     "effort": "max"
     }
    },
    "messages": [
@@ -318,7 +318,7 @@
   "unset": {
    "extra_body": {
     "reasoning": {
-     "effort": "xhigh"
+     "effort": "max"
     }
    },
    "messages": [
@@ -2294,6 +2294,191 @@
      "type": "function"
     }
    ]
+  }
+ },
+ "aux:openrouter-task-ultra": {
+  "aux_options": {
+   "config": "auxiliary:\n  compression:\n    reasoning_effort: ultra\n",
+   "task": "compression"
+  },
+  "base_url": "https://openrouter.ai/api/v1",
+  "high": {
+   "max_tokens": 1024,
+   "messages": [
+    {
+     "content": "You are a test agent.",
+     "role": "system"
+    },
+    {
+     "content": "list files",
+     "role": "user"
+    },
+    {
+     "content": "",
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"command\": \"ls\"}",
+        "name": "terminal"
+       },
+       "id": "call_1",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "a.txt\nb.txt",
+     "role": "tool",
+     "tool_call_id": "call_1"
+    },
+    {
+     "content": "thanks, now summarize",
+     "role": "user"
+    }
+   ],
+   "model": "anthropic/claude-opus-5.5",
+   "timeout": 30.0,
+   "tools": [
+    {
+     "function": {
+      "description": "Run a shell command.",
+      "name": "terminal",
+      "parameters": {
+       "properties": {
+        "command": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "command"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "verbosity": "high"
+  },
+  "model": "anthropic/claude-opus-5.5",
+  "off": {
+   "max_tokens": 1024,
+   "messages": [
+    {
+     "content": "You are a test agent.",
+     "role": "system"
+    },
+    {
+     "content": "list files",
+     "role": "user"
+    },
+    {
+     "content": "",
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"command\": \"ls\"}",
+        "name": "terminal"
+       },
+       "id": "call_1",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "a.txt\nb.txt",
+     "role": "tool",
+     "tool_call_id": "call_1"
+    },
+    {
+     "content": "thanks, now summarize",
+     "role": "user"
+    }
+   ],
+   "model": "anthropic/claude-opus-5.5",
+   "timeout": 30.0,
+   "tools": [
+    {
+     "function": {
+      "description": "Run a shell command.",
+      "name": "terminal",
+      "parameters": {
+       "properties": {
+        "command": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "command"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  },
+  "provider": "openrouter",
+  "unset": {
+   "max_tokens": 1024,
+   "messages": [
+    {
+     "content": "You are a test agent.",
+     "role": "system"
+    },
+    {
+     "content": "list files",
+     "role": "user"
+    },
+    {
+     "content": "",
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"command\": \"ls\"}",
+        "name": "terminal"
+       },
+       "id": "call_1",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "a.txt\nb.txt",
+     "role": "tool",
+     "tool_call_id": "call_1"
+    },
+    {
+     "content": "thanks, now summarize",
+     "role": "user"
+    }
+   ],
+   "model": "anthropic/claude-opus-5.5",
+   "timeout": 30.0,
+   "tools": [
+    {
+     "function": {
+      "description": "Run a shell command.",
+      "name": "terminal",
+      "parameters": {
+       "properties": {
+        "command": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "command"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ],
+   "verbosity": "max"
   }
  },
  "aux:zai": {

@@ -131,13 +131,18 @@ AUX_CELLS: list[tuple[str, str, str, str | None, dict[str, Any]]] = [
     ("aux:custom-direct-openai-moa", "custom", "my-model", None, {
         "task": "moa_reference",
         "config": "model:\n  provider: custom\n  base_url: https://api.openai.com/v1\n  default: my-model\n"}),
-    # Caller extra_body.reasoning without ``enabled``: kept (clamped) beside the profile's
-    # reasoning_effort, dropped when the call turns reasoning off.
+    # Caller extra_body.reasoning without ``enabled``: kept beside the profile's reasoning_effort
+    # (clamped by _merge_aux_extra_body: ``ultra`` -> ``max``), dropped when the call turns
+    # reasoning off.
     ("aux:custom-caller-reasoning", "custom", "my-local-model", "http://127.0.0.1:8080/v1", {
-        "extra_body": {"reasoning": {"effort": "xhigh"}}}),
+        "extra_body": {"reasoning": {"effort": "ultra"}}}),
     # auxiliary.<task>.reasoning_effort folded by _get_task_extra_body into the request reasoning.
     ("aux:custom-task-reasoning", "custom", "my-local-model", "http://127.0.0.1:8080/v1", {
         "task": "compression", "config": "auxiliary:\n  compression:\n    reasoning_effort: low\n"}),
+    # auxiliary.<task>.reasoning_effort: ultra becomes the call's reasoning_config; the entry clamp
+    # in _build_call_kwargs is what keeps ``ultra`` off this profile's wire (custom clamps itself).
+    ("aux:openrouter-task-ultra", "openrouter", "anthropic/claude-opus-5.5", "https://openrouter.ai/api/v1", {
+        "task": "compression", "config": "auxiliary:\n  compression:\n    reasoning_effort: ultra\n"}),
     ("aux:gemini", "gemini", "gemini-3-flash", "https://generativelanguage.googleapis.com/v1beta", {}),
 ]
 

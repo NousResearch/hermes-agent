@@ -69,7 +69,8 @@ import {
   type ModelFamily,
   modelVisibilityKey,
   seedKnownModels,
-  setModelVisibilityOpen
+  setModelVisibilityOpen,
+  switchedOffProviders
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
@@ -361,6 +362,8 @@ export function ModelCatalogMenu({
     [visibleModels, pickerProviders]
   )
 
+  const switchedOff = useMemo(() => switchedOffProviders(visibleModels), [visibleModels])
+
   // Favorites paint their own section ABOVE the provider groups — the whole
   // point of starring one. Resolved against the catalog we actually fetched,
   // so a favorite whose provider is not connected (or whose model the lab
@@ -389,9 +392,10 @@ export function ModelCatalogMenu({
         search,
         { model: current.model, provider: current.provider },
         shownKeys,
-        q ? null : favoriteSet
+        favoriteSet,
+        switchedOff
       ),
-    [pickerProviders, search, current.model, current.provider, shownKeys, q, favoriteSet]
+    [pickerProviders, search, current.model, current.provider, shownKeys, favoriteSet, switchedOff]
   )
 
   // Presets are searchable rows like everything else — an unfiltered preset
@@ -1352,15 +1356,18 @@ function DownloadingModelRow({
 }
 
 // Collapsed we show the user's chosen models (or the curated default); typing
-// spans every available model so anything is reachable past the cut. A search
-// is itself a narrowing action, so we do NOT cap per-provider matches.
+// spans every available model of a provider that is switched on, so anything
+// is reachable past the cut. A search is itself a narrowing action, so we do
+// NOT cap per-provider matches.
 function groupModels(
   providers: readonly ModelOptionProvider[],
   search: string,
   current: { model: string; provider: string },
   visible: Set<string> | null,
-  /** Favorites to leave out (they paint in their own section); null lists every row. */
-  favorites: ReadonlySet<string> | null
+  /** Starred models. Left out with no query, since they paint in their own section. */
+  favorites: ReadonlySet<string>,
+  /** Providers switched off in Edit models. */
+  switchedOff: ReadonlySet<string>
 ): ProviderGroup[] {
   const q = normalize(search)
   const groups: ProviderGroup[] = []
@@ -1391,11 +1398,24 @@ function groupModels(
         q
       )
 
+    const activeId =
+      catalogProviderMatches(provider, current.provider) && current.model
+        ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)?.id
+        : undefined
+
+    const starred = (family: ModelFamily) => favorites.has(favoriteModelKey(provider.slug, family.id))
+
     let shown: Set<string>
 
     if (q) {
-      // Search spans every family, regardless of visibility.
-      shown = new Set(allFamilies.filter(matches).map(family => family.id))
+      // Search spans every family regardless of the shortlist, except on a
+      // provider switched off in Edit models: there a query only narrows what
+      // the menu shows without one, its favorites and the active model.
+      const reachable = switchedOff.has(provider.slug)
+        ? (family: ModelFamily) => starred(family) || family.id === activeId
+        : () => true
+
+      shown = new Set(allFamilies.filter(family => matches(family) && reachable(family)).map(family => family.id))
     } else if (visible) {
       // User has customized which models show — honor their selection exactly.
       shown = new Set(
@@ -1408,16 +1428,10 @@ function groupModels(
     // Always include the active model — but keep every row in the provider's
     // stable curated order, so selecting a model can't shuffle the list. While
     // SEARCHING the pin is skipped: a query means "show me matches".
-    const activeId =
-      !q && catalogProviderMatches(provider, current.provider) && current.model
-        ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)?.id
-        : undefined
-
     // Favorites already paint in the Favorites section, so drop them here:
     // an open menu never lists the same model twice.
     const families = allFamilies.filter(
-      family =>
-        (shown.has(family.id) || family.id === activeId) && !favorites?.has(favoriteModelKey(provider.slug, family.id))
+      family => (shown.has(family.id) || (!q && family.id === activeId)) && (q || !starred(family))
     )
 
     if (families.length > 0) {

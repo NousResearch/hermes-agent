@@ -24,6 +24,7 @@ import { setShowModelPricing } from '@/store/model-pricing'
 import {
   $modelVisibilityOpen,
   $visibleModels,
+  emptyProviderSentinelKey,
   modelVisibilityKey,
   setModelVisibilityOpen,
   setVisibleModels
@@ -330,6 +331,10 @@ describe('the Daybreak switch', () => {
   })
 })
 
+function menuRowTexts(): string[] {
+  return screen.queryAllByRole('menuitem').map(row => row.textContent ?? '')
+}
+
 // A minimal controller — these tests are about the CATALOG's own behaviour
 // (what it lists, what it offers), not about what any host does with a pick.
 function renderMenu(current: Partial<ModelMenuController['current']> = {}, host: Partial<ModelMenuController> = {}) {
@@ -390,6 +395,64 @@ describe('the catalog owns model curation', () => {
       // row renders as <mark>Gemini 3.1</mark> + ' Pro'.
       expect(screen.getByText('Gemini 3.1', { selector: 'mark' })).toBeDefined()
     })
+  })
+
+  // The provider switch in Edit models is "I don't use this provider", not a
+  // shortlist, so a query must not bring its catalog back.
+  it('keeps a provider switched off in Edit models out of search', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        { models: ['gemini-3.1-pro', 'gemini-2.5-flash'], name: 'Google', slug: 'google' },
+        { models: ['google/gemini-3.1-pro', 'openai/gpt-4o-mini'], name: 'OpenRouter', slug: 'openrouter' }
+      ]
+    })
+    setVisibleModels(
+      new Set([modelVisibilityKey('google', 'gemini-2.5-flash'), emptyProviderSentinelKey('openrouter')])
+    )
+
+    renderMenu()
+    await screen.findByText('Gemini 2.5')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'gemini-3.1' } })
+
+    // Google's model hidden one by one still matches; the switched-off
+    // provider lists nothing.
+    await vi.waitFor(() => {
+      expect(menuRowTexts().filter(text => text.includes('Gemini 3.1 Pro'))).toHaveLength(1)
+    })
+    expect(screen.queryByText('OpenRouter')).toBeNull()
+  })
+
+  // With no query the menu still shows a switched-off provider's starred and
+  // active models; typing must narrow that, never take it away.
+  it('still finds the favorites and the active model of a switched-off provider', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        { models: ['gemini-3.1-pro'], name: 'Google', slug: 'google' },
+        {
+          models: ['google/gemini-3.1-pro', 'google/gemini-2.5-flash', 'openai/gpt-4o-mini'],
+          name: 'OpenRouter',
+          slug: 'openrouter'
+        }
+      ]
+    })
+    setVisibleModels(new Set([emptyProviderSentinelKey('openrouter')]))
+    toggleFavoriteModel('openrouter', 'google/gemini-2.5-flash')
+
+    renderMenu({ model: 'openai/gpt-4o-mini', provider: 'openrouter' })
+    await screen.findByText('Favorites')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'openrouter' } })
+
+    await vi.waitFor(() => {
+      expect(screen.queryByText('Favorites')).toBeNull()
+    })
+
+    const rows = menuRowTexts()
+
+    expect(rows.some(text => text.includes('GPT-4o-mini'))).toBe(true)
+    expect(rows.some(text => text.includes('Gemini 2.5'))).toBe(true)
+    expect(rows.some(text => text.includes('Gemini 3.1 Pro'))).toBe(false)
   })
 
   it('offers Edit Models without the host wiring it up', async () => {

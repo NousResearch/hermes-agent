@@ -1407,8 +1407,12 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         except Exception:
             logger.debug("Failed to restore one-turn model override", exc_info=True)
 
-    def _prefix_inbound_sender_context(self, event: MessageEvent, source: SessionSource, message_text: str) -> str:
-        """Attribute the sender in shared multi-user sessions and prepend history-backfill channel context."""
+    def _prefix_inbound_sender_context(
+        self, event: MessageEvent, source: SessionSource, message_text: str, starter: Optional[str] = None,
+    ) -> str:
+        """Attribute the sender in shared multi-user sessions and prepend history-backfill context.
+        A thread's *starter* post is folded in later, after ``@`` expansion
+        (``_prepare_inbound_message_text``); its ``[New message]`` marker goes here either way."""
         _is_shared_multi_user = is_shared_multi_user_session(
             source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
@@ -1424,8 +1428,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 _safe_user_name = f"{_safe_user_name} | Slack user <@{source.user_id}>"
             message_text = f"[{_safe_user_name}] {message_text}"
         # After the sender-prefix so the prefix applies only to the trigger message, not the backfill.
-        if getattr(event, "channel_context", None):
-            message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
+        context = getattr(event, "channel_context", None)
+        if context:
+            message_text = f"{context}\n\n[New message]\n{message_text}"
+        elif starter:
+            message_text = f"[New message]\n{message_text}"
         return message_text
 
     @staticmethod
@@ -1711,7 +1718,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # Reset only this session's per-call buffer; other sessions may be concurrently preparing.
         self._consume_pending_native_image_paths(session_key)
 
-        message_text = self._prefix_inbound_sender_context(event, source, message_text)
+        # The post a thread was opened on, for a session's first turn only.
+        starter = None if history else getattr(event, "thread_starter_context", None)
+        message_text = self._prefix_inbound_sender_context(event, source, message_text, starter)
         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
         if image_paths:
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
@@ -1724,8 +1733,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         message_text = await turn_references(self, event, source, session_key, message_text)
         if message_text is None:
             return None
-        # After expansion: the quoted reply is someone else's text and stays literal — an
-        # ``@file:`` inside it must never read a local file on the replier's behalf.
+        # After expansion: the thread's starter post and the quoted reply are someone else's text
+        # and stay literal — an ``@url:`` or ``@file:`` inside them must never fetch a page or
+        # read a local file on the user's behalf.
+        if starter:
+            message_text = f"{starter}\n\n{message_text}"
         return self._prepend_inbound_reply_context(event, source, message_text)
 
     async def _prepare_profile_scoped_inbound_message_text(

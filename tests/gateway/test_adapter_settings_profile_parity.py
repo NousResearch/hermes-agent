@@ -82,6 +82,8 @@ _SETTINGS = [
      lambda m: m._default_agent_name()),
     ("plugins.platforms.discord.adapter", "DISCORD_COMMAND_SYNC_POLICY", "full", "off",
      lambda m: _discord(m, "_get_discord_command_sync_policy")),
+    ("plugins.platforms.discord.adapter", "DISCORD_OWN_POST_THREADS", "true", "false",
+     lambda m: _discord(m, "_discord_own_post_threads")),
     ("plugins.platforms.discord.adapter", "DISCORD_ALLOW_MENTION_EVERYONE", "true", "false",
      lambda m: m._env_bool("DISCORD_ALLOW_MENTION_EVERYONE", False)),
 ]
@@ -118,6 +120,16 @@ def test_served_secondary_resolves_its_own_setting(monkeypatch, module, var, def
     standalone, served = _served(monkeypatch, {var: default_value, **creds}, {var: secondary_value, **creds},
                                  lambda: resolve(mod))
     assert served == standalone, f"{var}: served={served!r} standalone={standalone!r}"
+
+
+def test_served_secondary_without_own_post_threads_stays_off(monkeypatch):
+    """The default profile turns ``own_post_threads`` on; a served secondary whose ``.env`` and YAML
+    have no such key (Content beside Harry) reads the default, off, exactly as it does standalone."""
+    from plugins.platforms.discord import adapter as discord_adapter
+    monkeypatch.delenv("DISCORD_OWN_POST_THREADS", raising=False)
+    standalone, served = _served(monkeypatch, {"DISCORD_OWN_POST_THREADS": "true"}, {},
+                                 lambda: _discord(discord_adapter, "_discord_own_post_threads"))
+    assert (standalone, served) == (False, False)
 
 
 def test_signal_startup_gate_reads_the_profile_env(monkeypatch):

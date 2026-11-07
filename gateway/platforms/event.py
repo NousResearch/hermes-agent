@@ -137,6 +137,10 @@ class MessageEvent:
     # unknown). For adapters whose ``media_urls`` are random cache names (relay); the name is
     # display data only, never a path. Appended for positional compat.
     media_filenames: list[str] = field(default_factory=list)
+    # Discord ``own_post_threads``: the bot's own post this event's thread was opened on, fenced as
+    # quoted data by the adapter. It rides every event there; the gateway folds it into a session's
+    # first turn only. Appended for positional compat.
+    thread_starter_context: Optional[str] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

@@ -5,6 +5,8 @@ import { useLocation, useNavigate } from 'react-router'
 import { Button } from '@/components/ui/button'
 import type { HermesGateway, ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { overlayFrom } from '@/i18n/catalog-content'
+import { useContentDictionary } from '@/i18n/catalog-content/use-content-dictionary'
 import { $freeTierStatus } from '@/store/free-tier'
 import { $freeTierSignIn, $openAppWindows } from '@/store/free-tier-sign-in'
 import { notifyError } from '@/store/notifications'
@@ -36,6 +38,7 @@ import { HostedConnectorDialog, type PendingRename } from './hosted-dialog'
 import { HostedNotice } from './hosted-notice'
 import { LocalConnectorDialog } from './local-dialog'
 import { RemoveServerConfirm } from './local-slots'
+import { localizeConnectorCards } from './localize-cards'
 import { openToolsList, resetOpenedTools } from './tools-summary'
 import type { AccountRow, ConnectorCardModel, ConnectorsFilter } from './types'
 
@@ -47,7 +50,8 @@ export interface ConnectorsTabProps {
 }
 
 export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
+  const dictionaryVersion = useContentDictionary(locale)
   const copy = t.connectorsPage
 
   const hosted = useHostedConnectors(profile)
@@ -102,13 +106,17 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
 
   const cards = useMemo(
     () =>
-      deriveCards({
-        bundled,
-        hosted: forgetAbandoned(hosted.rows, new Set(abandoned)),
-        local: servers,
-        titles: hosted.titles
-      }),
-    [abandoned, bundled, hosted.rows, hosted.titles, servers]
+      localizeConnectorCards(
+        deriveCards({
+          bundled,
+          hosted: forgetAbandoned(hosted.rows, new Set(abandoned)),
+          local: servers,
+          titles: hosted.titles
+        }),
+        locale,
+        overlayFrom(t)
+      ),
+    [abandoned, bundled, hosted.rows, hosted.titles, servers, locale, t, dictionaryVersion]
   )
 
   useEffect(startConnectorPersistence, [])

@@ -33,6 +33,7 @@ import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } f
 import { useComposerSubmit } from './use-composer-submit'
 
 interface SubmitHarnessOptions {
+  cwd?: string | null
   attachments?: ComposerAttachment[]
   busy?: boolean
   busyInputMode?: 'interrupt' | 'queue' | 'steer' | null
@@ -45,9 +46,21 @@ interface SubmitHarnessOptions {
   visible?: boolean
 }
 
+it('passes the completion CWD with inline refs and restores the original text on refusal', async () => {
+  const text = '@file:`retry-app/README.md`'
+  const { hook, onSubmit, loadIntoComposer } = renderSubmitHook({ cwd: '/scope/fixtures', text })
+  onSubmit.mockResolvedValueOnce(false)
+  await act(async () => {
+    hook.result.current.submitDraft()
+  })
+  expect(onSubmit).toHaveBeenCalledWith(text, expect.objectContaining({ referenceCwd: '/scope/fixtures' }))
+  expect(loadIntoComposer).toHaveBeenCalledWith(text, [])
+})
+
 let surfaceSequence = 0
 
 function renderSubmitHook({
+  cwd,
   attachments = [],
   busy = false,
   busyInputMode = 'interrupt',
@@ -111,6 +124,7 @@ function renderSubmitHook({
   const hook = renderHook(
     () =>
       useComposerSubmit({
+        cwd,
         activeQueueSessionKey: sessionKey,
         activeQueueSessionKeyRef: { current: sessionKey },
         attachments,

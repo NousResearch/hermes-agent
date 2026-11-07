@@ -4,13 +4,18 @@
   "parameters": {
     "properties": {
       "action": {
-        "description": "Default 'spawn'. Live control of running children: 'list' = ids/goals/status/transcripts; 'steer' = queue course-correction text into one child (subagent_id + message) without stopping it; 'stop' = end one child early (subagent_id; partial result still returns). Control actions return immediately; goal/tasks are ignored unless spawning.",
+        "description": "Default 'spawn'. Control and result recovery: 'list' = ids/goals/status/transcripts; 'steer' = queue course-correction text into one child (subagent_id + message) without stopping it; 'stop' = end one child early (subagent_id; partial result still returns). 'inspect' = recover a result you no longer have (delegation_id), never poll for progress. Control actions return immediately; goal/tasks are ignored unless spawning.",
         "enum": [
           "spawn",
           "list",
+          "inspect",
           "steer",
           "stop"
         ],
+        "type": "string"
+      },
+      "delegation_id": {
+        "description": "For action='inspect': durable id from the dispatch response.",
         "type": "string"
       },
       "message": {

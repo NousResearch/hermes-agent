@@ -10,7 +10,7 @@ and async ladder drivers sleep it, so both caller kinds share one schedule.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from agent import retry_utils
 
@@ -46,9 +46,10 @@ def rate_limit_wait(exc: Exception, attempt: int) -> Optional[float]:
         attempt, base_delay=RATE_LIMIT_BACKOFF_BASE, max_delay=RATE_LIMIT_BACKOFF_CAP)
 
 
-def rate_limit_retry_rungs(failure: Any, route: Any, kwargs: dict[str, Any]):
+def rate_limit_retry_rungs(failure: Any, route: Any, kwargs: dict[str, Any], accept: Optional[Callable[[Any], bool]] = None):
     """Ladder rungs: wait, then re-send on the route's client, up to ``RATE_LIMIT_RETRIES`` times while
-    the refusal stays a per-key rate limit. Returns ``(response, None)`` or ``(None, last_failure)``."""
+    the refusal stays a per-key rate limit. ``accept``: the caller's acceptance (a parameter rung may already have
+    been spent on ``kwargs``). Returns ``(response, None)`` or ``(None, last_failure)``."""
     from agent import auxiliary_error_policy as aux_errors
     from agent.auxiliary_client import _LadderStep, _rung
 
@@ -62,7 +63,7 @@ def rate_limit_retry_rungs(failure: Any, route: Any, kwargs: dict[str, Any]):
         logger.info("Auxiliary %s: rate limited (attempt %d/%d); retrying after %.2fs",
                     label, attempt, RATE_LIMIT_RETRIES, wait)
         yield _LadderStep("wait", (wait,))
-        resp, failure = yield from _rung(_LadderStep("call", (route.client, kwargs)), aux_errors.ladder_accepts, route)
+        resp, failure = yield from _rung(_LadderStep("call", (route.client, kwargs)), accept or aux_errors.ladder_accepts, route)
         if failure is None:
             return resp, None
         if not aux_errors.same_key_retry(failure.verdict):

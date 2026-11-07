@@ -1,0 +1,5 @@
+name: engineering-evidence
+version: 0.1.0
+description: "Exact-head, diagnostic-only engineering evidence for Hermes agent handoffs and learning."
+author: NousResearch
+kind: standalone

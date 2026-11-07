@@ -74,6 +74,33 @@ def resolve_local_target(authority, actor, sid):
     return adopt_legacy_session(authority, actor, row)
 
 
+def _existing_launch_cwd(value):
+    """Whether a saved ``cwd`` can still carry a policy: an absolute path that is a directory today.
+
+    The pre-authority surfaces saved the folder they ran in, and a deleted profile dir is what many
+    live rows name now (36 routeless ``webui`` rows on this install). ``build_policy`` refuses such a
+    path (``invalid_params``, ``field=cwd``), which left those rows a read-only mount for good.
+    """
+    return isinstance(value, str) and Path(value).is_absolute() and Path(value).is_dir()
+
+
+def _profile_launch_cwd():
+    """The profile's ``terminal.cwd``, as a create that names no folder would run in here.
+
+    ``build_policy``'s own fallback is ``resolve_agent_cwd()``, which reads the ambient (or last
+    bound) ``TERMINAL_CWD``. A capability call, unlike a turn, has no terminal scope bound, so naming
+    the profile's folder keeps the adoption on the profile's workspace instead of the process cwd of
+    a multiplexed gateway.
+    """
+    from hermes_constants import get_hermes_home
+    from tools.terminal_scope import TerminalPolicyUnavailable, build_profile_terminal_scope
+    try:
+        value = str(build_profile_terminal_scope(get_hermes_home()).get('TERMINAL_CWD') or '').strip()
+    except TerminalPolicyUnavailable:
+        return None
+    return value if _existing_launch_cwd(value) else None
+
+
 def legacy_launch_params(row):
     """``(create params, api_mode)`` a legacy row resumes on.
 
@@ -82,6 +109,9 @@ def legacy_launch_params(row):
     combining their model with a later profile default. Older ACP rows also hold
     their workspace only there. ``api_mode`` is no create field, so it is
     returned apart.
+
+    A saved ``cwd`` that no longer exists is dropped rather than adopted: the profile's own
+    ``terminal.cwd`` applies, the way a create that names no folder behaves.
     """
     params = {key: row[key] for key in ('cwd', 'model') if row.get(key)}
     from hermes_state_sessions import _parse_model_config
@@ -115,6 +145,13 @@ def legacy_launch_params(row):
             pass
         else:
             params['service_tier'] = tier
+    if 'cwd' in params and not _existing_launch_cwd(params['cwd']):
+        # Never adopt a folder that is gone into the policy: build_policy refuses it, and the row
+        # would stay a read-only mount. Fall back to the profile's workspace instead.
+        params.pop('cwd')
+        fallback = _profile_launch_cwd()
+        if fallback:
+            params['cwd'] = fallback
     return params, route.get('api_mode')
 
 

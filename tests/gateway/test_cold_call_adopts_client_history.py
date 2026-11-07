@@ -13,6 +13,8 @@ The adoption path is label-agnostic, so most cases drive it with a synthetic cli
 history only from t_33cf038a's ``NOT_CLIENT_LABELS`` change, which is in the running checkout but not
 in this branch (that hunk is that card's to land).
 """
+import json
+import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -62,13 +64,14 @@ async def _owner(tmp_path, monkeypatch):
     return store, desktop
 
 
-def _chat(store, sid, source, *, parent=None):
+def _chat(store, sid, source, *, parent=None, cwd=None):
     """A routeless stored row (no route, no chat_id, no origin) with one message."""
     from gateway.owner_identity import host_owner_subject
     db = store._db
+    home = str(Path(db.db_path).parent)
     if parent is not None:
-        db.create_session(parent, source=CLIENT_LABEL, model='m-old', cwd=str(Path(db.db_path).parent))
-    db.create_session(sid, source=source, model='m-old', cwd=str(Path(db.db_path).parent),
+        db.create_session(parent, source=CLIENT_LABEL, model='m-old', cwd=home)
+    db.create_session(sid, source=source, model='m-old', cwd=cwd or home,
                       user_id=host_owner_subject())
     db.append_message(sid, role='user', content='hi from ' + sid)
     if parent is not None:
@@ -237,4 +240,93 @@ async def test_a_subagent_transcript_is_never_client_history(tmp_path, monkeypat
     with pytest.raises(RuntimeStoreError, match='session_read_only'):
         desktop.authority.authorize(desktop.actor, _ref(desktop, 'sub-chat'), 'session:submit')
     assert store._db.get_session('sub-chat')['source'] == CLIENT_LABEL
+    assert store._db.get_session('sub-chat')['parent_session_id'] == 'parent-chat'
+
+
+# ---- a saved cwd that no longer exists (36 live rows point at a deleted profile dir) -------------
+
+def _gone_workspace(tmp_path):
+    """The row's saved workspace: a path that is absolute and no longer exists, like the live rows."""
+    return str(tmp_path / 'deleted-profile')
+
+
+def _profile_home(tmp_path, cwd):
+    """The profile's own ``terminal.cwd``, written where ``build_profile_terminal_scope`` reads it."""
+    (tmp_path / 'config.yaml').write_text(f'terminal:\n  cwd: {cwd}\n', encoding='utf-8')
+
+
+async def _adopts_from_a_deleted_cwd(tmp_path, monkeypatch, source):
+    """A cold submit adopts the row and runs, on the profile's folder rather than the deleted one."""
+    from hermes_state_local import local_receipt
+    store, desktop = await _owner(tmp_path, monkeypatch)
+    db = store._db
+    profile_cwd = tmp_path / 'workspace'
+    profile_cwd.mkdir()
+    _profile_home(tmp_path, profile_cwd.as_posix())
+    _chat(store, 'cold-chat', source, cwd=_gone_workspace(tmp_path))
+
+    desktop.authority.authorize(desktop.actor, _ref(desktop, 'cold-chat'), 'session:submit')
+
+    row = db.get_session('cold-chat')
+    assert row['source'] == 'desktop', row
+    assert row['session_key'] and row['chat_id'], row
+    # Acceptance 3: the policy resumes in the profile's folder, never the deleted one.
+    receipt = local_receipt(db, 'cold-chat')
+    assert receipt['policy']['cwd'] == profile_cwd.as_posix(), receipt['policy']
+    assert receipt['policy']['cwd'] != _gone_workspace(tmp_path)
+    assert json.loads(receipt['policy']['terminal_json'])['TERMINAL_CWD'] == profile_cwd.as_posix()
+    # The submit then runs on that chat.
+    desktop.subscriptions['cold-chat'] = 'sub-1'
+    sent = await _submit(desktop, 'cold-chat')
+    assert 'error' not in sent, sent
+
+
+@pytest.mark.asyncio
+async def test_a_cold_submit_adopts_a_row_whose_saved_cwd_was_deleted(tmp_path, monkeypatch):
+    """Adoption no longer refuses the row for a folder that is gone: dropping it adopts the chat."""
+    await _adopts_from_a_deleted_cwd(tmp_path, monkeypatch, CLIENT_LABEL)
+
+
+@pytest.mark.asyncio
+@webui_only
+async def test_a_cold_submit_adopts_a_webui_row_whose_saved_cwd_was_deleted(tmp_path, monkeypatch):
+    """The live case: a dashboard row saved in the deleted profile dir is a writable chat again."""
+    await _adopts_from_a_deleted_cwd(tmp_path, monkeypatch, 'webui')
+
+
+def test_a_saved_cwd_that_still_exists_is_kept():
+    """A workspace still on disk is the row's own: the deleted-folder rule never rewrites it."""
+    from gateway.session_local_migration import legacy_launch_params
+    with tempfile.TemporaryDirectory() as live:
+        params, _ = legacy_launch_params({'cwd': live, 'model': 'm-old', 'source': 'webui',
+                                          'model_config': None, 'billing_base_url': None})
+    assert params['cwd'] == live
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source', ['cron', 'curator'])
+async def test_a_non_client_row_with_a_deleted_cwd_still_mounts_read_only(tmp_path, monkeypatch, source):
+    """Acceptance 2: the folder rule is about adopting, not about opening an automation row to writes."""
+    from gateway.session_history_mount import is_history_mount
+    store, desktop = await _owner(tmp_path, monkeypatch)
+    _chat(store, 'auto-row', source, cwd=_gone_workspace(tmp_path))
+
+    desktop.authority.authorize(desktop.actor, _ref(desktop, 'auto-row'), 'session:read')
+    assert is_history_mount(desktop.authority.sessions['auto-row'])
+    with pytest.raises(RuntimeStoreError, match='session_read_only'):
+        desktop.authority.authorize(desktop.actor, _ref(desktop, 'auto-row'), 'session:submit')
+    assert store._db.get_session('auto-row')['source'] == source
+
+
+@pytest.mark.asyncio
+async def test_a_subagent_transcript_with_a_deleted_cwd_still_mounts_read_only(tmp_path, monkeypatch):
+    """Acceptance 2, the subagent shape: a gone folder does not make evidence into a chat."""
+    from gateway.session_history_mount import is_history_mount
+    store, desktop = await _owner(tmp_path, monkeypatch)
+    _chat(store, 'sub-chat', CLIENT_LABEL, parent='parent-chat', cwd=_gone_workspace(tmp_path))
+
+    desktop.authority.authorize(desktop.actor, _ref(desktop, 'sub-chat'), 'session:read')
+    assert is_history_mount(desktop.authority.sessions['sub-chat'])
+    with pytest.raises(RuntimeStoreError, match='session_read_only'):
+        desktop.authority.authorize(desktop.actor, _ref(desktop, 'sub-chat'), 'session:submit')
     assert store._db.get_session('sub-chat')['parent_session_id'] == 'parent-chat'

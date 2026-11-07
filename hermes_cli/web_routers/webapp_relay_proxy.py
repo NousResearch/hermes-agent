@@ -120,9 +120,13 @@ def _target(scope, gateway_id: str, *, drop_query: frozenset[str] = frozenset())
 
 def _signed_in(request: Request) -> None:
     """Behind the sign-in gate, a login; on a loopback Webapp the session-token check already ran
-    (``web_server`` refuses an ``/api/`` request without it)."""
+    (``web_server`` refuses an ``/api/`` request without it). Only the Webapp's own page relays: the
+    session cookie is ``SameSite=Lax``, so another site's top-level navigation would otherwise make a
+    GET here with the saved credential. A client without Fetch Metadata is not judged."""
     if getattr(request.app.state, "auth_required", False) and getattr(request.state, "session", None) is None:
         raise HTTPException(401, "Unauthorized")
+    if any(value.strip().lower() != "same-origin" for value in request.headers.getlist("sec-fetch-site")):
+        raise HTTPException(403, "Relayed requests must come from this Webapp's own page.")
 
 
 def _without_dot_segments(path: str) -> str:

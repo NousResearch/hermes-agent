@@ -346,6 +346,21 @@ A pin naming a profile directory that doesn't exist never silently falls back to
 the last-used profile: the agent gets a fresh browser without your logins and a
 message naming the bad pin.
 
+Real-profile browsing follows your **default** browser, and only a
+Chromium-family default is usable. On a machine whose default is Safari or
+Firefox the toggle then fails with "not a supported Chromium browser". Name the
+family instead:
+
+```yaml
+# ~/.hermes/config.yaml
+browser:
+  use_real_profile: true
+  real_profile_browser: "chrome"   # chrome | edge | brave | brave-origin | chromium
+```
+
+The named browser only has to be installed; it does not have to be the default
+one. Hermes launches it on its own profile snapshot.
+
 When you turn the toggle back off, Hermes deletes the snapshot store
 (`~/.hermes/browser-profile/`) on the next browser use, so the copied
 credentials don't linger after you revoke consent.

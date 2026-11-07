@@ -8,6 +8,7 @@ import {
   beginPreviewGuestActivity,
   endPreviewGuestActivity,
   executePreviewGuestScript,
+  isPreviewGuestSession,
   isPreviewPartition,
   PREVIEW_GUEST_PARTITION,
   previewPartitionForProfile
@@ -74,10 +75,21 @@ describe('applyPreviewGuestAttachPrefs', () => {
   })
 })
 
-function contents(type: 'window' | 'webview', owner?: WebContents, session = {} as Session) {
+function contents(
+  type: 'window' | 'webview',
+  owner?: WebContents,
+  session = {} as Session,
+  { registerPreview = true }: { registerPreview?: boolean } = {}
+) {
   const emitter = new EventEmitter()
   let throttled = true
   let destroyed = false
+
+  // A real preview guest rides a jar the attach gate admitted; register this
+  // webview's session the same way so the activity gate recognizes it (F1).
+  if (type === 'webview' && registerPreview) {
+    applyPreviewGuestAttachPrefs({}, PREVIEW_GUEST_PARTITION, '/preload.js', () => session)
+  }
 
   const guest = Object.assign(emitter, {
     getType: () => type,
@@ -116,10 +128,10 @@ describe('preview script activity', () => {
     guest.setBackgroundThrottling.mockImplementationOnce(() => {
       throw new Error('guest disappeared')
     })
-    expect(() => beginPreviewGuestActivity(owner, guest, guest.session, hold)).toThrow('guest disappeared')
+    expect(() => beginPreviewGuestActivity(owner, guest, hold)).toThrow('guest disappeared')
     expect(owner.getBackgroundThrottling()).toBe(true)
     expect(owner.listenerCount('destroyed')).toBe(0)
-    const next = beginPreviewGuestActivity(owner, guest, guest.session, hold)
+    const next = beginPreviewGuestActivity(owner, guest, hold)
     expect(owner.getBackgroundThrottling()).toBe(false)
     endPreviewGuestActivity(owner, next)
     expect(owner.getBackgroundThrottling()).toBe(true)
@@ -129,8 +141,8 @@ describe('preview script activity', () => {
     const { owner, hold } = ownerFixture()
     const first = contents('webview', owner)
     const second = contents('webview', owner)
-    const a = beginPreviewGuestActivity(owner, first, first.session, hold)
-    const b = beginPreviewGuestActivity(owner, second, second.session, hold)
+    const a = beginPreviewGuestActivity(owner, first, hold)
+    const b = beginPreviewGuestActivity(owner, second, hold)
     first.emit('did-navigate', {}, 'https://new.test', 200, 'OK')
     endPreviewGuestActivity(owner, a)
     expect(first.getBackgroundThrottling()).toBe(true)
@@ -144,8 +156,8 @@ describe('preview script activity', () => {
   it('restores idle throttling only after the last owned lease, ignoring foreign and duplicate releases', () => {
     const { owner, hold } = ownerFixture()
     const guest = contents('webview', owner)
-    const first = beginPreviewGuestActivity(owner, guest, guest.session, hold)
-    const second = beginPreviewGuestActivity(owner, guest, guest.session, hold)
+    const first = beginPreviewGuestActivity(owner, guest, hold)
+    const second = beginPreviewGuestActivity(owner, guest, hold)
     expect(guest.getBackgroundThrottling()).toBe(false)
     expect(owner.getBackgroundThrottling()).toBe(false)
     endPreviewGuestActivity(contents('window'), first)
@@ -165,19 +177,38 @@ describe('preview script activity', () => {
   it('rejects other owners, partitions, and untrusted guest senders before changing scheduling', () => {
     const { owner, hold } = ownerFixture()
     const guest = contents('webview', owner)
-    expect(() => beginPreviewGuestActivity(contents('window'), guest, guest.session, hold)).toThrow('belong')
-    expect(() => beginPreviewGuestActivity(owner, guest, {} as Session, hold)).toThrow('belong')
-    expect(() => beginPreviewGuestActivity(guest, guest, guest.session, hold)).toThrow('belong')
-    expect(() => beginPreviewGuestActivity(owner, owner, owner.session, hold)).toThrow('belong')
+    expect(() => beginPreviewGuestActivity(contents('window'), guest, hold)).toThrow('belong')
+    const unregistered = contents('webview', owner, {} as Session, { registerPreview: false })
+    expect(() => beginPreviewGuestActivity(owner, unregistered, hold)).toThrow('belong')
+    expect(() => beginPreviewGuestActivity(guest, guest, hold)).toThrow('belong')
+    expect(() => beginPreviewGuestActivity(owner, owner, hold)).toThrow('belong')
     expect(guest.setBackgroundThrottling).not.toHaveBeenCalled()
+    expect(owner.getBackgroundThrottling()).toBe(true)
+  })
+
+  // F1: a named profile's guest rides a SIBLING preview jar, not the default one. The activity gate
+  // must accept it (the attach gate already admits the whole family), or saved-login fill / page read
+  // fail with "does not belong to this window". Pre-fix the gate compared against the default jar only.
+  it('admits a named-profile guest riding a sibling preview partition', () => {
+    const { owner, hold } = ownerFixture()
+    const siblingSession = {} as Session
+    // The sibling jar is admitted by the attach gate exactly as a real named-profile webview would be.
+    applyPreviewGuestAttachPrefs({}, previewPartitionForProfile('work'), '/preload.js', () => siblingSession)
+    expect(isPreviewGuestSession(siblingSession)).toBe(true)
+
+    const guest = contents('webview', owner, siblingSession, { registerPreview: false })
+    const token = beginPreviewGuestActivity(owner, guest, hold)
+
+    expect(guest.getBackgroundThrottling()).toBe(false)
+    endPreviewGuestActivity(owner, token)
     expect(owner.getBackgroundThrottling()).toBe(true)
   })
 
   it.each(['guest', 'owner'])('keeps overlapping work awake during cancelled provisional %s navigation', targetKind => {
     const { owner, hold } = ownerFixture()
     const guest = contents('webview', owner)
-    const first = beginPreviewGuestActivity(owner, guest, guest.session, hold)
-    const second = beginPreviewGuestActivity(owner, guest, guest.session, hold)
+    const first = beginPreviewGuestActivity(owner, guest, hold)
+    const second = beginPreviewGuestActivity(owner, guest, hold)
     const target = targetKind === 'owner' ? owner : guest
 
     target.emit('did-start-navigation', {}, 'https://slow.test', false, true)
@@ -197,8 +228,8 @@ describe('preview script activity', () => {
     event => {
       const { owner, hold } = ownerFixture()
       const guest = contents('webview', owner)
-      const first = beginPreviewGuestActivity(owner, guest, guest.session, hold)
-      const second = beginPreviewGuestActivity(owner, guest, guest.session, hold)
+      const first = beginPreviewGuestActivity(owner, guest, hold)
+      const second = beginPreviewGuestActivity(owner, guest, hold)
       const target = event.startsWith('owner') ? owner : guest
 
       if (event.endsWith('navigation')) {
@@ -232,7 +263,7 @@ describe('preview script activity', () => {
     const { owner, hold } = ownerFixture()
     const guest = contents('webview', owner)
     guest.isLoadingMainFrame.mockReturnValue(true)
-    const token = beginPreviewGuestActivity(owner, guest, guest.session, hold)
+    const token = beginPreviewGuestActivity(owner, guest, hold)
     const running = executePreviewGuestScript(owner, token, 'await a frame')
     guest.emit('did-navigate', {}, 'https://new.test', 200, 'OK')
     expect(guest.executeJavaScript).not.toHaveBeenCalled()
@@ -248,10 +279,10 @@ describe('preview script activity', () => {
     const { owner, hold } = ownerFixture()
     const guest = contents('webview', owner)
     guest.executeJavaScript.mockReturnValueOnce(new Promise(() => {}))
-    const old = executePreviewGuestScript(owner, beginPreviewGuestActivity(owner, guest, guest.session, hold), 'old')
+    const old = executePreviewGuestScript(owner, beginPreviewGuestActivity(owner, guest, hold), 'old')
     const rejected = expect(old).rejects.toThrow('navigated')
     guest.isLoadingMainFrame.mockReturnValue(true)
-    const next = executePreviewGuestScript(owner, beginPreviewGuestActivity(owner, guest, guest.session, hold), 'new')
+    const next = executePreviewGuestScript(owner, beginPreviewGuestActivity(owner, guest, hold), 'new')
     guest.emit('did-navigate', {}, 'https://new.test', 200, 'OK')
     await rejected
     expect(guest.getBackgroundThrottling()).toBe(false)
@@ -265,7 +296,7 @@ describe('preview script activity', () => {
     const { owner, hold } = ownerFixture()
     const guest = contents('webview', owner)
     guest.isLoadingMainFrame.mockReturnValue(true)
-    const token = beginPreviewGuestActivity(owner, guest, guest.session, hold)
+    const token = beginPreviewGuestActivity(owner, guest, hold)
     await expect(executePreviewGuestScript(contents('window'), token, 'foreign')).rejects.toThrow('belong')
     expect(owner.getBackgroundThrottling()).toBe(false)
     const running = executePreviewGuestScript(owner, token, 'cancelled')

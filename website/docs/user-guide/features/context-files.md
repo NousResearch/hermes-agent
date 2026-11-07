@@ -15,7 +15,8 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 | **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root |
 | **AGENTS.override.md** | Personal, per-directory override of AGENTS.md (typically gitignored) | CWD at startup + subdirectories progressively |
 | **AGENTS.md** | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
-| **CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
+| **CLAUDE.md** / **.claude/CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
+| **.claude/rules/\*\*/\*.md** | Claude Code rule modules, loaded together with `CLAUDE.md` | CWD only (nested directories included) |
 | **SOUL.md** | Global personality and tone customization for this Hermes instance | `HERMES_HOME/SOUL.md` only |
 | **.cursorrules** | Cursor IDE coding conventions | CWD only |
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
@@ -113,6 +114,22 @@ Important details:
 - If the file is empty, nothing from `SOUL.md` is added to the prompt
 - If the file has content, the content is injected verbatim after scanning and truncation
 
+## CLAUDE.md and .claude/rules/
+
+Hermes reads Claude Code's `CLAUDE.md` (also `claude.md` or `.claude/CLAUDE.md`) from the working directory, and every `.md` file under `.claude/rules/` — nested directories included — as separate rule sections next to it. A rules directory with no `CLAUDE.md` at all still counts as the project context.
+
+Rules with `paths` frontmatter are scoped in Claude Code to the files they name. Hermes loads them at startup like the unconditional ones, strips the frontmatter, and states the scope in the section heading so the model knows which files the rule governs:
+
+```markdown
+---
+paths:
+  - "src/api/**/*.ts"
+---
+All endpoints validate input.
+```
+
+renders as `## .claude/rules/api.md (applies to files matching: src/api/**/*.ts)`. The rules belong to the `CLAUDE.md` priority slot: an `AGENTS.md` or `.hermes.md` shadows them (shown as such in `/context`), and together they share the same character cap as the merged `AGENTS.md` chain.
+
 ## .cursorrules
 
 Hermes is compatible with Cursor IDE's `.cursorrules` file and `.cursor/rules/*.mdc` rule modules. If these files exist in your project root and no higher-priority context file (`.hermes.md`, `AGENTS.md`, or `CLAUDE.md`) is found, they're loaded as the project context.
@@ -125,7 +142,7 @@ This means your existing Cursor conventions automatically apply when using Herme
 
 Context files are loaded by `build_context_files_prompt()` in `agent/prompt_builder.py`:
 
-1. **Scan working directory** — checks for `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules` (first match wins)
+1. **Scan working directory** — checks for `.hermes.md` → `AGENTS.md` → `CLAUDE.md` + `.claude/rules/` → `.cursorrules` (first match wins)
 2. **Content is read** — each file is read as UTF-8 text
 3. **Security scan** — content is checked for prompt injection patterns
 4. **Truncation** — files exceeding the character cap are head/tail truncated (70% head, 20% tail, with a marker in the middle). The cap is an explicit `context_file_max_chars` from config.yaml when set; otherwise it scales dynamically with the model's context window (floor 20,000 chars, ceiling 500,000)

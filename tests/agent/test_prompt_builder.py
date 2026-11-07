@@ -509,6 +509,43 @@ class TestBuildContextFilesPrompt:
         assert "From uppercase" in result
         assert "From lowercase" not in result
 
+    def test_claude_rules_dir_loads_with_claude_md(self, tmp_path):
+        """Claude Code rule modules: every ``.md`` under ``.claude/rules`` (nested too) loads beside
+        ``.claude/CLAUDE.md``; a ``paths``-scoped rule states its globs in the heading with the frontmatter
+        stripped; non-``.md`` files are ignored; a lone CLAUDE.md keeps its historical rendering."""
+        rules = tmp_path / ".claude" / "rules"
+        (rules / "frontend").mkdir(parents=True)
+        (tmp_path / ".claude" / "CLAUDE.md").write_text("Main instructions.")
+        (rules / "testing.md").write_text("Run the suite first.")
+        (rules / "frontend" / "react.md").write_text(
+            '---\npaths:\n  - "src/**/*.{ts,tsx}"\n  - lib/**/*.ts\nother: ignored\n---\n\nFunction components only.')
+        (rules / "notes.txt").write_text("not a rule")
+        result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+        assert "## .claude/CLAUDE.md\n\nMain instructions." in result
+        assert "## .claude/rules/testing.md\n\nRun the suite first." in result
+        assert ("## .claude/rules/frontend/react.md (applies to files matching: src/**/*.{ts,tsx}, lib/**/*.ts)"
+                "\n\nFunction components only.") in result
+        assert "other: ignored" not in result and "not a rule" not in result
+
+        solo = tmp_path / "solo"
+        solo.mkdir()
+        (solo / "CLAUDE.md").write_text("Solo.")
+        assert build_context_files_prompt(cwd=str(solo), skip_soul=True).endswith("## CLAUDE.md\n\nSolo.")
+
+    def test_claude_rules_follow_claude_md_priority(self, tmp_path):
+        """Rules ride with the CLAUDE.md kind: an AGENTS.md shadows them (and ``/context`` says so), while a
+        rules dir with no CLAUDE.md at all still loads as the project context."""
+        from agent.context_file_sources import list_context_file_sources
+        rules = tmp_path / ".claude" / "rules"
+        rules.mkdir(parents=True)
+        (rules / "a.md").write_text("Only rules.")
+        assert "Only rules." in build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+        (tmp_path / "AGENTS.md").write_text("Agents wins.")
+        result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+        assert "Agents wins." in result and "Only rules." not in result
+        statuses = {s["label"]: s["status"] for s in list_context_file_sources(cwd=str(tmp_path), skip_soul=True)}
+        assert statuses == {"AGENTS.md": "loaded", ".claude/rules/a.md": "shadowed"}
+
 
 
 

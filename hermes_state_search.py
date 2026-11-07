@@ -34,7 +34,7 @@ class _BackfillProgress:
     """How many messages a backfill pass (``backfill`` = base + trigram) has
     indexed out of the messages at or below its high water. Counts rows, never ids: a pruned
     store's id gaps would otherwise read 0% then jump to 99%. The step engine adds the rows each
-    window covered (:meth:`SessionSearchMixin._rebuild_step`)."""
+    window covered (:meth:`SessionSearchMixin.fts_rebuild_step`)."""
 
     phase: str
     total: int = 0
@@ -325,16 +325,13 @@ class SessionSearchMixin:
     def fts_rebuild_status(self) -> Optional[dict[str, Any]]:
         """Deferred-rebuild progress ``{"pending", "total", "indexed", "percent"}`` or None. Reads
         via the pooled reader (not get_meta/self._lock) so search never blocks on the writer."""
-        return self._rebuild_status("fts_rebuild")
-
-    def _rebuild_status(self, prefix: str) -> Optional[dict[str, Any]]:
         rows = self._read_all("SELECT key, value FROM state_meta WHERE key IN (?, ?)",
-                              (f"{prefix}_high_water", f"{prefix}_progress"))
+                              ("fts_rebuild_high_water", "fts_rebuild_progress"))
         meta = {r["key"]: r["value"] for r in rows}
-        high_water = meta.get(f"{prefix}_high_water")
+        high_water = meta.get("fts_rebuild_high_water")
         if high_water is None or int(high_water) <= 0:
             return None
-        total, progress = int(high_water), int(meta.get(f"{prefix}_progress") or 0)
+        total, progress = int(high_water), int(meta.get("fts_rebuild_progress") or 0)
         return {"pending": True, "total": total, "indexed": progress, "percent": min(100, int(100 * progress / total))}
 
     # Re-index rows in an id window the index is missing. docsize has one row
@@ -358,10 +355,10 @@ class SessionSearchMixin:
         "AND NOT EXISTS (SELECT 1 FROM messages_fts_trigram_docsize d WHERE d.id = m.id)"
     )
     _CHUNK_INSERT_SQL = (
-        "INSERT INTO {table}(rowid, content, tool_name, tool_calls) "
+        "INSERT INTO messages_fts(rowid, content, tool_name, tool_calls) "
         "SELECT id, CASE WHEN role = 'tool' "
         f"THEN substr(COALESCE(content, ''), 1, {FTS_TOOL_CONTENT_PREFIX_CHARS}) "
-        "ELSE content END, tool_name, tool_calls FROM messages WHERE id > ? AND id <= ?{extra}"
+        "ELSE content END, tool_name, tool_calls FROM messages WHERE id > ? AND id <= ?"
     )
     _TRIGRAM_CHUNK_INSERT_SQL = (
         "INSERT INTO messages_fts_trigram(rowid, content, tool_name) "
@@ -374,24 +371,16 @@ class SessionSearchMixin:
         insurance against a write that slipped between high_water capture and trigger
         activation. The trigram half is gated on ``_trigram_available``: without the
         tokenizer/table an unconditional INSERT raises and aborts the whole rebuild."""
-        sweeps = [(self._BASE_BOUNDARY_SWEEP_SQL, True)]
-        if self._trigram_available:
-            sweeps.append((self._TRIGRAM_BOUNDARY_SWEEP_SQL, False))
-        self._rebuild_finish("fts_rebuild", sweeps)
-        logger.info("Deferred FTS rebuild complete — all messages indexed.")
-
-    def _rebuild_finish(self, prefix: str, sweep_sqls: list[tuple[str, bool]]) -> None:
-        """Sweep a generous window around the high-water boundary, then clear the markers.
-        ``(sql, bounded)``: a bounded sweep takes the tool-content prefix_chars param first."""
         def _do(conn):
-            hw_row = _meta_row(conn, f"{prefix}_high_water")
+            hw_row = _meta_row(conn, "fts_rebuild_high_water")
             if hw_row is not None:
                 hw = int(hw_row[0])
-                for sql, bounded in sweep_sqls:
-                    params = (FTS_TOOL_CONTENT_PREFIX_CHARS,) if bounded else ()
-                    conn.execute(sql, (*params, hw - 1000, hw + 1000))
-            _delete_meta(conn, f"{prefix}_high_water", f"{prefix}_progress")
+                conn.execute(self._BASE_BOUNDARY_SWEEP_SQL, (FTS_TOOL_CONTENT_PREFIX_CHARS, hw - 1000, hw + 1000))
+                if self._trigram_available:
+                    conn.execute(self._TRIGRAM_BOUNDARY_SWEEP_SQL, (hw - 1000, hw + 1000))
+            _delete_meta(conn, "fts_rebuild_high_water", "fts_rebuild_progress")
         self._execute_write(_do)
+        logger.info("Deferred FTS rebuild complete — all messages indexed.")
 
     def fts_rebuild_step(self, progress: Optional[_BackfillProgress] = None) -> bool:
         """Backfill one chunk (``_fts_chunk_rows`` messages) of the deferred FTS rebuild; True while
@@ -400,17 +389,10 @@ class SessionSearchMixin:
         the caller decides whether to retry). *progress* gains the messages the chunk covered."""
         if not self._fts_enabled:
             return False
-        inserts = [self._CHUNK_INSERT_SQL.format(table="messages_fts", extra="")]
+        inserts = [self._CHUNK_INSERT_SQL]
         if self._trigram_available:
             inserts.append(self._TRIGRAM_CHUNK_INSERT_SQL)
-        return self._rebuild_step("fts_rebuild", inserts, finish=self._fts_rebuild_finish, finish_when_empty=True,
-                                  progress=progress)
-
-    def _rebuild_step(self, prefix: str, insert_sqls: list[str], *, finish, finish_when_empty: bool = False,
-                      progress: Optional[_BackfillProgress] = None) -> bool:
-        """Chunk engine for the deferred backfill. ``finish_when_empty``
-        finalizes a high_water <= 0 marker (empty messages table) instead of leaving it pending."""
-        high_water_raw = self.get_meta(f"{prefix}_high_water")
+        high_water_raw = self.get_meta("fts_rebuild_high_water")
         if high_water_raw is None:
             return False
         high_water = int(high_water_raw)
@@ -419,7 +401,7 @@ class SessionSearchMixin:
         def _do(conn):
             # Re-reading progress inside the BEGIN IMMEDIATE held by _execute_write IS
             # the claim: two workers cannot read the same value.
-            row = _meta_row(conn, f"{prefix}_progress")
+            row = _meta_row(conn, "fts_rebuild_progress")
             if row is None:
                 return False, 0  # finished (or cleared) by another process
             done = int(row[0])
@@ -434,10 +416,10 @@ class SessionSearchMixin:
             if nth is None and progress is not None:  # the last, short window (< chunk rows)
                 covered = conn.execute("SELECT COUNT(*) FROM messages WHERE id > ? AND id <= ?",
                                        (done, upper)).fetchone()[0]
-            for sql in insert_sqls:
+            for sql in inserts:
                 conn.execute(sql, (done, upper))
             # Progress lands in the same transaction as its rows (crash-atomic).
-            conn.execute("UPDATE state_meta SET value = ? WHERE key = ?", (str(upper), f"{prefix}_progress"))
+            conn.execute("UPDATE state_meta SET value = ? WHERE key = ?", (str(upper), "fts_rebuild_progress"))
             return upper < high_water, covered
 
         more, covered = self._execute_write(_do)
@@ -445,11 +427,9 @@ class SessionSearchMixin:
             # Counted after the commit: _execute_write may replay _do on contention.
             progress.indexed += covered
         if more is False:
-            status = self._rebuild_status(prefix)
-            if (finish_when_empty and high_water <= 0) or (
-                status is not None and status["indexed"] >= status["total"]
-            ):
-                finish()
+            status = self.fts_rebuild_status()
+            if high_water <= 0 or (status is not None and status["indexed"] >= status["total"]):
+                self._fts_rebuild_finish()
             return False
         return bool(more)
 
@@ -670,10 +650,10 @@ class SessionSearchMixin:
                 raise sqlite3.OperationalError(failure_message)
             self._conn.commit()
 
-    def _backfill_progress(self, phase: str, prefix: str) -> Optional[_BackfillProgress]:
-        """Messages at or below *prefix*'s high water, and how many of them the resume marker already
+    def _backfill_progress(self, phase: str) -> Optional[_BackfillProgress]:
+        """Messages at or below the rebuild high water, and how many of them the resume marker already
         covers (one scan per pass); None when the pass has nothing pending."""
-        st = self._rebuild_status(prefix)
+        st = self.fts_rebuild_status()
         if st is None:
             return None
         with self._read_ctx() as conn:
@@ -821,7 +801,7 @@ class SessionSearchMixin:
         teardown = _TeardownProgress(counted=progress_cb is not None)
         with _HolderWatch(self._foreign_state_db_holders, self._HOLDER_SCAN_INTERVAL_S) as watch:
             # Phase 1: base backfill.
-            bf = self._backfill_progress("backfill", "fts_rebuild") if progress_cb else None
+            bf = self._backfill_progress("backfill") if progress_cb else None
             if bf is not None:
                 emit({**bf.info(), "paced": watch.held})
             step = partial(self.fts_rebuild_step, bf) if bf else self.fts_rebuild_step

@@ -951,7 +951,12 @@ class SessionSchemaMixin:
             if cursor.execute("SELECT 1 FROM messages WHERE active IS NULL LIMIT 1").fetchone() is not None:
                 cursor.execute("UPDATE messages SET active = 1 WHERE active IS NULL")
 
-        drop_retired_cjk_index(cursor)
+        if drop_retired_cjk_index(cursor):
+            logger.warning(
+                "Removed the retired messages_fts_cjk index; CJK search now uses the trigram index. "
+                "`hermes sessions optimize-storage` reclaims its disk space. "
+                "%s is no longer loaded and can be deleted.", get_hermes_home() / "lib" / "libfts5_cjk.so",
+            )
         fts5_available = self._sqlite_supports_fts5(cursor)
         stale_row = cursor.execute("SELECT 1 FROM state_meta WHERE key = ? LIMIT 1", (FTS_STALE_KEY,)).fetchone()
         self._fts_stale = stale_row is not None

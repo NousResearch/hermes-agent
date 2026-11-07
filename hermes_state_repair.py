@@ -777,7 +777,7 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     See #50502.
     """
     from hermes_state import SessionDB
-    from hermes_state_fts import drop_retired_cjk_index
+    from hermes_state_fts import drop_retired_cjk_index, retired_cjk_index_present
     # ── Strategy 0.5: rebuild stale B-tree indexes (#63386) ── PRAGMA integrity_check can report "wrong #
     # of entries in index" when a B-tree index (e.g. idx_sessions_handoff_state) falls out of sync with its
     # base table. REINDEX rewrites the index b-tree from the canonical table rows using the existing index
@@ -786,8 +786,10 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     try:
         with contextlib.closing(conn):
             conn.execute("PRAGMA journal_mode").fetchone()
-            # A leftover index whose tokenizer no process loads would fail every probe below.
-            drop_retired_cjk_index(conn.cursor())
+            # A leftover index whose tokenizer no process loads fails every probe below; ROLLBACK/close discards this.
+            if retired_cjk_index_present(conn.cursor()):
+                conn.execute("BEGIN IMMEDIATE")
+                drop_retired_cjk_index(conn.cursor())
             rows = conn.execute("PRAGMA integrity_check").fetchall()
             problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
             if problems:
@@ -817,7 +819,8 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
             # by the user's next message.
             probe_session_id = f"_hermes_fts_health_probe_{time.time_ns()}"
             try:
-                conn.execute("BEGIN IMMEDIATE")
+                if not conn.in_transaction:
+                    conn.execute("BEGIN IMMEDIATE")
                 conn.execute("INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
                              (probe_session_id, "_health_probe", time.time()))
                 conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",

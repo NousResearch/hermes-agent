@@ -240,3 +240,17 @@ def session_history_delivery_supported() -> bool:
 
     Fail closed on omitted bindings; never borrow authority from the environment."""
     return _SESSION_HISTORY_DELIVERY.get() == "1"
+
+
+def bound_session_value(name: str) -> str:
+    """Read only this task's binding; process environment never confers authority."""
+    var = _VAR_MAP.get(name)
+    value = var.get() if var is not None else _UNSET
+    return value if isinstance(value, str) else ""
+
+
+def source_runtime_profile(source: Any) -> str:
+    """Use the already resolved inbound identity, including standalone gateways."""
+    from gateway.session_identity import identity_of
+    identity = identity_of(source)
+    return identity.runtime_profile if identity is not None else getattr(source, "profile", "") or ""

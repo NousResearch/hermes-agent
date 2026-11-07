@@ -57,7 +57,44 @@ async def _build_profile_authority(runner, name, home, *, register):
             registry.remove(home)
             raise
     registry.replace(home, authority)
+    _serve_profile_local_adapter(authority)
     return authority
+
+
+def _serve_profile_local_adapter(authority):
+    """Give a served profile its own LocalSessionAdapter the moment its authority exists.
+
+    A LOCAL session (the profile's Bot Chat, a hosted-room member turn on it) is admitted and
+    answered through the profile's own ``LOCAL`` adapter (#139060); a live local turn builds it
+    on first use (``restore_local_session``, ``session_detached``), but the FIRST admission for
+    such a session — a room member's turn before any local turn ever ran for the profile —
+    must already resolve it: without it ``check_api_turn`` refused as ``runtime_draining``
+    (``_adapter_for_source`` looks at the adapter maps, never at the session authority, and
+    ``runner._profile_adapters`` / ``run_adapters`` never build a ``LOCAL`` adapter). This runs
+    in both built-from paths, boot (``initialize_gateway_runtime``) and the hot-serve
+    ``serve_profile_runtime``, so the bound adapter is there for every served profile instead
+    of arriving with the first turn.
+
+    Boundary stays fail-closed: the adapter is bound to *authority* in that profile's own
+    ``_profile_adapters`` slot (``local_adapter_map``); the launch profile keeps building its
+    LOCAL adapter on first use (its map is untouched), and a profile this process does not
+    serve has no slot and no adapter — nothing borrows across a profile line."""
+    from gateway.config import Platform
+    from gateway.session_local import LocalSessionAdapter
+    from gateway.session_local_recovery import local_adapter, local_adapter_map
+    from hermes_state_runtime import RuntimeStoreError
+    registry = getattr(authority.runner, 'session_authorities', None)
+    if registry is None or registry.profile_name(authority) is None:
+        return  # the launch profile: its LOCAL adapter stays built on first use, as always
+    adapters = local_adapter_map(authority)
+    # A previous serve's adapter bound to an earlier authority (a re-serve over one that was
+    # retired, or whose map outlived the pop) gives way, so this authority's admissions find
+    # an adapter that is ITS OWN — the exact adapter a later local turn would build.
+    if getattr(adapters.get(Platform.LOCAL), 'authority', None) is not authority:
+        adapters.pop(Platform.LOCAL, None)
+    adapter = local_adapter(authority)
+    if not isinstance(adapter, LocalSessionAdapter) or adapter.authority is not authority:
+        raise RuntimeStoreError('runtime_draining')
 
 
 def open_profile_store(runner, home):

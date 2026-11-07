@@ -1,0 +1,21 @@
+manifest_version: 1
+name: blockvectra
+description: Read BlockVectra EVM RPC and Data API docs, discover chains, and estimate CU usage.
+source: https://github.com/blockvectra/mcp
+transport: {type: http, url: https://docs.blockvectra.com/mcp}
+auth: {type: none}
+tools:
+  default_enabled:
+    - read_doc
+    - search_docs
+    - list_docs
+    - list_chains
+    - get_status
+    - get_pricing
+    - estimate_usage
+    - explain_error
+post_install: >-
+  For a known chain, call list_chains with the chain argument.
+  Search docs for your task, then use read_doc for the matching page.
+  This entry enables documentation, discovery and pricing tools without an API key.
+  It does not configure keyed account, Data API or transaction tools.

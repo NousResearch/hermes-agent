@@ -69,6 +69,51 @@ def _dashboard_author(request: Request, client_author: Optional[str] = None) -> 
     return (client_author or "").strip() or "dashboard"
 
 
+def _local_account_author() -> str:
+    """The gateway host's own signed-in Nous Portal account label, or '' when
+    there is none. Loopback mode has no interactive session, so a client that
+    wants a human-readable ``author`` (the desktop app) asks for this instead of
+    hardcoding a placeholder. The account snapshot decodes the locally stored
+    Portal JWT — no network on the hot path, and nothing is exposed that the
+    gateway's own status surfaces don't already show to the local user."""
+    try:
+        from hermes_cli.nous_account import get_nous_portal_account_info
+
+        info = get_nous_portal_account_info()
+    except Exception:  # an unreadable auth store just means "no hint"
+        return ""
+    if info is None or not getattr(info, "logged_in", False):
+        return ""
+    for value in (getattr(info, "org_name", None), getattr(info, "email", None)):
+        value = str(value or "").strip()
+        # The raw NAS ids are what this whole change exists to avoid re-surfacing.
+        if value and not value.startswith("nas_"):
+            return value
+    return ""
+
+
+# --- Identity hint -----------------------------------------------------------
+
+@router.get("/me")
+def whoami(request: Request):
+    """The author label a client should send on writes it makes on a human's
+    behalf (the desktop app posts comments; loopback mode trusts the client's
+    ``author`` — see ``_dashboard_author``).
+
+    Gated mode: the verified login (the server would override a wrong client
+    claim anyway; the hint simply matches what will be recorded). Loopback mode:
+    the gateway's own Portal account, else ``""`` — the client keeps its own
+    fallback. Attribution hint only; no secrets, and auth posture unchanged."""
+    session = getattr(request.state, "session", None)
+    if session is not None:
+        for attr in ("display_name", "email", "user_id"):
+            value = str(getattr(session, attr, "") or "").strip()
+            if value:
+                return {"author": value}
+        return {"author": ""}
+    return {"author": _local_account_author()}
+
+
 # --- Connection / board helpers ---------------------------------------------
 
 def _ws_upgrade_authorized(ws: WebSocket) -> bool:

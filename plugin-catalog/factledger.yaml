@@ -1,7 +1,7 @@
 name: factledger
 title: Factledger
 repo: https://github.com/explorelifehus-eng/factledger
-sha: 2641791435b0075299e9c3f725417680b346b266
+sha: c386f745da7f004d3db20aeffaf2ad0da024da02
 subdir: plugin
 version: "1.0.0"
 description: >-

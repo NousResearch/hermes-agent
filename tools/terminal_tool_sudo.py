@@ -201,6 +201,8 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45, *, command: str = "") -
                 return password
             except Exception:
                 human.outcome = "error"
+                # Reads as a wrong password otherwise: sudo prints the same text as when nobody was asked.
+                logger.warning("sudo password prompt failed; the command continues without a password", exc_info=True)
                 return ""
             finally:
                 _sudo_prompt_command.reset(token)

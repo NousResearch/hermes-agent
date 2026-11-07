@@ -23,6 +23,8 @@ def ask_sudo(events, session_id, command, *, cancelled=lambda: False, timeout=SU
     """Send one ``sudo`` request to the session's attached viewers and wait for its ``value``.
     "" when nobody is attached, the viewer skipped, the turn was interrupted, or it timed out."""
     from gateway.session_server_requests import ask_viewer
+    if not events.fanout.transports():
+        logger.warning("sudo prompt for session %s not sent: no viewer is attached", session_id)
     return ask_viewer(events, session_id, "sudo", {"command": command}, cancelled=cancelled, timeout=timeout)
 
 
@@ -41,6 +43,7 @@ def sudo_prompt_scope(turn, agent):
         from tools.terminal_tool_sudo import get_sudo_prompt_command
         live = authority.sessions.get(session_id)
         if live is None:
+            logger.warning("sudo prompt for session %s not sent: the session is no longer in memory", session_id)
             return ""
         return ask_sudo(live.event_stream, session_id, _redact_approval_command(get_sudo_prompt_command()),
                         cancelled=lambda: bool(getattr(agent, "_interrupt_requested", False)))

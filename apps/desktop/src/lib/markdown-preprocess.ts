@@ -972,7 +972,12 @@ function normalizeProseMath(text: string): string {
   const normalized = splitHuggingDisplayMath(normalizeMathDelimiters(normalizeDisplayMathForMarkdown(text)))
   const cjkEscaped = escapeCjkProseDollars(normalized)
 
-  return escapeCurrencyDollarsPreservingMath(cjkEscaped)
+  // Keep the CJK pass's cross-span context, but never insert currency
+  // escapes into inline code: Markdown renders those backslashes literally.
+  return cjkEscaped
+    .split(INLINE_CODE_SPLIT_RE)
+    .map(segment => (segment.startsWith('`') ? segment : escapeCurrencyDollarsPreservingMath(segment)))
+    .join('')
 }
 
 function extend(out: string[], lines: string[]) {

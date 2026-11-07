@@ -77,3 +77,32 @@ describe('markdown prose renders tilde ranges and unknown tags literally', () =>
     expect(container.textContent).toContain('deleted')
   })
 })
+
+describe('inline code preserves shell dollars', () => {
+  it.each([
+    ["tmux attach-session -t '$0'"],
+    ['printf "%s\\n" "$1"'],
+    [String.raw`printf '%s' '\$0'`],
+    [String.raw`printf '%s' '\\$0'`]
+  ])('renders %s verbatim during streaming and after completion', command => {
+    const text = `Run \`${command}\` now.`
+    const { container, rerender } = render(<MarkdownTextContent isRunning text={text} />)
+
+    expect(container.querySelector('code')?.textContent).toBe(command)
+
+    rerender(<MarkdownTextContent isRunning={false} text={text} />)
+
+    expect(container.querySelector('code')?.textContent).toBe(command)
+  })
+
+  it('keeps currency and math rendering outside inline code', () => {
+    const command = "tmux attach-session -t '$0'"
+    const text = `Costs $5 and $10; run \`${command}\`; outcome is $4\\in A$.`
+    const { container } = render(<MarkdownTextContent isRunning={false} text={text} />)
+
+    expect(container.querySelector('code')?.textContent).toBe(command)
+    expect(container.textContent).toContain('Costs $5 and $10; run')
+    expect(container.querySelectorAll('.katex')).toHaveLength(1)
+    expect(container.querySelector('annotation')?.textContent).toBe('4\\in A')
+  })
+})

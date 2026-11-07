@@ -1,0 +1,26 @@
+name: obsidian-rag
+repo: https://github.com/kastormdz/obsidian-rag
+sha: 42d3a6457df0b60799ab367271e2b9aa7143316f
+subdir: plugins/obsidian-rag
+version: "0.3.1"
+description: Search and edit an Obsidian vault from a local hybrid index (SQLite FTS5 plus
+  384-dim ONNX embeddings) through seven tools. Answers come from the notes on disk, with no
+  server, no account and no model in the gateway process.
+maintainer: kastormdz
+tier: community
+category: tools
+docs_url: https://github.com/kastormdz/obsidian-rag#hermes-plugin
+image: https://raw.githubusercontent.com/kastormdz/obsidian-rag/42d3a6457df0b60799ab367271e2b9aa7143316f/docs/banner.webp
+capabilities:
+  provides_tools:
+    - vault_search
+    - vault_read
+    - vault_write
+    - vault_list
+    - vault_move
+    - vault_delete
+    - vault_status
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

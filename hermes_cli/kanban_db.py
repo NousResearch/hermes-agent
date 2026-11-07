@@ -3554,9 +3554,13 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
     return "ready" if _parents_satisfied(conn, task_id) else "todo"
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(conn: sqlite3.Connection, task_id: str, *,
+                 reason: Optional[str] = None) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
-    when that is where it left off), closing any leaked run first."""
+    when that is where it left off), closing any leaked run first. An optional
+    ``reason`` rides the ``unblocked`` event payload (see ``kanban_db_rework``):
+    without one the payload is exactly what this transition always carried.
+    """
     now = int(time.time())
     with write_txn(conn):
         resume_status = (
@@ -3587,14 +3591,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
-        _append_event(
-            conn, task_id, "unblocked",
-            (
-                {"status": new_status, "resume_status": resume_status}
-                if new_status != "ready" or resume_status != "ready"
-                else None
-            ),
-        )
+        _append_event(conn, task_id, "unblocked",
+                      unblocked_payload(new_status, resume_status, reason))
         return True
 
 
@@ -4210,6 +4208,7 @@ from hermes_cli.kanban_db_connect import (
     init_db,
     write_txn,
 )
+from hermes_cli.kanban_db_rework import unblocked_payload
 from hermes_cli.kanban_db_workspace import (
     _cleanup_workspace,
     _is_managed_scratch_path,

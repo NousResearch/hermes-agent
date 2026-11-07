@@ -34,6 +34,10 @@ ANYDOC_EXTENSIONS = frozenset({
 # anydoc loads whole files (no streaming); read_file's char budget applies only post-conversion.
 MAX_ANYDOC_BYTES = 50 * 1024 * 1024
 MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
+# Decompressed ceiling for one OOXML part. read_file renders a preview (its char budget is orders
+# of magnitude smaller than this), so a part that inflates past it is refused instead of parsed:
+# a 70 KB DOCX can otherwise buy seconds of CPU and hundreds of MiB of RSS (#150199).
+_MAX_PART_BYTES = 32 * 1024 * 1024
 _MAX_XLSX_ROWS_PER_SHEET = 5000
 _MAX_XLSX_COLS = 256
 
@@ -459,10 +463,59 @@ def _open_zip(path: str, kind: str) -> Iterator[zipfile.ZipFile]:
         raise ExtractionError(f"Not a valid {kind}: {exc}" if bad_zip else str(exc)) from exc
 
 
+def _part_too_large(name: str, size: int) -> ExtractionError:
+    """The one refusal message for an OOXML part that inflates past the preview ceiling."""
+    return ExtractionError(
+        f"{name} expands to {size / (1024 * 1024):.0f} MiB, over the "
+        f"{_MAX_PART_BYTES // (1024 * 1024)} MiB limit for a document preview")
+
+
+class _PartReader:
+    """Read-only view of one package part that refuses to inflate past ``_MAX_PART_BYTES``.
+
+    The central directory's ``file_size`` is a claim the archive makes about itself, so the
+    ceiling is checked there first (cheap, before any inflation) and enforced again here on the
+    bytes that actually arrive.
+    """
+
+    def __init__(self, raw: Any, name: str) -> None:
+        self._raw = raw
+        self._name = name
+        self._total = 0
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._raw.read(size)
+        self._total += len(data)
+        if self._total > _MAX_PART_BYTES:
+            raise _part_too_large(self._name, self._total)
+        return data
+
+    def close(self) -> None:
+        self._raw.close()
+
+
+@contextlib.contextmanager
+def _open_part(zf: zipfile.ZipFile, name: str) -> Iterator[_PartReader]:
+    """Stream a package part instead of materializing it; a missing name raises ``KeyError``.
+
+    Callers parse the stream incrementally (``ET.iterparse`` + ``clear``) so peak memory follows
+    the largest single element, not the whole part.
+    """
+    info = zf.getinfo(name)
+    if info.file_size > _MAX_PART_BYTES:
+        raise _part_too_large(name, info.file_size)
+    raw = zf.open(name)
+    try:
+        yield _PartReader(raw, name)
+    finally:
+        raw.close()
+
+
 def _zip_xml(zf: zipfile.ZipFile, name: str, optional: bool = False) -> Any:
     """Parse a package part; ``optional`` parts yield an empty element when absent or malformed."""
     try:
-        return ET.fromstring(zf.read(name))
+        with _open_part(zf, name) as part:
+            return ET.parse(part).getroot()
     except (KeyError, ET.ParseError) as exc:
         if optional:
             return ET.Element("missing")
@@ -494,12 +547,27 @@ def _xlsx_string_text(item: ET.Element, s: str) -> str:
         for child in item if child.tag in {f"{s}t", f"{s}r"})
 
 
+def _shared_strings(zf: zipfile.ZipFile) -> list[str]:
+    """``xl/sharedStrings.xml`` in index order, streamed; absent or malformed yields none."""
+    s = f"{{{_NS_S}}}"
+    shared: list[str] = []
+    try:
+        with _open_part(zf, "xl/sharedStrings.xml") as part:
+            for _event, item in ET.iterparse(part, events=("end",)):
+                if item.tag != f"{s}si":
+                    continue
+                shared.append(_xlsx_string_text(item, s))
+                item.clear()
+    except (KeyError, ET.ParseError):
+        return []
+    return shared
+
+
 def _extract_xlsx(path: str) -> str:
     s, r, pr = f"{{{_NS_S}}}", f"{{{_NS_REL}}}", f"{{{_NS_PKG_REL}}}"
     with _open_zip(path, "XLSX") as zf:
         names = set(zf.namelist())
-        sst = _zip_xml(zf, "xl/sharedStrings.xml", optional=True)
-        shared = [_xlsx_string_text(item, s) for item in sst.iter(f"{s}si")]
+        shared = _shared_strings(zf)
         rels_root = _zip_xml(zf, "xl/_rels/workbook.xml.rels", optional=True)
         rels = {rel.get("Id", ""): rel.get("Target", "")
                 for rel in rels_root.iter(f"{pr}Relationship") if rel.get("Id")}
@@ -510,7 +578,7 @@ def _extract_xlsx(path: str) -> str:
             if sheet.get("state", "visible") in {"hidden", "veryHidden"} or part not in names:
                 continue
             with contextlib.suppress(ET.ParseError):
-                rows = _sheet_rows(zf.read(part), shared)
+                rows = _sheet_rows(zf, part, shared)
                 out += [f"# ── Sheet: {sheet.get('name', 'Sheet')} ──",
                         *(["\t".join(row) for row in rows] or ["(empty)"]), ""]
     return _joined(out, "XLSX has no visible sheets with content")
@@ -523,19 +591,25 @@ def _col_index(ref: str) -> int:
     return max(idx - 1, 0)
 
 
-def _sheet_rows(xml_bytes: bytes, shared: list[str]) -> list[list[str]]:
-    root = ET.fromstring(xml_bytes)
+def _sheet_rows(zf: zipfile.ZipFile, part_name: str, shared: list[str]) -> list[list[str]]:
+    """Rows of one worksheet, streamed and cleared row by row (see ``_open_part``)."""
     s = f"{{{_NS_S}}}"
     rows: list[list[str]] = []
-    for row in itertools.islice(root.iter(f"{s}row"), _MAX_XLSX_ROWS_PER_SHEET):
-        cells: dict[int, str] = {}
-        max_col = -1
-        for cell in row.iter(f"{s}c"):
-            col = _col_index(cell.get("r", "")) if cell.get("r") else max_col + 1
-            if col < _MAX_XLSX_COLS:
-                cells[col] = _cell_value(cell, shared, s)
-                max_col = max(max_col, col)
-        rows.append([cells.get(i, "") for i in range(max_col + 1)])
+    with _open_part(zf, part_name) as part:
+        for _event, row in ET.iterparse(part, events=("end",)):
+            if row.tag != f"{s}row":
+                continue
+            cells: dict[int, str] = {}
+            max_col = -1
+            for cell in row.iter(f"{s}c"):
+                col = _col_index(cell.get("r", "")) if cell.get("r") else max_col + 1
+                if col < _MAX_XLSX_COLS:
+                    cells[col] = _cell_value(cell, shared, s)
+                    max_col = max(max_col, col)
+            rows.append([cells.get(i, "") for i in range(max_col + 1)])
+            row.clear()
+            if len(rows) >= _MAX_XLSX_ROWS_PER_SHEET:
+                break
     while rows and not any(value.strip() for value in rows[-1]):
         rows.pop()
     return rows

@@ -1437,6 +1437,12 @@ class GoalManager:
                 goal=state.goal, command=gate.command, exit_code=exit_code, attempt=gate.attempts,
                 max_retries=gate.max_retries, output=tail or "(no output)",
             )
+            # A gate failure changes the next action, not the owner's completion criteria.
+            # Keep the same contract and extra criteria visible after interruption/reload too.
+            if state.has_contract():
+                prompt += "\n\n" + state.contract.render_block()
+            if state.subgoals:
+                prompt += "\n\n" + _render_extra_criteria(state.subgoals)
             return _decision(
                 "active", True, prompt, "gate_failed",
                 f"gate failed (exit {exit_code}): $ {gate.command}",

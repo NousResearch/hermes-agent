@@ -78,6 +78,36 @@ class TestInterruptAutoPause:
         mgr.resume()
         assert mgr.state.status == "active"
 
+class TestInterruptedCriteriaContinuity:
+    def test_reloaded_goal_keeps_criteria_in_failed_gate_continuation(self, hermes_home):
+        from hermes_cli.goals import GoalContract, GoalManager
+
+        cli, mgr = _make_cli_with_goal("reload-criteria", "Repair the destination")
+        mgr.set_contract(GoalContract(verification="Read exact contents at the destination"))
+        mgr.add_subgoal("Preserve the original source")
+        mgr.add_gate("destination-check")
+        cli._last_turn_interrupted = True
+        cli._maybe_continue_goal_after_turn()
+
+        reloaded = GoalManager("reload-criteria")
+        assert reloaded.state.status == "paused"
+        reloaded.resume(reset_budget=False)
+        cli._goal_manager = reloaded
+        cli._last_turn_interrupted = False
+        cli.conversation_history = [{"role": "assistant", "content": "More work required"}]
+        with patch("hermes_cli.goals.run_gate", return_value=(False, 1, "destination missing")), patch(
+            "hermes_cli.goals.judge_goal"
+        ) as judge:
+            cli._maybe_continue_goal_after_turn()
+            judge.assert_not_called()
+
+        prompt = cli._pending_input.get_nowait()
+        assert "Read exact contents at the destination" in prompt
+        assert "Preserve the original source" in prompt
+        assert "destination missing" in prompt
+        assert reloaded.state.status == "active"
+
+
 class TestHealthyTurnStillRuns:
     def test_clean_response_enqueues_continuation_when_judge_says_continue(
         self, hermes_home,

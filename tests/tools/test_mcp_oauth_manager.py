@@ -871,3 +871,30 @@ async def test_refresh_400_recovery_rejects_disk_pair_from_another_issuer(tmp_pa
     assert recovered is False
     assert provider.context.current_tokens is None
     assert (await storage.get_tokens()).refresh_token is None, "foreign refresh token must not survive on disk"
+
+
+@pytest.mark.asyncio
+async def test_refresh_refusal_is_recorded_so_a_rollback_cannot_restore_it(tmp_path, monkeypatch):
+    """A definitive 4xx refusal names the grant that is dead; a throttle says nothing about it.
+
+    The pre-re-login snapshot still holds the refused grant, so this record is what lets
+    ``HermesTokenStorage.restore`` drop it instead of putting back a token that can never refresh
+    (#150009): a failed or cancelled authorize used to leave the server looking authenticated.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = "https://idp.example.com/oauth/token"
+    provider = _provider_with_token_endpoint(tmp_path, {}, endpoint, monkeypatch)
+    storage = provider.context.storage
+
+    provider.context.current_tokens = _token("A1", "R-dead")
+    refused = await provider._handle_refresh_response(
+        _fake_response(400, endpoint, b'{"error":"invalid_grant"}')
+    )
+    assert refused is False
+    assert storage.refused_refresh_token("R-dead"), "a definitive refusal must be recorded"
+
+    provider.context.current_tokens = _token("A1", "R-throttled")
+    await provider._handle_refresh_response(
+        _fake_response(429, endpoint, b'{"error":"slow_down"}')
+    )
+    assert not storage.refused_refresh_token("R-throttled"), "a throttle must not be recorded as a refusal"

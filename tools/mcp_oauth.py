@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import contextvars
 import errno
+import hashlib
 import html
 import importlib.util as _importlib_util
 import json
@@ -236,6 +237,13 @@ def _get_token_dir(hermes_home: str | Path | None = None) -> Path:
 def _safe_filename(name: str) -> str:
     """Sanitize a server name for use as a filename (no path separators)."""
     return re.sub(r"[^\w\-]", "_", name).strip("_")[:128] or "default"
+
+
+def _refresh_digest(token: str | None) -> str | None:
+    """Digest of a refresh token: records WHICH grant a refusal was about without storing the token."""
+    if not isinstance(token, str) or not token:
+        return None
+    return hashlib.sha256(token.encode("utf-8", "surrogateescape")).hexdigest()
 
 
 # Callback-port reservation: bound-but-not-listening sockets keyed by port, held from selection
@@ -497,6 +505,9 @@ class HermesTokenStorage:
             payload["hermes_issuer"] = self._bound_issuer
             self.loaded_issuer = self._bound_issuer
         _write_json(self._tokens_path(), payload)
+        # A new grant supersedes any refusal: a later rollback may put THESE tokens back.
+        with contextlib.suppress(OSError):
+            self._refused_refresh_path().unlink(missing_ok=True)
         logger.debug("OAuth tokens saved for %s", self._server_name)
 
     def bind_issuer(self, issuer: str | None) -> None:
@@ -617,12 +628,60 @@ class HermesTokenStorage:
 
         mkdir_under_hermes_home(token_dir)
         for fname, data in snapshot.items():
+            data = self._without_refused_refresh(fname, data)
             try:
                 fd = os.open(str(token_dir / fname), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
                 with os.fdopen(fd, "wb") as fh:
                     fh.write(data)
             except OSError as exc:
                 logger.warning("Failed to restore OAuth state %s: %s", fname, exc)
+
+    def _refused_refresh_path(self) -> Path:
+        return _get_token_dir(self._hermes_home) / (_safe_filename(self._server_name) + ".refresh-refused")
+
+    def mark_refresh_refused(self, refresh_token: str | None) -> None:
+        """Record that the authorization server refused *refresh_token* outright (``invalid_grant``).
+
+        Only its digest is written. A snapshot taken before a re-login still holds that grant, so
+        ``restore`` consults this before writing a refresh token back: a failed or cancelled
+        authorization must not leave the server looking authenticated on a grant that can never
+        refresh again. A successful ``set_tokens`` drops the record.
+        """
+        digest = _refresh_digest(refresh_token)
+        if digest is None:
+            return
+        with contextlib.suppress(OSError):
+            path = self._refused_refresh_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(digest, encoding="utf-8")
+
+    def refused_refresh_token(self, refresh_token: str | None) -> bool:
+        """True when *refresh_token* is the grant this server's authorization server last refused."""
+        digest = _refresh_digest(refresh_token)
+        if digest is None:
+            return False
+        try:
+            recorded = self._refused_refresh_path().read_text(encoding="utf-8-sig").strip()
+        except OSError:
+            return False
+        return recorded == digest
+
+    def _without_refused_refresh(self, fname: str, data: bytes) -> bytes:
+        """*data* for *fname*, minus a refresh token already proven dead (the access token stays)."""
+        if fname != self._tokens_path().name:
+            return data
+        try:
+            payload = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return data
+        if not isinstance(payload, dict) or not self.refused_refresh_token(payload.get("refresh_token")):
+            return data
+        payload.pop("refresh_token", None)
+        logger.warning(
+            "MCP OAuth '%s': rolled back to a token file whose refresh grant the authorization server "
+            "refused; kept the access token and dropped the dead refresh token (re-authorize to continue)",
+            self._server_name)
+        return json.dumps(payload).encode("utf-8")
 
     def poison_client_registration(self) -> bool:
         """Discard a dead DCR client (``invalid_client`` at the token endpoint) plus stale ``meta.json``

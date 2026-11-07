@@ -467,6 +467,12 @@ class HermesProviderMixin:
                     "Recovered a peer-rotated refresh token instead of clearing the session"
                 )
                 return True
+            # A 4xx (a throttle aside) is the authorization server saying the grant is dead: record
+            # WHICH one, so a rollback after a failed or cancelled re-login cannot restore it.
+            if 400 <= response.status_code < 500 and response.status_code not in (408, 425, 429):
+                mark = getattr(getattr(self.context, "storage", None), "mark_refresh_refused", None)
+                if mark is not None:
+                    mark(getattr(self.context.current_tokens, "refresh_token", None))
             self.context.clear_tokens()
             return False
         from httpx import HTTPError

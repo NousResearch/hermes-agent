@@ -642,7 +642,9 @@ class PluginsManageParams(ProfileParams):
     security scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only);
     ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);
     ``presence``: ``names`` (catalog names, answered in that order); ``update_all``: no fields;
-    ``auto_update``: ``enable`` to set ``plugins.auto_apply`` (omit to read it)."""
+    ``auto_update``: ``enable`` to set ``plugins.auto_apply`` (omit to read it).
+    ``toggle``/``install`` may carry ``setup_consent``: the reviewed native-setup consent echoed back from a
+    ``consent_required`` refusal (bound to plugin key, profile home and revision)."""
 
     action: PluginsAction = PluginsAction.list
     key: str | None = None
@@ -656,6 +658,7 @@ class PluginsManageParams(ProfileParams):
     inspected_sha: str | None = None
     accept_capabilities: bool | None = None
     values: dict[str, JsonValue] | None = None
+    setup_consent: dict[str, JsonValue] | None = None
     names: list[str] | None = None
 
 
@@ -712,6 +715,8 @@ class AgentPluginRow(Result):
     description: str
     source: str
     status: str
+    # Bundled plugins that are on without an explicit enable; False marks an opt-in bundled plugin.
+    default_enabled: bool
     portable: bool
     install_dir: str
     has_desktop_half: bool

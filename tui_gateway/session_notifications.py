@@ -151,9 +151,10 @@ _KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out
 _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0
 
 
-def _notif_release_turn(session: dict) -> None:
+def _notif_release_turn(session: dict, *, queued_prompt_generation: int | None = None) -> None:
+    from tui_gateway.prompt_turn import _release_prompt_claim_locked
     with session["history_lock"]:
-        session["running"] = False
+        _release_prompt_claim_locked(session, queued_prompt_generation)
 
 
 def _notif_claim_turn(session: dict) -> bool:
@@ -163,6 +164,7 @@ def _notif_claim_turn(session: dict) -> bool:
     with _session_turn_admission(session) as admitted:
         if not admitted or session.get("running") or session.get("_turn_cancel_requested"):
             return False
+        session["_running_prompt_generation"] = int(session.get("_queued_prompt_generation", 0))
         session["running"] = True
         return True
 
@@ -171,23 +173,25 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
     print(f"[tui_gateway] {what}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
-def _notif_unowned_event(sid: str, evt: dict, deferred) -> None:
+def _notif_unowned_event(sid: str, evt: dict, deferred) -> bool:
     """Dispose of an addressed event this session cannot prove it owns (never adopt an orphan): park it for its
     owner's return (``notification_park``). One the park refuses: a delegation is dropped at WARNING with its offer
     cleared (``return_completion_offer``; the row stays pending) or, during a shutdown drain, goes onto ``deferred``
-    to be requeued; anything else drops."""
+    to be requeued; anything else drops. True when the event is retained (parked or deferred), False for a drop,
+    which the caller settles."""
     evt_type, is_delegation = evt.get("type", "completion"), evt.get("type") == "async_delegation"
     origin, key = str(evt.get("origin_ui_session_id") or ""), str(evt.get("session_key") or "")
     from tui_gateway import notification_park
     if notification_park.park(evt):
         logger.debug("Parked unowned %s notification (origin=%r key=%r) until its owner returns",
                      evt_type, origin, key)
-    elif deferred is not None:
+        return True
+    if deferred is not None:
         if is_delegation:
             deferred.append(evt)
-        else:
-            logger.debug("Dropping unowned %s notification during shutdown drain (origin=%r key=%r)",
-                         evt_type, origin, key)
+            return True
+        logger.debug("Dropping unowned %s notification during shutdown drain (origin=%r key=%r)",
+                     evt_type, origin, key)
     else:
         # A durable replay stays pending: hand it back so the orphan sweep re-offers it once its owner
         # is live (#97202), and keep that retry out of WARNING.
@@ -198,6 +202,7 @@ def _notif_unowned_event(sid: str, evt: dict, deferred) -> None:
         if is_delegation:
             from tools.async_delegation import return_completion_offer
             return_completion_offer(evt)
+    return False
 
 
 # A retried notice the canonical ledger refuses (SESSION_NOT_OWNED persists while a gateway owns the
@@ -615,6 +620,9 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
             return
     except Exception:
         release_event_delivery(evt, claim)
+        # Process notices are non-durable and this failure path drops them.
+        from tools.process_registry import process_registry
+        process_registry.settle_notification(evt)
         return
     complete_event_delivery(evt, claim)
 
@@ -636,12 +644,19 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
             time.sleep(0.1)
         return True
     if not owned and _notification_event_requires_owner(evt) and not _session_owns_notification_event(sid, session, evt):
-        _notif_unowned_event(sid, evt, deferred)
+        if not _notif_unowned_event(sid, evt, deferred):
+            registry.settle_notification(evt)  # a drop, not a requeue
+        return True
+    owner = str(evt.get("owner_task_id") or evt.get("task_id") or "")
+    if not is_delegation and owner.startswith("sa-") and not registry._surface_child_process_notifications():
+        registry.settle_notification(evt)
         return True
     if evt_type == "completion" and registry.is_completion_consumed(evt.get("session_id", "")):
+        registry.settle_notification(evt)
         return True
     text = fmt(evt)
     if not text:
+        registry.settle_notification(evt)
         return True
     # Emit once per dedup key: a re-queued completion would otherwise re-emit every 0.5s while the session is busy,
     # while distinct watch_match events from one process must stay visible.
@@ -658,6 +673,7 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     if evt_type != "async_delegation" and _background_notifications_off(session):
         # The user opted out of process-driven agent wakes: the status row above is the whole
         # delivery. Subagent results are not process notifications and still land.
+        registry.settle_notification(evt)
         return True
     if evt_type == "completion" and completions is not None:
         completions.append((evt, text))
@@ -694,6 +710,9 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
     except Exception as exc:
         _notif_log_failure("completion batch preparation failed", exc)
         _notif_release_turn(session)
+        # Nothing re-queues these completions, so the failure is a drop.
+        for event, _text in notifications:
+            registry.settle_notification(event)
         for event, _text, claim in claimed:
             release_event_delivery(event, claim)
         return
@@ -714,6 +733,7 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
     except Exception:
         for event, _text, claim in claimed:
             release_event_delivery(event, claim)
+            registry.settle_notification(event)
         return
     for event, _text, claim in claimed:
         complete_event_delivery(event, claim)
@@ -747,6 +767,75 @@ def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, 
     _notif_dispatch_completions(sid, session, completions, registry, deferred)
 
 
+def _poll_plugin_idle_once(sid: str, session: dict) -> bool:
+    """Offer plugins a synchronous, owner-pinned idle turn admission capability.
+
+    No queue or delivery state lives here; a plugin owns any durable receipt it
+    continues from. A callback must not retain submit beyond this hook.
+    """
+    from concurrent.futures import CancelledError
+    from hermes_cli.plugins import invoke_hook
+    from hermes_cli.session_hook_context import hook_profile_scope
+    started = False
+    open_boundary = True
+    caller_thread = threading.get_ident()
+    pinned_transport = session.get("transport")
+
+    def identity_now():
+        return {**_session_hook_identity(session), "source": _session_source(session),
+                "hermes_home": _session_home(session)}
+
+    identity = identity_now()
+
+    def eligible():
+        lease = session.get("active_session_lease")
+        return (not any(session.get(k) for k in (
+            "running", "_closing", "_finalized", "queued_prompt", "queued_prompts",
+            "_auto_continue_scheduled")) and session.get("agent") is not None
+            and not (lease is not None and getattr(lease, "released", False)))
+
+    with session["history_lock"]:
+        if not eligible():
+            return False
+
+    def submit(message, *, terminal_callback):
+        nonlocal started
+        with _session_turn_admission(session) as admitted:
+            if (not admitted or not open_boundary or started or not eligible()
+                    or threading.get_ident() != caller_thread
+                    or session.get("transport") is not pinned_transport
+                    or identity_now() != identity):
+                return False
+            queued_generation = int(session.get("_queued_prompt_generation", 0))
+            session["running"] = True
+            session["_running_prompt_generation"] = queued_generation
+        try:
+            started = _run_prompt_submit(None, sid, session, message, image_paths=[],
+                                         queued_prompt_generation=queued_generation,
+                                         terminal_callback=terminal_callback)
+        except Exception:
+            _notif_release_turn(session, queued_prompt_generation=queued_generation)
+            raise
+        if not started:
+            _notif_release_turn(session, queued_prompt_generation=queued_generation)
+            with session["history_lock"]:
+                cancelled = int(session.get("_queued_prompt_generation", 0)) != queued_generation
+            if cancelled:
+                # An explicit Stop is terminal, not a transient busy deferral.
+                raise CancelledError("Plugin continuation cancelled before native admission")
+        return started
+
+    with _sessions_lock:
+        if _sessions.get(sid) is not session:
+            return False
+    try:
+        with hook_profile_scope(_session_home(session)):
+            invoke_hook("on_session_idle", **identity, submit=submit)
+    finally:
+        open_boundary = False
+    return started
+
+
 def _notification_poller_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
     with _session_profile_runtime_scope(session):
         _notification_poller_scoped_loop(stop_event, sid, session)
@@ -777,6 +866,10 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
         now = time.monotonic()
         # Completions whose owner process died after this one started (#97202); throttled per profile home.
         async_delegation.maybe_sweep_orphaned_completions(queue)
+        try:
+            _poll_plugin_idle_once(sid, session)
+        except Exception:
+            logger.warning("Plugin idle delivery poll failed", exc_info=True)
         # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:

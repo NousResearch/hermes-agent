@@ -83,8 +83,10 @@ export interface InstallDeps {
  *  that commit and fail forever, so the dialog reads the source again and shows the new commit first.
  *  `partial`: the agent half installed at the reviewed commit, then the desktop half was refused because the
  *  source left it; only a replacement of both halves may follow. `needsConfirm`: the backend cannot hold the
- *  install to the reviewed commit and installed nothing; the user decides whether to install anyway. */
+ *  install to the reviewed commit and installed nothing; the user decides whether to install anyway.
+ *  `setup`: the agent half's files landed but its native setup needs review (enablement unchanged). */
 export type InstallOutcome =
+  | { error: string; plugin: string; status: 'setup' }
   | { error: string; status: 'failed' }
   | { error: string; status: 'partial' }
   | { error: string; status: 'stale' }
@@ -342,6 +344,10 @@ export async function runPluginInstall(plan: InstallPlan, deps: InstallDeps): Pr
 
   for (const message of report.successes) {
     notify({ kind: 'success', message })
+  }
+
+  if (agentResult && !agentResult.ok && agentResult.installed) {
+    return { status: 'setup', error: report.errors.join(' '), plugin: agentResult.pluginName ?? plan.request.repo }
   }
 
   if (agentResult?.ok && skipsDesktopHalf(plan.request, plan.probe)) {

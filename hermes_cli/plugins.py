@@ -132,7 +132,9 @@ VALID_HOOKS: set[str] = {
     # Run-all-then-pick-first (see get_plugin_error_classification). Privacy: error_message/
     # error_body may be unredacted.
     "transform_api_error_classification", "on_session_start", "on_session_end",
-    "on_session_finalize", "on_session_reset", "on_session_delete",
+    "on_session_finalize", "on_session_reset", "on_session_delete", "on_session_identity",
+    # Native idle boundary; synchronous submit(message, terminal_callback) capability.
+    "on_session_idle",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
@@ -1088,6 +1090,10 @@ def _get_pre_tool_call_directive_details(
     tool_name: str, args: Optional[dict[str, Any]], task_id: str = "", session_id: str = "",
     tool_call_id: str = "", turn_id: str = "", api_request_id: str = "",
     middleware_trace: Optional[list[dict[str, Any]]] = None, conversation_id: str = "",
+    *, runtime_session_id: Optional[str] = None, stored_session_id: Optional[str] = None,
+    profile: Optional[str] = None, hermes_home: Optional[Path] = None,
+    source: Optional[str] = None, surface: Optional[str] = None, session_origin: Optional[str] = None,
+    parent_session_id: Optional[str] = None,
 ) -> _PreToolCallDirective:
     """Check ``pre_tool_call`` hooks for ``{"action": "block", "message"}`` (veto; message becomes
     the tool result) or ``{"action": "approve", "message", "rule_key"?}`` (escalate ANY tool to the
@@ -1104,6 +1110,9 @@ def _get_pre_tool_call_directive_details(
         "pre_tool_call", tool_name=tool_name, args=args if isinstance(args, dict) else {},
         task_id=task_id, session_id=session_id, tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=list(middleware_trace or []), conversation_id=conversation_id,
+        runtime_session_id=runtime_session_id, stored_session_id=stored_session_id,
+        profile=profile, hermes_home=hermes_home, source=source, surface=surface,
+        session_origin=session_origin, parent_session_id=parent_session_id,
     )
     modified_args: Optional[dict[str, Any]] = None
     first_approve: Optional[tuple[Optional[str], Optional[str]]] = None  # (message, rule_key)

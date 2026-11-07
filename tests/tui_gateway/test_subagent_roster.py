@@ -56,8 +56,27 @@ def test_roster_resolves_a_background_process_route_key_to_its_stored_conversati
     _, call = roster
     route = "agent:main:local:dm:desktop-chat-1"
     server._get_db().create_session("local-abc123", source="local", session_key=route)
-    proc = ProcessSession(id="proc_route", command="sleep 90", session_key=route)
+    proc = ProcessSession(id="proc_route", command="sleep 90", session_key=route, notify_on_complete=True)
     monkeypatch.setattr(process_registry, "list_sessions", lambda **_: [{"session_id": proc.id}])
     monkeypatch.setattr(process_registry, "get", lambda pid: proc if pid == proc.id else None)
 
     assert call() == {"local-abc123": {"session_id": "local-abc123", "subagents": 0, "background": 1}}
+
+
+def test_roster_counts_only_background_work_the_agent_awaits(roster, monkeypatch):
+    """A silent server (no completion notice, no unmet watch) is monitoring, not active work: it must not light
+    an off-screen row. Armed, watching and owed-notification processes do."""
+    from tools.process_registry import ProcessSession, process_registry
+
+    _, call = roster
+    procs = {
+        "silent": ProcessSession(id="silent", command="serve", parent_session_id="parent-a"),
+        "notify": ProcessSession(id="notify", command="build", parent_session_id="parent-a", notify_on_complete=True),
+        "watch": ProcessSession(id="watch", command="dev", parent_session_id="parent-a", watch_patterns=["READY"]),
+        "hit": ProcessSession(id="hit", command="dev", parent_session_id="parent-a", watch_patterns=["READY"]),
+    }
+    procs["hit"]._watch_hits = 1
+    monkeypatch.setattr(process_registry, "list_sessions", lambda **_: [{"session_id": k} for k in procs])
+    monkeypatch.setattr(process_registry, "get", procs.get)
+
+    assert call() == {"parent-a": {"session_id": "parent-a", "subagents": 0, "background": 2}}

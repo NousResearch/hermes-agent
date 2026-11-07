@@ -81,12 +81,19 @@ def platform_configured_on(home: Path, name: str) -> bool:
     (:func:`_merged_platform_block`), so the last explicit ``enabled`` wins. A stored token with no
     ``enabled`` anywhere counts too. Env credentials are the caller's to check. Read-only; works before
     the platform's plugin loads."""
-    from gateway.config import PlatformConfig
     block = _merged_platform_block(home, name)
     if block is None:
         return False
-    platform = PlatformConfig.from_dict(block)
+    platform = _platform_config(block)
     return platform.enabled or ("enabled" not in block and bool(str(platform.token or "").strip()))
+
+
+def _platform_config(block: dict):
+    """``PlatformConfig`` of a merged block, read for its ``enabled``, token and ``extra``. A saved
+    ``home_channel`` (``/sethome``) is left out: it names a ``Platform`` a left-core platform has only once
+    its plugin loads, so parsing it before the install raised and stopped the home's whole migration."""
+    from gateway.config import PlatformConfig
+    return PlatformConfig.from_dict({**block, "home_channel": None})
 
 
 def _toolset_listed(config: dict, names: frozenset[str], *, own_platform: str = "") -> bool:
@@ -139,13 +146,12 @@ def yuanbao_in_use(home: Path, *, process_env: bool = False) -> bool:
     now turns the plugin off)."""
     if _plugins_listed(home, ("platforms/yuanbao", "yuanbao-platform"))[1]:
         return False
-    from gateway.config import PlatformConfig
     block = _merged_platform_block(home, "yuanbao")
-    if block is not None and "enabled" in block and not PlatformConfig.from_dict(block).enabled:
+    if block is not None and "enabled" in block and not _platform_config(block).enabled:
         return _toolset_listed(_read_config(home), frozenset({"yuanbao", "hermes-yuanbao"}), own_platform="yuanbao")
     if platform_configured_on(home, "yuanbao"):
         return True
-    extra = PlatformConfig.from_dict(block).extra if block is not None else {}
+    extra = _platform_config(block).extra if block is not None else {}
 
     def field(key: str, *env_names: str) -> bool:
         return bool(str(extra.get(key) or "").strip()) or any(

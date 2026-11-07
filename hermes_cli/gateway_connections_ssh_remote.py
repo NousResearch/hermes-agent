@@ -404,7 +404,18 @@ except OSError:
  except subprocess.CalledProcessError:
   # pid already gone — a dead process is FOREIGN, not a transport error
   print("FOREIGN");sys.exit(0)
- args=shlex.split(line)
+ # ps joins argv with spaces and no quoting (macOS has no /proc), so a quote or space in the
+ # Hermes path breaks shlex: cut the known entry path out before splitting the rest.
+ head,rest=None,line
+ for e in sorted(expected_entries,key=len,reverse=True):
+  at=0 if line.startswith(e+" ") else line.find(" "+e+" ")+1
+  if at>0 or line.startswith(e+" "):
+   head,rest=line[:at].split()+[e],line[at+len(e)+1:]
+   break
+ try:
+  args=(head or [])+shlex.split(rest)
+ except ValueError:
+  args=(head or [])+rest.split()
 ok=False
 try:
  profile_arg=args.index("--profile") if expected_profile else -1

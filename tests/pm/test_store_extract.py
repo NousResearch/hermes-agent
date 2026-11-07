@@ -38,7 +38,7 @@ def test_relative_symlinks_resolve_from_their_own_directory(tmp_path):
 @pytest.mark.parametrize("linkname", ["../../../etc/passwd", "/etc/passwd"])
 def test_symlinks_escaping_the_destination_are_rejected(tmp_path, linkname):
     archive = _tar(tmp_path, [("python/bin/evil", linkname)])
-    with pytest.raises(tarfile.FilterError):
+    with pytest.raises(tarfile.TarError):
         extract(archive, tmp_path / "out")
     assert not (tmp_path / "out" / "python/bin/evil").is_symlink()
 

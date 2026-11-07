@@ -6,6 +6,7 @@ config.
 
 import asyncio
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -57,18 +58,20 @@ def test_worker_for_served_profile_gets_its_own_env_and_toolset_pin(served, monk
     spawned = {}
 
     def fake_popen(argv, **kwargs):
+        assert kwargs["stdout"] == subprocess.DEVNULL
         spawned["argv"], spawned["env"] = argv, kwargs["env"]
         return SimpleNamespace(pid=4242)
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(kbd, "_open_worker_log", lambda task, board: open("/dev/null", "w"))
-    monkeypatch.setattr(kbd, "_hermes_argv", lambda: ["hermes"], raising=False)
+    monkeypatch.setattr(kbd, "_restart_safe_worker_argv", lambda _task, command: command)
     kbd._default_spawn(task, str(served.alpha), board=None)
 
     env = spawned["env"]
     assert env["HERMES_HOME"] == str(served.alpha)
     assert "HERMES_MODEL" not in env and "TERMINAL_ENV" not in env
-    assert spawned["argv"][-2:] == ["-m", "hermes_cli.kanban_worker_client"]
+    command = spawned["argv"]
+    assert command[:3] == [sys.executable, "-m", "hermes_cli.kanban_worker_log"]
+    assert command[command.index("--") + 1:] == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
 
 
 class RecordingAdapter:

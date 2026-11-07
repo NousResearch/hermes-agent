@@ -14,6 +14,11 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_dispatch as kbd
 
 
+def _unwrap_worker_log_wrapper(command: list[str]) -> list[str]:
+    wrapper_index = command.index("hermes_cli.kanban_worker_log")
+    return command[command.index("--", wrapper_index) + 1 :]
+
+
 @pytest.fixture
 def worker_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, kb.Task]:
     root = tmp_path / ".hermes"
@@ -83,7 +88,10 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     assert captured_cmd[unit_index + 1] == "hermes-worker-kanban-t_candidate_restart-run-23"
     assert "MemoryMax=536870912" in captured_cmd
     separator = captured_cmd.index("--")
-    assert captured_cmd[separator + 1 :] == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    assert captured_cmd[separator + 1 : separator + 4] == [sys.executable, "-m", "hermes_cli.kanban_worker_log"]
+    assert _unwrap_worker_log_wrapper(captured_cmd[separator + 1 :]) == [
+        sys.executable, "-m", "hermes_cli.kanban_worker_client",
+    ]
     assert task.assignee is not None
     assert captured_env["HERMES_PROFILE"] == task.assignee
     assert captured_env["HERMES_HOME"] == str(workspace.parent / ".hermes" / "profiles" / task.assignee)
@@ -143,7 +151,7 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
     )
 
     assert kbd._default_spawn(task, str(workspace)) == 4243
-    assert captured_cmd == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    assert _unwrap_worker_log_wrapper(captured_cmd) == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
 
 
 @pytest.mark.platforms("linux")
@@ -182,7 +190,7 @@ def test_oneshot_unit_dispatcher_scope_wraps_or_warns_never_dooms_silently(
     with caplog.at_level("WARNING", logger=process_registry.logger.name):
         kbd._default_spawn(task, str(workspace))
     # Unwrapped: the bare worker argv (the profile owner executes; this client waits for its receipt).
-    assert spawned[-1] == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    assert _unwrap_worker_log_wrapper(spawned[-1]) == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
     warned = [r.getMessage() for r in caplog.records if "KILLED when the unit exits" in r.getMessage()]
     assert len(warned) == 1 and "KillMode=process" in warned[0]
 
@@ -202,11 +210,20 @@ def test_real_user_systemd_scope_preserves_worker_context(
     if not process_registry._systemd_run_user_scope_available():
         pytest.skip("systemd-run --user --scope is unavailable on this host")
 
-    workspace, task = worker_setup
-    from dataclasses import replace
-    from uuid import uuid4
-    # User-manager transient units outlive pytest's temporary directories.
-    task = replace(task, id=f"t_candidate_{uuid4().hex}")
+    from hermes_cli import kanban_db_connect as kbc
+
+    workspace, template = worker_setup
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(workspace.parent / ".hermes" / "scope-test.db"))
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    # The wrapper checks its live claim before launching the payload. Use the
+    # real claim path, which also gives this transient scope a unique task id.
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(
+            conn, title=template.title, assignee=template.assignee,
+            workspace_kind=template.workspace_kind, workspace_path=str(workspace),
+        )
+        task = kb.claim_task(conn, tid)
+    assert task is not None
     unit = f"hermes-worker-kanban-{task.id}-run-{task.current_run_id}.scope"
     # Only this freshly named scope is test-owned; the live-system guard still refuses every other unit.
     request.node.live_system_guard_owned_units = {unit}
@@ -215,7 +232,7 @@ def test_real_user_systemd_scope_preserves_worker_context(
         "import json, os, pathlib, sys, time; "
         "p = pathlib.Path(sys.argv[1]); t = p.with_suffix('.tmp'); "
         "t.write_text(json.dumps({"
-        "'pid': os.getpid(), 'cwd': os.getcwd(), "
+        "'pid': os.getpid(), 'ppid': os.getppid(), 'cwd': os.getcwd(), "
         "'task': os.environ.get('HERMES_KANBAN_TASK'), "
         "'run': os.environ.get('HERMES_KANBAN_RUN_ID'), "
         "'claim': os.environ.get('HERMES_KANBAN_CLAIM_LOCK'), "
@@ -243,10 +260,18 @@ def test_real_user_systemd_scope_preserves_worker_context(
         log_path = kb.worker_logs_dir() / f"{task.id}.log"
         assert receipt.exists(), log_path.read_text(encoding="utf-8", errors="replace")
         payload = json.loads(receipt.read_text(encoding="utf-8"))
-        assert payload["pid"] == pid
+        assert payload["pid"] != pid
+        assert payload["ppid"] == pid
         assert payload["cwd"] == str(workspace)
         assert payload["task"] == task.id
-        assert payload["run"] == "23"
+        assert payload["run"] == str(task.current_run_id)
+        with kbc.connect_closing() as conn:
+            current = kb.get_task(conn, task.id)
+            assert current is not None and current.worker_pid == pid
+            run = conn.execute(
+                "SELECT worker_pid FROM task_runs WHERE id = ?", (task.current_run_id,),
+            ).fetchone()
+            assert run is not None and run["worker_pid"] == pid
         assert payload["claim"] == task.claim_lock
         assert payload["board"] == kb.get_current_board()
         assert payload["home"] == str(workspace.parent / '.hermes' / 'profiles' / task.assignee)

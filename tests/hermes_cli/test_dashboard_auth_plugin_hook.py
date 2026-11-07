@@ -305,7 +305,7 @@ def _profile_ctx(manager: PluginManager) -> tuple[PluginContext, str, PluginMana
     profile_scope = hermes_home_key(Path(manager.scope_key) / "profiles" / "bot")
     profile_manager = PluginManager(scope_key=profile_scope)
     profile_ctx = PluginContext(
-        PluginManifest(name="basic", version="0.0.1", kind="backend"),
+        PluginManifest(name="basic", version="0.0.1", kind="backend", source="bundled"),
         manager=profile_manager,
     )
     return profile_ctx, profile_scope, profile_manager
@@ -339,6 +339,37 @@ def test_profile_re_registering_launch_provider_is_quiet_no_op(caplog):
     assert any(
         rec.levelno == logging.DEBUG and "already owns it" in rec.message
         for rec in caplog.records
+    )
+
+
+def test_external_plugin_name_collision_in_profile_scope_still_warns(caplog):
+    """An unrelated plugin using a launch-owned name is not a routine bundled reload."""
+    import logging
+
+    manager, ctx = _real_ctx()
+    launch_provider = _Basic("launch-home")
+    ctx.register_dashboard_auth_provider(launch_provider)
+
+    profile_scope = hermes_home_key(Path(manager.scope_key) / "profiles" / "bot")
+    profile_manager = PluginManager(scope_key=profile_scope)
+    foreign_ctx = PluginContext(
+        PluginManifest(
+            name="community-auth", version="0.0.1", kind="backend", source="user"
+        ),
+        manager=profile_manager,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+        registration = foreign_ctx.register_dashboard_auth_provider(_Basic("collision"))
+
+    assert registration is None
+    assert get_provider("basic") is launch_provider
+    assert "basic" not in profile_manager._ownership_ledger
+    assert any(
+        record.levelno >= logging.WARNING
+        and "community-auth" in record.getMessage()
+        and "dashboard-auth provider" in record.getMessage()
+        for record in caplog.records
     )
 
 

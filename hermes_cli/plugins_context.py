@@ -547,9 +547,11 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         auth gate (non-loopback bind without ``--insecure``). Wrong type / duplicate name warn and
         are ignored, never raised."""
         from hermes_cli.dashboard_auth import DashboardAuthProvider
-        from hermes_cli.dashboard_auth.registry import (get_provider,
-                                                        register_global_provider,
-                                                        unregister_global_provider)
+        from hermes_cli.dashboard_auth.registry import (
+            get_provider,
+            register_global_provider,
+            unregister_global_provider,
+        )
         if self._wrong_type(provider, DashboardAuthProvider, "dashboard-auth provider"):
             return
         launch_scope = _facade().hermes_home_key(_facade().get_process_hermes_home())
@@ -561,8 +563,14 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
             # process-global registry (launch scope owns it), the registry merges
             # the global slot into every profile scope anyway, so skipping is a
             # provable no-op -- demote the per-boot warning to debug. The warning
-            # is RETAINED for a genuinely first-time foreign-scope registration.
-            if get_provider(provider.name) is not None:
+            # is RETAINED for a genuinely first-time foreign-scope registration,
+            # and for a *different* plugin reusing a name the launch scope already
+            # owns -- that is a real scope mistake, not a routine bundled reload.
+            routine_bundled_reload = (
+                self.manifest.source == "bundled"
+                and get_provider(provider.name) is not None
+            )
+            if routine_bundled_reload:
                 _facade().logger.debug(
                     "Plugin '%s' re-registered dashboard-auth provider %r from profile "
                     "scope %s; launch scope %s already owns it -- skipping (no-op).",

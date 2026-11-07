@@ -2796,6 +2796,9 @@ export function dropTilesForProfile(
   // outlive it, or a later profile of the same name inherits them.
   dropPreviewTabsForProfile(name)
   dropBrowserProfilePrefs(name)
+  // P2-7: the imported real-profile sign-ins record + per-profile cookie jar live in Electron main
+  // (userData); signal main to drop them so a later same-named profile does not inherit the cookies.
+  void window.hermesDesktop?.dropPreviewSigninsForProfile?.({ profile: name })?.catch(() => undefined)
 }
 
 /**
@@ -2863,6 +2866,9 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
   // the renamed profile opens with an empty rail and the old name keeps them.
   migratePreviewTabsForProfile(from, to)
   migrateBrowserProfilePrefs(from, to)
+  // P2-7: the imported real-profile sign-ins record + per-profile cookie jar live in Electron main
+  // (userData); signal main to move them old→new so the rename does not strand or orphan the cookies.
+  void window.hermesDesktop?.migratePreviewSigninsForProfile?.({ oldProfile: from, newProfile: to })?.catch(() => undefined)
 }
 
 /** ⌘⇧T — reopen the most recently closed tab where it was, then focus it.

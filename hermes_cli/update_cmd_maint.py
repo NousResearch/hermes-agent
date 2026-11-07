@@ -153,10 +153,6 @@ def _print_fts_optimize_available_notice() -> None:
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' "
                 "AND name LIKE 'fts\\_v22\\_trash\\_%' ESCAPE '\\' LIMIT 1"
             ).fetchone()
-            or db._conn.execute(
-                "SELECT 1 FROM state_meta WHERE key IN "
-                "('fts_cjk_rebuild_high_water', 'fts_cjk_stale') LIMIT 1"
-            ).fetchone()
         )
     except Exception:
         return
@@ -808,13 +804,18 @@ def _sweep_bytecode_after_update(branch: str) -> None:
     Never fails the committed update: a failed sweep is a ``bytecode_sweep`` follow-up and the
     fingerprint stays un-stamped, so the launch-time sweep (fingerprint mismatch) retries it.
     """
+    from hermes_cli.main_web_build import _prune_dropped_directories, _recorded_bytecode_fingerprint
     from hermes_cli.update_cmd import _m
     from hermes_cli.update_receipt import record_followup
     # Timestamp-based .pyc validation can accept old bytecode after the source swap.
     try:
-        removed = _m()._clear_bytecode_cache(_m().PROJECT_ROOT)
+        root = _m().PROJECT_ROOT
+        recorded = _recorded_bytecode_fingerprint(root)
+        removed = _m()._clear_bytecode_cache(root)
         if removed:
             print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
+        if pruned := _prune_dropped_directories(root, recorded):
+            print(f"  ✓ Removed {pruned} director{'y' if pruned == 1 else 'ies'} the new version no longer has")
         _m()._record_bytecode_fingerprint()
     except Exception as exc:  # health: allow BLE001 -- owed to the next launch's fingerprint sweep
         record_followup("bytecode_sweep", str(exc) or type(exc).__name__)

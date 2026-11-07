@@ -7,7 +7,7 @@ import ipaddress
 import math
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Callable, Literal
 from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
@@ -74,8 +74,15 @@ def gateway_profile_home(home: str | Path) -> Path:
     return _overlay_owner_home(Path(home).expanduser().resolve())
 
 
-def _overlay_owner_home(home: Path) -> Path:
-    """Return the owner named by a private overlay's gateway lock, if it has one."""
+class OverlayOutsideScope(Exception):
+    """An overlay lock names an owner home outside the caller's ``within`` scope."""
+
+
+def _overlay_owner_home(home: Path, *, within: Callable[[Path], bool] | None = None) -> Path:
+    """Return the owner named by a private overlay's gateway lock, if it has one.
+
+    With *within*, an owner home that fails it raises :class:`OverlayOutsideScope` before that
+    home or its lock is inspected or tightened (``resolve-profile`` stays inside its own root)."""
     if os.name == "nt":
         return home
     from hermes_cli.gateway_runtime_discovery import DiscoveryError, _private_lock, _private_node
@@ -88,6 +95,8 @@ def _overlay_owner_home(home: Path) -> Path:
         target = lock.resolve(strict=True)
         if not lock.is_symlink() or target.name != "gateway.lock":
             return home
+        if within is not None and not within(target.parent):
+            raise OverlayOutsideScope(str(target.parent))
         _private_node(target.parent, kind="directory", home=True)
         _private_lock(target)
     except (FileNotFoundError, OSError, DiscoveryError):
@@ -286,13 +295,26 @@ def _refused(home: Path, *, windows: bool = _NATIVE_WINDOWS) -> GatewayDiscovery
     return GatewayDiscovery("inaccessible", reason_code="authorization")
 
 
+def _missing_owner_verdict(home: Path) -> GatewayDiscovery:
+    """Discovery's verdict when no control socket answers for *home*: its lock state, plus the
+    repair for a lock another user left behind. The control socket's ``resolve-profile`` verb
+    answers an unserved secondary with this same verdict."""
+    from hermes_cli.gateway_runtime_discovery import missing_owner_state
+    state = missing_owner_state(home)
+    if state == "inaccessible" and os.name != "nt":
+        from gateway.runtime_ownership import unreadable_lock_recovery
+        if detail := unreadable_lock_recovery(home / "gateway.lock"):
+            return GatewayDiscovery(state, reason_code="foreign_stale_lock", detail=detail)
+    return GatewayDiscovery(state)
+
+
 def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0) -> GatewayDiscovery:
     """Read live control identity, preserving uncertainty instead of spawning.
 
     A named profile served by the default multiplexer resolves to the multiplexer's endpoint
     with ``profile_id`` = the profile's own home, so clients attach to it with that identity.
     """
-    from hermes_cli.gateway_runtime_discovery import DiscoveryError, missing_owner_state, query_identify
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError, query_identify
 
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
@@ -303,12 +325,7 @@ def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0)
         served = _served_by_multiplexer(home, timeout=timeout)
         if served is not None:
             return served
-        state = missing_owner_state(home)
-        if state == "inaccessible" and os.name != "nt":
-            from gateway.runtime_ownership import unreadable_lock_recovery
-            if detail := unreadable_lock_recovery(home / "gateway.lock"):
-                return GatewayDiscovery(state, reason_code="foreign_stale_lock", detail=detail)
-        return GatewayDiscovery(state)
+        return _missing_owner_verdict(home)
     except TimeoutError:
         return GatewayDiscovery("inaccessible", reason_code="control_timeout")
     except DiscoveryError as exc:

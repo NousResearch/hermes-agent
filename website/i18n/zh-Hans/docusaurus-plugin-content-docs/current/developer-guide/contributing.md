@@ -32,7 +32,7 @@ description: "如何为 Hermes Agent 做贡献 — 开发环境配置、代码�
 ### 前置要求
 
 项目要求 Python 3.14（`>=3.14,<3.15`）。PM 提供固定版本的解释器和工具。
-准备 Git 和 git-lfs。JS 构建使用 PM 的 Node 和 pnpm（pnpm 版本须与根 `package.json` 的 `devEngines` 完全一致），或满足相应 `package.json` engines 的 Node 版本。
+准备 Git 和 git-lfs。JS 构建使用 PM 的 Node 和 pnpm（pnpm 版本须与 `pm/lock.json` 的固定版本完全一致），或满足相应 `package.json` engines 的 Node 版本。
 
 ### PM 开发环境
 

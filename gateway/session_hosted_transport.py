@@ -300,6 +300,9 @@ def _check_remote_hosted_admission(authority, ref, row):
             raise ValueError('input changed')
     except (ValueError, KeyError, TypeError) as exc:
         raise RuntimeStoreError('permission_denied') from exc
+    if attested.get('retired') is True:  # the source says this unchanged attempt is over
+        from gateway.session_hosted_service import retired_attempt_conflict
+        raise retired_attempt_conflict()
     # Outside the permission_denied fold: a corrupted or missing retained document is a
     # storage fault of this destination, not a revoked source binding.
     verify_attested_documents(attested['attachments'], attested.get('attachment_digests'))

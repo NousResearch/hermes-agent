@@ -1739,7 +1739,8 @@ def register(ctx):
 - Hermes calls `resolver(session_id)` each time it starts a local process for a session: a foreground or background `terminal` command, a `terminal()` call from `execute_code`, and the other subprocesses that get the session's `HERMES_SESSION_*` variables. The value is read at that moment, so a change (the conversation moves to another pane) applies to the next command.
 - `session_id` is the session the process runs for. A subagent's commands get the subagent's id; map it to its parent session in your resolver when the parent's values must apply.
 - Return a map of declared names to strings. A value of `None` removes the name from the process environment. A name you leave out keeps the gateway's own value. Names you did not declare are ignored.
-- The declared names are never saved in the shared shell snapshot, so one session's value cannot reach a later command of another session, and an `export` of one of these names does not carry to the next command.
+- The declared names are never saved in the shared shell snapshot, so one session's value cannot reach a later command of another session, and an `export` of one of these names does not carry to the next command. This applies to your plugin's own profile only: another profile served by the same gateway keeps its own exports of the name.
+- Each name has one plugin per profile. Declaring a name another loaded plugin of the same profile already declared raises `ValueError` naming that plugin. Unloading a plugin frees its names, and a reload of the same plugin declares them again. Your own plugin may declare a name in more than one call: the later registration's value wins, and disposing it brings back the earlier one's.
 - Names must be valid environment variable names. `HERMES_*` names are refused (they belong to core). Provider and Hermes credential names that the subprocess scrub removes are also removed from your values.
 - A resolver that raises is logged and contributes nothing; the command still runs. Keep it fast and local: it runs on every spawn.
 - Values apply on the local terminal backend only. Remote backends (Docker, SSH, Modal and other sandboxes) do not receive them.
@@ -1997,12 +1998,28 @@ listens for the event frame of type `plugin.<plugin_id>.pane.changed`:
   client that reconnects replays them. `session_id` may be the conversation's id or its agent's current
   id (compression gives the agent a new one), so a tool or hook can pass the `session_id` it received.
   `payload` is a JSON dict. The call returns `True` when a live viewer took the frame, `False` when no
-  client is viewing or this process holds no such session. `hermes_cli.plugin_events.emit_plugin_session_event(plugin_id, session_id, event, payload)`
-  is the same call for code without `ctx`.
+  client is viewing or this process holds no such session. `ctx.emit_to_session` looks the session up in
+  your plugin's own profile, also from a thread you started. `hermes_cli.plugin_events.emit_plugin_session_event(plugin_id, session_id, event, payload)`
+  is the same call for code without `ctx`; it uses the caller's profile scope, so from your own thread on
+  a gateway that serves several profiles, use `ctx.emit_to_session`.
+- **`plugins.isolation: host`:** handlers run in the plugin host process, and both emit calls are
+  forwarded to the gateway process, looked up in the host's profile. There `emit_plugin_session_event`
+  is sent as the plugin whose code made the call: it returns `False` and sends nothing when `plugin_id`
+  is not that plugin's own or the code is from a load that has since unloaded (a task left running
+  across a reload too), and it may do the same from a thread you
+  started (the host may not know which plugin it belongs to), so use `ctx.emit_to_session` there. In-process the helper takes
+  `plugin_id` as given.
 - **Where it works:** on a gateway that owns sessions (its session authority, as on the shared
   `hermes gateway run` gateway that attached frontends use). A backend without one answers the method
   with `-32601`. In a process without one (`hermes chat`, cron, a
   `dashboard.turn_isolation` compute child) `emit_to_session` returns `False`.
+- **Detect it first.** An owner that serves plugin methods lists `plugin-rpc-v1` in
+  `runtime.describe`'s `capabilities`. With it, `-32601` means that plugin method is not loaded (the
+  plugin is disabled, not installed, or has no such method). Without `plugin-rpc-v1`, clients must not
+  assume plugin RPC is supported (an older owner may still serve it without listing the capability). The contract declares the namespace once as
+  `plugin.{plugin_id}.{name}` (`CanonicalRpcNamespaces` in the generated TypeScript,
+  `x-canonical-namespaces` in the OpenRPC document): params are an open object with an optional
+  `session_id`, and the result is whatever JSON your handler returns.
 
 **Security.** A plugin method gets the same gate as a plugin slash command on that gateway: the connection
 needs the `session:control` capability, and a call that names a `session_id` must pass that session's

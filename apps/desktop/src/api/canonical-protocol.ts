@@ -56,18 +56,22 @@ export const canonicalOwnerProfile = (value: object): string | undefined => cano
 export const recordCanonicalOwner = (value: object, profile: string): void => { canonicalOwners.set(value, profile) }
 
 // Mirrors hermes_cli/gateway_mutations.slash_mutation: the typed directives
-// that are canonical mutations, not gateway-executed slash commands. Model
-// flags (--global/--once/--refresh) have no canonical mutation and stay on the
-// exec path so the authority refuses them explicitly.
+// that are canonical mutations, not gateway-executed slash commands. `--provider`
+// (and `--session`) map onto the model mutation like the picker's value; other
+// model flags (--global/--once/--refresh) have no canonical mutation and stay on
+// the exec path so the authority refuses them explicitly.
 export function slashMutation(command: string): { operation: string; payload: Record<string, unknown> } | null {
   const [name, ...rest] = command.trim().replace(/^\/+/, '').split(/\s+/)
   const arg = rest.join(' ').trim()
 
   if (name === 'model') {
-    if (!arg || arg.startsWith('-') || /(^|\s)--/.test(arg)) { return null }
+    if (!arg || arg.startsWith('-')) { return null }
     const [model, ...flags] = arg.split(/\s+/)
 
-    return flags.length ? null : { operation: 'model', payload: { model } }
+    if (!flags.length) { return { operation: 'model', payload: { model } } }
+    const pick = pickerModelMutation(arg)
+
+    return pick ? { operation: 'model', payload: pick } : null
   }
 
   const field = ({ branch: 'title', compress: 'focus' } as Record<string, string>)[name]

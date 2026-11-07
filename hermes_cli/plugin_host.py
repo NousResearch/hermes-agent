@@ -52,6 +52,23 @@ _RESTART_BUDGET = 3
 _RESTART_WINDOW_SECS = 600.0
 
 
+def _hosted_ambient_credentials(home: Path) -> dict[str, str]:
+    """``env_vars`` of this home's hosted ``ambient_credentials`` providers (``GH_TOKEN``-style names the
+    child-env scrub always strips), read the way that provider reads them in-process: ``get_secret``
+    under the home's scope, so the launch home keeps its shell value and a routed home never gets it."""
+    from agent.secret_scope import build_profile_secret_scope, get_secret, reset_secret_scope, set_secret_scope
+    from hermes_cli.plugin_host_profiles import is_hosted_profile
+    from providers import list_providers
+    names = {name for p in list_providers() if p.ambient_credentials and is_hosted_profile(p) for name in p.env_vars}
+    if not names:
+        return {}
+    token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+    try:
+        return {name: value for name in sorted(names) if (value := get_secret(name))}
+    finally:
+        reset_secret_scope(token)
+
+
 class PluginHost:
     """One host process for one :class:`~hermes_cli.plugins.PluginManager` (one profile home)."""
 
@@ -62,6 +79,10 @@ class PluginHost:
         self._proc: Optional[subprocess.Popen] = None
         self._channel: Optional[Channel] = None
         self._contexts: dict[str, Any] = {}
+        # The current load of each plugin_key: a request (and the tasks it spawns) carries the load it ran
+        # in, so code left running from an unloaded load is not taken for a reload of the same plugin.
+        self._loads: dict[str, int] = {}
+        self._load_ids = itertools.count(1)
         self._handles: dict[int, Any] = {}
         self._handle_ids = itertools.count(1)
         self._base_context = self._build_base_context()
@@ -110,6 +131,7 @@ class PluginHost:
     def _env(self) -> dict[str, str]:
         from tools.environments.local import served_profile_child_env
         env = self._base_context.run(served_profile_child_env, target_home=self._home, inherit_credentials=True)
+        env.update(self._base_context.run(_hosted_ambient_credentials, self._home))
         repo_root = str(Path(__file__).resolve().parents[1])
         env["PYTHONPATH"] = os.pathsep.join(p for p in (repo_root, env.get("PYTHONPATH", "")) if p)
         env.setdefault("HERMES_PLUGIN_HOST_LOG_LEVEL", "WARNING")
@@ -208,11 +230,14 @@ class PluginHost:
     def load(self, manifest: Any, ctx: Any, *, module_name: Optional[str], entrypoint: bool) -> str:
         """Import ``manifest``'s plugin in the host and replay its registrations onto ``ctx``."""
         from hermes_cli.plugins import PluginContext, manifest_key
-        channel = self.ensure_started()
         plugin_key = manifest_key(manifest)
+        # Claimed before ensure_started() can block on a host start, so a load abandoned at its deadline there
+        # cannot take the key back from a newer load of this plugin when it resumes (see the except branch).
         self._contexts[plugin_key] = ctx
+        self._loads[plugin_key] = next(self._load_ids)
         params = {
-            "plugin_key": plugin_key, "plugin_id": ctx.plugin_id, "name": manifest.name,
+            "plugin_key": plugin_key, "load": self._loads[plugin_key], "plugin_id": ctx.plugin_id,
+            "name": manifest.name,
             "path": manifest.path, "module_name": module_name, "entrypoint": entrypoint,
             "profile_name": self._base_context.copy().run(lambda: ctx.profile_name),
             "manifest": {k: getattr(manifest, k, None) for k in (
@@ -220,11 +245,21 @@ class PluginHost:
                 "data_namespace")},
             "ctx_methods": sorted(n for n in dir(PluginContext) if not n.startswith("_")),
         }
-        self._loading = plugin_key
         try:
+            channel = self.ensure_started()
+            self._loading = plugin_key
             result = channel.call("load", params)
         except BaseException:
-            self._contexts.pop(plugin_key, None)
+            # register() may have queued host-side on_unload callbacks before raising: run them, as
+            # the in-process failure path does, so the failed load leaves nothing behind in the host.
+            # Only while this load still owns the key: a deadline-abandoned load can fail after a newer
+            # load of the same plugin took it over, and the host's state is keyed by plugin, not load.
+            # Best effort: a failing cleanup must not replace the load error being re-raised.
+            if self._contexts.get(plugin_key) is ctx:
+                try:
+                    self._unload(plugin_key)
+                except Exception:
+                    logger.warning("Plugin '%s' cleanup after a failed load failed", plugin_key, exc_info=True)
             raise
         finally:
             self._loading = None
@@ -264,7 +299,9 @@ class PluginHost:
             self._contexts[plugin_key] = ctx
         from hermes_cli.plugins import PluginContext
         params = {
-            "plugin_key": plugin_key, "plugin_id": getattr(ctx, "plugin_id", Path(plugin_dir).name),
+            # One load per key until it unloads: a fresh instance of the same plugin is not a reload.
+            "plugin_key": plugin_key, "load": self._loads.setdefault(plugin_key, next(self._load_ids)),
+            "plugin_id": getattr(ctx, "plugin_id", Path(plugin_dir).name),
             "name": Path(plugin_dir).name, "path": str(plugin_dir), "module_name": module_name,
             "base": base_ref, "capture": capture, "forward": ctx is not None,
             "manifest": {"name": Path(plugin_dir).name, "path": str(plugin_dir), "source": "user"},
@@ -305,6 +342,7 @@ class PluginHost:
 
     def _unload(self, plugin_key: str) -> None:
         self._contexts.pop(plugin_key, None)
+        self._loads.pop(plugin_key, None)
         channel = self._channel
         if channel is None or channel.closed_reason is not None:
             return
@@ -366,6 +404,8 @@ class PluginHost:
             return self._serve_ctx(params)
         if method == "facade":
             return self._serve_facade(params)
+        if method == "session_event":
+            return self._serve_session_event(params)
         if method == "dispose":
             handle = self._handles.pop(int(params["handle"]), None)
             if handle is not None:
@@ -394,6 +434,28 @@ class PluginHost:
         kwargs = decode(params.get("kwargs") or {}, resolve)
         result = getattr(ctx, method)(*args, **kwargs)
         return self._encode_for_host(result)
+
+    def _serve_session_event(self, params: dict[str, Any]) -> bool:
+        """A hosted plugin's ``emit_plugin_session_event``: looked up in this host's profile, the one
+        every plugin it runs belongs to (a plugin thread's call has no caller scope of its own).
+
+        Sent as the plugin whose code made the call (``plugin``, in its load ``load``); False, as before
+        this was forwarded, unless that load is the plugin's current one and ``plugin_id`` is its own."""
+        from hermes_cli.plugin_events import emit_plugin_session_event
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        plugin = str(params.get("plugin") or "")
+        ctx = self._contexts.get(plugin)
+        if ctx is None or getattr(ctx, "plugin_id", None) != params.get("plugin_id") \
+                or params.get("load") != self._loads.get(plugin):
+            logger.warning("Plugin host session event %r refused: sender %r (load %r) is not that loaded plugin",
+                           params.get("plugin_id"), params.get("plugin"), params.get("load"))
+            return False
+        token = set_hermes_home_override(self._home)
+        try:
+            return emit_plugin_session_event(str(params.get("plugin_id")), params.get("session_id"),
+                                             str(params.get("event")), params.get("payload"))
+        finally:
+            reset_hermes_home_override(token)
 
     def _serve_facade(self, params: dict[str, Any]) -> Any:
         from hermes_cli.plugin_isolation import HOST_REMOTE_FACADES

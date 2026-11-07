@@ -29,14 +29,24 @@ _EXTRACT_TIMEOUT_SECS = 60.0
 _CACHE_VERSION = 1
 
 
-def load_hosted_profiles(plugin_dir: Path, module_name: str) -> list[Any]:
-    """ProviderProfile proxies for a model-provider plugin whose code runs in the plugin host."""
+def load_hosted_profiles(plugin_dir: Path, module_name: str) -> tuple[list[Any], dict[str, str]]:
+    """ProviderProfile proxies for a model-provider plugin whose code runs in the plugin host, plus
+    ``{profile name: reason}`` for its profiles that cannot cross the host boundary (the caller
+    loads those in-process)."""
     from providers.base import ProviderProfile
     payload = _cached_extraction(Path(plugin_dir), module_name)
     if payload.get("error"):
         raise PluginHostUnavailable(str(payload["error"]))
-    return [_profile_proxy(ProviderProfile, str(plugin_dir), module_name, entry)
-            for entry in payload.get("profiles") or []]
+    entries = payload.get("profiles") or []
+    in_process = {str(e["name"]): str(e["in_process"]) for e in entries if e.get("in_process")}
+    hosted = [_profile_proxy(ProviderProfile, str(plugin_dir), module_name, e)
+              for e in entries if not e.get("in_process")]
+    return hosted, in_process
+
+
+def is_hosted_profile(profile: Any) -> bool:
+    """True for a profile proxy whose code runs in the plugin host."""
+    return type(profile).__module__ == __name__
 
 
 def _fingerprint(plugin_dir: Path) -> str:

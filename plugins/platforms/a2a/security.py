@@ -127,6 +127,24 @@ class A2ASecurityContext:
         return hmac.new(self.push_secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
 
 
+def browser_post_refusal(headers) -> Optional[str]:
+    """Why a no-token POST must be refused as browser-originated, or None.
+
+    No-token mode trusts anything that reaches 127.0.0.1, and a web page open in the operator's
+    browser reaches it too. Refuse what only a browser sends: an ``Origin`` header, a
+    ``Sec-Fetch-Site`` other than ``none``/``same-origin``, or a body type a page can POST without a
+    CORS preflight (A2A is JSON, so anything but a JSON media type). Local agents and SDKs send JSON
+    and none of these headers."""
+    if headers.get("Origin") is not None:
+        return "browser-originated request refused (no A2A token configured)"
+    if (headers.get("Sec-Fetch-Site") or "none").strip().lower() not in {"none", "same-origin"}:
+        return "cross-site request refused (no A2A token configured)"
+    media_type = (headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    if media_type != "application/json" and not media_type.endswith("+json"):
+        return "Content-Type must be application/json"
+    return None
+
+
 def localhost_only() -> bool:
     """Fresh-context convenience for callers outside the adapter."""
     return A2ASecurityContext.capture().localhost_only()
@@ -184,6 +202,23 @@ def redact_outbound(text: str) -> str:
 # (link-local/AWS metadata, RFC1918, unspecified, IPv6 link-local/ULA). Loopback only in localhost mode.
 _BLOCKED_PREFIXES = ("169.254.", "127.", "10.", *(f"172.{i}." for i in range(16, 32)), "192.168.",
                      "0.0.0.0", "::1", "fe80:", "fc00:", "fd00:")
+
+
+def is_loopback_host_header(host_header: Optional[str], public_url: str = "") -> bool:
+    """True when an HTTP ``Host`` value names a loopback address or the ``A2A_PUBLIC_URL`` host
+    (any port); malformed fails closed."""
+    value = (host_header or "").strip()
+    if not value or any(c in value for c in "@/\\?# \t"):
+        return False
+    try:
+        parts = urllib.parse.urlsplit("//" + value)
+        parts.port  # raises ValueError on a malformed port
+        public_host = (urllib.parse.urlsplit(public_url or "").hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    # ``localhost.`` is the absolute form of ``localhost``; a rebound name stays foreign either way.
+    host = (parts.hostname or "").lower().rstrip(".")
+    return is_loopback_host(host) or (bool(public_host) and host == public_host)
 
 
 def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> bool:

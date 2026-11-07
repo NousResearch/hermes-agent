@@ -17,7 +17,7 @@ Hermes routes each model family through the API that serves it best:
 | Model family | API route | Why |
 |---|---|---|
 | Anthropic Claude | Anthropic SDK (`AnthropicBedrock`) | Prompt caching, thinking budgets, adaptive thinking — features not exposed via Converse |
-| OpenAI GPT-6 (Astra, Sol, Luna), GPT-6.1 Sol, GPT-5.6 (Sol, Terra, Luna), GPT-5.5 with a bare `openai.*` ID | Bedrock Mantle **OpenAI Responses** endpoint (`bedrock-mantle.<region>.api.aws/openai/v1`) | Bedrock Mantle serves the bare in-Region ID. `bedrock-runtime` does not accept it |
+| OpenAI GPT-6 (Astra, Sol, Luna), GPT-6.1 (Sol, Terra), GPT-5.6 (Sol, Terra, Luna), GPT-5.5, GPT-5.4 with a bare `openai.*` ID | Bedrock Mantle **OpenAI Responses** endpoint (`bedrock-mantle.<region>.api.aws/openai/v1`) | Bedrock Mantle serves the bare in-Region ID. `bedrock-runtime` does not accept it |
 | The same OpenAI models with a `us.` or `global.` inference-profile ID | Native **Converse API** (`bedrock-runtime`) | Cross-Region profiles exist only on `bedrock-runtime`, and the model cards list Converse as supported there |
 | Everything else (Nova, DeepSeek, Llama, GPT-OSS, …) | Native **Converse API** (`bedrock-runtime`) | Full Bedrock feature set: Guardrails, inference profiles, streaming |
 
@@ -116,7 +116,9 @@ Hermes automatically applies prompt caching on the Bedrock **Converse API** path
 
 For models whose context window isn't in Hermes' static table, Hermes can probe the real limit by sending oversized requests at fixed tiers (~1.3M and ~2.2M tokens) and parsing the `maximum` reported in Bedrock's length-validation error. Probed values feed the same metadata cache as the static table; stale cached entries that under-report a model's window (e.g. entries seeded before a model's 1M window went GA) are dropped automatically in favor of the larger known value.
 
-When neither the probe nor the static table knows a model, Hermes uses a 128,000-token fallback and logs a WARNING naming the model. Set `model.context_length` in `config.yaml` to the model's real window.
+When the static table has no row for a model from Anthropic, OpenAI or xAI, Hermes uses that model family's window from its general model catalog (`agent/model_metadata.py`). This is how a new tier gets its real window before the Bedrock table is updated. Other vendors' catalog rows are vendor-direct windows that can exceed what Bedrock serves (Llama 3 8B is 8K on Bedrock), so those models do not borrow them.
+
+When nothing knows a model, Hermes uses a 128,000-token fallback and logs a WARNING naming the model. The banner, status bar, `/usage`, `/model` and the gateway session line mark that window `fallback` so it is not mistaken for a detected limit. Set `model.context_length` (or `model_overrides.bedrock.<model id>.context_window`) in `config.yaml` to the model's real window.
 
 **Application inference profiles.** An ARN such as `arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/abcdef123456` names no model, so neither the probe nor the static table can size it. Hermes calls `bedrock:GetInferenceProfile` in the ARN's region and sizes the window from the model the profile wraps (1M for a profile wrapping Claude Sonnet 4.6). Without that permission the 128,000-token default applies and a WARNING names the profile; set `model.context_length` explicitly to override either way.
 
@@ -131,12 +133,14 @@ Bedrock models use **inference profile IDs** for on-demand invocation. The `herm
 | Claude Haiku 4.5 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Fastest Claude |
 | OpenAI GPT-6 Astra | `openai.gpt-6-astra` | Most capable OpenAI model, 1,050,000-token window |
 | OpenAI GPT-6.1 Sol | `openai.gpt-6.1-sol` | 1M-token window. Mantle in-Region access is `us-east-1` only |
+| OpenAI GPT-6.1 Terra | `openai.gpt-6.1-terra` | Balanced Terra tier, 1,050,000-token window |
 | OpenAI GPT-6 Sol | `openai.gpt-6-sol` | Coding and agentic work, 1,050,000-token window |
 | OpenAI GPT-6 Luna | `openai.gpt-6-luna` | Focused, high-volume tasks, 1,050,000-token window |
 | OpenAI GPT-5.6 Sol | `openai.gpt-5.6-sol` | 1,050,000-token window |
 | OpenAI GPT-5.6 Terra | `openai.gpt-5.6-terra` | Balanced, 1,050,000-token window |
 | OpenAI GPT-5.6 Luna | `openai.gpt-5.6-luna` | Fast, affordable, 1,050,000-token window |
 | OpenAI GPT-5.5 | `openai.gpt-5.5` | Mantle only, no inference profiles |
+| OpenAI GPT-5.4 | `openai.gpt-5.4` | 1,050,000-token window |
 | Amazon Nova Pro | `us.amazon.nova-pro-v1:0` | Amazon's flagship |
 | Amazon Nova Micro | `us.amazon.nova-micro-v1:0` | Fastest, cheapest |
 | DeepSeek V3.2 | `deepseek.v3.2` | Strong open model |

@@ -228,15 +228,19 @@ def _resolve_tts_client_config() -> dict[str, Any]:
     return _relay(f"provider {provider!r} has no client wire")
 
 
-def resolve_client_voice_config() -> dict[str, Any]:
+def resolve_client_voice_config(client_direct: bool = True) -> dict[str, Any]:
     """Resolve both directions for the CURRENT profile scope.
 
     Callers scope the profile via ``hermes_constants.set_hermes_home_override``
     (the web server's ``_config_profile_scope``) before calling — identical to
     how ``/api/audio/transcribe`` scopes ``transcribe_recording``.
+    ``client_direct=False`` is the serving surface's verdict (a browser tab):
+    both directions relay and no key is resolved.
     """
     out: dict[str, Any] = {}
-    if not _client_direct_enabled():
+    if not client_direct:
+        out = {"stt": _relay("browser surface"), "tts": _relay("browser surface")}
+    elif not _client_direct_enabled():
         out = {"stt": _relay("voice.client_direct disabled"), "tts": _relay("voice.client_direct disabled")}
     else:
         for key, resolver in (("stt", _resolve_stt_client_config), ("tts", _resolve_tts_client_config)):

@@ -176,11 +176,17 @@ def worker_message_api_content(db, conn, session_id, payload):
 
 def worker_user_content(db, conn, session_id, payload):
     """Rewrite ONE active user row of this session, same guards as ``SessionDB.set_user_message_content``."""
-    if set(payload) != {'row_id', 'content'}:
+    if set(payload) - {'display_metadata'} != {'row_id', 'content'}:
         raise RuntimeStoreError('invalid_params')
+    if 'display_metadata' not in payload:
+        return {'value': conn.execute(
+            "UPDATE messages SET content=? WHERE id=? AND session_id=? AND role='user' AND active=1",
+            (db._encode_content(payload['content']), _row_id(payload), session_id)).rowcount}
     return {'value': conn.execute(
-        "UPDATE messages SET content=? WHERE id=? AND session_id=? AND role='user' AND active=1",
-        (db._encode_content(payload['content']), _row_id(payload), session_id)).rowcount}
+        "UPDATE messages SET content=?, api_content=NULL, display_metadata=? "
+        "WHERE id=? AND session_id=? AND role='user' AND active=1",
+        (db._encode_content(payload['content']), db._encode_display_metadata(payload['display_metadata']),
+         _row_id(payload), session_id)).rowcount}
 
 
 WORKER_LIFECYCLE_HANDLERS = {

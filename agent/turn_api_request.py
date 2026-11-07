@@ -1,7 +1,7 @@
 """Per-attempt request assembly for the conversation turn's retry loop: re-apply the
 reasoning echo pad and prompt-cache decoration for the CURRENT provider (a fallback may
 differ from the primary), build ``api_kwargs``, run the surrogate/ASCII chokepoints, Codex
-preflight, OpenRouter cache bypass, Copilot ``x-initiator``, the LLM request middleware,
+preflight, OpenRouter cache bypass, provider per-request headers, the LLM request middleware,
 the ``pre_api_request`` hook and the debug dump. Nothing here imports
 ``agent.conversation_loop`` at module level.
 """
@@ -38,6 +38,23 @@ def _set_extra_header(api_kwargs: Any, key: str, value: str) -> None:
     _xh = dict(api_kwargs.get("extra_headers") or {})
     _xh[key] = value
     api_kwargs["extra_headers"] = _xh
+
+
+def _apply_user_turn_request_headers(agent: Any, api_kwargs: Any) -> None:
+    """Provider per-request headers (turn attribution). Only the first payload built in a user turn (the
+    first attempt of its first API call) is user-initiated, and it consumes the turn flag exactly once,
+    whatever the route answers (or if its hook fails). Every later build of the turn (a 429/5xx retry, a
+    fallback activation, a tool-loop follow-up) gets the route's default: the historical billing
+    behaviour, kept on purpose."""
+    if not getattr(agent, "_is_user_initiated_turn", False):
+        return
+    agent._is_user_initiated_turn = False
+    from agent.provider_route_hooks import route_answer
+    _request_headers = route_answer(
+        "request_headers", provider=agent.provider or "", base_url=agent.base_url or "",
+        model=agent.model or "", user_initiated=True, scope=agent)
+    for _key, _value in (_request_headers or {}).items():
+        _set_extra_header(api_kwargs, _key, _value)
 
 
 def _fire_pre_api_request_hook(
@@ -124,19 +141,17 @@ def build_request_payload(
     # extra_body, kwargs strings) — see sanitize_outbound_kwargs for the #50959 rationale.
     sanitize_outbound_kwargs(agent, api_kwargs)
     if agent.api_mode == "codex_responses":
+        from agent.codex_responses_adapter import drops_replay_item_ids
+
         api_kwargs = agent._get_transport().preflight_kwargs(
-            api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),
+            api_kwargs, allow_stream=False, drop_replay_item_ids=drops_replay_item_ids(agent.base_url),
             sanitize_harmony_tokens=agent._is_codex_backend(),
         )
     # OpenRouter caching replays identical responses, even empty ones; an empty-response
     # retry must bypass the cache.
     if agent._empty_content_retries > 0 and agent._is_openrouter_url():
         _set_extra_header(api_kwargs, "X-OpenRouter-Cache", "false")
-    # Copilot x-initiator: first call of a user turn is "user" (billed premium);
-    # tool-loop follow-ups keep the default "agent".
-    if getattr(agent, "_is_user_initiated_turn", False) and agent._is_copilot_url():
-        _set_extra_header(api_kwargs, "x-initiator", "user")
-        agent._is_user_initiated_turn = False
+    _apply_user_turn_request_headers(agent, api_kwargs)
     try:
         from hermes_cli.middleware import apply_llm_request_middleware
 

@@ -19,5 +19,11 @@ export const esErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   launch_credentials_unavailable: {
     title: 'La clave de API de este chat cambió',
     body: 'Este chat se inició con una clave de API que desde entonces cambió o se eliminó, así que tu mensaje no se envió. Un chat abierto nunca cambia por sí solo a otra clave. Usa «Iniciar sesión nueva» para usar tu clave actual.'
+  },
+  local_runtime_unavailable: {
+    title: 'No se puede acceder al servidor de modelos local',
+    body: 'El servidor de modelos local aún no está en ejecución: puede que todavía se esté iniciando. Reintenta en un momento o cambia a otro modelo.',
+    bodyNoRetry:
+      'El servidor de modelos local está apagado. Inícialo desde la app de escritorio de Hermes o con `hermes model` en una terminal, o cambia a otro modelo.'
   }
 }

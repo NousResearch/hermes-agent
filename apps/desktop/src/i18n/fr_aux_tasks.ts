@@ -9,10 +9,6 @@ export const frAuxTasks: AuxTaskCopyMap = {
     label: 'Compression',
     hint: 'Compaction de contexte'
   },
-  skills_hub: {
-    label: 'Hub de skills',
-    hint: 'Recherche de skills'
-  },
   approval: {
     label: 'Approbation',
     hint: 'Auto-approbation intelligente'

@@ -17,6 +17,7 @@ import { isLayoutNode, normalize } from '@/components/pane-shell/tree/model'
 import { $layoutTree, markActivePreset, persistTree } from '@/components/pane-shell/tree/store'
 import { exportProfileArchive, importProfileArchive } from '@/hermes'
 import { translateNow } from '@/i18n'
+import { dropBrowserProfilePrefs } from '@/lib/browser-profile-prefs'
 import { modePref, skinPref, type ThemeMode } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
 import type { DesktopTheme } from '@/themes/types'
@@ -137,6 +138,9 @@ export function applyDesktopOverlay(profile: string, overlay: null | ProfileDesk
 /** Import an archive, apply its desktop overlay, return the new profile name. */
 export async function importProfileBundle(archive: string, name?: string): Promise<string> {
   const result = await importProfileArchive(archive, name)
+  // An import never lands on a live profile's name, so a folder or startup profile stored under
+  // it was left by a profile deleted before delete dropped them.
+  dropBrowserProfilePrefs(result.name)
   applyDesktopOverlay(result.name, result.desktop)
 
   return result.name

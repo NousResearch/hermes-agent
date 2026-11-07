@@ -645,8 +645,15 @@ class GatewaySessionCommandsMixin:
             logger.debug("undo: cached-agent eviction skipped: %s", e)
         target_text = result["target_text"]
         preview = target_text[:200] + "..." if len(target_text) > 200 else target_text
-        return t("gateway.undo.removed", turns=result["turns_undone"],
-                 count=result["rewound_count"], preview=preview)
+        reply = t("gateway.undo.removed", turns=result["turns_undone"],
+                  count=result["rewound_count"], preview=preview)
+        if (mgr := self._checkpoint_manager(source)) is not None:
+            # Same manager and cwd /rollback lists.
+            from tools.checkpoint_undo_hint import format_undo_rollback_hint, undo_changed_files
+            files = await asyncio.to_thread(undo_changed_files, mgr, self._terminal_cwd(), result.get("undo_since"))
+            if line := format_undo_rollback_hint(files):
+                reply += "\n" + line
+        return reply
 
     # --------------------------------------------------------------------- /compress
 
@@ -1076,6 +1083,12 @@ class GatewaySessionCommandsMixin:
         if isinstance(resolved, str):
             return resolved
         target_id, name = resolved
+        # A local conversation moves onto this lane from its current head, as /handoff carries it: a
+        # title naming its first segment (a local /new moved on) would strand the live one (#143286).
+        from gateway.session_route_recovery import conversation_head, follow_hand_off
+        authority, local_owner, head = await conversation_head(self, target_id)
+        if local_owner is not None:
+            target_id = head
         denied = await self._resume_access_denied_reply(source, target_id, name, allow_all, allow_cross_room)
         if denied is not None:
             return denied
@@ -1088,6 +1101,8 @@ class GatewaySessionCommandsMixin:
         )
         if not new_entry:
             return t("gateway.resume.switch_failed")
+        if local_owner is not None and authority is not None:  # a Desktop still viewing it follows it
+            follow_hand_off(authority, source, session_key, authority.logical_owner(target_id), local_owner)
         # Conversation boundary: all conversation-scoped state + security state in one funnel call.
         # Conversation boundary: clear ALL conversation-scoped per-session state (model/reasoning overrides
         # #10702, one-turn restores, model notes, last-resolved cache #58403, /queue overflow) + security

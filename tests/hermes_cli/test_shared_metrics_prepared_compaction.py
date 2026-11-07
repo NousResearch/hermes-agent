@@ -190,7 +190,7 @@ def test_waste_modes_say_why(monkeypatch, marks):
     aborted = _compressor()
     _run_pass(aborted, msgs, "tool-batch")
     held = aborted.prepared_compaction._entry
-    taken = aborted.prepared_compaction.take(msgs, held.session_id, held.compress_start, held.compress_end, eligible=True)
+    taken = aborted.prepared_compaction.take(msgs, held.session_id, held.compress_start, eligible=True)
     assert taken is not None
     before = len(marks)
     aborted.on_session_end(held.session_id, msgs)

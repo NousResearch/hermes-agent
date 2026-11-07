@@ -111,6 +111,9 @@ def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
             column = 'last_read_at' if key == 'unread' else key
             stored = (0.0 if value else time.time()) if key == 'unread' else int(value)
             affected.update(db._set_lineage_column_in_transaction(conn, column, session_id, stored))
+            if key == 'archived' and value:
+                # Desktop's Archive lands here, not in set_session_archived: same retire (#139779).
+                affected.update(db._retire_canonical_bot_chat_in_transaction(conn, session_id))
             result[key] = value
     return affected, result
 
@@ -149,6 +152,8 @@ def _rewind(db, conn, session_id, payload):
     target = db._row_to_message_dict(target, warn_context='rewind receipt', summary_flag=True)
     if live is not None:
         target['content'] = live.get('content')
+    from agent.message_metadata import typed_prompt_content  # /retry, /undo: the typed ask, not the placeholder
+    target['content'] = typed_prompt_content(target.get('content'), target)
     conn.execute('UPDATE sessions SET runtime_generation=runtime_generation+1 WHERE id=?', (session_id,))
     return {session_id, physical}, {'rewound_count': len(ids), 'target_message': target,
         'new_head_id': head, 'replacement_message_id': replacement}

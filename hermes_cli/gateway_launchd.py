@@ -19,6 +19,8 @@ from datetime import UTC
 
 from hermes_cli import gateway_service_owner
 
+from agent.deadline import poll_until
+
 
 def _gw():
     from hermes_cli import gateway  # late: the facade imports this module
@@ -307,6 +309,7 @@ def _spawn_detached_gateway() -> bool:
                 _timestamped_stderr_gateway_command(log_dir / "gateway.error.log"),
                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.DEVNULL,
                 env=child_env,
+                # detached-spawn: ok — foreground-less gateway launch, a service meant to outlive the CLI
                 **windows_detach_popen_kwargs(),
             )
     except OSError:
@@ -562,9 +565,8 @@ def _bootout_drain_and_rebootstrap(domain, plist_path, label, old_pid, budget: f
         domain, plist_path, label, deadline=time.monotonic() + budget)
 
 
-def refresh_launchd_plist_if_needed() -> bool:
-    """Rewrite the installed plist when the generated one differs, then bootout/bootstrap so launchd
-    re-reads it immediately."""
+def _rewrite_stale_launchd_plist() -> bool:
+    """Write the generated plist over a stale installed one this home owns; True when written."""
     plist_path = _gw().get_launchd_plist_path()
     if not plist_path.exists() or _gw().launchd_plist_is_current():
         return False
@@ -579,6 +581,28 @@ def refresh_launchd_plist_if_needed() -> bool:
 
     _gw()._prepare_service_launcher()
     plist_path.write_text(new_plist, encoding="utf-8")
+    return True
+
+
+def refresh_unloaded_launchd_plist() -> bool:
+    """Rewrite a stale plist of a job launchd does not hold; the next bootstrap reads it.
+
+    A loaded job is left to ``refresh_launchd_plist_if_needed`` (its restart path), which must
+    still see the file stale to reload the job."""
+    if _gw()._locate_launchd_gateway_service(_gw().get_launchd_label())[0] is not None:
+        return False
+    if not _rewrite_stale_launchd_plist():
+        return False
+    print(f"  ↻ Updated {_gw().get_launchd_plist_path().name} to match the current Hermes install")
+    return True
+
+
+def refresh_launchd_plist_if_needed() -> bool:
+    """Rewrite the installed plist when the generated one differs, then bootout/bootstrap so launchd
+    re-reads it immediately."""
+    if not _rewrite_stale_launchd_plist():
+        return False
+    plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
     domain = _gw()._launchd_domain()
     target = f"{domain}/{label}"
@@ -804,14 +828,11 @@ def _wait_for_launchd_service_pid(
 ) -> bool:
     """Poll ``domain/label`` (0.5s) until it runs on a fresh PID or ``timeout`` passes — KeepAlive respawn
     isn't instantaneous. launchctl ``TimeoutExpired`` propagates; callers own failure accounting."""
-    deadline = time.monotonic() + max(timeout, 0.5)
-    while True:
-        _loaded, pid = _gw()._launchd_print_service_pid(domain, label)
-        if pid is not None and pid > 0 and pid != old_pid:
-            return True
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.5)
+    def _fresh_pid() -> bool:
+        pid = _gw()._launchd_print_service_pid(domain, label)[1]
+        return pid is not None and pid > 0 and pid != old_pid
+
+    return poll_until(_fresh_pid, max(timeout, 0.5), 0.5)
 
 
 def launchd_restart():
@@ -927,14 +948,11 @@ def wait_for_launchd_gateway_supervision(
         return True
 
     label = label or _gw().get_launchd_label()
-    deadline = time.monotonic() + max(timeout, 0.0)
-    while True:
+    def _supervised() -> bool:
         pid = _gw()._launchctl_supervised_pid(label)
-        if pid is not None and pid != old_pid:
-            return True
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(max(poll_interval, 0.01))
+        return pid is not None and pid != old_pid
+
+    return poll_until(_supervised, max(timeout, 0.0), max(poll_interval, 0.01))
 
 
 def launchd_status(deep: bool = False):

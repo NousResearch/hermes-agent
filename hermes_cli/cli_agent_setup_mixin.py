@@ -17,11 +17,8 @@ def _single_query_clarify_callback(questions: list) -> dict:
 
     A -q turn never builds the prompt_toolkit app, so the interactive clarify modal
     can never be painted or answered — the CLI callback would poll until
-    ``agent.clarify_timeout`` while the caller sees a silent hang. Mirror the oneshot
-    path and answer immediately instead.
-
-    The oneshot path answers immediately via ``_oneshot_clarify_callback``; single-query turns need the same
-    headless behavior (#94943).
+    ``agent.clarify_timeout`` while the caller sees a silent hang. Answer immediately
+    instead (#94943).
     """
     return {"answers": {}, "outcome": "undelivered", "notice": (
         "single-query mode: no user available to answer. Pick the best choices using your own "
@@ -179,6 +176,7 @@ def _collect_resume_entries(display_history, disp: dict, clean_assistant):
     screen, retitle the window or restyle the panel. Pure-reasoning assistant rows with no
     visible output are skipped, as are tool-call-only rows when ``resume_skip_tool_only``.
     """
+    from agent.message_metadata import withheld_prompt_text
     from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
     max_user_len = int(disp.get("resume_max_user_chars", 300))
     max_asst_len = int(disp.get("resume_max_assistant_chars", 200))
@@ -200,7 +198,7 @@ def _collect_resume_entries(display_history, disp: dict, clean_assistant):
             entries.append(("event", _sanitize_display_text(label or t(_RESUME_EVENT_KEYS[display_kind]))))
             continue
         if role == "user":
-            text = _sanitize_display_text(_user_display_text(content))
+            text = _sanitize_display_text(withheld_prompt_text(msg) or _user_display_text(content))
             if len(text) > max_user_len:
                 text = text[:max_user_len] + "..."
             entries.append(("user", text))
@@ -270,7 +268,7 @@ class CLIAgentSetupMixin:
         # process only routes, so it must not run a second JWT exchange per launch.
         with deferred_token_mint():
             try:
-                # target_model: the ladder's model-keyed rungs (Zen/Go api_mode, Copilot/Nous
+                # target_model: the ladder's model-keyed rungs (Zen/Go api_mode, per-model
                 # api_mode) must see the model this CLI will actually send, not config's `default`,
                 # or `hermes -m mimo-v2.5 --provider opencode-go` resolves an api_mode/base_url the
                 # sent model cannot use (#112600).

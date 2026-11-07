@@ -947,14 +947,17 @@ let
     ]
     ++ cfg.backend.extraArgs;
 
-  # The launcher that reads the session token, waits for the bind target,
-  # then starts the backend.
+  # The launcher that waits for the bind target, then starts the backend.
   #
-  # The token cannot go in the unit environment. A systemd `Environment=`
-  # value and a launchd EnvironmentVariables value both land in the Nix
-  # store, which all users can read. Thus the launcher reads the file at
-  # start time. launchd has no EnvironmentFile, so a script is the one shape
-  # that works on both hosts.
+  # The token never rides through this script: it travels as a file path in
+  # the unit environment (backendSessionEnvironment), which is not a secret,
+  # and hermes reads the file itself at startup
+  # as HERMES_DASHBOARD_SESSION_TOKEN=file:<path>, which hermes expands). A
+  # shell wrapper that read the file
+  # had to escapeShellArg the path, which froze any "${XDG_RUNTIME_DIR}"
+  # placeholder into a literal and crash-looped the unit (agenix's Home
+  # Manager module default). Set an absolute path instead; see the option
+  # description.
   #
   # `exec` on the last line keeps hermes as the MainPID of the unit. No shell
   # stays in the cgroup, and the restart logic of systemd sees the real
@@ -971,25 +974,6 @@ let
         _timeout=${toString cfg.backend.waitTimeout}
         _waited=0
 
-        ${lib.optionalString (cfg.backend.sessionTokenFile != null) ''
-          # Read the token, and never put it on a command line. A command
-          # line is visible to each process on the host.
-          _token_file=${lib.escapeShellArg cfg.backend.sessionTokenFile}
-
-          if [ ! -r "$_token_file" ]; then
-            echo "hermes-backend: cannot read the session token file '$_token_file'. The unit stops." >&2
-            echo "hermes-backend: backend.sessionTokenFile must name a runtime path that this user can read." >&2
-            exit 1
-          fi
-
-          HERMES_DASHBOARD_SESSION_TOKEN="$(${pkgs.coreutils}/bin/tr -d '\r\n' < "$_token_file")"
-          export HERMES_DASHBOARD_SESSION_TOKEN
-
-          if [ -z "$HERMES_DASHBOARD_SESSION_TOKEN" ]; then
-            echo "hermes-backend: the session token file '$_token_file' is empty. The unit stops." >&2
-            exit 1
-          fi
-        ''}
         ${
           if cfg.backend.waitFor == null then
             ''
@@ -1054,12 +1038,31 @@ let
       ''
     );
 
+  # The session token travels as a file path, never as the token itself. A
+  # path is not a secret, so it can sit in a systemd Environment= or a
+  # launchd EnvironmentVariables value without putting anything readable
+  # into the store. hermes expands the file: prefix of
+  # HERMES_DASHBOARD_SESSION_TOKEN and reads that file at startup, failing
+  # loudly when it is missing or empty.
+  #
+  # The path must be absolute. A "$XDG_RUNTIME_DIR"-style placeholder that a
+  # secret manager left for a shell to expand is passed through verbatim and
+  # nothing expands it here; agenix's home-manager module default is such a
+  # placeholder, so pin `age.secrets.<name>.path` to
+  # /run/user/<uid>/agenix/<name>.
+  backendSessionEnvironment =
+    { cfg }:
+    lib.optionalAttrs (cfg.backend.sessionTokenFile != null) {
+      HERMES_DASHBOARD_SESSION_TOKEN = "file:" + cfg.backend.sessionTokenFile;
+    };
+
   backendArgv =
     { pkgs, cfg }:
     # A plain argv is enough only when nothing must run before the backend.
-    # A wait needs the address at start time, and a token must be read from
-    # a file that the store must never hold. Either one needs the launcher.
-    if cfg.backend.waitFor == null && cfg.backend.sessionTokenFile == null then
+    # A wait needs the address at start time, so it needs the launcher. The
+    # token does not: it travels as a file path in the unit environment and
+    # hermes reads the file itself.
+    if cfg.backend.waitFor == null then
       backendCommand cfg cfg.backend.host
     else
       [ "${backendLauncher { inherit pkgs cfg; }}" ];
@@ -1179,6 +1182,7 @@ in
     backendArgv
     backendBindAssertions
     backendDescription
+    backendSessionEnvironment
     deepConfigType
     effectivePackage
     gatewayArgv

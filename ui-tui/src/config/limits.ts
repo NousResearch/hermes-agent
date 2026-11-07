@@ -24,3 +24,8 @@ export const THINKING_COT_MAX = 160
 // (each scroll < viewport-1) and produces smooth motion. wheelAccel.ts
 // ramps this on sustained scrolls.
 export const WHEEL_SCROLL_STEP = 1
+
+// Cell budget for an inline image in the transcript (see components/inlineImage.tsx).
+// Mirrors hermes_cli/cli_inline_images.py _MAX_COLS/_MAX_ROWS (the classic CLI's budget); keep them equal.
+export const INLINE_IMAGE_MAX_COLS = 64
+export const INLINE_IMAGE_MAX_ROWS = 16

@@ -298,6 +298,7 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
     """``image_urls=False`` is the ``inline_images=false`` projection (#116511): image parts render ``[image]``
     so a remote client's history read stays kilobytes instead of re-transmitting every stored attachment."""
     from agent.history_commentary import project_history_commentary
+    from agent.message_metadata import withheld_prompt_text
 
     messages = []
     tool_call_args = {}
@@ -323,6 +324,8 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
             continue
         if role == "user":
             content_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text)
+            # A pre_llm_call veto stores a placeholder; the transcript shows what the user typed.
+            content_text = withheld_prompt_text(m) or content_text
         if role == "user" and m.get("display_kind") == STEER_DISPLAY_KIND:
             # Mid-turn /steer: show the user's own words, not the model-facing marker wrapper.
             from agent.conversation_compression import _extract_steer_text_from_message

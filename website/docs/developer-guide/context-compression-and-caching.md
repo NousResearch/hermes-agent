@@ -412,8 +412,8 @@ map.
 ### Codex gpt-5.x / Astra threshold autoraise
 
 The ChatGPT Codex OAuth backend hard-caps gpt-5.4/5.5/5.6 and gpt-6 Astra at a **272K** context window
-(the same slug exposes 1.05M on OpenAI's direct API and OpenRouter, and 400K on
-GitHub Copilot). At the default 50% trigger, compaction would fire at ~136K —
+(the same slug exposes 1.05M on OpenAI's direct API and OpenRouter, and smaller
+windows through some resellers). At the default 50% trigger, compaction would fire at ~136K —
 half the window the model can actually use. When the active route is Codex
 OAuth (`provider: openai-codex`) and the model is one of those families (Astra
 matches any slug containing `astra`; the opt-in `-900k` picker variants are
@@ -501,7 +501,7 @@ narrow, re-checked on every request:
   Astra variants and other GPT-6 models are excluded. gpt-5.1/5.2 return HTTP 500 or stall the stream when the
   field is present (no structured rejection to downgrade on, verified live Aug 2026).
 - **Routes:** `api.openai.com` (OpenAI API key) or the ChatGPT Codex backend
-  (Codex subscription OAuth) only. xAI, GitHub/Copilot, OpenRouter, relays, and
+  (Codex subscription OAuth) only. xAI, plugin providers, OpenRouter, relays, and
   local servers never see the field.
 
 For Astra, both the resolved `openai-codex` provider and an official HTTPS
@@ -684,8 +684,7 @@ transcript, the system prompt and the prompt cache are untouched until compactio
 per compaction: while a summary is held, no further pass starts, however much the prompt grows.
 
 At the next automatic threshold compaction `compress()` splices the completed summary when it still
-covers the same messages: same session, unchanged head boundary, a candidate boundary no later than
-the fresh tail cut, and the same message structure up to that boundary (role, tool call ids and
+covers the same messages: same session, unchanged head boundary, and the same message structure up to that boundary (role, tool call ids and
 names, tool result ids), each message vouched for by its durable `message_uid`. The text of a
 persisted message, tool arguments and tool bodies are not compared: the no-LLM prune and plugins
 rewrite them in place, and the summary still describes the same messages. A message without a uid on
@@ -693,7 +692,10 @@ one side (caller-supplied `conversation_history` that is never persisted) is com
 nothing else can tell it from a different message. A dropped or inserted message, or a rewind or
 branch into the window (new `message_uid`s), is a miss. The summary then covers
 `[head, candidate boundary)` and every later message, however many arrived after the pass started, is
-kept as tail; tail rules such as lean-mode tool stubbing still apply to them. Summary placement and
+kept as tail; tail rules such as lean-mode tool stubbing still apply to them. Where the fresh plan
+would cut does not matter: a cut that moved earlier (the prune made tail rows cheaper, tool-group
+alignment) or later never discards the summary, because one prepared summary per compaction is never
+redone. The pass planned its own window with a full tail, so the tail is never empty. Summary placement and
 alternation handling are the normal Phase 4 assembly. The splice leaves the live compressor as the
 inline call would have: a pass that recovered on the main model after the summary model failed hands
 over that fallback (later compactions use the main model, and the user sees the broken-model

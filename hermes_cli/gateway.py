@@ -20,7 +20,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from hermes_cli import gateway_service_owner, setup_platforms
+from hermes_cli import _startup_fast, gateway_service_owner, setup_platforms
 
 # UV's bundled Python ships a minimal PATH; ensure launchctl/systemctl are discoverable.
 if os.name == "posix":
@@ -30,10 +30,11 @@ if os.name == "posix":
     if _missing:
         os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + os.pathsep.join(sorted(_missing))
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+PROJECT_ROOT = Path(_startup_fast.project_root_str())
 
 from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
 from gateway.status import terminate_pid
+from agent.deadline import poll_until
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
@@ -1098,6 +1099,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
             _WINDOWS_GATEWAY_BREAKAWAY_ENV, pid_exists_stdlib, windows_detach_flags,
             windows_detach_flags_without_breakaway,
         )
+        from hermes_cli.gateway_launchd_runtime import start_gateway_job
 
         pid = int(sys.argv[1])
         cmd = sys.argv[2:]
@@ -1110,9 +1112,8 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
                 break
             time.sleep(0.2)
 
-        # Route the respawned gateway's stray stdout/stderr to the same sidecar log _spawn_detached
-        # uses: with DEVNULL a gateway killed moments after respawn (parent Job Object teardown when
-        # breakaway is denied) left ZERO trace. Best-effort: DEVNULL when the log dir is unavailable.
+        # Respawned stdout/stderr go to _spawn_detached's sidecar log: with DEVNULL a gateway killed moments
+        # after respawn (Job Object teardown when breakaway is denied) left ZERO trace. Best-effort.
         _stdio_target = subprocess.DEVNULL
         _stdio_fh = None
         try:
@@ -1125,13 +1126,10 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
         except Exception:
             pass
 
-        # Platform-appropriate detach for the respawned gateway: POSIX start_new_session (setsid);
-        # Windows needs explicit creationflags. CREATE_BREAKAWAY_FROM_JOB is critical: the watcher may
-        # itself sit inside a job object (Electron/Tauri parent) and without breakaway the respawned
-        # gateway dies when that job tears down. See _subprocess_compat.windows_detach_flags().
+        # Detach the respawn: POSIX setsid; Windows needs CREATE_BREAKAWAY_FROM_JOB, since the watcher may sit in a job
+        # object (Electron/Tauri parent) whose teardown would otherwise kill it (_subprocess_compat.windows_detach_flags).
         _popen_kwargs = {{"stdout": _stdio_target, "stderr": _stdio_target}}
-        # Anchor at the stable working dir and overlay the env (VIRTUAL_ENV / PYTHONPATH /
-        # HERMES_HOME) the windowless base interpreter needs to import hermes_cli. Empty on POSIX.
+        # Stable cwd + env overlay (VIRTUAL_ENV/PYTHONPATH/HERMES_HOME) the windowless interpreter needs; empty on POSIX.
         if _respawn_cwd:
             _popen_kwargs["cwd"] = _respawn_cwd
         _base_env = {{**os.environ, **_respawn_env_overlay}}
@@ -1150,6 +1148,9 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
                     _popen_kwargs["creationflags"] = windows_detach_flags_without_breakaway()
                     _popen_kwargs["env"] = {{**_base_env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "0"}}
                     subprocess.Popen(cmd, **_popen_kwargs)
+            elif sys.platform == "darwin" and _stdio_fh and start_gateway_job(
+                    cmd, env=_base_env, cwd=os.getcwd(), log_path=_log_dir / "gateway-stdio.log"):
+                pass  # a launchd job: its LAN access outlives whoever ran this one
             else:
                 if _respawn_env_overlay:
                     _popen_kwargs["env"] = _base_env
@@ -1176,13 +1177,13 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
     popen_env = {"env": watcher_env} if watcher_env is not None else {}
     # Same detach for the watcher itself, so closing the terminal doesn't kill it.
     try:
-        subprocess.Popen(watcher_argv, **devnull, **popen_env, **windows_detach_popen_kwargs())
+        subprocess.Popen(watcher_argv, **devnull, **popen_env, **windows_detach_popen_kwargs())  # detached-spawn: ok — restart watcher, must outlive the process that asked for the restart
     except OSError:
         # Parent job object rejected CREATE_BREAKAWAY_FROM_JOB; retry without it (Windows only —
         # ``start_new_session=True`` cannot raise OSError on POSIX).
         fallback_kwargs: dict = (
             {"creationflags": windows_detach_flags_without_breakaway()} if sys.platform == "win32"
-            else {"start_new_session": True}
+            else {"start_new_session": True}  # detached-spawn: ok — restart watcher, must outlive the process that asked for the restart
         )
         try:
             subprocess.Popen(watcher_argv, **devnull, **popen_env, **fallback_kwargs)
@@ -2420,13 +2421,10 @@ def _ensure_user_systemd_env() -> None:
 
 def _wait_for_user_dbus_socket(timeout: float = 3.0) -> bool:
     """Poll up to ``timeout`` s for a user systemd control socket (user@.service takes a moment after enable-linger)."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if _user_systemd_socket_ready():
-            _ensure_user_systemd_env()
-            return True
-        time.sleep(0.2)
-    return _user_systemd_socket_ready()
+    if not poll_until(_user_systemd_socket_ready, timeout, 0.2):
+        return False
+    _ensure_user_systemd_env()
+    return True
 
 
 def _wait_for_target_user_bus(uid: int, timeout: float = 5.0) -> bool:
@@ -2434,12 +2432,7 @@ def _wait_for_target_user_bus(uid: int, timeout: float = 5.0) -> bool:
     Only the D-Bus socket counts — ``systemd/private`` alone is enough for ``systemctl --user`` but not for
     the ``systemd-run --user`` that restart-safe workers need. Never adopts anything into our env."""
     bus = Path(f"/run/user/{uid}/bus")
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if _path_exists_safe(bus):
-            return True
-        time.sleep(0.2)
-    return _path_exists_safe(bus)
+    return poll_until(lambda: _path_exists_safe(bus), timeout, 0.2)
 
 
 def _loginctl_enable_linger(username: str) -> subprocess.CompletedProcess:
@@ -4015,19 +4008,18 @@ def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> b
     the race logs EADDRINUSE and keeps running with no API. Connection-refused means the
     listener is gone; a timed-out connect is a live listener with a slow accept queue.
     """
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    def _port_free() -> bool:
         try:
             with socket.create_connection((host, port), timeout=0.2):
-                pass
+                return False
         except ConnectionRefusedError:
             return True
         except TimeoutError:
-            pass  # a slow accept queue is still a live listener
+            return False  # a slow accept queue is still a live listener
         except OSError:
             return True  # unresolvable/unreachable address: nothing to wait for; the bind retry covers it
-        time.sleep(0.1)
-    return False
+
+    return poll_until(_port_free, timeout, 0.1)
 
 
 def _wait_for_api_server_port_free(*, timeout: float = 10.0) -> bool:
@@ -4852,7 +4844,7 @@ def _dispatch_via_service_manager_if_s6(action: str, profile: str | None = None)
             getattr(mgr, action)(service)
         except GatewayNotRegisteredError:
             # A profile created from the HOST against a bind-mounted home has a directory but no
-            # slot (`profile create` cannot reach the container's /run/service). Only `start`
+            # slot (`profile create` cannot reach the container's /run/hermes-service). Only `start`
             # repairs that; stop/restart on a missing slot stay an error.
             if action != "start" or not register_unregistered_profile_gateway(mgr, profile):
                 raise
@@ -5675,24 +5667,3 @@ def _gateway_command_inner(args):
     handler = _GATEWAY_SUBCOMMANDS.get(getattr(args, "gateway_command", None))
     if handler is not None:
         handler(args)
-
-
-def _pm_runtime_venv_dir(project_root: Path | None = None) -> Path | None:
-    """The venv pm provisioned for this install, resolved through
-    ``runtime_paths.selected_venv`` — the committed-environment contract —
-    never from interpreter state.
-
-    Under no-boot-through-venv the gateway runs the store python with the
-    venv's site-packages on PYTHONPATH, so ``sys.prefix`` always equals
-    ``sys.base_prefix`` and ``VIRTUAL_ENV`` is unset in bundled installs;
-    prefix/env probing silently degrades. Resolution follows the committed-
-    environment contract: a committed selection is returned as-is, a host
-    with nothing committed yields nothing launchable, and a malformed
-    selection raises — fail closed, never a silently wrong venv.
-    """
-    root = Path(project_root) if project_root is not None else PROJECT_ROOT
-    from pm.environments import selected_venv
-
-    venv = selected_venv(root)  # a malformed committed selection raises: fail closed
-    return venv if venv.is_dir() else None
-

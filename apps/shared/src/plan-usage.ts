@@ -31,9 +31,15 @@ export function usageLevel(provider: PlanProvider, model: string): UsageLevel | 
 }
 
 /** The tag a picker row shows: only Large (it has its own monthly limit) and Free (never runs out). Small /
- *  Medium change only how fast usage drains, so they carry no tag. */
+ *  Medium change only how fast usage drains, so they carry no tag. A row billed to a subscription the account
+ *  holds (`plan_usage.subscription_model_ids`) keeps its `free` level, so it is never dimmed, but carries no
+ *  tag: "Free" would read as free of charge when that subscription pays. */
 export function usageTag(provider: PlanProvider, model: string): 'free' | 'top_tier' | null {
   const level = usageLevel(provider, model)
+
+  if (level && (provider?.plan_usage?.subscription_model_ids ?? []).includes(model)) {
+    return null
+  }
 
   return level === 'free' || level === 'top_tier' ? level : null
 }

@@ -89,13 +89,14 @@ def _events(conn, task_id: str, kind: str) -> list[dict | None]:
 # ---------------------------------------------------------------------------
 
 
-def test_valid_marker_on_unblock_lifts_active_pr(kanban_home: Path) -> None:
+@pytest.mark.parametrize("cause", ["failure", "timed_out", "action_required"])
+def test_valid_marker_on_unblock_lifts_active_pr(kanban_home: Path, cause: str) -> None:
     with kbc.connect() as conn:
         task_id = _card_with_pr(conn)
         assert kbd.check_respawn_guard(conn, task_id) == "active_pr"
 
         assert kb.block_task(conn, task_id, reason="waiting on the red CI") is True
-        assert kb.unblock_task(conn, task_id, reason=_marker()) is True
+        assert kb.unblock_task(conn, task_id, reason=_marker(causa=cause)) is True
 
         assert kbd.check_respawn_guard(conn, task_id) is None
 
@@ -154,6 +155,7 @@ def test_marker_naming_another_pr_keeps_active_pr(kanban_home: Path) -> None:
 @pytest.mark.parametrize(
     "head",
     [
+        "-",                                        # emitter has no SHA: fail closed
         "abc123",                                   # 6 chars: too short
         "0" * 41,                                   # 41 chars: too long
         "zzzzzzz",                                  # not hex
@@ -251,12 +253,15 @@ def test_manual_promotion_without_marker_keeps_active_pr(kanban_home: Path) -> N
         assert kbd.check_respawn_guard(conn, task_id) == "active_pr"
 
 
-def test_manual_promotion_with_valid_marker_lifts_active_pr(kanban_home: Path) -> None:
+@pytest.mark.parametrize("cause", ["failure", "timed_out", "action_required"])
+def test_manual_promotion_with_valid_marker_lifts_active_pr(
+    kanban_home: Path, cause: str,
+) -> None:
     with kbc.connect() as conn:
         task_id = _card_with_pr(conn)
         assert kb.block_task(conn, task_id, reason="rework") is True
         ok, err = kb.promote_task(
-            conn, task_id, actor="operator", reason=_marker(resume="promote"),
+            conn, task_id, actor="operator", reason=_marker(causa=cause, resume="promote"),
         )
         assert (ok, err) == (True, None)
 

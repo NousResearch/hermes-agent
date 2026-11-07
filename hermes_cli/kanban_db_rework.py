@@ -51,7 +51,8 @@ _REWORK_DECISIONS = frozenset({
 
 # What the emitter observed: a GitHub ``synchronize`` / ``changes_requested``
 # delivery, the auto-approver skipping a head, the queue label landing, or any
-# CI conclusion it read (hyphenated, as GitHub spells them).
+# CI conclusion it read (raw GitHub values use underscores; hyphenated aliases
+# remain accepted for compatibility).
 _REWORK_CAUSES = frozenset({
     "synchronize",
     "changes_requested",
@@ -60,6 +61,8 @@ _REWORK_CAUSES = frozenset({
     "success",
     "failure",
     "cancelled",
+    "timed_out",
+    "action_required",
     "timed-out",
     "action-required",
     "neutral",

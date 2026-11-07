@@ -54,4 +54,9 @@ def test_origin_with_no_resolvable_target_is_not_configured_never_delivered(tmp_
     execution = executions.latest_execution(job["id"])
     assert delivery_queue.get_status(execution["id"]) is None, "no target: nothing is queued"
     assert execution["delivery_outcome"] == "not_configured"
-    assert jobs.get_job(job["id"])["last_status"] == "ok"
+    # The run succeeded but reached nobody: the job record must say so instead of a green "ok"
+    # (the user is waiting for a message that was never sent). Still a non-failure — #43014.
+    saved = jobs.get_job(job["id"])
+    assert saved is not None
+    assert saved["last_status"] == "delivery_not_configured"
+    assert not saved.get("last_delivery_error") and saved.get("failure_streak", 0) == 0

@@ -82,6 +82,12 @@ def finish_completed_run(d, fire_owner: Optional[str], execution_id: str, *, rec
         mark_kwargs["status"] = "delivery_queued"
     if fire_owner is not None:
         mark_kwargs["expected_fire_owner"] = fire_owner
+    if d.success and d.unresolved_origin:
+        # deliver='origin' resolved to no target (no captured origin and no home channel): the run
+        # itself succeeded, but the output only reached last_output. Keep it a non-failure (a CLI job
+        # with no gateway channel is legitimate, #43014) while making the missing delivery visible in
+        # `cron list` / `cron get` instead of reporting a plain "ok".
+        mark_kwargs["status"] = "delivery_not_configured"
     if d.blocked_config:
         mark_kwargs["status"] = "blocked_config"
     # A run that removed its own record has nothing left to mark; the delivery above is its result.

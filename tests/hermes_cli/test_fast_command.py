@@ -104,6 +104,22 @@ class TestPriorityProcessingModels(unittest.TestCase):
         assert model_supports_fast_mode("grok-4.5") is False
         assert resolve_fast_mode_overrides("grok-4.6") == {"service_tier": "priority"}
 
+    def test_grok_47_supports_priority_processing(self):
+        from hermes_cli.models import (
+            model_supports_fast_mode,
+            resolve_fast_mode_overrides,
+        )
+
+        assert model_supports_fast_mode("grok-4.7") is True
+        assert model_supports_fast_mode("x-ai/grok-4.7-latest") is True
+        assert resolve_fast_mode_overrides(
+            "grok-4.7", provider="xai", base_url="https://api.x.ai/v1",
+        ) == {"service_tier": "priority"}
+        # Proxies never see the param.
+        assert resolve_fast_mode_overrides(
+            "x-ai/grok-4.7", provider="openrouter", base_url="https://openrouter.ai/api/v1",
+        ) is None
+
 class TestFastModeRouting(unittest.TestCase):
     def test_fast_command_exposed_for_model_even_when_provider_is_auto(self):
         cli_mod = _import_cli()

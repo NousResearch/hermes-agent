@@ -171,6 +171,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[text | remove N | clear]", busy_policy="dispatch"),
     CommandDef("status", "Show session, model, token, and context info", "Session",
                busy_policy="dispatch"),
+    CommandDef("refresh", "Ask continuing session(s) to rebuild their system prompt once on the next turn (updated SOUL.md, skills and context files are adopted)", "Session",
+               gateway_only=True, args_hint="[all | <session-prefix>]", busy_policy="dispatch"),
     CommandDef("egress", "Show Docker egress proxy status", "Session",
                args_hint="[status]", subcommands=("status",), busy_policy="dispatch",
                busy_handler="egress", execute="egress"),

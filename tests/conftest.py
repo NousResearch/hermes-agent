@@ -312,6 +312,12 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     (fake_hermes_home / "memories").mkdir()
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
+    # Pin the opt-in board gates OFF for the whole suite: their enablement is read
+    # from the shared install config (never the per-test HERMES_HOME), so without an
+    # explicit pin a gate flag in the real config would leak into unrelated tests
+    # (e.g. a body-less kanban card sent back to triage). The board-gates test file
+    # turns it back on with HERMES_KANBAN_BOARD_GATES=1.
+    monkeypatch.setenv("HERMES_KANBAN_BOARD_GATES", "0")
     # A test that pins the process home (hermes_constants.pin_process_hermes_home) must not
     # leak that module-global into the next test's routed-profile decisions.
     try:

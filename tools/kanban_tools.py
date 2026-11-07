@@ -784,6 +784,13 @@ def _handle_complete(args: dict, **kw) -> str:
                 f"kanban_complete blocked: {empty_err}. Your task is still in-flight (no state "
                 f"change). Retry kanban_complete with a non-empty summary or result describing "
                 f"what was done.")
+        except kb.MissingDebriefError as debrief_err:
+            # Same shape: nothing was mutated, the audit event already landed;
+            # the worker retries with a debrief instead of stalling.
+            return tool_error(
+                f"kanban_complete blocked: {debrief_err}. Your task is still in-flight (no state "
+                f"change). Retry kanban_complete with a summary that includes the keep / improve / "
+                f"undo debrief sections.")
         task = kb.get_task(conn, tid)
         if not ok:
             # complete_task reports every refusal as bare False; a reopened or

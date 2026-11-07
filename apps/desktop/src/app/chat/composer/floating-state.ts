@@ -6,6 +6,7 @@ export interface FloatingComposerOwner {
   id: string
   groupId: string
   target: ComposerTarget
+  paneId?: string
 }
 
 /** User intent, not whichever editor happened to receive a delayed DOM focus. */

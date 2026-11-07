@@ -22,11 +22,11 @@ import { atom, computed } from 'nanostores'
 import { setSessionOwnerResolver } from '@/api/client'
 import { routeSessionId } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
+import { requestPaneFocus } from '@/components/pane-shell/pane-focus'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import {
   $layoutTree,
   focusedSessionTabAnchor,
-  isPaneVisible,
   moveTreePane,
   noteActiveTreeGroup,
   revealTreePane
@@ -84,7 +84,7 @@ import {
   setTurnStartedAt
 } from './session'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
-import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
+import { $focusedStoredSessionId, frontSessionPane, TILE_PANE_PREFIX } from './session-focus'
 import { turnHasReply, withNoReplyNotice } from './session-no-reply'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
@@ -2419,15 +2419,10 @@ export function focusOpenSession(
 
   if (tile) {
     const paneId = `${TILE_PANE_PREFIX}${tile.storedSessionId}`
-    revealTreePane(paneId) // un-dismiss + adopt + front in its group
-    const tree = $layoutTree.get()
-    const group = tree ? findGroupOfPane(tree, paneId) : null
 
-    if (!group || !isPaneVisible(paneId)) {
+    if (!frontSessionPane(paneId)) {
       return null
     }
-
-    noteActiveTreeGroup(group.id)
 
     return 'tile'
   }
@@ -2463,6 +2458,7 @@ export function frontMainIfSelected(storedSessionId: string): boolean {
 
   revealTreePane('workspace')
   noteActiveTreeGroup(null)
+  requestPaneFocus('workspace')
 
   return true
 }

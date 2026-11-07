@@ -252,23 +252,32 @@ export function plainSecrets(
     return secret
   }
 
-  const connections = registry.connections.map(entry => {
-    const next: RegistryConnection = { ...entry }
+  const withPlainSecrets = <T extends { headers?: unknown; token?: unknown }>(entry: T, id: string): T => {
+    const next = { ...entry }
 
     if (entry.token !== undefined) {
-      next.token = convert(entry.token, entry.id, 'token')
+      next.token = convert(entry.token, id, 'token')
     }
 
-    if (entry.headers) {
+    if (entry.headers && typeof entry.headers === 'object' && !Array.isArray(entry.headers)) {
       next.headers = Object.fromEntries(
-        Object.entries(entry.headers).map(([name, secret]) => [name, convert(secret, entry.id, `headers.${name}`)])
+        Object.entries(entry.headers).map(([name, secret]) => [name, convert(secret, id, `headers.${name}`)])
       )
     }
 
     return next
-  })
+  }
 
-  return { notices, registry: { ...registry, connections } }
+  const connections = registry.connections.map(entry => withPlainSecrets(entry, entry.id))
+
+  // Quarantined entries are user data too: their secrets get the same treatment.
+  const quarantined = registry.quarantined?.map((item, index) =>
+    item.entry && typeof item.entry === 'object' && !Array.isArray(item.entry)
+      ? { ...item, entry: withPlainSecrets(item.entry as Record<string, unknown>, `quarantined.${index}`) }
+      : item
+  )
+
+  return { notices, registry: { ...registry, connections, ...(quarantined ? { quarantined } : {}) } }
 }
 
 // ── merge rules ────────────────────────────────────────────────────────────
@@ -333,6 +342,7 @@ export function mergeRegistries(store: ConnectionRegistry, incoming: ConnectionR
 
     const identity = dialIdentity(entry)
     const sameId = connections.findIndex(c => c.id === entry.id && dialIdentity(c) === identity)
+
     const sameDial =
       sameId >= 0 ? sameId : connections.findIndex(c => identity !== null && dialIdentity(c) === identity)
 
@@ -608,6 +618,7 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
   }
 
   const remember = (registry: ConnectionRegistry, revision: number) => {
+    announced = announced || registry
     cache = registry
     cacheRevision = revision
     cacheStamp = stampOf()
@@ -814,13 +825,14 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
   }
 
   function watch(handlers: { onRegistry: (changes: ConnectionsChange[]) => void; onTokens: () => void }) {
-    announced = announced || read()
-
+    // No read here: main registers this at load, before safeStorage may be used.
     const onRegistryStat = () => {
       const before = announced
       const after = read()
 
-      if (before && after !== before) {
+      if (!before) {
+        announced = after
+      } else if (after !== before) {
         announced = after
         const changes = registryChanges(before, after)
 

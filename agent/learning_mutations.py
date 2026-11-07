@@ -113,7 +113,9 @@ def _mutate_memory(node_id: str, replacement: str | None) -> dict[str, Any]:
                           "over_budget")
         return new_entries, message
 
-    result = load_on_disk_store()._mutate(_STORE_TARGETS[source], _apply)
+    result = load_on_disk_store()._mutate(_STORE_TARGETS[source], _apply,
+                                          action="remove" if replacement is None else "replace",
+                                          content=replacement)
     if not result.get("success"):
         return {"ok": False, "message": result.get("error", f"{name} write failed")}
     return {"ok": True, "message": message}

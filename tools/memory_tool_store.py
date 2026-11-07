@@ -25,6 +25,24 @@ MEMORY_BLOCK_HEADERS = {
 
 ENTRY_DELIMITER = "\n§\n"
 
+# Set by ``apply_memory_pending`` while it replays an approved staged write, so the
+# ``post_memory_write`` hook can name the pending record the change came from.
+REPLAY_PENDING_ID: ContextVar[Optional[str]] = ContextVar("memory_replay_pending_id", default=None)
+
+
+def _emit_post_write(action: str, target: str, content: Optional[str],
+                     before: list[str], after: list[str]) -> None:
+    """Best-effort ``post_memory_write`` observer call after a persisted change. Runs outside
+    the file lock; a failing or slow subscriber never affects the write that already landed."""
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook
+        if has_hook("post_memory_write"):
+            invoke_hook("post_memory_write", action=action, target=target, content=content,
+                        entries_before=list(before), entries_after=list(after),
+                        pending_id=REPLAY_PENDING_ID.get())
+    except Exception:
+        logger.debug("post_memory_write hook failed for %s/%s", target, action, exc_info=True)
+
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Error string if *content* matches injection/exfil patterns. Strict scope:
@@ -347,7 +365,17 @@ class MemoryStore:
                    usage=self._usage(target),
                    **({"closest_entries": closest_entries} if closest_entries else {})))
 
-    def _mutate(self, target: str, mutate, *, skip_drift: bool = False) -> dict[str, Any]:
+    def _mutate(self, target: str, mutate, *, skip_drift: bool = False, action: str = "",
+                content: Optional[str] = None) -> dict[str, Any]:
+        """Run ``_mutate_locked`` and, once the lock is released, tell ``post_memory_write``
+        observers about a write that changed the file. *action*/*content* label that event."""
+        response, before, after = self._mutate_locked(target, mutate, skip_drift=skip_drift)
+        if after is not None and after != before:
+            _emit_post_write(action, target, content, before, after)
+        return response
+
+    def _mutate_locked(self, target: str, mutate, *, skip_drift: bool = False
+                       ) -> tuple[dict[str, Any], list[str], Optional[list[str]]]:
         """Lock, re-read from disk, run ``mutate(entries, limit)`` -> ``(new_entries, message)``
         or an error dict, then persist and return the success response. The reload aborts
         on an existing-but-unreadable file (even append-only ``add`` rewrites the whole
@@ -357,12 +385,14 @@ class MemoryStore:
         third value, a dict merged into the success payload (``_error``'s ``**extra``
         convention) — e.g. the full text a replace overwrote (#117952). ANY dict the closure
         returns is passed through verbatim and nothing is persisted: error dicts, or the
-        success payload of a read-only closure (``resolve_entry``, ``resolve_batch_entries``)."""
+        success payload of a read-only closure (``resolve_entry``, ``resolve_batch_entries``).
+        Returns ``(response, entries_before, entries_after)``; *entries_after* is None unless
+        the file was written."""
         path = self._path_for(target)
         with self._file_lock(path):
             raw, read_ok = self._read_raw_checked(path)
             if not read_ok:
-                return _read_failed_error(path)
+                return _read_failed_error(path), [], None
             oversized = not skip_drift and self._has_oversized_entry(target, raw)
             before = list(dict.fromkeys(self._parse_entries(raw)))
             self._set_entries(target, before)
@@ -372,27 +402,27 @@ class MemoryStore:
                 # Over budget beside an oversized entry: that entry is the obstacle, so report
                 # the drift (with its snapshot) rather than a budget the model cannot meet.
                 if oversized and result.get("success") is False and FAILURE_CLASS.get() == "over_budget":
-                    return _drift_error(path, self._drift_backup(target, raw))
-                return result
+                    return _drift_error(path, self._drift_backup(target, raw)), before, None
+                return result, before, None
             extra_fields = dict(result[2]) if len(result) > 2 else {}
             # An oversized entry is either free text appended without a delimiter or an entry written before the limit was lowered. Pruning is the way
             # back under a lowered limit, so a write that only deletes entries proceeds; one that
             # drops an oversized entry keeps the snapshot first, as it may hold appended text.
             if oversized:
                 if not set(result[0]) <= set(before):
-                    return _drift_error(path, self._drift_backup(target, raw))
+                    return _drift_error(path, self._drift_backup(target, raw)), before, None
                 limit = self._char_limit(target)
                 if any(len(e) > limit for e in before if e not in result[0]):
                     bak = self._drift_backup(target, raw)
                     if bak.endswith(_BACKUP_FAILED):  # no copy, no delete of possibly glued text
-                        return _drift_error(path, bak)
+                        return _drift_error(path, bak), before, None
                     extra_fields["drift_backup"] = bak
             self._set_entries(target, result[0])
             from hermes_constants import mkdir_under_hermes_home
 
             mkdir_under_hermes_home(path.parent)
             self._write_file(path, result[0])
-            return self._success_response(target, result[1], **extra_fields)
+            return self._success_response(target, result[1], **extra_fields), before, list(result[0])
 
     def add(self, target: str, content: str) -> dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
@@ -410,7 +440,7 @@ class MemoryStore:
             return entries + [content], "Entry added."
         # Append-only: skip the drift guard (appending never clobbers foreign
         # content) but still refuse a failed read — add rewrites the WHOLE file.
-        return self._mutate(target, _add, skip_drift=True)
+        return self._mutate(target, _add, skip_drift=True, action="add", content=content)
 
     def replace(self, target: str, old_text: str, new_content: str,
                 matched_entry: Optional[str] = None) -> dict[str, Any]:
@@ -459,7 +489,7 @@ class MemoryStore:
                     f"(see current_entries below), then retry — all in this turn."))
             return patched, "Entry patched.", {
                 "patched_entry_before": before, "patched_entry_after": after}
-        return self._mutate(target, _apply)
+        return self._mutate(target, _apply, action="patch", content=new_text)
 
     def remove(self, target: str, old_text: str, matched_entry: Optional[str] = None) -> dict[str, Any]:
         """Remove the entry containing old_text substring."""
@@ -509,7 +539,8 @@ class MemoryStore:
                     f"'operations' batch with this replace plus removes/shortenings of other stale entries "
                     f"(see current_entries below) — the limit is checked only on the batch result."))
             return replaced, "Entry replaced.", {"replaced_entry": entries[idx]}
-        return self._mutate(target, _apply)
+        return self._mutate(target, _apply, action="remove" if new_content is None else "replace",
+                            content=new_content)
 
     @staticmethod
     def _apply_batch_op(working: list[str], act: str, content: str, old_text: str, pos: str,
@@ -644,7 +675,7 @@ class MemoryStore:
             if removed:
                 replaced_fields["removed_entries"] = removed
             return working, f"Applied {len(operations)} operation(s).", replaced_fields
-        return self._mutate(target, _apply, skip_drift=not commit)
+        return self._mutate(target, _apply, skip_drift=not commit, action="batch")
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """Frozen load-time snapshot (NOT live state — mid-session writes don't touch

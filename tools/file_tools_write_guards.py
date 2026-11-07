@@ -585,6 +585,13 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
         return None
     if not exists:
         return None
+    if not os.access(resolved, os.R_OK):
+        # "Read it first" can never be satisfied here: read_file answers Permission denied,
+        # and the model loops between the two refusals.
+        return (
+            f"{resolved} exists but cannot be read (permission denied), so its current content "
+            "cannot be checked before a whole-file overwrite. Do not retry read_file or write_file "
+            "on it: tell the user, or change its permissions first if that is what they asked for.")
     if _is_own_blind_patch(resolved, task_id):
         return (
             "Your patch changed this file without a full view of its current content. Read the current file "

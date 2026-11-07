@@ -99,3 +99,17 @@ def test_absent_path_is_still_not_found(file_ops, tmp_path, op):
     result = getattr(file_ops, op)(str(tmp_path / "nope.txt"))
     assert result.error and "File not found" in result.error
     assert result.not_found
+
+
+@pytest.mark.platforms("posix")
+def test_write_file_on_unreadable_file_names_the_denial_not_read_first(locked_file):
+    """write_file must not tell the model to read a file read_file cannot read (refusal loop)."""
+    import json
+
+    from tools.file_tools import write_file_tool
+
+    result = json.loads(write_file_tool(str(locked_file), "new\n", task_id="denied-write"))
+    assert "permission denied" in result["error"]
+    assert "Read the file" not in result["error"]
+    locked_file.chmod(0o600)
+    assert locked_file.read_text() == "secret\n"

@@ -81,6 +81,8 @@ For detailed installation options, prerequisites, and troubleshooting, see the [
 
 ## 2. Choose a Provider
 
+On a fresh install, `hermes` offers setup and opens the chat when setup finishes with a provider configured.
+
 The single most important setup step. Use `hermes model` to walk through the choice interactively:
 
 ```bash

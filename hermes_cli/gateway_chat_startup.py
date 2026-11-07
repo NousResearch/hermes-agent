@@ -26,8 +26,7 @@ def ensure_launch_provider(args) -> bool:
     run_bootstrap(announce=False)
     if _has_any_provider_configured():
         return True
-    _first_run_setup_guard(args)
-    return False
+    return _first_run_setup_guard(args)
 
 
 def launch_gateway_chat(args) -> int:

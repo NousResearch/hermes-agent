@@ -510,3 +510,69 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+def test_guardrail_halt_reply_reaches_the_model_as_a_harness_label_on_later_turns(tmp_path):
+    """The halt reply is written by the harness in the first person. Replayed as an ordinary
+    assistant message, the model takes it for an answer of its own and can repeat it verbatim on
+    later turns where no guardrail fired. The user keeps the reply; the model reads a label —
+    in the same process and after the session is reloaded from the session db."""
+    from hermes_state import SessionDB
+
+    agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
+    same_args = {"query": "same"}
+    looping = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", json.dumps(same_args), f"c{i}")],
+        )
+        for i in range(1, 10)
+    ]
+    agent._disable_streaming = True
+
+    def assistant_texts_sent():
+        sent = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assert all("api_content" not in m for m in sent)
+        return [m["content"] for m in sent if m.get("role") == "assistant" and isinstance(m.get("content"), str)]
+
+    with (
+        patch("model_tools.handle_function_call", return_value=json.dumps({"error": "boom"})),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        agent.client.chat.completions.create.side_effect = looping
+        halted = agent.run_conversation("search repeatedly")
+        assert halted["turn_exit_reason"] == "guardrail_halt"
+        halt_text = halted["final_response"]
+
+        # What the user sees and what is stored for display is unchanged.
+        halt_row = halted["messages"][-1]
+        assert halt_row["role"] == "assistant"
+        assert halt_row["content"] == halt_text
+
+        # The history as a resumed session gets it back: flushed to and reloaded from the session db.
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            db.create_session("s1", source="cli")
+            agent._session_db, agent.session_id = db, "s1"
+            agent._flush_messages_to_session_db(halted["messages"])
+            reloaded = db.get_messages_as_conversation("s1")
+        finally:
+            agent._session_db = None
+            db.close()
+        assert reloaded[-1]["role"] == "assistant" and reloaded[-1]["content"] == halt_text
+
+        labels = []
+        for history in (halted["messages"], reloaded):
+            agent.client.chat.completions.create.reset_mock(side_effect=True)
+            agent.client.chat.completions.create.side_effect = [_mock_response(content="done")]
+            followup = agent.run_conversation("try something else", conversation_history=history)
+            assert followup["final_response"] == "done"
+            texts = assistant_texts_sent()
+            assert halt_text not in texts
+            labels.append(texts[-1])
+
+    assert labels[0] == labels[1]  # same bytes live and after reload: the cache prefix holds
+    assert labels[0].startswith("[") and labels[0].endswith("]") and "web_search" in labels[0]

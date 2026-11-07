@@ -461,6 +461,7 @@ class GatewayVoiceMixin:
         if guild_id and callable(play) and callable(is_in_vc) and is_in_vc(guild_id):
             for path in audio_paths:
                 await play(guild_id, path)
+                event._voice_reply_delivered = True
             return
         if not callable(send_voice := getattr(adapter, "send_voice", None)):
             return
@@ -470,5 +471,7 @@ class GatewayVoiceMixin:
         thread_meta = dict(self._thread_metadata_for_source(event.source, reply_anchor) or {})
         thread_meta["notify"] = True
         for path in audio_paths:
-            await send_voice(chat_id=event.source.chat_id, audio_path=path, reply_to=reply_anchor,
-                             metadata=thread_meta)
+            result = await send_voice(chat_id=event.source.chat_id, audio_path=path, reply_to=reply_anchor,
+                                      metadata=thread_meta)
+            if getattr(result, "success", False) is True:
+                event._voice_reply_delivered = True

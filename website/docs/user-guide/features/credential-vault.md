@@ -88,7 +88,7 @@ or the switch in **Settings → Passwords & Logins**.
 If you turn on [real-profile browsing](browser.md#real-profile-browsing-use-your-own-logins)
 (`browser.use_real_profile: true`), the passwords your everyday Chrome / Brave /
 Edge has saved become a login source too, shown in the Browser bar's key-button
-picker as **Browser profile — <your browser>** beside the Hermes vault and any
+picker as **Browser profile — `your browser`** beside the Hermes vault and any
 1Password / Bitwarden entries. Pick one and Hermes fills it into the in-app
 browser just like a vault login.
 

@@ -609,8 +609,14 @@ class ProviderProfile:
     # models.dev provider id when it differs from ``name`` (e.g. ``fireworks`` -> ``fireworks-ai``).
     models_dev_id: str = ""
 
+    use_live_model_metadata: bool = field(default=False, kw_only=True)
+
     def live_context_length(self, model: str, *, api_key: str = "", base_url: str = "") -> int | None:
-        """Context window from the provider's live, credentialed catalog; consulted after the persistent cache."""
+        """Live catalog window; opt in with use_live_model_metadata to precede the persistent cache.
+
+        Implementations own bounded I/O and caching scoped to the endpoint and credential.
+        Return None when unavailable; explicit user overrides always take precedence.
+        """
         return None
 
     def normalize_model_id(self, model: str, *, api_key: str = "") -> str | None:

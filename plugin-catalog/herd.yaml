@@ -1,0 +1,18 @@
+name: herd
+title: Herd
+description: >-
+  Multiplayer Hermes. Channels and DMs where you, a teammate, and both of
+  your Hermes agents work together across two machines.
+repo: https://github.com/tyleramberry/herd
+sha: b69a9d03e99441c165d797ee60fa067fca00e1f9
+tier: community
+category: desktop
+maintainer: tyleramberry
+version: "0.1.0"
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/tyleramberry/herd#readme
+capabilities:
+  provides_tools: [herd_list_channels, herd_post, herd_read_channel, herd_set_status]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -335,19 +335,26 @@ async def ensure_hosted_service(runner):
 
 
 async def _ensure_hosted_service(runner, authority):
-    with owner_scope(authority):
-        service = getattr(authority, 'hosted_room_service', None)
-        if service is None:
-            loop = asyncio.get_running_loop()
-            from gateway.hosted_rooms_gateway_import import import_standalone_rooms
-            await asyncio.to_thread(import_standalone_rooms, Path(authority.db.db_path), runtime_epoch=authority.epoch)
-            service = await asyncio.to_thread(CanonicalHostedRoomService, authority, loop)
-            authority.hosted_room_service = service
-        if not getattr(service, '_transport_installed', False):
-            from gateway.session_hosted_transport import install_hosted_transport
-            install_hosted_transport(runner.session_control_server, authority, asyncio.get_running_loop(),
-                                     attest=service.attest)
-            service._transport_installed = True
+    # The 1 s worker watcher and a hot serve both reach a new authority. Serialized, the second finds
+    # the first's service: two would leave one started service unreferenced, so retiring the profile
+    # never stops it and its room driver polls the closed store until the gateway exits.
+    lock = getattr(authority, '_hosted_service_lock', None)
+    if lock is None:
+        lock = authority._hosted_service_lock = asyncio.Lock()
+    async with lock:
+        with owner_scope(authority):
+            service = getattr(authority, 'hosted_room_service', None)
+            if service is None:
+                loop = asyncio.get_running_loop()
+                from gateway.hosted_rooms_gateway_import import import_standalone_rooms
+                await asyncio.to_thread(import_standalone_rooms, Path(authority.db.db_path), runtime_epoch=authority.epoch)
+                service = await asyncio.to_thread(CanonicalHostedRoomService, authority, loop)
+                authority.hosted_room_service = service
+            if not getattr(service, '_transport_installed', False):
+                from gateway.session_hosted_transport import install_hosted_transport
+                install_hosted_transport(runner.session_control_server, authority, asyncio.get_running_loop(),
+                                         attest=service.attest)
+                service._transport_installed = True
 
 
 def start_ready_hosted_services(runner):

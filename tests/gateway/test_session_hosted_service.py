@@ -44,6 +44,34 @@ async def test_room_owner_survives_service_restart_and_foreign_actor_cannot_clai
         db.close()
 
 
+@pytest.mark.asyncio
+async def test_concurrent_ensure_builds_and_publishes_one_service(tmp_path, monkeypatch):
+    """The 1 s worker watcher and a hot serve reach a new authority together. A second service
+    would replace the first after it may have started, and retiring the profile would stop only
+    the published one, leaving the other's room driver polling a closed store."""
+    from gateway import session_hosted_service, session_hosted_transport
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    built, installed = [], []
+
+    class Recorded(session_hosted_service.CanonicalHostedRoomService):
+        def __init__(self, *args):
+            super().__init__(*args)
+            built.append(self)
+
+    monkeypatch.setattr(session_hosted_service, 'CanonicalHostedRoomService', Recorded)
+    monkeypatch.setattr(session_hosted_transport, 'install_hosted_transport',
+                        lambda *args, attest: installed.append(attest.__self__))
+    with SessionDB(tmp_path / 'state.db') as db:
+        authority = SimpleNamespace(db=db, profile_id=str(tmp_path), runner=None,
+                                    epoch=begin_runtime_epoch(db, instance_id='test'))
+        runner = SimpleNamespace(session_control_server=None)
+        # Both callers yield at the threaded import before either publishes.
+        await asyncio.gather(*(session_hosted_service._ensure_hosted_service(runner, authority)
+                               for _ in range(2)))
+    assert built == [authority.hosted_room_service]
+    assert installed == built
+
+
 def test_private_hosted_policy_restores_without_public_source_admission(tmp_path):
     from dataclasses import asdict, replace
     from gateway.session_policy import build_policy, restore_policy

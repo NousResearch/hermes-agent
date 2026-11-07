@@ -209,6 +209,26 @@ Use an **inference profile ID** (prefixed with `us.` or `global.`) instead of th
 
 You've hit the Bedrock per-model rate limit. Hermes automatically retries with backoff. To increase limits, request a quota increase in the [AWS Service Quotas console](https://console.aws.amazon.com/servicequotas/).
 
+### Bearer-only profile on a multiplexed gateway
+
+A profile authenticated only by `AWS_BEARER_TOKEN_BEDROCK` (no IAM keys, no `AWS_PROFILE`) needs its own gateway endpoint and credential source — set `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` and `AWS_BEARER_TOKEN_BEDROCK` in that profile's own `.env`, not in the launch process environment. Under `gateway.multiplex_profiles: true`, a served profile never inherits another profile's token; a profile with no complete credential of its own fails closed rather than borrowing one.
+
+A bearer token expires. Instead of setting a static value, point `providers.bedrock.key_cmd` at a helper that mints a fresh token and reports its UTC expiry:
+
+```yaml
+providers:
+  bedrock:
+    api: https://your-gateway.example.com/bedrock
+    transport: bedrock_converse
+    key_cmd: /path/to/your/token-helper
+```
+
+Hermes re-runs the helper before the cached token expires, with a safety margin. A helper failure fails closed instead of reusing an expired token.
+
+### "Jwt is expired" / "could not reach this custom endpoint's model listing"
+
+A stale token or a missing `key_cmd` leaves the profile re-using an expired bearer token. A custom gateway with no `/models` route does not need one, because Bedrock model validation uses the configured model list, not a live listing probe.
+
 ## One-Click AWS Deployment
 
 For a fully automated deployment on EC2 with CloudFormation:

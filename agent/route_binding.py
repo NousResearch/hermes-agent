@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional, Tuple
 
+from agent.fast_mode import regate_pinned_fast_overrides
 from utils import base_url_host_matches
 
 logger = logging.getLogger(__name__)
@@ -90,6 +91,8 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     _update_fallback_context_compressor(agent)
     _reresolve_fallback_reasoning_config(agent)
     _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
+    # A /fast value pinned for the previous route must not reach this one (#122010).
+    regate_pinned_fast_overrides(agent)
     return old_model, old_provider
 
 

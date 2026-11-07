@@ -102,6 +102,24 @@ _FETCH_LIMIT = 50  # events per poll / seed call
 _CONTEXT_MESSAGE_LIMIT_DEFAULT = 12
 _CONTEXT_MESSAGE_LIMIT_MAX = 100
 _CONTEXT_MESSAGE_CHARS = 2000  # per message; the trigger itself is never truncated
+_CONTEXT_TOTAL_CHARS = 16000  # whole block; the oldest lines go first (a thread's root stays)
+_CONTEXT_MAX_PAGES = 4  # top-level paging bound: at most 4 x _FETCH_LIMIT events read
+_CONTEXT_CLI_TIMEOUT = 5.0
+_CONTEXT_BUDGET = 12.0  # the receive loop is serial: context must never hold it for long
+# Line breaks the indentation below must neutralize, beyond \n (NEL, LS, PS, VT, FF, lone CR).
+_CONTEXT_LINE_BREAKS = re.compile(r"\r\n?|[\x0b\x0c\x85\u2028\u2029]")
+_CONTEXT_CONTROL = re.compile(r"[\x00-\x08\x0e-\x1f\x7f]")
+
+
+def _context_text(content: object) -> str:
+    """A context message body: truncated, control characters removed, and every continuation line
+    indented, so no line of it can pose as a ``[name]`` line or a section header."""
+    if not isinstance(content, str):
+        return ""
+    text = _CONTEXT_CONTROL.sub(" ", _CONTEXT_LINE_BREAKS.sub("\n", content)).strip()
+    if len(text) > _CONTEXT_MESSAGE_CHARS:
+        text = text[:_CONTEXT_MESSAGE_CHARS] + " …[truncated]"
+    return text.replace("\n", "\n  ")
 _DM_DISCOVERY_EVERY = 5  # re-run DM discovery every N poll sweeps
 _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
@@ -420,6 +438,9 @@ async def _exec_buzz(
         await proc.wait()
         detail = {"error": "timeout", "message": f"buzz {args[0] if args else ''} timed out after {timeout}s"}
         return 124, "", json.dumps(detail)
+    except asyncio.CancelledError:
+        proc.kill()  # a caller's deadline (conversation context) must not leave the CLI running
+        raise
     rc = proc.returncode if proc.returncode is not None else 4
     return rc, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
 
@@ -546,8 +567,8 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         # trigger as channel_context; 0 disables.
         _cml = _setting_or("BUZZ_CONTEXT_MESSAGE_LIMIT", extra, "context_message_limit", _CONTEXT_MESSAGE_LIMIT_DEFAULT)
         try:
-            _cml = int(str(_cml).strip())
-        except ValueError:
+            _cml = int(float(str(_cml).strip()))
+        except (ValueError, OverflowError):
             _cml = _CONTEXT_MESSAGE_LIMIT_DEFAULT
         self.context_message_limit = max(0, min(_cml, _CONTEXT_MESSAGE_LIMIT_MAX))
         self._reply_to_mode: str = _reply_to_mode(config, extra)
@@ -606,12 +627,13 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
 
     # ── buzz-cli plumbing ─────────────────────────────────────────────────
 
-    async def _run_cli(self, args: list[str], *, input_text: Optional[str] = None) -> tuple[int, str, str]:
+    async def _run_cli(self, args: list[str], *, input_text: Optional[str] = None,
+                       timeout: float = _CLI_TIMEOUT) -> tuple[int, str, str]:
         if not self._private_key:
             self._private_key = _resolve_private_key(self._extra)
             self._auth_tag = _resolve_auth_tag(self._extra)
         return await _exec_buzz(self.cli_path, args, relay_url=self.relay_url, private_key=self._private_key,
-                                auth_tag=self._auth_tag, input_text=input_text)
+                                auth_tag=self._auth_tag, input_text=input_text, timeout=timeout)
 
     async def _cli_json(self, args: list[str], default):
         """``_run_cli`` -> parsed stdout on rc 0, else *default*."""
@@ -1731,21 +1753,81 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
 
     def _live_session_id(self, source) -> Optional[str]:
         """``session_id`` of the session this source keys to, or None when there is none to build on
-        (no store, no entry, or a suspended one; Slack's ``_has_active_session_for_thread`` check)."""
+        (no store, no entry, or a suspended one). Blocking: call it off the event loop."""
         store = getattr(self, "_session_store", None)
         if not store:
             return None
         try:
-            store._ensure_loaded()
-            entry = store._entries.get(self._source_session_key(source))
+            entry = store.lookup_by_session_key(self._source_session_key(source))
             return entry.session_id if entry is not None and not entry.suspended else None
         except Exception:
             return None
 
     def _incorporated(self, session_id: str, event_ids: list[str]) -> set[str]:
-        """Which of ``event_ids`` this session's transcript holds as a user turn (blocking DB reads)."""
+        """Which of ``event_ids`` this session's transcript holds as a user turn. Blocking DB reads."""
         store = self._session_store
         return {event_id for event_id in event_ids if store.has_platform_message_id(session_id, event_id)}
+
+    def _session_is_shared(self, chat_type: str, thread_id: Optional[str]) -> bool:
+        """Whether everyone in the scope shares one session (``build_session_key``'s isolation rule), so
+        every reply of ours there is an assistant turn of THIS session."""
+        if chat_type == "dm":
+            return True
+        extra = self.config.extra
+        per_user = extra.get("thread_sessions_per_user", False) if thread_id else extra.get(
+            "group_sessions_per_user", True)
+        return not per_user
+
+    async def _scope_events(self, chat_id: str, trigger_id: str, trigger_ts: int, thread_id: Optional[str],
+                            enough: int) -> list[dict]:
+        """Messages in the trigger's scope that precede it, oldest first (relay order within a second)."""
+
+        def in_scope(ev: dict) -> bool:
+            try:
+                event_id = str(ev.get("id") or "")
+                if not event_id or event_id == trigger_id or int(ev.get("kind") or 0) not in _DISPATCH_KINDS:
+                    return False
+                # Same-second ties are kept: a message posted just after the trigger may show as prior
+                # context (repeats), where dropping ties could hide one posted just before it.
+                if int(ev.get("created_at") or 0) > trigger_ts:
+                    return False
+                root = self._extract_thread_root(ev)
+            except (TypeError, ValueError):
+                return False
+            return (event_id == thread_id or root == thread_id) if thread_id else root is None
+
+        if thread_id:
+            code, out, err = await self._run_cli(
+                ["messages", "thread", "--channel", chat_id, "--event", trigger_id, "--limit", str(_FETCH_LIMIT)],
+                timeout=_CONTEXT_CLI_TIMEOUT)
+            if code != 0:
+                raise RuntimeError(_cli_error_message(err, code))
+            fetched = _parse_json_list(out)
+        else:
+            # Top-level history is interleaved with thread replies and reactions: page back until the
+            # scope has enough messages, within a bounded number of pages.
+            fetched, ids, before = [], set(), None
+            for _page in range(_CONTEXT_MAX_PAGES):
+                args = ["messages", "get", "--channel", chat_id, "--limit", str(_FETCH_LIMIT)]
+                if before is not None:
+                    args += ["--before", str(before + 1)]  # inclusive of the boundary second; deduped below
+                code, out, err = await self._run_cli(args, timeout=_CONTEXT_CLI_TIMEOUT)
+                if code != 0:
+                    raise RuntimeError(_cli_error_message(err, code))
+                page = [ev for ev in _parse_json_list(out) if str(ev.get("id") or "") not in ids]
+                if not page:
+                    break
+                ids.update(str(ev.get("id") or "") for ev in page)
+                fetched = page + fetched
+                if sum(1 for ev in fetched if in_scope(ev)) >= enough or len(page) < _FETCH_LIMIT // 2:
+                    break
+                try:
+                    before = min(int(ev.get("created_at") or 0) for ev in page)
+                except (TypeError, ValueError):
+                    break
+        events = [ev for ev in fetched if in_scope(ev)]
+        events.sort(key=lambda ev: int(ev.get("created_at") or 0))  # stable: keeps relay order inside a second
+        return events
 
     async def _conversation_context(
         self, chat_id: str, chat_type: str, trigger_id: str, trigger_ts: int, thread_id: Optional[str], *,
@@ -1754,66 +1836,50 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         """Prior messages the session has not seen, as a ``channel_context`` block (None when there are none).
 
         Scope follows the session: the trigger's thread, or the top level of the conversation for a
-        non-threaded message. The cut comes from the session itself, never from the channel: the newest
-        message in scope that the transcript of ``session_id`` holds as a user turn. Only what follows it
-        is new — our own replies after it already are assistant turns there. Without such a message
-        (no session, ``/new``, a per-user session that never saw this scope, a compressed-away history)
-        the session is treated as fresh: the latest ``context_message_limit`` messages, ours included,
-        with a thread's root always kept. That can repeat context; it never hides it. Best-effort: a
-        failed fetch dispatches the trigger without context.
+        non-threaded message. What the session has seen is read from its own transcript — the messages
+        in scope it holds as user turns (``platform_message_id``) — never inferred from the channel. The
+        new messages are the ones from the newest seen message on that are not themselves seen; our own
+        replies among them are dropped only when the session is shared, since then they are its own
+        assistant turns. With nothing seen (no session, ``/new``, a per-user session that never saw this
+        scope, history compressed away) the session is treated as fresh: the latest
+        ``context_message_limit`` messages, ours included, a thread's root always kept. That can repeat
+        context; it never hides it. Best-effort and bounded in time: on failure the trigger goes alone.
         """
         limit = self.context_message_limit
         if limit <= 0 or not trigger_id:
             return None
         try:
-            if thread_id:
-                args = ["messages", "thread", "--channel", chat_id, "--event", trigger_id, "--limit", str(_FETCH_LIMIT)]
-            else:
-                # Top-level history is interleaved with thread replies, so over-fetch and filter.
-                args = ["messages", "get", "--channel", chat_id, "--limit", str(_FETCH_LIMIT)]
-
-            def in_scope(ev: dict) -> bool:
-                event_id = str(ev.get("id") or "")
-                if not event_id or event_id == trigger_id or int(ev.get("kind") or 0) not in _DISPATCH_KINDS:
-                    return False
-                if int(ev.get("created_at") or 0) > trigger_ts:
-                    return False
-                root = self._extract_thread_root(ev)
-                return (event_id == thread_id or root == thread_id) if thread_id else root is None
-
-            code, out, err = await self._run_cli(args)
-            if code != 0:
-                logger.debug("Buzz: no conversation context for %s — %s", trigger_id[:12], _cli_error_message(err, code))
-                return None
-            events = sorted((ev for ev in _parse_json_list(out) if in_scope(ev)),
-                            key=lambda ev: (int(ev.get("created_at") or 0), str(ev.get("id"))))
+            events = await self._scope_events(chat_id, trigger_id, trigger_ts, thread_id, limit + 1)
             seen = (await asyncio.to_thread(self._incorporated, session_id, [str(ev["id"]) for ev in events])
                     if session_id and events else set())
-            cut = max((i for i, ev in enumerate(events) if str(ev["id"]) in seen), default=None)
-            if cut is not None:
-                events = [ev for ev in events[cut + 1:]
-                          if str(ev.get("pubkey") or "").lower() != self._self_pubkey]
+            if seen:
+                cut_ts = max(int(ev.get("created_at") or 0) for ev in events if str(ev["id"]) in seen)
+                shared = self._session_is_shared(chat_type, thread_id)
+                events = [ev for ev in events
+                          if int(ev.get("created_at") or 0) >= cut_ts and str(ev["id"]) not in seen
+                          and not (shared and str(ev.get("pubkey") or "").lower() == self._self_pubkey)]
                 events = events[-limit:]
             else:
                 root = [ev for ev in events if str(ev["id"]) == thread_id] if thread_id else []
                 rest = [ev for ev in events if not root or ev is not root[0]]
                 events = root + rest[-(limit - len(root)):] if limit > len(root) else root
+            pubkeys = list(dict.fromkeys(str(ev.get("pubkey") or "").lower() for ev in events))
+            names = dict(zip(pubkeys, await asyncio.gather(
+                *(self._resolve_user_name(pk) for pk in pubkeys if pk))))
             lines, unverified = [], False
             for ev in events:
                 pubkey = str(ev.get("pubkey") or "").lower()
-                content = ev.get("content") if isinstance(ev.get("content"), str) else ""
-                content = content.strip() or ("(attachment)" if self._imeta_attachments(ev) else "")
+                content = _context_text(ev.get("content")) or ("(attachment)" if self._imeta_attachments(ev) else "")
                 if not content:
                     continue
-                if len(content) > _CONTEXT_MESSAGE_CHARS:
-                    content = content[:_CONTEXT_MESSAGE_CHARS] + " …[truncated]"
-                # Continuation lines are indented so a message cannot forge a "[name]" line or a section header.
-                content = content.replace("\r\n", "\n").replace("\n", "\n  ")
-                name = neutralize_untrusted_inline_text(await self._resolve_user_name(pubkey) if pubkey else "unknown")
+                name = neutralize_untrusted_inline_text(names.get(pubkey) or "unknown")
                 trust = ""
-                if self._is_sender_authorized(pubkey, chat_type, chat_id) is False:
+                if pubkey != self._self_pubkey and self._is_sender_authorized(pubkey, chat_type, chat_id) is False:
                     trust, unverified = "[unverified] ", True
                 lines.append(f"{trust}[{name}] {content}")
+            keep_first = bool(thread_id and events and str(events[0]["id"]) == thread_id)
+            while len(lines) > 1 and sum(len(line) + 1 for line in lines) > _CONTEXT_TOTAL_CHARS:
+                del lines[1 if keep_first and len(lines) > 2 else 0]
         except Exception:
             logger.debug("Buzz: conversation context for %s unavailable", trigger_id[:12], exc_info=True)
             return None
@@ -1856,8 +1922,15 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
             chat_id=chat_id, chat_name=self._channel_names.get(chat_id, chat_id), chat_type=chat_type,
             user_id=user_id, user_name=user_name, thread_id=thread_id, message_id=message_id,
         )
-        channel_context = await self._conversation_context(
-            chat_id, chat_type, message_id, created_at, thread_id, session_id=self._live_session_id(source))
+        channel_context = None
+        if self.context_message_limit > 0 and not text.lstrip().startswith("/"):  # commands need no history
+            try:
+                channel_context = await asyncio.wait_for(self._conversation_context(
+                    chat_id, chat_type, message_id, created_at, thread_id,
+                    session_id=await asyncio.to_thread(self._live_session_id, source)), _CONTEXT_BUDGET)
+            except TimeoutError:
+                logger.warning("Buzz: conversation context for %s took over %.0fs; dispatching without it",
+                               message_id[:12], _CONTEXT_BUDGET)
         event = MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=raw_message, message_id=message_id,
             media_urls=list(media_urls), media_types=list(media_types), media_text_inlined=[False] * len(media_urls),
@@ -1934,6 +2007,7 @@ _YAML_BRIDGE = (  # (extra key, env var, kind) for apply_yaml_bridge
     ("reaction_only_users", "BUZZ_REACTION_ONLY_USERS", "csv"), ("allow_all_users", "BUZZ_ALLOW_ALL_USERS", "lower"),
     ("require_mention", "BUZZ_REQUIRE_MENTION", "lower"), ("reply_in_thread", "BUZZ_REPLY_IN_THREAD", "lower"),
     ("reply_to_mode", "BUZZ_REPLY_TO_MODE", "lower"),
+    ("context_message_limit", "BUZZ_CONTEXT_MESSAGE_LIMIT", "str"),
 )
 
 

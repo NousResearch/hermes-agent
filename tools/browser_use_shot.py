@@ -15,6 +15,7 @@ import io
 import logging
 import os
 import tempfile
+import uuid
 from typing import Any, Callable
 
 # A png that has not arrived by then will not: a visible tab answers in well under a second, a hidden
@@ -31,6 +32,18 @@ def _default_shot_path() -> str:
         return str(_ipc._TMP / "shot.png")
     except (ImportError, AttributeError):
         return os.path.join(tempfile.gettempdir(), "shot.png")
+
+
+def _unique_shot_path() -> str:
+    """A fresh name beside :func:`_default_shot_path` for every capture that names no path of its own.
+
+    ``browser_exec`` reports this path as the step's ``screenshot_path``, and the model's history keeps
+    it for the rest of the session. One fixed name meant a later step's capture overwrote the frame an
+    earlier tool result still points at, so multi-step workflows answered "show me step 2" with the
+    current screen instead (#150572).
+    """
+    stem, ext = os.path.splitext(_default_shot_path())
+    return f"{stem}-{uuid.uuid4().hex[:12]}{ext}"
 
 
 def _bring_to_front_if_hidden(cdp: Callable[..., Any], current_tab: Callable[[], dict]) -> None:
@@ -65,7 +78,7 @@ def make_capture_screenshot(cdp: Callable[..., Any], current_tab: Callable[[], d
     def capture_screenshot(path=None, full=False, max_dim=None):
         """Save a PNG of the current viewport. Set max_dim=1800 on a 2x display to keep the file under
         the 2000px-per-side limit some image-aware LLMs enforce."""
-        path = os.fspath(path or _default_shot_path())  # a pathlib.Path works too
+        path = os.fspath(path or _unique_shot_path())  # a pathlib.Path works too
         if activate_hidden():
             _bring_to_front_if_hidden(cdp, current_tab)
         fmt = "png"

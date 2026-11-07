@@ -357,6 +357,43 @@ instead of silently eating the click. Open-ended clarify questions render as a p
 accept your next typed reply. No configuration needed — this works regardless
 of the `rich_blocks` setting.
 
+### Generative cards
+
+With `platforms.slack.extra.card_blocks: true`, the agent can answer with a
+**real card** instead of markdown. It emits a [json-render](https://json-render.dev)
+spec in a ` ```card ` fenced code block:
+
+    Here's the house right now:
+
+    ```card
+    {
+      "root": "card",
+      "elements": {
+        "card": {
+          "type": "Card",
+          "props": { "title": "Home status" },
+          "children": ["kpis", "actions"]
+        },
+        "kpis": { "type": "Fields", "children": ["f1"], "props": {} },
+        "f1": { "type": "Field", "props": { "label": "Lights on", "value": 3 } },
+        "actions": { "type": "Actions", "children": ["b1"], "props": {} },
+        "b1": { "type": "Button", "props": { "id": "kitchen-off", "label": "Turn kitchen light off", "style": "primary" } }
+      }
+    }
+    ```
+
+and the fence becomes a Block Kit card — header, field grid, native table,
+buttons. Supported components are the standard json-render chat catalog ones
+that map onto Slack: Card, Section, Text, Fields, Field, Table, Divider,
+Image, Actions, Button, LinkButton (a `Chart` has no Slack equivalent and
+rejects the card). Anything that fails to render — invalid JSON, an unknown
+component, a spec over Slack's limits — falls back to the ordinary markdown
+path, so a bad card can never lose the message. The fence is stripped from
+the visible text; when the card carries the whole reply, the message text is
+a plain mrkdwn summary of the card (used by notifications and screen readers).
+Button `id`s arrive as Block Kit `action_id`s your app's interactivity handler
+receives.
+
 ### Advanced: emit only the slash-commands array
 
 If you maintain your Slack manifest by hand and just want the slash
@@ -432,6 +469,13 @@ platforms:
       # Requires rich_blocks: true. Default: false.
       feedback_buttons: false
 
+      # Render agent-emitted json-render card specs as native Block Kit cards
+      # (default: false). When true, a ```card fenced JSON code block in the
+      # agent's reply becomes a real card — headers, field grids, native
+      # tables, buttons — instead of a code block. See "Generative cards"
+      # below. Anything that fails to render falls back to the markdown path.
+      card_blocks: false
+
       # Render live tool calls as Slack-native plan/task cards. Works with
       # Slack's built-in tool_progress: off default; a tool_progress: off you
       # write yourself disables cards too. Cards need a thread: an un-threaded
@@ -473,6 +517,7 @@ platforms:
 | `platforms.slack.extra.unfurl_media` | Slack default | Set to `false` to suppress automatic media previews while preserving clickable links. Same caption-ordering and streaming notes as `unfurl_links`. |
 | `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). Markdown `[label](url)` links and Slack `<url\|label>` autolinks both become clickable links inside lists, quotes and table cells; mentions (`<@U…>`, `<#C…>`, `<!here>`) are left as-is. A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
 | `platforms.slack.extra.feedback_buttons` | `false` | When `true` with `rich_blocks`, appends Slack-native feedback controls to final replies. |
+| `platforms.slack.extra.card_blocks` | `false` | When `true`, a ` ```card ` fenced JSON block in the agent's reply is rendered as a [json-render](https://json-render.dev) card — native headers, field grids, tables and buttons. See [Generative cards](#generative-cards). |
 | `platforms.slack.extra.native_task_cards` | `false` | When `true`, renders live tool calls as Slack-native plan/task cards. Cards work with Slack's built-in default `tool_progress: off`; an explicitly configured `display.tool_progress: off` (global or `display.platforms.slack`; `/verbose` writes the same key) disables cards too. Cards need a thread: when the card lane is active and the chat has no thread to anchor on (a top-level DM with `reply_in_thread: false`), Hermes shows no tool progress instead of text bubbles, unless you explicitly set `tool_progress: new`/`all`, which falls back to editable text progress there. Recoverable native API failures fall back to one continuously edited text update. |
 | `platforms.slack.extra.suggested_prompts` | `[]` | Up to four `{title, message}` prompts for Agent/Assistant DM entry points; accepts either a list or `{title, prompts}`. |
 | `platforms.slack.extra.assistant_thread_titles` | `true` | When `true`, names Agent/Assistant DM threads from the first user message. |

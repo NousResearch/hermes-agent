@@ -27,7 +27,7 @@ def project_compression_tips(db, sessions: list[dict[str, Any]], compact_rows: b
         merged = dict(s)
         for key in (
             "id", "ended_at", "end_reason", "message_count", "tool_call_count", "title", "last_active",
-            "preview", "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
+            "preview", "model", "system_prompt", "cwd", "git_branch", "git_repo_root", "source",
         ):
             if key in tip_row:
                 merged[key] = tip_row[key]

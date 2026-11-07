@@ -21,8 +21,7 @@ export type BotsMessages = {
     providerCustom: string
     modelCustom: string
     backToDropdowns: string
-    inheritLaunch: string
-    enterManually: string
+    typeOrChooseProvider: string
     gatewayDefault: string
     modelNameExample: string
     modelSwitchFailed: string

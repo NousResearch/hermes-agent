@@ -73,6 +73,40 @@ interface ModelOptionsResult {
   providers?: ModelProviderOption[]
 }
 
+/**
+ * The provider a typed string names, matched case-insensitively against the
+ * catalog's slug, display name and `custom:<key>` aliases.
+ *
+ * The catalog lookup is case-SENSITIVE (`catalogProviderMatches` compares the
+ * slug verbatim), so a user who types `PROV-TWO` for the slug `prov-two` would
+ * otherwise get a provider the catalog does not know — and the picker would
+ * drop them into the free-text form mid-keystroke. This folds the
+ * case-insensitive comparison into the catalog's own matching rules instead of
+ * inventing a second one.
+ */
+export function matchTypedProvider(
+  providers: readonly ModelProviderOption[],
+  typed: string
+): ModelProviderOption | undefined {
+  const key = typed.trim().toLowerCase()
+
+  if (!key) {
+    return undefined
+  }
+
+  return providers.find(
+    p =>
+      p.slug.toLowerCase() === key ||
+      p.name?.toLowerCase() === key ||
+      p.aliases?.some(alias => alias.toLowerCase() === key)
+  )
+}
+
+/** The provider models a catalog row offers, as bare ids. */
+function providerModelIds(provider: ModelProviderOption | null | undefined): string[] {
+  return (provider?.models || []).map(m => (typeof m === 'string' ? m : m.id || m.name || ''))
+}
+
 function useModelOptions(bot: null | RosterRow = null) {
   // Hook body runs during render: an orphaned row must paint the picker
   // disabled/erroring, not throw into the pane's error boundary.
@@ -127,13 +161,9 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel }: M
 
   // Hooks are ALWAYS declared up front, before any conditional return.
   // Declaring them after a return trips React error #310.
-  const NONE = '__default__'
-  const CUSTOM = '__custom__'
   const providers = (data?.providers || []).filter(p => p && p.slug)
 
-  const isKnown =
-    !value.provider || value.provider === NONE || providers.some(p => catalogProviderMatches(p, value.provider))
-
+  const isKnown = !value.provider || providers.some(p => catalogProviderMatches(p, value.provider))
   // The manual-entry latch is the USER's choice only. Seeding it from
   // `isKnown` froze whatever the catalog state was at first paint: on the
   // first open the async read had not resolved yet, so a configured provider
@@ -143,7 +173,17 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel }: M
   // loaded inventory knows flips to the dropdowns when data arrives, while
   // one it does not know still gets the free-text form.
   const [manualEntry, setManualEntry] = useState<boolean | null>(null)
-  const useFreeText = manualEntry ?? !isKnown
+  // While the provider field is being typed into, the form must NOT swap:
+  // a partial slug (`p`, `prov-`) matches no catalog row, so deriving
+  // `useFreeText` from the live value would unmount the focused input
+  // mid-word and swallow the next keystroke. The typed text is held in the
+  // picker itself for the duration, and the catalog keeps the last form the
+  // user was on. A provider the catalog does not know AT ALL still gets the
+  // free-text form — that is the `isKnown` fallback below, which only a
+  // value that is neither typed-in nor a known catalog row reaches.
+  const [typedProvider, setTypedProvider] = useState<string | null>(null)
+  const isTyping = typedProvider !== null
+  const useFreeText = manualEntry ?? (!isKnown && !isTyping)
 
   if (isLoading) {
     return (
@@ -226,50 +266,76 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel }: M
     )
   }
 
-  const activeProvider = providers.find(p => catalogProviderMatches(p, value.provider)) || null
+  const activeProvider =
+    providers.find(p => catalogProviderMatches(p, value.provider)) ||
+    matchTypedProvider(providers, value.provider) ||
+    null
 
-  const models = activeProvider
-    ? (activeProvider.models || []).map(m => (typeof m === 'string' ? m : m.id || m.name || ''))
-    : []
+  const models = providerModelIds(activeProvider)
+
+  // The provider field is a COMBOBOX: the catalog's slugs are suggestions,
+  // and anything the user types is accepted verbatim. The typed text is
+  // committed on blur/Enter, not on every keystroke — canonicalizing
+  // per-keystroke rewrote the model out from under the user (typing
+  // `openai-codex` passed through `openai` and snapped the model to that
+  // provider's first model before the word was finished).
+  const commitProvider = (raw: string) => {
+    const typed = raw.trim()
+    const selected = matchTypedProvider(providers, typed)
+
+    setTypedProvider(null)
+
+    if (!typed) {
+      onChange({ provider: '' })
+
+      return
+    }
+
+    if (!selected) {
+      // Not a catalog row: keep the user's own spelling.
+      onChange({ provider: typed })
+
+      return
+    }
+
+    const providerModels = providerModelIds(selected)
+    const nextModel = providerModels.includes(value.model) ? value.model : providerModels[0] || ''
+
+    onChange({
+      provider: selected.slug,
+      model: nextModel
+    })
+  }
 
   return (
     <div className="grid grid-cols-[1fr_1.4fr] gap-2.5">
       {labeled(
         t.settings.model.provider,
-        <Select
-          onValueChange={v => {
-            if (v === NONE) {
-              onChange({
-                provider: '',
-                model: ''
-              })
-            } else if (v === CUSTOM) {
-              setManualEntry(true)
-            } else {
-              const prov = providers.find(p => p.slug === v)
-              const provModels = (prov?.models || []).map(m => (typeof m === 'string' ? m : m.id || m.name || ''))
-              const first = provModels[0] || ''
-              onChange({
-                provider: v,
-                model: prov && provModels.includes(value.model) ? value.model : first
-              })
-            }
-          }}
-          value={activeProvider?.slug || value.provider || NONE}
-        >
-          <SelectTrigger className="h-8 rounded-md">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={NONE}>{b.editor.inheritLaunch}</SelectItem>
+        <>
+          <Input
+            aria-label={t.settings.model.provider}
+            list="hermes-bot-provider-options"
+            onBlur={event => commitProvider(event.target.value)}
+            onChange={event => {
+              const provider = event.target.value
+
+              setTypedProvider(provider)
+              onChange({ provider })
+            }}
+            onKeyDown={event => {
+              if (event.key === 'Enter') {
+                commitProvider((event.target as HTMLInputElement).value)
+              }
+            }}
+            placeholder={b.editor.typeOrChooseProvider}
+            value={value.provider}
+          />
+          <datalist id="hermes-bot-provider-options">
             {providers.map(p => (
-              <SelectItem key={p.slug} value={p.slug}>
-                {p.name ? `${p.name} (${p.slug})` : p.slug}
-              </SelectItem>
+              <option key={p.slug} label={p.name ? `${p.name} (${p.slug})` : p.slug} value={p.slug} />
             ))}
-            <SelectItem value={CUSTOM}>{b.editor.enterManually}</SelectItem>
-          </SelectContent>
-        </Select>
+          </datalist>
+        </>
       )}
       {labeled(
         t.settings.model.model,

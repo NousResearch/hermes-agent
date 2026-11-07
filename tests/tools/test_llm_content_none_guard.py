@@ -85,3 +85,24 @@ class TestExtractContentOrReasoning:
             {"content": "", "reasoning_content": "short"},
             max_reasoning_chars=8000,
         ) == "short"
+
+    def test_block_list_content_is_flattened_not_repr_d(self):
+        """A block-list ``content`` must yield its visible text, never a Python repr.
+
+        Anthropic-style providers (and relays that proxy them) return ``content`` as a list of
+        parts. ``str()``-ing that list hands the caller a literal full of escaped quotes and
+        thinking tokens; a vision tool then reports that literal as its ``analysis`` and the
+        main model has to interpret a repr instead of a description.
+        """
+        content = [
+            {"type": "thinking", "thinking": [{"type": "text", "text": "internal reasoning"}]},
+            {"type": "text", "text": "The mixer has 6 strips: Kick, Snare, Bass."},
+        ]
+        out = extract_content_or_reasoning({"role": "assistant", "content": content})
+        assert out == "The mixer has 6 strips: Kick, Snare, Bass."
+        assert "thinking" not in out and "\\n" not in out
+
+    def test_thinking_only_block_list_returns_empty(self):
+        """Reasoning-only block lists flatten to ``""`` so the caller's retry path runs."""
+        content = [{"type": "thinking", "thinking": [{"type": "text", "text": "hmm"}]}]
+        assert extract_content_or_reasoning({"role": "assistant", "content": content}) == ""

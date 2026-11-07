@@ -32,6 +32,32 @@ hermes desktop
 
 That uses your current config, keys, sessions, and skills.
 
+## Simplified agent sidebar (opt-in)
+
+After startup, Hermes offers **Simplified agent mode** once. Choose **Yes, try it** for a sidebar
+with a global navigation rail beside New session, pinned chats, and chats nested under their agents.
+The rail opens Chats, Agent settings (the existing Profiles view), Capabilities,
+Library (Artifacts), and Routines (Scheduled jobs). Capabilities opens the existing page
+for Skills, Connectors, Plugins, and Tools. The gear at the bottom opens an index of existing settings and utilities;
+these shortcuts preserve each destination's current profile and gateway scope. The global rail
+stays visible when sessions are hidden. Sessions appear only in Chats; other global pages
+use that space, and returning to Chats preserves your sidebar visibility preference.
+
+Enabled plugins that contribute pages appear beneath Routines in the rail.
+Select a page to open it; use the Plugins tab in Capabilities to manage plugin settings. Pinned chats also remain under their agents.
+Pinned rows show the profile name; rows under an agent show age and a pin marker when applicable.
+Agents are grouped by gateway; clicking an agent opens its settings. New session lets you choose
+an agent when there is more than one; Start blank uses the current gateway's default agent.
+
+| Original sidebar | Simplified agent sidebar |
+| --- | --- |
+| ![Original sidebar with sample chats](/img/desktop/classic-sidebar.png) | ![Simplified sidebar with chats nested under agents](/img/desktop/simplified-agent-sidebar.png) |
+
+The new sidebar hides the Bots tab and the old gateway/profile selectors. It does not migrate or
+delete profiles or conversations. Choose **No, keep current sidebar** to retain the original UI,
+or change **Settings → Appearance → Window layout → Simplified agent mode** at any time. Existing
+Bot Mode conversations remain available by switching back to the original sidebar.
+
 ## Use the Desktop workspace from a browser
 
 The gateway can serve this workspace to a normal browser: sessions, profiles, Capabilities, Messaging,

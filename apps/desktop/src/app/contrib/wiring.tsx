@@ -16,21 +16,16 @@ import { useLocation, useNavigate } from 'react-router'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { StartupOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
-import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { ExternalOpenFailedDialog } from '@/components/external-open-failed-dialog'
 import { FindBar } from '@/components/find-bar'
-import { FreeTierSignInDialog } from '@/components/free-tier/sign-in-dialog'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
-import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { firstRunIntro } from '@/components/onboarding/first-run/kickoff'
-import { OnboardingEnd } from '@/components/onboarding/onboarding-end'
 import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
-import { SharedMetricsConsentDialog } from '@/components/shared-metrics/consent-dialog'
 import { TipHost } from '@/components/tips'
 import { UpdateHoldOverlay } from '@/components/update-hold-overlay'
 import { emitGatewayEvent } from '@/contrib/events'
@@ -172,9 +167,11 @@ import { useDesktopMetrics } from './hooks/use-desktop-metrics'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
+import { MainWindowOverlays } from './main-window-overlays'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { useTitlebarToolContributions } from './panes'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
+import { SimplifiedNavigationSurface } from './simplified-navigation-surface'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
 import {
@@ -1078,19 +1075,19 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     // The sidebar row menu reuses this verb in the Archived view too, where the
     // row is already archived — dispatch by state so the verb restores there
     // instead of re-archiving (#98813).
-    onArchiveSession: sessionId => {
-      const listed = $sessions.get().find(session => sessionMatchesStoredId(session, sessionId))
+    onArchiveSession: (sessionId, row) => {
+      const listed = row ?? $sessions.get().find(session => sessionMatchesStoredId(session, sessionId))
 
       const isArchived =
         listed?.archived === true || $archivedSessions.get().some(session => sessionMatchesStoredId(session, sessionId))
 
-      void (isArchived ? unarchiveSession(sessionId) : archiveSession(sessionId))
+      void (isArchived ? unarchiveSession(sessionId, row) : archiveSession(sessionId, row))
     },
     onAttachDroppedItems: composer.attachDroppedItems,
     onAttachImageBlob: composer.attachImageBlob,
     onAttachPastedText: composer.attachPastedText,
     onBranchInNewChat: messageId => void branchInNewChat(messageId),
-    onBranchSession: sessionId => void branchStoredSession(sessionId),
+    onBranchSession: (sessionId, profile, row) => void branchStoredSession(sessionId, profile, row),
     onCancel: cancelRun,
     onDeleteSelectedSession: () => {
       const id = $selectedStoredSessionId.get()
@@ -1099,7 +1096,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         void removeSession(id)
       }
     },
-    onDeleteSession: sessionId => void removeSession(sessionId),
+    onDeleteSession: (sessionId, row) => void removeSession(sessionId, row),
     onDismissError: dismissError,
     onEdit: editMessage,
     onLoadMoreMessaging: loadMoreMessagingForPlatform,
@@ -1170,6 +1167,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [actions, currentView]
   )
 
+  const globalNavNode = useMemo(
+    () => <SimplifiedNavigationSurface onNavigate={item => actions.onNavigate(item)} />,
+    [actions]
+  )
+
   const terminalNode = useMemo(() => <TerminalSurface />, [])
 
   const statusbarNode = useMemo(
@@ -1193,12 +1195,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const api = useMemo<WiringApi>(
     () => ({
+      globalNav: globalNavNode,
       chatRoutes: chatRoutesNode,
       sidebar: sidebarNode,
       statusbar: statusbarNode,
       terminal: terminalNode
     }),
-    [chatRoutesNode, sidebarNode, statusbarNode, terminalNode]
+    [globalNavNode, chatRoutesNode, sidebarNode, statusbarNode, terminalNode]
   )
 
   // The REAL titlebar tool clusters (sidebar/flip toggles, haptics, keybinds,
@@ -1279,31 +1282,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       {/* The full real overlay set (mirrors DesktopController's `overlays`). */}
       <RemoteDisplayBanner />
-      {!isAuxiliaryWindow() && <DesktopInstallOverlay />}
-      {!isAuxiliaryWindow() && (
-        <DesktopOnboardingOverlay
-          enabled={gatewayState === 'open'}
-          onCompleted={() => {
-            void refreshHermesConfig()
-            void refreshCurrentModel()
-            void queryClient.invalidateQueries({ queryKey: ['model-options'] })
-          }}
-          profile={activeGatewayProfile}
-          requestGateway={requestGateway}
-        />
-      )}
-      {!isAuxiliaryWindow() && <OnboardingEnd />}
-      {!isAuxiliaryWindow() && (
-        <SharedMetricsConsentDialog
-          enabled={gatewayState === 'open'}
-          profile={activeGatewayProfile}
-          requestGateway={requestGateway}
-        />
-      )}
-      {/* One host for every free-tier sign-in entry point (Settings › Billing,
-          the statusbar chip, the first-launch intro). It owns the flow; the
-          entry points only record the intent. */}
-      {!isAuxiliaryWindow() && <FreeTierSignInDialog onSelectModel={selectModel} />}
+      <MainWindowOverlays
+        enabled={gatewayState === 'open'}
+        onCompleted={() => {
+          void refreshHermesConfig()
+          void refreshCurrentModel()
+          void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+        }}
+        onSelectModel={selectModel}
+        profile={activeGatewayProfile}
+        requestGateway={requestGateway}
+      />
       <ModelPickerOverlay
         gateway={gateway || undefined}
         onSelect={selectModel}

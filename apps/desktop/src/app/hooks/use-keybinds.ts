@@ -87,6 +87,7 @@ import {
   switcherActive,
   switcherJustClosed
 } from '@/store/session-switcher'
+import { requestSimplifiedNewSession } from '@/store/simplified-new-session'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { requestThreadPageScroll } from '@/store/thread-scroll'
 import { openNewWindow } from '@/store/windows'
@@ -317,6 +318,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.agents': () => navigate(AGENTS_ROUTE),
 
     'session.new': () => {
+      if (requestSimplifiedNewSession()) { return }
       // Match the sidebar New Session button. A plain keyboard new chat should
       // target the current live profile, not a stale per-profile quick-create
       // selection from a prior action.

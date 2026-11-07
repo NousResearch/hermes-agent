@@ -41769,7 +41769,8 @@
               "click",
               "menu",
               "palette",
-              "shortcut"
+              "shortcut",
+              "state"
             ],
             "title": "Via",
             "type": "string"

@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode, useLayoutEffect, useRef } from 'react'
+import { type CSSProperties, type ReactNode, type RefObject, useLayoutEffect, useRef } from 'react'
 
 import { cn } from '@/lib/utils'
 
@@ -61,7 +61,8 @@ export function FadeScroll({
   deps,
   fade,
   maxHeight = '9rem',
-  pad
+  pad,
+  ref: scrollRef
 }: {
   children: ReactNode
   className?: string
@@ -69,14 +70,16 @@ export function FadeScroll({
   fade?: string
   maxHeight?: string
   pad?: string
+  ref?: RefObject<HTMLDivElement | null>
 }) {
-  const ref = useRef<HTMLDivElement>(null)
+  const localRef = useRef<HTMLDivElement>(null)
+  const ref = scrollRef ?? localRef
 
   useLayoutEffect(() => {
     if (deps !== undefined && ref.current) {
       ref.current.scrollTop = ref.current.scrollHeight
     }
-  }, [deps])
+  }, [deps, ref])
 
   const style = {
     maxHeight,

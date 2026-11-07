@@ -19,13 +19,7 @@ import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $chatTextScale, CHAT_TEXT_SCALE_PRESETS, setChatTextScale } from '@/store/chat-text-scale'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
-import {
-  $interfaceMode,
-  $modeShadowed,
-  INTERFACE_MODES,
-  type InterfaceMode,
-  setInterfaceMode
-} from '@/store/interface-mode'
+import { $modeShadowed } from '@/store/interface-mode'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { $fileBrowserOpen, setFileBrowserOpen } from '@/store/layout'
 import { $showModelPricing, setShowModelPricing } from '@/store/model-pricing'
@@ -81,6 +75,7 @@ import type { AppearanceSubpageId } from './appearance-subpages'
 import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
 import { setNested } from './helpers'
+import { InterfaceModeSettings } from './interface-mode-settings'
 import { MinimizeToTraySetting } from './minimize-to-tray-setting'
 import { PetSettings } from './pet-settings'
 import { ListRow, RowFootnoteAction, SectionHeading, SettingsContent, ToggleRow } from './primitives'
@@ -420,7 +415,6 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const hideThreadTimeline = useStore($hideThreadTimeline)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const reasoningCollapsedShadowed = useStore($modeShadowed('reasoningCollapsedByDefault'))
-  const interfaceMode = useStore($interfaceMode)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
@@ -508,14 +502,6 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
     { id: 'comfortable', label: a.sessionDensityComfortable },
     { id: 'detailed', label: a.sessionDensityDetailed }
   ] as const satisfies readonly { id: SessionListDensity; label: string }[]
-
-  const interfaceModeOptions = INTERFACE_MODES.map(id => ({
-    id,
-    label: t.interfaceMode[id].label
-  })) satisfies readonly {
-    id: InterfaceMode
-    label: string
-  }[]
 
   // A row whose value Simple mode currently decides says so where the
   // preference text would otherwise promise a persistence it cannot deliver.
@@ -712,23 +698,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             </>
           )}
 
-          {show('window-layout') && (
-            <ListRow
-              action={
-                <SegmentedControl
-                  onChange={id => {
-                    triggerHaptic('selection')
-                    setInterfaceMode(id)
-                  }}
-                  options={interfaceModeOptions}
-                  value={interfaceMode}
-                />
-              }
-              description={t.interfaceMode.hint}
-              id={settingElementId(ids.interfaceMode)}
-              title={t.interfaceMode.title}
-            />
-          )}
+          {show('window-layout') && <InterfaceModeSettings />}
 
           {show('window-layout') && (
             <ListRow

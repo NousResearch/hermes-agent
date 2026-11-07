@@ -1,3 +1,4 @@
+import type * as HermesSdk from '@hermes/plugin-sdk'
 /**
  * Bot Mode's pane layout contract, asserted by running the real `register()`
  * against a recording plugin context:
@@ -15,8 +16,6 @@
  *    always-registered fallback kept for older desktops. Cron jobs are
  *    bot-scoped, so the tile must not sit beside a group chat.
  */
-
-import type * as HermesSdk from '@hermes/plugin-sdk'
 import type { PluginContext } from '@hermes/plugin-sdk'
 import { atom } from 'nanostores'
 import type { ReactNode } from 'react'
@@ -26,6 +25,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // The app provider the plugin's tab label renders under; a plugin test may reach it.
 // eslint-disable-next-line no-restricted-imports
 import { I18nProvider } from '@/i18n'
+// eslint-disable-next-line no-restricted-imports
+import { setSimplifiedAgentMode } from '@/store/simplified-agent-mode'
 
 import type * as DataModule from './data'
 import type * as RoutingModule from './routing'
@@ -342,4 +343,18 @@ describe('a desktop without host.paneVisibility', () => {
     harness.dispose()
     host.paneVisibility = restore
   })
+})
+
+
+it('removes only the Bots sidebar tab while simplified agents is enabled and restores it when disabled', () => {
+  setSimplifiedAgentMode(false)
+  paneStores()
+  const harness = recordingContext()
+  plugin.register(harness.ctx)
+  expect(harness.find('pane')).toBeDefined()
+  setSimplifiedAgentMode(true)
+  expect(harness.find('pane')).toBeUndefined()
+  setSimplifiedAgentMode(false)
+  expect(harness.find('pane')).toMatchObject({ data: { dock: { pane: 'sessions', pos: 'center', enforce: true } } })
+  harness.dispose()
 })

@@ -139,4 +139,12 @@ describe('removeSession × archived view store', () => {
 
     expect(vi.mocked(deleteSession)).toHaveBeenCalledWith('arch-1', 'sage')
   })
+  it('deletes an uncached search result using its explicit gateway and profile', async () => {
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+    const handle = await mountHarness()
+    const row = archivedSession({ archived: false, profile: 'research', connection_id: 'remote-b' })
+    await act(() => handle.removeSession(row.id, row))
+    expect(deleteSession).toHaveBeenCalledWith(row.id, { connectionId: 'remote-b', profile: 'research' })
+  })
+
 })

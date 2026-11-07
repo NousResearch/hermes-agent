@@ -1,0 +1,36 @@
+name: hypnos
+repo: https://github.com/0xNoramiya/hypnos
+sha: 0a809b9085fdeaed63fd909b927afcc41de512de
+description: Hermes learns in its sleep. Consolidates your corrections and denials into a small LoRA brain overnight, then routes mastered turns to it with the learned habits pruned from its prompt.
+maintainer: 0xNoramiya
+tier: community
+category: models
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/0xNoramiya/hypnos#readme
+version: "0.1.0"
+image: "https://raw.githubusercontent.com/0xNoramiya/hypnos/0a809b9085fdeaed63fd909b927afcc41de512de/docs/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/0xNoramiya/hypnos/0a809b9085fdeaed63fd909b927afcc41de512de/docs/screenshots/preview-report-dark.png"
+  - "https://raw.githubusercontent.com/0xNoramiya/hypnos/0a809b9085fdeaed63fd909b927afcc41de512de/docs/screenshots/preview-reply-badge.png"
+readme: true
+platforms: [linux, macos]
+title: Hypnos
+known_issues:
+  - Training needs a separate Python environment with torch; hermes hypnos doctor prints the command.
+  - The Apple Silicon (MLX) backend is not written yet; Macs train on CPU.
+  - Without Docker, REM dreams run in lucid mode (pattern checks only, no execution); the morning report says so.
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+    - post_approval_response
+    - post_llm_call
+    - on_session_end
+    - on_session_finalize
+    - post_compaction
+    - on_session_delete
+    - transform_llm_output
+  provides_middleware:
+    - llm_execution
+  requires_env: []

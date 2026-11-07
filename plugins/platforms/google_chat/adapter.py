@@ -361,6 +361,25 @@ _SA_ERROR_MESSAGES = {
 }
 
 
+# Docs, Sheets, Slides and Drawings are not files until exported; shortcuts/folders share the prefix.
+_GOOGLE_EDITOR_MIME_RE = re.compile(r"^application/vnd\.google-apps\.(document|spreadsheet|presentation|drawing)$")
+
+
+def _undelivered_attachment_note(attachment: dict[str, Any]) -> str:
+    """Agent-visible note for an inbound attachment that never reached the cache. A Drive-picker
+    share carries only a Drive id: ``media.download`` refuses it and the app cannot open the
+    sender's Drive, so the agent is told to ask for an upload (or an export, for editor files)."""
+    name = json.dumps(attachment.get("contentName") or "file", ensure_ascii=False)
+    resource_name = (attachment.get("attachmentDataRef") or {}).get("resourceName")
+    if (attachment.get("source") or "") != "DRIVE_FILE" or resource_name:
+        return f"[The user attempted to send {name} but it could not be downloaded.]"
+    ask = ("Ask them to export it (for example as PDF) and upload that file into the chat instead."
+           if _GOOGLE_EDITOR_MIME_RE.match(str(attachment.get("contentType") or ""))
+           else "Ask them to upload the file into the chat instead (paste or drag it in).")
+    return (f"[The user shared Google Drive file {name}, but it was not downloaded: this app can't open "
+            f"files shared from Google Drive. {ask}]")
+
+
 def _thread_body(text: str, thread_id: Optional[str]) -> dict[str, Any]:
     """``{"text": ...}`` plus ``thread.name`` when replying into a thread."""
     body: dict[str, Any] = {"text": text}
@@ -957,8 +976,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 local_path, mime = await self._download_attachment(att)
             except Exception:
                 logger.exception("[GoogleChat] attachment download failed")
-                continue
+                local_path = None
             if not local_path:
+                # Never a silent drop: the agent would answer as if no file had been sent.
+                text = f"{text}\n\n{_undelivered_attachment_note(att)}".strip()
                 continue
             media_urls.append(local_path)
             media_types.append(mime or "application/octet-stream")

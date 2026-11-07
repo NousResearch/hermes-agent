@@ -7,7 +7,7 @@ tier: community
 category: memory
 title: Mindhall
 requires_hermes: ">=0.23.0"
-version: "0.2.0"
+version: "0.3.0"
 capabilities:
   provides_tools:
     - mindhall_read

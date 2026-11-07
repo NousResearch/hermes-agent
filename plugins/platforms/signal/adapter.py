@@ -40,7 +40,7 @@ from plugins.platforms.signal.signal_rate_limit import (
     SignalRateLimitError, _extract_retry_after_seconds, _format_wait, _is_signal_rate_limit_error,
     _signal_send_timeout, get_scheduler)
 from gateway.platforms._shared import get_scoped_secret as _sig_secret
-from utils import TRUTHY_STRINGS
+from utils import TRUTHY_STRINGS, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,15 @@ _SKIP_IMAGE_LOG = {
     "oversize": lambda url, detail: ("Signal: image too large (%d bytes), skipping %s", detail, url)}
 _QUOTE_AUTHOR_KEYS = (
     "author", "authorNumber", "authorUuid", "authorAci", "authorServiceId", "authorServiceIdString")
+# Channel prompt for addressed group turns while unmentioned chatter is observed. Gateway replay keys on the
+# "observed Signal group context" phrase to move observed rows into a context-only block; it rides the
+# ephemeral system prompt, so keep the bytes stable.
+_OBSERVE_CHANNEL_PROMPT = (
+    "You are handling a Signal group chat message.\n"
+    "- observed Signal group context may be provided in a separate context-only block "
+    "before the current message; it is not necessarily addressed to you.\n"
+    "- Treat only the current new message as a request explicitly directed at you, "
+    "and use observed context only when the current message asks for it.")
 
 
 def _parse_comma_list(value: str) -> list[str]:
@@ -197,6 +206,17 @@ class SignalAdapter(BasePlatformAdapter):
         _rm_cfg = extra.get("require_mention")
         self.require_mention = (bool(_rm_cfg) if _rm_cfg is not None
                                 else (_sig_secret("SIGNAL_REQUIRE_MENTION", "false") or "false").lower() in TRUTHY_STRINGS)
+        # Unmentioned group chatter that require_mention drops is kept as context for the next addressed turn.
+        # Replay reads that turn's session, so this needs one session per group: per-sender lanes
+        # (group_sessions_per_user) would scatter the chatter where the addressed turn never looks.
+        _obs_cfg = extra.get("observe_unmentioned_group_messages")
+        observe = is_truthy_value(
+            _obs_cfg if _obs_cfg is not None else _sig_secret("SIGNAL_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "false"))
+        shared_group_sessions = not is_truthy_value(extra.get("group_sessions_per_user"), default=True)
+        self.observe_unmentioned_group_messages = observe and self.require_mention and shared_group_sessions
+        if observe and self.require_mention and not shared_group_sessions:
+            logger.warning("Signal: observe_unmentioned_group_messages needs group_sessions_per_user: false "
+                           "(observed context lives in the group's shared session); not observing")
         self.dm_allow_from = set(_parse_comma_list(_sig_secret("SIGNAL_ALLOWED_USERS", "*")))
         self.client: Optional[httpx.AsyncClient] = None
         self._sse_task: Optional[asyncio.Task] = None
@@ -375,7 +395,7 @@ class SignalAdapter(BasePlatformAdapter):
         return {**envelope_data, "dataMessage": sent_msg}
 
     def _apply_group_mention_rules(self, text: str, data_message: dict) -> tuple[bool, str]:
-        """Gate on require_mention (False = drop) and strip the bot's own @mention from every group
+        """Gate on require_mention (False = not addressed) and strip the bot's own @mention from every group
         message, so the agent doesn't read "@+155****4567 say hello" as a directive to contact that number."""
         account_norm = self._account_normalized
         if self.require_mention:
@@ -447,10 +467,13 @@ class SignalAdapter(BasePlatformAdapter):
         text = data_message.get("message", "")
         if text and (mentions := data_message.get("mentions", [])):
             text = _render_mentions(text, mentions)
+        observe_only = False
         if is_group:
             mentioned, text = self._apply_group_mention_rules(text, data_message)
             if not mentioned:
-                return
+                if not self.observe_unmentioned_group_messages:
+                    return
+                observe_only = True
         # quote.id is the quoted message's timestamp, quote.author the quoted sender —
         # both are preserved so the gateway can tell the agent which message was replied to.
         quote_data = data_message.get("quote") or {}
@@ -481,10 +504,14 @@ class SignalAdapter(BasePlatformAdapter):
         if ts_ms:
             with suppress(ValueError, OSError):
                 timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
+        if observe_only:
+            await self._record_observed_group_message(source, text, media_urls, media_types, timestamp)
+            return
         # raw_message keeps sender + timestamp_ms so processing hooks can build sendReaction targets.
         event = MessageEvent(
             source=source, text=text or "", message_type=msg_type, media_urls=media_urls,
             media_types=media_types, timestamp=timestamp,
+            channel_prompt=_OBSERVE_CHANNEL_PROMPT if is_group and self.observe_unmentioned_group_messages else None,
             raw_message={"sender": sender, "timestamp_ms": ts_ms, "quote": quote_data if quote_data else None},
             reply_to_message_id=reply_to_id, reply_to_text=quote_data.get("text"),
             reply_to_author_id=reply_to_author,
@@ -493,6 +520,35 @@ class SignalAdapter(BasePlatformAdapter):
         )
         logger.debug("Signal: message from %s in %s: %s", redact_phone(sender), chat_id[:20], (text or "")[:50])
         await self.handle_message(event)
+
+    async def _record_observed_group_message(self, source, text: Optional[str], media_urls: list[str],
+                                             media_types: list[str], timestamp: datetime) -> None:
+        """Append unmentioned group chatter to the group's session as an ``observed`` row — no agent turn,
+        reply, typing or reaction. Gateway replay hands it to the next addressed turn as context only."""
+        store = getattr(self, "_session_store", None)
+        if not store:
+            return
+        from gateway.session import neutralize_untrusted_inline_text
+        from tools.credential_files import to_agent_visible_cache_path
+        parts = [text.strip()] if text and text.strip() else []
+        for path, mime in zip(media_urls, media_types):
+            kind = mime.split("/", 1)[0] if mime.startswith(("image/", "audio/", "video/")) else "document"
+            parts.append(f"[{kind} saved at: {to_agent_visible_cache_path(path)}]")
+        # Same "[sender] text" shape the runner gives addressed turns in a shared group session.
+        content = f"[{neutralize_untrusted_inline_text(source.user_name)}] " + "\n\n".join(parts)
+        # Epoch seconds: the store refuses ISO strings, and a delayed delivery keeps its real send time.
+        entry = {"role": "user", "content": content, "timestamp": timestamp.timestamp(), "observed": True}
+
+        def _append() -> None:
+            store.append_to_transcript(store.get_or_create_session(source).session_id, entry)
+
+        try:
+            await asyncio.to_thread(_append)  # SessionStore is synchronous SQLite; keep the SSE loop free
+        except Exception as exc:
+            logger.warning("Signal: failed to record observed group message: %s", exc, exc_info=True)
+            return
+        logger.debug("Signal: observed group message (bot not mentioned) from %s in %s",
+                     redact_phone(source.user_id), source.chat_id[:20])
 
     def _group_allowed(self, group_id: str) -> bool:
         """Group policy from SIGNAL_GROUP_ALLOWED_USERS: unset → groups disabled; IDs → only those

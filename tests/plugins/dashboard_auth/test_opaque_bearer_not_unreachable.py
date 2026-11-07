@@ -20,8 +20,11 @@ from __future__ import annotations
 
 import json
 import threading
+import base64
+import logging
 import time
 from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import jwt
@@ -37,7 +40,7 @@ from hermes_cli.dashboard_auth import (
     clear_providers,
     register_provider,
 )
-from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
+from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE, SESSION_RT_COOKIE
 import plugins.dashboard_auth.nous as nous_plugin
 
 OPAQUE_PEER_KEY = "hk_live_opaque_peer_key_0123456789abcdef"
@@ -243,6 +246,35 @@ def test_gated_api_foreign_portal_jwt_cookie_is_401_not_503(gated_portal, portal
     r = gated_portal.get("/api/auth/me")
     assert r.status_code == 401, r.text
     assert "unreachable" not in r.text.lower()
+
+
+def test_gated_api_refresh_minting_foreign_token_is_401_not_503(gated_portal, portal):
+    """Cookie path with a refresh token: the rotated token Portal hands back does not verify
+    here, so the provider rejects the RT (signed-out 401), never a 503 or an uncaught 500."""
+    foreign = _mint(portal, aud="hermes-cli:hermes-cli")
+    grant = MagicMock(status_code=200, headers={"content-type": "application/json"})
+    grant.json.return_value = {"access_token": foreign, "token_type": "Bearer", "refresh_token": "rt2"}
+    gated_portal.cookies.set(SESSION_AT_COOKIE, foreign)
+    gated_portal.cookies.set(SESSION_RT_COOKIE, "rt-old")
+    with patch("plugins.dashboard_auth._shared.httpx.post", return_value=grant) as post:
+        r = gated_portal.get("/api/auth/me")
+    assert post.called
+    assert r.status_code == 401, r.text
+    assert r.json()["reason"] == "invalid_or_expired_session"
+
+
+def test_forged_alg_with_published_kid_is_rejected_without_a_drift_warning(portal, caplog):
+    """The drift WARNING is reserved for aud/iss mismatches, which PyJWT reports only after the
+    signature verified. A forged token naming the published kid with another alg is rejected
+    before any signature check: a 401, and no attacker-sized log line."""
+    def b64(obj):
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+    forged = ".".join((b64({"alg": "HS256", "kid": _KID}), b64({"iss": "x" * 4000, "aud": "y"}), "c2ln"))
+    provider = _nous(portal[0])
+    with caplog.at_level(logging.WARNING, logger="plugins.dashboard_auth._shared"):
+        assert provider.verify_session(access_token=forged) is None
+    assert "verification failed" not in caplog.text
 
 
 def test_gated_api_unreachable_jwks_is_still_503(portal):

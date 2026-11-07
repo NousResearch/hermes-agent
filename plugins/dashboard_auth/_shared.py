@@ -255,19 +255,24 @@ def verify_jwt(
         raise InvalidCodeError(f"{label} signature invalid: {exc}") from exc
     except jwt.ImmatureSignatureError as exc:
         raise InvalidCodeError(f"{label} not yet valid: {exc}") from exc
-    except jwt.InvalidTokenError as exc:
-        # Unverified decode for diagnostics only: verification already failed, nothing is trusted.
+    except (jwt.InvalidAudienceError, jwt.InvalidIssuerError) as exc:
+        # Raised only after the signature verified, so only a real IdP-signed token gets here:
+        # a foreign client's token, or config drift (wrong client_id / portal URL). Log it, since
+        # the caller only sees a 401. Unverified decode for diagnostics only, values capped.
         details = ""
         try:
             unverified = jwt.decode(token, options={"verify_signature": False, "verify_exp": False})
             details = (
-                f" [token iss={unverified.get('iss')!r} aud={unverified.get('aud')!r}; "
+                f" [token iss={str(unverified.get('iss'))[:128]!r} aud={str(unverified.get('aud'))[:128]!r}; "
                 f"expected iss={issuer!r} aud={audience!r}]")
         except Exception:
             pass
         message = f"{label} verification failed: {exc}{details}"
         _log.warning("dashboard-auth: %s", message)
         raise InvalidCodeError(message) from exc
+    except jwt.InvalidTokenError as exc:
+        # Wrong alg, missing claim, malformed payload: reachable without a valid signature, so not logged.
+        raise InvalidCodeError(f"{label} verification failed: {exc}") from exc
 
 
 # ---- Shared provider skeletons ----
@@ -320,8 +325,9 @@ class JwtOAuthProvider(DashboardAuthProvider):
             return self._grant(
                 data, headers=headers, bad_request_exc=RefreshExpiredError, previous_refresh_token=refresh_token)
         except InvalidCodeError as exc:
-            # The grant succeeded but the minted token is not ours (foreign aud, unknown kid):
-            # this provider rejects the RT, so the refresh scan moves on instead of raising.
+            # The grant succeeded but the minted token does not verify here (foreign aud, unknown
+            # kid, or a Portal-side fault). The RT is already rotated server-side, so this provider
+            # rejects it and the refresh scan moves on instead of raising.
             raise RefreshExpiredError(str(exc)) from exc
 
     def verify_session(self, *, access_token: str) -> Optional[Session]:

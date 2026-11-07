@@ -9,14 +9,22 @@ from contextlib import suppress
 
 
 def _end_current_session(cli, reason: str) -> None:
-    """Flush un-persisted messages, then end the current session row with ``reason``.
-    Best-effort on both steps (the switch proceeds even if the DB write fails)."""
+    """Flush un-persisted messages, end the current session row with ``reason``, then prune that
+    row when the switch abandoned it before its first message. Best-effort on every step (the
+    switch proceeds even if the DB write fails)."""
     if cli.agent:
         with suppress(Exception):
             cli.agent._flush_messages_to_session_db(
                 cli.conversation_history, conversation_history=cli.conversation_history)
     with suppress(Exception):
         cli._session_db.end_session(cli.session_id, reason)
+    # A switch away from a session that never gained content leaves a titeless row that /resume
+    # and `hermes sessions list` then offer forever (#146165). /new and the TUI quit path prune
+    # theirs right after end_session; this path must too. The prune belongs HERE, before the
+    # caller swaps cli.session_id: _discard_session_if_empty reads cli.conversation_history as
+    # the authoritative transcript and probes the id it is handed.
+    with suppress(Exception):
+        cli._discard_session_if_empty(cli.session_id)
 
 
 def _sync_agent_to_session(cli, session_id: str, *, parent_session_id: str, reason: str) -> None:

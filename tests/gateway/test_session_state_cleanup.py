@@ -61,7 +61,6 @@ class TestSessionResetZombieRace:
 
     def test_generation_guard_blocks_then_unconditional_release_evicts(self):
         runner = _make_runner()
-        runner._session_run_generation = {}
         key = "agent:main:telegram:private:1"
 
         gen_n = runner._begin_session_run_generation(key)

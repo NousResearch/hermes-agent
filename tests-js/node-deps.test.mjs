@@ -48,7 +48,13 @@ function fixture() {
   json(join(source, 'web/package.json'), { name: 'web', version: '1.0.0', dependencies: { 'web-only': 'file:../vendor/web-only-1.0.0.tgz' } })
   json(join(source, 'apps/desktop/package.json'), { name: 'desktop', version: '1.0.0', scripts: { postinstall: 'node -e "require(\'fs\').writeFileSync(\'electron-provisioned\',\'yes\')"' } })
   execFileSync(pnpmCommand(), ['install', '--lockfile-only'], { cwd: source, env, stdio: 'pipe' })
+  pinPnpm(source, execFileSync(pnpmCommand(), ['--version'], { cwd: source, env, encoding: 'utf8' }).trim())
   return { source, env }
+}
+
+// PM's pnpm pin, the one node-deps requires.
+function pinPnpm(source, version) {
+  json(join(source, 'pm/lock.json'), { schema: 1, packages: { pnpm: { version, artifacts: {} } } })
 }
 
 function installs(source) {
@@ -290,6 +296,7 @@ function fakePnpm({ manifest }) {
 
 test.skipIf(process.platform === 'win32')('the pnpm version reads from the manifest beside the resolved executable without a child spawn', () => {
   const { source, env } = fixture()
+  pinPnpm(source, '12.0.0')
   const pnpm = fakePnpm({ manifest: '12.0.0' })
   const options = { source, workspaces: ['web'], reuse: true, env: { ...env, PATH: `${pnpm.path}${delimiter}${env.PATH}` } }
   prepareNodeDependencies(options)
@@ -300,6 +307,7 @@ test.skipIf(process.platform === 'win32')('the pnpm version reads from the manif
 
 test.skipIf(process.platform === 'win32')('a pnpm layout without a readable manifest falls back to the child version probe', () => {
   const { source, env } = fixture()
+  pinPnpm(source, '12.0.0')
   const pnpm = fakePnpm({ manifest: null })
   prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env: { ...env, PATH: `${pnpm.path}${delimiter}${env.PATH}` } })
   expect(readFileSync(pnpm.spawned, 'utf8')).toBe('--version\ninstall\n')
@@ -310,6 +318,7 @@ test.skipIf(process.platform === 'win32')('a pnpm layout without a readable mani
 // depending on a probe that can no longer spawn.
 test.skipIf(process.platform === 'win32')('a receipt keyed by the probed version reuses under the manifest version, even when the probe fails', () => {
   const { source, env } = fixture()
+  pinPnpm(source, '12.0.0')
   const pnpm = fakePnpm({ manifest: null })
   const options = { source, workspaces: ['web'], reuse: true, env: { ...env, PATH: `${pnpm.path}${delimiter}${env.PATH}` } }
   prepareNodeDependencies(options)
@@ -319,21 +328,34 @@ test.skipIf(process.platform === 'win32')('a receipt keyed by the probed version
   prepareNodeDependencies({ ...options, install: false })
   expect(readFileSync(pnpm.spawned, 'utf8')).toBe('--version\ninstall\n')
   // A genuinely different pnpm still invalidates the receipt.
+  pinPnpm(source, '12.0.1')
   pnpm.writeManifest('12.0.1')
   expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
 }, 30000)
 
 // pmOnFail: ignore keeps the pin out of the lockfile, so pnpm itself never compares it.
-test.skipIf(process.platform === 'win32')('a pnpm other than the root devEngines pin is refused before anything is installed', () => {
+test.skipIf(process.platform === 'win32')('a pnpm other than the pm/lock.json pin is refused before anything is installed', () => {
   const { source, env } = fixture()
-  const manifest = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8'))
-  json(join(source, 'package.json'), { ...manifest, devEngines: { packageManager: { name: 'pnpm', version: '12.0.1', onFail: 'error' } } })
-  writeFileSync(join(source, 'pnpm-workspace.yaml'), `${readFileSync(join(source, 'pnpm-workspace.yaml'), 'utf8')}pmOnFail: ignore\n`)
+  pinPnpm(source, '12.0.1')
   const pnpm = fakePnpm({ manifest: '12.0.0' })
-  const options = { source, workspaces: ['web'], env: { ...env, PATH: `${pnpm.path}${delimiter}${env.PATH}` } }
-  expect(() => prepareNodeDependencies(options)).toThrow(/pnpm 12\.0\.1 is required .*found 12\.0\.0/)
+  const options = { source, workspaces: ['web'], reuse: true, env: { ...env, PATH: `${pnpm.path}${delimiter}${env.PATH}` } }
+  expect(() => prepareNodeDependencies(options)).toThrow(/pnpm 12\.0\.1 is required \(pm\/lock\.json\).*found 12\.0\.0/)
   expect(existsSync(pnpm.spawned)).toBe(false)
   pnpm.writeManifest('12.0.1')
   prepareNodeDependencies(options)
   expect(readFileSync(pnpm.spawned, 'utf8')).toBe('install\n')
+  // pm/lock.json isn't a receipt input, so a re-pin must be refused before a completed install is reused.
+  pinPnpm(source, '12.0.2')
+  expect(() => prepareNodeDependencies(options)).toThrow(/pnpm 12\.0\.2 is required \(pm\/lock\.json\)/)
+}, 30000)
+
+test.skipIf(process.platform === 'win32')('a source without a pm/lock.json pnpm pin is refused with the reason, before anything is installed', () => {
+  const { source, env } = fixture()
+  const pnpm = fakePnpm({ manifest: '12.0.0' })
+  const options = { source, workspaces: ['web'], env: { ...env, PATH: `${pnpm.path}${delimiter}${env.PATH}` } }
+  json(join(source, 'pm/lock.json'), { schema: 1, packages: {} })
+  expect(() => prepareNodeDependencies(options)).toThrow(/pm\/lock\.json pins no pnpm/)
+  rmSync(join(source, 'pm/lock.json'))
+  expect(() => prepareNodeDependencies(options)).toThrow(/cannot read the pnpm pin from .*pm\/lock\.json: ENOENT/)
+  expect(existsSync(pnpm.spawned)).toBe(false)
 }, 30000)

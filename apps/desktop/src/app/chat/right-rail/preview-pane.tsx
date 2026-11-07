@@ -46,13 +46,17 @@ import {
   noteViewerDocument,
   popOutBrowserTab,
   type PreviewRenderMode,
+  previewTabOwnerProfile,
   type PreviewTarget,
   reopenViewer,
   setPreviewRenderMode,
   viewerUrlSpent
 } from '@/store/preview'
-import { $selectedStoredSessionId } from '@/store/session'
+import { currentSessionId } from '@/store/preview-ownership'
+import { $selectedStoredSessionId, knownSessionProfile, ownerLookupSessionRows } from '@/store/session'
 import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
+
+import { previewPartitionForProfile } from '../../../../electron/preview-guest-throttle'
 
 import { placeAnnotateCard, PreviewAnnotateCard } from './preview-annotate-card'
 import {
@@ -65,7 +69,7 @@ import {
   waitAnnotateEvent
 } from './preview-annotate-host'
 import { ArtifactPreview } from './preview-artifact'
-import { PreviewBrowserBar } from './preview-browser-bar'
+import { externalOpenerFor, PreviewBrowserBar } from './preview-browser-bar'
 import { mountBrowserPreviewFrame, type PreviewNavigationSurface } from './preview-browser-frame'
 import { PreviewBrowserFrameHint } from './preview-browser-frame-hint'
 import {
@@ -83,6 +87,7 @@ import { usePreviewGuestOffscreen } from './preview-guest-offscreen'
 import { type PreviewInputEvent } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
+import { watchPreviewDocumentLifecycle } from './preview-script-runner'
 import { RealProfileConsentDialog } from './real-profile-consent-dialog'
 
 type PreviewWebview = HTMLElement &
@@ -285,6 +290,19 @@ function PreviewDocumentBody(props: ComponentProps<typeof LocalFilePreview>) {
   )
 }
 
+/** The in-app browser cookie jar for the tab owned by `sessionId`: its owning profile's partition,
+ *  resolved through compression rotations. Per-profile so one profile's sign-ins never land in
+ *  another's jar (#150283 P1-3). Module-level so it reads the live stores at webview creation.
+ *
+ *  A session-less DRAFT tab has no row to resolve a profile from, so it falls back to the tab's own
+ *  workspace bucket (#150283 F2) — never the shared default jar, which would expose the default
+ *  profile's sign-ins to a named profile's draft workspace. */
+function previewPartitionForTab(sessionId: null | string | undefined, tabId?: null | string): string {
+  const sessionProfile = knownSessionProfile(ownerLookupSessionRows(), currentSessionId(sessionId))
+
+  return previewPartitionForProfile(sessionProfile ?? previewTabOwnerProfile(tabId))
+}
+
 export function PreviewPane({
   embedded = false,
   onClose,
@@ -320,6 +338,8 @@ export function PreviewPane({
   // the live address through this mirror instead of a stale closure.
   const targetUrlRef = useRef(target.url)
   targetUrlRef.current = target.url
+  const ownerSessionIdRef = useRef(sessionId)  // tab owner, read by the guest effect to resolve its partition
+  ownerSessionIdRef.current = sessionId
   const [devtoolsOpen, setDevtoolsOpen] = useState(false)
   const [history, setHistory] = useState({ back: false, forward: false })
   const [loading, setLoading] = useState(true)
@@ -1160,7 +1180,12 @@ export function PreviewPane({
       }
     }
 
-    const webview = createPreviewWebview(initialUrl, target.browserContext) as PreviewWebview
+    const webview = createPreviewWebview(
+      initialUrl,
+      target.browserContext,
+      // Per-profile cookie jar so one profile's in-app sign-ins never land in another's jar (#150283 P1-3).
+      previewPartitionForTab(ownerSessionIdRef.current, tabId)
+    ) as PreviewWebview
     let liveDocument: BrowserDocument | undefined
 
     // The guest preload (main.ts installs it on this partition) forwards a
@@ -1415,6 +1440,7 @@ export function PreviewPane({
     webview.addEventListener('devtools-closed', onDevToolsClosed)
     webview.addEventListener('devtools-opened', onDevToolsOpened)
     webview.addEventListener('did-fail-load', onFail)
+    const stopWatchingDocument = watchPreviewDocumentLifecycle(webview, tabId)
     webview.addEventListener('did-navigate', onNavigate)
     webview.addEventListener('did-navigate-in-page', onNavigate)
     webview.addEventListener('did-start-loading', onStart)
@@ -1451,6 +1477,7 @@ export function PreviewPane({
       webview.removeEventListener('devtools-closed', onDevToolsClosed)
       webview.removeEventListener('devtools-opened', onDevToolsOpened)
       webview.removeEventListener('did-fail-load', onFail)
+      stopWatchingDocument()
       webview.removeEventListener('did-navigate', onNavigate)
       webview.removeEventListener('did-navigate-in-page', onNavigate)
       webview.removeEventListener('did-start-loading', onStart)
@@ -1587,11 +1614,7 @@ export function PreviewPane({
             onFlushComments={() => void flushComments()}
             onForward={goForward}
             onNavigate={navigateTo}
-            onOpenExternal={
-              !isBrowserWindow() && !canOpenBrowserWindow()
-                ? () => void window.hermesDesktop?.openExternal(currentUrl)
-                : undefined
-            }
+            onOpenExternal={externalOpenerFor(currentUrl)}
             onPopIn={isBrowserWindow() ? () => window.close() : undefined}
             onPopOut={
               isBrowserWindow() || !tabId || !canPopOutBrowserTab(tabId) ? undefined : () => popOutBrowserTab(tabId)
@@ -1600,6 +1623,7 @@ export function PreviewPane({
             onToggleAnnotate={toggleAnnotate}
             onToggleConsole={() => consoleState.setOpen(open => !open)}
             onToggleDevTools={toggleDevTools}
+            tabId={tabId}
             url={currentUrl}
           />
         )}

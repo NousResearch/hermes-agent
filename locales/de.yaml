@@ -974,9 +974,6 @@ platform:
     approved: "✅ Genehmigt."
     denied: "❌ Abgelehnt."
     approval_expired: "⌛ Genehmigung abgelaufen — Befehl wurde nicht ausgeführt (Zeitüberschreitung oder bereits anderswo entschieden)."
-  yuanbao:
-    slow_response_notice: "Diese Aufgabe ist etwas aufwendiger — ich arbeite noch daran, bitte einen Moment Geduld..."
-    owner_command_denied: "⚠️ {command} ist im privaten Chatmodus nur für den Ersteller verfügbar"
   shared:
     truncated_suffix: "\n...(gekürzt)"
     unknown: "unbekannt"
@@ -1710,10 +1707,10 @@ slash:
     description: "CLI beenden (--delete entfernt zusätzlich den Sitzungsverlauf)"
 cli:
   backtrack:
-    title: "↺ Zurückspulen — einen früheren Prompt wählen"
-    keys_hint: "↑/↓ wählen · Enter bearbeiten & erneut senden · f von hier abzweigen · Esc schließen"
-    preview_label: "Prompt {number} von {total}:"
-    more_lines: "… ({count} weitere Zeilen)"
+    title: "↺ Verlauf — einen Prompt zum Bearbeiten wählen"
+    keys_hint: "Verlauf durchsuchen · ↑↓/jk scrollen · ←→/hl Prompts · ↵ bearbeiten · f abzweigen · esc zurück"
+    prime_hint: "esc erneut, um die vorige Nachricht zu bearbeiten"
+    no_previous: "Keine vorige Nachricht zum Bearbeiten."
     editing_hint: "↺ Prompt {number} wird bearbeitet — Enter spult hierher zurück und sendet · Esc Esc bricht ab"
     edit_cancelled: "↺ Zurückspulen abgebrochen; nichts wurde entfernt."
     rewound: "↺ Zu Prompt {number} zurückgespult ({count} Nachricht(en) archiviert); Bearbeitung wird gesendet."

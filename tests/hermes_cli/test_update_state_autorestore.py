@@ -1,5 +1,6 @@
 """Updater restore must publish snapshot rows without replaying the old WAL."""
 
+import os
 import shutil
 import sqlite3
 from pathlib import Path
@@ -460,3 +461,22 @@ def test_update_and_boot_guards_defer_a_locked_healthy_db(tmp_path, monkeypatch,
     assert "corrupted" not in out
     assert "integrity check FAILED" not in out
     assert db.read_bytes() == before
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="needs a non-root chmod 000")
+def test_unreadable_header_and_unopenable_db_is_indeterminate(tmp_path, monkeypatch):
+    """A Windows sharing lock can refuse BOTH the raw read and SQLite's open (CANTOPEN):
+    with no NOTADB/CORRUPT evidence the verdict is None, never "corrupt" (#147938)."""
+    from hermes_cli import sqlite_safe_read
+    from hermes_cli.backup import verify_sqlite_integrity
+
+    db = tmp_path / "state.db"
+    _make_valid_db(db, 3)
+    monkeypatch.setattr(sqlite_safe_read, "read_header_bytes_preopen", lambda *a, **k: None)
+    db.chmod(0)
+    try:
+        result = verify_sqlite_integrity(db, check_header=True, run_pragma=True)
+    finally:
+        db.chmod(0o644)
+
+    assert result["valid"] is None, result

@@ -21,6 +21,7 @@ DEFAULT_INTEGRITY_CHECK_MAX_BYTES = 2 << 30  # 2 GiB
 
 _SQLITE_HEADER = b"SQLite format 3\0"
 _LOCK_PRIMARY_CODES = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED})
+_CORRUPT_PRIMARY_CODES = frozenset({sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB})
 
 
 def _query_ro_sqlite(path: Path, fn):
@@ -35,10 +36,15 @@ def _query_ro_sqlite(path: Path, fn):
         _close_quietly(conn)
 
 
-def _is_lock_contention(exc: BaseException) -> bool:
-    """True when *exc* is SQLite BUSY/LOCKED (primary code in the low byte of extended codes)."""
+def _primary_code(exc: BaseException) -> Optional[int]:
+    """SQLite primary result code (low byte of the extended code), or None."""
     code = getattr(exc, "sqlite_errorcode", None)
-    return isinstance(code, int) and (code & 0xFF) in _LOCK_PRIMARY_CODES
+    return code & 0xFF if isinstance(code, int) else None
+
+
+def _is_lock_contention(exc: BaseException) -> bool:
+    """True when *exc* is SQLite BUSY/LOCKED."""
+    return _primary_code(exc) in _LOCK_PRIMARY_CODES
 
 
 def verify_sqlite_integrity(
@@ -60,6 +66,10 @@ def verify_sqlite_integrity(
 
     def _query_failure(message: str, exc: Exception, size: int) -> dict:
         if _is_lock_contention(exc):
+            return _done(message, valid=None, size=size)
+        # Header unreadable AND SQLite cannot open the file (CANTOPEN/IOERR under a hard
+        # sharing lock): nothing proved corruption, so no verdict (#147938).
+        if header_note and _primary_code(exc) not in _CORRUPT_PRIMARY_CODES:
             return _done(message, valid=None, size=size)
         return _done(message, size=size)
 

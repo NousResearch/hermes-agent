@@ -1072,14 +1072,14 @@ def policy_for_source(runner, source):
     return None
 
 
-def workspace_ready(policy, *, task_id=None, session_key=None) -> bool:
+def workspace_ready(policy, *, task_id=None) -> bool:
     """Readiness, not structure: a removed workspace keeps the chat readable and movable, but no
     turn runs in a missing directory."""
     if not Path(policy.cwd).is_dir():
         return False
     from gateway.session_coding_workspace import verify_policy
     try:
-        verify_policy(policy, task_id=task_id, session_key=session_key)
+        verify_policy(policy, task_id=task_id)
     except RuntimeStoreError as exc:
         if exc.reason != 'workspace_unavailable':
             raise

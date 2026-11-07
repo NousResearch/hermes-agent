@@ -11,7 +11,7 @@ from tui_gateway import server
 
 
 WORKER = r'''
-import io, json, os, subprocess, sys
+import io, json, os, shlex, subprocess, sys
 from pathlib import Path
 from types import SimpleNamespace
 from tui_gateway import server
@@ -70,6 +70,15 @@ def tampered(server, frame):
     elif change == 'nonlocal':
         Path(os.environ['HERMES_HOME'], 'config.yaml').write_text(
             json.dumps({'terminal': {'backend': 'ssh'}}), encoding='utf-8')
+    elif change in ('cd-outside', 'cd-sub', 'cd-deleted'):
+        # The previous turn's agent left its persistent shell here (an artifacts dir, a sibling repo).
+        dest = {'cd-outside': cwd.parent, 'cd-sub': cwd / 'sub', 'cd-deleted': cwd / 'gone'}[change]
+        dest.mkdir(exist_ok=True)
+        moved = json.loads(terminal_tool('cd -- ' + shlex.quote(str(dest)) + ' && pwd',
+                                         task_id=session['session_key'], timeout=10))
+        assert moved['output'].strip() == str(dest), moved
+        if change == 'cd-deleted':
+            dest.rmdir()
     elif change == 'branch':
         git('checkout', '-b', 'another-task')
     elif change == 'detach':
@@ -98,7 +107,8 @@ sys.__stdout__.write(json.dumps([json.loads(line) for line in out.getvalue().spl
 
 
 @pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
-@pytest.mark.parametrize("change", ["none", "explicit", "cwd", "deleted", "root", "terminal-cwd", "nonlocal", "branch", "detach", "rebase"])
+@pytest.mark.parametrize("change", ["none", "explicit", "cwd", "deleted", "root", "terminal-cwd", "nonlocal", "branch", "detach",
+                                    "rebase", "cd-outside", "cd-sub", "cd-deleted"])
 def test_compute_process_verifies_checkout_before_dispatch(tmp_path, monkeypatch, change, warm):
     from hermes_constants import get_hermes_home
     from tui_gateway.coding_workspaces import workspace_instructions
@@ -134,7 +144,9 @@ def test_compute_process_verifies_checkout_before_dispatch(tmp_path, monkeypatch
     assert child.returncode == 0, child.stderr
     frames = json.loads(child.stdout.splitlines()[-1])
     results = json.loads(receipt.read_text(encoding="utf-8")) if receipt.exists() else []
-    accepted = change in {"none", "branch", "detach", "rebase"}
+    # A persistent cd is not checkout loss: one that left starts the next turn at the root, one
+    # inside the checkout carries over.
+    accepted = change in {"none", "branch", "detach", "rebase", "cd-outside", "cd-sub", "cd-deleted"}
     assert len(results) == int(warm) + int(accepted), json.dumps(frames, indent=2)
     turn = [f for f in frames if f.get("request_id") == frame["request_id"]]
     if accepted:
@@ -149,7 +161,11 @@ def test_compute_process_verifies_checkout_before_dispatch(tmp_path, monkeypatch
             assert result["instructions"] == instructions
             assert result["builds"] == 1
             assert result["agentId"] == results[0]["agentId"]
-            assert result["pwd"]["exit_code"] == 0 and result["pwd"]["output"].strip() == str(checkout)
+        expected = [str(checkout)] * len(results)
+        if change == "cd-sub":
+            expected[-1] = str(checkout / "sub")
+        assert [r["pwd"]["exit_code"] for r in results] == [0] * len(results), results
+        assert [r["pwd"]["output"].strip() for r in results] == expected, results
     else:
         assert any(f["type"] == "turn.error" for f in turn), frames
         assert not any(f["type"] == "turn.started" for f in turn), frames

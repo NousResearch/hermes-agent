@@ -1,6 +1,5 @@
 """Exercise live route/physical terminal identity across real compression."""
 import json
-import shlex
 from types import SimpleNamespace
 
 import pytest
@@ -36,9 +35,8 @@ def terminal(policy, owner, task_id, route, command, **kwargs):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('retarget', ['route-cd', 'physical-override'])
 @pytest.mark.parametrize('boundary', ['verify', 'submit', 'turn', 'managed'])
-async def test_live_terminal_retarget_after_compression_is_refused(workspace, monkeypatch, retarget, boundary):
+async def test_live_terminal_retarget_after_compression_is_refused(workspace, monkeypatch, boundary):
     from gateway.run_turn_runner import TurnRunner
     from gateway.session_authorities import owner_scope
     from gateway.session_policy import restore_policy
@@ -53,20 +51,16 @@ async def test_live_terminal_retarget_after_compression_is_refused(workspace, mo
     policy = restore_policy(local_receipt(owner.db, sid)['policy'])
     monkeypatch.setattr(owner, '_schedule_admitted', lambda ref, row: None)
     try:
-        if retarget == 'physical-override':
-            with owner_scope(owner):
-                register_task_env_overrides(child, {'cwd': str(source)})
-            observed = terminal(policy, owner, child, live.route, 'pwd')
-        else:
-            observed = terminal(policy, owner, child, live.route, 'cd -- ' + shlex.quote(str(source)) + '; pwd')
+        # A configured override on the compressed physical task is identity, unlike a persistent cd
+        # (test_coding_workspace_cd_reanchor.py), so it must be found under the live task, not sid.
+        with owner_scope(owner):
+            register_task_env_overrides(child, {'cwd': str(source)})
+        observed = terminal(policy, owner, child, live.route, 'pwd')
         assert observed['exit_code'] == 0 and observed['output'].removesuffix('\n') == str(source), observed
         with owner_scope(owner):
-            assert get_session_cwd(live.route) == str(source)
             assert get_session_cwd(sid) is None  # the rejected implementation checks only this unused key
-            if retarget == 'physical-override':
-                # Keep physical-key coverage independent from the separate route-cd regression.
-                clear_session_cwd(live.route)
-                assert get_session_cwd(child) == str(source)
+            clear_session_cwd(live.route)
+            assert get_session_cwd(child) == str(source)
         if boundary == 'verify':
             reply = await rpc(connection, 'session.workspace.verify', session_id=sid)
             assert reply.get('error', {}).get('message') == 'workspace_unavailable', reply

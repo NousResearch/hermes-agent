@@ -239,7 +239,7 @@ class ComputeHost:
             from tui_gateway import server
             session = self._ensure_server_session(server, frame)
             from tui_gateway.coding_workspaces import verify_session_workspace
-            verify_session_workspace(session, probe=True)
+            verify_session_workspace(session, probe=True, turn_start=True)
             # #101416: the parent already holds this session's active-session lease (claimed in
             # prompt.submit before routing here). Install the inert borrow BEFORE the turn runs, or
             # _admit_prompt_turn re-claims from this child pid and is fenced out by the parent's own

@@ -141,7 +141,7 @@ def workspace_binding(policy):
     return (json.loads(policy.config_json).get(_KEY) or {}).get('binding')
 
 
-def verify_policy(policy, expected=None, *, task_id=None, session_key=None):
+def verify_policy(policy, expected=None, *, task_id=None):
     """No branch constraint: pin the checkout inode and Git metadata ownership instead."""
     binding = workspace_binding(policy)
     if not binding:
@@ -158,33 +158,40 @@ def verify_policy(policy, expected=None, *, task_id=None, session_key=None):
         saved = prepared['identity']
         if _identity(binding) != saved:
             raise ValueError('Prepared checkout moved or was replaced')
-        _verify_terminal(binding, task_id or prepared['session_id'], session_key)
+        _verify_terminal(binding, task_id or prepared['session_id'])
     except (OSError, ValueError) as exc:
         raise RuntimeStoreError('workspace_unavailable', field='coding_workspace', detail=str(exc)) from exc
     return binding
 
 
-def _terminal_cwd_within(cwd, root):
-    """Observed cd state may vary, but must resolve to an existing checkout directory."""
-    try:
-        path = Path(cwd)
-        resolved = path.resolve(strict=True)
-        return path.is_absolute() and resolved.is_dir() and resolved.is_relative_to(root)
-    except (OSError, RuntimeError, ValueError):
-        return False
-
-
-def _verify_terminal(binding, task_id, session_key=None):
-    from tools.terminal_tool import get_session_cwd, resolve_task_overrides
+def _verify_terminal(binding, task_id):
+    from tools.terminal_tool import resolve_task_overrides
     overrides = resolve_task_overrides(task_id)
-    # Configured task identity stays pinned; only observed persistent cd state may vary.
+    # Configured task identity stays pinned. Observed persistent cd state is not identity: an agent
+    # that cd'd out of the checkout (its artifacts dir, a sibling repo) or into a folder it later
+    # deleted is re-anchored when its next turn starts, never refused here. A refusal would lock
+    # the chat for good, since only a turn could cd back and none would be admitted.
     if (overrides.get('cwd', binding['cwd']) != binding['cwd']
             or overrides.get('env_type', 'local') != 'local'):
         raise ValueError('Terminal workspace changed')
-    for key in (task_id, session_key):
-        observed = get_session_cwd(key) if key else None
-        if observed is not None and not _terminal_cwd_within(observed, binding['cwd']):
-            raise ValueError('Terminal workspace changed')
+
+
+def _cd_left_checkout(binding, keys):
+    from tui_gateway.coding_workspaces import cd_left_checkout
+    return [key for key in keys if key and cd_left_checkout(key, binding['cwd'])]
+
+
+def begin_turn(policy, *, task_id, session_key=None):
+    """Turn-start admission: verify the binding, then start the shell in the checkout. A persistent
+    cd inside it carries over; one that left it is reset to the root here, never mid-turn (a probe
+    or a queued prompt must not yank a running turn's shell)."""
+    binding = verify_policy(policy, task_id=task_id)
+    if binding is None:
+        return None
+    from tools.terminal_tool import record_session_cwd
+    for key in _cd_left_checkout(binding, (task_id, session_key)):
+        record_session_cwd(key, binding['cwd'])
+    return binding
 
 
 def terminal_identity(authority, session_id):
@@ -199,24 +206,30 @@ async def verify_admission(authority, ref):
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if workspace_binding(policy):
-        await asyncio.to_thread(verify_policy, policy, **terminal_identity(authority, ref.session_id))
+        task_id = terminal_identity(authority, ref.session_id)['task_id']
+        await asyncio.to_thread(verify_policy, policy, task_id=task_id)
 
 
 def _probe_terminal(authority, policy, session_id, expected):
     identity = terminal_identity(authority, session_id)
-    binding = verify_policy(policy, expected, **identity)
+    binding = verify_policy(policy, expected, task_id=identity['task_id'])
     if binding is None:
         raise RuntimeStoreError('invalid_params', field='coding_workspace', detail='session has no coding workspace')
     from gateway.session_policy import policy_scope
     from tools.approval_context import reset_current_session_key, set_current_session_key
     from tools.terminal_tool import terminal_tool
+    # A cd that left the checkout is reset when the next turn starts, so probe where that turn
+    # will run. A transient workdir leaves the shell alone: a running turn may be the one that cd'd.
+    left = _cd_left_checkout(binding, identity.values())
     with policy_scope(policy, authority=authority):
         token = set_current_session_key(identity['session_key'])
         try:
-            result = json.loads(terminal_tool('pwd', task_id=identity['task_id'], timeout=10))
+            result = json.loads(terminal_tool('pwd', task_id=identity['task_id'], timeout=10,
+                                              workdir=binding['cwd'] if left else None))
         finally:
             reset_current_session_key(token)
-    if result.get('exit_code') != 0 or not _terminal_cwd_within(
+    from tui_gateway.coding_workspaces import cwd_within_checkout
+    if result.get('exit_code') != 0 or not cwd_within_checkout(
             result.get('output', '').removesuffix('\n'), binding['cwd']):
         raise RuntimeStoreError('workspace_unavailable', field='coding_workspace', detail='terminal workspace changed')
     return {'cwd': binding['cwd'], 'gatewayCwd': binding['cwd']}

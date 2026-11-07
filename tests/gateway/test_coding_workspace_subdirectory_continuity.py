@@ -83,9 +83,8 @@ async def test_contained_persistent_cd_survives_each_execution_boundary(workspac
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('fault', ['missing', 'outside-link', 'symlink-loop', 'not-directory', 'contained-task-override'])
 @pytest.mark.parametrize('boundary', ['verify', 'submit', 'turn', 'managed'])
-async def test_containment_never_adopts_invalid_cd_or_configured_task_retarget(workspace, monkeypatch, fault, boundary):
+async def test_containment_never_adopts_configured_task_retarget(workspace, monkeypatch, boundary):
     from gateway import session_managed_worker as managed
     from gateway.run_turn_runner import TurnRunner
     from gateway.session_authorities import owner_scope
@@ -96,7 +95,7 @@ async def test_containment_never_adopts_invalid_cd_or_configured_task_retarget(w
     from tools.terminal_tool import (
         clear_session_cwd, clear_task_env_overrides, get_session_cwd, register_task_env_overrides,
     )
-    _home, source, owner, connection, binding = workspace
+    _home, _source, owner, connection, binding = workspace
     created = await rpc(connection, 'session.create', **create_params(binding))
     assert 'result' in created, created
     sid = created['result']['session_id']
@@ -109,23 +108,15 @@ async def test_containment_never_adopts_invalid_cd_or_configured_task_retarget(w
         assert observed['exit_code'] == 0 and observed['output'] == str(target), observed
         with owner_scope(owner):
             assert get_session_cwd(live.route) == str(target)
-        if fault == 'contained-task-override':
-            # A configured override is identity, not observed cd state, even inside the checkout.
-            with owner_scope(owner):
-                register_task_env_overrides(child, {'cwd': str(target)})
-        else:
-            target.rmdir()
-            if fault == 'outside-link':
-                target.symlink_to(source, target_is_directory=True)
-            elif fault == 'symlink-loop':
-                target.symlink_to(target, target_is_directory=True)
-            elif fault == 'not-directory':
-                target.touch()
+        # A configured override is identity, not observed cd state, even inside the checkout. An
+        # invalid observed cd is re-anchored instead (test_coding_workspace_cd_reanchor.py).
+        with owner_scope(owner):
+            register_task_env_overrides(child, {'cwd': str(target)})
         if boundary == 'verify':
             reply = await rpc(connection, 'session.workspace.verify', session_id=sid)
             assert reply.get('error', {}).get('message') == 'workspace_unavailable', reply
         elif boundary == 'submit':
-            reply = await rpc(connection, 'prompt.submit', session_id=sid, text='must not run', submission_id='invalid-cd')
+            reply = await rpc(connection, 'prompt.submit', session_id=sid, text='must not run', submission_id='override')
             assert reply.get('error', {}).get('message') == 'workspace_unavailable', reply
             assert list_session_admissions(owner.db, session_id=sid) == []
         elif boundary == 'turn':
@@ -140,9 +131,9 @@ async def test_containment_never_adopts_invalid_cd_or_configured_task_retarget(w
             monkeypatch.setattr(managed, 'execute_managed', would_spawn)
             with owner_scope(owner):
                 result = await managed.admit_managed(owner, SessionRef(owner.profile_id, sid),
-                                                     {'admission_id': 'invalid-cd-managed'}, policy)
+                                                     {'admission_id': 'override-managed'}, policy)
             assert result != 'worker would execute', result
-            assert owner.pending_results['invalid-cd-managed']['result']['failed'] is True
+            assert owner.pending_results['override-managed']['result']['failed'] is True
         with owner_scope(owner):
             assert get_session_cwd(live.route) == str(target)  # refusal never silently rebinds the route
         assert local_receipt(owner.db, sid)['policy']['cwd'] == binding['cwd']

@@ -1222,9 +1222,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 bind_turn_workspace(policy, self._ctx.session_id)
                 # Local unbind above may legitimately retire a historical owned mount. Check the
                 # terminal that will actually execute only after that normal boundary cleanup.
-                from gateway.session_coding_workspace import verify_policy
-                verify_policy(policy, task_id=self._ctx.session_id,
-                              session_key=getattr(self._ctx, 'session_key', None))
+                from gateway.session_coding_workspace import begin_turn
+                begin_turn(policy, task_id=self._ctx.session_id,
+                           session_key=getattr(self._ctx, 'session_key', None))
             except RuntimeStoreError as exc:
                 result = refused_turn_result(policy, exc)
                 if result is None:

@@ -91,11 +91,36 @@ def inspect_workspace(path: str) -> dict:
     }
 
 
-def verify_session_workspace(session: dict, expected: str | None = None, *, probe: bool = False) -> dict | None:
+def cwd_within_checkout(cwd: str, root: str) -> bool:
+    """Observed cd state may vary, but must resolve to an existing checkout directory."""
+    try:
+        path = Path(cwd)
+        resolved = path.resolve(strict=True)
+        return path.is_absolute() and resolved.is_dir() and resolved.is_relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def cd_left_checkout(key: str, root: str) -> bool:
+    """Whether *key*'s persistent shell cwd left the checkout (or its folder stopped being one).
+
+    That is ordinary agent behaviour, not checkout loss: agents keep evidence in their
+    session-artifacts dir and cd into it or into sibling repos. Turn start re-anchors it to the
+    root; refusing on it would lock the chat for good, since only a turn could cd back.
+    """
+    from tools.terminal_tool import get_session_cwd
+    observed = get_session_cwd(key)
+    return observed is not None and not cwd_within_checkout(observed, root)
+
+
+def verify_session_workspace(session: dict, expected: str | None = None, *, probe: bool = False,
+                             turn_start: bool = False) -> dict | None:
     """Bind checkout/repository/local terminal identity at gateway and worker submit.
 
     Git branch switches, detached HEAD and rebases do not retarget the checkout.
     Keep binding.branch as the creation receipt; never rewrite it from live Git.
+    ``turn_start`` re-anchors a shell that cd'd out of the checkout; any other probe checks the
+    root instead and leaves the shell alone, because a running turn may own it.
     """
     from tui_gateway import server
     binding = session.get("coding_workspace")
@@ -118,14 +143,19 @@ def verify_session_workspace(session: dict, expected: str | None = None, *, prob
     try:
         if server._effective_terminal_backend() != "local":
             raise ValueError("Coding workspaces require a local terminal on the owning gateway")
-        from tools.terminal_tool import resolve_task_overrides, terminal_tool
-        overrides = resolve_task_overrides(session["session_key"])
+        from tools.terminal_tool import record_session_cwd, resolve_task_overrides, terminal_tool
+        key = session["session_key"]
+        overrides = resolve_task_overrides(key)
         if overrides.get("cwd") != cwd:
             raise ValueError("Terminal workspace does not match the session")
         if probe:
             import json
-            result = json.loads(terminal_tool("pwd", task_id=session["session_key"], timeout=10))
-            if result.get("exit_code") != 0 or result.get("output", "").strip() != cwd:
+            left = cd_left_checkout(key, cwd)
+            if left and turn_start:
+                record_session_cwd(key, cwd)
+            result = json.loads(terminal_tool("pwd", task_id=key, timeout=10,
+                                              workdir=cwd if left and not turn_start else None))
+            if result.get("exit_code") != 0 or not cwd_within_checkout(result.get("output", "").strip(), cwd):
                 raise ValueError("Terminal could not verify the prepared workspace")
     finally:
         if token is not None:

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { buildBrowserWindowUrl } from './browser-windows'
+import { buildBrowserWindowUrl, installPreviewGuestWindowOpenHandler } from './browser-windows'
 
 test('buildBrowserWindowUrl puts win=browser before the hash (dev server)', () => {
   const url = buildBrowserWindowUrl('url:browser-1', { devServer: 'http://localhost:5173' })
@@ -38,4 +38,27 @@ test('buildBrowserWindowUrl builds a packaged file URL with the flag before the 
   const url = buildBrowserWindowUrl('abc', { rendererIndexPath: '/opt/app/index.html' })
 
   assert.match(url, /^file:\/\/.*index\.html\?win=browser&tab=abc#\/$/)
+})
+
+test('embedded preview links open externally and never create an Electron window', () => {
+  let handler: ((details: { url: string }) => { action: 'deny' }) | undefined
+
+  const openExternal = (url: string) => {
+    assert.equal(url, 'https://example.com/from-preview')
+
+    return true
+  }
+
+  installPreviewGuestWindowOpenHandler(
+    {
+      setWindowOpenHandler: next => {
+        handler = next
+      }
+    },
+    openExternal
+  )
+
+  assert.ok(handler)
+
+  assert.deepEqual(handler?.({ url: 'https://example.com/from-preview' }), { action: 'deny' })
 })

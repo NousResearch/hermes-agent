@@ -1,25 +1,29 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, existsSync, readFileSync, statSync } from 'node:fs'
+import { copyFileSync, existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
+
+import { lockImporters } from './pnpm-lock.mjs'
 
 // Do not require('electron'): Electron 42's entry point can acquire a binary.
 // Only this explicit preparation phase may execute the installed installer.
 /** @param {{ source: string, install?: boolean, env?: NodeJS.ProcessEnv }} options @returns {string} */
 export function prepareElectronRuntime({ source, install = true, env = process.env }) {
   source = resolve(source)
-  const manifest = [join(source, 'apps/desktop/node_modules/electron/package.json'),
-    join(source, 'node_modules/electron/package.json')].find(existsSync)
-  if (!manifest) throw new Error('Missing prepared Electron dependency; install the locked desktop workspace first')
+  const link = join(source, 'apps/desktop/node_modules/electron/package.json')
+  if (!existsSync(link)) throw new Error('Missing prepared Electron dependency; install the locked desktop workspace first')
+  // The workspace entry is a link into pnpm's virtual store, where Electron's own
+  // dependencies (@electron-internal/extract-zip) resolve from.
+  const manifest = realpathSync(link)
   const packageRoot = dirname(manifest)
   const { version, dependencies } = JSON.parse(readFileSync(manifest, 'utf8'))
   const desktop = JSON.parse(readFileSync(join(source, 'apps/desktop/package.json'), 'utf8'))
-  const lock = JSON.parse(readFileSync(join(source, 'package-lock.json'), 'utf8'))
-  const entry = lock.packages?.[relative(source, packageRoot).split('\\').join('/')]
-  const lockedVersion = entry?.link ? lock.packages[entry.resolved]?.version : entry?.version
+  const locked = lockImporters(readFileSync(join(source, 'pnpm-lock.yaml'), 'utf8'))['apps/desktop']?.devDependencies?.electron
+  // A locked version carries its peer resolution as a suffix: 44.9.3(supports-color@10.2.2).
+  const lockedVersion = locked?.version?.replace(/\(.*$/, '')
   if (version !== desktop.devDependencies?.electron || version !== lockedVersion) {
     throw new Error('Installed Electron is not the desktop lock-pinned version')
   }

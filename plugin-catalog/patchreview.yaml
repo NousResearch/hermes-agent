@@ -1,0 +1,23 @@
+name: patchreview
+title: PatchReview
+repo: https://github.com/Bilalsnz/plugin
+sha: 228460d031cf4b52f8565404b91a636cc13fb612
+description: "Intercepts supported file-writing tool calls before execution and queues proposed changes for explicit human review. Users can inspect diffs, accept or reject individual proposals, or accept all pending proposals; accepted writes use a stale-file guard and atomic replacement. Includes an offline sample review UI (not a live queue client). Disclosure — accepting a proposal writes the staged UTF-8 file content to its target path; replacement proposals read the current target file to prepare the diff. The plugin stores its review queue under Hermes plugin data. It makes no network calls, sends no telemetry, invokes no shell commands, stores no credentials, and starts no background processes. It does not intercept arbitrary shell writes or unrelated processes, and unsupported tool argument shapes may pass through."
+maintainer: Bilalsnz
+tier: community
+category: tools
+requires_hermes: ">=0.20"
+docs_url: https://github.com/Bilalsnz/plugin/blob/228460d031cf4b52f8565404b91a636cc13fb612/README.md
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - patchreview_list
+    - patchreview_accept
+    - patchreview_reject
+    - patchreview_accept_all
+    - patchreview_status
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

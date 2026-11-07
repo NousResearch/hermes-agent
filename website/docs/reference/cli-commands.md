@@ -38,6 +38,24 @@ hermes [global-options] <command> [subcommand/options]
 | `--cli` | Force the classic prompt_toolkit REPL. Use this to override `display.interface: tui` for a single invocation. |
 | `--dev` | With `--tui`: run the TypeScript sources directly via `tsx` instead of the prebuilt bundle (for TUI contributors). |
 
+### Machine-readable output (`--json`)
+
+Subcommands that print a result accept `--json` and emit a single JSON object instead of
+human-readable text — `hermes peer dm`/`run`/`status` receipts, `hermes sessions list`,
+`hermes skills list`, `hermes usage`, and the rest of the group pages below list it where it
+applies. Verb without the flag: nothing changes.
+
+To make JSON the default for every invocation without passing the flag, set it once in
+`config.yaml`:
+
+```bash
+hermes config set display.json_output true
+```
+
+An explicit `--json` still wins, and verbs that do not declare the flag ignore the setting.
+The value is read per profile, so a fleet that parses receipts sets it in each profile's
+config (`hermes --profile <name> config set display.json_output true`).
+
 ### `hermes-agent` (legacy single-query runner)
 
 The install also ships `hermes-agent`, a minimal runner that sends one query and exits: `hermes-agent --query "summarize README.md"` (or `hermes-agent "summarize README.md"`). `hermes-agent --help` lists its options (`--model`, `--base-url`, `--max-turns`, `--enabled-toolsets`, `--disabled-toolsets`, `--list-tools`, `--save-trajectories`, …) and `hermes-agent --version` prints the version; neither starts the agent. Run with no query, it prints the same help and exits. For anything else use `hermes` (`hermes -z <prompt>` is the scripted one-shot).

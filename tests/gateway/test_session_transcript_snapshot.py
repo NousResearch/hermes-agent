@@ -251,3 +251,145 @@ async def test_a_rewrap_between_newest_first_pages_sends_no_handoff_twice(tmp_pa
         assert len(walked) == len(set(walked)), walked
         assert {(row['row_kind'], row.get('text')) for row in started} <= set(walked), walked
         await owner.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['pooled', 'fallback'])
+async def test_a_rewrite_between_the_backfill_and_the_snapshot_still_reaches_the_poller(tmp_path, monkeypatch, mode):
+    """A queued prompt's prologue rewrites its early row (``set_user_message_content``) after ``_poll``'s
+    display-index backfill and before its read snapshot, so the snapshot sees the row with no
+    ``display_order``. The poller must still end up holding what a fresh read shows."""
+    from gateway import session_stored_reads
+    from gateway.session_local_recovery import transcript_target
+    from tests.gateway.test_session_mutation_model_busy import _owner
+
+    async def handle(event):
+        return 'ok'
+    store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
+    _read_path(monkeypatch, db, mode)
+    try:
+        target = transcript_target(authority, ref)
+        db.append_message(target, 'user', 'question 1')
+        db.append_message(target, 'assistant', 'answer 1')
+        queued = db.append_message(target, 'user', 'raw @file prompt')
+        db.append_message(target, 'assistant', 'in-flight reply')
+        reader = Reader(owner, ref.session_id, limit=500)
+        await reader.poll()
+        original, fired = session_stored_reads._whole_lineage, []
+
+        def rewrite_after_the_backfill(*args):
+            whole = original(*args)
+            if not fired:
+                fired.append(db.set_user_message_content(target, queued, 'expanded prompt'))
+            return whole
+        monkeypatch.setattr(session_stored_reads, '_whole_lineage', rewrite_after_the_backfill)
+        await reader.poll()
+        await reader.poll()
+        assert fired == [1]
+        assert _shape(reader.rows) == await reader.fresh()
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('appends', [1, 2])
+@pytest.mark.parametrize('partway', [False, True])
+async def test_an_append_past_the_resume_guard_leaves_the_poller_on_a_fresh_reads_rows(tmp_path, monkeypatch,
+                                                                                        appends, partway):
+    """With the guard at the lineage's size plus one, two appends take the rotated lineage past
+    ``sessions.max_resume_messages`` and a fresh read shows the tip segment only. A poller caught up on
+    the whole lineage (or one page into it) must end up holding what a fresh read shows."""
+    import hermes_state
+    from gateway.session_authority import initialize_session_authority
+
+    store, db, runner = _legacy_owner(tmp_path, monkeypatch)
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
+    native = _native(authority, tmp_path, 'native')
+    try:
+        count = db.assert_resume_safe('tui-tip', max_messages=10 ** 6)
+        monkeypatch.setattr(hermes_state, 'resolved_max_resume_messages', lambda: count + 1)
+        reader = Reader(native, 'old-tui', limit=2 if partway else 500)
+        if partway:
+            page = (await _call(native, 'session.transcript', session_id='old-tui', limit=2))['result']
+            reader.rows, reader.cursor = page['rows'], page['next_cursor']
+        else:
+            await reader.poll()
+        for text in ['late question', 'late answer'][:appends]:
+            db.append_message('tui-tip', 'user' if text == 'late question' else 'assistant', text)
+        await reader.poll()
+        assert _shape(reader.rows) == await reader.fresh()
+    finally:
+        await native.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_newest_first_walk_restarts_when_the_lineage_crosses_the_resume_guard(tmp_path, monkeypatch):
+    """A newest-first cursor names a slot of the read it came from: once two appends take the rotated
+    lineage past the guard, the next page starts again from the newest (``reset``), as a fresh read does."""
+    import hermes_state
+    from gateway.session_authority import initialize_session_authority
+
+    store, db, runner = _legacy_owner(tmp_path, monkeypatch)
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
+    native = _native(authority, tmp_path, 'native')
+    try:
+        count = db.assert_resume_safe('tui-tip', max_messages=10 ** 6)
+        monkeypatch.setattr(hermes_state, 'resolved_max_resume_messages', lambda: count + 1)
+        newest = (await _call(native, 'session.transcript', session_id='old-tui', limit=1, order='latest'))['result']
+        db.append_message('tui-tip', 'user', 'late question')
+        db.append_message('tui-tip', 'assistant', 'late answer')
+        page = (await _call(native, 'session.transcript', session_id='old-tui', limit=1, order='latest',
+                            cursor=newest['next_cursor']))['result']
+        fresh = (await _call(native, 'session.transcript', session_id='old-tui', limit=1, order='latest'))['result']
+        assert page['reset'] is True and _shape(page['rows']) == _shape(fresh['rows']), (page, fresh)
+    finally:
+        await native.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_cursor_from_before_the_scope_was_bound_resets_the_poller(tmp_path, monkeypatch):
+    """A cursor in the earlier unscoped format (``t3``) is still this read's, so it is no error; it does not
+    say which scope its rows came from, so the poll starts again."""
+    import base64
+    import json
+    with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
+        try:
+            db.append_message(target, 'user', 'question 1')
+            reader = Reader(owner, ref.session_id, limit=500)
+            await reader.poll()
+            payload = json.loads(base64.urlsafe_b64decode(reader.cursor + '=' * (-len(reader.cursor) % 4)))
+            unscoped = base64.urlsafe_b64encode(json.dumps(['t3', *payload[1:-1]]).encode()).decode()
+            reply = (await _call(owner, 'session.transcript', session_id=ref.session_id, cursor=unscoped))['result']
+            assert reply['reset'] is True and [row.get('text') for row in reply['rows']] == ['question 1'], reply
+        finally:
+            await owner.close()
+
+
+@pytest.mark.asyncio
+async def test_a_display_index_that_never_stays_whole_resets_the_poller(tmp_path, monkeypatch):
+    """Every read finds a displayed row without a slot (a rewrite lands after each backfill): no page is
+    proven, so the reply is ``reset`` with the first page, and the next poll resets again."""
+    with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
+        try:
+            for n in range(3):
+                db.append_message(target, 'user', f'message {n}')
+            reader = Reader(owner, ref.session_id, limit=2)
+            await reader.poll()
+            complete, broken = db.transcript_display_index_complete, [True]
+            monkeypatch.setattr(db, 'transcript_display_index_complete',
+                                lambda segment: not broken[0] and complete(segment))
+            first = (await _call(owner, 'session.transcript', session_id=ref.session_id, limit=2,
+                                 cursor=reader.cursor))['result']
+            assert first['reset'] is True and [row.get('text') for row in first['rows']] == ['message 0', 'message 1']
+            again = (await _call(owner, 'session.transcript', session_id=ref.session_id, limit=2,
+                                 cursor=first['next_cursor']))['result']
+            assert again['reset'] is True, again
+            broken[0] = False
+            reader.rows, reader.cursor = again['rows'], again['next_cursor']
+            await reader.poll()
+            assert _shape(reader.rows) == await reader.fresh()
+        finally:
+            await owner.close()

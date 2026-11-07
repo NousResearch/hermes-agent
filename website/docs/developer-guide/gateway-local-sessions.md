@@ -194,9 +194,11 @@ listener keeps working.
   `order: "latest"` starts at the newest rows and pages older until `next_cursor` is null; its cursor
   is keyed by each message's first durable row, so a page boundary holds across later compactions.
   A single-segment conversation is paged in SQL on its display index, in one read transaction, with
-  the resume's conversation normalization (only the page's bodies are read, and the first read may
-  backfill that index once, as REST `/messages` does); a rotated lineage is deduplicated whole, and
-  past `sessions.max_resume_messages` only its current segment is paged.
+  the resume's conversation normalization (only the page's bodies are read, and a read backfills that
+  index outside the transaction when a row lacks its slot, as REST `/messages` does, then reads again);
+  a rotated lineage is deduplicated whole, and past `sessions.max_resume_messages` only its current
+  segment is paged. A cursor also holds which of the two its page read: when appends take the lineage
+  past that guard, a reply in either order is `reset: true` from its first page.
   With `subagent_id` it reads a delegated child of `session_id` instead
   (`gateway/session_transcript_subagent.py`); the reply adds `subagent_id`, `available`, `running`
   and `child_session_id`. The session must be live on this owner (else `not_found`) and readable by

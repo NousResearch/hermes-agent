@@ -13,7 +13,8 @@ of them were sent. A
 single-segment conversation (every in-place compaction) is paged in SQL on its durable display
 index, so only the page's bodies are read. A rotated lineage needs the one display dedupe over every
 segment; it is read whole only while it is under ``sessions.max_resume_messages`` (the resume's own
-guard), and past that only its current segment is paged, as a resume past it shows only live rows.
+guard), and past that only its current segment is paged, as a resume past it shows only live rows. A
+cursor holds which of the two its page read (``_scope``); a read in the other answers ``reset``.
 
 Forward polling (``order: 'oldest'``): the cursor also holds the segment it read and
 ``transcript_cursor_state`` of the rows it covered. While both still hold, only appends happened and the
@@ -42,7 +43,10 @@ MAX_PAGE_ROWS = 500
 PAGE_BYTES = 2 * 1024 * 1024
 # Tool results kept on their call's page beyond ``limit`` (a tool row is labelled from its call).
 _TOOL_RUN = 64
-_CURSOR_TAG = 't3'
+_CURSOR_TAG = 't4'
+# An earlier cursor format, without the scope: still decoded (and validated), and its scope never matches, so
+# a poll from it resets.
+_CURSOR_TAG_UNSCOPED = 't3'
 _CURSOR_MAX_CHARS = 1024
 _INT_MAX = 2 ** 63
 # Reads retried while a page's read transaction ends early (each attempt is one bounded page).
@@ -84,29 +88,33 @@ def _uint(value):
     return type(value) is int and 0 <= value < _INT_MAX
 
 
-def _encode_cursor(binding, key, poll):
+def _encode_cursor(binding, key, poll, whole):
     """*binding*: ``(session_id, subagent_id, order)``. *key*: the page edge ``(position, durable)``, None
     for the start (an oldest-order read of an empty transcript), or ``(position, durable, n)`` when the
     page ended inside that row's group (its handoffs and the row, in reading order; *n*: ``_sent``). *poll*: ``(segment, through, state)`` of an
-    oldest-order read, else None."""
+    oldest-order read, else None. *whole*: the scope the page was read in (``_scope``); a key means a
+    slot only in it."""
     segment, through, state = poll if poll is not None else (None, None, None)
     payload = [_CURSOR_TAG, *binding, list(key) if key is not None else [], segment, through,
-               list(state) if state is not None else None]
+               list(state) if state is not None else None, whole]
     return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip('=')
 
 
 def _decode_cursor(cursor, binding):
-    """``{key, segment, through, state}`` of a cursor this read issued for *binding*; anything else is
-    ``invalid_params``."""
+    """``{key, segment, through, state, whole}`` of a cursor this read issued for *binding*; anything else
+    is ``invalid_params``. An unscoped cursor (``_CURSOR_TAG_UNSCOPED``) has ``whole`` None."""
     try:
         if len(cursor) > _CURSOR_MAX_CHARS:
             raise ValueError('cursor too long')
-        tag, session_id, subagent_id, order, key, segment, through, state = json.loads(
-            base64.urlsafe_b64decode(cursor + '=' * (-len(cursor) % 4)))
+        payload = json.loads(base64.urlsafe_b64decode(cursor + '=' * (-len(cursor) % 4)))
+        if isinstance(payload, list) and payload[:1] == [_CURSOR_TAG_UNSCOPED]:
+            payload = [_CURSOR_TAG, *payload[1:], None]
+        tag, session_id, subagent_id, order, key, segment, through, state, whole = payload
     except (TypeError, ValueError, binascii.Error):
         raise RuntimeStoreError('invalid_params', field='cursor') from None
     oldest = binding[2] == 'oldest'
     if ((tag, session_id, subagent_id, order) != (_CURSOR_TAG, *binding) or not isinstance(key, list)
+            or not (whole is None or type(whole) is bool)
             or len(key) not in ((0, 2, 3) if oldest else (2, 3)) or not all(_uint(part) for part in key)
             or (len(key) == 3 and key[2] == 0)
             or (oldest and not (isinstance(segment, str) and segment and _uint(through) and isinstance(state, list)
@@ -114,7 +122,7 @@ def _decode_cursor(cursor, binding):
             or (not oldest and (segment, through, state) != (None, None, None))):
         raise RuntimeStoreError('invalid_params', field='cursor')
     return {'key': tuple(key) or None, 'segment': segment, 'through': through,
-            'state': tuple(state) if state is not None else None}
+            'state': tuple(state) if state is not None else None, 'whole': whole}
 
 
 # A row's key is ``(position, durable)``: where the read orders it, and the id of its message's first durable
@@ -178,9 +186,12 @@ def _segment_window(db, segment, latest, after, count):
     return rows, [keys[message['_row_id']] for message in rows], len(raw) == count, edge, start
 
 
-def _whole_lineage(db, target, lineage):
-    """Whether *lineage* is read whole (``_lineage_window``): rotated, and under the resume's guard; else
-    only *target* is paged, on its display index (backfilled here when a legacy segment lacks one)."""
+def _scope(db, target, lineage):
+    """What a read of *lineage* shows, judged on the caller's reads (inside ``_poll``'s snapshot, the
+    page's generation): True, the whole lineage (``_lineage_window``: rotated, and under the resume's
+    guard); False, only *target*, paged on its display index; None, only *target*, whose display index
+    lacks a slot (a legacy segment, or a rewrite since the last backfill cleared one), so a page would skip
+    that row: ``_whole_lineage`` backfills it, a write, outside any snapshot."""
     from hermes_state import SessionResumeTooLargeError
     if len(lineage) > 1:
         try:
@@ -189,9 +200,16 @@ def _whole_lineage(db, target, lineage):
             pass  # past the resume's guard: the current segment only
         else:
             return True
-    if not db._ensure_display_order(target):
+    return False if db.transcript_display_index_complete(target) else None
+
+
+def _whole_lineage(db, target, lineage):
+    """Whether *lineage* is read whole (``_scope``), with *target*'s display index backfilled when it lacks
+    a slot."""
+    whole = _scope(db, target, lineage)
+    if whole is None and not db._ensure_display_order(target):
         raise RuntimeStoreError('storage_unavailable', detail='the transcript has no display index')
-    return False
+    return bool(whole)
 
 
 def _window(db, target, latest, after, count, lineage, whole=None):
@@ -394,32 +412,52 @@ def read_page(db, target, order, after, limit, *, profile_home, inline_images=Fa
         after = next_key
 
 
+def _read(db, target, lineage, order, held, limit, whole, page):
+    """One page in scope *whole* (``_scope``): ``(rows, next key, poll state, reset, whole)``. A cursor
+    issued in another scope (the lineage crossed the resume's guard since, or an unscoped cursor) holds
+    nothing: its key names a slot of the other read, and its rows are not what this read shows."""
+    if held is not None and held['whole'] is not whole:
+        held = None
+    if order == 'latest':
+        rows, key, _ = read_page(db, target, order, held and held['key'], limit, lineage=lineage,
+                                 whole=whole, **page)
+        return rows, key, None, held is None, whole
+    holds = (held is not None and held['segment'] == target
+             and db.transcript_cursor_state(target, held['through'], lineage) == held['state'])
+    after = held['key'] if holds else None
+    rows, key, through = read_page(db, target, order, after, limit, lineage=lineage, whole=whole, **page)
+    through = max(through, held['through'] if holds else 0)
+    state = db.transcript_cursor_state(target, through, lineage)
+    return rows, key if key is not None else after, (target, through, state), not holds, whole
+
+
 def _poll(db, target, lineage, order, held, limit, **page):
-    """``(rows, next key, poll state, reset)``. Latest order pages back from the cursor's message wherever
-    a compaction moved it. Oldest order continues after the cursor only while its segment and
-    ``transcript_cursor_state`` still hold, else starts again (``reset``). The check, the page and the
-    state stored for the next poll are read in one read transaction, so a cursor vouches for exactly
-    the rows its page holds, and a change committed meanwhile is the next poll's to see. Without a pooled
-    reader the reads are kept only when no write landed between them; after one retry, ``_unproven``."""
-    whole = _whole_lineage(db, target, lineage)  # may backfill a legacy display index: before the snapshot
+    """``(rows, next key, poll state, reset, whole)``. Latest order pages back from the cursor's message
+    wherever a compaction moved it. Oldest order continues after the cursor only while its segment and
+    ``transcript_cursor_state`` still hold, else starts again (``reset``). Either order starts again when
+    the scope (``_scope``) is not the cursor's. The scope, the check, the page and the state stored for
+    the next poll are read in one read transaction, so a cursor vouches for exactly the rows its page
+    holds, and a change committed meanwhile is the next poll's to see. A display index missing a slot
+    there (a rewrite since the backfill) is backfilled outside it and read again. Without a pooled reader
+    the reads are kept only when no write landed between them; after one retry, ``_unproven``, as when
+    the index never stays whole."""
+    _whole_lineage(db, target, lineage)  # may backfill a legacy display index: before the snapshot
+    missing = False
     for attempt in range(_STABLE_READS):
         with db.transcript_read_snapshot() as consistent:
-            if order == 'latest':
-                rows, key, _ = read_page(db, target, order, held and held['key'], limit, lineage=lineage,
-                                         whole=whole, **page)
-                result = rows, key, None, held is None
-            else:
-                holds = (held is not None and held['segment'] == target
-                         and db.transcript_cursor_state(target, held['through'], lineage) == held['state'])
-                after = held['key'] if holds else None
-                rows, key, through = read_page(db, target, order, after, limit, lineage=lineage, whole=whole, **page)
-                through = max(through, held['through'] if holds else 0)
-                state = db.transcript_cursor_state(target, through, lineage)
-                result = rows, key if key is not None else after, (target, through, state), not holds
-            if consistent():
-                return result
-            if not consistent.pinned and attempt:
-                return _unproven(db, target, lineage, order, limit, result, whole, page)
+            whole = _scope(db, target, lineage)
+            missing = whole is None
+            if not missing:
+                result = _read(db, target, lineage, order, held, limit, whole, page)
+                if consistent():
+                    return result
+                if not consistent.pinned and attempt:
+                    return _unproven(db, target, lineage, order, limit, result, whole, page)
+        if missing:
+            whole = _whole_lineage(db, target, lineage)  # outside the snapshot; then read again
+    if missing:  # the last attempt still found a slot missing: the backfilled index, unproven
+        result = _read(db, target, lineage, order, held, limit, whole, page) if order == 'latest' else None
+        return _unproven(db, target, lineage, order, limit, result, whole, page)
     raise RuntimeStoreError('storage_unavailable', detail='the transcript read kept ending early')
 
 
@@ -435,14 +473,14 @@ def _unproven(db, target, lineage, order, limit, result, whole, page):
     if order == 'latest':
         return result
     rows, key, through = read_page(db, target, order, None, limit, lineage=lineage, whole=whole, **page)
-    return rows, key, (target, through, _UNPROVEN_STATE), True
+    return rows, key, (target, through, _UNPROVEN_STATE), True, whole
 
 
 def read_transcript(db, target, lineage, binding, held, limit, *, profile_home, inline_images):
     """The reply fields ``rows``, ``next_cursor`` and ``reset`` of one page of physical *target*."""
-    rows, key, poll, reset = _poll(db, target, lineage, binding[2], held, limit,
-                                   profile_home=profile_home, inline_images=inline_images)
-    next_cursor = _encode_cursor(binding, key, poll) if key is not None or poll is not None else None
+    rows, key, poll, reset, whole = _poll(db, target, lineage, binding[2], held, limit,
+                                          profile_home=profile_home, inline_images=inline_images)
+    next_cursor = _encode_cursor(binding, key, poll, whole) if key is not None or poll is not None else None
     return {'rows': rows, 'next_cursor': next_cursor, 'reset': reset}
 
 

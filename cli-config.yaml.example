@@ -368,6 +368,21 @@ model:
 #   #     only: ["anthropic"]
 
 # =============================================================================
+# Provider Model Catalog Background Refresh
+# =============================================================================
+# Keep the local model picker catalog warm for fast model switching. Probes
+# configured custom/local endpoints in the background on the gateway without
+# blocking user interactions. Detects additions and removals in provider catalogs.
+#
+# provider_models:
+#   background_refresh:
+#     interval_seconds: 3600     # 60 to 86400 (default: 0 = disabled)
+#     providers:                 # Required when enabled: explicit provider slugs
+#       - deepseek
+#       - ollama
+#       - custom:local-vllm
+
+# =============================================================================
 # OpenRouter Response Caching (only applies when using OpenRouter)
 # =============================================================================
 # Cache identical API responses at the OpenRouter edge for free instant replays.

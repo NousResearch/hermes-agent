@@ -110,6 +110,22 @@ model_catalog:
 
 The exclusion is matched case-insensitively against every key a provider can surface under — the Hermes id and models.dev id (built-in mapped providers), the overlay pid and resolved Hermes slug (overlay providers), and the canonical slug (canonical providers) — so a single entry like `copilot` hides the provider regardless of which section emits it. It is honored by every `/model` picker surface: the gateway interactive/text pickers, the TUI picker, and the interactive `hermes model` CLI picker. An empty list (or omitting the key) has no effect.
 
+## Provider catalog background refresh
+
+When configured, the gateway periodically refreshes provider model catalogs in the background to ensure picker responsiveness, discover new models as they are deployed, and detect removed models:
+
+```yaml
+provider_models:
+  background_refresh:
+    interval_seconds: 3600     # 60 to 86400 (default: 0 = disabled)
+    providers:
+      - deepseek
+      - ollama
+      - custom:local-vllm
+```
+
+The background watcher probes endpoints in worker threads, writes fresh results to `provider_models_cache.json`, logs detected catalog differences (additions and removals), and retains the last valid cache entry if a probe fails.
+
 ## Updating the manifest
 
 Maintainers:

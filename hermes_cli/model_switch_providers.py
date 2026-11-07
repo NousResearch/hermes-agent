@@ -1154,16 +1154,19 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
             slug = f"{base_slug}-{n}"
             grp["slug"] = slug
         grp_url_norm = _norm_url(api_url)
+        is_current = b.endpoint_is_current(
+            slug, {str(alias).lower() for alias in grp["aliases"]}, grp_url_norm,
+            url_match_ok=current_url_group_count == 1)
         pair_key = (str(grp["name"]).strip().lower(), grp_url_norm)
         if pair_key[0] and pair_key[1] and pair_key in b.section3_pairs:
             continue
         # A built-in row already represents this endpoint (e.g. "my-dashscope" vs the
-        # alibaba-coding-plan row): keep the built-in, hide the shadow.
-        if grp_url_norm and grp_url_norm in b.builtin_endpoints:
+        # alibaba-coding-plan row): keep the built-in, hide the shadow — except when the shadow is
+        # the row SERVING this session. A ``*_BASE_URL`` override can point a built-in at a private
+        # endpoint its static catalog knows nothing about; hiding the configured row then leaves the
+        # picker advertising a provider list that endpoint does not serve (#149233).
+        if grp_url_norm and grp_url_norm in b.builtin_endpoints and not is_current:
             continue
-        is_current = b.endpoint_is_current(
-            slug, {str(alias).lower() for alias in grp["aliases"]}, grp_url_norm,
-            url_match_ok=current_url_group_count == 1)
         discovered, native_catalog_empty, probe_live = b.discover_endpoint(
             api_key, api_url,
             "ollama" if "ollama" in {str(slug).strip().lower(), str(grp.get("name") or "").strip().lower()} else "custom",

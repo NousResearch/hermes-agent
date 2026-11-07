@@ -390,6 +390,46 @@ def test_list_authenticated_providers_dedup_honors_base_url_env_override(monkeyp
     )
 
 
+def test_current_custom_provider_survives_a_builtin_env_override_shadow(monkeypatch):
+    """#149233: an env base_url override that points a built-in at a private gateway must not
+    hide the ``custom_providers`` row that endpoint belongs to — above all when that row is the
+    one serving this session, since the built-in keeps a static catalog for a URL it no longer
+    talks to."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gw.example.com/v1")
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {"anthropic": {"name": "Anthropic", "env": ["ANTHROPIC_API_KEY"]}},
+    )
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="https://gw.example.com/v1",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "SRouter",
+                "base_url": "https://gw.example.com/v1",
+                "api_key": "sk-test",
+                "model": "rv/zai-org/GLM-5.3-Flash",
+            }
+        ],
+        max_models=50,
+        probe_custom_providers=False,
+        probe_current_custom_provider=False,
+    )
+
+    slugs = [p["slug"] for p in providers]
+    assert "custom:srouter" in slugs, (
+        f"The configured provider serving this session must stay listed, got: {slugs}"
+    )
+    row = next(p for p in providers if p["slug"] == "custom:srouter")
+    assert (row["is_current"], row["is_user_defined"]) == (True, True)
+    # The shadow-hiding rule itself is unchanged: the built-in row is still there beside it.
+    assert "anthropic" in slugs
+
+
 # =============================================================================
 # Tests for _get_named_custom_provider with providers: dict
 # =============================================================================

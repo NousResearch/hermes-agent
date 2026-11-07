@@ -1,4 +1,4 @@
-"""Session Insights Engine: aggregates the SQLite state DB into usage insights (tokens, cost estimates, tool/skill
+"""Session Insights Engine: aggregates the session DB into usage insights (tokens, cost estimates, tool/skill
 usage, activity, model/platform breakdowns). ``InsightsEngine(db).generate(days=30)`` → ``format_terminal(report)``."""
 
 import json
@@ -163,22 +163,28 @@ class InsightsEngine:
 
     def __init__(self, db):
         self.db = db
-        self._conn = db._conn
-        try:
-            self._has_assistant_calls_index = bool(self._conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (self._MESSAGES_ASSISTANT_CALLS_INDEX,)).fetchone())
-        except sqlite3.Error:
-            self._has_assistant_calls_index = False
+        self._conn = db._conn if getattr(db, "backend", "sqlite") == "sqlite" else None
+        self._has_assistant_calls_index = False
+        if self._conn is not None:
+            try:
+                self._has_assistant_calls_index = bool(self._conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (self._MESSAGES_ASSISTANT_CALLS_INDEX,)).fetchone())
+            except sqlite3.Error:
+                pass
         if not self._has_assistant_calls_index:
             strip = f" INDEXED BY {self._MESSAGES_ASSISTANT_CALLS_INDEX}"
             for base in self._PINNED:
                 for suffix in ("_ALL", "_WITH_SOURCE"):
                     setattr(self, base + suffix, getattr(self, base + suffix).replace(strip, ""))
         # Same read-only caveat: an older writer's DB has no ``created_source`` (and no ``local`` rows).
-        try:
-            self._local_surfaces = any(row[1] == "created_source" for row in self._conn.execute("PRAGMA table_info(sessions)"))
-        except sqlite3.Error:
-            self._local_surfaces = False
+        # The PostgreSQL schema always carries the column.
+        if self._conn is None:
+            self._local_surfaces = True
+        else:
+            try:
+                self._local_surfaces = any(row[1] == "created_source" for row in self._conn.execute("PRAGMA table_info(sessions)"))
+            except sqlite3.Error:
+                self._local_surfaces = False
         if not self._local_surfaces:
             for base in self._SOURCE_SCOPED:
                 sql = getattr(self, base + "_WITH_SOURCE")
@@ -189,9 +195,13 @@ class InsightsEngine:
     def _query(self, base: str, cutoff: float, source: Optional[str]) -> list:
         """Rows of ``<base>_WITH_SOURCE`` or ``<base>_ALL`` (instance attrs, so the unpinned fallback applies)."""
         if not source:
-            return self._conn.execute(getattr(self, base + "_ALL"), (cutoff,)).fetchall()
-        params = (cutoff, source, source) if self._local_surfaces else (cutoff, source)
-        return self._conn.execute(getattr(self, base + "_WITH_SOURCE"), params).fetchall()
+            sql, params = getattr(self, base + "_ALL"), (cutoff,)
+        else:
+            sql, params = getattr(self, base + "_WITH_SOURCE"), ((cutoff, source, source) if self._local_surfaces else (cutoff, source))
+        if self._conn is not None:
+            return self._conn.execute(sql, params).fetchall()
+        with self.db._read_ctx() as conn:
+            return conn.execute(sql, params).fetchall()
 
     def generate(self, days: int = 30, source: str | None = None) -> dict[str, Any]:
         """Generate a complete insights report for the last ``days`` days, optionally filtered by source platform."""

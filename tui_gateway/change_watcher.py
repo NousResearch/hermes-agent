@@ -282,11 +282,39 @@ def _sessions_sig():
     never touch this gateway's transports, so their session rows are the shared
     change signal. Hashing only those rows avoids false Desktop refreshes from
     unrelated state.db writes such as gateway heartbeats.
+
+    PostgreSQL stores have no file to stat: the schema's change-revision counter
+    advances on every sessions/messages statement, so it stands in for the
+    content digest (the watcher's read-only open never initializes or writes).
     """
-    return tuple(
-        _session_db_content_sig(root / "state.db")
-        for root in (_watcher_home(), *_served_profile_homes)
-    )
+    from hermes_state_backend import resolve_database_settings
+
+    signatures = []
+    for root in (_watcher_home(), *_served_profile_homes):
+        path = root / "state.db"
+        try:
+            settings = resolve_database_settings(path)
+            if settings.backend == "postgres":
+                signatures.append(_postgres_sessions_sig(path, settings))
+                continue
+        except Exception:
+            pass
+        signatures.append(_session_db_content_sig(path))
+    return tuple(signatures)
+
+
+def _postgres_sessions_sig(db_path: Path, settings):
+    """(database, schema, revision) fingerprint of a PostgreSQL session store."""
+    import hashlib
+
+    from hermes_state import SessionDB
+    try:
+        with SessionDB(db_path, read_only=True, database_settings=settings) as db:
+            revision = db.get_change_revision()
+        database_id = hashlib.sha256(settings.database_url.encode()).hexdigest()
+        return ("postgres", database_id, settings.schema, revision)
+    except Exception:
+        return ("postgres", "unavailable")
 
 
 def _projects_sig():

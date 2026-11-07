@@ -13,6 +13,7 @@ import pytest
 
 from gateway.session_contract import SessionActor, SessionRef
 from hermes_state_local import POLICY_PREFIX
+from hermes_state_runtime import RuntimeStoreError
 
 _CAPS = frozenset({'session:create', 'session:read', 'session:submit'})
 
@@ -63,3 +64,82 @@ async def test_rehomed_receipt_never_restores_under_another_profiles_route(tmp_p
     with pytest.raises(ValueError, match='route mismatch'):
         owned_receipt(authority, ref.session_id)
 
+
+
+@pytest.mark.asyncio
+async def test_picker_offers_an_ended_chat_only_when_resume_would_take_it(tmp_path, authority_for):
+    """The cold picker judges an ended chat by the checks a resume runs: a moved store's chat is
+    offered, one whose route names another profile's namespace is not (resume refuses it)."""
+    from gateway.session_listing import _stored_closed
+    old_home, new_home = str(tmp_path / 'mac' / 'work'), str(tmp_path / 'cloud' / 'work')
+    first = await authority_for(old_home, 'mac')
+    kept, foreign = _create(first, 'kept'), _create(first, 'foreign')
+    for ref in (kept, foreign):
+        receipt = json.loads(first.db.get_meta(POLICY_PREFIX + ref.session_id))
+        first.db.end_session(receipt['entry']['session_id'], 'closed')
+    receipt = json.loads(first.db.get_meta(POLICY_PREFIX + foreign.session_id))
+    first.db.set_meta(POLICY_PREFIX + foreign.session_id,
+                      json.dumps(dict(receipt, route='agent:sibling:local:dm:' + foreign.session_id)))
+
+    moved = await authority_for(new_home, 'cloud')
+    actor = SessionActor('owner', new_home, _CAPS, 'peer')
+    assert _stored_closed(moved, actor, kept.session_id)
+    assert not _stored_closed(moved, actor, foreign.session_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('damage', [
+    lambda receipt: receipt['policy'].update(model=''),
+    lambda receipt: receipt.update(lineage=['not-the-root', receipt['entry']['session_id']]),
+], ids=['policy', 'lineage'])
+async def test_picker_leaves_out_a_chat_whose_policy_or_lineage_resume_refuses(tmp_path, authority_for, damage):
+    from gateway.session_listing import _stored_closed
+    from gateway.session_local_recovery import restore_local_session
+    authority = await authority_for(str(tmp_path / 'home'), 'i')
+    ref = _create(authority, 'ended')
+    key = POLICY_PREFIX + ref.session_id
+    receipt = json.loads(authority.db.get_meta(key))
+    authority.db.end_session(receipt['entry']['session_id'], 'closed')
+    actor = SessionActor('owner', authority.profile_id, _CAPS, 'peer')
+    assert _stored_closed(authority, actor, ref.session_id)
+    damage(receipt)
+    authority.db.set_meta(key, json.dumps(receipt))
+    authority.sessions.pop(ref.session_id, None)
+    with pytest.raises(RuntimeStoreError):
+        restore_local_session(authority, ref.session_id)
+    assert not _stored_closed(authority, actor, ref.session_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('corrupt', [False, True], ids=['valid', 'corrupt-lineage'])
+async def test_picker_judges_a_pending_compression_catch_up_as_restore_would(tmp_path, authority_for, corrupt):
+    """An older writer compacted the chat past its receipt: restore adopts the step, then checks the
+    lineage. The picker judges that same projected receipt, without writing it."""
+    import time
+    from gateway.session_listing import _stored_closed
+    from gateway.session_local_recovery import restorable_receipt
+    authority = await authority_for(str(tmp_path / 'home'), 'i')
+    ref = _create(authority, 'compacted')
+    key = POLICY_PREFIX + ref.session_id
+    receipt = json.loads(authority.db.get_meta(key))
+    tip = receipt['entry']['session_id']
+
+    def compact(conn):
+        parent = conn.execute('SELECT * FROM sessions WHERE id=?', (tip,)).fetchone()
+        conn.execute("UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?", (time.time(), tip))
+        conn.execute("""INSERT INTO sessions(id,source,model,parent_session_id,cwd,profile_name,user_id,session_key,
+            chat_id,chat_type,origin_json,started_at,ended_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ('child', 'gui', parent['model'], tip, parent['cwd'], parent['profile_name'], parent['user_id'],
+             parent['session_key'], parent['chat_id'], parent['chat_type'], parent['origin_json'], time.time(), time.time()))
+    authority.db._execute_write(compact)
+    if corrupt:
+        authority.db.set_meta(key, json.dumps(dict(receipt, lineage=['not-the-root', tip])))
+    authority.sessions.pop(ref.session_id, None)
+    actor = SessionActor('owner', authority.profile_id, _CAPS, 'peer')
+
+    if corrupt:
+        assert not _stored_closed(authority, actor, ref.session_id)
+    else:
+        assert restorable_receipt(authority, ref.session_id)[1].session_id == 'child'
+        assert _stored_closed(authority, actor, ref.session_id)
+    assert json.loads(authority.db.get_meta(key))['entry']['session_id'] == tip, 'the listing wrote the catch-up'

@@ -126,6 +126,23 @@ def owned_receipt(authority, sid):
     return receipt, source, route, _checked_entry(authority, receipt, source, route)
 
 
+def restorable_receipt(authority, sid):
+    """*sid*'s receipt and entry once ``restore_local_session``'s checks on the stored receipt pass,
+    judged read-only: ``owned_receipt`` plus the stored policy and lineage. A compression catch-up
+    still to adopt is judged as the restore would commit it (``with_adopted_compression``)."""
+    from gateway.session_policy import restore_policy
+    from hermes_state_local_lineage import adoptable_compression, validate_local_lineage, with_adopted_compression
+    receipt, source, route, entry = owned_receipt(authority, sid)
+    restore_policy(receipt['policy'])
+    with authority.db._read_ctx() as conn:
+        adoptable = adoptable_compression(conn, receipt)
+        if adoptable is not None:
+            receipt = with_adopted_compression(receipt, adoptable[0])
+        validate_local_lineage(conn, receipt)
+    # Outside the read: _checked_entry reads the stored row itself (a writer-fallback read holds the lock).
+    return receipt, (entry if adoptable is None else _checked_entry(authority, receipt, source, route))
+
+
 def unused_session(conn, session_id):
     """*session_id* holds nothing: no transcript, ledger rows or children (what the SessionStore's
     stale-route heal, #54878, mints as a route's replacement before any turn runs on it)."""

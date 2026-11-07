@@ -339,12 +339,15 @@ def record_worker_loss(policy, reason, *, pid=None, bound=False):
         logging.getLogger(__name__).exception('kanban worker_lost record failed')
 
 
-def _bound_worker_matches(conn, context):
+def _bound_worker_matches(conn, context, *, pid=None):
+    """``pid`` defaults to THIS interpreter (the writer's own check); a reader that must judge
+    ANOTHER process's result passes the pid it is checking explicitly — the invariant is the
+    same: the interpreter ``worker_bound`` recorded for this run, under this claim."""
     import os
     row = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='worker_bound' ORDER BY id DESC LIMIT 1",
         (context['task_id'], context['run_id'])).fetchone()
     bound = json.loads(row[0]) if row else {}
-    return (bound.get('pid'), bound.get('claim_lock')) == (os.getpid(), context['claim_lock'])
+    return (bound.get('pid'), bound.get('claim_lock')) == (os.getpid() if pid is None else pid, context['claim_lock'])
 
 
 def _bound_claim_is_live(context):
@@ -373,6 +376,22 @@ def worker_result(path, params):
 
 def worker_exit_code(path, params):
     return worker_result(path, params).get('exit_code', 1)
+
+
+def worker_result_for_claim(path, params):
+    """This attempt's ``worker_result`` when it is provably OURS, else None.
+
+    The reconcile the submitter runs when ``prompt.receipt`` settles ``unknown``: the run's own
+    result is the real outcome, but only under the same gate that let it be written — the claim
+    lock (:func:`worker_result`) AND the interpreter ``worker_bound`` recorded for this very run
+    (:func:`_bound_worker_matches`, checked with the result's own pid). Absent, foreign or
+    mismatched answers are None so the caller keeps the old raise: never synthesize success.
+    """
+    result = worker_result(path, params)
+    if not result:
+        return None
+    with closing(sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+        return result if _bound_worker_matches(conn, params, pid=result.get('pid')) else None
 
 
 # Who wrote a card attempt's prompts: the dispatcher, never the operator, so memory providers do not

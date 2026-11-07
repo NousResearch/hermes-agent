@@ -249,6 +249,10 @@ def _exit_code_kind(code: int) -> tuple[str, int]:
         return ("clean_exit", 0)
     if code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE:
         return ("rate_limited", code)
+    # A host-side stall (#139612): the owner never answered the submitter, or its receipt stayed
+    # ``unknown`` with no board result to reconcile. The card pays nothing; see _DeadWorker.
+    if code == _kb.KANBAN_INFRASTRUCTURE_EXIT_CODE:
+        return ("infrastructure_failure", code)
     if code == _kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE:
         return ("terminal_provider", code)
     return ("nonzero_exit", code)
@@ -1046,6 +1050,12 @@ class _DeadWorker:
     event_payload: dict
     protocol_violation: bool = False
     rate_limited: bool = False
+    infrastructure_failure: bool = False
+    """``KANBAN_INFRASTRUCTURE_EXIT_CODE``: the host stalled — the owner never admitted the run
+    or its receipt stayed ``unknown`` unreconcilable. Nothing about the card ran, so
+    ``_account_crashes`` books it through the infrastructure seam (#114720): the counter is
+    left alone and the breaker never trips, while the run's ``infrastructure`` marker keeps the
+    outage visible and the respawn guard spaces the re-probes."""
     terminal_provider: bool = False
     """``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
     credential/model — trips the breaker on this first occurrence."""
@@ -1121,6 +1131,22 @@ def _classify_dead_worker_exit(
             "rate_limited",
             {"pid": pid, "claimer": claimer, "exit_code": code},
             rate_limited=True,
+        )
+    if kind == "infrastructure_failure":
+        # The host stalled: the owner never admitted this run or its receipt stayed ``unknown``
+        # with no board result to reconcile (#139612). Nothing about the CARD ran, so this stays
+        # a ``crashed`` booking with an ``infrastructure`` marker — the same shape as the #114720
+        # spawn refusal — and `_account_crashes` funnels it through the infrastructure seam:
+        # ``consecutive_failures`` untouched, breaker never trips, outage still visible in the
+        # run history and the respawn cooldown spaces the re-probes.
+        return _DeadWorker(
+            kind, code,
+            f"pid {pid} exited {code}: the owner never completed this run (host-side stall) — "
+            "requeued without counting a failure",
+            "crashed",
+            {"pid": pid, "claimer": claimer, "exit_kind": kind, "exit_code": code,
+             "infrastructure": True},
+            infrastructure_failure=True,
         )
     if kind == "terminal_provider":
         # The worker classified its own provider failure as unhealable (credential
@@ -1313,6 +1339,9 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 release_claim=False,
                 end_run=False,
                 event_payload_extra=extra,
+                # A host-side stall rides the same seam as the #114720 spawn refusal: the
+                # counter move and every trip decision inside become no-ops (#139612).
+                infrastructure=dead.infrastructure_failure,
             )
         if tripped:
             auto_blocked.append(tid)
@@ -1328,6 +1357,9 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     violation-only retry budget; ``KANBAN_RATE_LIMIT_EXIT_CODE`` is a quota
     wall, released WITHOUT counting a failure and surfaced via the
     ``_last_rate_limited`` attribute (the return stays crashed-only).
+    ``KANBAN_INFRASTRUCTURE_EXIT_CODE`` is a host-side stall (#139612): booked
+    as a crash for the history, but counted through the infrastructure seam of
+    #114720, so the card's ``consecutive_failures`` and the breaker are untouched.
     """
     sweep = _reclaim_dead_workers(conn, board=board)
     # Outside the main txn: account each crash and maybe trip the breaker.
@@ -1560,7 +1592,9 @@ def check_respawn_guard(
 
     Called per ready/review row before any claim attempt. Priority order:
     ``"infrastructure_cooldown"`` (latest run is a ``spawn_failed`` the host
-    refused — no restart-safe scope — within the cooldown; never counted),
+    refused — no restart-safe scope — or a ``crashed`` run the owner never
+    completed (exit 74, #139612), both marked ``infrastructure``; within the
+    cooldown; never counted),
     ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
@@ -1587,7 +1621,10 @@ def check_respawn_guard(
     #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
     #    An infrastructure spawn refusal (#114720) shares the cooldown: the host
     #    condition is not the card's, so it retries forever, spaced, and never
-    #    reaches the breaker.
+    #    reaches the breaker. A host-side STALL (#139612, exit 74) is the same
+    #    condition with different timing — the run DID start its submitter and died
+    #    on the owner's silence — so a ``crashed`` run carrying the ``infrastructure``
+    #    marker takes this cooldown too.
     rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
     latest_run = conn.execute(
         "SELECT outcome, ended_at, metadata FROM task_runs "
@@ -1595,7 +1632,7 @@ def check_respawn_guard(
         "ORDER BY ended_at DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    if latest_run is not None and latest_run["outcome"] == "spawn_failed":
+    if latest_run is not None and latest_run["outcome"] in ("spawn_failed", "crashed"):
         if rl_cooldown > 0 and _kb._json_dict(latest_run["metadata"]).get("infrastructure"):
             ended_at = _kb._to_epoch(latest_run["ended_at"])
             if ended_at is not None and (now - ended_at) < rl_cooldown:

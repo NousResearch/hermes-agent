@@ -21,7 +21,8 @@ from hermes_state_runtime import (
 
 # A steer carries plain text and its presentation only. Attachments, finite runs, classic-CLI turns,
 # native envelopes and automation rows are whole turns: neither verb may drop what they carry.
-_TEXT_ONLY = frozenset({'text', 'surface_v1', 'display_v1', 'local_operator_v1'})
+from session_input_primitives import input_payload_fields
+_TEXT_ONLY = frozenset({'text', 'surface_v1', 'display_v1', 'local_operator_v1'}) | input_payload_fields()
 # Sessions launched from an interactive local surface (classic CLI, TUI, Desktop, ACP editor): their
 # plain-text rows are prompt.submit input, whose observers settle a ``steered``/``cancelled`` row.
 # ``desktop`` is the label a Desktop chat migrated from main keeps (hermes_state_local_migration).

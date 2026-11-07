@@ -896,3 +896,76 @@ def test_is_connected_requires_account_and_token(monkeypatch):
     assert weixin._is_connected(PlatformConfig(enabled=True, token="t", extra={"account_id": "a"}))
     assert not weixin._is_connected(PlatformConfig(enabled=True, token="t"))
     assert not weixin._is_connected(PlatformConfig(enabled=True, extra={"account_id": "a"}))
+
+
+class TestWeixinQuotedReplyExtraction:
+    """``_extract_text`` must keep quoted context. iLink changed its ``ref_msg``
+    delivery around 2026-07 (no hermes-side change; quotes carried only a title
+    with no ``message_item``) and the old parser silently dropped the title
+    whenever ``message_item`` was absent — the agent went blind to what the
+    user had replied to, with no log line."""
+
+    @staticmethod
+    def _text_item(text: str, ref_msg: dict | None = None) -> dict:
+        item: dict = {"type": weixin.ITEM_TEXT, "text_item": {"text": text}}
+        if ref_msg is not None:
+            item["ref_msg"] = ref_msg
+        return item
+
+    def test_full_quote_title_and_content(self):
+        items = [self._text_item("请继续", {
+            "title": "每日概念探索推荐",
+            "message_item": {"type": weixin.ITEM_TEXT, "text_item": {"text": "路径依赖"}},
+        })]
+        assert weixin._extract_text(items) == "[引用: 每日概念探索推荐 | 路径依赖]\n请继续"
+
+    def test_title_only_quote_survives(self):
+        """Regression lock: a ref_msg with a title but no message_item must still
+        surface the title instead of dropping the quote entirely."""
+        items = [self._text_item("这条讲得好", {
+            "title": "Cronjob Response: 每日概念探索推荐 (job_id: 7f0fd8a93564)",
+        })]
+        assert weixin._extract_text(items) == (
+            "[引用: Cronjob Response: 每日概念探索推荐 (job_id: 7f0fd8a93564)]\n这条讲得好"
+        )
+
+    def test_media_quote_unchanged(self):
+        items = [self._text_item("看这张", {
+            "title": "截图",
+            "message_item": {"type": weixin.ITEM_IMAGE, "image_item": {}},
+        })]
+        assert weixin._extract_text(items) == "[引用媒体: 截图]\n看这张"
+
+    def test_plain_text_without_ref(self):
+        assert weixin._extract_text(
+            [self._text_item("普通消息")]) == "普通消息"
+
+    @pytest.mark.asyncio
+    async def test_quote_shape_logged_without_private_content(self, caplog):
+        """INFO must carry the quote SHAPE (keys, type, lengths) so future iLink wire
+        changes are visible, but never the quoted text itself — quoted content is
+        private conversation, and routine INFO logs are routinely collected. The raw
+        payload only appears at DEBUG."""
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._text_batch_split_delay_seconds = 0.05
+        secret_title = "PRIVATE_TITLE_被引用的摘要"
+        message = {
+            "from_user_id": "wxid_user1",
+            "message_id": "msg-quote-1",
+            "item_list": [self._text_item("这条讲得好", {"title": secret_title})],
+        }
+        with caplog.at_level("INFO"):
+            await adapter._process_message(message)
+        info_lines = [rec.message for rec in caplog.records if "quoted reply from=" in rec.message]
+        assert info_lines, "forensic INFO line missing"
+        assert f"title_len={len(secret_title)}" in info_lines[0]
+        assert secret_title not in info_lines[0]
+
+        caplog.clear()
+        with caplog.at_level("DEBUG"):
+            await adapter._process_message({**message, "message_id": "msg-quote-2"})
+        assert any(secret_title in rec.message for rec in caplog.records
+                   if "quoted reply raw ref_msg" in rec.message)

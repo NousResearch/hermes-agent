@@ -368,6 +368,9 @@ async def _start_gateway_start_control_socket(runner):
                            # mints Team Gateway link codes through it.
                            "relay-link": relay_link_verb})
         _control_server.ticket_store = runner.session_ticket_store
+        # The public client lookup answers from the same descriptor ``identify`` does.
+        from gateway.control_resolve import resolve_profile_handler
+        _control_server.resolve_handler = resolve_profile_handler(_identify_runtime)
         # The Webapp's verbs answer from the socket's first moment ("starting" until the listener
         # settles): a client polling a restarting gateway must never read "unknown verb" as a failure.
         from gateway.webapp_listener import register_control_verbs

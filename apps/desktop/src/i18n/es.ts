@@ -5094,6 +5094,7 @@ export const esOverrides = {
       readAloud: 'Leer en voz alta',
       copyFullResponse: 'Copiar la respuesta completa',
       readAloudFullResponseHint: 'Mayús+clic: leer la respuesta completa',
+      contentRefusedNotice: 'El filtro de seguridad del modelo rechazó este mensaje: prueba con otra consulta.',
       editMessage: 'Editar mensaje',
       expandMessage: 'Expandir mensaje',
       scrollToBottom: 'Desplazarse hacia abajo',

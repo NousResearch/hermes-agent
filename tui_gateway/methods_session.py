@@ -144,8 +144,16 @@ def _auto_resume_denied_source(row: dict) -> bool:
 
 
 def _listing_rows(db, limit: int, **kwargs) -> list:
-    """Human-facing ``list_sessions_rich`` rows (most recent first), deny-list applied."""
-    rows = db.list_sessions_rich(source=None, limit=limit, order_by_last_active=True, compact_rows=True, **kwargs)
+    """Human-facing ``list_sessions_rich`` rows (most recent first), deny-list applied.
+
+    ``min_message_count=1``: a session with no messages is not a conversation the user can
+    pick. Clients that launch a TUI per tab (the Obsidian Hermes Console runs ``hermes`` as
+    every new terminal's startup command) leave one such row per abandoned tab, and listing
+    them filled this picker with unnamed entries. ``session.most_recent`` rides the same
+    helper, so auto-resume also stops landing on a ghost session.
+    """
+    rows = db.list_sessions_rich(source=None, limit=limit, order_by_last_active=True,
+                                 compact_rows=True, min_message_count=1, **kwargs)
     return [row for row in rows if not _denied_source(row)]
 
 

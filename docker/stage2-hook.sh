@@ -17,11 +17,25 @@
 
 set -eu
 
+# This hook runs as root: resolve its own commands from system directories
+# only, never from the inherited PATH. Commands run as hermes get the inherited
+# PATH back (with the hermes user's ~/.local/bin appended after it) and resolve
+# their command name after the drop.
+hermes_path="${PATH:-/opt/hermes/bin:/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin}"
+case ":$hermes_path:" in
+    *:/opt/data/.local/bin:*) ;;
+    *) hermes_path="$hermes_path:/opt/data/.local/bin" ;;
+esac
+PATH=/command:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
 
-# Drop to hermes via s6-setuidgid, but skip it when already non-root.
-as_hermes() { [ "$(id -u)" = 0 ] || { "$@"; return; }; s6-setuidgid hermes "$@"; }
+# Run "$@" as hermes: the drop tool by absolute path, the command looked up after the drop.
+drop_to_hermes() { /command/s6-setuidgid hermes /usr/bin/env PATH="$hermes_path" "$@"; }
+# drop_to_hermes, but skip the drop when already non-root.
+as_hermes() { [ "$(/usr/bin/id -u)" = 0 ] || { /usr/bin/env PATH="$hermes_path" "$@"; return; }; drop_to_hermes "$@"; }
 
 # --- Reject the unsupported `docker run --user <uid>:<gid>` start ---
 # Detect the case where the container was launched with `--user` pinned to an
@@ -46,8 +60,8 @@ as_hermes() { [ "$(id -u)" = 0 ] || { "$@"; return; }; s6-setuidgid hermes "$@";
 # `id -u hermes` is the unremapped build UID (10000) because no root-only remap
 # could run. root starts (id -u = 0) and the normal supervised drop to the
 # hermes UID are both unaffected.
-cur_uid="$(id -u)"
-if [ "$cur_uid" != 0 ] && [ "$cur_uid" != "$(id -u hermes)" ]; then
+cur_uid="$(/usr/bin/id -u)"
+if [ "$cur_uid" != 0 ] && [ "$cur_uid" != "$(/usr/bin/id -u hermes)" ]; then
     cat >&2 <<EOF
 [stage2] ERROR: container started with --user $cur_uid (an arbitrary, non-hermes UID).
 
@@ -104,11 +118,11 @@ validate_uid_gid() {
 HERMES_UID="${HERMES_UID:-${PUID:-}}"
 HERMES_GID="${HERMES_GID:-${PGID:-}}"
 
-if [ -n "${HERMES_UID:-}" ] && validate_uid_gid "$HERMES_UID" && [ "$HERMES_UID" != "$(id -u hermes)" ]; then
+if [ -n "${HERMES_UID:-}" ] && validate_uid_gid "$HERMES_UID" && [ "$HERMES_UID" != "$(/usr/bin/id -u hermes)" ]; then
     echo "[stage2] Changing hermes UID to $HERMES_UID"
     usermod -u "$HERMES_UID" hermes
 fi
-if [ -n "${HERMES_GID:-}" ] && validate_uid_gid "$HERMES_GID" && [ "$HERMES_GID" != "$(id -g hermes)" ]; then
+if [ -n "${HERMES_GID:-}" ] && validate_uid_gid "$HERMES_GID" && [ "$HERMES_GID" != "$(/usr/bin/id -g hermes)" ]; then
     echo "[stage2] Changing hermes GID to $HERMES_GID"
     # -o allows non-unique GID (e.g. macOS GID 20 "staff" may already
     # exist as "dialout" in the Debian-based container image).
@@ -149,7 +163,7 @@ for sock in /var/run/docker.sock /run/docker.sock; do
     sock_gid=$(stat -c '%g' "$sock" 2>/dev/null) || continue
     [ -n "$sock_gid" ] || continue
     # Already a member? Nothing to do.
-    if id -G hermes 2>/dev/null | tr ' ' '\n' | grep -qx "$sock_gid"; then
+    if /usr/bin/id -G hermes 2>/dev/null | tr ' ' '\n' | grep -qx "$sock_gid"; then
         echo "[stage2] hermes already in group $sock_gid for $sock"
         break
     fi
@@ -180,7 +194,7 @@ done
 #
 # The canonical list of hermes-owned subdirs is the same one the s6-setuidgid
 # mkdir -p block below seeds. Keep them in sync if the seed list changes.
-actual_hermes_uid=$(id -u hermes)
+actual_hermes_uid=$(/usr/bin/id -u hermes)
 
 path_has_symlink_component() {
     path="$1"
@@ -646,7 +660,7 @@ fi
 # dotenv parser and precedence as at boot: container env, $HERMES_HOME/.env, managed .env), never
 # by a second grammar here. If it cannot be decided, nothing is migrated: the agent still decides
 # at boot, and a file-mode migration simply waits for the next boot.
-_config_backend=$(s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" -c '
+_config_backend=$(drop_to_hermes "$INSTALL_DIR/.venv/bin/python" -c '
 import sys
 from pathlib import Path
 from hermes_cli.env_loader import selected_config_backend_name
@@ -657,7 +671,7 @@ if [ "$_config_backend" = "remote" ]; then
 elif [ -z "$_config_backend" ]; then
     echo "[stage2] Warning: could not determine the config backend; skipping docker_config_migrate.py"
 elif [ -f "$HERMES_HOME/config.yaml" ]; then
-    s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/scripts/docker_config_migrate.py" \
+    drop_to_hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/scripts/docker_config_migrate.py" \
         || echo "[stage2] Warning: docker_config_migrate.py failed; continuing"
 fi
 
@@ -670,7 +684,7 @@ fi
 # keeps the extras recorded for the next boot or install. Then collect the
 # generations nothing selects any more: no service holds a lease yet, and
 # collect_generations keeps anything younger than a day.
-s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" -c '
+drop_to_hermes "$INSTALL_DIR/.venv/bin/python" -c '
 from pathlib import Path
 from hermes_cli.runtime_state import collect_generations
 from pm.environments import install_state_dir
@@ -714,7 +728,7 @@ if [ -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_REBOOTSTRAP:-}" ]
     if refuse_symlinked_path "reseed" "$HERMES_HOME/auth.json"; then
         :
     else
-        s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" \
+        drop_to_hermes "$INSTALL_DIR/.venv/bin/python" \
             "$INSTALL_DIR/scripts/docker_rebootstrap_nous_session.py" \
             "$HERMES_HOME/auth.json" \
             || echo "[stage2] Warning: docker_rebootstrap_nous_session.py failed; continuing"

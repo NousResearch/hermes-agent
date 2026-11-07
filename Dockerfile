@@ -474,7 +474,7 @@ COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 # slots from $HERMES_HOME/profiles/<name>/ after a container restart
 # (the /run/hermes-service/ scandir is tmpfs and wiped on restart). Phase 4.
 RUN mkdir -p /etc/cont-init.d && \
-    printf '#!/command/with-contenv sh\nexec /opt/hermes/docker/stage2-hook.sh\n' \
+    printf '#!/command/with-contenv /bin/sh\nexec /opt/hermes/docker/stage2-hook.sh\n' \
         > /etc/cont-init.d/01-hermes-setup && \
     chmod +x /etc/cont-init.d/01-hermes-setup
 COPY --chmod=0755 docker/cont-init.d/015-supervise-perms /etc/cont-init.d/015-supervise-perms
@@ -536,7 +536,16 @@ COPY --chmod=0755 docker/entrypoint-dispatch.sh /opt/hermes/docker/entrypoint-di
 # shim wins PATH resolution. The shim's last act is to exec the venv
 # binary by absolute path, so this PATH ordering is transparent to
 # every other consumer.
-ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
+#
+# Only root-owned directories go here. This PATH is also the PATH of
+# PID 1, of every with-contenv script and of root `docker exec`, so a
+# directory on the hermes-writable /opt/data volume would let the
+# hermes user choose what those root contexts run. The hermes user's
+# own ~/.local/bin (profile wrappers, pip --user, uv tool) is appended,
+# after the system dirs, only for processes already running as hermes:
+# login shells (profile.d below), the dropped CMD, the dashboard and the
+# supervised gateways.
+ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:${PATH}"
 # Login shells re-read /etc/profile, which resets PATH; this re-adds the dirs above.
 COPY --chmod=0644 docker/profile-hermes-path.sh /etc/profile.d/hermes.sh
 # PM's atomic writer creates private facts for source installs. In the

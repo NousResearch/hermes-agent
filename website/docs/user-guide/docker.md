@@ -696,6 +696,12 @@ docker exec -e HERMES_DOCKER_EXEC_AS_ROOT=1 hermes <cmd>
 
 The shim accepts `1` / `true` / `yes` (case-insensitive). Anything else — including typos like `=0` — falls through to the drop, so silent opt-outs aren't possible. If `s6-setuidgid` isn't available (custom builds that stripped s6-overlay), the shim refuses to run as root and exits 126 instead, surfacing the broken privilege model loudly rather than regressing to the historical footgun where `docker exec hermes login` would write `auth.json` as `root:root` and break the supervised gateway's auth on every chat platform message.
 
+### `PATH` for root and for the `hermes` user
+
+Root contexts resolve commands from root-owned directories only. The image `PATH` (`/opt/hermes/bin`, `/opt/hermes/.venv/bin`, then the system dirs) is what PID 1, the cont-init and service scripts, and root `docker exec` see, and the root-run scripts additionally pin their own `PATH` to the system directories. The `hermes` user's `~/.local/bin` (`/opt/data/.local/bin`: profile aliases from `hermes profile create`, `pip --user`, `uv tool`) sits on the writable data volume, so it is appended after the system dirs, and only for processes that already run as `hermes`: the container's CMD after the privilege drop, the dashboard, supervised gateways, `docker exec <c> hermes …` (via the shim), and non-root login shells.
+
+A root `docker exec` therefore does not find tools installed there. Run them as the `hermes` user instead, for example `docker exec -it -u hermes hermes bash -l` (then `work chat`), or use the profile flag directly: `docker exec hermes hermes -p work chat`.
+
 ### Per-profile gateway supervision
 
 Each profile created with `hermes profile create <name>` automatically gets an s6-supervised gateway service registered at `/run/hermes-service/gateway-<name>/`, with state-persistent auto-restart across container restarts. See [Multi-profile support](#multi-profile-support) above for the user-facing workflow and the lifecycle commands.

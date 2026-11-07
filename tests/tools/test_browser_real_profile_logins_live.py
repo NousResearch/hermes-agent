@@ -84,8 +84,14 @@ def _launch_chrome(profile_root: Path) -> tuple[subprocess.Popen, str]:
         except Exception:
             return None
 
-    ws_url = wait_until(_devtools_ws, timeout=20, interval=0.1,
-                        what="chrome CDP endpoint")
+    try:
+        ws_url = wait_until(_devtools_ws, timeout=20, interval=0.1,
+                            what="chrome CDP endpoint")
+    except Exception:
+        # The caller registers proc for cleanup only once we return, so a startup that never opens
+        # the CDP port would otherwise leak a live Chrome across failed tests and retries.
+        _kill(proc)
+        raise
     return proc, ws_url
 
 

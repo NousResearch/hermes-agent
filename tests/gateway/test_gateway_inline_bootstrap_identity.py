@@ -15,6 +15,7 @@ import base64
 import json
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -169,3 +170,71 @@ def test_live_payload_launched_gateway_is_found_for_its_home(argv, profile, foun
     monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: " ".join(_payload_launcher(argv)))
 
     assert status.live_gateway_pid_for_home(home) == (4242 if found else None)
+
+
+# Any argv element may carry a space: a Windows profile like ``C:\Users\John Doe\...`` puts one in
+# the interpreter path itself (#140831). Whitespace-free argv must render exactly as before.
+_SPACED_PY = "/opt/venvs/John Doe/bin/python3"
+_PLAIN_ARGV = [PY, "-I", "-m", "hermes_cli.main", "gateway", "run", "--replace"]
+
+
+def test_argv_to_command_line_preserves_element_boundaries() -> None:
+    # Whitespace-free argv joins unchanged: every existing reader's output is byte-identical.
+    assert status._argv_to_command_line(_PLAIN_ARGV) == " ".join(_PLAIN_ARGV)
+    # A whitespace-bearing element is quoted so shlex keeps it one token; embedded quotes escape.
+    line = status._argv_to_command_line([_SPACED_PY, "-I", "-c", _SCRIPT, "gateway", "run"])
+    assert shlex.split(line)[0] == _SPACED_PY
+    assert shlex.split(status._argv_to_command_line(['a "quoted" arg', "b"])) == ['a "quoted" arg', "b"]
+    assert status._argv_to_command_line(["", "run"]) == '"" run'
+
+
+@pytest.mark.parametrize("form", ["venv-reentry", "store-launcher"])
+def test_spaced_interpreter_path_keeps_gateway_identity(form: str) -> None:
+    """#140831: a space inside the interpreter path made every strict identity surface reject a
+    healthy gateway. In the runpy re-entry the subcommand lives inside the ``-c`` payload, so a
+    shattered interpreter token (a non-option token before ``-I``) drops the inline-bootstrap
+    adoption and the matcher answers None; with the trailing argv spelled out the token stream
+    still matches, but the fix keeps the interpreter a whole token either way."""
+    if form == "venv-reentry":
+        argv = [str(t) for t in venv_sync.relaunch_command(
+            Path(_SPACED_PY), ROOT, [str(ROOT / "hermes_cli" / "main.py"), "gateway", "run", "--replace"],
+            ["/old/python", "-m", "hermes_cli.main", "gateway", "run", "--replace"], "hermes_cli.main")]
+    else:
+        argv = [str(t) for t in _launchers.runtime_command(
+            ROOT, ["gateway", "run", "--replace"], python=Path(_SPACED_PY))]
+    assert looks_like_gateway_command_line(status._argv_to_command_line(argv))
+    naive = looks_like_gateway_command_line(" ".join(argv))  # the naive join this fixes
+    assert naive is (form != "venv-reentry")
+
+
+def test_read_process_cmdline_quotes_psutil_argv(monkeypatch) -> None:
+    """The psutil reader (the only one on Windows) re-quotes argv elements it joins (#140831)."""
+    import types
+
+    class _FakeProcess:
+        @staticmethod
+        def cmdline():
+            return [str(t) for t in _launchers.runtime_command(ROOT, ["gateway", "run"], python=Path(_SPACED_PY))]
+
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(Process=lambda pid: _FakeProcess()))
+    line = status._read_process_cmdline(4242)
+    assert line is not None and looks_like_gateway_command_line(line)
+
+
+def test_record_argv_with_spaced_interpreter_still_a_gateway() -> None:
+    """The PID-record fallback validates the persisted argv list; its join keeps boundaries too."""
+    argv = [str(t) for t in _launchers.runtime_command(ROOT, ["gateway", "run"], python=Path(_SPACED_PY))]
+    assert status._record_looks_like_gateway({"kind": "hermes-gateway", "argv": argv})
+    assert not status._record_looks_like_gateway({"kind": "hermes-gateway", "argv": argv[:1]})
+
+
+def test_capture_gateway_argv_accepts_spaced_interpreter(monkeypatch) -> None:
+    """The update pause/relaunch watcher must still recognize (not None) a live gateway whose
+    interpreter path has a space (#140831)."""
+    import types
+
+    from hermes_cli import gateway as cli_gateway
+
+    argv = [str(t) for t in _launchers.runtime_command(ROOT, ["gateway", "run"], python=Path(_SPACED_PY))]
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(Process=lambda pid: types.SimpleNamespace(cmdline=lambda: argv)))
+    assert cli_gateway._capture_gateway_argv(4242) == argv

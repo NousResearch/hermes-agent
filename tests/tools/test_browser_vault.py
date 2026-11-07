@@ -382,6 +382,39 @@ class TestBrowserVaultTools:
         assert out["error_type"] == "origin_mismatch"
         assert "s3cret-pw" not in json.dumps(out)
 
+    def test_fill_reports_empty_saved_password(self):
+        """An item saved without a password is reported as such, not as a page with no matching field."""
+        from tools import browser_vault_tool
+
+        meta = self._manager_meta()
+
+        class _EmptyPasswordBackend:
+            name, display_name, needs_unlock = "onepassword", "1Password", False
+
+            def is_unlocked(self):
+                return True
+
+            def get_meta(self, handle):
+                return meta if handle == meta.id else None
+
+            def fill_context(self):
+                return nullcontext()
+
+            def resolve_password(self, handle):
+                return ""
+
+        controls = [
+            {"autocomplete": "current-password", "formIndex": 0, "index": 0, "label": "", "name": "pw", "type": "password"},
+        ]
+        with patch("agent.vault_backends.backend_for_handle", return_value=_EmptyPasswordBackend()), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://www.amazon.co.uk"), \
+             patch.object(browser_vault_tool, "_eval_js", return_value={"success": True, "result": json.dumps(controls)}), \
+             patch.object(browser_vault_tool, "_eval_js_secret") as secret_eval:
+            out = json.loads(browser_vault_tool.browser_vault_fill("op:multi"))
+        assert out["success"] is False
+        assert out["error_type"] == "empty_secret"
+        secret_eval.assert_not_called()
+
     def test_fill_unknown_handle(self, store):
         from tools import browser_vault_tool
 

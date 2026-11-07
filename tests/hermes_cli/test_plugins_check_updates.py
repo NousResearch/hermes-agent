@@ -545,3 +545,72 @@ def test_default_fetch_follows_https_redirect(feed_redirect_server):
     base, visited = feed_redirect_server
     assert default_fetch(base + "/secure") == "version: 1.2.0\n"
     assert visited == ["/secure", "/feed"]
+
+
+# ── a catalog install: the version decides whether an update is offered ──
+
+
+def _catalog_prov(tmp_path, *, installed_version, revision):
+    """A catalog install: an install record naming a catalog entry, plus its own manifest."""
+    plugin_dir = tmp_path / "mnemosyne"
+    plugin_dir.mkdir(exist_ok=True)
+    (plugin_dir / "plugin.yaml").write_text(
+        f"name: mnemosyne\nversion: {installed_version}\ndescription: d\nmaintainer: m\n",
+        encoding="utf-8")
+    row = {
+        "catalog": {"name": "mnemosyne", "repo": "https://example/o/r", "sha": revision,
+                    "tier": "community", "pin": ""},
+        "pinned": True,
+        "revision": revision,
+        "source": "https://example/o/r#integrations/hermes-catalog",
+    }
+    return _prov(ProvenanceClass.DRIFT, row=row, path=plugin_dir)
+
+
+def _catalog_entry(*, version, sha):
+    from hermes_cli.plugin_catalog import PluginCatalogEntry
+
+    return PluginCatalogEntry(name="mnemosyne", repo="https://example/o/r", sha=sha,
+                              description="", maintainer="m", version=version, tier="community")
+
+
+def _check_catalog(tmp_path, monkeypatch, *, installed_version, catalog_version, catalog_sha):
+    from hermes_cli import plugins_updates
+
+    monkeypatch.setattr(
+        plugins_updates, "get_live_catalog_entry", lambda _n: _catalog_entry(
+            version=catalog_version, sha=catalog_sha), raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.plugin_catalog.get_live_catalog_entry", lambda _n: _catalog_entry(
+            version=catalog_version, sha=catalog_sha))
+    prov = _catalog_prov(tmp_path, installed_version=installed_version,
+                         revision="b" * 40)
+    return check_provenanced(prov, fetch=_no, ls_remote=_no)
+
+
+def test_a_catalog_pin_older_than_the_install_is_not_offered_as_an_update(tmp_path, monkeypatch):
+    """The catalog release is OLDER than the installed one: re-pinning would move it backwards."""
+    r = _check_catalog(tmp_path, monkeypatch, installed_version="0.7.7",
+                       catalog_version="0.7.3", catalog_sha="a" * 40)
+    assert r.update_available is False
+
+
+def test_a_catalog_pin_newer_than_the_install_is_offered(tmp_path, monkeypatch):
+    """The ordinary case: the catalog carries a newer release."""
+    r = _check_catalog(tmp_path, monkeypatch, installed_version="0.7.3",
+                       catalog_version="0.7.7", catalog_sha="c" * 40)
+    assert r.update_available is True
+
+
+def test_a_same_release_at_another_commit_is_still_offered(tmp_path, monkeypatch):
+    """The commit moved even though the release did not: the pin advance is a real update."""
+    r = _check_catalog(tmp_path, monkeypatch, installed_version="1.0.0",
+                       catalog_version="1.0.0", catalog_sha="c" * 40)
+    assert r.update_available is True
+
+
+def test_an_entry_without_a_version_keeps_the_sha_comparison(tmp_path, monkeypatch):
+    """No label to compare: the SHA difference stands."""
+    r = _check_catalog(tmp_path, monkeypatch, installed_version="1.0.0",
+                       catalog_version="", catalog_sha="c" * 40)
+    assert r.update_available is True

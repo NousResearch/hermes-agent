@@ -62,6 +62,23 @@ def is_borrowed_credential_source(source: Any, provider_id: Any = None) -> bool:
     return (normalized_provider, normalized_source) not in _PERSISTABLE_PROVIDER_SOURCES
 
 
+def is_hermes_owned_credential_source(provider_id: Any, source: Any) -> bool:
+    """Return True when Hermes itself wrote this ``(provider, source)`` pair.
+
+    The same ownership table that decides which pool rows may keep their secret
+    also names the sign-ins Hermes performed: MiniMax OAuth writes a pool row
+    with source ``oauth``, which no generic source-name list can distinguish
+    from an ambient row borrowed from another tool. Consumers that must decide
+    "did the user sign in to this provider through Hermes?" read the pair here
+    so the picker gate and the disk boundary cannot drift apart.
+    """
+    normalized_source = str(source or "").strip().lower()
+    normalized_provider = str(provider_id or "").strip().lower()
+    if not normalized_source or not normalized_provider:
+        return False
+    return (normalized_provider, normalized_source) in _PERSISTABLE_PROVIDER_SOURCES
+
+
 def _is_secret_payload_key(key: Any) -> bool:
     normalized = _normalize_key(key)
     if not normalized or normalized in _SAFE_SECRETISH_METADATA_KEYS:

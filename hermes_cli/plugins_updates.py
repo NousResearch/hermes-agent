@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import logging
 import re
 import subprocess
 from dataclasses import dataclass
@@ -30,6 +31,8 @@ from hermes_cli.plugins_provenance import (
     plugins_provenance,
 )
 
+logger = logging.getLogger(__name__)
+
 _FETCH_TIMEOUT = 10.0
 _MAX_FEED_BYTES = 1 * 1024 * 1024
 _FULL_GIT_SHA_RE = re.compile(r"[0-9a-fA-F]{40}")
@@ -41,6 +44,40 @@ def _version_is_newer(latest: str, current: str) -> Optional[bool]:
         return Version(latest) > Version(current)
     except InvalidVersion:
         return None
+
+
+def _version_relation(installed_version: str, catalog_version: str) -> Optional[int]:
+    """How the catalog's release stands against the installed one.
+
+    ``1`` the catalog is newer, ``0`` the same release, ``-1`` the catalog is OLDER, and ``None``
+    when the two cannot be compared (a missing or unparsable label).
+    """
+    if not installed_version or not catalog_version:
+        return None
+    try:
+        installed, catalog = Version(installed_version), Version(catalog_version)
+    except InvalidVersion:
+        return None
+    if catalog > installed:
+        return 1
+    if catalog < installed:
+        return -1
+    return 0
+
+
+def _installed_manifest_version(plugin_dir: Path) -> str:
+    """The release the installed plugin's own manifest declares ("" when unreadable).
+
+    The install record carries the commit, not the version; the manifest is where the plugin states
+    its own release, so it is what a version comparison has to read.
+    """
+    try:
+        from hermes_cli.plugins_cmd import _read_manifest
+
+        return str(_read_manifest(Path(plugin_dir)).get("version") or "")
+    except (ImportError, OSError, TypeError, ValueError) as exc:
+        logger.warning("Failed to read the installed version of %s: %s", plugin_dir, exc)
+        return ""
 
 
 @dataclass
@@ -170,6 +207,15 @@ def check_provenanced(
             return result
         result.latest = entry.sha
         result.update_available = result.current != entry.sha
+        # A SHA difference alone is not an update: the catalog's release can be OLDER than the
+        # one installed (an install that sits on a commit the catalog does not point at, e.g. an
+        # explicit ``--ref``), and re-pinning then moves the install BACKWARDS. The version labels
+        # decide when both are known; a same-version pin advance is still an update (the commit
+        # moved), and an unlabelled entry keeps the SHA comparison.
+        installed_version = _installed_manifest_version(prov.path)
+        relation = _version_relation(installed_version, entry.version or "")
+        if relation is not None and relation < 0:
+            result.update_available = False
         result.min_hermes = entry.requires_hermes or None
         return result
     result = check_local_provenance(prov)

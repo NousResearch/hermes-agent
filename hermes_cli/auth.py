@@ -31,7 +31,10 @@ from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tup
 from urllib.parse import urlparse
 
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
-from agent.credential_persistence import sanitize_borrowed_credential_payload
+from agent.credential_persistence import (
+    is_hermes_owned_credential_source,
+    sanitize_borrowed_credential_payload,
+)
 from utils import atomic_json_write, env_float, file_cache_version, is_truthy_value
 from hermes_cli.auth_zai_kimi import (
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
@@ -1254,7 +1257,10 @@ def _config_selects_provider(normalized: str) -> bool:
 def _explicit_pool_entry_present(normalized: str) -> bool:
     """Pool rows from EXPLICIT Hermes flows (manual add / device-code / PKCE) or live env keys;
     ambient borrowed sources (gh_cli / claude_code / qwen-cli) are deliberately excluded."""
-    return any(_pool_entry_is_explicit(entry) for entry in read_credential_pool(normalized))
+    return any(
+        _pool_entry_is_explicit(entry, normalized)
+        for entry in read_credential_pool(normalized)
+    )
 
 
 # Set by Claude Code itself, not by the user explicitly configuring anthropic in Hermes.
@@ -1299,7 +1305,7 @@ def _explicit_env_credentials_present(normalized: str) -> bool:
     return False
 
 
-def _pool_entry_is_explicit(entry: Any) -> bool:
+def _pool_entry_is_explicit(entry: Any, provider_id: str = "") -> bool:
     """True for pool rows the user created via an explicit Hermes flow (or a still-live env key)."""
     if not isinstance(entry, dict):
         return False
@@ -1310,7 +1316,13 @@ def _pool_entry_is_explicit(entry: Any) -> bool:
         # See #55790.
         env_var = entry.get("source", "").split(":", 1)[1].strip()
         return bool(env_var and _env_secret(env_var))
-    return bool(source) and (source in _EXPLICIT_POOL_SOURCES or source.startswith("manual:"))
+    if source in _EXPLICIT_POOL_SOURCES or source.startswith("manual:"):
+        return True
+    # A provider-scoped source Hermes owns (MiniMax OAuth's "oauth") is a sign-in the user
+    # completed in Hermes. The source NAME is generic, so only the (provider, source) pair
+    # identifies it — without this the row is dropped and the provider vanishes from the
+    # explicit-only picker, reading as "my login was lost".
+    return bool(source) and is_hermes_owned_credential_source(provider_id, source)
 
 
 def _keyless_provider_has_explicit_config(normalized: str) -> bool:

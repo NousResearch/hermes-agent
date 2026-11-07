@@ -14,6 +14,7 @@ from agent.error_classifier import ClassifiedError, FailoverReason, classify_api
 
 _R = FailoverReason
 AUTH_ERROR, PAYMENT_ERROR, MODEL_INCOMPATIBLE = "auth error", "payment error", "model incompatible with route"
+MODEL_NOT_FOUND = "model not found"
 _TRANSIENT = frozenset({_R.timeout, _R.overloaded, _R.server_error})
 # The request's own shape failed: another provider only helps once a parameter rung changed the request.
 _REQUEST_SHAPE = frozenset({
@@ -24,7 +25,7 @@ _REQUEST_SHAPE = frozenset({
 })
 _LABELS = {
     _R.auth: AUTH_ERROR, _R.auth_permanent: AUTH_ERROR, _R.billing: PAYMENT_ERROR,
-    _R.rate_limit: "rate limit", _R.upstream_rate_limit: "rate limit", _R.model_not_found: "model not found",
+    _R.rate_limit: "rate limit", _R.upstream_rate_limit: "rate limit", _R.model_not_found: MODEL_NOT_FOUND,
     _R.model_entitlement: MODEL_INCOMPATIBLE, _R.incomplete_response: "invalid provider response",
     _R.overloaded: "provider overloaded", _R.server_error: "server error", _R.long_context_tier: "long context tier",
 }

@@ -374,7 +374,7 @@ def _anthropic_event_has_content(event: Any) -> bool:
 def _anthropic_aux_stream_event_hook() -> Callable[[Any], None]:
     """Per-event callback for the Anthropic aux wire: progress only for substantive payloads
     (keepalives must not keep a stalled summary alive), stop at the host deadline or explicit
-    cancel. The ``TimeoutError`` text must say "timed out" so ``_is_timeout_error`` classifies it."""
+    cancel. The ``TimeoutError`` text must say "timed out" so the classifier reads it as a timeout."""
     host_deadline = _current_aux_stream_deadline()
     started = time.monotonic()
 
@@ -3509,7 +3509,8 @@ def _recoverable_pool_provider(
     return None
 
 
-def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "", verdict: Any = None) -> bool:
+def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "",
+                           verdict: Optional[aux_errors.ClassifiedError] = None) -> bool:
     """Try same-provider credential-pool recovery for auxiliary calls.
 
     ``failed_api_key`` lets mark_exhausted_and_rotate identify the right pool entry even if
@@ -3898,7 +3899,7 @@ def _quarantine_fallback_candidate(
     _mark_provider_unhealthy(
         fb_provider or fb_label, ttl=fallback_candidate_quarantine_ttl(reason),
         base_url=base_url, reason=reason or "stale fallback credential",
-        model=model if reason in ("model not found", aux_errors.MODEL_INCOMPATIBLE) else None)
+        model=model if reason in (aux_errors.MODEL_NOT_FOUND, aux_errors.MODEL_INCOMPATIBLE) else None)
     why = f"is out of capacity ({reason})" if reason else "has a stale/unrefreshable credential"
     logger.warning("Auxiliary %s%s: fallback candidate %s %s (%s) — skipping to next fallback",
                    task or "call", tag, fb_label, why, fb_err)
@@ -4004,8 +4005,7 @@ def _call_fallback_candidate_sync(
 async def _call_fallback_candidate_async(
     fb_client: Any, fb_model: Optional[str], fb_label: str, *, task: Optional[str], messages: list,
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
-    effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
-    classify_as: Optional[str] = None,
+    effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict], classify_as: str,
 ) -> Optional[Any]:
     """Async mirror of :func:`_call_fallback_candidate_sync` (no fast-lane cap on this wire)."""
     destination, fb_kwargs, rebuild = _plan_fallback_candidate(
@@ -4014,7 +4014,7 @@ async def _call_fallback_candidate_async(
         max_tokens=max_tokens, effective_extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
     )
-    provider = classify_as or _candidate_classification_provider(fb_client, fb_model, fb_label, task)
+    provider = classify_as
 
     async def _send(client: Any, request_kwargs: dict[str, Any], dest: _FallbackDestination) -> Any:
         import asyncio
@@ -6862,14 +6862,15 @@ def _create_with_progress(
     client: Any, kwargs: dict[str, Any], task: Optional[str] = None, *, force_stream: bool = False, provider: str = ""
 ) -> Any:
     """Credit-aware :func:`_create_with_progress_once`: a 402 naming an affordable
-    budget retries ONCE with that cap (only ever lowering); anything else re-raises."""
+    budget retries ONCE with that cap (only ever lowering); anything else re-raises (as a ``_ClassifiedAttempt``
+    once the 402 was read)."""
     try:
         return _create_with_progress_once(client, kwargs, task, force_stream=force_stream, provider=provider)
     except Exception as exc:
         affordable = _affordable_max_tokens_from_error(exc)
         if affordable is None:
             raise
-        failure = _attempt_failure(client, kwargs, exc, provider)
+        failure = _classify_failure(exc, provider, client, kwargs.get("model"), None)
         existing_cap = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
         if not aux_errors.benches_provider(failure.verdict) or (
                 isinstance(existing_cap, (int, float)) and 0 < existing_cap <= affordable):
@@ -6883,12 +6884,6 @@ def _create_with_progress(
                 "retrying once with a clamped output cap instead of failing: %s",
                 task or "call", affordable, rejection)
     return _create_with_progress_once(client, retry_kwargs, task, force_stream=force_stream, provider=provider)
-
-
-def _attempt_failure(client: Any, kwargs: dict[str, Any], exc: Exception, provider: str) -> aux_errors.Failure:
-    """The recovery ladder's failure for this attempt, classified on the provider it was sent to (an attempt raised
-    as a ``_ClassifiedAttempt`` already carries it)."""
-    return _classify_failure(exc, provider, client, kwargs.get("model"), None)
 
 
 _STREAM_REJECTED = object()  # the stream negotiation failed: re-send the request non-streaming
@@ -6940,11 +6935,11 @@ def _create_with_progress_once(
     try:
         chunks = client.chat.completions.create(**stream_kwargs)
     except Exception as exc:
-        # Genuine provider failures aren't streaming's fault — surface unchanged so the
-        # recovery chains see the same error as a plain call.
+        # Genuine provider failures aren't streaming's fault: surface them (classified) for the
+        # recovery ladder, as a plain call would.
         if force_stream:
             raise
-        failure = _attempt_failure(client, kwargs, exc, provider)
+        failure = _classify_failure(exc, provider, client, kwargs.get("model"), None)
         if aux_errors.stream_negotiation_reraises(failure.verdict):
             raise _ClassifiedAttempt(failure)
         # Possibly a streaming-specific rejection: retry non-streaming once; a genuinely bad
@@ -6971,8 +6966,8 @@ def _aggregate_chat_stream(
     chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None,
     no_progress: Optional[tuple[float, Optional[float]]] = None,
 ) -> Any:
-    """Consume a chunk stream into a complete response; TimeoutError (phrased "timed out" so
-    ``_is_timeout_error`` matches) past *total_ceiling* or the *no_progress* windows (#100501)."""
+    """Consume a chunk stream into a complete response; TimeoutError (phrased "timed out" so the
+    classifier reads a timeout) past *total_ceiling* or the *no_progress* windows (#100501)."""
     from agent.auxiliary_stream_watchdog import _close_chunk_stream, consume_chat_stream
     acc = _ChatStreamAccumulator(
         model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline)
@@ -7180,7 +7175,7 @@ async def _acreate_with_progress(
         # re-sending the whole prompt non-streaming.
         if force_stream:
             raise
-        failure = _attempt_failure(client, kwargs, exc, provider)
+        failure = _classify_failure(exc, provider, client, kwargs.get("model"), None)
         if aux_errors.stream_negotiation_reraises(failure.verdict):
             raise _ClassifiedAttempt(failure)
         logger.debug("Auxiliary %s: streamed async request failed (%s); retrying non-streaming",

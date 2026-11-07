@@ -72,14 +72,26 @@ export function registerGlobalRoute(registry: ConnectionRegistry, config: Record
 
   const route = config.remote && typeof config.remote === 'object' ? config.remote : {}
   const key = sshRouteKey(route)
-  const existing = key ? registry.connections.find(c => c.kind === 'ssh' && sshRouteKey(c) === key) : undefined
 
-  if (!key || existing) {
+  if (!key) {
     return registry
   }
 
   const ssh = normalizeSshConfig({ ...route, mode: 'ssh' })!
   const { mode: _mode, ...sshFields } = ssh
+  const existing = registry.connections.find(c => c.kind === 'ssh' && sshRouteKey(c) === key)
+
+  if (existing) {
+    // Same gateway (user, host, port, profile): carry a corrected key or Hermes path onto it.
+    const aligned = { ...existing }
+    delete aligned.keyPath
+    delete aligned.remoteHermesPath
+    const { host: _host, user: _user, port: _port, remoteProfile: _profile, ...paths } = sshFields
+    Object.assign(aligned, paths)
+
+    return upsertConnection(registry, aligned)
+  }
+
   const label = uniqueLabel(
     ssh.remoteProfile ? `${ssh.host} (${ssh.remoteProfile})` : ssh.host,
     registry.connections.map(c => c.label)

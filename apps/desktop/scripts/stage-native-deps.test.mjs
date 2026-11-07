@@ -579,8 +579,16 @@ test('a Windows dev run restages a build-staged copy that has no binding', () =>
     stageGetWindowsInto(srcRoot, staged, { platform: 'win32', arch: 'x64' })
     assert.equal(existsSync(join(staged, binding)), false)
     const install = root => makeFakeNode(join(root, binding), 'win32')
-    ensureDevGetWindowsBinding({ platform: 'win32', arch: 'x64', resolveRoot: () => srcRoot, install, staged })
+    const run = () => ensureDevGetWindowsBinding({ platform: 'win32', arch: 'x64', resolveRoot: () => srcRoot, install, staged })
+    run()
     assert.ok(existsSync(join(staged, binding)))
+    // A staged copy that has its binding is left alone, and a dev run never creates one.
+    fs.writeFileSync(join(staged, 'kept'), '')
+    run()
+    assert.ok(existsSync(join(staged, 'kept')))
+    fs.rmSync(join(tmp, 'dist'), { recursive: true })
+    run()
+    assert.equal(existsSync(staged), false)
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
   }

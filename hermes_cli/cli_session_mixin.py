@@ -903,9 +903,15 @@ class CLISessionMixin:
         return ""
 
     def _write_terminal_breadcrumb(self) -> None:
-        """Record this terminal's live session for bare ``hermes -c``. Called whenever
-        ``self.session_id`` is (re)assigned so a later bare ``-c`` in THIS terminal resumes
-        this conversation's live tip. Best-effort; no-op without a terminal identity."""
+        """Record the current terminal binding, with Herdr independent of breadcrumb opt-out."""
+        with contextlib.suppress(Exception):
+            from hermes_cli.gateway_session_store import GatewaySessionStore
+            from hermes_cli.terminal_breadcrumbs import report_agent_session
+
+            # Startup's provisional id is replaced by the owner; never publish it to Herdr.
+            if (not isinstance(getattr(self, "_session_db", None), GatewaySessionStore)
+                    or getattr(self, "_gateway_session_open", False)):
+                report_agent_session(self.session_id)
         with contextlib.suppress(Exception):
             from hermes_cli.terminal_breadcrumbs import write_breadcrumb
 

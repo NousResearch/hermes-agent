@@ -472,7 +472,7 @@ class CLIInitMixin:
             bind_session(self, store.connection)  # the session's processes, before _init_agent's chat proxy
             if sid and sid != self.session_id:
                 self.session_id = sid
-                getattr(self, "_write_terminal_breadcrumb", lambda: None)()
+            getattr(self, "_write_terminal_breadcrumb", lambda: None)()
 
     def _new_session_id(self, now, *, branch_of=None, title=None):
         """The id main mints for /new (``new_session_id``) and /branch (``mint_session_id``). On a gateway

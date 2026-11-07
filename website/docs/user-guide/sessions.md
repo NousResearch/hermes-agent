@@ -164,6 +164,19 @@ This looks up the most recent `cli` session from the SQLite database and loads i
 
 A bare `-c` is terminal-aware: each CLI session drops a small breadcrumb file under `~/.hermes/terminal-sessions/` keyed by the terminal it runs in (tty device, tmux pane, kitty window, wezterm pane, Zellij pane, Windows Terminal session, ...). When you run `hermes -c` again in the *same* terminal, Hermes resumes that terminal's own session — so two panes side by side each continue their own conversation instead of both grabbing the globally most-recent one. If there's no breadcrumb for the terminal (first use, deleted session, or a stale breadcrumb older than 30 days), `-c` falls back to the most-recent-session behavior. `-c "name"` and `--resume` are unaffected. Disable with `session.terminal_continue: false` in `config.yaml`.
 
+#### Herdr Conversation Identity
+
+When a local CLI or TUI runs inside Herdr (`HERDR_ENV=1` and
+`HERDR_PANE_ID` are set), the terminal client reports its durable session ID
+to Herdr when it creates, resumes, or switches conversations. The TUI also
+tracks durable-ID changes announced by the gateway. This allows Herdr Mobile
+Relay to find the correct conversation without matching titles or workspaces.
+
+Reporting is independent of `session.terminal_continue` and the TUI's
+active-session file. A missing or unresponsive Herdr command does not stop
+chat. Explicit gateway or sidecar URLs are excluded because their session
+database may be on another machine.
+
 ### Resume by Name
 
 If you've given a session a title (see [Session Naming](#session-naming) below), you can resume it by name:

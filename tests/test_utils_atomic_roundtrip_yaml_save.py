@@ -369,6 +369,8 @@ class TestSequenceEntriesKeepTheirOwnFormatting:
             (["a", "b", "b", "c"], ["b", "x", "b"]),
             (["a", "b"], []),
             ([1, True, "1"], [True, 1, "1"]),
+            ([0, 1, 1.0], [1.0]),
+            ([0, 1, 1.0], [1]),
             (["a"], ["x", "a", "y", "z"]),
         ],
     )

@@ -258,6 +258,23 @@ describe('normalizeIndicatorStyle', () => {
     expect(normalizeIndicatorStyle('sparkle')).toBe('kaomoji')
     expect(normalizeIndicatorStyle(42)).toBe('kaomoji')
   })
+
+  it('defaults to ascii under a legacy Windows console (#67151)', () => {
+    expect(normalizeIndicatorStyle(undefined, 'win32', {})).toBe('ascii')
+    expect(normalizeIndicatorStyle(null, 'win32', {})).toBe('ascii')
+    expect(normalizeIndicatorStyle('sparkle', 'win32', {})).toBe('ascii')
+  })
+
+  it('an explicit style always wins over the console fallback', () => {
+    expect(normalizeIndicatorStyle(' kaomoji ', 'win32', {})).toBe('kaomoji')
+    expect(normalizeIndicatorStyle('unicode', 'win32', {})).toBe('unicode')
+  })
+
+  it('keeps kaomoji under Windows Terminal and on other platforms', () => {
+    expect(normalizeIndicatorStyle(undefined, 'win32', { WT_SESSION: 'guid' })).toBe('kaomoji')
+    expect(normalizeIndicatorStyle(undefined, 'darwin', {})).toBe('kaomoji')
+    expect(normalizeIndicatorStyle(undefined, 'linux', {})).toBe('kaomoji')
+  })
 })
 
 describe('applyDisplay → busy_input_mode', () => {

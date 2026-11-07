@@ -2,6 +2,7 @@ import { contrastRatio, ensureContrast, mix, parseColor, relativeLuminance, toHe
 import type { SkinBranding, SkinColors } from '@hermes/shared/skin'
 
 import { desaturate, grayOf, liftForContrast } from './lib/color.js'
+import { promptGlyph } from './lib/platform.js'
 
 export interface ThemeColors {
   primary: string
@@ -254,7 +255,8 @@ export function themeToneHex(tone: string): string {
 const BRAND: ThemeBrand = {
   name: 'Hermes Agent',
   icon: '☤',
-  prompt: '❯',
+  // U+276F is tofu in legacy Windows consoles (Consolas) — promptGlyph falls back to '>' there (#67151).
+  prompt: promptGlyph(),
   welcome: 'Type your message or /help for commands.',
   goodbye: 'Goodbye! ☤',
   tool: '┊',

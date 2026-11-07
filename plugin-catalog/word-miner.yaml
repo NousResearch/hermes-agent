@@ -1,6 +1,6 @@
 name: word-miner
 repo: https://github.com/trenthalden/word-miner
-sha: "cac49a10ac754475f5ac110971400817ddfab5c5"
+sha: "d5f8bccd1756ed9d049e397abf92f7abcb76f503"
 description: >
   Turn any text you are consuming (lyrics, subtitles, articles, chat) into a
   personal vocabulary deck and run short daily spaced-repetition sessions inside
@@ -14,6 +14,11 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/trenthalden/word-miner#readme
+image: https://raw.githubusercontent.com/trenthalden/word-miner/d5f8bccd1756ed9d049e397abf92f7abcb76f503/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/trenthalden/word-miner/d5f8bccd1756ed9d049e397abf92f7abcb76f503/assets/shot-1.png
+  - https://raw.githubusercontent.com/trenthalden/word-miner/d5f8bccd1756ed9d049e397abf92f7abcb76f503/assets/shot-2.png
+  - https://raw.githubusercontent.com/trenthalden/word-miner/d5f8bccd1756ed9d049e397abf92f7abcb76f503/assets/shot-3.png
 version: "0.1.0"
 platforms: [macos, linux, windows]
 capabilities:

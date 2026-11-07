@@ -660,8 +660,18 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
     yaml_rt, existing = _roundtrip_load(path)
 
     def _unchanged(current: Any, value: Any) -> bool:
-        # ``True == 1`` in Python; a bool↔int flip is a real change for YAML readers.
-        return current == value and isinstance(current, bool) is isinstance(value, bool)
+        if isinstance(current, dict) and isinstance(value, dict):
+            return current.keys() == value.keys() and all(
+                _unchanged(current[key], item) for key, item in value.items()
+            )
+        if isinstance(current, list) and isinstance(value, list):
+            return len(current) == len(value) and all(
+                _unchanged(old, new) for old, new in zip(current, value)
+            )
+        # Python equates True, 1 and 1.0; YAML readers distinguish their scalar kinds.
+        return current == value and all(
+            isinstance(current, kind) is isinstance(value, kind) for kind in (bool, int, float)
+        )
 
     def _merge_seq(dst: CommentedSeq, src: list) -> None:
         # An entry on both sides keeps its own node, so a removal or insertion cannot hand one

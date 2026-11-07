@@ -42,6 +42,26 @@ def test_same_size_edit_within_one_mtime_tick_is_still_backed_up(tmp_path: Path,
     assert second is not None and second.read_text() == "model: b\n"
 
 
+def test_backup_is_owner_only_regardless_of_source_mode(tmp_path: Path, monkeypatch):
+    # copy2 carries the source's permission bits over; a config rewritten world/-group-readable
+    # must not leak that mode into a backup holding the full config.
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("model: a\n")
+    cfg.chmod(0o644)
+    stamps = iter(f"2026010100000{i}" for i in range(10))
+    monkeypatch.setattr("hermes_cli.config_backups.time.strftime", lambda _fmt: next(stamps))
+
+    dest = backup_config(cfg, "pre-setup")
+    assert dest is not None
+    assert (dest.stat().st_mode & 0o777) == 0o600
+
+    cfg.chmod(0o600)
+    cfg.write_text("model: b\n")
+    dest2 = backup_config(cfg, "pre-setup")
+    assert dest2 is not None
+    assert (dest2.stat().st_mode & 0o777) == 0o600
+
+
 def test_legacy_siblings_move_but_user_named_copies_stay(tmp_path: Path):
     cfg = tmp_path / "config.yaml"
     cfg.write_text("model: a\n")

@@ -268,7 +268,7 @@ def _coerce_handle(handle: Any) -> Optional[SubagentHandle]:
 
 class SubagentLifecycleService:
     """Stable public service behind :attr:`PluginContext.subagent_lifecycle`. Children run in-process only;
-    completed results stay until process exit; ``reconnect`` reports that a serialized handle cannot
+    completed results stay for one hour; ``reconnect`` reports that a serialized handle cannot
     reconnect after a restart instead of launching work again."""
 
     def __init__(self, parent_agent_resolver: Callable[[], Any]) -> None:
@@ -397,6 +397,7 @@ class SubagentLifecycleService:
         if _session_id_of(self._parent_agent_resolver()) != handle.parent_session_id:
             return None
         with _REGISTRY.lock:
+            self._cleanup_locked()
             return _REGISTRY.records.get(handle.subagent_id)
 
     @staticmethod

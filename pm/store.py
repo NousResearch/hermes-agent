@@ -378,6 +378,28 @@ def _tree_digest(root: Path, *, skip_metadata: bool) -> str:
     return digest.hexdigest()
 
 
+def _keep_staged_tree_usable(path: Path) -> None:
+    """Keep a freshly created staging directory usable by this user unelevated.
+
+    ``tempfile.mkdtemp`` creates the directory with mode ``0o700``, which on Windows is a
+    *protected* DACL naming only SYSTEM, Administrators and OWNER RIGHTS — inherited by
+    everything later extracted inside it. Run from an elevated process, the owner is
+    ``BUILTIN\\Administrators``, so the same user's filtered (UAC) token matches no ACE at all:
+    ``publish()`` renames the finished tree into the store with that DACL intact and every
+    unelevated process afterwards gets WinError 5 on its contents — the desktop spawns
+    ``cmd\\git.exe`` out of the store for its update check this way and reports
+    ``head-unavailable``. ``make_user_dir`` adds the user's inheriting ACE and is inert off
+    Windows and when the process is already unelevated.
+    """
+    if os.name != "nt":
+        return
+    try:
+        from hermes_dir_acl import make_user_dir
+    except ImportError:  # pm-runtime used outside a Hermes checkout
+        return
+    make_user_dir(path, exist_ok=True)
+
+
 class Store:
     """One directory of immutable published entries plus a scratch area.
     Hash-keyed archives survive failed installs. Publication releases them."""
@@ -442,6 +464,7 @@ class Store:
     def scratch(self):
         self.root.mkdir(parents=True, exist_ok=True)
         path = Path(tempfile.mkdtemp(prefix=".staging-", dir=self.root))
+        _keep_staged_tree_usable(path)
         try:
             yield path
         finally:

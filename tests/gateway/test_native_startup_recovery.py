@@ -6,13 +6,12 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
-import socket
 import sqlite3
 import threading
 
 import aiohttp
 
-from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon
+from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon, listen_port
 from tests.waiting import async_wait_until
 
 
@@ -25,9 +24,7 @@ def test_native_queue_recovers_only_after_current_adapter_publication(tmp_path):
     peer.requests = []
     peer.blocked, peer.release = threading.Event(), threading.Event()
     threading.Thread(target=peer.serve_forever, daemon=True).start()
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
-        port = sock.getsockname()[1]
+    port = listen_port()
     base = f'http://127.0.0.1:{peer.server_port}/v1'
     cfg = {'model': {'provider': 'custom', 'default': 'local-wire-stub', 'base_url': base},
            'gateway': {'multiplex_profiles': False},

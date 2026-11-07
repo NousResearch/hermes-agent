@@ -62,7 +62,7 @@ describe('buildManualUpdateCommand', () => {
     expect(buildManualUpdateCommand(null)).toBe('hermes update')
   })
 
-  it('branch-pinned for non-main checkouts', () => {
-    expect(buildManualUpdateCommand('ethie/pm')).toBe('hermes update --branch ethie/pm')
+  it('branch-pinned for non-main checkouts, staying on the target (#80041)', () => {
+    expect(buildManualUpdateCommand('ethie/pm')).toBe('hermes update --branch ethie/pm --stay-on-branch')
   })
 })

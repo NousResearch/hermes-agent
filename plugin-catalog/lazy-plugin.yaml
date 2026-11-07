@@ -1,7 +1,7 @@
 name: lazy-plugin
 repo: https://github.com/RegeneratusLabs/lazy-plugin
-sha: c6865376bbd0ebb55d269d35f6158a9d02e61bf9
-version: "0.9.0"
+sha: cbb7d9dc763e538041ac19719da7e2d52bcb31d9
+version: "0.9.1"
 title: "Lazy Plugin"
 description: >-
   A dashboard page in Hermes Desktop where you describe a plugin and watch it get built. Say

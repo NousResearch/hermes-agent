@@ -226,10 +226,13 @@ def new_sandbox(root: Path, origin: Path | None = None, *, pythonpath: Path | No
     return Sandbox(root=root, env=env)
 
 
-def run_installer(sb: Sandbox, *, timeout: float = 1800) -> subprocess.CompletedProcess:
-    """HEAD's scripts/install.sh, non-interactive, as the documented `curl | bash` run does it."""
+def run_installer(sb: Sandbox, *, timeout: float = 1800, ref: str | None = None) -> subprocess.CompletedProcess:
+    """``scripts/install.sh`` of ``ref`` (None: HEAD's), non-interactive, as the documented `curl | bash` run does it."""
     script = sb.root / "install.sh"
-    shutil.copy(H.WORKTREE / "scripts" / "install.sh", script)
+    if ref is None:
+        shutil.copy(H.WORKTREE / "scripts" / "install.sh", script)
+    else:
+        script.write_text(git("show", f"{ref}:scripts/install.sh", cwd=H.WORKTREE) + "\n", encoding="utf-8")
     return sb.run(["bash", str(script), "--non-interactive"], timeout=timeout, input="",
                   env=fresh_install_env(sb))
 

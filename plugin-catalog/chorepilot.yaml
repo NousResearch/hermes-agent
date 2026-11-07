@@ -1,0 +1,28 @@
+name: chorepilot
+title: ChorePilot
+repo: https://github.com/WestWaters/ChorePilot
+sha: 9b1843ac0a0c467c7ccc0fb3ae355f1bb5f70434
+subdir: hermes/chorepilot
+version: "0.7.0"
+description: "Your house and family chore board as Hermes tools, through ChorePilot's own MCP server on this machine, the LAN or Tailscale. Runs appliances (lights, climate, dishwasher/washer/dryer, sprinklers, vacuum and more via Home Assistant, Home Connect, MQTT or a simulator) and keeps a rotating chore board that devices verify. ChorePilot's policy decides every call: water/heat actions wait for the person's own yes in Telegram or the ChorePilot dashboard, kids' requests go to a parent's approval queue, and unlocking, opening the garage and disarming are never available to an agent. Bundles the chorepilot:household skill. Disclosure — each tool call sends HTTP requests with the bearer token in CHOREPILOT_TOKEN to the user's own ChorePilot server at CHOREPILOT_URL, and the plugin also lists that server's tools once at every Hermes start (plain http only to loopback, private, Tailscale or .local/.lan/.ts.net addresses); chorepilot_call runs any device or chore tool the token's person may use (lights, climate, vacuum, locking and more) without a Hermes approval prompt, with ChorePilot's own policy deciding, so water/heat actions wait up to two minutes for that person's yes in Telegram or the ChorePilot dashboard, kids' requests go to a parent, and unlocking, opening the garage and disarming are never available; no other network calls, no files read outside the plugin, no background processes, no telemetry, stdlib only."
+maintainer: WestWaters
+tier: community
+category: tools
+docs_url: https://github.com/WestWaters/ChorePilot/blob/main/docs/HERMES.md
+requires_hermes: ">=0.21.5"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - chorepilot_status
+    - chorepilot_chores
+    - chorepilot_who_has
+    - chorepilot_done
+    - chorepilot_whoami
+    - chorepilot_tools
+    - chorepilot_call
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - CHOREPILOT_URL
+    - CHOREPILOT_TOKEN

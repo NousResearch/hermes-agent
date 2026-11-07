@@ -4,7 +4,7 @@ Verifies that users get an immediate status response instead of total silence
 when the agent is working on a task. See PR fix for the @Lonely__MH report.
 """
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -97,6 +97,20 @@ def _make_adapter(platform_val="telegram"):
 class TestBusySessionAck:
     """User sends a message while agent is running — should get acknowledgment."""
 
+    @pytest.mark.asyncio
+    async def test_busy_ack_is_not_sent_to_a_bot_peer(self):
+        """Regression for #137027: runtime acknowledgements must not restart bot loops."""
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner()
+        event = _make_event()
+        event.source.is_bot = True
+        adapter = _make_adapter()
+
+        await GatewayRunner._send_busy_ack_reply(runner, event, adapter, "⚡ Interrupting current task")
+
+        adapter._send_with_retry.assert_not_awaited()
+
 
     @pytest.mark.asyncio
     async def test_telegram_grace_followups_respect_queue_fifo(self, monkeypatch):
@@ -150,7 +164,7 @@ class TestBusySessionAck:
     @pytest.mark.asyncio
     async def test_sends_ack_when_agent_running(self):
         """First message during busy session should get a status ack."""
-        runner, sentinel = _make_runner()
+        runner, _sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
 
@@ -194,8 +208,8 @@ class TestBusySessionAck:
         import gateway.run as _gr
 
         monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
-        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
-        runner, sentinel = _make_runner()
+        monkeypatch.setattr(_gr, "_load_gateway_config", dict)
+        runner, _sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         adapter = _make_adapter()
 
@@ -233,7 +247,7 @@ class TestBusySessionAck:
         import gateway.run as _gr
 
         monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
-        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(_gr, "_load_gateway_config", dict)
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         runner._should_echo_stt_transcripts = MagicMock(return_value=False)
@@ -256,7 +270,7 @@ class TestBusySessionAck:
         await runner._handle_active_session_busy_message(event, sk)
 
         runner._enrich_message_with_transcription.assert_awaited_once_with(
-            "", ["/tmp/follow-up.ogg"]
+            "", ["/tmp/follow-up.ogg"], ANY
         )
         agent.steer.assert_called_once()
         injected = agent.steer.call_args.args[0]
@@ -272,7 +286,7 @@ class TestBusySessionAck:
     @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_rejects(self):
         """If agent.steer() returns False, fall back to queue behavior."""
-        runner, sentinel = _make_runner()
+        runner, _sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         adapter = _make_adapter()
 
@@ -386,7 +400,7 @@ class TestBusySessionAck:
             "_load_gateway_config",
             lambda: {"display": {"platforms": {"telegram": {"busy_ack_detail": True}}}},
         )
-        runner, sentinel = _make_runner()
+        runner, _sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
 
@@ -425,7 +439,7 @@ class TestBusySessionOnboardingHint:
         monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
         # mark_seen imports utils.atomic_yaml_write; make sure it resolves
         # against a writable dir by pointing _hermes_home at tmp_path.
-        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(_gr, "_load_gateway_config", dict)
 
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"

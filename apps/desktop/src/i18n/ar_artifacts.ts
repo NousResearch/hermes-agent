@@ -88,6 +88,7 @@ export const arArtifacts = {
     editing: 'جار التحرير',
     unsavedChanges: 'تغييرات غير محفوظة',
     saveFailed: message => `تعذّر الحفظ: ${message}`,
+    saveScopeChanged: 'عُد إلى الاتصال والملف الشخصي الأصليين لحفظ هذه المسودة.',
     diskChangedTitle: 'تغيّر الملف على القرص',
     diskChangedBody: 'تغيّر هذا الملف منذ أن فتحته. هل تريد الكتابة فوقه بنسختك، أم تجاهل تعديلاتك وإعادة التحميل؟',
     overwrite: 'الكتابة فوقه',
@@ -113,6 +114,7 @@ export const arArtifacts = {
       sentMessage: count => `أُضيف ${count} ${count === 1 ? 'إدخال سجل' : 'إدخالات سجل'} إلى المُنشئ`
     },
     web: {
+      embeddedPreviewHint: 'تمنع بعض المواقع المعاينات المضمّنة. افتح الصفحة الأصلية في علامة تبويب بالمتصفح.',
       appFailedToBoot: 'فشل إقلاع تطبيق المعاينة',
       serverNotFound: 'الخادم غير موجود',
       remoteLoopback:

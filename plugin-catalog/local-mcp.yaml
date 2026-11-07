@@ -1,0 +1,33 @@
+name: local-mcp
+repo: https://github.com/colibird-ai/local-mcp-hermes-plugin
+sha: 6d6da7722af2243aa6f92fc363405c629e162cf6
+description: >-
+  Mac apps for Hermes through a separately installed LMCP app: Apple Mail,
+  Microsoft 365 mail, Calendar, Teams, Slack, OneDrive, Office files, a
+  logged-in browser and the terminal, with a skill for scoping tools on
+  unattended jobs. Requires LMCP from local-mcp.com; no automatic install or
+  updates. Disclosure — a thin launcher for the LMCP app by Colibird (same
+  organization as this plugin); the plugin holds no logic or credentials and
+  downloads nothing, but a shell launcher starts the server bundled inside that
+  separately installed app (/Applications or ~/Applications), which reads
+  local app data (Mail index, Teams cache, calendars), can send mail and
+  messages, run terminal commands and drive a browser, uses an unofficial
+  client for WhatsApp and updates itself outside Hermes. Tools that send or
+  can't be undone require a confirm step in LMCP rather than Hermes approval.
+  LMCP_DISABLE_TELEMETRY=1 turns off usage telemetry in the server process
+  this plugin starts. The plugin's launcher also starts the LMCP app, which
+  sends its own telemetry, plus a minimal liveness heartbeat (computer id,
+  version, licence) that is not disabled.
+maintainer: colibird-ai
+tier: community
+category: tools
+docs_url: https://github.com/colibird-ai/local-mcp-hermes-plugin#readme
+version: "0.1.0"
+readme: true
+platforms: [macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+

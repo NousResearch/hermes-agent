@@ -31,7 +31,7 @@ from gateway.config import PlatformConfig
 # sys.modules for the rest of the session: every later telegram test that
 # asserts ParseMode repr or isinstance against telegram.error classes failed
 # order-dependently in full runs while passing in isolation.
-from tests.gateway.conftest import _ensure_telegram_mock  # noqa: E402
+from tests.gateway.conftest import _ensure_telegram_mock
 
 _ensure_telegram_mock()
 # Force reimport so the adapter binds to whatever sys.modules now holds
@@ -39,7 +39,7 @@ _ensure_telegram_mock()
 # stub an earlier test file may have bound it to.
 sys.modules.pop("plugins.platforms.telegram.adapter", None)
 
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter(dm_topics_config=None, group_topics_config=None):
@@ -408,7 +408,7 @@ def test_build_message_event_no_auto_skill_without_binding():
 # so `from telegram.constants import ChatType` in telegram.py resolves to
 # telegram_mod.ChatType — not telegram_mod.constants.ChatType.  We must use
 # the same ChatType object the production code sees so equality checks work.
-from telegram.constants import ChatType as _ChatType  # noqa: E402
+from telegram.constants import ChatType as _ChatType
 
 
 def test_group_topic_skill_binding():

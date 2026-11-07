@@ -32,7 +32,7 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
     "SLACK_HOME_CHANNEL_NAME", "SLACK_ALLOWED_USERS", "WHATSAPP_ENABLED",
     "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS", "SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT",
     "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS", "SIGNAL_HOME_CHANNEL",
-    "SIGNAL_HOME_CHANNEL_NAME", "SIGNAL_IGNORE_STORIES", "HASS_TOKEN", "HASS_URL",
+    "SIGNAL_HOME_CHANNEL_NAME", "SIGNAL_IGNORE_STORIES",
     "EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST",
     "EMAIL_HOME_ADDRESS", "EMAIL_HOME_ADDRESS_NAME", "HERMES_DASHBOARD_SESSION_TOKEN",
     "GATEWAY_ALLOWED_USERS", "GH_TOKEN", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
@@ -52,9 +52,17 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
 })
 
 
+def _left_core_env(*, secrets_only: bool) -> frozenset:
+    """Env of features that left core for a catalog plugin (``hermes_cli.left_core_migration``):
+    stripped exactly as when core shipped them, plugin installed or not."""
+    from hermes_cli.left_core_migration import LEFT_CORE
+    return frozenset(name for feature in LEFT_CORE
+                     for name in feature.secret_env + (() if secrets_only else feature.private_env))
+
+
 def _build_provider_env_blocklist() -> frozenset:
     """Derive the blocklist from provider, tool, and gateway config."""
-    blocked: set[str] = set(_STATIC_PROVIDER_ENV_BLOCKLIST)
+    blocked: set[str] = set(_STATIC_PROVIDER_ENV_BLOCKLIST) | _left_core_env(secrets_only=False)
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
         for pconfig in PROVIDER_REGISTRY.values():
@@ -102,8 +110,12 @@ def _build_adapter_secret_env() -> frozenset:
         CORE_DECLARED_ENV_NAMES, OPTIONAL_ENV_VARS, PLATFORM_SECRET_ENV_SUFFIXES, platform_manifest_secret_envs)
     from hermes_cli.profile_channels import config_env_table_keys
     # Read in code only, declared nowhere else: the Microsoft Graph app secret and webhook
-    # clientState, and the QQ bot's speech-to-text key.
-    names: set[str] = {"MSGRAPH_CLIENT_SECRET", "MSGRAPH_WEBHOOK_CLIENT_STATE", "QQ_STT_API_KEY"}
+    # clientState, the QQ bot's speech-to-text key, and secrets only a plugin's ``env_overrides``
+    # reads (Feishu webhook keys, Yuanbao's legacy app key). Those rows live on the adapter's
+    # PlatformEntry, which this import-time policy cannot load without importing every adapter;
+    # tests/gateway/test_platform_env_overrides.py pins that every such secret is listed here.
+    names: set[str] = {"MSGRAPH_CLIENT_SECRET", "MSGRAPH_WEBHOOK_CLIENT_STATE", "QQ_STT_API_KEY",
+                       "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN", "YUANBAO_APP_KEY"}
     names.update(name.upper() for name, meta in OPTIONAL_ENV_VARS.items()
                  if name in CORE_DECLARED_ENV_NAMES
                  and meta.get("category") == "messaging" and meta.get("password"))
@@ -162,7 +174,7 @@ def _registered_adapter_secret_env() -> frozenset:
     return _registry_adapter_secret_env() | _home_adapter_secret_env()
 
 
-def _is_provider_env_blocklisted(name: str, _registered: "frozenset | None" = None) -> bool:
+def _is_provider_env_blocklisted(name: str, _registered: frozenset | None = None) -> bool:
     """``name`` is a blocklisted provider/tool credential or adapter secret, matched the way the
     platform's environment resolves names: exact plus case-folded. On Windows the environment
     block is case-insensitive, so ``openai_api_key`` IS ``OPENAI_API_KEY``; consistent with
@@ -197,7 +209,7 @@ def _is_provider_env_blocklisted(name: str, _registered: "frozenset | None" = No
 # computer-use driver binary, and user-script runners (bang ``!`` commands, quick commands, cron scripts,
 # webhook-filter scripts), so those children receive the vars too — matching the approved background/PTY
 # scope. Every other surface stays sealed — execute_code scrubbing, :func:`hermes_subprocess_env` (browser /
-# TUI host / copilot-executor spawns), docker children, and ``env_passthrough`` registration (skills/config
+# TUI host / ACP agent spawns), docker children, and ``env_passthrough`` registration (skills/config
 # still cannot register these names). The GHSA-rhgp-j443-p4rf seal is preserved because no registration path
 # is opened; this is a scrub-path exemption, not an allowlist addition. First-party matches use the merged
 # env value directly — they are the process's own env values and are never scope-resolved (a profile secret
@@ -264,6 +276,43 @@ def _is_terminal_first_party_env(name: str) -> bool:
 # _strip_hermes_owned_pythonpath() which removes only Hermes-owned entries, preserving user-set paths.
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME")
 
+# Identity a supervisor hands to the ONE process it started, which no child of that process owns.
+# HERMES_LAUNCHD_LABEL is the stderr-timestamp wrapper's re-export of its launchd job label for the
+# gateway it starts (#120087); HERMES_GATEWAY_EXTERNAL_SUPERVISOR is stamped into the gateway's own
+# environ by ``gateway run --external-supervisor``. Inherited, a gateway an agent starts from its
+# terminal answers ``launchd``/supervised and takes the exit-75 restart route no supervisor answers.
+# NOTIFY_SOCKET/WATCHDOG_* name the systemd unit's main process (sd_notify's unset_environment).
+# Kept on purpose: XPC_SERVICE_NAME (launchd's own per-process stamp, "0" below the wrapper, which
+# ``hermes update`` compares to tell it runs inside a job), INVOCATION_ID/JOURNAL_STREAM (systemd
+# sets them for every process of the unit, and the gateway-child dispatch reads them there), and the
+# launch markers HERMES_SUPERVISED_CHILD / HERMES_S6_SUPERVISED_CHILD (profile pinning, s6 redirect).
+_SUPERVISED_PROCESS_IDENTITY_VARS = (
+    "HERMES_LAUNCHD_LABEL", "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID",
+)
+# The supervisor markers are also profile pins: a CLI under them skips the sticky active_profile
+# (``hermes_cli.main._under_gateway_supervisor``, #74872), and HERMES_GATEWAY_EXTERNAL_SUPERVISOR is an
+# --external-supervisor gateway's ONLY one. A child that loses a marker keeps the pin under a name the
+# restart-route and launch-identity probes never read, so it stays on the gateway's profile without
+# claiming the supervisor.
+GATEWAY_PROFILE_PIN_ENV = "HERMES_GATEWAY_PROFILE_PIN"
+
+
+def carry_gateway_profile_pin(env: dict) -> dict:
+    """Mark *env* with :data:`GATEWAY_PROFILE_PIN_ENV` while it still holds a pinning supervisor marker."""
+    if env.get("HERMES_SUPERVISED_CHILD") or str(
+            env.get("HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "")).strip().lower() in {"1", "true", "yes", "on"}:
+        env[GATEWAY_PROFILE_PIN_ENV] = "1"
+    return env
+
+
+def strip_supervised_process_identity(env: dict) -> dict:
+    """Drop :data:`_SUPERVISED_PROCESS_IDENTITY_VARS` from a child env, in place; returns *env*.
+    The profile pin they carried survives (:func:`carry_gateway_profile_pin`)."""
+    carry_gateway_profile_pin(env)
+    for name in _SUPERVISED_PROCESS_IDENTITY_VARS:
+        env.pop(name, None)
+    return env
+
 
 def _is_hermes_internal_secret(key: str) -> bool:
     """True for Hermes-internal secrets injected under *dynamic* names the static
@@ -308,7 +357,7 @@ def _static_gate_env_prefixes() -> frozenset:
         bundled, aliases = Platform._scan_bundled_plugin_platforms()
         names.update(bundled)
         names.update(aliases)
-    except Exception:  # noqa: BLE001 — a broken gateway import must not disable the gate strip
+    except Exception:
         pass
     return frozenset(str(n).upper().replace("-", "_") for n in names if n)
 
@@ -321,7 +370,7 @@ def _platform_gate_env_prefixes() -> frozenset:
     try:
         from gateway.platform_registry import platform_registry
         names.update(str(n).upper().replace("-", "_") for n in platform_registry.registered_names() if n)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return frozenset(names)
 
@@ -374,7 +423,7 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     # _is_hermes_internal_secret, but _ID has no secret suffix, so it must be
     # enumerated here to stay stripped on the inherit_credentials=True path.
     "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET", "GATEWAY_RELAY_DELIVERY_KEY",
-    "HASS_TOKEN", "EMAIL_PASSWORD", "HERMES_DASHBOARD_SESSION_TOKEN",
+    "EMAIL_PASSWORD", "HERMES_DASHBOARD_SESSION_TOKEN",
     # Dashboard auth: the basic-auth password and session-signing secret, the OIDC client
     # secret and the drain bearer. They let a holder mint or forge dashboard sessions, and no
     # child (credentialed CLIs included) consumes them.
@@ -382,5 +431,5 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET",
     # Remote-compute / infrastructure secrets
     "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY",
-}) | _ADAPTER_SECRET_ENV  # every declared adapter secret is Tier 1, like the bot tokens above
+}) | _ADAPTER_SECRET_ENV | _left_core_env(secrets_only=True)  # every declared adapter secret is Tier 1
 _ALWAYS_STRIP_FOLDED: frozenset[str] = frozenset(k.upper() for k in _ALWAYS_STRIP_KEYS)

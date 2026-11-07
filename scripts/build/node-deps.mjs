@@ -1,152 +1,173 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
-import { delimiter, dirname, join, resolve } from 'node:path'
+import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 
-// npm.cmd needs a shell. Use npm's JS entrypoint so paths remain argv on Windows.
-export function npmCommand({ env = process.env } = {}) {
-  const names = process.platform === 'win32' ? ['npm.cmd', 'npm'] : ['npm']
-  const candidates = [env.npm_execpath]
+import { prepareElectronRuntime } from './electron-runtime.mjs'
+import { lockImporters } from './pnpm-lock.mjs'
+
+// pnpm 12 is a native executable (pnpm.exe on Windows, never a .cmd shim), so it
+// runs without a shell and paths stay argv. Nix's pnpm is a shell wrapper that
+// execFile runs through its shebang.
+export function pnpmCommand({ env = process.env } = {}) {
+  const name = process.platform === 'win32' ? 'pnpm.exe' : 'pnpm'
   for (const dir of (env.PATH || env.Path || '').split(delimiter)) {
-    for (const name of names) {
-      const bin = join(dir, name)
-      if (!existsSync(bin)) continue
-      const prefix = dirname(realpathSync(bin))
-      const lib = join(prefix, '../lib')
-      candidates.push(
-        join(prefix, 'node_modules/npm/bin/npm-cli.js'),
-        join(prefix, '../lib/node_modules/npm/bin/npm-cli.js'),
-        // Nix packages use lib/npm or a versioned lib/npm* directory.
-        // Discover the installed JS entrypoint, never parse/execute its shell wrapper.
-        ...(existsSync(lib) ? readdirSync(lib).filter(name => name.startsWith('npm')).sort()
-          .map(name => join(lib, name, 'bin/npm-cli.js')) : []),
-        realpathSync(bin),
-      )
+    const bin = dir && join(dir, name)
+    if (bin && existsSync(bin)) return bin
+  }
+  // Under `pnpm run`, the pnpm running this script: it was started by path, not from PATH.
+  const running = env.npm_execpath
+  if (running && basename(running) === name && existsSync(running)) return running
+  throw new Error('pnpm is required on PATH')
+}
+
+// The native package ships its manifest beside the executable: no child spawn,
+// which runs before the reuse short-circuit. Layouts without one (Nix) fall back
+// to asking pnpm.
+function pnpmVersion(pnpm, { source, env }) {
+  try {
+    return JSON.parse(readFileSync(join(dirname(realpathSync(pnpm)), 'package.json'), 'utf8')).version
+  } catch {
+    return execFileSync(pnpm, ['--version'], { cwd: source, env, encoding: 'utf8' }).trim()
+  }
+}
+
+// PM's pnpm pin: the pnpm this checkout's lockfile is written and installed with.
+function pinnedPnpm(source) {
+  const path = join(source, 'pm/lock.json')
+  let version
+  try {
+    version = JSON.parse(readFileSync(path, 'utf8')).packages?.pnpm?.version
+  } catch (error) {
+    throw new Error(`cannot read the pnpm pin from ${path}: ${error.message}`)
+  }
+  if (typeof version !== 'string') throw new Error(`${path} pins no pnpm (packages.pnpm.version)`)
+  return version
+}
+
+// Every package directory pnpm linked: each locked direct dependency of an installed
+// project, and every entry of every virtual-store slot (the package itself plus links
+// to its dependencies, so a removed slot shows up as a dangling link). Optional
+// dependencies are skipped on hosts they do not support.
+function linkedPackageDirs(source, installedLock) {
+  const dirs = []
+  for (const [project, fields] of Object.entries(lockImporters(readFileSync(installedLock, 'utf8')))) {
+    for (const name of Object.keys({ ...fields.dependencies, ...fields.devDependencies })) {
+      dirs.push(join(source, project, 'node_modules', name))
     }
   }
-  const cli = candidates.find(path => path && path.endsWith('.js') && existsSync(path))
-  if (!cli) throw new Error('npm CLI is required on PATH')
-  return [process.execPath, cli]
-}
-
-// npm's own manifest states its version — no child spawn. A node-under-node spawn
-// hits Windows Job-Object EBUSY (#123933), and the probe runs before the reuse
-// short-circuit: a read-only version read must not abort an otherwise complete run.
-// npm_execpath may point through a symlink; the manifest sits beside the resolved
-// CLI, never beside the link. Layouts without a readable manifest return undefined
-// so the caller falls back to the child probe, matching the pre-manifest behavior.
-function npmManifestVersion(cli) {
-  try {
-    return JSON.parse(readFileSync(join(dirname(realpathSync(cli)), '..', 'package.json'), 'utf8')).version
-  } catch {
-    return undefined
+  const virtualStore = join(source, 'node_modules/.pnpm')
+  for (const slot of readdirSync(virtualStore, { withFileTypes: true })) {
+    if (!slot.isDirectory() || slot.name === 'node_modules') continue
+    const modules = join(virtualStore, slot.name, 'node_modules')
+    for (const entry of existsSync(modules) ? readdirSync(modules, { withFileTypes: true }) : []) {
+      const path = join(modules, entry.name)
+      if (entry.name.startsWith('@') && entry.isDirectory()) {
+        dirs.push(...readdirSync(path).map(scoped => join(path, scoped)))
+      } else {
+        dirs.push(path)
+      }
+    }
   }
+  return dirs
 }
 
-function completedInstallMatches({ source, receipt, hiddenLock, key, nativeKey }) {
-  if (!existsSync(receipt) || !existsSync(hiddenLock)) return false
-  const installed = readFileSync(hiddenLock)
-  const expected = `${key}\n${createHash('sha256').update(installed).digest('hex')}\n`
+function completedInstallMatches({ source, receipt, installedLock, key, nativeKey }) {
+  if (!existsSync(receipt) || !existsSync(installedLock)) return false
+  const expected = `${key}\n${createHash('sha256').update(readFileSync(installedLock)).digest('hex')}\n`
   if (nativeKey !== undefined) {
     const nativeReceipt = `${receipt}.native-toolchain`
     if (!existsSync(nativeReceipt) || readFileSync(nativeReceipt, 'utf8') !== `${expected}${nativeKey}\n`) return false
   }
-  return readFileSync(receipt, 'utf8') === expected && Object.keys(JSON.parse(installed).packages)
-    .every(path => existsSync(join(source, path)))
+  // Probe each installed package's manifest, not its directory: a partial cleanup
+  // or snapshot restore can leave gutted directories behind, and product builders
+  // resolve tools through these manifests (#128935).
+  return readFileSync(receipt, 'utf8') === expected
+    && linkedPackageDirs(source, installedLock).every(dir => existsSync(join(dir, 'package.json')))
 }
 
-// An interrupted Windows update can leave a nested .bin that npm ci's own rmdir
-// cannot clear (ENOTEMPTY, #75584); only deleting node_modules recovers it. npm's
-// debug log names the code while stdio stays on the terminal, so give each run
-// its own logs dir and retry once only on that code. Other failures keep the tree.
-function runNpmCi(node, npm, args, { source, env }) {
-  const logsDir = mkdtempSync(join(tmpdir(), 'hermes-npm-logs-'))
-  // Builders set CI=1, which turns npm's spinner off. Ask for it back: npm
-  // still shows it only on a terminal. Kept out of `args`, which keys the receipt.
-  const run = () => execFileSync(node, [npm, ...args, '--progress=true', `--logs-dir=${logsDir}`],
-    { cwd: source, env, stdio: 'inherit' })
-  try {
-    run()
-  } catch (error) {
-    const logged = readdirSync(logsDir).some(name => readFileSync(join(logsDir, name), 'utf8').includes('ENOTEMPTY'))
-    if (!logged) throw error
-    console.log('node-deps: npm ci hit ENOTEMPTY; removing node_modules and retrying once...')
-    rmSync(join(source, 'node_modules'), { recursive: true, force: true, maxRetries: 3 })
-    run()
-  } finally {
-    rmSync(logsDir, { recursive: true, force: true })
+// pnpm's frozen install is incremental: it trusts its record of what is installed,
+// so it neither restores a gutted package nor reruns dependency builds for a changed
+// toolchain or configuration. Every install starts from empty trees, as npm ci did;
+// the store keeps that local. This also removes an npm-made tree, which pnpm would
+// move aside and leave behind.
+function removeInstalledTrees(source, projects) {
+  for (const project of projects) {
+    rmSync(join(source, project, 'node_modules'), { recursive: true, force: true, maxRetries: 3 })
   }
 }
 
-/** Install the full requested workspace union in one strict, locked operation. */
-export function prepareNodeDependencies({ source, workspaces, env = process.env, reuse = false, install = true, nativeToolchain }) {
+/** Install the full requested workspace union in one strict, locked operation.
+ *  ``electron: false`` leaves Desktop's Electron binary unprepared, for builds that never run it. */
+export function prepareNodeDependencies({ source, workspaces, env = process.env, reuse = false, install = true, nativeToolchain, electron = true }) {
   source = resolve(source)
   if (!Array.isArray(workspaces) || workspaces.length === 0) {
     throw new Error('Select at least one workspace; implicit all-workspace installation is not allowed')
   }
-  const manifest = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8'))
-  const lock = JSON.parse(readFileSync(join(source, 'package-lock.json'), 'utf8'))
-  const workspacePaths = Object.values(lock.packages || {})
-    .filter(entry => entry.link)
-    .map(entry => entry.resolved)
+  const lockText = readFileSync(join(source, 'pnpm-lock.yaml'), 'utf8')
+  const projects = Object.keys(lockImporters(lockText)).sort()
   const selected = [...new Set(workspaces.map(workspace => {
-    const path = workspacePaths.find(path => path === workspace || lock.packages[path]?.name === workspace)
-    if (!path || !existsSync(join(source, path, 'package.json'))) {
+    // pnpm ignores a filter that matches nothing, so an unknown path must fail here.
+    if (workspace === '.' || !projects.includes(workspace) || !existsSync(join(source, workspace, 'package.json'))) {
       throw new Error(`Unknown or missing locked workspace: ${workspace}`)
     }
-    return path
+    return workspace
   }))].sort()
-  const [node, npm] = npmCommand({ env })
-  const npmVersion = npmManifestVersion(npm) ?? execFileSync(
-    node, [npm, '--version'], { cwd: source, env, encoding: 'utf8' }).trim()
-  const { satisfies } = createRequire(npm)('semver')
-  for (const [name, version] of [['node', process.versions.node], ['npm', npmVersion]]) {
-    const range = manifest.engines?.[name]
-    if (range && !satisfies(version, range)) throw new Error(`${name} ${version} violates ${range}`)
+  const prepareElectron = electron && selected.includes('apps/desktop')
+    && Boolean(JSON.parse(readFileSync(join(source, 'apps/desktop/package.json'), 'utf8')).devDependencies?.electron)
+  const pnpm = pnpmCommand({ env })
+  const version = pnpmVersion(pnpm, { source, env })
+  // pnpm never checks its own version here (pmOnFail: ignore keeps the lock one YAML
+  // document): PM's pin is the one this checkout's lockfile was written with.
+  const pinned = pinnedPnpm(source)
+  if (pinned !== version) {
+    throw new Error(`pnpm ${pinned} is required (pm/lock.json), found ${version} at ${pnpm}`)
   }
-  const args = ['ci', '--no-audit', '--no-fund', '--engine-strict', '--include=dev',
-    '--include=optional', '--include-workspace-root=true',
-    ...selected.flatMap(workspace => ['--workspace', workspace]),
+  // The root project is always installed with a filtered install. The release-age
+  // policy is enforced where the lockfile is written (CI), not re-fetched per user.
+  const args = ['install', '--frozen-lockfile', '--trust-lockfile', '--prod=false',
+    ...selected.flatMap(workspace => ['--filter', `{./${workspace}}...`]),
   ]
   // This receipt certifies dependency preparation, never compiled product freshness.
-  // Keep it inside the cached tree so a clean npm ci also removes the receipt.
+  // Keep it inside the cached tree so removing node_modules also removes the receipt.
   const receipt = join(source, 'node_modules/.hermes-node-deps')
   // Ordinary product builders consume the baseline receipt; preparation also
-  // binds lifecycle outputs to its compiler/SDK identity. On a mismatch npm ci
-  // removes arbitrary package lifecycle outputs, not just known node-pty paths.
+  // binds lifecycle outputs to its compiler/SDK identity.
   const nativeReceipt = `${receipt}.native-toolchain`
   const nativeKey = nativeToolchain === undefined ? undefined : JSON.stringify(nativeToolchain)
-  const hiddenLock = join(source, 'node_modules/.package-lock.json')
+  // pnpm's copy of the lockfile it last installed.
+  const installedLock = join(source, 'node_modules/.pnpm/lock.yaml')
   const inputs = createHash('sha256').update(JSON.stringify({
-    node: process.versions.node, npm: npmVersion, platform: process.platform, arch: process.arch, args,
-    // npm names are case-insensitive; Windows Python uppercases inherited keys.
-    config: Object.entries(env).filter(([key]) => /^npm_config_/i.test(key) && !/^npm_config_(cache|offline|prefer_offline)$/i.test(key))
+    node: process.versions.node, pnpm: version, platform: process.platform, arch: process.arch, args,
+    // Windows Python uppercases inherited keys. Cache, store and state locations
+    // change where pnpm keeps data, not what it installs.
+    config: Object.entries(env).filter(([key]) => /^p?npm_config_/i.test(key)
+      && !/^p?npm_config_(cache|cache_dir|store_dir|state_dir|offline|prefer_offline)$/i.test(key))
       .map(([key, value]) => [key.toLowerCase(), value]).sort(),
   }))
-  const files = ['package-lock.json', '.npmrc', ...Object.keys(lock.packages)
-    .filter(path => !path.split('/').includes('node_modules'))
-    .map(path => join(path, 'package.json'))].sort()
+  const files = ['pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', ...projects.map(path => join(path, 'package.json'))].sort()
   for (const file of files) {
     inputs.update(file).update('\0').update(existsSync(join(source, file)) ? readFileSync(join(source, file)) : '<missing>').update('\0')
   }
   const key = inputs.digest('hex')
-  if (reuse && completedInstallMatches({ source, receipt, hiddenLock, key, nativeKey })) {
+  if (reuse && completedInstallMatches({ source, receipt, installedLock, key, nativeKey })) {
+    if (prepareElectron) prepareElectronRuntime({ source, install, env })
     console.log(`node-deps: reusing completed install (${selected.join(', ')})`)
     return { source, workspaces: selected }
   }
   if (!install) throw new Error('Workspace dependencies are stale or missing and lazy installs are disabled; run an explicit build/update')
-  // npm can fail during validation before deleting node_modules. Invalidate first.
+  // pnpm can fail during validation before touching node_modules. Invalidate first.
   rmSync(receipt, { force: true })
   rmSync(nativeReceipt, { force: true })
-  console.log(`node-deps: installing workspace dependencies with npm ci (${selected.join(', ')})...`)
-  runNpmCi(node, npm, args, { source, env })
+  removeInstalledTrees(source, projects)
+  console.log(`node-deps: installing workspace dependencies with pnpm (${selected.join(', ')})...`)
+  execFileSync(pnpm, args, { cwd: source, env, stdio: 'inherit' })
+  if (prepareElectron) prepareElectronRuntime({ source, install, env })
   if (reuse) {
-    const completed = `${key}\n${createHash('sha256').update(readFileSync(hiddenLock)).digest('hex')}\n`
+    const completed = `${key}\n${createHash('sha256').update(readFileSync(installedLock)).digest('hex')}\n`
     writeFileSync(receipt, completed)
     if (nativeKey !== undefined) writeFileSync(nativeReceipt, `${completed}${nativeKey}\n`)
   }
@@ -155,9 +176,8 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   // The Python bundle driver uses this same resolver, not a second layout probe.
-  if (process.argv[2] === '--npm') {
-    const [node, ...command] = npmCommand()
-    const child = spawnSync(node, [...command, ...process.argv.slice(3)], { stdio: 'inherit' })
+  if (process.argv[2] === '--pnpm') {
+    const child = spawnSync(pnpmCommand(), process.argv.slice(3), { stdio: 'inherit' })
     if (child.error) throw child.error
     process.exit(child.status ?? 1)
   }

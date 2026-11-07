@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
     <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#0a0a0a" />
     <link rel="icon" type="image/png" sizes="180x180" href="/apple-touch-icon.png" />
@@ -20,7 +20,7 @@
       // `transparent: true` already have a clear canvas, and pre-painting a
       // theme colour there does not prevent a flash, it IS the flash: an
       // opaque rectangle standing until that window's module graph executes.
-      // The list is TRANSPARENT_WINDOWS in src/main.tsx — keep the two in step.
+      // The list is TRANSPARENT_WINDOWS in src/lib/transparent-windows.ts — keep the two in step.
       // `secondary` (a session window) and `browser` are opaque and DO want the
       // pre-paint.
       try {
@@ -45,6 +45,6 @@
   </head>
   <body>
     <div id="root" class="scrollbar-dt"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script type="module" src="/src/entry.ts"></script>
   </body>
 </html>

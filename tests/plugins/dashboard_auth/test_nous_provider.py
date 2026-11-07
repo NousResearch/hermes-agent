@@ -465,8 +465,9 @@ class TestVerifySession:
 
     def test_agent_instance_id_mismatch_rejected(self, provider, rsa_keypair):
         token = _mint_token(rsa_keypair, agent_instance_id="some-other-id")
-        with pytest.raises(ProviderError, match="agent_instance_id mismatch"):
-            provider.verify_session(access_token=token)
+        with pytest.raises(InvalidCodeError, match="agent_instance_id mismatch"):
+            provider._claims_for(token)
+        assert provider.verify_session(access_token=token) is None
 
     def test_contract_version_missing_warns_but_succeeds(
         self, provider, rsa_keypair, caplog

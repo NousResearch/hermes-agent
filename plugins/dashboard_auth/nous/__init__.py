@@ -110,10 +110,11 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
             audience=self._client_id,  # contract C2: bare client_id
             issuer=self._portal_url, label="access token", leeway=self._token_leeway)
         # Contract C9: agent_instance_id is "should" not "must" — tolerated when absent
-        # (the aud check already binds the token to this instance).
+        # (the aud check already binds the token to this instance). A token for another
+        # instance is not ours, like a foreign aud: a rejection, never a 503.
         token_instance_id = claims.get("agent_instance_id")
         if token_instance_id is not None and token_instance_id != self._agent_instance_id:
-            raise ProviderError(
+            raise InvalidCodeError(
                 f"agent_instance_id mismatch: token={token_instance_id!r} vs configured={self._agent_instance_id!r}")
         contract_version = claims.get("oauth_contract_version")
         if contract_version is None:

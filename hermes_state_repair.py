@@ -16,6 +16,7 @@ import re
 import shutil
 import sqlite3
 import stat
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -786,10 +787,14 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     try:
         with contextlib.closing(conn):
             conn.execute("PRAGMA journal_mode").fetchone()
-            # A leftover index whose tokenizer no process loads fails every probe below; ROLLBACK/close discards this.
+            # Retirement must not hold the live write lock across a full integrity scan.
             if retired_cjk_index_present(conn.cursor()):
-                conn.execute("BEGIN IMMEDIATE")
-                drop_retired_cjk_index(conn.cursor())
+                with tempfile.TemporaryDirectory(prefix="hermes-cjk-probe-") as tmp:
+                    snapshot = Path(tmp) / "state.db"
+                    _copy_database_snapshot(db_path, snapshot, source_connection=conn)
+                    with _repair_conn(snapshot) as probe:
+                        drop_retired_cjk_index(probe.cursor())
+                    return _db_opens_cleanly(snapshot)
             rows = conn.execute("PRAGMA integrity_check").fetchall()
             problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
             if problems:
@@ -842,7 +847,7 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                 with contextlib.suppress(sqlite3.Error):
                     conn.execute("ROLLBACK")
             return None
-    except sqlite3.DatabaseError as exc:
+    except (sqlite3.DatabaseError, OSError) as exc:
         return str(exc)
 
 

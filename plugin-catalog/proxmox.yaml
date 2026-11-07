@@ -1,0 +1,30 @@
+name: proxmox
+repo: https://github.com/cgray2222/hermes-proxmox
+sha: 1540a01bf422ad48f762add14ac9db20190c0705
+description: 'Proxmox VE for Hermes Agent: six pve_* tools (cluster inventory, per-guest status
+  and config, node health and storage, snapshot list/create/delete, recent backup job results,
+  and QEMU guest-agent command execution) plus an @pve: context reference that pulls live
+  cluster, guest or node state into the prompt on demand. Talks to the Proxmox HTTP API
+  directly with a scoped API token; standard library only, no Python dependencies. Write
+  actions (snapshot create/delete, guest exec) refuse unless the same call carries confirm=true.'
+maintainer: cgray2222
+tier: community
+category: tools
+title: "Proxmox VE"
+docs_url: https://github.com/cgray2222/hermes-proxmox#readme
+requires_hermes: ">=0.21.5"
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - pve_list_guests
+    - pve_guest_status
+    - pve_node_status
+    - pve_snapshot
+    - pve_backup_status
+    - pve_guest_exec
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - PVE_HOST
+    - PVE_API_TOKEN

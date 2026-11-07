@@ -3118,14 +3118,39 @@ class TestNewEndpoints:
         assert cfg["web"]["backend"] == "firecrawl"
 
         # The REAL runtime resolution — not a parallel reimplementation.
-        from tools.web_tools import _get_extract_backend, _get_search_backend
+        from tools.web_tools import _get_extract_backend, _get_extract_backends, _get_search_backend
         assert _get_search_backend() == "searxng"
         assert _get_extract_backend() == "firecrawl"
+        assert _get_extract_backends() == ["firecrawl"]
 
-        # And the config endpoint reports the same split.
+        # And the config endpoint reports the same split. The scalar key stays
+        # the contract the GUI badge binds to; the chain is additive.
         data = self.client.get("/api/tools/toolsets/web/config").json()
         assert data["active_search_backend"] == "searxng"
         assert data["active_extract_backend"] == "firecrawl"
+        assert data["active_extract_backends"] == ["firecrawl"]
+
+    def test_extract_chain_head_is_what_the_badge_binds_to(self, monkeypatch):
+        """With web.extract_backends configured, the badge's scalar field must name the
+        backend a web_extract call hits FIRST (the chain's head), not the legacy scalar
+        key behind it — while the full chain rides along additively."""
+        monkeypatch.setenv("FIRECRAWL_API_URL", "http://localhost:3002")
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("web", {})["extract_backend"] = "firecrawl"
+        cfg["web"]["extract_backends"] = ["tavily", "firecrawl"]
+        save_config(cfg)
+
+        from tools.web_tools import _get_extract_backend, _get_extract_backends
+        assert _get_extract_backend() == "firecrawl"
+        assert _get_extract_backends() == ["tavily", "firecrawl"]
+
+        data = self.client.get("/api/tools/toolsets/web/config").json()
+        assert data["active_extract_backend"] == "tavily"
+        assert data["active_extract_backends"] == ["tavily", "firecrawl"]
+        assert data["extract_via_nous"] is False
 
 
     # -- Terminal execution backend picker ---------------------------------

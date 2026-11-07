@@ -400,20 +400,25 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
                 # Resolve active backends exactly as the web_search/web_extract dispatchers do, so badges
                 # reflect what a call would hit now — plus whether that call rides the Nous Tool Gateway
                 # or the user's own key (the managed and BYOK Firecrawl rows share one backend name).
+                # ``active_extract_backend`` stays the scalar the badge binds to (the backend a
+                # web_extract call hits FIRST, i.e. the chain's head when web.extract_backends is set);
+                # the additive ``active_extract_backends`` is the full fallback chain behind it.
                 try:
                     from plugins.web.firecrawl.provider import is_managed_route
-                    from tools.web_tools import _get_extract_backend, _get_search_backend, _managed_web_search
+                    from tools.web_tools import _get_extract_backends, _get_search_backend, _managed_web_search
 
                     search_backend = _get_search_backend()
-                    extract_backend = _get_extract_backend()
+                    extract_backends = _get_extract_backends()
+                    extract_backend = extract_backends[0] if extract_backends else None
                     search_managed = _managed_web_search() or (
                         search_backend == "firecrawl" and is_managed_route("search"))
                     extract_managed = extract_backend == "firecrawl" and is_managed_route("extract")
                 except Exception:
-                    search_backend = extract_backend = None
+                    search_backend = extract_backend = extract_backends = None
                     search_managed = extract_managed = False
                 payload["active_search_backend"] = search_backend
                 payload["active_extract_backend"] = extract_backend
+                payload["active_extract_backends"] = extract_backends
                 payload["search_via_nous"] = bool(search_managed)
                 payload["extract_via_nous"] = bool(extract_managed)
         return payload

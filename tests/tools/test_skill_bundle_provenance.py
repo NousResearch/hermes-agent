@@ -239,6 +239,31 @@ def test_github_source_rejects_symlink_in_referenced_directory(monkeypatch):
     assert source.fetch("owner/repo/skill") is None
 
 
+def test_github_source_accepts_skill_md_link_to_a_directory(monkeypatch):
+    """A SKILL.md that points at a whole directory ("see `references/engines/`") must install.
+
+    The git tree lists that directory as a ``type: tree`` entry; it used to be lumped in with
+    symlinks and hard-rejected the bundle (universal-modder's mod-any-game hub).
+    """
+    source = GitHubSource(GitHubAuth())
+    skill_md = "---\nname: dir-link\ndescription: d\n---\nPer-engine notes live in `references/engines/`.\n"
+    monkeypatch.setattr(source, "_fetch_file_content", lambda _repo, path, ref=None: skill_md)
+    monkeypatch.setattr(source, "_fetch_file_bytes", lambda _repo, path, ref=None: b"content-of-" + path.encode())
+    source._tree_cache["owner/repo"] = (
+        "main",
+        [
+            {"path": "skill/SKILL.md", "type": "blob", "mode": "100644"},
+            {"path": "skill/references", "type": "tree", "mode": "040000"},
+            {"path": "skill/references/engines", "type": "tree", "mode": "040000"},
+            {"path": "skill/references/engines/unity.md", "type": "blob", "mode": "100644"},
+        ],
+    )
+
+    bundle = source.fetch("owner/repo/skill")
+    assert bundle is not None
+    assert set(bundle.files) == {"SKILL.md", "references/engines/unity.md"}
+
+
 def test_github_source_fetch_downloads_full_skill_directory(monkeypatch):
     """Support files a skill keeps outside SKILL.md-linked paths still install.
 

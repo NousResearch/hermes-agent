@@ -289,6 +289,20 @@ class TestVideoDownloadBlock:
         assert os.path.exists(event.media_urls[0])
         assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("attr,expect_flag", [("video", False), ("video_note", True)])
+    async def test_video_note_metadata_flag(self, adapter, attr, expect_flag):
+        """Only round video notes are marked for the STT pipeline; plain videos stay vision-only."""
+        file_obj = _make_file_obj(b"fake-mp4")
+        msg = _make_message()
+        setattr(msg, attr, _make_video(file_obj))
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.VIDEO
+        assert bool(event.metadata.get("telegram_video_note")) is expect_flag
+
     def test_media_handler_accepts_video_notes(self, adapter):
         class _Names:  # filter stand-in: | collects names; & and ~ only need to compose
             def __init__(self, *names):

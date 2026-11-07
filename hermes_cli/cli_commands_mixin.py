@@ -58,15 +58,9 @@ def _attempt(label: str, errors, fn, *args, **kwargs):
         return _FAILED
 
 
-def _take_flag(parts: list, flag: str):
-    """Pop ``flag VALUE`` out of ``parts``: ``(rest, value, ok)``; ok=False when the value is
-    missing (caller prints usage)."""
-    if flag not in parts:
-        return parts, None, True
-    idx = parts.index(flag)
-    if idx + 1 >= len(parts):
-        return parts, None, False
-    return parts[:idx] + parts[idx + 2:], parts[idx + 1], True
+# Moved to a topical sibling to keep this facade under its line cap; re-exported so
+# existing call sites and tests keep importing it from here.
+from hermes_cli.cli_command_args import _take_flag
 
 
 def _summarize_paths(paths, limit: int = 5) -> str:
@@ -1262,8 +1256,14 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         if args and args[0].lower() in review_words:
             from hermes_cli.write_approval_commands import handle_pending_subcommand
             from tools import write_approval as wa
+            # The live agent owns the memory manager: the staged write bypassed the
+            # agent-loop bridge (it had not committed), so the approval replay is the
+            # point where it commits and can be mirrored to external providers.
+            _agent = getattr(self, "agent", None)
             out = handle_pending_subcommand(
-                wa.SKILLS, args, set_mode_fn=lambda enabled: self._save_write_approval("skills", enabled),
+                wa.SKILLS, args,
+                memory_manager=getattr(_agent, "_memory_manager", None),
+                set_mode_fn=lambda enabled: self._save_write_approval("skills", enabled),
             )
             if out is not None:
                 return print(out)

@@ -430,3 +430,263 @@ def test_staged_hint_keeps_command_for_chat_gateway_platform(hermes_home, monkey
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
     r = _stage_one_memory_write()
     assert "/memory pending" in r["message"], r["message"]
+
+
+# ---------------------------------------------------------------------------
+# Approval replay mirrors committed skill writes to external memory providers
+# ---------------------------------------------------------------------------
+
+_SKILL = "---\nname: my-skill\ndescription: d\n---\n\nbody\n"
+
+
+def _recording_manager():
+    """Real MemoryManager wired to a minimal recording external provider."""
+    from agent.memory_manager import MemoryManager
+    from agent.memory_provider import MemoryProvider
+
+    class _Recording(MemoryProvider):
+        def __init__(self):
+            self.calls = []
+
+        @property
+        def name(self):
+            return "recording"
+
+        def is_available(self):
+            return True
+
+        def initialize(self, session_id, **kwargs):
+            pass
+
+        def get_tool_schemas(self):
+            return []
+
+        def shutdown(self):
+            pass
+
+        def on_skill_write(self, action, name, content, metadata=None):
+            self.calls.append({
+                "action": action,
+                "name": name,
+                "content": content,
+                "metadata": dict(metadata or {}),
+            })
+
+    mgr = MemoryManager()
+    provider = _Recording()
+    mgr.add_provider(provider)
+    return mgr, provider
+
+
+def test_skill_approve_replay_mirrors_create_once(hermes_home):
+    # A staged write has not committed, so the agent-loop bridge correctly
+    # skips it. Approving replays apply_skill_pending(); the commit happens
+    # there, so that is where providers must be notified — exactly once.
+    from tools import write_approval as wa
+    from tools.skill_manager_tool import skill_manage, _find_skill
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+
+    mgr, provider = _recording_manager()
+    _set_approval("skills", True)
+    r = json.loads(skill_manage("create", "mirrored-skill", content=_SKILL))
+    assert r.get("staged") is True, r
+    assert provider.calls == []  # staged != committed
+
+    out = handle_pending_subcommand(
+        wa.SKILLS, ["approve", r["pending_id"]], memory_manager=mgr)
+
+    assert "Approved 1" in out, out
+    assert _find_skill("mirrored-skill") is not None
+    assert len(provider.calls) == 1
+    call = provider.calls[0]
+    assert call["action"] == "create"
+    assert call["name"] == "mirrored-skill"
+    assert call["content"] == _SKILL
+    assert call["metadata"]["execution_context"] == "approval_replay"
+    assert call["metadata"]["tool_name"] == "skill_manage"
+    assert call["metadata"]["write_origin"] == "foreground"
+
+
+def test_skill_approve_replay_maps_patch_arguments(hermes_home):
+    # The staged payload keeps skill_manage's argument shape (patch carries
+    # new_string, not content), so the replay notification must map it the
+    # same way the live bridge does.
+    from tools import write_approval as wa
+    from tools.skill_manager_tool import skill_manage
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+
+    r = json.loads(skill_manage("create", "patched-skill", content=_SKILL))
+    assert r["success"] is True, r
+    _set_approval("skills", True)
+    r = json.loads(skill_manage(
+        "patch", "patched-skill", old_string="body", new_string="patched body"))
+    assert r.get("staged") is True, r
+
+    mgr, provider = _recording_manager()
+    out = handle_pending_subcommand(
+        wa.SKILLS, ["approve", r["pending_id"]], memory_manager=mgr)
+
+    assert "Approved 1" in out, out
+    assert len(provider.calls) == 1
+    call = provider.calls[0]
+    assert call["action"] == "patch"
+    assert call["content"] == "patched body"
+    assert call["metadata"]["old_string"] == "body"
+    assert call["metadata"]["execution_context"] == "approval_replay"
+
+
+def test_skill_approve_replay_maps_write_file_arguments(hermes_home):
+    # write_file carries its body in file_content and the target in file_path —
+    # both must survive the staged payload -> replay -> provider round trip.
+    from tools import write_approval as wa
+    from tools.skill_manager_tool import skill_manage
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+
+    r = json.loads(skill_manage("create", "filed-skill", content=_SKILL))
+    assert r["success"] is True, r
+    _set_approval("skills", True)
+    r = json.loads(skill_manage(
+        "write_file", "filed-skill", file_path="references/api.md", file_content="# API\n"))
+    assert r.get("staged") is True, r
+
+    mgr, provider = _recording_manager()
+    out = handle_pending_subcommand(
+        wa.SKILLS, ["approve", r["pending_id"]], memory_manager=mgr)
+
+    assert "Approved 1" in out, out
+    assert len(provider.calls) == 1
+    call = provider.calls[0]
+    assert call["action"] == "write_file"
+    assert call["content"] == "# API\n"
+    assert call["metadata"]["file_path"] == "references/api.md"
+
+
+def test_skill_approve_failed_replay_does_not_notify(hermes_home):
+    # A replay that fails (skill vanished between staging and approval)
+    # commits nothing and must notify nobody.
+    from tools import write_approval as wa
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+
+    rec = wa.stage_write(
+        wa.SKILLS,
+        {"action": "edit", "name": "ghost-skill-does-not-exist", "content": _SKILL},
+        summary="edit ghost", origin="foreground")
+
+    mgr, provider = _recording_manager()
+    out = handle_pending_subcommand(
+        wa.SKILLS, ["approve", rec["id"]], memory_manager=mgr)
+
+    assert "Failed" in out, out
+    assert provider.calls == []
+
+
+def test_skill_approve_without_manager_still_applies(hermes_home):
+    # No live memory manager (e.g. a gateway session with no cached agent):
+    # the approval itself must still apply exactly as before.
+    from tools import write_approval as wa
+    from tools.skill_manager_tool import skill_manage, _find_skill
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+
+    _set_approval("skills", True)
+    r = json.loads(skill_manage("create", "unmirrored-skill", content=_SKILL))
+    assert r.get("staged") is True, r
+
+    out = handle_pending_subcommand(wa.SKILLS, ["approve", r["pending_id"]])
+
+    assert "Approved 1" in out, out
+    assert _find_skill("unmirrored-skill") is not None
+
+
+def test_skill_approve_provider_failure_does_not_fail_approval(hermes_home):
+    # Mirroring is best-effort: an exploding provider must never break the
+    # user's approval or the committed write.
+    from agent.memory_manager import MemoryManager
+    from agent.memory_provider import MemoryProvider
+    from tools import write_approval as wa
+    from tools.skill_manager_tool import skill_manage, _find_skill
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+
+    class _Exploding(MemoryProvider):
+        @property
+        def name(self):
+            return "exploding"
+
+        def is_available(self):
+            return True
+
+        def initialize(self, session_id, **kwargs):
+            pass
+
+        def get_tool_schemas(self):
+            return []
+
+        def shutdown(self):
+            pass
+
+        def on_skill_write(self, action, name, content, metadata=None):
+            raise RuntimeError("backend down")
+
+    mgr = MemoryManager()
+    mgr.add_provider(_Exploding())
+
+    _set_approval("skills", True)
+    r = json.loads(skill_manage("create", "resilient-skill", content=_SKILL))
+    assert r.get("staged") is True, r
+
+    out = handle_pending_subcommand(
+        wa.SKILLS, ["approve", r["pending_id"]], memory_manager=mgr)
+
+    assert "Approved 1" in out, out
+    assert _find_skill("resilient-skill") is not None
+
+
+def test_cli_skills_command_threads_the_live_agent_memory_manager(hermes_home, capsys):
+    # The CLI owns the only manager on a foreground turn; /skills approve must
+    # hand it to the shared handler so the replay is observed.
+    from types import SimpleNamespace
+    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+    from tools.skill_manager_tool import skill_manage
+
+    _set_approval("skills", True)
+    r = json.loads(skill_manage("create", "cli-mirrored", content=_SKILL))
+    assert r.get("staged") is True, r
+
+    mgr, provider = _recording_manager()
+    handler = CLICommandsMixin.__new__(CLICommandsMixin)
+    handler.agent = SimpleNamespace(_memory_manager=mgr)
+    handler._handle_skills_command("/skills approve " + r["pending_id"])
+
+    out = capsys.readouterr().out
+    assert "Approved 1" in out, out
+    assert [c["name"] for c in provider.calls] == ["cli-mirrored"]
+    assert provider.calls[0]["metadata"]["execution_context"] == "approval_replay"
+
+
+def test_skill_approve_replay_mirrors_a_batch_in_operation_order(hermes_home):
+    # A batch stages as one pending record ({"action": "batch", "operations": [...]})
+    # and commits atomically. Every operation committed, so each is mirrored —
+    # in order, with the same approval-replay provenance.
+    from tools import write_approval as wa
+    from tools.skill_manager_tool import skill_manage, _find_skill
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+
+    _set_approval("skills", True)
+    r = json.loads(skill_manage("", "", operations=[
+        {"action": "create", "name": "batch-skill",
+         "content": "---\nname: batch-skill\ndescription: d\n---\n\nbody\n"},
+        {"action": "write_file", "name": "batch-skill",
+         "file_path": "references/api.md", "file_content": "# API\n"},
+    ]))
+    assert r.get("staged") is True, r
+
+    mgr, provider = _recording_manager()
+    out = handle_pending_subcommand(
+        wa.SKILLS, ["approve", r["pending_id"]], memory_manager=mgr)
+
+    assert "Approved 1" in out, out
+    assert _find_skill("batch-skill") is not None
+    assert [(c["action"], c["name"]) for c in provider.calls] == [
+        ("create", "batch-skill"), ("write_file", "batch-skill")]
+    assert provider.calls[1]["content"] == "# API\n"
+    assert provider.calls[1]["metadata"]["file_path"] == "references/api.md"
+    assert all(c["metadata"]["execution_context"] == "approval_replay" for c in provider.calls)

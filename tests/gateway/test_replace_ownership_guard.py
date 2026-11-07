@@ -436,10 +436,11 @@ import gateway.status as status
 status.get_running_pid = lambda *args, **kwargs: 424242
 gateway_run._replace_target_belongs_to_other_profile = lambda pid: True
 
-# A stalled disk: the background writer takes five seconds to persist, so an
-# unflushed stamp dies with the process (the CLI exits through os._exit).
+# A stalled disk: the background writer takes two seconds to persist, so an
+# unflushed stamp dies with the process (the CLI exits through os._exit). Kept well
+# under the refusal's 5 s wait bound: a stall equal to the bound is a coin flip.
 def _slow_write(path, payload):
-    time.sleep(5.0)
+    time.sleep(2.0)
     status._write_json_file(path, payload)
 
 status._get_runtime_status_writer = lambda: status._RuntimeStatusWriter(write_fn=_slow_write)

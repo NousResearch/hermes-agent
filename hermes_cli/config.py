@@ -2770,12 +2770,11 @@ def save_anthropic_api_key(value: str, save_fn=None):
 def save_env_value_secure(key: str, value: str) -> dict[str, Any]:
     """Save via the unified credential lifecycle (also refreshes any config.yaml mirror of the old
     value and lifts a prior env-source suppression)."""
+    from agent.redact import register_vault_redaction_value
     from hermes_cli.credential_lifecycle import save_provider_env_credential
-
-    # Route through the unified credential lifecycle so a rotation via the secret-capture path also
-    # refreshes any config.yaml mirror of the old value and lifts a prior env-source suppression (#62269 fix
-    # family).
+    # The lifecycle also refreshes config.yaml mirrors and lifts env-source suppressions (#62269 family).
     save_provider_env_credential(key, value)
+    register_vault_redaction_value(value)  # a captured secret never reaches model-facing output
     return {"success": True, "stored_as": key, "validated": False}
 
 

@@ -145,3 +145,23 @@ def test_cli_chat_registers_secret_capture_callback():
         assert skills_tool_module._secret_capture_callback == cli_obj._secret_capture_callback
     finally:
         set_secret_capture_callback(None)
+
+
+def test_agent_secret_request_stays_inside_the_panel_on_a_narrow_terminal(monkeypatch):
+    import os
+    import shutil
+
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda fallback=(100, 20): os.terminal_size((60, 20)))
+    cli = _make_cli_stub()
+    cli._secret_state = {
+        "response_queue": queue.Queue(),
+        "var_name": "WEATHER_API_KEY",
+        "prompt": "Weather API key for the forecast script that runs every morning and posts a summary "
+                  "of the next three days to your notes folder, with alerts for storms",
+        "metadata": {"source": "agent"},
+    }
+
+    text = "".join(fragment for _style, fragment in cli._get_secret_display_fragments())
+    rows = text.rstrip("\n").split("\n")
+    assert len({len(row) for row in rows}) == 1, rows  # every border lines up: nothing ran past the box
+    assert len(rows[0]) <= 60

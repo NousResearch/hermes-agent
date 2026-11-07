@@ -113,6 +113,69 @@ def test_git_unpack_timeout_is_a_package_error(tmp_path, monkeypatch):
         Git().unpack(_portable_git(tmp_path), tmp_path / "scratch" / "tree", "win32-x64")
 
 
+def _fake_sfx_with_post_install(monkeypatch, calls, bash_returncode=0):
+    """The SFX stand-in lays down the two things the post-install step looks
+    for; the bash stand-in plays 99-post-install-cleanup.post."""
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if argv[1].startswith("-o"):
+            staged = Path(argv[1][2:])
+            (staged / "etc" / "post-install").mkdir(parents=True)
+            (staged / "etc" / "post-install" / "03-mtab.post").write_text("")
+            (staged / "usr" / "bin").mkdir(parents=True)
+            (staged / "usr" / "bin" / "bash.exe").write_bytes(b"MZ")
+        elif bash_returncode == 0:
+            shutil.rmtree(Path(kwargs["cwd"]) / "etc" / "post-install")
+        return subprocess.CompletedProcess(argv, bash_returncode if len(calls) > 1 else 0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+
+def test_git_unpack_runs_the_vendor_post_install_in_the_staged_tree(tmp_path, monkeypatch):
+    """Under -y the SFX skips post-install; Git Bash's /etc/profile would run it
+    on first use INSIDE the published entry (adds etc/mtab, hosts, ...; deletes
+    etc/post-install), leaving the realized bytes off the recorded digest
+    forever. unpack() runs it while the tree is still staged."""
+    import subprocess
+    import pm.packages
+    from pm.packages import Git
+
+    monkeypatch.setattr(pm.packages, "_HOST_IS_WINDOWS", True)
+    calls = []
+    _fake_sfx_with_post_install(monkeypatch, calls)
+    staged = tmp_path / "scratch" / "tree"
+    Git().unpack(_portable_git(tmp_path), staged, "win32-x64")
+
+    assert len(calls) == 2
+    argv, kwargs = calls[1]
+    assert argv[:2] == [str(staged / "usr" / "bin" / "bash.exe"), "--norc"]
+    assert "/etc/post-install/*.post" in argv[3]
+    assert "/mingw64/bin" in argv[3], "13-copy-dlls.post needs git on PATH"
+    assert kwargs["cwd"] == staged
+    assert all(kwargs[k] is subprocess.DEVNULL for k in ("stdin", "stdout", "stderr"))
+    assert not (staged / "etc" / "post-install").exists()
+
+
+def test_git_unpack_post_install_failure_is_not_fatal(tmp_path, monkeypatch, caplog):
+    """The step only aligns the staged bytes with first use; when it fails the
+    entry is exactly what it was before the step existed, so warn and go on."""
+    import pm.packages
+    from pm.packages import Git
+
+    monkeypatch.setattr(pm.packages, "_HOST_IS_WINDOWS", True)
+    calls = []
+    _fake_sfx_with_post_install(monkeypatch, calls, bash_returncode=1)
+    staged = tmp_path / "scratch" / "tree"
+    with caplog.at_level("WARNING", logger="pm.packages"):
+        Git().unpack(_portable_git(tmp_path), staged, "win32-x64")
+    assert len(calls) == 2
+    assert "post-install did not complete" in caplog.text
+
+
 def test_git_unpack_requires_a_windows_host(tmp_path, monkeypatch):
     """Off Windows the PE extractor cannot run: refuse before executing
     anything, with a remedy that is not "retry"."""

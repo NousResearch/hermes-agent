@@ -16,9 +16,10 @@
  * block (the warm-session-switch path of #95595) paints the cached HTML
  * synchronously and never re-tokenizes. Only cache misses run shiki, and
  * misses are debounced so a streaming block settles before the heavy work
- * starts.
+ * starts. Offscreen misses render escaped plain text and defer tokenization
+ * until they enter an 800px viewport margin.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { bundledLanguages, getSingletonHighlighter } from 'shiki'
 import type { BundledLanguage, BundledTheme, Highlighter } from 'shiki'
 import { createOnigurumaEngine } from 'shiki/engine/oniguruma'
@@ -124,7 +125,47 @@ export default function CachedShikiBlock({ language, code, theme, colorReplaceme
     [language, code, replacements, themeConfig]
   )
 
-  const [html, setHtml] = useState<string | null>(() => highlightCache.get(cacheKey) ?? null)
+  // The HTML is only valid for the key it was produced from. A block that
+  // MOUNTS on a cache hit has html already, so the viewport observer below
+  // never arms; if the same mounted row then gets new props (an edit, a
+  // re-sent turn, a language change) the old markup must not be served as if
+  // it were current. Keep the key beside the HTML and re-derive on mismatch,
+  // so an uncached change falls back to the placeholder and re-arms the
+  // observer, and a cached change paints that entry without tokenizing.
+  const [rendered, setRendered] = useState<{ key: string; html: string | null }>(() => ({
+    key: cacheKey,
+    html: highlightCache.get(cacheKey) ?? null
+  }))
+
+  const html = rendered.key === cacheKey ? rendered.html : (highlightCache.get(cacheKey) ?? null)
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const [nearViewport, setNearViewport] = useState(() => typeof IntersectionObserver === 'undefined')
+
+  useEffect(() => {
+    if (html !== null || nearViewport || typeof IntersectionObserver === 'undefined') {
+      return undefined
+    }
+
+    const container = containerRef.current
+
+    if (!container) {
+      return undefined
+    }
+
+    const observer = new IntersectionObserver(
+      entries => {
+        if (entries.some(entry => entry.isIntersecting || entry.intersectionRatio > 0)) {
+          setNearViewport(true)
+          observer.disconnect()
+        }
+      },
+      { rootMargin: '800px 0px' }
+    )
+
+    observer.observe(container)
+
+    return () => observer.disconnect()
+  }, [html, nearViewport])
 
   useEffect(() => {
     let cancelled = false
@@ -134,8 +175,12 @@ export default function CachedShikiBlock({ language, code, theme, colorReplaceme
     const cached = highlightCache.get(cacheKey)
 
     if (cached !== undefined) {
-      setHtml(cached)
+      setRendered({ key: cacheKey, html: cached })
 
+      return
+    }
+
+    if (!nearViewport) {
       return
     }
 
@@ -147,7 +192,7 @@ export default function CachedShikiBlock({ language, code, theme, colorReplaceme
           }
 
           highlightCache.set(cacheKey, result)
-          setHtml(result)
+          setRendered({ key: cacheKey, html: result })
         })
         .catch(error => {
           if (cancelled) {
@@ -155,7 +200,7 @@ export default function CachedShikiBlock({ language, code, theme, colorReplaceme
           }
 
           console.error('shiki highlight failed; rendering plain code', error)
-          setHtml(plainTextHtml(code))
+          setRendered({ key: cacheKey, html: plainTextHtml(code) })
         })
     }, HIGHLIGHT_DELAY_MS)
 
@@ -163,14 +208,26 @@ export default function CachedShikiBlock({ language, code, theme, colorReplaceme
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [cacheKey, code, language, replacements, themeConfig])
+  }, [cacheKey, code, language, nearViewport, replacements, themeConfig])
 
   if (html === null) {
-    // Keep the same pre/code geometry during the debounce. An empty render
-    // collapses every cold code card, then shifts the transcript when color
-    // arrives. React escapes the payload; only highlighting uses cached HTML.
-    return <PlainShiki code={code} />
+    // Keep the same pre/code geometry during the debounce AND while an
+    // offscreen miss waits for its viewport approach (PlainShiki matches the
+    // highlighted markup, so loading a grammar changes color, not layout).
+    // React escapes the payload; only highlighting uses cached HTML.
+    return (
+      <div className="rs-root not-prose" data-testid="shiki-placeholder" ref={containerRef}>
+        <PlainShiki code={code} />
+      </div>
+    )
   }
 
-  return <div className="rs-root not-prose" dangerouslySetInnerHTML={{ __html: html }} data-testid="shiki-container" />
+  return (
+    <div
+      className="rs-root not-prose"
+      dangerouslySetInnerHTML={{ __html: html }}
+      data-testid="shiki-container"
+      ref={containerRef}
+    />
+  )
 }

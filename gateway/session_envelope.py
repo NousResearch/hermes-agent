@@ -90,9 +90,12 @@ def _drop_remote_media(event):
 def _refuse(event, reason, clause):
     """Name the refused clause in gateway.log and on the error; the wire reason stays stable."""
     source = event.source
-    logger.warning('Native admission refused: %s (%s) platform=%s chat=%s message=%s', reason, clause,
+    logger.warning('Native admission refused: %s (%s) platform=%s chat=%s message=%s urls=%d types=%d inlined=%d names=%d mt=%s flags=%r',
+                   reason, clause,
                    getattr(getattr(source, 'platform', None), 'value', None), getattr(source, 'chat_id', None),
-                   event.message_id)
+                   event.message_id, len(event.media_urls or []), len(event.media_types or []),
+                   len(event.media_text_inlined or []), len(event.media_filenames or []),
+                   getattr(event.message_type, 'value', event.message_type), event.media_text_inlined)
     raise RuntimeStoreError(reason, field=clause)
 
 

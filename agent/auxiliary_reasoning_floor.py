@@ -20,6 +20,8 @@ import logging
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
+from utils import base_url_host_matches
+
 logger = logging.getLogger(__name__)
 
 REASONING_FLOOR_EFFORT = "low"
@@ -113,6 +115,11 @@ def known_reasoning_floor(
     """*reasoning_config* lifted to the floor when this route+model is known to refuse a disable — learned
     from an earlier 400 in this process, or flagged mandatory by the route's model catalog; unchanged
     otherwise. Runs before the profile projection so every wire shape starts at the floor."""
+    # Ark Coding Plan rejects a forced disable with a generic InvalidParameter.
+    # Only the title lane forces reasoning off; leave its choice to that route.
+    if (task == "title_generation" and _is_disabled(reasoning_config)
+            and base_url_host_matches(base_url, "volces.com")):
+        return None
     if not _is_disabled(reasoning_config):
         return reasoning_config
     if (_route_key(provider, base_url), str(model or "")) not in _FLOORED_ROUTES and not _catalog_marks_mandatory(

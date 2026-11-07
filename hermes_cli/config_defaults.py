@@ -1049,6 +1049,12 @@ DEFAULT_CONFIG = {
         # the OAuth path. Empty or malformed (no http(s):// + host, or quote/angle/whitespace chars)
         # = reconstruct from headers.
         "public_url": "",
+        # Extra Host-header aliases the same dashboard is legitimately served under:
+        # a Tailscale MagicDNS short name, split-horizon DNS, or a reverse proxy's public
+        # hostname when the backend bound to its LAN IP. Exact hostnames only (a port
+        # suffix is stripped); no wildcards or suffixes. Any non-loopback alias engages
+        # the auth gate exactly like public_url (hermes_cli/web_server_boundary.py).
+        "trusted_hosts": [],
     },
 
     "privacy": {

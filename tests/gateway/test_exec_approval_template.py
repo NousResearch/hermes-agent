@@ -5,13 +5,14 @@ used to be re-derived in every button adapter and needed three separate "same fi
 sweeps. It now comes from one place; adapters only render it.
 """
 
+from types import SimpleNamespace
 from typing import Any, Dict
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult
-from gateway.run_turn_runner import _renders_exec_approval_buttons
+from gateway.run_turn_runner import TurnRunner, _renders_exec_approval_buttons
 
 
 class _Plain(BasePlatformAdapter):
@@ -88,3 +89,52 @@ def test_runner_only_offers_buttons_to_adapters_that_render_them():
 
     assert _renders_exec_approval_buttons(_DuckTyped) is True
     assert _renders_exec_approval_buttons(object) is False
+
+
+@pytest.mark.parametrize("source, expected", [
+    (SimpleNamespace(platform=Platform.DISCORD, user_id="11111"), "11111"),
+    (SimpleNamespace(platform=Platform.DISCORD, user_id=None), None),
+    (None, None),
+])
+@pytest.mark.asyncio
+async def test_runner_hands_the_turn_user_to_the_card_as_requester(source, expected):
+    """A card can only admit its requester if the runner says who asked: the prompt carries the
+    platform user id of the turn's source, and None when the turn has no user."""
+    import asyncio
+
+    adapter = _Buttons()
+    ctx = SimpleNamespace(_status_adapter=adapter, _status_chat_id="chat", _status_thread_metadata=None,
+                          session_key="sess", source=source, _loop_for_step=asyncio.get_running_loop(),
+                          stream_consumer_holder=[None])
+    await asyncio.to_thread(TurnRunner(SimpleNamespace(), ctx)._approval_notify_sync,
+                            {"command": "mcp_srv_write", "description": "untrusted server"})
+    (prompt,) = adapter.prompts
+    assert prompt.requester_user_id == expected
+
+
+@pytest.mark.asyncio
+async def test_runner_keeps_the_card_of_an_override_without_the_requester_parameter():
+    """An adapter overriding ``send_exec_approval`` with the older signature still gets its card."""
+    import asyncio
+
+    sent = []
+
+    class _OlderOverride:
+        def pause_typing_for_chat(self, chat_id):
+            pass
+
+        async def send_exec_approval(self, chat_id, command, session_key, description=None, metadata=None,
+                                     allow_permanent=True, allow_session=True, smart_denied=False, request_id=None):
+            sent.append("card")
+            return SendResult(success=True, message_id="m1")
+
+        async def send(self, *a, **k):
+            sent.append("text")
+            return SendResult(success=True)
+
+    ctx = SimpleNamespace(_status_adapter=_OlderOverride(), _status_chat_id="chat", _status_thread_metadata=None,
+                          session_key="sess", source=SimpleNamespace(platform=Platform.DISCORD, user_id="11111"),
+                          _loop_for_step=asyncio.get_running_loop(), stream_consumer_holder=[None])
+    await asyncio.to_thread(TurnRunner(SimpleNamespace(), ctx)._approval_notify_sync,
+                            {"command": "mcp_srv_write", "description": "untrusted server"})
+    assert sent == ["card"]

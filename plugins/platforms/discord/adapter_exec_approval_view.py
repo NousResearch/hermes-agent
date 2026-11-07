@@ -23,7 +23,8 @@ def build_exec_approval_view(discord, base, *, unauthorized):
             self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None,
             require_admin: bool = False, admin_user_ids: Optional[set] = None,
             allow_permanent: bool = True, allow_session: bool = True, smart_denied: bool = False,
-            request_id: Optional[str] = None,
+            request_id: Optional[str] = None, require_requester: bool = False,
+            requester_user_id: Optional[str] = None,
         ):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
@@ -33,6 +34,8 @@ def build_exec_approval_view(discord, base, *, unauthorized):
             self._retire_lock = asyncio.Lock()
             self.require_admin = require_admin
             self.admin_user_ids = {str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()}
+            self.require_requester = require_requester
+            self.requester_user_id = str(requester_user_id or "").strip()
             self._localize_buttons(
                 allow_once="gateway.exec_approval.action_once", allow_session="gateway.exec_approval.action_session",
                 allow_always="gateway.exec_approval.action_always", deny="gateway.exec_approval.action_deny")
@@ -43,17 +46,27 @@ def build_exec_approval_view(discord, base, *, unauthorized):
                 self.remove_item(self.allow_always)
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
-            """Base admission always required; with ``require_admin`` the clicker must
-            also be an admin. Fails closed (logged once) when no admins are configured."""
+            """Base admission always required; with ``require_requester`` the clicker must also
+            be the user whose turn asked, and with ``require_admin`` an admin. Each fails closed
+            (logged) when the card has no requester or no admins are configured."""
             if not super()._check_auth(interaction):
                 return False
-            if not self.require_admin:
-                return True
             user = getattr(interaction, "user", None)
             try:
                 uid = str(getattr(user, "id", "") or "")
             except Exception:
                 uid = ""
+            if self.require_requester and not (uid and uid == self.requester_user_id):
+                if not self.requester_user_id:
+                    logger.warning(
+                        "[Discord] require_requester_for_exec_approval is enabled but "
+                        "this approval card has no requester (its turn carried no user "
+                        "id) — nobody can answer it. Disable the toggle if such "
+                        "approvals must stay answerable."
+                    )
+                return False
+            if not self.require_admin:
+                return True
             if uid and uid in self.admin_user_ids:
                 return True
             if not self.admin_user_ids:

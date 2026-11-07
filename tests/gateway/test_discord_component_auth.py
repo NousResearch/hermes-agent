@@ -326,3 +326,52 @@ def test_other_views_not_admin_gated():
     )
     assert sc._check_auth(_interaction(11111)) is True
 
+
+
+# ---------------------------------------------------------------------------
+# Opt-in requester gate for exec-approval buttons. When
+# `require_requester_for_exec_approval` is true, only the user whose turn asked
+# may answer the card (on top of the allowlist and the admin gate). Fails
+# closed when the card carries no requester.
+# ---------------------------------------------------------------------------
+
+
+class _PromptChannel:
+    def __init__(self):
+        self.sent_kwargs = None
+
+    async def send(self, **kwargs):
+        self.sent_kwargs = kwargs
+        return SimpleNamespace(id=12345)
+
+
+async def _sent_approval_view(extra, requester_user_id):
+    """Send an exec-approval card through the adapter; return the view on the sent message."""
+    channel = _PromptChannel()
+    adapter = object.__new__(DiscordAdapter)
+    adapter._client = SimpleNamespace(get_channel=lambda _channel_id: channel)
+    adapter._allowed_user_ids = {"11111", "22222"}
+    adapter._allowed_role_ids = set()
+    adapter._component_live_auth = lambda _interaction: None
+    adapter.config = SimpleNamespace(extra=extra)
+    result = await adapter.send_exec_approval(
+        chat_id="99", command="mcp_srv_write", session_key="s", requester_user_id=requester_user_id,
+    )
+    assert result.success is True
+    return channel.sent_kwargs["view"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra,requester,admitted", [
+    ({"require_requester_for_exec_approval": True}, "11111", {11111}),
+    ({"require_requester_for_exec_approval": "true"}, "22222", {22222}),
+    ({"require_requester_for_exec_approval": True}, None, set()),
+    ({}, "11111", {11111, 22222}),
+    ({"require_requester_for_exec_approval": True, "require_admin_for_exec_approval": True,
+      "allow_admin_from": "22222"}, "11111", set()),
+    ({"require_requester_for_exec_approval": True, "require_admin_for_exec_approval": True,
+      "allow_admin_from": "11111"}, "11111", {11111}),
+])
+async def test_requester_gate_admits_only_the_user_who_asked(extra, requester, admitted):
+    view = await _sent_approval_view(extra, requester)
+    assert {uid for uid in (11111, 22222) if view._check_auth(_interaction(uid))} == admitted

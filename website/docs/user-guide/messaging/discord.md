@@ -804,6 +804,26 @@ request is answered, cancelled, or expires, even if the Discord view timeout is
 longer. A shorter Discord timeout retires the buttons without extending or ending
 the underlying approval wait.
 
+### Who can answer an approval card
+
+By default any allowed user can click a command-approval card's buttons. Two opt-in switches narrow that, and they combine:
+
+```yaml
+discord:
+  # Only the user whose message led to the request may answer its card
+  require_requester_for_exec_approval: true
+  # Only users in allow_admin_from may answer
+  require_admin_for_exec_approval: true
+  allow_admin_from:
+    - "123456789012345678"
+```
+
+- `require_requester_for_exec_approval`: a card admits only the user whose message started the turn that asked. In a shared channel, another allowed user's click is refused. A card with no known requester can be answered by nobody and ends as a denial when it times out.
+- `require_admin_for_exec_approval`: a card admits only users in `allow_admin_from`. With no admins configured, nobody can answer.
+- With both on, the clicker must be the requester and an admin.
+
+The switches cover the buttons. A typed `/approve` or `/deny` answers the pending request of the session it is typed in. With `group_sessions_per_user: true` (the default) every user in a server channel has their own session, so that is their own request; in a thread shared by several users (`thread_sessions_per_user: false`, the default) anyone in the thread can still answer by text.
+
 ## Home Channel
 
 You can designate a "home channel" where the bot sends proactive messages (such as cron job output, reminders, and notifications). There are two ways to set it:

@@ -100,7 +100,8 @@ def test_failed_dependency_preparation_launches_the_previous_build(tui_source, m
 # The TUI's first write (ui-tui/src/entry.tsx): clear the screen and the scrollback.
 _TUI_CLEAR = "\\x1b[2J\\x1b[H\\x1b[3J"
 _FALLBACK_LAUNCH = f"""
-import sys
+import fcntl, sys, termios
+fcntl.ioctl(0, termios.TIOCSCTTY, 0)  # this new session's controlling terminal, as a shell has
 from hermes_cli import main_tui_launch
 def argv(tui_dir, tui_dev, notices=None):
     print("fallback notice", file=sys.stderr)
@@ -109,49 +110,100 @@ def argv(tui_dir, tui_dev, notices=None):
     return [sys.executable, "-c", "import sys; sys.stdout.write({_TUI_CLEAR!r} + 'TUI RAN')"], tui_dir.parent
 main_tui_launch._make_tui_argv = argv
 main_tui_launch._print_tui_exit_summary = lambda *_: None
-main_tui_launch._launch_tui()
+main_tui_launch._NOTICE_WAIT_S = float(sys.argv[1])
+if sys.argv[3]:  # a background job: its own process group, while this one keeps the terminal
+    import os
+    pid = os.fork()
+    if pid:
+        sys.exit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]))
+    os.setpgid(0, 0)
+main_tui_launch._launch_tui(query=sys.argv[2] or None)
 """
+
+
+class _Terminal:
+    """A pty that is the launch's controlling terminal, with the launch in its foreground process
+    group (as a shell runs it) unless *background*."""
+
+    def __init__(self, wait_s: float, *, background: bool = False, query: str = ""):
+        import pty
+        import sys
+
+        self.leader, follower = pty.openpty()
+        self.child = subprocess.Popen(
+            [sys.executable, "-c", _FALLBACK_LAUNCH, str(wait_s), query, "1" if background else ""],
+            stdin=follower, stdout=follower,
+            stderr=follower, close_fds=True, cwd=Path(__file__).resolve().parents[2],
+            start_new_session=True,
+        )
+        os.close(follower)
+        self.seen = b""
+
+    def read_until(self, marker: bytes) -> float:
+        import select
+        import time
+
+        started = time.monotonic()
+        while marker not in self.seen:
+            ready, _, _ = select.select([self.leader], [], [], 30)
+            assert ready, f"timed out waiting for {marker!r}; got {self.seen!r}"
+            try:
+                chunk = os.read(self.leader, 4096)
+            except OSError:  # EIO: the child closed the terminal
+                chunk = b""
+            assert chunk, f"terminal closed before {marker!r}; got {self.seen!r}"
+            self.seen += chunk
+        return time.monotonic() - started
+
+    def close(self) -> None:
+        self.child.kill()
+        self.child.wait()
+        os.close(self.leader)
 
 
 @pytest.mark.platforms("posix")
 def test_fallback_notice_survives_the_tui_screen_clear(monkeypatch):
     """In a terminal the warning waits for Enter before the TUI clears the screen, and is printed
     again once the TUI exits, below whatever it drew."""
-    import pty
-    import select
     import sys
 
     monkeypatch.setenv("HERMES_PYTHON", sys.executable)
-    leader, follower = pty.openpty()
-    child = subprocess.Popen([sys.executable, "-c", _FALLBACK_LAUNCH], stdin=follower, stdout=follower,
-                             stderr=follower, close_fds=True, cwd=Path(__file__).resolve().parents[2])
-    os.close(follower)
-    seen = b""
-
-    def read_until(marker: bytes) -> None:
-        nonlocal seen
-        while marker not in seen:
-            ready, _, _ = select.select([leader], [], [], 30)
-            assert ready, f"timed out waiting for {marker!r}; got {seen!r}"
-            try:
-                chunk = os.read(leader, 4096)
-            except OSError:  # EIO: the child closed the terminal
-                chunk = b""
-            assert chunk, f"terminal closed before {marker!r}; got {seen!r}"
-            seen += chunk
-
+    terminal = _Terminal(60)
     try:
-        read_until(b"Press Enter")
-        assert b"TUI RAN" not in seen
-        seen = b""
-        os.write(leader, b"\r")
-        read_until(b"TUI RAN")
-        read_until(b"fallback notice")
-        assert child.wait(timeout=30) == 0
+        terminal.read_until(b"Press Enter")
+        assert b"TUI RAN" not in terminal.seen
+        terminal.seen = b""
+        os.write(terminal.leader, b"\r")
+        terminal.read_until(b"TUI RAN")
+        terminal.read_until(b"fallback notice")
+        assert terminal.child.wait(timeout=30) == 0
     finally:
-        child.kill()
-        os.close(leader)
-    assert b"fallback notice" in seen.partition(b"TUI RAN")[2]
+        terminal.close()
+    assert b"fallback notice" in terminal.seen.partition(b"TUI RAN")[2]
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("case", ["nobody answers", "background job", "query given"])
+def test_fallback_notice_never_holds_an_unwatched_launch(monkeypatch, case):
+    """A terminal nobody answers (tmux or expect automation) starts the TUI once the wait ends; a
+    launch in the background, or one that carries its query (-q), starts it at once. The warning
+    still follows the TUI's output."""
+    import sys
+
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    terminal = _Terminal(1.5 if case == "nobody answers" else 60, background=case == "background job",
+                         query="hello" if case == "query given" else "")
+    try:
+        waited = terminal.read_until(b"TUI RAN")
+        before, _, terminal.seen = terminal.seen.partition(b"TUI RAN")
+        terminal.read_until(b"fallback notice")  # printed again below the TUI's output
+        assert terminal.child.wait(timeout=30) == 0
+    finally:
+        terminal.close()
+    if case == "nobody answers":
+        assert b"Press Enter" in before and waited >= 1.5
+    else:
+        assert b"Press Enter" not in before and waited < 30
 
 
 @pytest.mark.platforms("posix")

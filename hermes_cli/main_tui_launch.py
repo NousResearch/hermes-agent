@@ -475,12 +475,53 @@ def _refuse_unforwarded_tui_flags(args) -> None:
         raise SystemExit(2)
 
 
-def _run_tui(argv: list[str], cwd: Path, env: dict, notices: list[str]) -> int:
-    """Run the TUI. Its first write clears the screen and the scrollback, so in a terminal a launch
-    notice waits for Enter first, and every notice is printed again once the TUI exits."""
+# How long a launch notice holds the TUI back; then it starts anyway, so a terminal nobody
+# watches (tmux or expect automation) is never stuck.
+_NOTICE_WAIT_S = 60
+
+
+def _someone_at_the_terminal() -> bool:
+    """stdin and stdout are a terminal, and this process is its foreground job: a launch in the
+    background (`&`) or from a script with a terminal attached is not waited on."""
     try:
-        if notices and sys.stdin.isatty() and sys.stderr.isatty():
-            input("  Press Enter to start it (Ctrl+C to cancel). ")
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            return False
+        if os.name == "nt":
+            return True  # a console has no process groups to ask
+        return os.tcgetpgrp(sys.stdin.fileno()) == os.getpgrp()
+    except (OSError, ValueError):
+        return False
+
+
+def _wait_for_enter(prompt: str, timeout: float) -> None:
+    """Show *prompt* and return on Enter or after *timeout* seconds. EOF and Ctrl+C propagate."""
+    print(prompt, end="", file=sys.stderr, flush=True)
+    if os.name == "nt":
+        import msvcrt
+        import time
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if msvcrt.kbhit() and msvcrt.getwch() in "\r\n":
+                break
+            time.sleep(0.05)
+    else:
+        import select
+
+        ready, _, _ = select.select([sys.stdin], [], [], timeout)
+        if ready and not sys.stdin.readline():
+            raise EOFError
+    print(file=sys.stderr)
+
+
+def _run_tui(argv: list[str], cwd: Path, env: dict, notices: list[str]) -> int:
+    """Run the TUI. Its first write clears the screen and the scrollback, so when someone is at
+    the terminal a launch notice waits for Enter (at most a minute) first; every notice is printed
+    again once the TUI exits. A launch that carries its query (``-q``) does not wait."""
+    try:
+        if notices and not env.get("HERMES_TUI_QUERY") and _someone_at_the_terminal():
+            _wait_for_enter(f"  Press Enter to start it, or wait {_NOTICE_WAIT_S} s (Ctrl+C to cancel). ",
+                            _NOTICE_WAIT_S)
         code = subprocess.call(argv, cwd=str(cwd), env=env)  # health: allow HX006 -- the interactive TUI runs until the user quits
     except (KeyboardInterrupt, EOFError):
         code = 130

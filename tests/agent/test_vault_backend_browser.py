@@ -25,6 +25,17 @@ from agent.vault_backends import backend_for_handle, enabled_backends
 _PASSWORD = "correct horse battery staple 42"
 
 
+def _fake_page_target(page_url):
+    """A stand-in for the real ``_page_target`` context manager that yields a page CDP URL without
+    opening a browser tab (the resolver's CDP calls are mocked separately in these unit tests)."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _cm(cdp_url, nav_url):
+        yield page_url
+    return _cm
+
+
 def _seed_login_data(copy_dir: Path, origin: str = "https://example.com/login",
                      username: str = "jane@example.com") -> None:
     """A minimal Chrome ``Login Data`` with one row. password_value holds opaque bytes: the backend
@@ -130,11 +141,288 @@ def test_resolve_refuses_wrong_account_on_multi_account_origin():
             return {"result": {"value": calls["read_value"]}}      # password/username value read
         return {"result": {}}
 
-    with patch.object(rpl, "_page_cdp_url", return_value="ws://page"), \
+    with patch.object(rpl, "_page_target", _fake_page_target("ws://page")), \
          patch("websockets.sync.client.connect"), \
          patch.object(rpl, "_cdp_call", side_effect=fake_cdp_call), \
          patch("time.sleep"):
-        calls["read_value"] = '{"password": "other-accts-pw", "username": "bob@example.com"}'
-        assert rpl.resolve_login_password("ws://b", "https://example.com", "alice@example.com") is None
-        calls["read_value"] = '{"password": "alice-pw", "username": "alice@example.com"}'
-        assert rpl.resolve_login_password("ws://b", "https://example.com", "alice@example.com") == "alice-pw"
+        calls["read_value"] = ('{"password": "other-accts-pw", "username": "bob@example.com",'
+                               ' "origin": "https://example.com"}')
+        assert rpl.resolve_login_password("ws://b", "https://example.com/login",
+                                          "https://example.com", "alice@example.com") is None
+        calls["read_value"] = ('{"password": "alice-pw", "username": "alice@example.com",'
+                               ' "origin": "https://example.com"}')
+        assert rpl.resolve_login_password("ws://b", "https://example.com/login",
+                                          "https://example.com", "alice@example.com") == "alice-pw"
+
+
+# ── finding 1 (security): a redirect off the saved origin must never return another site's password ──
+
+def test_resolve_refuses_when_page_redirected_off_saved_origin():
+    """The saved root redirects to another site that has its OWN saved login; Chrome autofills THAT
+    site's password. The resolver must refuse because the final page's origin is not the handle's
+    saved origin, so a redirect can never leak a different site's password for this handle."""
+    from tools import browser_real_profile_logins as rpl
+
+    def fake_cdp_call(ws, mid, method, params=None):
+        if method == "Runtime.evaluate":
+            if "getBoundingClientRect" in (params or {}).get("expression", ""):
+                return {"result": {"value": '{"x": 1, "y": 1}'}}
+            # Autofilled a password, but the page is now on evil.example, NOT the saved origin.
+            return {"result": {"value": '{"password": "victim-site-pw", "username": "",'
+                                        ' "origin": "https://evil.example"}'}}
+        return {"result": {}}
+
+    with patch.object(rpl, "_page_target", _fake_page_target("ws://page")), \
+         patch("websockets.sync.client.connect"), \
+         patch.object(rpl, "_cdp_call", side_effect=fake_cdp_call), \
+         patch("time.sleep"):
+        # No username on the handle, so only the origin recheck can stop the leak.
+        assert rpl.resolve_login_password(
+            "ws://b", "https://bank.example/login", "https://bank.example", "") is None
+        # Control: same page, origin back on the saved origin -> the password is returned.
+
+    def fake_same_origin(ws, mid, method, params=None):
+        if method == "Runtime.evaluate":
+            if "getBoundingClientRect" in (params or {}).get("expression", ""):
+                return {"result": {"value": '{"x": 1, "y": 1}'}}
+            return {"result": {"value": '{"password": "victim-site-pw", "username": "",'
+                                        ' "origin": "https://bank.example"}'}}
+        return {"result": {}}
+
+    with patch.object(rpl, "_page_target", _fake_page_target("ws://page")), \
+         patch("websockets.sync.client.connect"), \
+         patch.object(rpl, "_cdp_call", side_effect=fake_same_origin), \
+         patch("time.sleep"):
+        assert rpl.resolve_login_password(
+            "ws://b", "https://bank.example/login", "https://bank.example", "") == "victim-site-pw"
+
+
+# ── finding 3: the saved login PATH is preserved end to end (handle -> nav_url) ──────────────────
+
+def test_handle_preserves_saved_login_path_and_resolve_navigates_there(real_profile, monkeypatch):
+    """A login saved at ``https://example.com/login`` must list with an origin of
+    ``https://example.com`` (for the exact-origin fill guard) yet resolve by navigating to the full
+    saved URL (path included), not the bare root which may have no form."""
+    from tools import browser_real_profile_logins as rpl
+
+    with _set_consent(True):
+        b = next(b for b in enabled_backends() if b.name == "browser")
+        item = b.list_items()[0]
+        assert item.origin == "https://example.com"
+        assert item.allowed_origins == ("https://example.com",)
+
+        navigated = {}
+
+        def fake_resolve(cdp_url, nav_url, origin, username):
+            navigated["nav_url"] = nav_url
+            navigated["origin"] = origin
+            return "pw"
+
+        monkeypatch.setattr(rpl, "resolve_login_password", fake_resolve)
+        monkeypatch.setattr("tools.browser_session_real_profile.real_profile_cdp",
+                            lambda: ("ws://x", None))
+        assert b.resolve_password(item.id) == "pw"
+    # The full saved URL (with its path) drives navigation; the normalized origin guards the match.
+    assert navigated["nav_url"] == "https://example.com/login"
+    assert navigated["origin"] == "https://example.com"
+
+
+# ── finding 4: a freshly-enabled source with no snapshot prepares one before listing ────────────
+
+def test_list_prepares_snapshot_when_none_exists(tmp_path, monkeypatch):
+    """On a fresh profile with no prior browser session the snapshot does not exist yet; listing must
+    drive the real-profile lifecycle (``real_profile_cdp``) to create it, then read it — not silently
+    return empty so the user can never select a login to initialise the source."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    copy_dir = tmp_path / ".hermes" / "browser-profile" / "chrome"  # does NOT exist yet
+
+    def prepare_snapshot():
+        _seed_login_data(copy_dir)  # the lifecycle call is what materialises the snapshot
+        return ("ws://x", None)
+
+    prepared = {"n": 0}
+
+    def counted():
+        prepared["n"] += 1
+        return prepare_snapshot()
+
+    with patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+         patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(copy_dir)), \
+         patch("tools.browser_session_real_profile.real_profile_cdp", side_effect=counted), \
+         _set_consent(True):
+        b = next(b for b in enabled_backends() if b.name == "browser")
+        items = b.list_items()
+    assert prepared["n"] == 1, "listing did not prepare a missing snapshot"
+    assert len(items) == 1 and items[0].origin == "https://example.com"
+
+
+# ── finding 5: the temporary autofill tab is closed (Target.closeTarget), not just the socket ────
+
+def test_page_target_closes_the_tab_on_exit():
+    """``_page_target`` opens a tab for the autofill and must close it with ``Target.closeTarget`` on
+    exit — on both success and failure — so repeated fills never leak live pages."""
+    from tools import browser_real_profile_logins as rpl
+
+    closed = []
+    created = {"id": "TARGET-123"}
+
+    def fake_cdp_call(ws, mid, method, params=None):
+        if method == "Target.createTarget":
+            return {"targetId": created["id"]}
+        if method == "Target.closeTarget":
+            closed.append((params or {}).get("targetId"))
+        return {}
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def fake_connect(url, **kwargs):
+        yield object()
+
+    with patch("websockets.sync.client.connect", fake_connect), \
+         patch.object(rpl, "_cdp_call", side_effect=fake_cdp_call):
+        with rpl._page_target("ws://browser/devtools/browser/abc", "https://example.com/login") as page_url:
+            assert created["id"] in page_url
+        assert closed == ["TARGET-123"], "tab was not closed on success"
+        # And it is still closed when the body raises.
+        closed.clear()
+        with pytest.raises(RuntimeError):
+            with rpl._page_target("ws://browser/devtools/browser/abc", "https://example.com/login"):
+                raise RuntimeError("boom")
+        assert closed == ["TARGET-123"], "tab was not closed on failure"
+
+
+# ── finding 6: drive the REAL resolver against a faithful CDP-level fake (no whole-function mock) ──
+
+class _FakeAutofillWS:
+    """A faithful fake of the real-profile browser's DevTools WebSocket for ONE page. It implements
+    the exact JSON-RPC methods ``resolve_login_password`` drives (``Page.enable``, ``Runtime.enable``,
+    the field-point ``Runtime.evaluate``, the trusted ``Input.dispatchMouseEvent`` click, and the
+    value ``Runtime.evaluate``) so the real resolver — field discovery, the trusted-click gesture, the
+    settle wait, the read-back, and the origin/username guards — runs unmodified. Chrome fills the
+    password ONLY after the trusted click, exactly like PasswordAutofillAgent; with the click removed
+    the password reads back empty and the resolver returns None (the mutant-proof check)."""
+
+    def __init__(self, *, origin, username, password):
+        self._origin, self._username, self._password = origin, username, password
+        self._clicked = False
+        self._pending = None
+
+    def send(self, payload):
+        self._pending = json.loads(payload)
+
+    def recv(self, timeout=None):
+        req = self._pending
+        mid, method, params = req["id"], req["method"], req.get("params", {})
+        result = {}
+        if method == "Input.dispatchMouseEvent":
+            self._clicked = True
+        elif method == "Runtime.evaluate":
+            expr = params.get("expression", "")
+            if "getBoundingClientRect" in expr:
+                result = {"result": {"value": '{"x": 10, "y": 20}'}}
+            else:
+                # The browser only fills after a trusted gesture landed on the form.
+                pw = self._password if self._clicked else ""
+                user = self._username if self._clicked else ""
+                result = {"result": {"value": json.dumps(
+                    {"password": pw, "username": user, "origin": self._origin})}}
+        return json.dumps({"id": mid, "result": result})
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_resolve_drives_real_autofill_mechanism_over_cdp_level_fake():
+    from tools import browser_real_profile_logins as rpl
+
+    ws = _FakeAutofillWS(origin="https://example.com", username="jane@example.com",
+                         password="s3cret-from-browser")
+
+    def fake_connect(url, **kwargs):
+        return ws  # same fake page socket for the resolve connection
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def fake_page_target(cdp_url, nav_url):
+        yield "ws://page"
+
+    with patch.object(rpl, "_page_target", fake_page_target), \
+         patch("websockets.sync.client.connect", fake_connect), \
+         patch("time.sleep"):
+        got = rpl.resolve_login_password(
+            "ws://browser", "https://example.com/login", "https://example.com", "jane@example.com")
+    assert got == "s3cret-from-browser"
+
+
+def test_resolve_returns_none_without_the_trusted_click_mutant():
+    """Mutant-proof for finding 6: with the trusted click suppressed (PasswordAutofillAgent never
+    fires), the real resolver reads an empty password and returns None — proving the test exercises
+    the click mechanism, not a stubbed value."""
+    from tools import browser_real_profile_logins as rpl
+
+    ws = _FakeAutofillWS(origin="https://example.com", username="jane@example.com",
+                         password="s3cret-from-browser")
+    ws.send = lambda payload, _w=ws: setattr(_w, "_pending", _swallow_click(payload))
+
+    def fake_connect(url, **kwargs):
+        return ws
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def fake_page_target(cdp_url, nav_url):
+        yield "ws://page"
+
+    with patch.object(rpl, "_page_target", fake_page_target), \
+         patch("websockets.sync.client.connect", fake_connect), \
+         patch("time.sleep"):
+        got = rpl.resolve_login_password(
+            "ws://browser", "https://example.com/login", "https://example.com", "jane@example.com")
+    assert got is None
+
+
+def _swallow_click(payload):
+    """Turn a dispatched mouse-event request into a no-op the fake acknowledges but never treats as a
+    trusted click, so the autofill never fires (used by the mutant test)."""
+    req = json.loads(payload)
+    if req.get("method") == "Input.dispatchMouseEvent":
+        req["method"] = "Input.ignored"
+    return req
+
+
+# ── finding 8: committed-but-WAL changes are visible (no immutable=1 on a live DB) ──────────────
+
+def test_read_login_metadata_sees_committed_wal_changes(tmp_path):
+    """The real browser mutates its own ``Login Data`` while running: a saved/changed login is
+    committed into the WAL file first. ``immutable=1`` tells SQLite to ignore the WAL, so such a login
+    would be missing or stale in the picker. Reading with ``mode=ro`` (no immutable) must see it."""
+    from tools.browser_real_profile_logins import read_login_metadata
+
+    default = tmp_path / "Default"
+    default.mkdir()
+    db = default / "Login Data"
+    con = sqlite3.connect(db)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("CREATE TABLE logins (origin_url TEXT, username_value TEXT, password_value BLOB, "
+                "blacklisted_by_user INTEGER DEFAULT 0)")
+    con.execute("INSERT INTO logins VALUES ('https://old.example/login', 'a', X'00', 0)")
+    con.commit()
+    # A SECOND connection commits another row and stays OPEN, so the change lives in the WAL and is
+    # not checkpointed into the main DB file — exactly the running-browser situation.
+    live = sqlite3.connect(db)
+    live.execute("INSERT INTO logins VALUES ('https://new.example/login', 'b', X'00', 0)")
+    live.commit()
+    assert (db.parent / "Login Data-wal").exists(), "fixture did not leave a WAL file"
+    try:
+        rows = read_login_metadata(str(tmp_path))
+    finally:
+        con.close()
+        live.close()
+    urls = {r["origin_url"] for r in rows}
+    assert "https://new.example/login" in urls, "committed WAL change was not seen (immutable=1 regression)"
+    assert "https://old.example/login" in urls

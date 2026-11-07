@@ -61,35 +61,70 @@ class BrowserProfileLoginBackend(LoginBackend):
         from hermes_cli.browser_connect import real_profile_copy_dir
         return real_profile_copy_dir(browser)
 
-    def _handle(self, origin: str, username: str) -> str:
-        # Opaque handle: prefix + origin + "\x1f" + username. Origin and username are metadata (the
-        # agent already sees them in list output), so no secret is encoded here.
-        return f"{self.prefix}{origin}\x1f{username}"
+    def _ensure_snapshot(self) -> Optional[str]:
+        """The snapshot copy dir with a populated ``Login Data``, preparing it first when needed.
+
+        A freshly-enabled source on a profile that has had no prior browser session has no snapshot
+        yet, so a bare read would list empty and the user could never select a login to initialise it.
+        Prepare the consented snapshot through the SAME lifecycle a fill uses (``real_profile_cdp()``,
+        which snapshots then launches/attaches the real-profile browser) before reading. The launch is
+        idempotent and shared per profile, so listing reuses an already-running browser. Returns
+        ``None`` when consent is off or the snapshot still cannot be produced (listing stays empty, but
+        only because there is genuinely nothing to show)."""
+        copy_dir = self._copy_dir()
+        if copy_dir and self._login_data_present(copy_dir):
+            return copy_dir
+        # No usable snapshot yet: drive the real-profile lifecycle to create one. Failure (consent
+        # off, unsupported browser, locked profile) is non-fatal here — fall back to whatever the copy
+        # dir holds (usually nothing), so listing degrades to empty rather than raising.
+        try:
+            from tools.browser_session_real_profile import real_profile_cdp
+            real_profile_cdp()
+        except Exception as exc:  # health: allow BLE001 -- listing must never raise; a later fill surfaces the real error
+            logger.debug("real-profile logins: snapshot preparation failed: %s", exc)
+        copy_dir = self._copy_dir()
+        return copy_dir if copy_dir and self._login_data_present(copy_dir) else None
+
+    @staticmethod
+    def _login_data_present(copy_dir: str) -> bool:
+        from tools.browser_real_profile_logins import login_data_present
+        return login_data_present(copy_dir)
+
+    def _handle(self, nav_url: str, username: str) -> str:
+        # Opaque handle: prefix + saved-login URL + "\x1f" + username. The URL (path preserved) and
+        # username are metadata (the agent already sees them in list output), so no secret is encoded
+        # here. The full URL is carried, not just the origin, so a login saved at
+        # ``https://example.com/account/login`` is resolved on that page, not the bare root.
+        return f"{self.prefix}{nav_url}\x1f{username}"
 
     def _split(self, handle: str) -> tuple[str, str]:
         body = handle[len(self.prefix):]
-        origin, _, username = body.partition("\x1f")
-        return origin, username
+        nav_url, _, username = body.partition("\x1f")
+        return nav_url, username
 
     # ── LoginBackend contract ──────────────────────────────────────────────────────────────────────
 
     def list_items(self) -> list[VaultItemMeta]:
-        copy_dir = self._copy_dir()
+        copy_dir = self._ensure_snapshot()
         if not copy_dir:
             return []
         from tools.browser_real_profile_logins import read_login_metadata
         from agent.vault_store import VaultError
         out: list[VaultItemMeta] = []
         for row in read_login_metadata(copy_dir):
+            nav_url = row["origin_url"].strip()
             try:
-                origin = normalize_origin(row["origin"])
+                origin = normalize_origin(nav_url)
             except VaultError:
                 continue
             if not origin or not origin.startswith(("http://", "https://")):
                 continue  # fill targets are web pages; app/extension origins never widen the set
             username = row["username"].strip() or None
             out.append(VaultItemMeta(
-                id=self._handle(origin, username or ""), kind="login",
+                # The handle carries the full saved URL (path preserved) so resolution opens the exact
+                # sign-in page, while ``origin``/``allowed_origins`` stay the normalized origin the
+                # fill tool's exact-origin guard checks against.
+                id=self._handle(nav_url, username or ""), kind="login",
                 label=f"{origin.split('://', 1)[-1]}" + (f" ({username})" if username else ""),
                 origin=origin, created_at="",
                 identifier_type="username" if username else None, identifier=username,
@@ -100,16 +135,23 @@ class BrowserProfileLoginBackend(LoginBackend):
         return next((m for m in self.list_items() if m.id == handle), None)
 
     def resolve_password(self, handle: str) -> str:
-        origin, username = self._split(handle)
+        nav_url, username = self._split(handle)
+        from agent.vault_store import VaultError
+        try:
+            origin = normalize_origin(nav_url)
+        except VaultError:
+            origin = nav_url
         from tools.browser_session_real_profile import real_profile_cdp
         cdp_url, err = real_profile_cdp()
         if cdp_url is None:
             raise RuntimeError(err or "real-profile browsing is off; cannot resolve the saved password")
         from tools.browser_real_profile_logins import resolve_login_password
-        password = resolve_login_password(cdp_url, origin, username)
+        # nav_url opens the exact saved sign-in page (path preserved); origin is the origin the final
+        # page must still be on after any redirect before the autofilled value is accepted.
+        password = resolve_login_password(cdp_url, nav_url, origin, username)
         if not password:
             raise RuntimeError(
                 "The browser did not autofill a saved password for this login. It may have been "
-                "removed, need a chooser (several accounts on this site), or be unavailable in this "
-                "session. Save it to the Hermes vault, or sign in in the browser.")
+                "removed, need a chooser (several accounts on this site), redirect off its origin, or "
+                "be unavailable in this session. Save it to the Hermes vault, or sign in in the browser.")
         return password

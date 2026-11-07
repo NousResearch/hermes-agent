@@ -4,14 +4,16 @@ defs plus the budgeted, byte-stable catalog listing embedded in the bridge."""
 from __future__ import annotations
 
 import functools
+import importlib
+import importlib.util
 import math
 import re
+import sys
 import threading
+import types
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
-
-import snowballstemmer
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # Reserved bridge names: a user/plugin/MCP tool may not take them (registry override
 # protection rejects such registrations).
@@ -39,13 +41,45 @@ _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 _thread_local = threading.local()
 
 
+_SNOWBALL_ENGLISH_PKG = "_hermes_snowball_english"
+
+
+@functools.cache
+def _english_stemmer_factory() -> Callable[[], Any]:
+    """snowballstemmer's English stemmer class, loaded without the package ``__init__``: that imports
+    all ~30 language stemmers to build its lookup table (~2.6 MB of an idle gateway's heap). The
+    package directory is mounted under a private name so the stemmer's relative imports
+    (``.basestemmer``, ``.among``) resolve and the real ``snowballstemmer`` stays untouched.
+
+    This always uses the pure-Python class, even where PyStemmer is installed (the public
+    ``snowballstemmer.stemmer()`` would pick its C stemmer). PyStemmer is not a dependency, and
+    ``_stem``'s lru_cache makes stemming speed irrelevant here."""
+    english_stemmer = None
+    try:
+        spec = importlib.util.find_spec("snowballstemmer")
+        if spec is not None and spec.submodule_search_locations:
+            pkg = types.ModuleType(_SNOWBALL_ENGLISH_PKG)
+            pkg.__path__ = list(spec.submodule_search_locations)
+            sys.modules.setdefault(_SNOWBALL_ENGLISH_PKG, pkg)
+            english_stemmer = importlib.import_module(f"{_SNOWBALL_ENGLISH_PKG}.english_stemmer")
+    except ImportError:
+        english_stemmer = None
+    # Only a missing module/class means "layout changed"; errors raised while executing
+    # english_stemmer.py itself propagate.
+    stemmer_cls = getattr(english_stemmer, "EnglishStemmer", None)
+    if stemmer_cls is not None:
+        return stemmer_cls
+    import snowballstemmer  # layout changed: the public API still works
+    return functools.partial(snowballstemmer.stemmer, "english")
+
+
 @functools.lru_cache(maxsize=16384)
 def _stem(token: str) -> str:
     """Stem one token, memoized across stateless catalog rebuilds. Snowball stemmers carry
     mutable parsing state and bridge dispatch runs on parallel tool-call threads, so the
     stemmer is one-per-thread, created lazily."""
     if getattr(_thread_local, "stemmer", None) is None:
-        _thread_local.stemmer = snowballstemmer.stemmer("english")
+        _thread_local.stemmer = _english_stemmer_factory()()
     return _thread_local.stemmer.stemWord(token)
 
 

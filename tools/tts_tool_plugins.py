@@ -21,15 +21,17 @@ logger = logging.getLogger("tools.tts_tool")
 def _lookup_plugin_provider(key: str, *, discover: bool = True, retry: bool = False):
     """The registered ``TTSProvider`` named *key*, or None. ``discover`` runs plugin discovery first;
     ``retry`` re-discovers with ``force=True`` on a miss (a long-lived session may predate the
-    plugin's install). Raises on registry/discovery failure — callers decide if fatal."""
+    plugin's install), at most once per plugin-source stamp — see
+    :mod:`hermes_cli.plugin_provider_retry` for why a per-call forced pass is not affordable.
+    Raises on registry/discovery failure — callers decide if fatal."""
     from agent.tts_registry import get_provider
     if discover:
         from hermes_cli.plugins import _ensure_plugins_discovered
         _ensure_plugins_discovered()
     plugin_provider = get_provider(key)
     if plugin_provider is None and retry:
-        _ensure_plugins_discovered(force=True)
-        plugin_provider = get_provider(key)
+        from hermes_cli.plugin_provider_retry import lookup_with_forced_refresh
+        plugin_provider = lookup_with_forced_refresh("tts", key, lambda: get_provider(key))
     return plugin_provider
 
 

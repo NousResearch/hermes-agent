@@ -44,8 +44,16 @@ def _expand_tilde(path: str) -> str:
         home = get_subprocess_home()
     except Exception:
         home = None
-    if home and (path == "~" or path.startswith("~/")):
-        return home if path == "~" else os.path.join(home, path[2:])
+
+    if home and path == "~":
+        return home
+
+    if home and path.startswith(("~/", "~\\")):
+        suffix = path[2:]
+        if "\\" in suffix:
+            suffix = suffix.replace("\\", os.sep)
+        return os.path.join(home, suffix)
+
     return os.path.expanduser(path)
 
 

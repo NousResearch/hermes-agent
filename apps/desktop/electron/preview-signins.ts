@@ -13,12 +13,13 @@
  * exactly those, and nothing the user signed into by hand inside the in-app browser.
  */
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
 import { type CookiesSetDetails, ipcMain, type Session, session } from 'electron'
 
-import { PREVIEW_GUEST_PARTITION } from './preview-guest-throttle'
+import { previewPartitionForProfile } from './preview-guest-throttle'
 import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
 
 const EXPORT_TIMEOUT_MS = 90_000
@@ -47,6 +48,17 @@ export interface CookieIdentity {
   name: string
   domain: string
   path: string
+  /** Host-only (no leading-dot domain) vs a domain cookie: a same-name pair can coexist, so the
+   *  removal must target the exact one it imported, never url+name (which removes both). */
+  hostOnly: boolean
+  /** SHA-256 of the imported value (NEVER the value itself — the record is written to userData and
+   *  must stay value-free), so a cookie the user has since replaced by hand reads as no-longer-ours. */
+  valueHash: string
+}
+
+/** Hash a cookie value for the ownership record. A fixed salt separates it from any other digest use. */
+function hashCookieValue(value: string): string {
+  return createHash('sha256').update(`preview-signins\u0000${value}`).digest('hex')
 }
 
 /** What the renderer sees: counts and a reason, never a cookie. */
@@ -192,10 +204,17 @@ export function cookieSetDetails(cookie: ExportedCookie): CookiesSetDetails | nu
 }
 
 export function identityOf(details: CookiesSetDetails): CookieIdentity {
-  return { url: details.url, name: details.name || '', domain: details.domain || '', path: details.path || '/' }
+  return {
+    url: details.url,
+    name: details.name || '',
+    domain: details.domain || '',
+    path: details.path || '/',
+    hostOnly: !details.domain,
+    valueHash: hashCookieValue(details.value ?? '')
+  }
 }
 
-const identityKey = (id: CookieIdentity) => `${id.url}\u0000${id.name}\u0000${id.domain}\u0000${id.path}`
+const identityKey = (id: CookieIdentity) => `${id.url}\u0000${id.name}\u0000${id.domain}\u0000${id.path}\u0000${id.hostOnly ? 'h' : 'd'}`
 
 type RecordFile = Record<string, CookieIdentity[]>
 
@@ -220,11 +239,48 @@ export class PreviewSigninsRecord {
   }
 }
 
-async function removeIdentities(jar: Session, ids: CookieIdentity[], keep: Set<string>): Promise<number> {
+/**
+ * True when the cookie currently in the jar still matches what we imported for `id`: a host-only vs
+ * domain distinction on top of url+name, and the SAME value we wrote. A cookie the user has since
+ * replaced by hand (different value) is no-longer-ours and must be left alone.
+ */
+async function stillOurs(jar: Session, id: CookieIdentity): Promise<boolean> {
+  let live: Electron.Cookie[]
+
+  try {
+    live = await jar.cookies.get({ url: id.url, name: id.name })
+  } catch {
+    return false
+  }
+
+  return live.some(c => {
+    const liveHostOnly = (c as { hostOnly?: boolean }).hostOnly === true || !String(c.domain ?? '').startsWith('.')
+
+    return hashCookieValue(c.value) === id.valueHash && liveHostOnly === id.hostOnly && (c.path || '/') === id.path
+  })
+}
+
+/**
+ * Remove each identity that is still ours (value unchanged) and not in `keep`. Returns the identities
+ * that could NOT be removed (a `cookies.remove` failure) so the caller retains the claim: a retry must
+ * still find them, never orphan a cookie by dropping its ownership record while it is installed.
+ */
+async function removeIdentities(jar: Session, ids: CookieIdentity[], keep: Set<string>): Promise<{ removed: number; retained: CookieIdentity[] }> {
   let removed = 0
+  const retained: CookieIdentity[] = []
 
   for (const id of ids) {
     if (keep.has(identityKey(id))) {
+      retained.push(id)
+
+      continue
+    }
+
+    // The user manually replaced this cookie: it is no longer what we imported, so leave it AND drop
+    // the claim (we no longer own it). Treat a gone cookie as removed.
+    if (!(await stillOurs(jar, id))) {
+      removed += 1
+
       continue
     }
 
@@ -232,21 +288,13 @@ async function removeIdentities(jar: Session, ids: CookieIdentity[], keep: Set<s
       await jar.cookies.remove(id.url, id.name)
       removed += 1
     } catch {
-      // already gone
+      // Could not remove it: keep the claim so a later clear/re-sync retries and the cookie never
+      // lingers unowned.
+      retained.push(id)
     }
   }
 
-  return removed
-}
-
-/** Identities another profile still claims: shared partition, so one profile's consent-off must not sign
- *  the in-app browser out of what a still-consenting profile imported. */
-function claimedByOthers(record: RecordFile, profile: string): Set<string> {
-  return new Set(
-    Object.entries(record)
-      .filter(([name]) => name !== profile)
-      .flatMap(([, ids]) => (Array.isArray(ids) ? ids : []).map(identityKey))
-  )
+  return { removed, retained }
 }
 
 export async function clearImportedSignins(jar: Session, store: PreviewSigninsRecord, profile: string): Promise<number> {
@@ -257,14 +305,23 @@ export async function clearImportedSignins(jar: Session, store: PreviewSigninsRe
     return 0
   }
 
-  const removed = await removeIdentities(jar, mine, claimedByOthers(record, profile))
-  const { [profile]: _dropped, ...rest } = record
-  store.write(rest)
+  const { removed, retained } = await removeIdentities(jar, mine, new Set())
+
+  if (retained.length) {
+    // A removal failed: keep this profile's claim on exactly the cookies still installed so a retry
+    // can finish the job. Dropping the key here would orphan them.
+    store.write({ ...store.read(), [profile]: retained })
+  } else {
+    const { [profile]: _dropped, ...rest } = store.read()
+    store.write(rest)
+  }
 
   return removed
 }
 
-/** Replace `profile`'s imported set with `cookies`: set each, then drop identities it no longer has. */
+/** Replace `profile`'s imported set with `cookies`: record the intended identities BEFORE touching
+ *  the jar (so a record-write failure installs nothing), set each, then reconcile the record to what
+ *  actually landed and drop identities this profile no longer has. */
 export async function applyImportedSignins(
   jar: Session,
   store: PreviewSigninsRecord,
@@ -273,7 +330,8 @@ export async function applyImportedSignins(
 ): Promise<{ imported: number; failed: number }> {
   const record = store.read()
   const previous = Array.isArray(record[profile]) ? record[profile] : []
-  const now: CookieIdentity[] = []
+
+  const intended: { details: CookiesSetDetails; id: CookieIdentity }[] = []
   let failed = 0
 
   for (const cookie of cookies) {
@@ -285,23 +343,48 @@ export async function applyImportedSignins(
       continue
     }
 
+    intended.push({ details, id: identityOf(details) })
+  }
+
+  // Write-ahead: name every cookie we are ABOUT to install (union with the previous claim) before any
+  // jar mutation. If this throws, no cookie is set, so nothing is ever installed-but-unowned. Only
+  // after this durably lands do we touch the jar.
+  const intendedIds = intended.map(({ id }) => id)
+  store.write({ ...record, [profile]: dedupeById([...previous, ...intendedIds]) })
+
+  const now: CookieIdentity[] = []
+
+  for (const { details, id } of intended) {
     try {
       await jar.cookies.set(details)
-      now.push(identityOf(details))
+      now.push(id)
     } catch {
       failed += 1
     }
   }
 
+  // Reconcile: the claim is now exactly what landed plus anything we failed to remove from the old set.
   const current = new Set(now.map(identityKey))
-  await removeIdentities(jar, previous, new Set([...current, ...claimedByOthers(record, profile)]))
-  store.write({ ...store.read(), [profile]: now })
+  const { retained } = await removeIdentities(jar, previous, current)
+  store.write({ ...store.read(), [profile]: dedupeById([...now, ...retained]) })
 
   return { imported: now.length, failed }
 }
 
+function dedupeById(ids: CookieIdentity[]): CookieIdentity[] {
+  const seen = new Map<string, CookieIdentity>()
+
+  for (const id of ids) {
+    seen.set(identityKey(id), id)
+  }
+
+  return [...seen.values()]
+}
+
 export interface PreviewSigninsDeps {
-  session: () => Session
+  /** The cookie jar for one owning profile. Each profile has its OWN partition (P1-3): a profile's
+   *  import, consent-off and rename/delete touch only its jar, never another profile's. */
+  session: (profile: string) => Session
   store: PreviewSigninsRecord
   /** The owning profile and whether its resolved backend is on THIS machine (main computes both). */
   resolveRoute: (
@@ -311,6 +394,12 @@ export interface PreviewSigninsDeps {
   ) => Promise<{ profile: string; local: boolean }>
   exportSignins: (profile: string) => Promise<ExportVerdict>
   log: (message: string) => void
+}
+
+/** The record key for a profile: the SAME normalized key its partition is derived from, so the record,
+ *  the jar and the webview all agree on one identity per profile. */
+export function previewRecordKey(profile: string | null | undefined): string {
+  return (profile ?? '').trim() || 'default'
 }
 
 const empty = (status: PreviewSigninsResult['status'], extra: Partial<PreviewSigninsResult> = {}): PreviewSigninsResult => ({
@@ -330,6 +419,8 @@ export async function syncPreviewSignins(
   request: { connectionId: null | string; enabled: boolean; profile: null | string }
 ): Promise<PreviewSigninsResult> {
   const { profile, local } = await deps.resolveRoute(sender, request.profile, request.connectionId)
+  const key = previewRecordKey(profile)
+  const jar = deps.session(key)
 
   // A remote backend never imported (its profile is another machine's), so it has nothing to clear either;
   // checking first keeps a remote `default` from clearing what the local `default` imported.
@@ -338,10 +429,10 @@ export async function syncPreviewSignins(
   }
 
   if (!request.enabled) {
-    const cleared = await clearImportedSignins(deps.session(), deps.store, profile)
+    const cleared = await clearImportedSignins(jar, deps.store, key)
 
     if (cleared) {
-      deps.log(`[preview-signins] consent off for "${profile}": removed ${cleared} imported cookie(s)`)
+      deps.log(`[preview-signins] consent off for "${key}": removed ${cleared} imported cookie(s)`)
     }
 
     return empty('cleared', { cleared })
@@ -350,21 +441,93 @@ export async function syncPreviewSignins(
   const verdict = await deps.exportSignins(profile)
 
   if (verdict.status === 'disabled') {
-    const cleared = await clearImportedSignins(deps.session(), deps.store, profile)
+    const cleared = await clearImportedSignins(jar, deps.store, key)
 
     return empty('disabled', { cleared })
   }
 
   if (verdict.status === 'error') {
-    deps.log(`[preview-signins] import for "${profile}" failed: ${verdict.error}`)
+    deps.log(`[preview-signins] import for "${key}" failed: ${verdict.error}`)
 
     return empty('error', { error: verdict.error })
   }
 
-  const { imported, failed } = await applyImportedSignins(deps.session(), deps.store, profile, verdict.cookies)
-  deps.log(`[preview-signins] imported ${imported} cookie(s) for "${profile}" (${failed} failed, ${verdict.skipped ?? 0} skipped)`)
+  const { imported, failed } = await applyImportedSignins(jar, deps.store, key, verdict.cookies)
+  deps.log(`[preview-signins] imported ${imported} cookie(s) for "${key}" (${failed} failed, ${verdict.skipped ?? 0} skipped)`)
 
   return empty('imported', { imported, failed, skipped: verdict.skipped ?? 0 })
+}
+
+/** Rename hook (P2-7): move a profile's imported-sign-ins record and jar from old→new, following the
+ *  `migrateTilesForProfile`/`migratePreviewTabsForProfile` family. Cookies move by re-setting them on
+ *  the new jar from the recorded identities (values are not in the record, so a jar-to-jar copy reads
+ *  the live cookie) and clearing the old jar. */
+export async function migratePreviewSigninsForProfile(
+  deps: Pick<PreviewSigninsDeps, 'session' | 'store' | 'log'>,
+  oldProfile: string,
+  newProfile: string
+): Promise<void> {
+  const from = previewRecordKey(oldProfile)
+  const to = previewRecordKey(newProfile)
+
+  if (from === to) {
+    return
+  }
+
+  const record = deps.store.read()
+  const mine = Array.isArray(record[from]) ? record[from] : []
+
+  if (!mine.length && !(from in record)) {
+    return
+  }
+
+  const oldJar = deps.session(from)
+  const newJar = deps.session(to)
+  const moved: CookieIdentity[] = []
+
+  for (const id of mine) {
+    try {
+      const live = await oldJar.cookies.get({ url: id.url, name: id.name })
+      const match = live.find(c => hashCookieValue(c.value) === id.valueHash && (c.path || '/') === id.path)
+
+      if (match) {
+        await newJar.cookies.set({
+          url: id.url,
+          name: id.name,
+          value: match.value,
+          path: id.path,
+          ...(id.hostOnly ? {} : { domain: id.domain }),
+          secure: Boolean(match.secure),
+          httpOnly: Boolean(match.httpOnly),
+          ...(typeof match.expirationDate === 'number' ? { expirationDate: match.expirationDate } : {})
+        })
+        moved.push(id)
+      }
+    } catch {
+      // A cookie we could not read/copy is left behind; it is cleared from the old jar below.
+    }
+  }
+
+  await removeIdentities(oldJar, mine, new Set())
+
+  const base = deps.store.read()
+  const { [from]: _gone, ...rest } = base
+  deps.store.write({ ...rest, [to]: dedupeById([...(Array.isArray(base[to]) ? base[to] : []), ...moved]) })
+  deps.log(`[preview-signins] migrated ${moved.length} imported cookie(s) "${from}" → "${to}"`)
+}
+
+/** Delete hook (P2-7): drop a profile's record and clear its jar, following the
+ *  `dropTilesForProfile`/`dropPreviewTabsForProfile` family. */
+export async function dropPreviewSigninsForProfile(
+  deps: Pick<PreviewSigninsDeps, 'session' | 'store' | 'log'>,
+  profile: string
+): Promise<void> {
+  const key = previewRecordKey(profile)
+  const cleared = await clearImportedSignins(deps.session(key), deps.store, key)
+
+  if (cleared) {
+    deps.log(`[preview-signins] profile "${key}" deleted: removed ${cleared} imported cookie(s)`)
+  }
 }
 
 /** main.ts registration: the partition and the record file are owned here; main supplies route + spawn. */
@@ -375,7 +538,7 @@ export function registerPreviewSignins(opts: {
   log: PreviewSigninsDeps['log']
 }): void {
   registerPreviewSigninsIpc(ipcMain, {
-    session: () => session.fromPartition(PREVIEW_GUEST_PARTITION),
+    session: (profile: string) => session.fromPartition(previewPartitionForProfile(profile)),
     store: new PreviewSigninsRecord(path.join(opts.userData, PREVIEW_SIGNINS_RECORD_FILE)),
     resolveRoute: opts.resolveRoute,
     exportSignins: opts.exportSignins,
@@ -384,17 +547,57 @@ export function registerPreviewSignins(opts: {
 }
 
 export function registerPreviewSigninsIpc(ipc: Pick<Electron.IpcMain, 'handle'>, deps: PreviewSigninsDeps): void {
-  // One sync at a time: a toggle flip during an import must land after it, never interleave with it.
+  // One sync/rename/delete at a time: a toggle flip during an import must land after it, never
+  // interleave with it, and a rename/delete must not race an in-flight import of the same profile.
   let chain: Promise<unknown> = Promise.resolve()
+
+  const serialize = <T>(work: () => Promise<T>): Promise<T> => {
+    const run = chain.then(work)
+    chain = run.catch(() => undefined)
+
+    return run
+  }
 
   ipc.handle('hermes:preview-signins:sync', (event, payload: unknown) => {
     const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
     const profile = typeof body.profile === 'string' && body.profile.trim() ? body.profile.trim() : null
     const connectionId = typeof body.connectionId === 'string' && body.connectionId.trim() ? body.connectionId.trim() : null
     const request = { connectionId, enabled: body.enabled === true, profile }
-    const run = chain.then(() => syncPreviewSignins(deps, event.sender, request))
-    chain = run.catch(() => undefined)
 
-    return run.catch((error: unknown) => empty('error', { error: error instanceof Error ? error.message : String(error) }))
+    return serialize(() => syncPreviewSignins(deps, event.sender, request)).catch((error: unknown) =>
+      empty('error', { error: error instanceof Error ? error.message : String(error) })
+    )
+  })
+
+  // P2-7: the renderer's local profile rename/delete flow (session-states.ts, beside
+  // migrate/dropTilesForProfile) calls these so the per-profile cookie record + jar — which live in
+  // Electron main (userData) — follow the profile. Fire-and-forget: the renderer does not block on it.
+  ipc.handle('hermes:preview-signins:profile-renamed', (_event, payload: unknown) => {
+    const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    const oldProfile = typeof body.oldProfile === 'string' ? body.oldProfile : ''
+    const newProfile = typeof body.newProfile === 'string' ? body.newProfile : ''
+
+    return serialize(() => migratePreviewSigninsForProfile(deps, oldProfile, newProfile)).then(
+      () => ({ ok: true }),
+      (error: unknown) => {
+        deps.log(`[preview-signins] rename migration failed: ${error instanceof Error ? error.message : String(error)}`)
+
+        return { ok: false }
+      }
+    )
+  })
+
+  ipc.handle('hermes:preview-signins:profile-deleted', (_event, payload: unknown) => {
+    const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    const profile = typeof body.profile === 'string' ? body.profile : ''
+
+    return serialize(() => dropPreviewSigninsForProfile(deps, profile)).then(
+      () => ({ ok: true }),
+      (error: unknown) => {
+        deps.log(`[preview-signins] delete cleanup failed: ${error instanceof Error ? error.message : String(error)}`)
+
+        return { ok: false }
+      }
+    )
   })
 }

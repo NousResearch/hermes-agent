@@ -7,9 +7,54 @@ import {
   applyPreviewGuestAttachPrefs,
   beginPreviewGuestActivity,
   endPreviewGuestActivity,
-  executePreviewGuestScript
+  executePreviewGuestScript,
+  isPreviewPartition,
+  PREVIEW_GUEST_PARTITION,
+  previewPartitionForProfile
 } from './preview-guest-throttle'
 import { createStreamThrottle } from './stream-throttle'
+
+// Mirror of src/store/profile.ts normalizeProfileKey, to pin equivalence (the helper must derive the
+// same key the renderer does, or the webview and the jar diverge).
+const normalizeProfileKey = (name: string | null | undefined) => (name ?? '').trim() || 'default'
+
+describe('previewPartitionForProfile (P1-3)', () => {
+  it('keeps the launch jar for the default/empty profile (no sign-out on upgrade)', () => {
+    for (const profile of [null, undefined, '', '   ', 'default']) {
+      expect(previewPartitionForProfile(profile)).toBe(PREVIEW_GUEST_PARTITION)
+    }
+  })
+
+  it('gives every other profile its own colon-free sibling jar', () => {
+    expect(previewPartitionForProfile('work')).toBe(`${PREVIEW_GUEST_PARTITION}-work`)
+    // The SANITIZED component (after the prefix) is colon- and %-free (the Windows jar invariant):
+    // encodeURIComponent then %->_. The `persist:` scheme prefix is Electron's own, not on-disk.
+    const component = previewPartitionForProfile('a:b/c d').slice(`${PREVIEW_GUEST_PARTITION}-`.length)
+    expect(component).not.toContain(':')
+    expect(component).not.toContain('%')
+    expect(component).toBe('a_3Ab_2Fc_20d')
+  })
+
+  it('derives the same key as normalizeProfileKey (trim / empty→default)', () => {
+    for (const name of ['', '  ', 'default', ' work ', 'Research-1']) {
+      const key = normalizeProfileKey(name)
+      const expected = key === 'default' ? PREVIEW_GUEST_PARTITION : previewPartitionForProfile(key)
+      expect(previewPartitionForProfile(name)).toBe(expected)
+    }
+  })
+})
+
+describe('isPreviewPartition (FAMILY predicate)', () => {
+  it('matches the launch jar and every per-profile sibling, nothing else', () => {
+    expect(isPreviewPartition(PREVIEW_GUEST_PARTITION)).toBe(true)
+    expect(isPreviewPartition(previewPartitionForProfile('work'))).toBe(true)
+    expect(isPreviewPartition(`${PREVIEW_GUEST_PARTITION}-anything`)).toBe(true)
+    expect(isPreviewPartition('persist:other')).toBe(false)
+    expect(isPreviewPartition('persist:hermes-remote-oauth')).toBe(false)
+    expect(isPreviewPartition('persist:hermes-previewX')).toBe(false)
+    expect(isPreviewPartition(undefined)).toBe(false)
+  })
+})
 
 describe('applyPreviewGuestAttachPrefs', () => {
   it('leaves every other webview alone', () => {
@@ -18,6 +63,14 @@ describe('applyPreviewGuestAttachPrefs', () => {
     applyPreviewGuestAttachPrefs(webPreferences, 'persist:other', '/preload.js')
 
     expect(webPreferences).toEqual({})
+  })
+
+  it('applies the preload to every preview-family jar, not only the launch jar', () => {
+    const prefs: { backgroundThrottling?: boolean; preload?: string } = {}
+
+    applyPreviewGuestAttachPrefs(prefs, previewPartitionForProfile('work'), '/preload.js')
+
+    expect(prefs).toEqual({ preload: '/preload.js', backgroundThrottling: true })
   })
 })
 

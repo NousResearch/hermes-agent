@@ -3572,9 +3572,10 @@ def _prepare_same_provider_retry(
     final_model: Optional[str], messages: list, temperature: Optional[float],
     max_tokens: Optional[int], tools: Optional[list], effective_timeout: float,
     effective_extra_body: dict, reasoning_config: Optional[dict], async_mode: bool,
-    extra_headers: Optional[dict[str, str]] = None,
+    extra_headers: Optional[dict[str, str]] = None, repairs: tuple = (),
 ) -> tuple[Any, dict[str, Any]]:
-    """Rebuild (client, request kwargs) for a same-provider retry after credential recovery."""
+    """Rebuild (client, request kwargs) for a same-provider retry after credential recovery. ``repairs``: the
+    parameter rungs' strips the failed request already carried, re-applied so a stripped field stays stripped."""
     if task == "vision":
         effective_provider, retry_client, retry_model = resolve_vision_provider_client(
             provider=resolved_provider, model=final_model, base_url=resolved_base_url,
@@ -3601,6 +3602,8 @@ def _prepare_same_provider_retry(
     # retry: dropping them would let a recovery retry silently lose capability gating (#60293).
     if extra_headers:
         retry_kwargs["extra_headers"] = dict(extra_headers)
+    for strip in repairs:
+        retry_kwargs = strip(retry_kwargs) or retry_kwargs
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
     return retry_client, retry_kwargs
@@ -7382,7 +7385,7 @@ async def _aoutcome(awaitable: Any) -> tuple[Any, Optional[Exception]]:
 
 class _LadderStep(NamedTuple):
     """A provider request the ladder asks its driver to perform. kind: "call" (client, kwargs) |
-    "retry_same_provider" (provider, model) | "fallback" (fb_client, fb_model, fb_label)."""
+    "retry_same_provider" (provider, model, repairs) | "fallback" (fb_client, fb_model, fb_label)."""
     kind: str
     args: tuple
 
@@ -7500,7 +7503,7 @@ class _ParameterRepair(NamedTuple):
     response: Any
     failure: Optional[aux_errors.Failure]
     kwargs: dict[str, Any]
-    repaired: bool  # a rung changed the request: provider fallback may now take a request-shape failure
+    repairs: tuple  # the strips that changed the request (any: provider fallback may take a request-shape failure)
 
 
 def _ladder_parameter_rungs(
@@ -7512,7 +7515,7 @@ def _ladder_parameter_rungs(
     field stripped at most once, so a request with N rejected fields recovers in N retries.
     Returns a :class:`_ParameterRepair`."""
     client, task, tag = route.client, route.task, route.tag
-    rungs, repaired = list(_parameter_rungs(client, max_tokens)), False
+    rungs, repairs = list(_parameter_rungs(client, max_tokens)), ()
     while rungs and not aux_errors.resend_cannot_help(first_err.verdict):
         hit = next((rung for rung in rungs
                     if rung[0](first_err.error) and rung[1](kwargs) is not None), None)
@@ -7531,9 +7534,9 @@ def _ladder_parameter_rungs(
                 # memory hits when the client exposes no base_url but the task resolved one.
                 remember(route.resolved_provider, route.base_info or route.resolved_base_url,
                          kwargs, rejection)
-            return _ParameterRepair(resp, None, retry_kwargs, True)
-        kwargs, repaired = retry_kwargs, True
-    return _ParameterRepair(None, first_err, kwargs, repaired)
+            return _ParameterRepair(resp, None, retry_kwargs, (*repairs, strip))
+        kwargs, repairs = retry_kwargs, (*repairs, strip)
+    return _ParameterRepair(None, first_err, kwargs, repairs)
 
 
 def _refreshed_nous_step(route: _LadderRoute, kwargs: dict[str, Any], message: str) -> Optional[_LadderStep]:
@@ -7612,10 +7615,13 @@ def _recover_failure_pool(route: _LadderRoute, failure: aux_errors.Failure) -> b
 
 def _ladder_credential_rungs(
     first_err: aux_errors.Failure, route: _LadderRoute, kwargs: dict[str, Any], client_is_nous: bool,
+    repairs: tuple = (),
 ):
-    """OAuth credential refresh + same-provider retry, then credential-pool rotation.
+    """OAuth credential refresh + same-provider retry, then credential-pool rotation. ``repairs``: the parameter
+    rungs' strips, carried into each rebuilt retry; a failure after them is judged as after a spent rung.
     Returns ``(response, None)`` or ``(None, first_err)`` to fall through."""
     client, task, tag, resolved_provider = route.client, route.task, route.tag, route.resolved_provider
+    accept = functools.partial(aux_errors.ladder_accepts, rung_spent=bool(repairs))
     auth_refresh_provider = _auth_refresh_provider_for_route(
         resolved_provider, route.base_info, _effective_provider_for_client(client, ""))
     if (aux_errors.auth_refresh(first_err.verdict) and auth_refresh_provider not in {"auto", "", None}
@@ -7631,8 +7637,8 @@ def _ladder_credential_rungs(
                         task or "call", tag, auth_refresh_provider)
             step = _LadderStep(
                 "retry_same_provider",
-                (auth_refresh_provider, route.resolved_model or route.final_model))
-            resp, first_err = yield from _rung(step, aux_errors.ladder_accepts, route)
+                (auth_refresh_provider, route.resolved_model or route.final_model, repairs))
+            resp, first_err = yield from _rung(step, accept, route)
             if first_err is None:
                 return resp, None
             # ``first_err`` is now the retry's own failure, not the original auth error: the
@@ -7653,8 +7659,8 @@ def _ladder_credential_rungs(
         if _recover_failure_pool(route, first_err):
             logger.info("Auxiliary %s%s: recovered %s via credential-pool rotation after %s",
                         task or "call", tag, pool_provider, type(first_err.error).__name__)
-            step = _LadderStep("retry_same_provider", (resolved_provider, route.resolved_model))
-            resp, first_err = yield from _rung(step, aux_errors.ladder_accepts, route)
+            step = _LadderStep("retry_same_provider", (resolved_provider, route.resolved_model, repairs))
+            resp, first_err = yield from _rung(step, accept, route)
             if first_err is None:
                 return resp, None
             # Rotated key also hit a wall: mark it now so concurrent processes skip it, then fall back.
@@ -7794,7 +7800,7 @@ def _aux_recovery_ladder(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info,
         kwargs.get("timeout"))
-    resp, first_err, kwargs, rung_spent = yield from _ladder_parameter_rungs(
+    resp, first_err, kwargs, repairs = yield from _ladder_parameter_rungs(
         _failure(route, first_err), route, kwargs, max_tokens)
     if first_err is None:
         return resp
@@ -7803,10 +7809,10 @@ def _aux_recovery_ladder(
     resp, first_err = yield from _ladder_nous_rungs(first_err, route, kwargs, client_is_nous)
     if first_err is None:
         return resp
-    resp, first_err = yield from _ladder_credential_rungs(first_err, route, kwargs, client_is_nous)
+    resp, first_err = yield from _ladder_credential_rungs(first_err, route, kwargs, client_is_nous, repairs)
     if first_err is None:
         return resp
-    resp = yield from _ladder_provider_fallback(first_err, route, rung_spent=rung_spent)
+    resp = yield from _ladder_provider_fallback(first_err, route, rung_spent=bool(repairs))
     if resp is not None:
         return resp
     # Connection/timeout errors poison the cached client (closed transport, half-read
@@ -7986,8 +7992,9 @@ def _ladder_step_call(
     if step.kind == "call":
         return "call", step.args, dict(provider=req.resolved_provider, api_mode=req.resolved_api_mode)
     if step.kind == "retry_same_provider":
-        retry_provider, retry_model = step.args
-        return "retry", (), dict(retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model)
+        retry_provider, retry_model, repairs = step.args
+        return "retry", (), dict(retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model,
+                                 repairs=repairs)
     return "fallback", step.args, candidate_kwargs
 
 

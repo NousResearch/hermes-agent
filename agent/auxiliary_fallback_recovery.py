@@ -21,7 +21,7 @@ def _parameter_ladder(first_err: Exception, client: Any, kwargs: dict[str, Any],
                             "base_info": base_url or str(getattr(client, "base_url", "") or "")})
     max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
     repair = yield from _ladder_parameter_rungs(_failure(route, first_err), route, kwargs, max_tokens)
-    return repair.response, repair.failure, repair.repaired
+    return repair.response, repair.failure, bool(repair.repairs)
 
 
 def send_with_parameter_rungs(

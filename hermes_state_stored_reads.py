@@ -223,6 +223,20 @@ class SessionStoredReadsMixin:
             (*ids, session_id, int(through_id), *ids, *ids))
         return int(row[0]), int(row[1]), int(row[2])
 
+    def transcript_display_index_complete(self, segment: str) -> bool:
+        """Whether every displayed row of *segment* has its display slot (``_ensure_display_order``'s check,
+        read only, on the caller's ``transcript_read_snapshot`` when one is open): a rewrite of a row's content
+        or ``display_kind`` clears its slot until the next backfill, and a page on the index skips that row.
+        A store without the display columns has no index: False.
+
+        Storage interface: port as ``display_index_complete``."""
+        from hermes_state_messages import _DISPLAY_INDEX_MISSING_SQL
+        with self._read_ctx() as conn:
+            columns = set(self._message_column_names(conn))
+        if not {"display_order", "display_identity"} <= columns:
+            return False
+        return self._read_one(_DISPLAY_INDEX_MISSING_SQL, (segment,)) is None
+
     def transcript_handoff_rows(self, shown_ids: list[int], segment_ids: list[str]) -> dict[int, list[dict[str, Any]]]:
         """``{shown row id: [candidate handoff message, ...]}`` in id order, for display rows *shown_ids*
         of the lineage *segment_ids*: the shown row when it can hold a handoff, and every earlier stored

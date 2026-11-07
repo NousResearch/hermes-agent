@@ -45,8 +45,9 @@ class StoredTranscriptResult(Result):
     # rows written since. Latest order: null after the oldest page.
     next_cursor: str | None
     # The rows start the transcript again from its first page and replace what the caller holds: on a
-    # read without a cursor, and when an oldest-order cursor's rows changed shape (an in-place
-    # compaction, a rotation, a rewind, a rewrite or deletion of a covered row or of an earlier segment's row).
+    # read without a cursor, when an oldest-order cursor's rows changed shape (an in-place
+    # compaction, a rotation, a rewind, a rewrite or deletion of a covered row or of an earlier segment's row),
+    # and in either order when appends took a rotated lineage past ``sessions.max_resume_messages``.
     reset: bool
     # Only with ``subagent_id``: the child read, whether it was found (a foreign or unknown child is
     # ``available: false`` with no rows and a null cursor), whether it is still running, and its own
@@ -70,7 +71,8 @@ canonical_method('session.transcript', params=StoredTranscriptParams, result=Sto
                      "`reset: true` means the rows the cursor covered changed shape, so the reply starts "
                      "again from the first page. Latest order: read on until `next_cursor` is null; its "
                      "cursor stays valid across later compactions and turns. A rotated lineage past "
-                     "`sessions.max_resume_messages` pages only its current segment. With `subagent_id`: "
+                     "`sessions.max_resume_messages` pages only its current segment (a cursor from before it "
+                     "crossed answers `reset: true`). With `subagent_id`: "
                      "a delegated child of the session (running: through the parent's roster; finished: "
                      "through its stored row, when its ancestry reaches this conversation); a foreign or "
                      "unknown child is `available: false`. Refusals: invalid_params (a cursor issued for "

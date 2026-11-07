@@ -217,3 +217,78 @@ def test_multiplex_tick_routes_desktop_served_satellite_with_only_local_adapter(
     # The routed view releases the primary adapter for exactly the route-mapped target.
     assert shared.get(Platform.DISCORD, {"chat_id": "C1"}) is primary
     assert shared.get(Platform.DISCORD, {"chat_id": "unmapped"}) is None
+
+
+def test_multiplex_tick_borrows_routed_telegram_with_another_owned_bot(tmp_path, monkeypatch):
+    """A satellite's Discord bot must not prevent its routed Telegram cron delivery."""
+    import threading
+
+    from cron.scheduler_provider import InProcessCronScheduler
+    from cron.scheduler_delivery import _resolve_target_transport
+
+    root = tmp_path / "root"
+    sat_home = root / "profiles" / "sat"
+    (sat_home / "cron").mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump({
+        "gateway": {"multiplex_profiles": True, "profile_routes": [
+            {"platform": "telegram", "chat_id": "-100", "thread_id": "2", "profile": "sat"}]},
+    }), encoding="utf-8")
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    primary = _primary_adapter()
+    own_discord = _primary_adapter()
+    captured = {}
+    stop = threading.Event()
+
+    def _tick_and_stop(*_args, **kwargs):
+        captured["adapters"] = kwargs["adapters"]
+        stop.set()
+
+    provider = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=_tick_and_stop):
+        thread = threading.Thread(
+            target=provider.start, args=(stop,),
+            kwargs={
+                "interval": 0, "profile_homes": [("sat", sat_home)],
+                "adapters": {Platform.TELEGRAM: primary},
+                "profile_adapters": {"sat": {Platform.DISCORD: own_discord}},
+                "profile_bot_platforms": {"sat": {Platform.DISCORD}},
+                "default_profile": "default",
+            }, daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=10)
+        stop.set()
+        thread.join(timeout=10)
+
+    assert not thread.is_alive()
+    shared = captured["adapters"]
+    assert isinstance(shared, SharedRouteAdapters)
+    config = MagicMock()
+    config.platforms = {Platform.DISCORD: PlatformConfig(enabled=True)}
+    telegram = {"platform": "telegram", "chat_id": "-100", "thread_id": "2"}
+    resolved, err = _resolve_target_transport(
+        {"id": "j"}, Platform.TELEGRAM, "telegram", telegram, shared, config)
+    assert err is None and resolved is not None and resolved[2] is primary
+    assert shared.get(Platform.TELEGRAM, {**telegram, "thread_id": "1"}) is None
+
+    discord = {"platform": "discord", "chat_id": "C1"}
+    resolved, err = _resolve_target_transport(
+        {"id": "j"}, Platform.DISCORD, "discord", discord, shared, config)
+    assert err is None and resolved is not None and resolved[2] is own_discord
+
+
+def test_owned_platform_dropped_adapter_does_not_borrow_primary():
+    from cron.scheduler_delivery import _resolve_target_transport
+    from gateway.profile_routing import ProfileRoute
+
+    primary = _primary_adapter()
+    route = ProfileRoute(name="route", platform="telegram", profile="sat", chat_id="-100")
+    shared = SharedRouteAdapters(
+        {Platform.TELEGRAM: primary}, [route], own_adapters={}, owned_platforms={Platform.TELEGRAM})
+    config = MagicMock()
+    config.platforms = {}
+    resolved, err = _resolve_target_transport(
+        {"id": "j"}, Platform.TELEGRAM, "telegram",
+        {"platform": "telegram", "chat_id": "-100"}, shared, config)
+    assert resolved is None and err is not None and "not configured/enabled" in err
+    assert primary.sent == []

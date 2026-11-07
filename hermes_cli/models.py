@@ -815,14 +815,14 @@ def _configured_custom_provider_ids() -> set[str]:
 def _provider_has_credentials(pid: str) -> bool:
     try:
         from hermes_cli.auth import get_auth_status, has_usable_secret
-
+        from hermes_cli.providers import cn_twin_lit_only_by_shared_keys
         if pid == "custom":
             return bool((_get_custom_base_url() or "").strip())
         if pid == "openrouter":
             from hermes_cli.model_switch import _scoped_key_env
             return has_usable_secret(_scoped_key_env("OPENROUTER_API_KEY"))
         status = get_auth_status(pid)
-        return bool(status.get("logged_in") or status.get("configured"))
+        return bool(status.get("logged_in") or status.get("configured")) and not cn_twin_lit_only_by_shared_keys(pid)
     except Exception:
         return False
 

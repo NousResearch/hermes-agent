@@ -3290,23 +3290,6 @@ def _write_user_config(config_path: Path, user_config: dict[str, Any]) -> None:
     recording_raw_config_write(config_path, user_config, atomic_config_replace)
 
 
-def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
-    print(color(
-        f"⚠ '{key}' is not a recognized config key — it was saved anyway, "
-        "but Hermes may not read it.", Colors.YELLOW))
-    if suggestion:
-        print(color(f"  Did you mean: {suggestion}", Colors.YELLOW))
-    # The env bridge covers custom TOP-LEVEL keys only; an unseeded nested path (``stt.provider``)
-    # is written but not bridged, so the footer would be a false promise there.
-    if len(_split_key_path(key)) == 1:
-        print(color(
-            "  (Custom top-level keys are supported and bridged to the "
-            "environment for skills/external tools. Use --force to skip "
-            "this notice.)", Colors.DIM))
-    else:
-        print(color("  (Use --force to skip this notice.)", Colors.DIM))
-
-
 def set_config_value(key: str, value: str, force: bool = False):
     """Set a configuration value at a dotted ``key``; ``value`` is auto-coerced to bool/int/float.
     ``force`` writes a known key given under the wrong prefix (``gateway.discord.foo`` where
@@ -3444,7 +3427,8 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Post-write unknown-key notice (#34067): value IS saved, but tell the user the runtime may never read
     # it and suggest the likely-intended path.
     if not is_known and not force:
-        _print_unknown_key_notice(key, suggestion)
+        from hermes_cli.config_key_notices import print_unknown_key_notice
+        print_unknown_key_notice(key, suggestion)
 
 
 def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
@@ -3701,6 +3685,11 @@ def _cmd_config_check(args):
     print()
 
 
+def _list_edit(args, *, remove: bool) -> None:
+    from hermes_cli.config_list_edit import cmd_config_list_edit
+    cmd_config_list_edit(args, remove=remove)
+
+
 def _cmd_config_show() -> None:
     from hermes_cli.config_show import show_config
     show_config()
@@ -3713,6 +3702,8 @@ _CONFIG_SUBCOMMANDS = {
     "get": _cmd_config_get,
     "set": _cmd_config_set,
     "unset": _cmd_config_unset,
+    "add": lambda args: _list_edit(args, remove=False),
+    "remove": lambda args: _list_edit(args, remove=True),
     "path": lambda args: print(get_config_path()),
     "env-path": lambda args: print(get_env_path()),
     "migrate": _cmd_config_migrate,
@@ -3724,6 +3715,7 @@ _CONFIG_USAGE = """Available commands:
   hermes config get <key>          Print a resolved config value
   hermes config set <key> <value>   Set a config value
   hermes config unset <key>        Remove a config value
+  hermes config add|remove <key> <value>  Add/remove one item of a list setting
   hermes config check     Check for missing, outdated, or inactive config
   hermes config migrate   Update config with new options
   hermes config path      Show config file path

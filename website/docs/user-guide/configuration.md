@@ -39,6 +39,7 @@ hermes config edit         # Open config.yaml in your editor
 hermes config get KEY      # Print a resolved value
 hermes config set KEY VAL  # Set a specific value
 hermes config unset KEY    # Remove a user-set value
+hermes config add KEY VAL  # Add one item to a list setting (remove: take it out)
 hermes config check        # Check for missing options and stale saved selections
 hermes config migrate      # Interactively add missing options
 
@@ -47,6 +48,8 @@ hermes config get model
 hermes config set model anthropic/claude-opus-4
 hermes config set terminal.backend docker
 hermes config unset terminal.backend
+hermes config add toolsets web                 # starts from the default list: [hermes-cli, web]
+hermes config remove toolsets web
 hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 ```
 

@@ -39,7 +39,7 @@ from agent.memory_provider import spawn_context_thread
 from pm.downloader import Download, DownloadPaused, Source
 
 from hermes_cli.local_runtime.endpoint import _state_endpoint, child_query
-from hermes_cli.local_runtime.gguf import split_parts
+from hermes_cli.local_runtime.gguf import SPLIT_PART_RE, split_parts
 
 logger = logging.getLogger(__name__)
 
@@ -512,10 +512,20 @@ def _loaded_models(running: dict[str, Any]) -> tuple[dict[str, str], dict[str, A
     return loaded, placement
 
 
-def _staged_row(gguf: Path) -> dict[str, Any]:
+def _staged_row(gguf: Path) -> dict[str, Any] | None:
     model_id = _model_id_for(gguf)
     # A split model is every part on disk; its first file can be a metadata stub of a few MB.
-    size = sum(p.stat().st_size for p in split_parts(gguf) or [gguf])
+    # Discovery is only a snapshot: volumes and individual shards can disappear before sizing.
+    try:
+        parts = split_parts(gguf) or [gguf]
+        split = SPLIT_PART_RE.search(gguf.name)
+        if split is not None and len(parts) != int(split.group(2)):
+            logger.warning("local model unavailable: %s has missing split parts", gguf)
+            return None
+        size = sum(p.stat().st_size for p in parts)
+    except OSError as exc:
+        logger.warning("local model unavailable: %s: %s", gguf, exc)
+        return None
     return {"id": model_id, "size_bytes": size, "size_label": _human_gb(size)}
 
 
@@ -561,7 +571,8 @@ def local_models_status():
         # The chat's loading bar and the picker rows poll this; garnish, never a 500.
         "loading": _quiet(load_progress.get_loading_progress, {}),
         "placement": placement,
-        "models": [_staged_row(gguf) for gguf in bootstrap.staged_models()] if mdir.exists() else [],
+        "models": [row for gguf in bootstrap.staged_models() if (row := _staged_row(gguf)) is not None]
+        if mdir.exists() else [],
         "models_dir": str(mdir),
     }
 

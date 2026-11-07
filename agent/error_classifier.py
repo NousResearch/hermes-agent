@@ -129,7 +129,7 @@ _LONG_QUOTA_WINDOW_PATTERNS = (
 _QUOTA_WINDOW_PATTERNS = _LONG_QUOTA_WINDOW_PATTERNS + ("quota exceeded", "quota_exceeded", "upgrade for higher limits")
 # An account wall on a 403, 404, 429 or status-less body; bare "billing" is not one.
 _ACCOUNT_WALL_PATTERNS = _BILLING_PATTERNS + _QUOTA_WINDOW_PATTERNS + (
-    "credits", "key limit exceeded", "spending limit", "budget limit", "requires a subscription", "upgrade for access")
+    "key limit exceeded", "spending limit", "budget limit", "requires a subscription", "upgrade for access")
 _WALL_WORDS = _ACCOUNT_WALL_PATTERNS + ("quota", "billing", "free tier", "free-tier")
 _RESOURCE_EXHAUSTED_PATTERNS = ("resource exhausted", "resource_exhausted", "resource-exhausted", "resourceexhausted")
 

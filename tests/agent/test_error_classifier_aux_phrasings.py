@@ -50,6 +50,11 @@ _PHRASINGS = [  # (message or error, status, reason, rotates credential, error_c
     (_boto(429), 429, _R.rate_limit, True, {}),
     (_boto(503), 503, _R.overloaded, False, {}),
     (httpx.HTTPStatusError("x", request=_REQ, response=httpx.Response(429, request=_REQ)), 429, _R.rate_limit, True, {}),
+    # The aux client's bare "credits" token is not an account wall: main's verdicts for these bodies hold.
+    ("The model credits-v1 does not exist", 404, _R.model_not_found, False, {}),
+    ("The model credits-v1 does not exist", None, _R.model_not_found, False, {}),
+    ("Invalid API key. Manage API keys and credits at https://example.com/credits", 403, _R.auth, False, {}),
+    ("Rate limit reached, see https://example.com/credits", 429, _R.rate_limit, True, {}),
 ]
 
 

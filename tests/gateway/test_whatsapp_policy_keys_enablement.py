@@ -1,6 +1,5 @@
-"""A slash or allowlist policy is not a platform setup: the plugin enable sweep must not count the
-shared policy keys the loader bridges into every platform's ``extra``. Real ``load_gateway_config``
-against a temp HERMES_HOME and managed scope."""
+"""WhatsApp's config.yaml keys are policy, not a setup: only the WHATSAPP_ENABLED opt-in or an explicit
+``enabled: true`` turns WhatsApp on. Real ``load_gateway_config`` against a temp HERMES_HOME and managed scope."""
 
 import json
 
@@ -10,6 +9,7 @@ from gateway.config import Platform, load_gateway_config
 from hermes_cli import managed_scope
 
 _POLICY = {"allow_admin_from": ["nobody"], "user_allowed_commands": ["new", "stop"]}
+_OWN_POLICY = {"free_response_chats": ["123@g.us"]}
 
 
 def _load(monkeypatch, tmp_path, *, managed=None, profile=None, env=None):
@@ -34,6 +34,8 @@ def _load(monkeypatch, tmp_path, *, managed=None, profile=None, env=None):
 @pytest.mark.parametrize("source", [
     pytest.param({"managed": {"platforms": {"whatsapp": {"extra": _POLICY}}}}, id="managed-scope"),
     pytest.param({"profile": {"whatsapp": _POLICY}}, id="profile-config"),
+    pytest.param({"profile": {"whatsapp": _OWN_POLICY}}, id="whatsapp-only-key"),
+    pytest.param({"profile": {"platforms": {"whatsapp": {"extra": _OWN_POLICY}}}}, id="whatsapp-only-key-in-extra"),
 ])
 def test_a_policy_alone_does_not_enable_whatsapp(monkeypatch, tmp_path, source):
     config = _load(monkeypatch, tmp_path, **source)
@@ -41,8 +43,12 @@ def test_a_policy_alone_does_not_enable_whatsapp(monkeypatch, tmp_path, source):
     assert Platform.WHATSAPP not in config.get_connected_platforms()
 
 
-def test_the_opt_in_still_enables_whatsapp_with_its_policy(monkeypatch, tmp_path):
-    config = _load(monkeypatch, tmp_path, profile={"whatsapp": _POLICY}, env={"WHATSAPP_ENABLED": "true"})
+@pytest.mark.parametrize(("profile", "env"), [
+    pytest.param({"whatsapp": _POLICY}, {"WHATSAPP_ENABLED": "true"}, id="env-opt-in"),
+    pytest.param({"platforms": {"whatsapp": {"enabled": True, "extra": _POLICY}}}, {}, id="enabled-true"),
+])
+def test_an_opt_in_enables_whatsapp_and_keeps_its_policy(monkeypatch, tmp_path, profile, env):
+    config = _load(monkeypatch, tmp_path, profile=profile, env=env)
 
     assert Platform.WHATSAPP in config.get_connected_platforms()
     assert config.platforms[Platform.WHATSAPP].extra["user_allowed_commands"] == ["new", "stop"]

@@ -1355,12 +1355,15 @@ def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:
 
 
 def _is_connected(config) -> bool:
-    """Connected == WHATSAPP_ENABLED opt-in (or an enabled PlatformConfig with extras); auth lives in the bridge."""
-    if config is not None and getattr(config, "enabled", False) and (getattr(config, "extra", {}) or {}):
-        return True
+    """Set up == the WHATSAPP_ENABLED opt-in; auth lives in the bridge, and config.yaml whatsapp: keys are only policy."""
     # Via hermes_cli.gateway.get_env_value (not os.getenv) so setup-status callers that patch it observe the same value.
     import hermes_cli.gateway as gateway_mod
     return (gateway_mod.get_env_value("WHATSAPP_ENABLED") or "").strip().lower() in {"true", "1", "yes"}
+
+
+def _config_connected(config) -> bool:
+    """``config_connected_fn``: an enabled WhatsApp config is connected; there is no token to check."""
+    return bool(config.enabled)
 
 
 # System-prompt platform hint (PlatformEntry.platform_hint); cached-prompt bytes, keep stable.
@@ -1392,7 +1395,7 @@ def register(ctx) -> None:
             "WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_DM_POLICY", "WHATSAPP_ALLOWED_USERS",
         ),
         dashboard_required_env=(),
-        is_connected=_is_connected, required_env=["WHATSAPP_ENABLED"],
+        is_connected=_is_connected, config_connected_fn=_config_connected, required_env=["WHATSAPP_ENABLED"],
         install_hint="WhatsApp requires a Node.js bridge — see the WhatsApp messaging docs",
         setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, cron_deliver_env_var="WHATSAPP_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send, max_message_length=4096, emoji="💬", allow_update_command=True,

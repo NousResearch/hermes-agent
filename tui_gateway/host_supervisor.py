@@ -463,20 +463,21 @@ class HostSupervisor:
     def _fail_pending_turns(self, *, reason: str, message: str, waiters: tuple[dict, dict, dict]) -> None:
         pending, waiting, late = waiters
         failure = {"reason": reason, "message": message}
-        for request_id, (sid, cb) in pending.items():
-            self.rpc_sink({"jsonrpc": "2.0", "method": "event",
-                           "params": {"type": "error", "session_id": sid, "payload": dict(failure)}})
-            if cb is not None:
-                frame = {"type": "turn.error", "sid": sid, "request_id": request_id, **failure}
-                _call_logged(cb, frame, "compute host error callback failed")
         # A crashed host never answers controls still waiting or the late acks timed-out waiters
-        # expect; fail both so neither the caller nor the client's "still running" notice hangs.
+        # expect. Answer them before the turn callbacks, which can run long or start a new host:
+        # a waiter that timed out meanwhile would register its late handler past this cleanup.
         for request_id, (q, error_type) in waiting.items():
             with contextlib.suppress(queue.Full):
                 q.put_nowait({"type": error_type, "request_id": request_id, **failure})
         for request_id, (_registered_at, handler) in late.items():
             frame = {"type": "control.error", "request_id": request_id, **failure}
             _call_logged(handler, frame, "compute host late control error handler failed")
+        for request_id, (sid, cb) in pending.items():
+            self.rpc_sink({"jsonrpc": "2.0", "method": "event",
+                           "params": {"type": "error", "session_id": sid, "payload": dict(failure)}})
+            if cb is not None:
+                frame = {"type": "turn.error", "sid": sid, "request_id": request_id, **failure}
+                _call_logged(cb, frame, "compute host error callback failed")
 
     def _maybe_respawn_after_crash(self) -> None:
         now = time.monotonic()

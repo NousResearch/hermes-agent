@@ -308,7 +308,7 @@ def test_a_crash_does_not_fail_controls_sent_to_the_replacement_host():
     def start_a_new_control(_frame):
         threading.Thread(target=lambda: replies.append(sup.control(
             "sid", route_name="session.save", wait=True, timeout=5))).start()
-        assert wait_until(lambda: sup._pending_controls, timeout=5)
+        assert wait_until(lambda: any(f.get("route_name") == "session.save" for f in sent), timeout=5)
 
     sup._pending_turns["turn-1"] = ("sid", start_a_new_control)
     _crash(sup)
@@ -333,3 +333,25 @@ def test_reload_mcp_reports_an_error_inside_the_host_ack(compute_host_gateway):
 
     assert replies[0]["error"]["code"] == 5019
     assert "discovery failed" in replies[0]["error"]["message"]
+
+
+def test_a_crash_answers_waiting_controls_before_the_turn_callbacks_run():
+    """A turn callback can run long; a control waiting on the crashed host is already answered by
+    then, so it never times out into a late handler that the crash cleanup has passed."""
+    sup, _sent = _supervisor()
+    replies: list = []
+    seen_by_callback: list = []
+    caller = threading.Thread(target=lambda: replies.append(sup.control(
+        "sid", route_name="session.compress", wait=True, timeout=30)))
+    caller.start()
+    assert wait_until(lambda: sup._pending_controls, timeout=5)
+
+    def turn_callback(_frame):
+        caller.join(timeout=5)
+        seen_by_callback.append(list(replies))
+
+    sup._pending_turns["turn-1"] = ("sid", turn_callback)
+    _crash(sup)
+
+    assert seen_by_callback == [[{"type": "control.error", "request_id": seen_by_callback[0][0]["request_id"],
+                                  "reason": "crash", "message": "compute host exited with code 1"}]]

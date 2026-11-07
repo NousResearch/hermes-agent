@@ -1,7 +1,57 @@
 import type { Session, WebContents } from 'electron'
 
-/** Partition the preview pane's `<webview>` always carries. */
+/**
+ * The launch/default preview jar. A tab owned by the default profile (or an
+ * empty profile) rides this partition so an upgrade never signs the existing
+ * single-jar user out. Every other profile rides a `${PREVIEW_GUEST_PARTITION}-<sanitized>`
+ * sibling jar (`previewPartitionForProfile`), so one profile's real-profile
+ * sign-ins can never be presented in — or cleared from — another profile's tab
+ * (#150283 P1-3, mirrors oauth-partition.ts's per-connection jars).
+ */
 export const PREVIEW_GUEST_PARTITION = 'persist:hermes-preview'
+
+// Colon-free ON PURPOSE (same invariant as oauth-partition.ts): Electron
+// percent-escapes ':' to '%3A' in the on-disk profile folder, and a Windows
+// folder whose name contains '%3A' gets a cookie store the network stack can
+// neither read nor write. encodeURIComponent then '%'→'_' keeps the whole
+// component within the characters Electron never escapes.
+function sanitizePartitionComponent(id: string): string {
+  return encodeURIComponent(id).replace(/%/g, '_')
+}
+
+// Mirror of src/store/profile.ts `normalizeProfileKey` — kept here because this
+// module stays free of renderer/electron imports so it unit-tests in the
+// electron vitest project. The equivalence is pinned by a unit test.
+function normalizePreviewProfileKey(profile: string | null | undefined): string {
+  return (profile ?? '').trim() || 'default'
+}
+
+/**
+ * The preview partition a tab owned by `profile` rides. The default/empty
+ * profile keeps the bare launch jar (`PREVIEW_GUEST_PARTITION`) so the existing
+ * single-jar user is not signed out by the upgrade; every other profile gets
+ * its own sibling jar. Lane B imports this for the `<webview>` partition
+ * attribute, so both sides MUST produce byte-identical names for a profile.
+ */
+export function previewPartitionForProfile(profile: string | null | undefined): string {
+  const key = normalizePreviewProfileKey(profile)
+
+  return key === 'default' ? PREVIEW_GUEST_PARTITION : `${PREVIEW_GUEST_PARTITION}-${sanitizePartitionComponent(key)}`
+}
+
+/**
+ * The FAMILY predicate: true for the launch jar and every per-profile sibling
+ * jar, and NOTHING else. The GHSA will-attach gate and the throttle/ipc
+ * plumbing admit exactly this family — the preload and admission rules are
+ * identical per jar, so the advisory's scheme/popup protections still hold —
+ * and never widen to an arbitrary partition.
+ */
+export function isPreviewPartition(partition: string | undefined): boolean {
+  return (
+    partition === PREVIEW_GUEST_PARTITION ||
+    (typeof partition === 'string' && partition.startsWith(`${PREVIEW_GUEST_PARTITION}-`))
+  )
+}
 
 export interface PreviewGuestAttachPrefs {
   backgroundThrottling?: boolean
@@ -14,7 +64,7 @@ export function applyPreviewGuestAttachPrefs(
   partition: string | undefined,
   preloadPath: string
 ): void {
-  if (partition !== PREVIEW_GUEST_PARTITION) {
+  if (!isPreviewPartition(partition)) {
     return
   }
 

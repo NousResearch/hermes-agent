@@ -60,3 +60,11 @@ class TestBucket:
         b = RateLimitBucket(limit=800, remaining=795, reset_seconds=60.0, captured_at=now - 10)
         # ~50 seconds should remain
         assert 49 <= b.remaining_seconds_now <= 51
+
+
+def test_fmt_count_promotes_unit_when_rounding_carries():
+    from agent.rate_limit_tracker import _fmt_count
+
+    # 999_960 / 1000 rounds to 1000.0 — promote to M instead of printing "1000.0K".
+    assert _fmt_count(999_960) == "1.0M"
+    assert _fmt_count(999_949) == "999.9K"

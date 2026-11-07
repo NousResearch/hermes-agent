@@ -8,6 +8,7 @@ Legacy boolean ``required`` flags are removed from schema positions, lifting pro
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import re
 from typing import Any, Callable
@@ -107,11 +108,72 @@ def resolve_local_schema_ref(schema: Any, root_schema: Any, seen_refs: set[str] 
     return combined
 
 
+_ROOT_COMBINATOR_KEYS = ("allOf", "anyOf", "oneOf")
+
+
+def _branch_signature(branch: dict, required: list[str]) -> str:
+    """``action="get", id`` — a union branch's required names, discriminator consts inline."""
+    props = branch.get("properties") or {}
+    parts = []
+    for name in required:
+        sub = props.get(name)
+        parts.append(f"{name}={json.dumps(sub['const'])}" if isinstance(sub, dict) and "const" in sub else name)
+    return ", ".join(parts)
+
+
+def lift_root_union_properties(params: Any) -> tuple[Any, list[str]]:
+    """Lift the object branches of a ROOT ``anyOf``/``oneOf``/``allOf`` into root ``properties``.
+
+    Strict backends reject root combinators, so they are stripped; zod/TS MCP servers emit
+    ``z.union``/``discriminatedUnion`` tools whose every argument lives inside the branches, and
+    the model saw ``properties: {}``. A name found in several branches with differing schemas
+    becomes an ``anyOf`` of them (same-typed consts collapse to an enum later). Root ``required``
+    gains names required by EVERY ``anyOf``/``oneOf`` branch and by ANY ``allOf`` branch. Returns
+    the schema plus one signature per union branch when they differ (for the description), and
+    never mutates the input."""
+    if not isinstance(params, dict):
+        return params, []
+    props = dict(params["properties"]) if isinstance(params.get("properties"), dict) else {}
+    required = [r for r in params.get("required") or () if isinstance(r, str)] \
+        if isinstance(params.get("required"), list) else []
+    lifted: dict[str, list] = {}
+    signatures: list[str] = []
+    for key in _ROOT_COMBINATOR_KEYS:
+        raw = params.get(key)
+        branches = [resolve_local_schema_ref(b, params) for b in raw if isinstance(b, dict)] \
+            if isinstance(raw, list) else []
+        if not any(isinstance(b.get("properties"), dict) for b in branches):
+            continue
+        branch_required = [[r for r in b.get("required") or () if isinstance(r, str)]
+                           if isinstance(b.get("required"), list) else [] for b in branches]
+        for branch in branches:
+            for name, sub in (branch.get("properties") or {}).items():
+                sub = resolve_local_schema_ref(sub, params)  # "#/anyOf/0/..." dangles once stripped
+                if name not in props and sub not in lifted.setdefault(name, []):
+                    lifted[name].append(sub)
+        if key == "allOf":
+            newly_required = [n for req in branch_required for n in req]
+        else:
+            newly_required = [n for n in branch_required[0] if all(n in req for req in branch_required[1:])]
+            sigs = [_branch_signature(b, req) for b, req in zip(branches, branch_required) if req]
+            if len(set(sigs)) > 1:
+                signatures.extend(sigs)
+        required += [n for n in newly_required if n not in required]
+    if not lifted:
+        return params, []
+    for name, subs in lifted.items():
+        props[name] = subs[0] if len(subs) == 1 else collapse_const_unions({"anyOf": subs})
+    required = [n for n in required if n in props]
+    return {**params, "properties": props, "required": required}, signatures
+
+
 def unrename_tool_args(params_schema: Any, args: Any, root_schema: Any = None) -> Any:
     """Map sanitized keys in model-emitted args back to wire names. ``params_schema`` is the
     ORIGINAL registry schema; recurses into objects/array items, following local ``$ref``s
     (the sanitizer renames keys inside ``$defs`` too); unknown keys pass through."""
     root = params_schema if root_schema is None else root_schema
+    if root_schema is None:  # renames are computed over the lifted root, as the sanitizer saw it
+        params_schema = lift_root_union_properties(params_schema)[0]
     params_schema = resolve_local_schema_ref(params_schema, root)
     props = params_schema.get("properties") if isinstance(params_schema, dict) else None
     if not isinstance(props, dict) or not isinstance(args, dict):
@@ -145,6 +207,10 @@ def _sanitize_single_tool(tool: dict) -> dict:
         fn["parameters"] = _empty_object()
         return out
     name = fn.get("name", "<tool>")
+    params, signatures = lift_root_union_properties(params)
+    if signatures:  # the strip below drops which argument sets go together; say it once here
+        hint = "Argument sets (provide one): " + " | ".join(signatures)
+        fn["description"] = f"{fn.get('description') or ''}\n\n{hint}".lstrip()
     top = _sanitize_node(params, path=name)
     top = top if isinstance(top, dict) else {}  # guarantee an object with properties on top
     top["type"] = "object"

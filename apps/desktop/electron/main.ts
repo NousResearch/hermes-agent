@@ -83,7 +83,7 @@ import {
   createBackendShutdownCoordinator
 } from './backend-ownership'
 import { canImportHermesCli, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
-import { recycleOwnedBackend } from './backend-recycle'
+import { recycleOwnedBackend, recyclePinnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
 import { createInstalledRuntimeGate } from './backend-resolution'
 import { desktopBackendSpawnEnv } from './backend-spawn-env'
@@ -146,12 +146,15 @@ import {
 } from './connection-caches'
 import {
   apiRequestRegistryConnectionId,
+  assertConnectionOwner,
   authModeFromStatus,
+  bindSessionRowsToRoute,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
   cookiesHaveLiveSession,
   cookiesHaveSession,
+  dispatchLegacySessionRequest,
   gatewayWsUrlIpcResult,
   hostLabelFromBaseUrl,
   isGatewayAuthRejection,
@@ -170,8 +173,10 @@ import {
   profileSshOverride,
   type RegistryBackendRequestScope,
   resolveAuthMode,
+  resolveLegacyApiConnection,
   resolveProfileApiRequest,
   resolveProfileBackendRoute,
+  resolveRegistryApiConnection,
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   sanitizeRemoteHeaderValue,
@@ -180,6 +185,7 @@ import {
   withTransientRetries
 } from './connection-config'
 import { applyConnectionConfigAtomically } from './connection-config-apply'
+import { resolveConnectionForRequest } from './connection-for'
 import {
   backendScopeKey,
   backendScopePrefix,
@@ -195,7 +201,6 @@ import {
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   registryDialConnectionId,
-  registrySourceOwnsPrimaryBackend,
   rememberSshEnumeration,
   removeConnection,
   type ResolvedConnectionDescriptor,
@@ -463,10 +468,8 @@ import {
 import { migrateActiveProfileIfMissing as migrateActiveProfileIfMissingPure } from './profile-migration'
 import { prepareProfileRenameLifecycle, profileRenameFromRequest } from './profile-rename-routing'
 import {
-  applyRemoteProfileSessionOutcomes,
   assembleSidebarSessionSlices,
   buildSidebarSessionSliceParams,
-  composeUnifiedSessionResponse,
   fetchAllProfilesAggregatePerProfile,
   fetchAllProfilesSessionsPerProfile,
   fetchPrimaryProfileSessions,
@@ -477,15 +480,13 @@ import {
   isAllProfilesSessionListRequest,
   isNotFoundApiError,
   isRemoteSessionRequestPath,
-  mergeRegistrySessionRows,
+  pinnedRegistrySessionDescriptor,
   type RegistrySessionSource,
   remoteOwnerRoutePath,
   remoteProfileQueryScope,
-  settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
-  tagPrimaryAggregateRows,
-  tagRegistrySessionResponse,
-  tagRemoteSessionRows
+  tagRemoteSessionRows,
+  tagSessionResponseOwnership
 } from './profile-session-routing'
 import {
   createQuickEntryShortcut,
@@ -516,7 +517,6 @@ import {
   probeCachedConnectionInstallId,
   rememberConnectionInstallId
 } from './registry-backend-identity'
-import { collectRegistrySessionSources } from './registry-session-sources'
 import { releaseHolderRetry } from './release-holder-consent'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
@@ -559,6 +559,7 @@ import {
 } from './secret-storage-policy'
 import { selectPathsDialogProperties } from './select-paths-dialog'
 import { selectRunnableBinary } from './select-runnable-binary'
+import { createPooledRegistrySessionSources, createRemoteProfileSessionMerger } from './session-list-owner-routing'
 import {
   buildInstanceWindowUrl,
   buildSessionWindowUrl,
@@ -578,7 +579,7 @@ import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstra
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
 import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
-import { managedSshConfig, resolveSharedSshProfileBackend, sharedSshProfiles } from './ssh-shared-profile-backend'
+import { managedSshConfig, resolveSharedSshProfileBackend } from './ssh-shared-profile-backend'
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
 import { registerStreamWorkClock } from './stream-work-clock'
@@ -14013,11 +14014,17 @@ async function connectDesktopProfileRoute(route: DesktopProfileRoute, sender?: E
 // canonical gateway when the v1 global mode is remote (the registry 'local'
 // entry always means this machine) unless the profile is remote-only.
 ipcMain.handle('hermes:connection:for', async (event, payload) => {
-  const { connectionId, profile } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
   const registry = readDesktopConnectionsRegistry()
-  const id = registryDialConnectionId(connectionId, registry.primary)
 
-  return connectDesktopProfileRoute({ connectionId: id, profile: String(profile ?? '').trim() || 'default' }, event.sender)
+  return resolveConnectionForRequest(payload, {
+    assertOwner: assertConnectionOwner,
+    resolve: (connectionId, profile) => connectDesktopProfileRoute(
+      connectionId
+        ? { connectionId: registryDialConnectionId(connectionId, registry.primary), profile }
+        : resolveDesktopConnectionRequest(profile, null, primaryProfileKey()),
+      event.sender
+    )
+  })
 })
 
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()
@@ -14310,6 +14317,27 @@ const hudIpc = registerHudIpc({
 })
 
 ipcMain.handle('hermes:backend:recycle', async (_event, profile) => {
+  if (profile && typeof profile === 'object') {
+    const primaryProfile = primaryProfileKey()
+    const config = readDesktopConnectionConfig()
+    await recyclePinnedBackend(profile, {
+      registry: readDesktopConnectionsRegistry(),
+      routeOptions: profileRouteOptions(profile.profile),
+      primarySshKey: profileSshOverride(config, primaryProfile) ? sshScopeKey(primaryProfile) : sshScopeKey(null),
+      effectiveSshFingerprint: source => effectiveSshConfigFingerprint(managedSshConfig(source, profile.profile)),
+      primaryPromise: () => backendConnectionState.getPromise(),
+      pool: backendPool,
+      sshState: key => sshConnections.get(key),
+      teardownSsh: key => teardownSshConnection(key),
+      teardownPool: stopPoolBackend,
+      teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
+      restartLocalGateway: restartAttachedLocalGateway,
+      notifyApplied: sendConnectionApplied
+    })
+
+    return { ok: true }
+  }
+
   // Models-page recovery after a code-skew 503 (#97046): kill the owned
   // SSH serve (if any) before the local child so reconnect cannot reuse a
   // stale lockfile, and restart the attached local gateway (Desktop does not
@@ -15557,6 +15585,20 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
 
   const { pathname, searchParams } = parsed
 
+  const dispatchLegacySession = (dispatch: (connection?: any) => Promise<any>, profile = request?.profile) =>
+    dispatchLegacySessionRequest(request, profile, ensureBackend, dispatch, {
+      request: { method: request?.method, path: request?.path }
+    })
+
+  const assertPinnedRegistryOwner = (sources: RegistrySessionSource[]) => {
+    if (registryConnectionId && Object.hasOwn(request, 'connectionOwner')) {
+      assertConnectionOwner(
+        request.connectionOwner,
+        pinnedRegistrySessionDescriptor(registryConnectionId, request, sources)
+      )
+    }
+  }
+
   if (method === 'GET' && pathname === '/api/profiles/sessions') {
     const remoteProfiles = configuredRemoteProfileNames()
 
@@ -15578,13 +15620,21 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
       return undefined
     }
 
+    assertPinnedRegistryOwner(registrySources)
+
     const requested = (searchParams.get('profile') || 'all').trim() || 'all'
 
     if (requested !== 'all') {
-      return profileHasRemoteOverride(requested) ? remoteSessionList(requested, searchParams) : undefined
+      if (!profileHasRemoteOverride(requested)) {
+        return undefined
+      }
+
+      return dispatchLegacySession(() => remoteSessionList(requested, searchParams), requested)
     }
 
-    return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources, registryConnectionId)
+    return dispatchLegacySession(() =>
+      mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources, registryConnectionId)
+    )
   }
 
   // Batched sidebar slices. With no remote profiles the local batched endpoint
@@ -15610,15 +15660,20 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
       return undefined
     }
 
-    const { recents: recentsSp, cron: cronSp, messaging: messagingSp } = buildSidebarSessionSliceParams(searchParams)
+    assertPinnedRegistryOwner(registrySources)
 
-    const [recents, cron, messaging] = await Promise.all([
-      fetchProfilesSessionSlice(recentsSp, remoteProfiles, registrySources, registryConnectionId),
-      fetchProfilesSessionSlice(cronSp, remoteProfiles, registrySources, registryConnectionId),
-      fetchProfilesSessionSlice(messagingSp, remoteProfiles, registrySources, registryConnectionId)
-    ])
+    return dispatchLegacySession(async () => {
+      const { recents: recentsSp, cron: cronSp, messaging: messagingSp } =
+        buildSidebarSessionSliceParams(searchParams)
 
-    return assembleSidebarSessionSlices(recents, cron, messaging)
+      const [recents, cron, messaging] = await Promise.all([
+        fetchProfilesSessionSlice(recentsSp, remoteProfiles, registrySources, registryConnectionId),
+        fetchProfilesSessionSlice(cronSp, remoteProfiles, registrySources, registryConnectionId),
+        fetchProfilesSessionSlice(messagingSp, remoteProfiles, registrySources, registryConnectionId)
+      ])
+
+      return assembleSidebarSessionSlices(recents, cron, messaging)
+    })
   }
 
   // Per-session read/mutation. Owner is in ?profile= (reads) or request.profile
@@ -15664,7 +15719,13 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
       const ownerPath = remoteOwnerRoutePath(pathname, searchParams, ownerScope)
 
       if (method === 'GET') {
-        return fetchJsonForProfile(profile, ownerPath)
+        return dispatchLegacySession(
+          connection =>
+            connection
+              ? fetchJsonForBackend(connection, ownerPath, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+              : fetchJsonForProfile(profile, ownerPath),
+          profile
+        )
       }
 
       const body = request.body && typeof request.body === 'object' ? { ...request.body } : request.body
@@ -15674,7 +15735,13 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
       }
 
       // A DELETE's mutation identity is query-only; a bare pathname 409s on the remote.
-      return requestJsonForProfile(profile, ownerPath, method, body)
+      return dispatchLegacySession(
+        connection =>
+          connection
+            ? fetchJsonForBackend(connection, ownerPath, { body, method, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+            : requestJsonForProfile(profile, ownerPath, method, body),
+        profile
+      )
     }
 
     if (globalRemoteActive()) {
@@ -15683,12 +15750,18 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
       const path = `${pathname}?${passthroughParams.toString()}`
 
       if (method === 'GET') {
-        return fetchJsonForProfile(null, path)
+        return dispatchLegacySession(() => fetchJsonForProfile(null, path), profile)
       }
 
       const body = request.body && typeof request.body === 'object' ? { ...request.body, profile } : { profile }
 
-      return requestJsonForProfile(null, path, method, body)
+      return dispatchLegacySession(
+        connection =>
+          connection
+            ? fetchJsonForBackend(connection, path, { body, method, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+            : requestJsonForProfile(null, path, method, body),
+        profile
+      )
     }
 
     return undefined
@@ -15704,24 +15777,26 @@ const rowsOf = data => (Array.isArray(data?.sessions) ? data.sessions : [])
 // authoritative identity — never relabel rows with the Desktop scope name.
 async function remoteSessionList(profile, searchParams) {
   const sshOverride = profileSshOverride(readDesktopConnectionConfig(), profile)
+  const connection = await ensureBackend(profile)
 
-  const data = await fetchRemoteProfileSessions(profile, searchParams, fetchJsonForProfile, {
-    remoteProfileAlias: sshOverride?.remoteProfile
-  })
+  const data = await fetchRemoteProfileSessions(
+    profile,
+    searchParams,
+    (_profile, path) => fetchJsonForBackend(connection, path, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }),
+    { remoteProfileAlias: sshOverride?.remoteProfile }
+  )
 
-  const rows = tagRemoteSessionRows(
-    rowsOf(data),
-    remoteProfileQueryScope(profile, sshOverride?.remoteProfile) || profile
+  const rows = bindSessionRowsToRoute(
+    tagRemoteSessionRows(rowsOf(data), remoteProfileQueryScope(profile, sshOverride?.remoteProfile) || profile),
+    connection
   )
 
   return { ...(data as any), sessions: rows }
 }
 
-// #85834: find which remote profile owns a session id when the caller gave no
-// profile hint (pure lookup lives in profile-session-routing.ts; the bounded
-// memo lives in remote-owner-cache.ts — #58485: it only ever INSERTS, so the
-// raw Map grew one entry per session id ever resolved, unbounded, on the main
-// process heap).
+// #85834: find which remote profile owns a session id without a profile hint.
+// The lookup lives in profile-session-routing.ts; remote-owner-cache.ts bounds
+// the memo that previously grew one entry per resolved session id (#58485).
 const remoteOwnerCache = createRemoteOwnerCache()
 
 async function remoteOwnerProfileForSession(sessionId: string) {
@@ -15750,11 +15825,29 @@ async function remoteOwnerProfileForSession(sessionId: string) {
   return owner
 }
 
-// Resolve one /api/profiles/sessions slice with remote profiles spliced in —
-// the same branch logic as the GET /api/profiles/sessions intercept, but always
-// returns data (never `undefined`) so a batched caller can compose slices. A
-// specific local profile reads from the local primary; a remote-override profile
-// reads from its remote; 'all' merges every remote into the primary aggregate.
+const pooledRegistrySessionSources = createPooledRegistrySessionSources({
+  backendIdForConnection: async (connectionId, descriptor) => boundedInstallId(probeConnectionInstallId(connectionId, descriptor)),
+  backendPool,
+  primaryBackend: () => backendConnectionState.getPromise(),
+  readRegistry: readDesktopConnectionsRegistry
+})
+
+const primaryBackendInstallId = createPrimaryInstallIdResolver({
+  resolve: () => ensureBackend(null, { passive: true }),
+  status: descriptor => getJsonForBackend(descriptor, '/api/status', { timeoutMs: 2_000 }),
+  ttlMs: INSTALL_ID_TTL_MS,
+  negativeTtlMs: INSTALL_ID_NEGATIVE_TTL_MS
+})
+
+const mergeRemoteProfileSessions = createRemoteProfileSessionMerger({
+  fetchJsonForProfile,
+  getJsonForBackend,
+  pooledRegistrySessionSources,
+  primaryBackend: () => ensureBackend(null, { passive: true }),
+  primaryBackendId: primaryBackendInstallId,
+  remoteSessionList
+})
+
 async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registrySources = null, pinnedConnectionId = null) {
   const requested = (searchParams.get('profile') || 'all').trim() || 'all'
 
@@ -15769,127 +15862,6 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registryS
   return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources, pinnedConnectionId)
 }
 
-// Unified list: primary's local aggregate, with each remote profile's stale local
-// rows/totals swapped for the remote's real ones, re-sorted by recency and
-// re-windowed to the requested page. A dead remote contributes nothing rather
-// than breaking the sidebar. Connected registry gateways' sessions are spliced
-// in too (#88880) — the unified Sessions list shows EVERY connected gateway's
-// chats, tagged with connection_id + profile so opens route correctly.
-async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySourcesOverride = null, pinned = null) {
-  const limit = Math.max(1, Number(searchParams.get('limit')) || 20)
-  const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
-  const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
-
-  const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, { prefixForMerge: true })) as any
-
-  if (pinned) {
-    await tagPrimaryAggregateRows(base, () => ensureBackend(null, { passive: true }), pinned)
-  }
-
-  // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
-  // is correct for this page — mirrors the primary's per-profile over-fetch.
-  const remoteParams = new URLSearchParams(searchParams)
-  remoteParams.set('limit', String(limit + offset))
-  remoteParams.set('offset', '0')
-
-  const remoteSet = new Set(remoteProfiles)
-  const merged = rowsOf(base).filter(s => !remoteSet.has(s?.profile))
-  const profileTotals = { ...(base.profile_totals || {}) }
-  let total = (Number(base.total) || 0) - remoteProfiles.reduce((n, p) => n + (profileTotals[p] || 0), 0)
-
-  // Swap each remote profile's stale local rows/total for the remote's real
-  // ones. #75712: each remote fetch runs under its own bounded budget and
-  // settles — one unavailable remote no longer holds the whole aggregate (and
-  // the sidebar behind it) hostage for the 180s backend readiness wait. A
-  // dead or still-pending remote contributes no rows, drops its stale local
-  // total, and is NAMED in the response `errors` instead of silently
-  // vanishing; the fetch itself keeps running so a remote that is merely slow
-  // to boot lands on a later refresh.
-  const remoteOutcomes = await settleRemoteProfileSessions(remoteProfiles, name =>
-    remoteSessionList(name, remoteParams)
-  )
-
-  const { total: remoteTotal, errors: remoteErrors } = applyRemoteProfileSessionOutcomes(
-    remoteOutcomes,
-    merged,
-    profileTotals,
-    total
-  )
-
-  total = remoteTotal
-
-  // Registry gateways (v2 connections): splice every CONNECTED gateway's rows
-  // into the unified list. Only already-pooled backends are read — a sidebar
-  // refresh must never dial or spawn a backend (the Bot Mode roster-respawn
-  // trap). Reads omit include_hidden, so Bot Mode's hidden canonical chats
-  // stay out of the global list, same as local sessions.
-  const registrySources = registrySourcesOverride || (await pooledRegistrySessionSources())
-
-  if (registrySources.length) {
-    const getRegistryJson = (descriptor, path) => getJsonForBackend(descriptor, path, { timeoutMs: 10_000 })
-    // RT-42: count each backend (install_id) once; remote-override profiles are another backend.
-    const identity = { primaryBackendId: await primaryBackendInstallId(), unknownPrimaryProfiles: remoteProfiles }
-    total += await mergeRegistrySessionRows(registrySources, remoteParams, getRegistryJson, merged, profileTotals, identity)
-  }
-
-  const recency = s => s?.[order] ?? s?.started_at ?? 0
-  merged.sort((a, b) => recency(b) - recency(a))
-
-  const archivedOnly = searchParams.get('archived') === 'only'
-
-  return composeUnifiedSessionResponse(base, merged, offset, limit, total, profileTotals, remoteErrors, { archivedOnly })
-}
-
-// Every CONNECTED registry gateway as a session source (see the module); never dials.
-async function pooledRegistrySessionSources(includeLocal = false): Promise<RegistrySessionSource[]> {
-  const registry = readDesktopConnectionsRegistry()
-
-  return collectRegistrySessionSources(
-    {
-      connections: registry.connections,
-      pool: backendPool.entries(),
-      scopePrefix: backendScopePrefix,
-      reusedPrimary: connectionId => reusedPrimarySshDescriptor(registry, connectionId),
-      installId: (connectionId, descriptor) => boundedInstallId(probeConnectionInstallId(connectionId, descriptor)),
-      sharedProfiles: sharedSshProfiles
-    },
-    includeLocal
-  )
-}
-
-// The running primary descriptor when it IS this registry SSH connection: its
-// registry routes reuse it rather than pooling a backend. Never starts one.
-async function reusedPrimarySshDescriptor(registry, connectionId: string) {
-  const pending = connectionId === registry.primary ? backendConnectionState.getPromise() : null
-
-  if (!pending) {
-    return null
-  }
-
-  try {
-    const descriptor = await Promise.race([
-      pending,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('pending')), 2_000))
-    ])
-
-    return descriptor?.mode === 'remote' &&
-      descriptor.remoteKind === 'ssh' &&
-      registrySourceOwnsPrimaryBackend(registry, connectionId, descriptor)
-      ? descriptor
-      : null
-  } catch {
-    return null
-  }
-}
-
-// RT-42: install_id of the backend the primary session aggregate reads (see the module).
-const primaryBackendInstallId = createPrimaryInstallIdResolver({
-  resolve: () => ensureBackend(null, { passive: true }),
-  status: descriptor => getJsonForBackend(descriptor, '/api/status', { timeoutMs: 2_000 }),
-  ttlMs: INSTALL_ID_TTL_MS,
-  negativeTtlMs: INSTALL_ID_NEGATIVE_TTL_MS
-})
-
 async function dispatchRegistryApiRequest(
   request,
   registryConnectionId,
@@ -15902,11 +15874,17 @@ async function dispatchRegistryApiRequest(
   // SSH tunnel / remote dashboard. A passive read never dials, so it stays
   // OUT of the claim: an interactive open coalescing onto an in-flight
   // passive read would otherwise inherit its "no warm backend" rejection.
-  const connection: any = request?.passive
-    ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
-    : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
-        ensureRegistryBackend(registryConnectionId, routeProfile)
-      )
+  const connection: any = await resolveRegistryApiConnection(
+    request,
+    registryConnectionId,
+    (_connectionId, profile) =>
+      request?.passive
+        ? ensureRegistryBackend(registryConnectionId, profile, '', { passive: true })
+        : backendDialClaims.run(backendScopeKey(registryConnectionId, profile), () =>
+            ensureRegistryBackend(registryConnectionId, profile)
+          ),
+    routeProfile
+  )
 
   const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection, request?.method || 'GET')
 
@@ -15920,7 +15898,16 @@ async function dispatchRegistryApiRequest(
   desktopProfilePreferences.afterProfileRequest(registryConnectionId, request, response, connection.mode)
 
   return (request?.method || 'GET').toUpperCase() === 'GET'
-    ? tagRegistrySessionResponse(requestPath, response, registryConnectionId)
+    ? tagSessionResponseOwnership(requestPath, response, registryConnectionId, rows =>
+        bindSessionRowsToRoute(
+          rows.map(row =>
+            row && typeof row === 'object' && !(row as Record<string, unknown>).profile
+              ? { ...(row as Record<string, unknown>), profile: routeProfile || 'default' }
+              : row
+          ),
+          connection
+        )
+      )
     : response
 }
 
@@ -16000,30 +15987,38 @@ async function handleHermesApiRequest(request) {
     ? profileRename.routeProfile
     : resolveRouteProfile(tornDownProfile, apiRoute.backendProfile)
 
+  // Reuse the complete route contract after a local-gateway redial. Dropping
+  // the mutation identity here can retry against the shared primary profile.
+  const ensureOpts = {
+    passive: request?.passive,
+    request: { method: request?.method, path: request?.path }
+  }
+
   let response
   let connection
+  let responseConnection: ResolvedConnectionDescriptor | null = null
 
   try {
-    // The redial reuses these options: without the request an unscopable mutation's retry
-    // resolves the shared primary and writes in the wrong profile (B2-15).
-    const ensureOpts = { passive: request?.passive, request: { method: request?.method, path: request?.path } }
-    connection = await ensureBackend(routeProfile, ensureOpts)
-
+    connection = await resolveLegacyApiConnection(request, routeProfile, ensureBackend, ensureOpts)
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
     // Main's shared transport for every descriptor: configured headers, a native
     // gateway grant per attempt, and the OAuth bearer→cookie fallback that
     // survives refresh failures and login races (requestWithOauthFallback).
-    const send = current => fetchJsonForBackend(current, apiRoute.requestPath, {
-      method: request?.method,
-      body: request?.body,
-      upload: request?.upload,
-      timeoutMs
-    })
+    const send = (current: ResolvedConnectionDescriptor) => {
+      responseConnection = current
+
+      return fetchJsonForBackend(current, apiRoute.requestPath, {
+        method: request?.method,
+        body: request?.body,
+        upload: request?.upload,
+        timeoutMs
+      })
+    }
 
     response = connection.gatewayEndpoint
       ? await redialLocalGateway({
-          ensure: () => ensureBackend(routeProfile, ensureOpts),
+          ensure: () => resolveLegacyApiConnection(request, routeProfile, ensureBackend, ensureOpts),
           forget: () => forgetLocalGatewayDescriptor(routeProfile, ensureOpts.request),
           use: send
         })
@@ -16048,7 +16043,11 @@ async function handleHermesApiRequest(request) {
     await profileRename?.complete()
   }
 
-  return response
+  return (request?.method || 'GET').toUpperCase() === 'GET'
+    ? tagSessionResponseOwnership(request.path, response, null, rows =>
+        bindSessionRowsToRoute(rows, responseConnection ?? connection, routeProfile || 'default')
+      )
+    : response
 }
 
 // Format an api-request failure for desktop.log. The renderer only ever sees

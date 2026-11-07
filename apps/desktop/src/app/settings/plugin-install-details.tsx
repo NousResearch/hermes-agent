@@ -31,6 +31,7 @@ export interface ProfileState {
   label: string
   options: Pick<ProfileInfo, 'display_name' | 'name'>[]
   onChange: (value: string) => void
+  locked?: boolean
 }
 
 interface PluginInstallDetailsProps {
@@ -167,7 +168,7 @@ export function PluginInstallDetails(props: PluginInstallDetailsProps) {
       <VersionRow agent={agent} busy={busy} copy={copy} pin={props.pin} request={request} />
       <ContentsRow copy={copy} probe={probe} profile={profile} remote={props.remote} request={request} />
       <Row label={copy.profileLabel}>
-        <Select disabled={busy || !agent} onValueChange={profile.onChange} value={profile.value}>
+        <Select disabled={busy || !agent || profile.locked} onValueChange={profile.onChange} value={profile.value}>
           <SelectTrigger aria-label={copy.profileLabel} className="w-full">
             <SelectValue />
           </SelectTrigger>

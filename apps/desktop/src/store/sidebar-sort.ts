@@ -4,7 +4,13 @@ import type { SessionInfo } from '@/hermes'
 
 import { $sidebarOrdering, type SidebarOrdering } from './layout'
 import { $sessions } from './session'
-import { $sessionDotStateById, type SessionDotState, sessionStatusRank } from './session-dot-state'
+import {
+  $sessionDotStateById,
+  type SessionDotState,
+  sessionDotStateForRow,
+  sessionStatusRank
+} from './session-dot-state'
+import { sessionOwnerRowKey } from './session-request-router'
 import { sessionCostUsd } from './sidebar-archive'
 
 // Same array on every recompute, so the default (unranked) sidebar never churns
@@ -23,7 +29,7 @@ function rankBy(
       return session => -session.started_at
 
     case 'status':
-      return session => sessionStatusRank(dotStates[session.id])
+      return session => sessionStatusRank(sessionDotStateForRow(dotStates, session))
 
     case 'tokens':
       return session => -(session.input_tokens + session.output_tokens)
@@ -57,6 +63,6 @@ export const $sidebarSessionRankIds: ReadableAtom<string[]> = computed(
       return UNRANKED
     }
 
-    return [...sessions].sort((a, b) => rank(a) - rank(b)).map(session => session.id)
+    return [...sessions].sort((a, b) => rank(a) - rank(b)).map(sessionOwnerRowKey)
   }
 )

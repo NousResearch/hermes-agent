@@ -63,8 +63,8 @@ export function VoiceProviderFields({
   const writeConfigCache = useMemo(() => hermesConfigCacheWriter(profile), [scopeKey])
 
   const { data: schemaResponse } = useQuery({
-    queryKey: ['hermes-config-schema'],
-    queryFn: () => getHermesConfigSchema(),
+    queryKey: ['hermes-config-schema', ...(scopeKey ? [scopeKey] : [])],
+    queryFn: () => (profile === undefined ? getHermesConfigSchema() : getHermesConfigSchema(profile)),
     staleTime: 5 * 60 * 1000
   })
 
@@ -122,7 +122,9 @@ export function VoiceProviderFields({
 
     let cancelled = false
 
-    getElevenLabsVoices()
+    const voices = profile === undefined ? getElevenLabsVoices() : getElevenLabsVoices(profile)
+
+    voices
       .then(result => {
         if (cancelled || !result.available) {
           return
@@ -139,7 +141,8 @@ export function VoiceProviderFields({
       })
 
     return () => void (cancelled = true)
-  }, [wantsElevenLabs])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- scopeKey is the normalized owner identity
+  }, [scopeKey, wantsElevenLabs])
 
   if (keys.length === 0 || !config) {
     return null
@@ -168,6 +171,7 @@ export function VoiceProviderFields({
             optionLabels={isElVoice ? elVoiceLabels : undefined}
             schema={field}
             schemaKey={key}
+            scope={profile}
             value={value}
           />
         )

@@ -31,7 +31,7 @@ import {
 } from '@/store/local-runtime-jobs'
 import type { LocalModelLoadProgress, LocalRuntimeJob } from '@/types/hermes'
 
-import type { HermesGateway } from '../hermes'
+import type { HermesGateway, ProfileScope } from '../hermes'
 import { startManualOnboarding } from '../store/onboarding'
 
 import { InlineNotice } from './notifications'
@@ -56,6 +56,8 @@ interface ModelPickerDialogProps {
   /** Desktop route profile for provider setup; `profile` may be the backend-side target. */
   setupProfile?: string
   request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  /** Exact REST recovery owner for an owner-routed catalog request. */
+  scope?: ProfileScope
   /**
    * Optional class for DialogContent. Use it to lift the picker onto a higher
    * rung of the overlay ladder when it opens over another fixed overlay (the
@@ -76,6 +78,7 @@ export function ModelPickerDialog({
   ownerConnectionId,
   profile = 'default',
   request,
+  scope,
   setupProfile,
   contentClassName
 }: ModelPickerDialogProps): ReactElement {
@@ -94,7 +97,7 @@ export function ModelPickerDialog({
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
-    queryFn: () => requestModelOptions({ gateway: gw, profile, request, sessionId }),
+    queryFn: () => requestModelOptions({ gateway: gw, profile, request, scope, sessionId }),
     enabled: open
   })
 

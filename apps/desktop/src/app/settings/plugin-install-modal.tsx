@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { Puzzle } from 'lucide-react'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
@@ -23,6 +23,7 @@ import { AlertTriangle, Loader2 } from '@/lib/icons'
 import { lookupPluginCatalogEntry } from '@/lib/plugin-catalog'
 import { cn } from '@/lib/utils'
 import { COMMIT_SHA_RE, inspectAgentPlugin } from '@/store/agent-plugins'
+import { requestGatewayForAgent } from '@/store/gateway'
 import {
   $pluginInstallRequest,
   closePluginInstallRequest,
@@ -31,6 +32,7 @@ import {
 } from '@/store/plugin-install-request'
 import { $activeGatewayProfile, $profiles, $profileScope, normalizeProfileKey, profileLabel } from '@/store/profile'
 import { $connection } from '@/store/session'
+import { settingsGatewayRequestOwnership } from '@/store/settings-scope'
 
 import { PluginInstallDetails } from './plugin-install-details'
 import {
@@ -436,9 +438,9 @@ interface InstallViewProps {
 function InstallView({ request, installing, onInstallingChange }: InstallViewProps) {
   const { t } = useI18n()
   const m = t.settings.plugins.installModal
-  const { requestGateway } = useGatewayRequest()
+  const { requestGateway: ambientRequest } = useGatewayRequest()
   const navigate = useNavigate()
-  const remote = useStore($connection)?.mode === 'remote'
+  const ambientRemote = useStore($connection)?.mode === 'remote'
   const activeProfile = useStore($activeGatewayProfile)
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
@@ -448,6 +450,32 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
   const [targetProfile, setTargetProfile] = useState(() =>
     normalizeProfileKey(request.profile || activeProfile || profileScope)
   )
+
+  const requestGateway = useCallback(
+    <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => {
+      const owner = request.owner
+
+      return owner && typeof owner === 'object'
+        ? requestGatewayForAgent<T>(
+            owner.connectionId ?? null,
+            targetProfile,
+            method,
+            params,
+            timeoutMs,
+            undefined,
+            settingsGatewayRequestOwnership({ ...owner, profile: targetProfile })
+          )
+        : ambientRequest<T>(method, params, timeoutMs)
+    },
+    [ambientRequest, request.owner, targetProfile]
+  )
+
+  const pinnedConnection =
+    request.owner && typeof request.owner === 'object'
+      ? (request.owner.cacheOwner ?? request.owner.connectionOwner ?? request.owner.legacyConnection)
+      : null
+
+  const remote = pinnedConnection ? pinnedConnection.mode === 'remote' : ambientRemote
 
   // Without Electron's inspection (the browser-hosted app) the backend clones and reads the repository.
   const { probe, start, cancel, settled } = usePluginProbe(m.probeUnavailable, repo =>
@@ -583,7 +611,8 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
               value: targetProfile,
               label: targetLabel,
               options: targetInfo ? profiles : [...profiles, { name: targetProfile }],
-              onChange: setTargetProfile
+              onChange: setTargetProfile,
+              locked: Boolean(request.owner)
             }}
             remote={remote}
             request={request}

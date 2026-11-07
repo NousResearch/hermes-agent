@@ -17,10 +17,12 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $unreadFinishedSessionIds,
+  markSessionRead,
   setSelectedStoredSessionId
 } from '@/store/session'
-import { $sessionStates, publishSessionState } from '@/store/session-states'
-import { $unreadFinishedMarkers, noteDesktopAdmission } from '@/store/session-unread'
+import { sessionOwnerRowKey } from '@/store/session-request-router'
+import { $sessionStates, publishSessionState, recordSessionEventScope } from '@/store/session-states'
+import { $unreadFinishedMarkers, noteDesktopAdmission, unreadOwnerKey } from '@/store/session-unread'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { handleMessageStreamEvent } from './message-stream'
@@ -84,10 +86,10 @@ describe('unread dot for a messaging turn Desktop sent', () => {
     $activeGatewayProfile.set('default')
   })
 
-  const complete = (admission?: string, sessionId = 'tg-1', profile?: string) => {
+  const complete = (admission?: string, sessionId = 'tg-1', profile?: string, connectionId?: string) => {
     const ctx = context('message.complete')
     ctx.sessionId = sessionId
-    ctx.event = { type: 'message.complete', admission_id: admission, profile }
+    ctx.event = { type: 'message.complete', admission_id: admission, profile, connectionId }
     handleMessageStreamEvent(ctx)
   }
 
@@ -152,15 +154,42 @@ describe('unread dot for a messaging turn Desktop sent', () => {
     expect($unreadFinishedSessionIds.get()).toContain('tg-1')
   })
 
+  it('keeps same-id messaging completions on their exact gateway owner', () => {
+    const local = makeSessionInfo({ connection_id: 'local', id: 'shared', profile: 'alpha', source: 'telegram' })
+    const remote = makeSessionInfo({ connection_id: 'remote', id: 'shared', profile: 'beta', source: 'telegram' })
+    $messagingSessions.set([local, remote])
+    markSessionRead(local)
+    $selectedStoredSessionId.set('shared')
+
+    noteDesktopAdmission('remote-turn')
+    complete('remote-turn', 'shared', 'beta', 'remote')
+    expect($unreadFinishedSessionIds.get()).toEqual([sessionOwnerRowKey(remote)])
+
+    $unreadFinishedSessionIds.set([])
+    complete('remote-early', 'shared', 'beta', 'remote')
+    markSessionRead(remote)
+    admit('remote-early')
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+
+    complete('remote-next', 'shared', 'beta', 'remote')
+    markSessionRead(remote)
+    markSessionRead(local)
+    recordSessionEventScope({ connectionId: 'remote', profile: 'beta', session_id: 'runtime-remote' })
+    publishSessionState('runtime-remote', { ...createClientSessionState('shared'), busy: true })
+    admit('remote-next')
+    expect($unreadFinishedSessionIds.get()).toEqual([sessionOwnerRowKey(remote)])
+  })
+
   it("judges a background profile's completion by its own profile's row", () => {
     // The active profile holds a Desktop session with the same id; it must not decide beta's turn.
     $activeGatewayProfile.set('alpha')
     $sessions.set([makeSessionInfo({ id: 'shared', source: 'desktop', profile: 'alpha' })])
-    $messagingSessions.set([makeSessionInfo({ id: 'shared', source: 'telegram', profile: 'beta' })])
+    const beta = makeSessionInfo({ id: 'shared', source: 'telegram', profile: 'beta' })
+    $messagingSessions.set([beta])
     noteDesktopAdmission('beta-turn')
     complete('beta-turn', 'shared', 'beta')
-    expect($unreadFinishedSessionIds.get()).toContain('shared')
-    expect($unreadFinishedMarkers.get()).toEqual({ beta: ['shared'] })
+    expect($unreadFinishedSessionIds.get()).toContain(sessionOwnerRowKey(beta))
+    expect($unreadFinishedMarkers.get()).toEqual({ beta: [unreadOwnerKey(beta)] })
   })
 
   it('does not light a held completion the user read before its receipt landed', () => {

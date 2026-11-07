@@ -28,6 +28,7 @@ import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import {
   profileScopeForSessionOwner,
   requestForSessionProfile,
+  sessionOwnerRouteFromRow,
   type SessionOwnerScope
 } from '@/store/session-request-router'
 import {
@@ -36,7 +37,7 @@ import {
   sessionTileOwnerRoute,
   setSessionTileDelegate
 } from '@/store/session-states'
-import type { SessionResumeResult } from '@/types/hermes'
+import type { SessionInfo, SessionResumeResult } from '@/types/hermes'
 
 import { refreshCronRunWriteGate } from '../../cron/open-cron-run'
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
@@ -49,7 +50,8 @@ import {
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   resolveResumedBusy,
-  resolveSessionOwner
+  resolveSessionOwner,
+  sessionMatchesStoredId
 } from '../../session/hooks/use-session-actions/utils'
 import type { useSessionStateCache } from '../../session/hooks/use-session-state-cache'
 import type { ClientSessionState } from '../../types'
@@ -155,11 +157,11 @@ function mergeTileTranscript(
 }
 
 interface SessionTileDelegateParams {
-  archiveSession: (storedSessionId: string) => Promise<unknown>
+  archiveSession: (target: SessionInfo | string) => Promise<unknown>
   branchLoadedSession: ReturnType<typeof useSessionActions>['branchLoadedSession']
   branchStoredSession: (storedSessionId: string) => Promise<unknown>
   executeSlashCommand: ReturnType<typeof usePromptActions>['executeSlashCommand']
-  removeSession: (storedSessionId: string) => Promise<unknown>
+  removeSession: (target: SessionInfo | string) => Promise<unknown>
   requestGateway: GatewayRequester
   runtimeIdByStoredSessionIdRef: SessionStateCache['runtimeIdByStoredSessionIdRef']
   sessionStateByRuntimeIdRef: SessionStateCache['sessionStateByRuntimeIdRef']
@@ -226,6 +228,28 @@ export function useSessionTileDelegate({
       return owner
     }
 
+    const mutationTargetForTile = (storedSessionId: string): SessionInfo | null => {
+      const tileOwner = sessionTileOwnerRoute(storedSessionId)
+      const candidates = ownerLookupSessionRows().filter(row => sessionMatchesStoredId(row, storedSessionId))
+
+      if (!tileOwner) {
+        return candidates.length === 1 ? candidates[0] : null
+      }
+
+      return (
+        candidates.find(row => {
+          const rowOwner = sessionOwnerRouteFromRow(row)
+
+          return (
+            rowOwner?.connectionId === tileOwner.connectionId &&
+            rowOwner.profile === (tileOwner.targetProfile ?? tileOwner.profile) &&
+            rowOwner.sessionRouteBinding === tileOwner.sessionRouteBinding &&
+            rowOwner.sessionRouteId === tileOwner.sessionRouteId
+          )
+        }) ?? null
+      )
+    }
+
     const requestForStoredSession = async <T>(
       storedSessionId: string,
       method: string,
@@ -239,7 +263,11 @@ export function useSessionTileDelegate({
 
     setSessionTileDelegate({
       archiveSession: async storedSessionId => {
-        await archiveSession(storedSessionId)
+        const target = mutationTargetForTile(storedSessionId)
+
+        if (target) {
+          await archiveSession(target)
+        }
       },
       branchSession: async storedSessionId => {
         await branchStoredSession(storedSessionId)
@@ -264,7 +292,11 @@ export function useSessionTileDelegate({
         })
       },
       deleteSession: async storedSessionId => {
-        await removeSession(storedSessionId)
+        const target = mutationTargetForTile(storedSessionId)
+
+        if (target) {
+          await removeSession(target)
+        }
       },
       executeSlash: async (rawCommand, sessionId, options) => {
         await executeSlashCommand(rawCommand, { sessionId, ...options })

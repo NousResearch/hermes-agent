@@ -16,7 +16,7 @@ vi.mock('@/hermes', () => ({
 
 import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
-import { $sessions, setConnection } from '@/store/session'
+import { $sessions, sessionOwnerPinId, setConnection } from '@/store/session'
 
 import { resetSessionPinMirror, watchSessionPins } from './session-pin-sync'
 
@@ -95,7 +95,7 @@ describe('desktop pin list is connection-scoped, not profile-scoped', () => {
     setConnection(gateway('a'))
     $sessions.set([row('only-on-a', { connection_id: 'a', pinned: true, profile: 'default' })])
     await flush()
-    expect($pinnedSessionIds.get()).toEqual(['only-on-a'])
+    expect($pinnedSessionIds.get()).toEqual([sessionOwnerPinId($sessions.get()[0])])
 
     // A pick publishes B while A's rows are still loaded.
     setConnection(gateway('b'))
@@ -105,7 +105,7 @@ describe('desktop pin list is connection-scoped, not profile-scoped', () => {
     $sessions.set([...$sessions.get(), row('b-own', { connection_id: 'b', pinned: true, profile: 'default' })])
     await flush()
 
-    expect($pinnedSessionIds.get()).toEqual(['b-own'])
+    expect($pinnedSessionIds.get()).toEqual([sessionOwnerPinId($sessions.get()[1])])
   })
 
   it("repaints only the active gateway's row when another gateway lists the same id", async () => {
@@ -130,7 +130,7 @@ describe('desktop pin list is connection-scoped, not profile-scoped', () => {
     setConnection({ connectionId: 'local', mode: 'local', profile: 'default' } as unknown as HermesConnection)
     $sessions.set([row('only-local', { pinned: true, profile: 'default' })])
     await flush()
-    expect($pinnedSessionIds.get()).toEqual(['only-local'])
+    expect($pinnedSessionIds.get()).toEqual([sessionOwnerPinId($sessions.get()[0])])
 
     // Picking registry gateway B leaves the primary (and its rows) in place.
     setConnection({ ...remote('default', 'https://gw-b.example'), connectionId: 'b' } as HermesConnection)
@@ -139,7 +139,7 @@ describe('desktop pin list is connection-scoped, not profile-scoped', () => {
 
     $sessions.set([...$sessions.get(), row('b-own', { connection_id: 'b', pinned: true, profile: 'default' })])
     await flush()
-    expect($pinnedSessionIds.get()).toEqual(['b-own'])
+    expect($pinnedSessionIds.get()).toEqual([sessionOwnerPinId($sessions.get()[1])])
   })
 
   it('lets an unpin survive a profile rescope instead of flushing pin=true', async () => {

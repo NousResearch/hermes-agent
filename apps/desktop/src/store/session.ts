@@ -27,7 +27,7 @@ import {
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 import { $removedSessionIds, isSessionRemovalPending, tombstoneRowIds } from './session-removal'
-import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
+import { type SessionOwnerRoute, sessionOwnerRowKey, type SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
 
 type Updater<T> = T | ((current: T) => T)
@@ -456,6 +456,38 @@ function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
  *  lineage root is stable across every compression, so we pin on that. */
 export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id'>): string =>
   session._lineage_root_id ?? session.id
+
+/** Renderer pin identity. Backend session ids are only owner-local, so a local
+ * pin key must retain the immutable gateway/profile boundary as well. */
+export const sessionOwnerPinId = (
+  session: Pick<SessionInfo, '_desktop_route_binding' | '_lineage_root_id' | 'connection_id' | 'id' | 'profile'>
+): string => {
+  const connectionId = session.connection_id?.trim()
+
+  // Route bindings authenticate a single live session route and rotate across
+  // app launches and compression tips. They cannot be persisted as pin owner
+  // identity, so connectionless rows retain their historical lineage-root key.
+  if (!connectionId) {
+    return sessionPinId(session)
+  }
+
+  return JSON.stringify([
+    'owner-pin',
+    connectionId,
+    session.profile?.trim() || 'default',
+    sessionPinId(session)
+  ])
+}
+
+/** Resolve an owner-qualified pin only to its exact row; retain compatibility
+ * with historical bare ids already persisted in localStorage. */
+export const sessionMatchesPinId = (
+  session: Pick<
+    SessionInfo,
+    '_desktop_route_binding' | '_lineage_ids' | '_lineage_root_id' | 'connection_id' | 'id' | 'profile'
+  >,
+  storedPinId: string
+): boolean => storedPinId === sessionOwnerPinId(session) || sessionMatchesStoredId(session, storedPinId)
 
 /** True when a stored/lineage id resolves to this session — it matches either
  *  the live id or the stable lineage root (see sessionPinId). The one place the
@@ -1582,12 +1614,14 @@ export const $lastReadAtBySessionId = atom<Record<string, number>>({})
 /** A new turn started for this session: the read baseline only guarded the
  *  PREVIOUS completion's re-asserts, so drop it — the new turn's finish must
  *  re-light even when it lands in the same millisecond as the last read. */
-export const clearReadBaseline = (storedSessionId: string) => {
+export const clearReadBaseline = (storedSessionId: string, row?: SessionInfo) => {
   const map = $lastReadAtBySessionId.get()
+  const keys = row ? [storedSessionId, sessionOwnerRowKey(row)] : [storedSessionId]
 
-  if (storedSessionId in map) {
-    const { [storedSessionId]: _dropped, ...rest } = map
-    $lastReadAtBySessionId.set(rest)
+  if (keys.some(key => key in map)) {
+    const next = { ...map }
+    keys.forEach(key => delete next[key])
+    $lastReadAtBySessionId.set(next)
   }
 }
 
@@ -1614,29 +1648,59 @@ export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
  *  baseline so a later completion that settles BEFORE this view is not
  *  re-lit. Must be callable before any focus short-circuit (openSession top)
  *  so re-clicking an already-visible session still clears its dot. */
-export const markSessionRead = (storedSessionId: string | null | undefined) => {
-  if (!storedSessionId) {
+export const markSessionRead = (target: SessionInfo | null | string | undefined) => {
+  if (!target) {
     return
   }
+
+  const storedSessionId = typeof target === 'string' ? target : target.id
 
   // The family is the opened session's own profile's rows: another profile's same-id session is a
   // different conversation. Its owner is the first matching row, recents first as selection reads them.
   // (Local normalize: importing @/store/profile here would be circular.)
   const profileOf = (row: SessionInfo) => (row.profile ?? '').trim() || 'default'
   const rows = [...$sessions.get(), ...$messagingSessions.get(), ...$cronSessions.get()]
-  const opened = rows.find(row => sessionMatchesStoredId(row, storedSessionId))
-  const own = opened ? rows.filter(row => profileOf(row) === profileOf(opened)) : rows
+  const matches = rows.filter(row => sessionMatchesStoredId(row, storedSessionId))
+
+  const opened =
+    typeof target === 'string'
+      ? matches.length === 1
+        ? matches[0]
+        : undefined
+      : rows.find(row => sessionOwnerRowKey(row) === sessionOwnerRowKey(target))
+
+  if (typeof target === 'string' && matches.length > 1) {
+    return
+  }
+
+  const own = opened
+    ? rows.filter(row => profileOf(row) === profileOf(opened) && sessionOwnerPinId(row) === sessionOwnerPinId(opened))
+    : rows
+
   const familyIds = new Set<string>(lineageAliases(storedSessionId, own))
+  const markerIds = new Set<string>()
+
+  for (const id of familyIds) {
+    const familyRows = own.filter(row => sessionMatchesStoredId(row, id))
+
+    if (familyRows.length === 1) {
+      const duplicateCount = rows.filter(row => sessionMatchesStoredId(row, id)).length
+
+      markerIds.add(duplicateCount === 1 ? id : sessionOwnerRowKey(familyRows[0]!))
+    } else if (familyRows.length === 0) {
+      markerIds.add(id)
+    }
+  }
 
   const lastReadAt = Date.now()
   const nextReadMap = { ...$lastReadAtBySessionId.get() }
 
-  for (const id of familyIds) {
+  for (const id of markerIds) {
     nextReadMap[id] = lastReadAt
   }
 
   $lastReadAtBySessionId.set(nextReadMap)
-  $unreadFinishedSessionIds.set($unreadFinishedSessionIds.get().filter(id => !familyIds.has(id)))
+  $unreadFinishedSessionIds.set($unreadFinishedSessionIds.get().filter(id => !markerIds.has(id)))
 }
 
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)

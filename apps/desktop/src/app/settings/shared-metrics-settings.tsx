@@ -3,12 +3,11 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { DocsLink } from '@/components/onboarding/flow'
 import { useI18n } from '@/i18n'
-import { $activeConnectionId } from '@/store/connections'
 import { setDesktopMetricsGate } from '@/store/desktop-metrics'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $settingsScopeProfile } from '@/store/settings-scope'
+import { $settingsOwner, $settingsScopeProfile, settingsGatewayRequestOwnership } from '@/store/settings-scope'
 import {
   readSharedMetricsConsent,
   saveSharedMetricsConsent,
@@ -30,7 +29,7 @@ export function SharedMetricsSettings() {
   const { t } = useI18n()
   const copy = t.sharedMetrics
   const scopeProfile = useStore($settingsScopeProfile)
-  const connectionId = useStore($activeConnectionId)
+  const settingsOwner = useStore($settingsOwner)
   const [consent, setConsent] = useState<SharedMetricsConsent | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -38,18 +37,33 @@ export function SharedMetricsSettings() {
   const request = useMemo(
     () =>
       sharedMetricsProfileRequester(
-        <T,>(method: string, params: Record<string, unknown> = {}) =>
-          requestGatewayForAgent<T>(connectionId, scopeProfile, method, params, undefined, undefined, {
-            spawnPriority: 'foreground'
-          }),
+        <T,>(method: string, params: Record<string, unknown> = {}) => {
+          if (!settingsOwner || $settingsOwner.get() !== settingsOwner) {
+            throw new Error('Settings owner changed. Reopen Settings and try again.')
+          }
+
+          return requestGatewayForAgent<T>(
+            settingsOwner.connectionId,
+            settingsOwner.profile ?? scopeProfile,
+            method,
+            params,
+            undefined,
+            undefined,
+            {
+              ...settingsGatewayRequestOwnership(settingsOwner),
+              spawnPriority: 'foreground'
+            }
+          )
+        },
         scopeProfile
       ),
-    [connectionId, scopeProfile]
+    [scopeProfile, settingsOwner]
   )
 
   useEffect(() => {
     let cancelled = false
 
+    setBusy(false)
     setLoaded(false)
     void readSharedMetricsConsent(request).then(next => {
       if (!cancelled) {
@@ -63,12 +77,17 @@ export function SharedMetricsSettings() {
 
   const save = async (flags: { enabled: boolean; send: boolean }) => {
     const previous = consent
+    const owner = settingsOwner
 
     setBusy(true)
     setConsent({ ...flags, send: flags.enabled && flags.send, decided: true })
 
     try {
       const saved = await saveSharedMetricsConsent(request, flags)
+
+      if (!owner || $settingsOwner.get() !== owner) {
+        return
+      }
 
       setConsent(saved)
 
@@ -81,10 +100,16 @@ export function SharedMetricsSettings() {
         setDesktopMetricsGate(saved.enabled ? 'on' : 'off')
       }
     } catch (err) {
+      if (!owner || $settingsOwner.get() !== owner) {
+        return
+      }
+
       setConsent(previous)
       notifyError(err, copy.saveFailed)
     } finally {
-      setBusy(false)
+      if (owner && $settingsOwner.get() === owner) {
+        setBusy(false)
+      }
     }
   }
 

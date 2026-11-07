@@ -1,5 +1,6 @@
 import type { ProfileScope } from '@/hermes'
 import { requestGatewayForAgent, requestGatewayForProfile, retainGatewayForSessionTurn } from '@/store/gateway'
+import type { SessionInfo } from '@/types/hermes'
 
 import { resetBackgroundPollingGuardAfterRebind } from './session-gone-latch'
 
@@ -21,6 +22,8 @@ export interface SessionOwnerRoute {
   connectionId: string
   mode?: 'local' | 'remote'
   profile: string
+  sessionRouteBinding?: string
+  sessionRouteId?: string
   targetProfile?: string
 }
 
@@ -41,7 +44,9 @@ export function profileScopeForSessionOwner(owner: SessionOwnerScope): ProfileSc
 
   return {
     connectionId: owner.connectionId,
-    profile: owner.targetProfile ?? owner.profile
+    profile: owner.targetProfile ?? owner.profile,
+    ...(owner.sessionRouteBinding ? { sessionRouteBinding: owner.sessionRouteBinding } : {}),
+    ...(owner.sessionRouteId ? { sessionRouteId: owner.sessionRouteId } : {})
   }
 }
 
@@ -51,7 +56,12 @@ export function profileScopeForSessionOwner(owner: SessionOwnerScope): ProfileSc
  *  across refreshes). A row without a connection tag yields undefined — a bare
  *  profile is not an exact owner. */
 export function sessionOwnerRouteFromRow(
-  row: { connection_id?: null | string; profile?: null | string } | null | undefined
+  row: {
+    _desktop_route_binding?: string
+    connection_id?: null | string
+    id?: null | string
+    profile?: null | string
+  } | null | undefined
 ): SessionOwnerRoute | undefined {
   const connectionId = String(row?.connection_id ?? '').trim()
 
@@ -59,7 +69,57 @@ export function sessionOwnerRouteFromRow(
     return undefined
   }
 
-  return { connectionId, profile: String(row?.profile ?? '').trim() || 'default' }
+  const sessionRouteBinding = String(row?._desktop_route_binding ?? '').trim()
+  const sessionRouteId = String(row?.id ?? '').trim()
+
+  return {
+    connectionId,
+    profile: String(row?.profile ?? '').trim() || 'default',
+    ...(sessionRouteBinding ? { sessionRouteBinding, sessionRouteId } : {})
+  }
+}
+
+/** REST mutation scope for a listed row. Legacy rows have no registry id, but
+ * their opaque Electron-issued binding still pins the route and must suppress
+ * the ambient registry tag. Keep that legacy shape out of live session RPCs. */
+export function sessionMutationScopeFromRow(
+  row: {
+    _desktop_route_binding?: string
+    connection_id?: null | string
+    id?: null | string
+    profile?: null | string
+  } | null | undefined
+): ProfileScope | undefined {
+  const owner = sessionOwnerRouteFromRow(row)
+
+  if (owner) {
+    return owner
+  }
+
+  const sessionRouteBinding = String(row?._desktop_route_binding ?? '').trim()
+
+  if (!sessionRouteBinding) {
+    return undefined
+  }
+
+  return {
+    connectionId: null,
+    profile: String(row?.profile ?? '').trim() || 'default',
+    sessionRouteBinding,
+    sessionRouteId: String(row?.id ?? '').trim()
+  }
+}
+
+/** Stable renderer identity for a stored row, including its immutable owner. */
+export function sessionOwnerRowKey(
+  row: Pick<SessionInfo, '_desktop_route_binding' | 'connection_id' | 'id' | 'profile'>
+): string {
+  return JSON.stringify([
+    row.connection_id?.trim() || 'legacy',
+    row.profile?.trim() || 'default',
+    row._desktop_route_binding?.trim() || '-',
+    row.id
+  ])
 }
 
 // ── Session-scoped RPC routing (the #89206 class) ───────────────────────────

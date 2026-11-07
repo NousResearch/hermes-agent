@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
 import type { SidebarListRow } from '@/lib/session-date-groups'
+import { sessionOwnerRowKey } from '@/store/session-request-router'
+import { makeSessionInfo } from '@/test/session-info'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
+  canReorderSessions,
   mergeVisibleReorder,
   orderByIds,
   orderRowsWithinGroups,
@@ -13,6 +16,14 @@ import {
   resolveManualSessionOrderIds,
   sameIds
 } from './order'
+
+describe('canReorderSessions', () => {
+  it('rejects owner-colliding ids because persisted order is id-only', () => {
+    const sessions = [makeSessionInfo({ id: 'shared' }), makeSessionInfo({ connection_id: 'remote', id: 'shared' })]
+
+    expect(canReorderSessions(sessions, true, true)).toBe(false)
+  })
+})
 
 describe('resolveManualSessionOrderIds', () => {
   it('clears legacy auto-seeded order until the user manually reorders sessions', () => {
@@ -85,6 +96,13 @@ describe('rankSessions', () => {
       'newest',
       'middle'
     ])
+  })
+
+  it('ranks same-id rows by immutable owner key', () => {
+    const alpha = makeSessionInfo({ connection_id: 'gateway-a', id: 'same' })
+    const beta = makeSessionInfo({ connection_id: 'gateway-b', id: 'same' })
+
+    expect(rankSessions([alpha, beta], [sessionOwnerRowKey(beta), sessionOwnerRowKey(alpha)])).toEqual([beta, alpha])
   })
 })
 

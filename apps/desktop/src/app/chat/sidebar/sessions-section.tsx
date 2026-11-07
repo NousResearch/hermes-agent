@@ -28,12 +28,13 @@ import {
   toggleWorkspaceNodeCollapsed
 } from '@/store/layout'
 import type { AgentProfileRoute } from '@/store/profile'
-import { sessionPinId } from '@/store/session'
-import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
+import { sessionOwnerPinId } from '@/store/session'
+import { $sessionDotStateById, hasLiveTurn, sessionDotStateForRow } from '@/store/session-dot-state'
+import { sessionOwnerRowKey } from '@/store/session-request-router'
 
 import { SIDEBAR_FOCUS_VISIBLE, SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import { GatewayProfileGroups } from './gateway-groups'
-import { mergeVisibleReorder, orderRowsWithinGroups, reorderableRowIds } from './order'
+import { canReorderSessions, mergeVisibleReorder, orderRowsWithinGroups, reorderableRowIds } from './order'
 import {
   EnteredProjectContent,
   ProjectOverviewRow,
@@ -115,11 +116,11 @@ interface SidebarSessionsSectionProps {
   sessions: SessionInfo[]
   activeSessionId: null | string
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
-  onDeleteSession: (sessionId: string) => void
-  onArchiveSession: (sessionId: string) => void
+  onDeleteSession: (session: SessionInfo) => void
+  onArchiveSession: (session: SessionInfo) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
-  onToggleUnread: (sessionId: string) => void
+  onToggleUnread: (session: SessionInfo) => void
   onNewSessionInWorkspace?: (path: null | string, owner?: AgentProfileRoute) => void
   /** Create a new session as a tile at a drop target (drag from a project "+"). */
   onNewSessionSplit?: NewSessionSplitHandler
@@ -268,9 +269,8 @@ export function SidebarSessionsSection({
   const showEmptyState =
     forceEmptyState || (!hasGroupedSessions && !hasProjectOverview && !hasProjectContent && sessions.length === 0)
 
-  // The flat recents/pinned list is the only place sessions reorder by hand;
-  // grouped/tree views always sort by creation date and never drag.
-  const sessionsDraggable = sortable && !!onReorderSessions
+  // Persisted order is id-only, so owner-colliding ids stay non-sortable.
+  const sessionsDraggable = canReorderSessions(sessions, sortable, !!onReorderSessions)
 
   // Only Pinned arrives pre-ordered as a flat sequence. Recents keeps its
   // recency sort — the drag order is layered on per date group below, so the
@@ -287,11 +287,11 @@ export function SidebarSessionsSection({
         card,
         isPinned: pinned,
         isSelected: session.id === activeSessionId,
-        onArchive: () => onArchiveSession(session.id),
+        onArchive: () => onArchiveSession(session),
         onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
-        onDelete: () => onDeleteSession(session.id),
-        onPin: () => onTogglePin(sessionPinId(session)),
-        onToggleUnread: () => onToggleUnread(session.id),
+        onDelete: () => onDeleteSession(session),
+        onPin: () => onTogglePin(sessionOwnerPinId(session)),
+        onToggleUnread: () => onToggleUnread(session),
         onResume: () => onResumeSession(session.id, session),
         reorderable: draggable && !branchStem,
         session,
@@ -299,13 +299,12 @@ export function SidebarSessionsSection({
         unread: session.unread === true
       }
 
-      // Key by (profile, id): twins with the same stored id in two profiles
-      // are distinct rows (#92454) — a bare-id key makes React misattribute
-      // one twin's rendered state to the other.
+      const rowKey = sessionOwnerRowKey(session)
+
       return draggable && !branchStem ? (
-        <SortableSidebarSessionRow key={`${session.profile ?? ''}::${session.id}`} {...rowProps} />
+        <SortableSidebarSessionRow key={rowKey} {...rowProps} />
       ) : (
-        <SidebarSessionRow key={`${session.profile ?? ''}::${session.id}`} {...rowProps} />
+        <SidebarSessionRow key={rowKey} {...rowProps} />
       )
     },
     [
@@ -434,7 +433,7 @@ export function SidebarSessionsSection({
         : grouping === 'status'
           ? groupEntriesByStatus(
               displayEntries,
-              entry => hasLiveTurn(dotStates[entry.session.id] ?? 'idle'),
+              entry => hasLiveTurn(sessionDotStateForRow(dotStates, entry.session)),
               statusDividerLabels
             )
           : toSessionRows(displayEntries)

@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
 import { Button } from '@/components/ui/button'
@@ -8,8 +8,8 @@ import { Tip } from '@/components/ui/tooltip'
 import {
   deleteSession,
   getHermesConfigRecord,
-  peekConfigReadOrigin,
-  retainConfigReadOrigin,
+  type ProfileScope,
+  profileScopeKey,
   saveHermesConfig,
   setSessionArchived
 } from '@/hermes'
@@ -27,7 +27,8 @@ import { bindingsFor } from '@/store/keybinds'
 import { notify, notifyError } from '@/store/notifications'
 import { $connection, applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
 import { untombstoneSessions } from '@/store/session-removal'
-import { forgetSessionUnread } from '@/store/session-unread'
+import { sessionMutationScopeFromRow } from '@/store/session-request-router'
+import { forgetSessionUnread, sessionUnreadCleanupIds } from '@/store/session-unread'
 import { listEveryArchivedSession } from '@/store/sidebar-archive'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
@@ -46,11 +47,30 @@ function newSessionShortcut(): null | string {
 
 const DEFAULT_AUTO_ARCHIVE_DAYS = 3
 
+function archivedSessionScope(settingsOwner: ProfileScope, session: SessionInfo): ProfileScope {
+  const rowOwner = sessionMutationScopeFromRow(session)
+
+  if (rowOwner) {
+    return rowOwner
+  }
+
+  if (settingsOwner && typeof settingsOwner === 'object') {
+    return {
+      ...settingsOwner,
+      connectionOwnerProfile: settingsOwner.profile ?? 'default',
+      profile: session.profile ?? settingsOwner.profile
+    }
+  }
+
+  return session.profile
+}
+
 interface SessionsSettingsProps {
+  settingsOwner?: ProfileScope
   subpage?: string
 }
 
-export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
+export function SessionsSettings({ settingsOwner, subpage }: SessionsSettingsProps = {}) {
   useSettingDeepLink('sessions', page => subpage === undefined || page === subpage)
 
   if (subpage === 'default-directory') {
@@ -61,27 +81,67 @@ export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
     )
   }
 
-  return <ArchivedSessionsSettings includeDefaultDirectory={subpage === undefined} />
+  return <ArchivedSessionsSettings includeDefaultDirectory={subpage === undefined} settingsOwner={settingsOwner} />
 }
 
-function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultDirectory: boolean }) {
+function ArchivedSessionsSettings({
+  includeDefaultDirectory,
+  settingsOwner
+}: {
+  includeDefaultDirectory: boolean
+  settingsOwner?: ProfileScope
+}) {
   const { t } = useI18n()
   const s = t.settings.sessions
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(true)
-  const [busyId, setBusyId] = useState<string | null>(null)
+  const [busyKeys, setBusyKeys] = useState<ReadonlySet<string>>(() => new Set())
+  const [lifetime] = useState(() => new AbortController())
+  const ownerKey = profileScopeKey(settingsOwner)
+  const ownerKeyRef = useRef(ownerKey)
+  ownerKeyRef.current = ownerKey
+
+  const rowKey = useCallback((session: SessionInfo) => {
+    const scope = archivedSessionScope(settingsOwner, session)
+    const routeBinding = scope && typeof scope === 'object' ? scope.sessionRouteBinding ?? null : null
+
+    return JSON.stringify([profileScopeKey(scope), routeBinding, session.id])
+  }, [settingsOwner])
+
+  useEffect(() => () => lifetime.abort(), [lifetime])
+
+  const ownerIsCurrent = useCallback(
+    (capturedOwnerKey: string) => !lifetime.signal.aborted && ownerKeyRef.current === capturedOwnerKey,
+    [lifetime]
+  )
 
   const load = useCallback(async () => {
+    const capturedOwnerKey = ownerKey
     setLoading(true)
 
-    try {
-      setLocalSessions(await listEveryArchivedSession())
-    } catch (err) {
-      notifyError(err, s.failedLoad)
-    } finally {
+    if (settingsOwner === null) {
+      setLocalSessions([])
       setLoading(false)
+
+      return
     }
-  }, [s.failedLoad])
+
+    try {
+      const rows = await listEveryArchivedSession(settingsOwner)
+
+      if (ownerIsCurrent(capturedOwnerKey)) {
+        setLocalSessions(rows)
+      }
+    } catch (err) {
+      if (ownerIsCurrent(capturedOwnerKey)) {
+        notifyError(err, s.failedLoad)
+      }
+    } finally {
+      if (ownerIsCurrent(capturedOwnerKey)) {
+        setLoading(false)
+      }
+    }
+  }, [ownerIsCurrent, ownerKey, s.failedLoad, settingsOwner])
 
   useEffect(() => {
     void load()
@@ -89,11 +149,19 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
 
   const unarchive = useCallback(
     async (session: SessionInfo) => {
-      setBusyId(session.id)
+      const actionOwnerKey = ownerKey
+      const actionScope = archivedSessionScope(settingsOwner, session)
+      const actionRowKey = rowKey(session)
+      setBusyKeys(keys => new Set(keys).add(actionRowKey))
 
       try {
-        await setSessionArchived(session.id, false, session.profile)
-        setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+        await setSessionArchived(session.id, false, actionScope)
+
+        if (!ownerIsCurrent(actionOwnerKey)) {
+          return
+        }
+
+        setLocalSessions(prev => prev.filter(s => rowKey(s) !== actionRowKey))
         // Surface it again in the sidebar without waiting for a full refresh, and
         // lift any optimistic eviction so the grouped tree shows it again too.
         untombstoneSessions([session.id, session._lineage_root_id])
@@ -101,48 +169,83 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
         triggerHaptic('selection')
         notify({ durationMs: 2_000, kind: 'success', message: s.restored })
       } catch (err) {
-        notifyError(err, s.unarchiveFailed)
+        if (ownerIsCurrent(actionOwnerKey)) {
+          notifyError(err, s.unarchiveFailed)
+        }
       } finally {
-        setBusyId(null)
+        if (ownerIsCurrent(actionOwnerKey)) {
+          setBusyKeys(keys => {
+            const next = new Set(keys)
+
+            next.delete(actionRowKey)
+
+            return next
+          })
+        }
       }
     },
-    [s]
+    [ownerIsCurrent, ownerKey, rowKey, s, settingsOwner]
   )
 
   const remove = useCallback(
     async (session: SessionInfo) => {
+      const actionOwnerKey = ownerKey
+      const actionScope = archivedSessionScope(settingsOwner, session)
+      const actionRowKey = rowKey(session)
+
+      const unreadCleanupIds = sessionUnreadCleanupIds(
+        session,
+        [session.id, session._lineage_root_id],
+        sessions
+      )
+
       const ok = await confirm({
         confirmLabel: s.deletePermanently,
         destructive: true,
         title: s.deleteConfirm(sessionTitle(session))
       })
 
-      if (!ok) {
+      if (!ok || !ownerIsCurrent(actionOwnerKey)) {
         return
       }
 
-      setBusyId(session.id)
+      setBusyKeys(keys => new Set(keys).add(actionRowKey))
 
       try {
-        await deleteSession(session.id, session.profile)
+        await deleteSession(session.id, actionScope)
+
+        if (!ownerIsCurrent(actionOwnerKey)) {
+          return
+        }
+
         // Permanent delete bypasses removeSession, so retire the persisted
         // unread state here too rather than leaving it to rot.
-        forgetSessionUnread([session.id, session._lineage_root_id], session.profile)
+        forgetSessionUnread(unreadCleanupIds, session.profile)
         // Same for the journaled in-flight tail: it holds this session's
         // prompt and tool calls in localStorage, and a deleted session must
         // not leave that copy behind to age out on its own. Both ids — the
         // stored tip and the durable lineage root — the journal keys on the
         // stored id and the row may carry either.
         purgeInFlightTurnJournals([session.id, session._lineage_root_id])
-        setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+        setLocalSessions(prev => prev.filter(s => rowKey(s) !== actionRowKey))
         triggerHaptic('warning')
       } catch (err) {
-        notifyError(err, s.deleteFailed)
+        if (ownerIsCurrent(actionOwnerKey)) {
+          notifyError(err, s.deleteFailed)
+        }
       } finally {
-        setBusyId(null)
+        if (ownerIsCurrent(actionOwnerKey)) {
+          setBusyKeys(keys => {
+            const next = new Set(keys)
+
+            next.delete(actionRowKey)
+
+            return next
+          })
+        }
       }
     },
-    [s]
+    [ownerIsCurrent, ownerKey, rowKey, s, sessions, settingsOwner]
   )
 
   useDeepLinkHighlight({
@@ -159,7 +262,7 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
     <SettingsContent>
       {includeDefaultDirectory && <DefaultProjectDirSetting />}
 
-      <AutoArchiveSetting />
+      <AutoArchiveSetting settingsOwner={settingsOwner} />
 
       <SectionHeading
         icon={Archive}
@@ -176,10 +279,11 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
         <div className="grid gap-1">
           {sessions.map(session => {
             const label = pathLeaf(session.cwd)
-            const busy = busyId === session.id
+            const key = rowKey(session)
+            const busy = busyKeys.has(key)
 
             return (
-              <div className="scroll-mt-6 rounded-lg" id={`archived-session-${session.id}`} key={session.id}>
+              <div className="scroll-mt-6 rounded-lg" id={`archived-session-${session.id}`} key={key}>
                 <ListRow
                   action={
                     <div className="flex items-center gap-1.5">
@@ -226,12 +330,15 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
 // (sessions.auto_archive in config.yaml + SessionDB.maybe_auto_archive); this
 // just toggles the config keys, so CLI / gateway / Desktop all honour one
 // setting. Pins are exempt on the backend, so pinned chats survive regardless.
-function AutoArchiveSetting() {
+function AutoArchiveSetting({ settingsOwner }: { settingsOwner?: ProfileScope }) {
   const { t } = useI18n()
   const s = t.settings.sessions
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [enabled, setEnabled] = useState(false)
   const [days, setDays] = useState(DEFAULT_AUTO_ARCHIVE_DAYS)
+  const ownerKey = profileScopeKey(settingsOwner)
+  const ownerKeyRef = useRef(ownerKey)
+  ownerKeyRef.current = ownerKey
 
   useEffect(() => {
     // Config REST is only reachable through the Electron bridge; skip in
@@ -242,7 +349,11 @@ function AutoArchiveSetting() {
 
     let alive = true
 
-    void getHermesConfigRecord()
+    if (settingsOwner === null) {
+      return
+    }
+
+    void getHermesConfigRecord(settingsOwner)
       .then(record => {
         if (!alive) {
           return
@@ -261,7 +372,7 @@ function AutoArchiveSetting() {
     return () => {
       alive = false
     }
-  }, [])
+  }, [settingsOwner])
 
   const persist = useCallback(
     async (autoArchive: boolean, archiveDays: number) => {
@@ -275,22 +386,24 @@ function AutoArchiveSetting() {
         auto_archive_days: archiveDays
       }
 
-      // Read the route at save time from the record itself, and carry it onto
-      // the replacement snapshot so the next save still targets the gateway
-      // that served the original GET.
-      const writeScope = peekConfigReadOrigin(config)
-
-      setConfig(retainConfigReadOrigin({ ...config, sessions }, config))
+      const updated = { ...config, sessions }
+      const capturedOwnerKey = ownerKey
+      setConfig(updated)
 
       try {
         // Sparse patch: PUT /api/config deep-merges, and echoing the cached
         // snapshot would overwrite keys other surfaces changed since it loaded.
-        await saveHermesConfig({ sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } }, writeScope)
+        await saveHermesConfig(
+          { sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } },
+          settingsOwner
+        )
       } catch (err) {
-        notifyError(err, s.autoArchiveFailed)
+        if (ownerKeyRef.current === capturedOwnerKey) {
+          notifyError(err, s.autoArchiveFailed)
+        }
       }
     },
-    [config, s.autoArchiveFailed]
+    [config, ownerKey, s.autoArchiveFailed, settingsOwner]
   )
 
   if (!config) {

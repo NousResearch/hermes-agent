@@ -4,10 +4,11 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // The host tab lists installed plugins on mount; only an `install` action counts as installing.
-const { requestGateway } = vi.hoisted(() => ({
+const { requestGateway, requestGatewayForAgent } = vi.hoisted(() => ({
   requestGateway: vi.fn(async (_method: string, _params?: Record<string, unknown>): Promise<unknown> => ({
     plugins: []
-  }))
+  })),
+  requestGatewayForAgent: vi.fn()
 }))
 
 vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
@@ -16,6 +17,10 @@ vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getProfiles: async () => ({ profiles: [] })
+}))
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...(await importOriginal<object>()),
+  requestGatewayForAgent: (...args: unknown[]) => requestGatewayForAgent(...args)
 }))
 
 import { $pluginDecisions, $pluginRecords, dropPlugin, patchPlugin, publishPlugin } from '@/contrib/plugins-store'
@@ -96,6 +101,9 @@ beforeEach(() => {
     }
   ])
   requestGateway.mockImplementation(async () => ({ plugins: [] }))
+  requestGatewayForAgent.mockImplementation(async (_connectionId, _profile, method, params) =>
+    requestGateway(method, params)
+  )
   probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'blender', desktop: false, warnings: [] })
   vi.stubGlobal('hermesDesktop', { probePluginRepo, installDesktopPlugin })
 })
@@ -106,6 +114,46 @@ afterEach(() => {
 })
 
 describe('A reviewed catalog pick', () => {
+  it('keeps a Settings-launched install pinned to its captured gateway owner', async () => {
+    const sourceOwner = { baseUrl: 'https://foreground.example', mode: 'remote' as const, token: 'synthetic-source' }
+    const targetOwner = { baseUrl: 'https://gateway-b.example', mode: 'remote' as const, token: 'synthetic-target' }
+
+    const owner = {
+      cacheOwner: targetOwner,
+      connectionId: 'gateway-b',
+      connectionOwner: sourceOwner,
+      connectionOwnerProfile: 'foreground',
+      profile: 'default'
+    }
+
+    requestGateway.mockImplementation(async (method, params) =>
+      method === 'plugins.manage' && params?.action === 'install'
+        ? { ok: true, plugin_name: 'blender' }
+        : { plugins: [] }
+    )
+    renderFlow()
+    act(() => openPluginInstallRequest({ ...BLENDER, owner, ownerIdentity: 'gateway-b::default', profile: 'default' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Advanced' }))
+    expect((screen.getByRole('combobox', { name: 'Install for profile' }) as HTMLButtonElement).disabled).toBe(true)
+
+    fireEvent.click(installButton())
+
+    await waitFor(() =>
+      expect(requestGatewayForAgent).toHaveBeenCalledWith(
+        'gateway-b',
+        'default',
+        'plugins.manage',
+        expect.objectContaining({ action: 'install', catalog_name: 'blender', profile: 'default' }),
+        expect.any(Number),
+        undefined,
+        expect.objectContaining({
+          expectedConnectionOwner: targetOwner,
+          expectedOwner: { profile: 'foreground', connectionOwner: sourceOwner }
+        })
+      )
+    )
+  })
+
   it('shows only name, one line and Verified until Advanced reveals source, version and profile', async () => {
     renderFlow()
     act(() => openPluginInstallRequest(BLENDER))

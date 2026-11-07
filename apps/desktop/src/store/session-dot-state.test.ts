@@ -18,11 +18,13 @@ import {
   $sessionDotStateById,
   $unreadSessionCount,
   hasLiveTurn,
+  sessionDotStateForRow,
   showsRunningArc,
   unreadSessionCount
 } from './session-dot-state'
+import { sessionOwnerRowKey } from './session-request-router'
 import { clearAllSessionStates, publishSessionState } from './session-states'
-import { $unreadWriteGuard } from './session-unread-remote'
+import { $unreadWriteGuard, unreadWriteKey } from './session-unread-remote'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
 
 describe('showsRunningArc', () => {
@@ -128,6 +130,34 @@ describe('persisted unread (backend watermark)', () => {
     expect($sessionDotStateById.get()['s1']).toBe('unread')
   })
 
+  it('keeps persisted unread state on its immutable owner when ids collide', () => {
+    const ownerA = storedRow('same', { connection_id: 'gateway-a', profile: 'work', unread: false })
+    const ownerB = storedRow('same', { connection_id: 'gateway-b', profile: 'work', unread: true })
+
+    setSessions([ownerA, ownerB])
+    const states = $sessionDotStateById.get()
+
+    expect(sessionDotStateForRow(states, ownerA)).toBe('idle')
+    expect(sessionDotStateForRow(states, ownerB)).toBe('unread')
+  })
+
+  it('does not fan a bare unread marker across duplicate owners', () => {
+    const ownerA = storedRow('same', { connection_id: 'gateway-a', profile: 'work' })
+    const ownerB = storedRow('same', { connection_id: 'gateway-b', profile: 'work' })
+
+    setSessions([ownerA, ownerB])
+    $unreadFinishedSessionIds.set(['same'])
+    let states = $sessionDotStateById.get()
+
+    expect(sessionDotStateForRow(states, ownerA)).toBe('idle')
+    expect(sessionDotStateForRow(states, ownerB)).toBe('idle')
+
+    $unreadFinishedSessionIds.set([sessionOwnerRowKey(ownerB)])
+    states = $sessionDotStateById.get()
+    expect(sessionDotStateForRow(states, ownerA)).toBe('idle')
+    expect(sessionDotStateForRow(states, ownerB)).toBe('unread')
+  })
+
   it('keeps draft weaker than persisted unread', () => {
     // A blank tile (no busy, no messages, message_count 0) is a draft; the
     // persisted unread claim must speak over it.
@@ -146,16 +176,18 @@ describe('persisted unread (backend watermark)', () => {
 
   it('fences a stale page with the write guard', () => {
     const guard = new Map<string, { at: number; value: boolean }>()
-    guard.set('s1', { at: Date.now(), value: true })
+    const guarded = storedRow('s1', { unread: false })
+
+    guard.set(unreadWriteKey(guarded), { at: Date.now(), value: true })
     $unreadWriteGuard.set(guard)
 
     // A page issued before our PATCH still says read — keep OUR value.
-    setSessions([storedRow('s1', { unread: false })])
+    setSessions([guarded])
     expect($sessionDotStateById.get()['s1']).toBe('unread')
 
     // The guard expires: the page wins and the dot drops.
     const expired = new Map<string, { at: number; value: boolean }>()
-    expired.set('s1', { at: Date.now() - 60_000, value: true })
+    expired.set(unreadWriteKey(guarded), { at: Date.now() - 60_000, value: true })
     $unreadWriteGuard.set(expired)
     expect($sessionDotStateById.get()['s1']).not.toBe('unread')
   })

@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { Dispatch, SetStateAction } from 'react'
 import { useSearchParams } from 'react-router'
 
 import { Button } from '@/components/ui/button'
@@ -18,14 +19,14 @@ import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Lock, Plus, ShieldLock, Trash2 } from '@/lib/icons'
-import { $activeConnectionId } from '@/store/connections'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $gatewayState } from '@/store/session'
-import { $settingsScopeProfile } from '@/store/settings-scope'
+import { $settingsOwner, settingsGatewayRequestOwnership } from '@/store/settings-scope'
 
 import { CONTROL_TEXT } from './constants'
 import { ListRow, Pill, SectionHeading, SettingsContent } from './primitives'
@@ -151,11 +152,278 @@ function buildSecret(form: VaultForm): Record<string, string> {
   return secret
 }
 
+interface VaultAddDialogProps {
+  addOpen: boolean
+  closeAdd: () => void
+  form: VaultForm
+  formError: null | string
+  isPending: boolean
+  setForm: Dispatch<SetStateAction<VaultForm>>
+  submitAdd: () => void
+}
+
+function VaultAddDialog({
+  addOpen,
+  closeAdd,
+  form,
+  formError,
+  isPending,
+  setForm,
+  submitAdd
+}: VaultAddDialogProps) {
+  const { t } = useI18n()
+  const v = t.settings.vault
+
+  return (
+    <Dialog onOpenChange={open => !open && closeAdd()} open={addOpen}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{v.addTitle}</DialogTitle>
+          <DialogDescription>{v.addDescription}</DialogDescription>
+        </DialogHeader>
+
+        <form
+          className="grid gap-4"
+          onSubmit={e => {
+            e.preventDefault()
+            submitAdd()
+          }}
+        >
+          <div className="grid items-start gap-4 sm:grid-cols-2">
+            <Field htmlFor="vault-kind" label={v.kindField}>
+              <Select onValueChange={value => setForm(f => ({ ...f, kind: value as VaultKind }))} value={form.kind}>
+                <SelectTrigger className={CONTROL_TEXT} id="vault-kind">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {VAULT_KINDS.map(kind => (
+                    <SelectItem key={kind} value={kind}>
+                      {v.kinds[kind]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field htmlFor="vault-label" label={v.labelField}>
+              <Input
+                autoFocus
+                id="vault-label"
+                onChange={e => setForm(f => ({ ...f, label: e.target.value }))}
+                placeholder={v.labelPlaceholder}
+                value={form.label}
+              />
+            </Field>
+          </div>
+
+          <Field htmlFor="vault-origin" label={v.originField}>
+            <Input
+              id="vault-origin"
+              inputMode="url"
+              onChange={e => setForm(f => ({ ...f, origin: e.target.value }))}
+              placeholder={form.kind === 'login' ? v.originPlaceholder : v.originPlaceholderCheckout}
+              value={form.origin}
+            />
+          </Field>
+
+          {form.kind === 'login' && (
+            <>
+              <div className="grid items-start gap-4 sm:grid-cols-2">
+                <Field htmlFor="vault-id-type" label={v.identifierTypeField}>
+                  <Select
+                    onValueChange={value => setForm(f => ({ ...f, identifierType: value as IdentifierType }))}
+                    value={form.identifierType}
+                  >
+                    <SelectTrigger className={CONTROL_TEXT} id="vault-id-type">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {IDENTIFIER_TYPES.map(type => (
+                        <SelectItem key={type} value={type}>
+                          {v.identifierTypes[type]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field htmlFor="vault-identifier" label={v.identifierField}>
+                  <Input
+                    autoComplete="off"
+                    id="vault-identifier"
+                    onChange={e => setForm(f => ({ ...f, identifier: e.target.value }))}
+                    value={form.identifier}
+                  />
+                </Field>
+              </div>
+              <Field htmlFor="vault-password" label={v.passwordField}>
+                <Input
+                  autoComplete="new-password"
+                  id="vault-password"
+                  onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
+                  type="password"
+                  value={form.password}
+                />
+              </Field>
+              <Field htmlFor="vault-otp" label={v.otpField} optional optionalLabel={v.optional}>
+                <Input
+                  autoComplete="off"
+                  id="vault-otp"
+                  onChange={e => setForm(f => ({ ...f, otpSecret: e.target.value }))}
+                  placeholder={v.otpPlaceholder}
+                  type="password"
+                  value={form.otpSecret}
+                />
+                <p className="text-xs text-muted-foreground">{v.otpHint}</p>
+              </Field>
+            </>
+          )}
+
+          {form.kind === 'payment' && (
+            <>
+              <Field htmlFor="vault-card-number" label={v.cardNumberField}>
+                <Input
+                  autoComplete="off"
+                  id="vault-card-number"
+                  inputMode="numeric"
+                  onChange={e => setForm(f => ({ ...f, cardNumber: e.target.value }))}
+                  type="password"
+                  value={form.cardNumber}
+                />
+              </Field>
+              <Field htmlFor="vault-card-name" label={v.cardNameField}>
+                <Input
+                  autoComplete="off"
+                  id="vault-card-name"
+                  onChange={e => setForm(f => ({ ...f, cardName: e.target.value }))}
+                  value={form.cardName}
+                />
+              </Field>
+              <div className="grid items-start gap-4 sm:grid-cols-4">
+                <Field htmlFor="vault-exp-month" label={v.expMonthField}>
+                  <Input
+                    id="vault-exp-month"
+                    inputMode="numeric"
+                    maxLength={2}
+                    onChange={e => setForm(f => ({ ...f, expMonth: e.target.value }))}
+                    placeholder="MM"
+                    value={form.expMonth}
+                  />
+                </Field>
+                <Field htmlFor="vault-exp-year" label={v.expYearField}>
+                  <Input
+                    id="vault-exp-year"
+                    inputMode="numeric"
+                    maxLength={4}
+                    onChange={e => setForm(f => ({ ...f, expYear: e.target.value }))}
+                    placeholder="YYYY"
+                    value={form.expYear}
+                  />
+                </Field>
+                <Field htmlFor="vault-cvc" label={v.cvcField}>
+                  <Input
+                    autoComplete="off"
+                    id="vault-cvc"
+                    inputMode="numeric"
+                    maxLength={4}
+                    onChange={e => setForm(f => ({ ...f, cvc: e.target.value }))}
+                    type="password"
+                    value={form.cvc}
+                  />
+                </Field>
+                <Field htmlFor="vault-postal" label={v.postalField}>
+                  <Input
+                    id="vault-postal"
+                    onChange={e => setForm(f => ({ ...f, postal: e.target.value }))}
+                    value={form.postal}
+                  />
+                </Field>
+              </div>
+            </>
+          )}
+
+          {form.kind === 'address' && (
+            <>
+              <Field htmlFor="vault-line1" label={v.addressLine1Field}>
+                <Input
+                  id="vault-line1"
+                  onChange={e => setForm(f => ({ ...f, line1: e.target.value }))}
+                  value={form.line1}
+                />
+              </Field>
+              <Field htmlFor="vault-line2" label={v.addressLine2Field} optional optionalLabel={v.optional}>
+                <Input
+                  id="vault-line2"
+                  onChange={e => setForm(f => ({ ...f, line2: e.target.value }))}
+                  value={form.line2}
+                />
+              </Field>
+              <div className="grid items-start gap-4 sm:grid-cols-2">
+                <Field htmlFor="vault-city" label={v.cityField}>
+                  <Input
+                    id="vault-city"
+                    onChange={e => setForm(f => ({ ...f, city: e.target.value }))}
+                    value={form.city}
+                  />
+                </Field>
+                <Field htmlFor="vault-state" label={v.stateField} optional optionalLabel={v.optional}>
+                  <Input
+                    id="vault-state"
+                    onChange={e => setForm(f => ({ ...f, state: e.target.value }))}
+                    value={form.state}
+                  />
+                </Field>
+              </div>
+              <div className="grid items-start gap-4 sm:grid-cols-2">
+                <Field htmlFor="vault-address-postal" label={v.postalField}>
+                  <Input
+                    id="vault-address-postal"
+                    onChange={e => setForm(f => ({ ...f, postal: e.target.value }))}
+                    value={form.postal}
+                  />
+                </Field>
+                <Field htmlFor="vault-country" label={v.countryField}>
+                  <Input
+                    id="vault-country"
+                    onChange={e => setForm(f => ({ ...f, country: e.target.value }))}
+                    value={form.country}
+                  />
+                </Field>
+              </div>
+            </>
+          )}
+
+          {formError && <p className="text-xs text-destructive">{formError}</p>}
+
+          <DialogFooter>
+            <Button onClick={closeAdd} size="sm" type="button" variant="ghost">
+              {t.common.cancel}
+            </Button>
+            <Button disabled={isPending} size="sm" type="submit">
+              {isPending ? v.adding : v.addConfirm}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 interface VaultSettingsProps {
+  settingsOwner?: NonNullable<ReturnType<typeof $settingsOwner.get>>
   subpage?: string
 }
 
-export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
+export function VaultSettings({ settingsOwner, subpage }: VaultSettingsProps = {}) {
+  if (!settingsOwner) {
+    return <SettingsContent>{null}</SettingsContent>
+  }
+
+  return <VaultSettingsInner key={profileScopeKey(settingsOwner)} settingsOwner={settingsOwner} subpage={subpage} />
+}
+
+function VaultSettingsInner({
+  settingsOwner,
+  subpage
+}: Required<Pick<VaultSettingsProps, 'settingsOwner'>> & Pick<VaultSettingsProps, 'subpage'>) {
   const { t } = useI18n()
   const v = t.settings.vault
   const gatewayState = useStore($gatewayState)
@@ -167,16 +435,38 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   // The mount site keys the panel by this same owner, so a profile switch / connection swap
   // remounts it: dialogs close and drafts (including a typed master password) are gone by
   // construction rather than by cleanup code.
-  const scopeProfile = useStore($settingsScopeProfile)
-  const connectionId = useStore($activeConnectionId)
-  const owner = vaultOwnerKey(connectionId, scopeProfile)
+  const owner = profileScopeKey(settingsOwner)
+  const isCurrentOwner = useCallback(() => $settingsOwner.get() === settingsOwner, [settingsOwner])
+  const ownerAbort = useMemo(() => new AbortController(), [])
+
+  useEffect(() => () => ownerAbort.abort(), [ownerAbort])
 
   const requestGateway = useCallback(
-    <T,>(method: string, params: Record<string, unknown> = {}) =>
-      requestGatewayForAgent<T>(connectionId, scopeProfile, method, params, undefined, undefined, {
-        spawnPriority: 'foreground'
-      }),
-    [connectionId, scopeProfile]
+    async <T,>(method: string, params: Record<string, unknown> = {}) => {
+      if (!isCurrentOwner()) {
+        throw new Error('Settings owner changed')
+      }
+
+      const result = await requestGatewayForAgent<T>(
+        settingsOwner.connectionId,
+        settingsOwner.profile ?? 'custom',
+        method,
+        params,
+        undefined,
+        ownerAbort.signal,
+        {
+          ...settingsGatewayRequestOwnership(settingsOwner),
+          spawnPriority: 'foreground'
+        }
+      )
+
+      if (!isCurrentOwner()) {
+        throw new Error('Settings owner changed')
+      }
+
+      return result
+    },
+    [isCurrentOwner, ownerAbort.signal, settingsOwner]
   )
 
   const VAULT_QUERY_KEY = useMemo(() => vaultQueryKey(owner), [owner])
@@ -212,15 +502,23 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   const externalSources = useMemo(() => (sourcesData ?? []).filter(s => s.needs_unlock), [sourcesData])
 
   const invalidateVault = useCallback(() => {
+    if (!isCurrentOwner()) {
+      return
+    }
+
     void queryClient.invalidateQueries({ queryKey: VAULT_QUERY_KEY })
     void queryClient.invalidateQueries({ queryKey: VAULT_SOURCES_QUERY_KEY })
-  }, [queryClient])
+  }, [isCurrentOwner, queryClient, VAULT_QUERY_KEY, VAULT_SOURCES_QUERY_KEY])
 
   const setSourceEnabled = useMutation({
     mutationFn: ({ name, enabled }: { name: VaultSourceName; enabled: boolean }) =>
       requestGateway<{ enabled: boolean }>('vault.source.set', { name, enabled }),
     onSuccess: invalidateVault,
-    onError: err => notifyError(err, v.sources.toggleFailed)
+    onError: err => {
+      if (isCurrentOwner()) {
+        notifyError(err, v.sources.toggleFailed)
+      }
+    }
   })
 
   const lockSource = useMutation({
@@ -244,6 +542,10 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
       return requestGateway<{ unlocked: boolean }>('vault.unlock', { name, password })
     },
     onSuccess: (_result, { name }) => {
+      if (!isCurrentOwner()) {
+        return
+      }
+
       triggerHaptic('submit')
       const source = externalSources.find(s => s.name === name)
       notify({ kind: 'success', message: v.sources.unlocked(source?.display_name ?? name) })
@@ -251,6 +553,10 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
       invalidateVault()
     },
     onError: err => {
+      if (!isCurrentOwner()) {
+        return
+      }
+
       setMasterPassword('')
       setUnlockError(err instanceof Error ? err.message : String(err))
     }
@@ -267,10 +573,10 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   })
 
   useEffect(() => {
-    if (error) {
+    if (error && isCurrentOwner()) {
       notifyError(error, v.loadFailed)
     }
-  }, [error, v.loadFailed])
+  }, [error, isCurrentOwner, v.loadFailed])
 
   const items = useMemo(() => data ?? [], [data])
 
@@ -314,7 +620,10 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
     setSearchParams(next, { replace: true })
   }, [openAdd, searchParams, setSearchParams])
 
-  const invalidate = useCallback(() => queryClient.invalidateQueries({ queryKey: VAULT_QUERY_KEY }), [queryClient])
+  const invalidate = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: VAULT_QUERY_KEY }),
+    [queryClient, VAULT_QUERY_KEY]
+  )
 
   const addMutation = useMutation({
     mutationFn: async (payload: { kind: VaultKind; label: string; origin?: string }) => {
@@ -324,12 +633,20 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
       return requestGateway<{ id: string }>('vault.add', { ...payload, secret: secret ?? {} })
     },
     onSuccess: () => {
+      if (!isCurrentOwner()) {
+        return
+      }
+
       triggerHaptic('success')
       notify({ kind: 'info', message: v.added })
       closeAdd()
       void invalidate()
     },
     onError: err => {
+      if (!isCurrentOwner()) {
+        return
+      }
+
       setFormError(String(err instanceof Error ? err.message : err))
     }
   })
@@ -586,236 +903,15 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
         </DialogContent>
       </Dialog>
 
-      {/* Add dialog */}
-      <Dialog onOpenChange={open => !open && closeAdd()} open={addOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>{v.addTitle}</DialogTitle>
-            <DialogDescription>{v.addDescription}</DialogDescription>
-          </DialogHeader>
-
-          <form
-            className="grid gap-4"
-            onSubmit={e => {
-              e.preventDefault()
-              submitAdd()
-            }}
-          >
-            <div className="grid items-start gap-4 sm:grid-cols-2">
-              <Field htmlFor="vault-kind" label={v.kindField}>
-                <Select onValueChange={value => setForm(f => ({ ...f, kind: value as VaultKind }))} value={form.kind}>
-                  <SelectTrigger className={CONTROL_TEXT} id="vault-kind">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {VAULT_KINDS.map(kind => (
-                      <SelectItem key={kind} value={kind}>
-                        {v.kinds[kind]}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-              <Field htmlFor="vault-label" label={v.labelField}>
-                <Input
-                  autoFocus
-                  id="vault-label"
-                  onChange={e => setForm(f => ({ ...f, label: e.target.value }))}
-                  placeholder={v.labelPlaceholder}
-                  value={form.label}
-                />
-              </Field>
-            </div>
-
-            <Field htmlFor="vault-origin" label={v.originField}>
-              <Input
-                id="vault-origin"
-                inputMode="url"
-                onChange={e => setForm(f => ({ ...f, origin: e.target.value }))}
-                placeholder={form.kind === 'login' ? v.originPlaceholder : v.originPlaceholderCheckout}
-                value={form.origin}
-              />
-            </Field>
-
-            {form.kind === 'login' && (
-              <>
-                <div className="grid items-start gap-4 sm:grid-cols-2">
-                  <Field htmlFor="vault-id-type" label={v.identifierTypeField}>
-                    <Select
-                      onValueChange={value => setForm(f => ({ ...f, identifierType: value as IdentifierType }))}
-                      value={form.identifierType}
-                    >
-                      <SelectTrigger className={CONTROL_TEXT} id="vault-id-type">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {IDENTIFIER_TYPES.map(type => (
-                          <SelectItem key={type} value={type}>
-                            {v.identifierTypes[type]}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field htmlFor="vault-identifier" label={v.identifierField}>
-                    <Input
-                      autoComplete="off"
-                      id="vault-identifier"
-                      onChange={e => setForm(f => ({ ...f, identifier: e.target.value }))}
-                      value={form.identifier}
-                    />
-                  </Field>
-                </div>
-                <Field htmlFor="vault-password" label={v.passwordField}>
-                  <Input
-                    autoComplete="new-password"
-                    id="vault-password"
-                    onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
-                    type="password"
-                    value={form.password}
-                  />
-                </Field>
-                <Field htmlFor="vault-otp" label={v.otpField} optional optionalLabel={v.optional}>
-                  <Input
-                    autoComplete="off"
-                    id="vault-otp"
-                    onChange={e => setForm(f => ({ ...f, otpSecret: e.target.value }))}
-                    placeholder={v.otpPlaceholder}
-                    type="password"
-                    value={form.otpSecret}
-                  />
-                  <p className="text-xs text-muted-foreground">{v.otpHint}</p>
-                </Field>
-              </>
-            )}
-
-            {form.kind === 'payment' && (
-              <>
-                <Field htmlFor="vault-card-number" label={v.cardNumberField}>
-                  <Input
-                    autoComplete="off"
-                    id="vault-card-number"
-                    inputMode="numeric"
-                    onChange={e => setForm(f => ({ ...f, cardNumber: e.target.value }))}
-                    type="password"
-                    value={form.cardNumber}
-                  />
-                </Field>
-                <Field htmlFor="vault-card-name" label={v.cardNameField}>
-                  <Input
-                    autoComplete="off"
-                    id="vault-card-name"
-                    onChange={e => setForm(f => ({ ...f, cardName: e.target.value }))}
-                    value={form.cardName}
-                  />
-                </Field>
-                <div className="grid items-start gap-4 sm:grid-cols-4">
-                  <Field htmlFor="vault-exp-month" label={v.expMonthField}>
-                    <Input
-                      id="vault-exp-month"
-                      inputMode="numeric"
-                      maxLength={2}
-                      onChange={e => setForm(f => ({ ...f, expMonth: e.target.value }))}
-                      placeholder="MM"
-                      value={form.expMonth}
-                    />
-                  </Field>
-                  <Field htmlFor="vault-exp-year" label={v.expYearField}>
-                    <Input
-                      id="vault-exp-year"
-                      inputMode="numeric"
-                      maxLength={4}
-                      onChange={e => setForm(f => ({ ...f, expYear: e.target.value }))}
-                      placeholder="YYYY"
-                      value={form.expYear}
-                    />
-                  </Field>
-                  <Field htmlFor="vault-cvc" label={v.cvcField}>
-                    <Input
-                      autoComplete="off"
-                      id="vault-cvc"
-                      inputMode="numeric"
-                      maxLength={4}
-                      onChange={e => setForm(f => ({ ...f, cvc: e.target.value }))}
-                      type="password"
-                      value={form.cvc}
-                    />
-                  </Field>
-                  <Field htmlFor="vault-postal" label={v.postalField}>
-                    <Input
-                      id="vault-postal"
-                      onChange={e => setForm(f => ({ ...f, postal: e.target.value }))}
-                      value={form.postal}
-                    />
-                  </Field>
-                </div>
-              </>
-            )}
-
-            {form.kind === 'address' && (
-              <>
-                <Field htmlFor="vault-line1" label={v.addressLine1Field}>
-                  <Input
-                    id="vault-line1"
-                    onChange={e => setForm(f => ({ ...f, line1: e.target.value }))}
-                    value={form.line1}
-                  />
-                </Field>
-                <Field htmlFor="vault-line2" label={v.addressLine2Field} optional optionalLabel={v.optional}>
-                  <Input
-                    id="vault-line2"
-                    onChange={e => setForm(f => ({ ...f, line2: e.target.value }))}
-                    value={form.line2}
-                  />
-                </Field>
-                <div className="grid items-start gap-4 sm:grid-cols-2">
-                  <Field htmlFor="vault-city" label={v.cityField}>
-                    <Input
-                      id="vault-city"
-                      onChange={e => setForm(f => ({ ...f, city: e.target.value }))}
-                      value={form.city}
-                    />
-                  </Field>
-                  <Field htmlFor="vault-state" label={v.stateField} optional optionalLabel={v.optional}>
-                    <Input
-                      id="vault-state"
-                      onChange={e => setForm(f => ({ ...f, state: e.target.value }))}
-                      value={form.state}
-                    />
-                  </Field>
-                </div>
-                <div className="grid items-start gap-4 sm:grid-cols-2">
-                  <Field htmlFor="vault-address-postal" label={v.postalField}>
-                    <Input
-                      id="vault-address-postal"
-                      onChange={e => setForm(f => ({ ...f, postal: e.target.value }))}
-                      value={form.postal}
-                    />
-                  </Field>
-                  <Field htmlFor="vault-country" label={v.countryField}>
-                    <Input
-                      id="vault-country"
-                      onChange={e => setForm(f => ({ ...f, country: e.target.value }))}
-                      value={form.country}
-                    />
-                  </Field>
-                </div>
-              </>
-            )}
-
-            {formError && <p className="text-xs text-destructive">{formError}</p>}
-
-            <DialogFooter>
-              <Button onClick={closeAdd} size="sm" type="button" variant="ghost">
-                {t.common.cancel}
-              </Button>
-              <Button disabled={addMutation.isPending} size="sm" type="submit">
-                {addMutation.isPending ? v.adding : v.addConfirm}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <VaultAddDialog
+        addOpen={addOpen}
+        closeAdd={closeAdd}
+        form={form}
+        formError={formError}
+        isPending={addMutation.isPending}
+        setForm={setForm}
+        submitAdd={submitAdd}
+      />
 
       {/* Delete confirmation */}
       <ConfirmDialog

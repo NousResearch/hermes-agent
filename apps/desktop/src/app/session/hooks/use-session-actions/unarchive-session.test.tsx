@@ -143,6 +143,48 @@ describe('unarchiveSession', () => {
     expect(vi.mocked(setSessionArchived)).toHaveBeenCalledWith('arch-1', false, 'sage')
   })
 
+  it('keeps a registry row route binding on restore', async () => {
+    $archivedSessions.set([
+      archivedSession({
+        _desktop_route_binding: 'binding-a',
+        connection_id: 'same-id',
+        profile: 'sage'
+      })
+    ])
+    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
+
+    const handle = await mountHarness()
+
+    await act(() => handle.unarchiveSession('arch-1'))
+
+    expect(vi.mocked(setSessionArchived)).toHaveBeenCalledWith('arch-1', false, {
+      connectionId: 'same-id',
+      profile: 'sage',
+      sessionRouteBinding: 'binding-a',
+      sessionRouteId: 'arch-1'
+    })
+  })
+
+  it('restores only the clicked owner when archived ids collide', async () => {
+    const ownerA = archivedSession({ _desktop_route_binding: 'binding-a', connection_id: 'gateway-a' })
+    const ownerB = archivedSession({ _desktop_route_binding: 'binding-b', connection_id: 'gateway-b' })
+
+    $archivedSessions.set([ownerA, ownerB])
+    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
+    const handle = await mountHarness()
+
+    await act(() => handle.unarchiveSession(ownerB))
+
+    expect(vi.mocked(setSessionArchived)).toHaveBeenCalledWith('arch-1', false, {
+      connectionId: 'gateway-b',
+      profile: 'default',
+      sessionRouteBinding: 'binding-b',
+      sessionRouteId: 'arch-1'
+    })
+    expect($archivedSessions.get()).toEqual([ownerA])
+    expect($sessions.get()).toEqual([{ ...ownerB, archived: false }])
+  })
+
   it('keeps the archived row when the restore RPC fails', async () => {
     $archivedSessions.set([archivedSession()])
     vi.mocked(setSessionArchived).mockRejectedValue(new Error('backend down'))

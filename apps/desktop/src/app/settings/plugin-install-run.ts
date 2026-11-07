@@ -292,7 +292,7 @@ function agentStopsInstall(
   report: Report
 ): InstallOutcome | null {
   if (result.timedOut) {
-    void loadAgentPlugins(deps.requestGateway, plan.profile)
+    void loadAgentPlugins(deps.requestGateway, plan.profile, plan.request.ownerIdentity ?? plan.profile)
 
     return { status: 'uncertain' }
   }
@@ -338,7 +338,7 @@ export async function runPluginInstall(plan: InstallPlan, deps: InstallDeps): Pr
     await installDesktopHalf(plan, components, deps, report, agentResult)
   }
 
-  await loadAgentPlugins(deps.requestGateway, plan.profile)
+  await loadAgentPlugins(deps.requestGateway, plan.profile, plan.request.ownerIdentity ?? plan.profile)
 
   for (const message of report.successes) {
     notify({ kind: 'success', message })

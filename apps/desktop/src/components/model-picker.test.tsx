@@ -108,6 +108,19 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
+it('forwards the captured owner scope for REST catalog recovery', async () => {
+  const request = vi.fn()
+  const scope = { connectionId: 'gateway-a', profile: 'work' }
+
+  renderPicker({ ownerConnectionId: 'gateway-a', profile: 'work', request, scope })
+
+  await waitFor(() =>
+    expect(requestModelOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ profile: 'work', request, scope })
+    )
+  )
+})
+
 describe('ModelPickerDialog download rows', () => {
   it('shows an in-flight download as a disabled progress row in the Local group', async () => {
     setRuntimeJobs([DOWNLOAD_JOB])

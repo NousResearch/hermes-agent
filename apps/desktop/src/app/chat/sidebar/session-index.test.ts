@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { sessionOwnerPinId } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
@@ -74,6 +75,22 @@ describe('resolvePinnedSessions', () => {
     const index = buildSessionByAnyId(sessions, [], [])
 
     expect(resolvePinnedSessions(['a'], index, sessions, settled).map(s => s.id)).toEqual(['a'])
+  })
+
+  it('resolves same-id pins independently by gateway owner', () => {
+    const ownerA = row('same', { connection_id: 'gateway-a', pinned: true, profile: 'default' })
+    const ownerB = row('same', { connection_id: 'gateway-b', pinned: true, profile: 'default' })
+    const sessions = [ownerA, ownerB]
+    const index = buildSessionByAnyId(sessions, [], [])
+
+    expect(
+      resolvePinnedSessions(
+        [sessionOwnerPinId(ownerB), sessionOwnerPinId(ownerA)],
+        index,
+        sessions,
+        settled
+      ).map(session => session.connection_id)
+    ).toEqual(['gateway-b', 'gateway-a'])
   })
 
   it('does not duplicate a server-pinned row whose pin is stored on the lineage root', () => {

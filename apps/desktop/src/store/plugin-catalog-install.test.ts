@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { lookupPluginCatalogEntry, PLUGIN_CATALOG_URL, type PluginCatalogLookup } from '@/lib/plugin-catalog'
 
-import { $agentPlugins } from './agent-plugins'
+import { $agentPlugins, $agentPluginsOwner } from './agent-plugins'
 import { $notifications } from './notifications'
 import { openCatalogPluginInstall, requestPluginCatalogInstallFromDeepLink } from './plugin-catalog-install'
 import { $pluginInstallRequest } from './plugin-install-request'
@@ -99,6 +99,7 @@ describe('openCatalogPluginInstall', () => {
   beforeEach(() => {
     $pluginInstallRequest.set(null)
     $notifications.set([])
+    $agentPluginsOwner.set(undefined)
   })
 
   it('short-circuits with a success toast when the entry is installed and current', () => {
@@ -128,5 +129,28 @@ describe('openCatalogPluginInstall', () => {
     })
 
     expect($pluginInstallRequest.get()).toMatchObject({ catalogName: 'weather', stayAfterInstall: true })
+  })
+
+  it("ignores another gateway owner's installed inventory", () => {
+    $agentPlugins.set([
+      {
+        catalog_name: 'weather',
+        description: '',
+        name: 'weather',
+        source: 'git',
+        status: 'enabled',
+        update_available: false,
+        version: '1'
+      }
+    ])
+    $agentPluginsOwner.set('gateway-a')
+
+    openCatalogPluginInstall({ name: 'weather', repo: 'https://github.com/x/weather' }, 'workbot', {
+      owner: 'workbot',
+      ownerIdentity: 'gateway-b'
+    })
+
+    expect($pluginInstallRequest.get()).toMatchObject({ catalogName: 'weather', ownerIdentity: 'gateway-b' })
+    expect($notifications.get()).toEqual([])
   })
 })

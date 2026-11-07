@@ -6,6 +6,11 @@ import { refreshProjectTree } from '@/store/projects'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
+const { ackStoredSessionId, markSessionRead } = vi.hoisted(() => ({
+  ackStoredSessionId: vi.fn(),
+  markSessionRead: vi.fn()
+}))
+
 afterEach(cleanup)
 
 // Exercises the real SessionActionsMenu end-to-end (no DropdownMenu mock) so
@@ -93,11 +98,12 @@ vi.mock('@/store/session', () => ({
   $selectedStoredSessionId: atom<null | string>(null),
   $sessions: atom<unknown[]>([]),
   $unreadFinishedSessionIds: atom<string[]>([]),
-  markSessionRead: vi.fn(),
+  markSessionRead,
   sessionMatchesStoredId: vi.fn(() => false),
   sessionPinId: vi.fn((s: { id: string }) => s.id),
   setSessions: vi.fn()
 }))
+vi.mock('@/store/session-unread', () => ({ ackStoredSessionId }))
 vi.mock('@/store/session-color', () => ({
   $sessionColorOverrides: atom<Record<string, string>>({}),
   setSessionColorOverride: vi.fn()
@@ -128,6 +134,11 @@ function renderMenu() {
 }
 
 describe('SessionActionsMenu', () => {
+  afterEach(() => {
+    ackStoredSessionId.mockClear()
+    markSessionRead.mockClear()
+  })
+
   it('opens the dropdown on click', async () => {
     renderMenu()
 
@@ -143,6 +154,40 @@ describe('SessionActionsMenu', () => {
     expect(await screen.findByRole('menu')).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: /rename/i })).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: /archive/i })).toBeTruthy()
+  })
+
+  it('marks the clicked owner row read when duplicate session ids coexist', async () => {
+    const session = {
+      _lineage_root_id: 'root-b',
+      connection_id: 'gateway-b',
+      id: 'shared-session',
+      profile: 'worker',
+      title: 'Owned session'
+    }
+
+    render(
+      <SessionActionsMenu
+        onToggleUnread={vi.fn()}
+        session={session as never}
+        sessionId="shared-session"
+        title="Owned session"
+        unread
+      >
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Mark as read' }))
+
+    expect(markSessionRead).toHaveBeenCalledWith(session)
+    expect(ackStoredSessionId).toHaveBeenCalledWith(session)
   })
 
   it('opens the rename dialog focused on its input, not the row trigger', async () => {

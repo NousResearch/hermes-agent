@@ -21,7 +21,7 @@ import { $connection } from '@/store/session'
 import { windowProfileOverride } from '@/store/windows'
 
 import { resolveGatewayVersion } from '../../electron/gateway-version'
-import { tagRegistrySessionResponse } from '../../electron/profile-session-routing'
+import { tagSessionResponseOwnership } from '../../electron/profile-session-routing'
 
 /**
  * Install a capability-limited Desktop bridge when the real renderer is served
@@ -59,7 +59,7 @@ export function installBrowserDesktopBridge(): boolean {
     const response = await api<T>(request)
 
     return (request.method || 'GET').toUpperCase() === 'GET'
-      ? (tagRegistrySessionResponse(request.path, response, LOCAL_CONNECTION_ID) as T)
+      ? (tagSessionResponseOwnership(request.path, response, LOCAL_CONNECTION_ID) as T)
       : response
   }
 

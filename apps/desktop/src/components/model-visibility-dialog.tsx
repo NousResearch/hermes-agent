@@ -11,7 +11,7 @@ import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { RowButton } from '@/components/ui/row-button'
 import { Switch } from '@/components/ui/switch'
-import type { HermesGateway } from '@/hermes'
+import type { HermesGateway, ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Plus, Search, X } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
@@ -40,21 +40,33 @@ import {
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { ambientRequestFor } from '@/store/session-gone-latch'
 import { sessionOwnerIsKnown } from '@/store/session-owner-resolution'
+import { profileScopeForSessionOwner } from '@/store/session-request-router'
 import { knownOwnerForSession, requestForOwnedSession } from '@/store/session-states'
 
 /** A session-scoped `model.options` goes to the session's OWNER: the ambient
  *  socket refuses a secondary profile's session_id and the dialog fell back to
  *  the launch profile's REST catalog. An owner nothing names yet keeps the
  *  ambient path (and its REST recovery) — this is a settings view, not a write. */
-function ownerModelOptionsRequest(gw: HermesGateway | undefined, sessionId: null | string | undefined) {
-  if (!gw || !sessionId || !sessionOwnerIsKnown(knownOwnerForSession(sessionId))) {
-    return undefined
+function ownerModelOptionsRequest(
+  gw: HermesGateway | undefined,
+  sessionId: null | string | undefined
+): {
+  request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  scope?: ProfileScope
+} {
+  const owner = knownOwnerForSession(sessionId)
+
+  if (!gw || !sessionId || !sessionOwnerIsKnown(owner)) {
+    return {}
   }
 
   const ambient = ambientRequestFor(gw)
 
-  return <T,>(method: string, params?: Record<string, unknown>) =>
-    requestForOwnedSession<T>(sessionId, ambient, method, params)
+  return {
+    request: <T,>(method: string, params?: Record<string, unknown>) =>
+      requestForOwnedSession<T>(sessionId, ambient, method, params),
+    scope: profileScopeForSessionOwner(owner)
+  }
 }
 
 interface ModelVisibilityDialogProps {
@@ -82,11 +94,12 @@ export function ModelVisibilityDialog({
   const stored = useStore($visibleModels)
   const collapsedProviders = useStore($collapsedProviders)
   const customModels = useStore($customModels)
+  const ownerRequest = ownerModelOptionsRequest(gw, sessionId)
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
     queryFn: (): Promise<ModelOptionsResult> =>
-      requestModelOptions({ gateway: gw, profile, request: ownerModelOptionsRequest(gw, sessionId), sessionId }),
+      requestModelOptions({ gateway: gw, profile, ...ownerRequest, sessionId }),
     enabled: open
   })
 

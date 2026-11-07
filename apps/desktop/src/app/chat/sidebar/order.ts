@@ -1,4 +1,14 @@
 import type { SidebarListRow } from '@/lib/session-date-groups'
+import { sessionOwnerRowKey } from '@/store/session-request-router'
+import type { SessionInfo } from '@/types/hermes'
+
+export function canReorderSessions(
+  sessions: readonly SessionInfo[],
+  sortable: boolean,
+  hasReorderHandler: boolean
+): boolean {
+  return sortable && hasReorderHandler && new Set(sessions.map(session => session.id)).size === sessions.length
+}
 
 /**
  * Fold ids absent from the persisted order back in, on the side they belong.
@@ -120,7 +130,19 @@ export function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: 
  * this on their own lane so a sort key reaches rows the flat list never renders.
  */
 export function rankSessions<T extends { id: string }>(sessions: T[], rankIds?: string[]): T[] {
-  return rankIds?.length ? orderByIds(sessions, session => session.id, rankIds) : sessions
+  if (!rankIds?.length) {
+    return sessions
+  }
+
+  const rank = new Map(rankIds.map((id, index) => [id, index]))
+
+  const rankFor = (session: T): number => {
+    const ownerKey = sessionOwnerRowKey(session as unknown as SessionInfo)
+
+    return rank.get(ownerKey) ?? rank.get(session.id) ?? Number.MAX_SAFE_INTEGER
+  }
+
+  return [...sessions].sort((a, b) => rankFor(a) - rankFor(b))
 }
 
 /** Reconcile a persisted order against the live id set. */
@@ -171,7 +193,7 @@ export function orderRowsWithinGroups(rows: SidebarListRow[], orderIds: string[]
   // (and every divider) exactly where it is.
   const flushGroup = () => {
     const ranked = cluster
-      .map((rows_, index) => ({ index, rank: rank.get(clusterId(rows_)) }))
+      .map((rows_, index) => ({ index, rank: rank.get(clusterId(rows_)) ?? rank.get(clusterStoredId(rows_)) }))
       .filter((entry): entry is { index: number; rank: number } => entry.rank !== undefined)
 
     const slots = ranked.map(entry => entry.index)
@@ -215,8 +237,14 @@ export function orderRowsWithinGroups(rows: SidebarListRow[], orderIds: string[]
   return reordered ? out : rows
 }
 
-/** A cluster's identity: its root row's session id. */
+/** A cluster's identity: its root row's immutable owner key. */
 function clusterId(rows: SidebarListRow[]): string {
+  const root = rows[0]
+
+  return root.kind === 'session' ? sessionOwnerRowKey(root.entry.session) : ''
+}
+
+function clusterStoredId(rows: SidebarListRow[]): string {
   const root = rows[0]
 
   return root.kind === 'session' ? root.entry.session.id : ''

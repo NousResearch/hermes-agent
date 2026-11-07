@@ -1,0 +1,32 @@
+name: hindsight-curator
+repo: https://github.com/trenthalden/hindsight-curator
+sha: "afac5f5daf0f6f6b648f5577f51caaa1705a1d46"
+version: "0.1.0"
+description: >-
+  Bulk-curate stale Hindsight memories from chat via /memory-curate or tools:
+  scan by topic (keyword/regex), review a dry-run plan, invalidate in bulk with
+  a reason, write one checkpoint fact, and restore via a local SQLite journal.
+  Separate from the official hindsight memory-provider plugin — talks only to
+  the public HTTP API. Disclosure — network calls only to the configured
+  Hindsight base URL (list, GET, PATCH invalidate/restore, retain checkpoint);
+  optional Bearer auth via HINDSIGHT_API_KEY through Hermes secrets; writes
+  invalidations, restores, and one checkpoint fact to that server; stores
+  plans/apply events/whitelist/history in the profile plugin-data directory;
+  no shell, no background daemons, does not read other plugins' config or
+  credential files.
+maintainer: trenthalden
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/trenthalden/hindsight-curator#readme
+capabilities:
+  provides_tools:
+    - curate_scan
+    - curate_plan
+    - curate_apply
+    - curate_restore
+    - curate_checkpoint
+    - curate_history
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

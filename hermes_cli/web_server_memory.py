@@ -70,9 +70,20 @@ def _memory_provider_setup_manifest(name: str) -> tuple[dict, dict]:
     }, inputs
 
 
-def _memory_provider_setup_info(name: str) -> dict[str, Any]:
-    import pm
+def _memory_provider_dependencies_current(inputs: dict[str, Any]) -> bool:
+    """Whether PM's recorded dependency generation covers this provider's declaration.
 
+    Read in-process from the committed facts. ``pm.client.venv_is_current`` would answer the
+    same question, but only by spawning a ``pm/worker.py`` subprocess and blocking on its
+    stdin pipe (measured ~8 s per call on Windows, on every request, nothing cached) — for a
+    boolean this dashboard only renders. The facts file is local state, so read it directly.
+    """
+    from pm.install import venv_is_current as direct
+
+    return bool(direct(**inputs))
+
+
+def _memory_provider_setup_info(name: str) -> dict[str, Any]:
     try:
         setup, inputs = _memory_provider_setup_manifest(name)
     except Exception:
@@ -80,7 +91,7 @@ def _memory_provider_setup_info(name: str) -> dict[str, Any]:
         return {"pip_dependencies": [], "python_dependencies_declared": True,
                 "external_dependencies": [], "required_env": [], "dependencies_installed": False}
     try:
-        python_ready = not inputs or pm.venv_is_current(**inputs)
+        python_ready = not inputs or _memory_provider_dependencies_current(inputs)
     except Exception:
         _log.debug("Could not read dependency state for %s", name, exc_info=True)
         python_ready = False

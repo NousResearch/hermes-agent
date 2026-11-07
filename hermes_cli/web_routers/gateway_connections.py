@@ -64,8 +64,11 @@ def save_connection(payload: dict = Body(...)) -> dict:
 def remove_connection(connection_id: str) -> dict:
     from hermes_cli.web_routers.webapp_relay_proxy import close_gateway_sockets
 
+    from hermes_cli.gateway_connections_reach import forget
+
     registry = _call(lambda: store.remove_connection(connection_id))
     close_gateway_sockets(connection_id)
+    forget(connection_id)
     return _answer(registry)
 
 

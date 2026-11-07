@@ -1,7 +1,8 @@
 import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 
-import type { HermesApiRequest, HermesConnection } from '@/global'
+import type { DesktopOauthLoginOptions, HermesApiRequest, HermesConnection } from '@/global'
 import { webappSignInRequired } from '@/lib/browser-launch-session'
+import { signInSavedConnection, signOutSavedConnection } from '@/lib/browser-saved-connection-oauth'
 import type { BrowserSavedConnections } from '@/lib/browser-saved-connections'
 import { createServedProfiles, SERVED_SET_READ_TIMEOUT_MS, UnservedProfileError } from '@/lib/browser-served-profiles'
 import {
@@ -348,15 +349,19 @@ export function createBrowserConnectionBridge({
           targetProfile: profile
         }))
     },
-    oauthLoginConnectionConfig: async (remoteUrl: string) => {
-      // Signing in to another gateway is that gateway's sign-in, which this tab cannot run here.
+    oauthLoginConnectionConfig: async (remoteUrl: string, identity?: DesktopOauthLoginOptions) => {
+      // Another gateway's sign-in runs on the serving gateway for its saved connection.
       if (!sameGateway(remoteUrl, `${window.location.origin}${bootstrap.basePath}`)) {
-        return {
-          baseUrl: remoteUrl,
-          connected: false,
-          error: 'Signing in to another gateway is not available in the Webapp yet. Use a session token.',
-          ok: false
+        if (!relays) {
+          return {
+            baseUrl: remoteUrl,
+            connected: false,
+            error: 'Signing in to another gateway is not available here.',
+            ok: false
+          }
         }
+
+        return signInSavedConnection(api, relays, remoteUrl, identity)
       }
 
       const target = new URL(`${bootstrap.basePath}/login`, window.location.origin)
@@ -366,9 +371,11 @@ export function createBrowserConnectionBridge({
       return { baseUrl: remoteUrl, connected: false, ok: false }
     },
     oauthLogoutConnectionConfig: async (remoteUrl?: string) => {
-      // Only this gateway's own sign-in ends here; another gateway's is not this tab's to end.
+      // Another gateway's sign-in is its saved connection's, kept on the serving gateway.
       if (remoteUrl && new URL(remoteUrl, window.location.origin).origin !== window.location.origin) {
-        return { connected: false, error: 'Only this gateway can be signed out from the Webapp.', ok: false }
+        return relays
+          ? signOutSavedConnection(api, relays, remoteUrl)
+          : { connected: false, error: 'Only this gateway can be signed out here.', ok: false }
       }
 
       const response = await fetch(endpointUrl('/auth/logout', bootstrap.basePath), {

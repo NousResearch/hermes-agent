@@ -93,10 +93,10 @@ def _available(state) -> bool:
     return policy(state).gateway_connections
 
 
-async def _resolve(state, connection_id: str) -> Optional[reach.Target]:
+async def _resolve(state, connection_id: str, rejected: Optional[reach.Target] = None) -> Optional[reach.Target]:
     if not _available(state):
         return None
-    return await reach.resolve_target(relay_client(state), connection_id)
+    return await reach.resolve_target(connection_id, rejected=rejected)
 
 
 def _target(scope, gateway_id: str, *, drop_query: frozenset[str] = frozenset()) -> Optional[str]:
@@ -157,6 +157,27 @@ def _relayed_location(value: str, gateway_url: str, base: str) -> Optional[str]:
     return f"{base}{_without_dot_segments(value[:end])}{value[end:]}"
 
 
+async def _send(request: Request, row: reach.Target, method: str, target: str, headers: dict[str, str],
+                has_body: bool) -> tuple[reach.Target, httpx.Response]:
+    """Send the request to *row*; a sign-in the remote answers 401 to earns one forced refresh and
+    one resend (Desktop's ``oauth-rest-request.ts`` rule), when the request has no body to replay."""
+    client = relay_client(request.app.state)
+
+    async def once(to: reach.Target) -> httpx.Response:
+        upstream = client.build_request(method, f"{to.base_url}{target}", headers={**headers, **to.headers},
+                                        content=request.stream() if has_body else None)
+        return await client.send(upstream, stream=True)
+
+    response = await once(row)
+    if response.status_code != 401 or not row.bearer or has_body:
+        return row, response
+    await response.aclose()
+    rotated = await _resolve(request.app.state, row.connection_id, rejected=row)
+    if rotated is None or rotated.bearer == row.bearer:
+        return row, await once(row)
+    return rotated, await once(rotated)
+
+
 def _refusal(error: str, connection_id: str, detail: str, status: int) -> JSONResponse:
     return JSONResponse({"error": error, "connection_id": connection_id, "detail": detail}, status_code=status)
 
@@ -171,8 +192,6 @@ async def relay_http(request: Request, connection_id: str, path: str):
         row = await _resolve(state, connection_id)
     except reach.Unreachable as exc:
         return _refusal("relay_reconnect", connection_id, str(exc), 409)
-    except httpx.HTTPError as exc:  # the sign-in refresh could not reach the gateway
-        return _refusal("relay_unreachable", connection_id, f"Not reachable from this gateway: {exc}", 502)
     if row is None:
         raise HTTPException(404, "No such connection")
     target = _target(request.scope, connection_id)
@@ -181,16 +200,15 @@ async def relay_http(request: Request, connection_id: str, path: str):
     method = request.method.upper()
     headers = {k: v for k, v in request.headers.items()
                if k.lower() not in _DROP_REQUEST and not k.lower().startswith("x-forwarded-")}
-    headers.update(row.headers)
     has_body = method not in {"GET", "HEAD", "OPTIONS"} or request.headers.get("content-length") not in (None, "0")
-    client = relay_client(state)
-    upstream = client.build_request(method, f"{row.base_url}{target}", headers=headers,
-                                    content=request.stream() if has_body else None)
     try:
-        response = await client.send(upstream, stream=True)
+        sent = await _send(request, row, method, target, headers, has_body)
+    except reach.Unreachable as exc:
+        return _refusal("relay_reconnect", connection_id, str(exc), 409)
     except httpx.HTTPError as exc:  # transport failure: the gateway is unreachable from here
         _log.info("Gateway relay to %s failed: %s", row.base_url, exc)
         return _refusal("relay_unreachable", connection_id, f"{row.label} is not reachable from this gateway.", 502)
+    row, response = sent
     if response.status_code == 401:
         await response.aclose()
         return _refusal("relay_reconnect", connection_id, f"{row.label} no longer accepts the saved credential. "
@@ -279,7 +297,7 @@ async def relay_ws(ws: WebSocket, connection_id: str, path: str) -> None:
     try:
         row = await _resolve(ws.app.state, connection_id) if admitted is not None else None
         target = _target(ws.scope, connection_id, drop_query=_CREDENTIAL_QUERY) if row else None
-        credential = await reach.socket_credential(relay_client(ws.app.state), row, f"/{path}") if target else None
+        credential = await reach.socket_credential(row, f"/{path}") if target else None
     except (reach.Unreachable, httpx.HTTPError, ValueError) as exc:
         _log.info("Gateway relay socket to %s refused before dialing: %s", connection_id, exc)
         await ws.close(code=4403)
@@ -288,6 +306,7 @@ async def relay_ws(ws: WebSocket, connection_id: str, path: str) -> None:
         await ws.close(code=4401)
         return
     track(ws, admitted)
+    named = reach.entry_url(connection_id)
     parts = urllib.parse.urlsplit(row.base_url)
     joiner = "&" if "?" in target else "?"
     url = (f"{'wss' if parts.scheme == 'https' else 'ws'}://{parts.netloc}{parts.path}{target}"
@@ -306,7 +325,7 @@ async def relay_ws(ws: WebSocket, connection_id: str, path: str) -> None:
     with _live_lock:
         _live[id(ws)] = (weakref.ref(ws), asyncio.get_running_loop(), connection_id)
     # Remove forgets the entry, then closes its live sockets; one removed during the dial missed this one.
-    if (reach.entry_url(connection_id) or "").rstrip("/") != row.base_url:
+    if reach.entry_url(connection_id) != named:
         with _live_lock:
             _live.pop(id(ws), None)
         with contextlib.suppress(OSError):

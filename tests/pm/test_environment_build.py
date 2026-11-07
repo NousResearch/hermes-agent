@@ -108,6 +108,8 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     dist = "construction_root-1.dist-info"
     entries = {
         "construction_root.pth": str(Path.cwd()) + "\\n",
+        # A build-machine pointer of the kind sealing must strip (pm.environment.prune_site_pth).
+        "__editable__.construction_root-1.pth": "# build machine path\\n",
         dist + "/METADATA": "Metadata-Version: 2.1\\nName: construction-root\\nVersion: 1\\nRequires-Dist: base-dep==1.0\\n",
         dist + "/WHEEL": "Wheel-Version: 1.0\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n",
     }
@@ -155,7 +157,7 @@ def test_public_build_installs_all_extras_at_explicit_destination(installable_pr
     assert executable.parent.parent == tmp_path / "native environment"
     assert not (tmp_path / "wrong-environment").exists()
     assert "root_app" not in sys.modules
-    assert (site / "_virtualenv.pth").exists() is not sealed
+    assert (site / "__editable__.construction_root-1.pth").exists() is not sealed
     assert (site / "construction_root.pth").is_file(), "load-bearing .pth must survive sealing"
     assert (source / "uv.lock").read_bytes() == locked
     assert dict(os.environ) == before
@@ -377,7 +379,8 @@ build_editable = build_wheel
                 cwd=tmp_path, env=env) == "installed from the explicit source"
 
 
-@pytest.mark.parametrize("diagnostic", ["No solution found", "Connection timed out", "Failed to build wheel"])
+@pytest.mark.parametrize("diagnostic", ["No solution found", "Connection timed out", "Failed to build wheel",
+                                        "The build backend returned an error"])
 def test_streaming_bounds_memory_without_losing_failure_class(tmp_path, diagnostic):
     import tracemalloc
     from pm.environment import PythonEnvironment

@@ -168,6 +168,14 @@ export class JsonRpcGatewayClient {
   > &
     Pick<GatewayClientOptions, 'onRequestHandlerError' | 'onUnhandledRequest' | 'socketFactory'>
 
+  /**
+   * This client is the Desktop app on the backend's own machine, read at each socket open
+   * (`JsonRpcRequestChannelOptions.desktopLocal`). Only the Desktop's client knows; others are not.
+   */
+  protected isDesktopLocal(): boolean {
+    return false
+  }
+
   constructor(options: GatewayClientOptions = {}) {
     this.options = {
       closedErrorMessage: options.closedErrorMessage ?? 'WebSocket closed',
@@ -187,6 +195,7 @@ export class JsonRpcGatewayClient {
     }
     this.channel = new JsonRpcRequestChannel({
       createRequestId: this.options.createRequestId,
+      desktopLocal: () => this.isDesktopLocal(),
       heartbeatDeadlineMs: this.options.heartbeatDeadlineMs,
       heartbeatIntervalMs: this.options.heartbeatIntervalMs,
       // Desktop/web and the TUI alike count any inbound frame as liveness
@@ -203,6 +212,11 @@ export class JsonRpcGatewayClient {
 
   get connectionState(): ConnectionState {
     return this.state
+  }
+
+  /** The connected canonical owner admits `clarify_batch` on `prompt.submit` (`client.capabilities`). */
+  protected get backendClarifyBatch(): boolean {
+    return this.channel.clarifyBatch
   }
 
   async connect(wsUrl: string): Promise<void> {
@@ -573,7 +587,11 @@ export class JsonRpcGatewayClient {
     }
 
     try {
-      const sessionEpochBefore = this.replayEpochBySession.get(sid) ?? this.replayEpoch
+      // Only a canonical session's own epoch qualifies the watermark on the wire. The legacy
+      // process epoch (gateway.ready) is compared with the answer's `epoch` in applyReplayEpochs.
+      // An older legacy `session.events.since` refuses any other key, so sending the process
+      // epoch here makes the reconnect replay fail and drops pending approval and clarify requests.
+      const sessionEpochBefore = this.replayEpochBySession.get(sid)
 
       // `open_requests` on the answer are re-delivered by the channel itself.
       const result = await this.request<{

@@ -87,20 +87,20 @@ def test_a_bare_forwarded_label_fails_closed(tmp_path):
 def test_a_forwarded_subject_matching_the_row_owner_takes_the_mutation(tmp_path):
     """The reviewer-repro shape: a stored ``desktop`` row owned by a dashboard account is
     deletable by a forwarded actor acting as that account, and refused for any other."""
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from hermes_state import SessionDB
     from hermes_state_mutation_binding import authorize_history
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
         db.create_session("cold-desktop", source="desktop", user_id=FORWARDED)
-        same = Principal(
+        same = SessionActor(
             FORWARDED,
             str(tmp_path),
             frozenset({"session:read", "session:create"}),
             "native-http:x",
         )
-        other = Principal(
+        other = SessionActor(
             'auth:v1:["basic","","someone-else"]',
             str(tmp_path),
             frozenset({"session:read", "session:create"}),

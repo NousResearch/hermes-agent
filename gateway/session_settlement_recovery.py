@@ -3,7 +3,8 @@ import asyncio
 import logging
 import sqlite3
 
-from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, settle_steer_transfers
+from gateway.session_producer_lifecycle import drop_producer_turn
+from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, get_session_admission, settle_steer_transfers
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,16 @@ def completion_payload(row, settled, response, captured):
     # Only the agent's reuse site sets this (never inferred from equal text): the
     # final repeats a reply the viewer already painted, so it settles in place.
     captured_result = (captured or {}).get('result') or {}
+    # A gateway-owned refusal brings its own descriptor (``session_cron.execute``); every other failed
+    # turn gets the one the TUI path builds from the same result, so the viewer shows the right card.
+    surface = captured_result.get('error_surface')
+    if not isinstance(surface, dict) and complete['status'] == 'error':
+        from agent.error_surface import build_error_surface_from_result
+        surface = build_error_surface_from_result(
+            captured_result, provider=str(captured_result.get('provider') or ''),
+            model=str(captured_result.get('model') or ''))
+    if isinstance(surface, dict):
+        complete['error_surface'] = surface
     if response and captured_result.get('response_reused'):
         complete['response_reused'] = True
     if captured_result.get('local_viewer'):
@@ -68,6 +79,10 @@ def completion_payload(row, settled, response, captured):
             complete['response_previewed'] = True
         if captured_result.get('response_transformed'):
             complete['response_transformed'] = True
+            # The stream carried the raw reply and the turn counts as delivered (``response`` is
+            # None): this frame is the only carrier of the rewrite the session stored.
+            if not response and (final := captured_result.get('final_response')):
+                complete['text'] = complete['content'] = final
         if isinstance(captured_result.get('warning'), str) and captured_result['warning']:
             complete['warning'] = captured_result['warning']
         if isinstance(captured_result.get('billing_block'), dict):
@@ -98,16 +113,59 @@ def _publish_completion(authority, live, ref, row, settled, response, captured):
         live.controls.snapshot(ref.session_id, None)
     except Exception:
         logger.exception('Terminal control cleanup failed for admission %s', row['admission_id'])
-    live.event_stream.publish(ref.session_id, completion_payload(row, settled, response, captured))
+    complete = completion_payload(row, settled, response, captured)
+    notice = owner_stop_notice(captured, settled['outcome'], row)
+    if notice and not complete.get('warning'):
+        # ``warning`` is the slot every surface already renders on message.complete (Ink activity
+        # line, Desktop toast), so a turn the owner's stop cut short says why (#134889 F1).
+        complete['warning'] = notice
+    live.event_stream.publish(ref.session_id, complete)
 
 
-def _release_media(authority, row):
+RESTART_INTERRUPT_NOTICE = ('Gateway restarting: this turn was interrupted and will not be run again. '
+                            'Send your message again once Hermes reconnects.')
+SHUTDOWN_INTERRUPT_NOTICE = ('Gateway shutting down: this turn was interrupted and will not be run again. '
+                             'Send your message again once Hermes is back.')
+
+
+def owner_stop_notice(captured, outcome, row=None):
+    """The named notice for a turn the owner's restart/stop interrupted, or None. With the default
+    ``agent.restart_drain_timeout: 0`` a restart interrupts in-flight turns at once; the admission
+    settles ``interrupted`` and is never replayed, so the viewer is told the restart did it.
+    An unattended ``row`` (cron, automation, webhook) has nobody to resend it, so it gets the
+    neutral automation copy instead of resend advice (#134889 GW-20, GW-10's rule)."""
+    # The cause is the one the turn recorded when it was interrupted (stop() interrupts with these
+    # reasons), never the runner's flags at publication: a user Stop whose settlement was delayed
+    # until after shutdown began is still the user's Stop.
+    from gateway.run import _INTERRUPT_REASON_GATEWAY_RESTART, _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+    cause = ((captured or {}).get('result') or {}).get('interrupt_message') if outcome == 'interrupted' else None
+    notice = {_INTERRUPT_REASON_GATEWAY_RESTART: RESTART_INTERRUPT_NOTICE,
+              _INTERRUPT_REASON_GATEWAY_SHUTDOWN: SHUTDOWN_INTERRUPT_NOTICE}.get(cause)
+    if notice is not None and row is not None:
+        from gateway.session_unattended_unknown import is_unattended
+        if is_unattended(row):
+            from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
+            return AUTOMATION_INTERRUPTED_NOTICE
+    return notice
+
+
+def gateway_refusal_boundary(captured, outcome):
+    """``(notice, display_metadata)`` for a failed turn the gateway itself refused with a renderable
+    descriptor (``result.error_surface``: ``session_cron.execute``, ``session_policy.refused_turn_result``), else None."""
+    value = (captured or {}).get('result') or {}
+    surface, error = value.get('error_surface'), value.get('error')
+    if outcome != 'failed' or not isinstance(surface, dict) or not isinstance(error, str) or not error:
+        return None
+    return error, {'error': error, 'error_surface': dict(surface)}
+
+
+def _release_media(authority, admission_id):
     """Terminal media cleanup: its own write txn after publication, never under the stream lock."""
     try:
         from gateway.session_ingress_media import release_admission_media
-        release_admission_media(authority.db, row['admission_id'])
+        release_admission_media(authority.db, admission_id)
     except Exception:
-        logger.exception('Terminal media cleanup failed for admission %s', row['admission_id'])
+        logger.exception('Terminal media cleanup failed for admission %s', admission_id)
 
 
 def commit_and_publish(authority, live, ref, row, response, outcome, captured, settlement):
@@ -140,7 +198,6 @@ def commit_and_publish(authority, live, ref, row, response, outcome, captured, s
     finally:
         with live.event_stream.lock:
             live.settling.pop(admission_id, None)
-    _release_media(authority, row)
 
 
 # Pauses between settlement attempts after a transient storage error (held writer past its
@@ -173,6 +230,137 @@ def publish_terminal(authority, ref, row, settled, response, captured):
     live = authority.sessions[ref.session_id]
     with live.event_stream.lock:
         _publish_completion(authority, live, ref, row, settled, response, captured)
-    _release_media(authority, row)
     # Idle follows the completion so a viewer cannot mistake a settled turn for a lost frame.
     authority._publish_pending(ref)
+
+
+async def settle_and_deliver(authority, live, ref, row, response, outcome):
+    """Own settlement through delivery even if the drain's waiter is cancelled.
+
+    Terminal media collection can scan a multi-GB transcript. Start it only after
+    delivery (or a failed attempt), tracked separately so it cannot delay the FIFO.
+    """
+    admission_id = row['admission_id']
+    settled, discarded = None, False
+    try:
+        settlement = {}
+        try:
+            # Redaction, encoding and the SQLite write run off-loop: one turn's settlement must
+            # not stall every other session. Publication takes the stream lock only after
+            # the write commits; this owner also outlives a cancelled drain.
+            captured = authority.pending_results.get(admission_id)
+            try:
+                await settle_with_retry(authority, live, ref, row, response, outcome, captured, settlement)
+            finally:
+                if 'settled' in settlement:
+                    settled, response = settlement['settled'], settlement['response']
+                    authority.pending_results.pop(admission_id, None)
+            # Idle follows the completion; its bot receipt wakeups are loop tasks. A delete
+            # that committed while the write yielded already retired this live entry.
+            if authority.sessions.get(ref.session_id) is live:
+                authority._publish_pending(ref)
+        except Exception:
+            logger.exception(
+                'Settlement or publication of admission %s failed', admission_id)
+            if settled is None:
+                authority.pending_results.setdefault(admission_id, {
+                    'result': {'final_response': response, 'failed': outcome == 'failed'}, 'usage': {}})
+                try:
+                    status = await recover_failed_settlement(authority, row)
+                except RuntimeStoreError:
+                    # Ownership moved; this owner may only release its process-local observers.
+                    authority._pause(ref, 'unknown_execution')
+                    return False
+                # Discard can race the off-loop recovery stamp; its terminal decision wins.
+                current = get_session_admission(authority.db, admission_id=admission_id)
+                status = current['status']
+                if status == 'unknown':
+                    from gateway.session_ingress import retain_unsettled_delivery
+                    retain_unsettled_delivery(authority, admission_id)
+                    authority._publish_pending(ref)
+                    authority._pause(ref, 'unknown_execution')
+                    return False
+                # A write can commit before reporting failure. Re-read its exact result,
+                # then publish the terminal outcome rather than inventing uncertainty.
+                from gateway.session_results import admission_result
+                with live.event_stream.lock:
+                    captured = admission_result(authority.db, admission_id)
+                    authority.pending_results.pop(admission_id, None)
+                    settled = current
+                    if captured is None:
+                        # An operator discarded uncertainty while recovery yielded. There is
+                        # no committed answer to replay; its queued successor may now run.
+                        authority.pending_deliveries.pop(admission_id, None)
+                        waiter = authority.waiters.pop(admission_id, None)
+                        if waiter is not None and not waiter.done():
+                            waiter.set_exception(RuntimeStoreError('unknown_execution'))
+                        discarded = True
+                        return True
+                    response = captured['result'].get('final_response') or ''
+                    publish_terminal(authority, ref, row, settled, response, captured)
+        finally:
+            # The stamp names a claimed, unsettled execution. Left in place, idle
+            # mutations (session.updated) would carry a terminal generation and
+            # a versioned viewer fence would discard them as late frames.
+            with live.event_stream.lock:
+                live.event_stream.execution = {}
+            authority.pending_stops.pop(ref.session_id, None)
+            authority.pending_stop_causes.pop(ref.session_id, None)
+            authority.pending_steers.pop(ref.session_id, None)
+            authority.adopted.pop(ref.session_id, None)
+            from gateway.session_queued_controls import publish_transfers
+            publish_transfers(authority, ref, row['generation'])
+            if settled is None or discarded:
+                # Uncommitted (unknown or discarded): the user is not told an answer the FIFO lost.
+                authority.pending_deliveries.pop(admission_id, None)
+                drop_producer_turn(authority, admission_id)
+                from gateway.session_ingress import fire_post_delivery
+                await fire_post_delivery(authority, admission_id)
+            from gateway.session_ingress import waiter_replies
+            waiter_replies(authority).pop(admission_id, None)
+            # Taken on every exit, so a turn that never settled leaves no reset for a later one.
+            reset = authority.deferred_resets.pop(live.route, None)
+        await authority._run_deferred_reset(live.route, reset)
+        from gateway.session_ingress import deliver_settled, fire_post_delivery
+        await deliver_settled(authority, admission_id)
+        await fire_post_delivery(authority, admission_id)
+        await authority._resolve_settled_waiter(admission_id, response)
+        return True
+    finally:
+        # A resolution that raced this drain handed its collection here (``_resolved_unknown``):
+        # honour it on every exit, settled or not.
+        owed = admission_id in getattr(authority, '_drain_owned_collection', ())
+        if owed:
+            authority._drain_owned_collection.discard(admission_id)
+        if settled is not None or owed:
+            release_media_after_delivery(authority, row)
+
+
+def hand_collection_to_drain(authority, admission_id):
+    """The drain still owns this admission's claim: its exit queues the media collection."""
+    owed = getattr(authority, '_drain_owned_collection', None)
+    if owed is None:
+        owed = authority._drain_owned_collection = set()
+    owed.add(admission_id)
+
+
+def release_media_after_delivery(authority, row):
+    """Queue terminal media collection on the authority's one off-loop collector.
+
+    Each collection can scan the whole transcript; running them one at a time bounds the worker
+    threads and pooled read connections they hold however many media turns settle meanwhile.
+    The collector is tracked, so shutdown and profile retirement join it. Only the admission id
+    waits: the row can carry inline images and a client's whole conversation history."""
+    queue = getattr(authority, '_media_release_queue', None)
+    if queue is None:
+        queue = authority._media_release_queue = []
+    queue.append(row['admission_id'])
+    task = getattr(authority, '_media_release_task', None)
+    if task is None or task.done():
+        from gateway.session_runtime_workers import track_mutation
+        authority._media_release_task = track_mutation(authority, _collect_queued_media(authority, queue))
+
+
+async def _collect_queued_media(authority, queue):
+    while queue:
+        await asyncio.to_thread(_release_media, authority, queue.pop(0))

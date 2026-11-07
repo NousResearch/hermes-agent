@@ -8,6 +8,7 @@ import secrets
 import subprocess
 
 from gateway.session_admission import admission_fingerprint
+from gateway.owner_identity import same_owner
 from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, _secret_digest, _session
 
 # A venv launcher (uv's Windows python.exe, pip's exe shim) sits between the owner's
@@ -37,7 +38,8 @@ def verify_worker_identity(process, hello):
         if handle.ppid() != os.getpid() or handle.status() == psutil.STATUS_ZOMBIE:
             raise RuntimeStoreError('permission_denied')
         worker = psutil.Process(pid)
-        birth = worker.create_time()
+        from hermes_cli.process_identity import worker_birth
+        birth = worker_birth(worker)  # kernel start: stable across clock steps (#140580) and btime re-anchors
         if birth != hello['birth'] or not worker.is_running() or worker.status() == psutil.STATUS_ZOMBIE:
             raise RuntimeStoreError('permission_denied')
         # psutil's parent() already refuses a recycled ppid (parent born after child).
@@ -49,12 +51,26 @@ def verify_worker_identity(process, hello):
     return pid, birth
 
 
-def reserve_admission_worker(authority, *, admission_id, process, principal_id, hello):
+def owner_worker_subject():
+    """The subject a managed worker's adoption ticket carries: the owner's own OS identity. The
+    control channel mints a worker ticket only for a same-user peer (``uid:<n>`` / ``sid:<sid>``)."""
+    if os.name == 'nt':
+        from gateway.runtime_bootstrap_windows import _process_sid
+        return 'sid:' + _process_sid(os.getpid())
+    return f'uid:{os.getuid()}'  # windows-footgun: ok — POSIX branch
+
+
+def reserve_admission_worker(authority, *, admission_id, process, principal_id, hello, worker_subject=None):
     """Return a private bootstrap scope; never accept caller-selected kind/target.
 
     Only the owner process may reserve its live direct exec child. The admission
     supplies physical session and generation; its durable principal must match
     the producer. Do not publish the returned secret on any client event stream.
+
+    The adoption claim binds ``worker_subject``, the identity the worker will authenticate
+    as (``owner_worker_subject``), when given. An automation admission's principal is a route
+    (``automation:<session key>``), never a ticket subject, so a claim bound to it refused every
+    adopt and each bot DM or completion wake on a managed session ended interrupted (#144139).
     """
     authority._require_admission_open()
     pid, birth = verify_worker_identity(process, hello)
@@ -65,7 +81,7 @@ def reserve_admission_worker(authority, *, admission_id, process, principal_id, 
         admission = _admission(conn, admission_id)
         if admission['status'] != 'started' or admission['owner_epoch'] != authority.epoch:
             raise RuntimeStoreError('producer_not_started')
-        if admission['principal_id'] != principal_id:
+        if not same_owner(admission['principal_id'], principal_id):
             raise RuntimeStoreError('permission_denied')
         owner, generation = admission['target_session_id'], admission['generation']
         if _session(conn, owner)['runtime_generation'] != generation:
@@ -85,7 +101,7 @@ def reserve_admission_worker(authority, *, admission_id, process, principal_id, 
                          "WHERE admission_id=?", (sid, admission_id))
         scope = dict(profile_id=authority.profile_id, session_id=sid, execution_id=execution_id,
                      generation=generation, pid=pid, birth=birth, secret=secret)
-        claim = admission_fingerprint(canonical_target=sid, payload=scope | {'principal': principal_id})
+        claim = admission_fingerprint(canonical_target=sid, payload=scope | {'principal': worker_subject or principal_id})
         conn.execute("INSERT INTO worker_executions(execution_id,session_id,kind,owner_epoch,generation,status,adoption_digest) "
                      "VALUES(?,?,'compute',?,?,'registered',?)",
                      (execution_id, sid, authority.epoch, generation, _secret_digest(claim)))

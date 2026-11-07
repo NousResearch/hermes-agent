@@ -27,7 +27,10 @@
  * and for catalog installs the trust comes from admission (human review of
  * an exact pinned SHA + the static lint in hermes_cli/plugin_validate_desktop.py),
  * not from this loader. The import allowlist below is the one runtime tripwire:
- * a plugin cannot pull a second stage from a URL. A remote source (https +
+ * a plugin cannot pull a second stage from a URL. The Webapp's HTTP door
+ * (`/api/desktop-plugins/*`, browser-desktop-plugins.ts) counts as local: it is
+ * same-origin, reads the serving host's own disk, and runs in a tab that holds no
+ * more authority than that host already grants it. A remote source (https +
  * allowlist) must NOT reuse this pipeline as-is: it needs a real boundary
  * (iframe/worker + CSP + capability gating) before it can land.
  */
@@ -37,9 +40,10 @@ import { atom } from 'nanostores'
 import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
+import { forgetPluginPreviewAccess } from '@/store/plugin-preview-grants'
 
 import { trackGatewayEventDisposers } from './events'
-import { createPluginContext, type HermesPlugin } from './plugin'
+import { createPluginContext, declaredCapabilities, type HermesPlugin } from './plugin'
 import { $pluginRecords, dropPlugin, pluginActive, type PluginKind, publishPlugin } from './plugins-store'
 
 interface LoadOptions {
@@ -456,10 +460,13 @@ export async function loadRuntimePlugin(
       throw new Error(`duplicate id "${plugin.id}", already loaded from ${owner.file ?? owner.kind}`)
     }
 
+    const capabilities = declaredCapabilities(plugin)
+
     const record = {
       id: plugin.id,
       name: plugin.name ?? plugin.id,
       description: plugin.description,
+      capabilities,
       kind: options.kind ?? 'disk',
       file: options.file,
       packageName: options.packageName,
@@ -493,7 +500,7 @@ export async function loadRuntimePlugin(
       try {
         result = trackGatewayEventDisposers(
           dispose => disposers.push(dispose),
-          () => plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
+          () => plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose), capabilities))
         )
       } catch (error) {
         failRegistration(error)
@@ -961,11 +968,13 @@ async function scanDiskPlugins(reloadKnown = false): Promise<void> {
 }
 
 /** Forget a disk entry whose folder is gone: unload its registration, drop
- *  its inventory rows, stop its file watch. */
+ *  its inventory rows and its preview-script grants, stop its file watch. */
 function retireDiskPlugin(file: string, record: DiskPlugin): void {
   if (record.id) {
     unloadRuntimePlugin(record.id)
     dropPlugin(record.id)
+    // A later plugin reusing this id must ask the user again, never inherit.
+    forgetPluginPreviewAccess(record.id)
   }
 
   dropOriginRecord(record.origin, record)
@@ -986,7 +995,12 @@ function retireDiskPlugin(file: string, record: DiskPlugin): void {
  *  entry is retired here so the pane/commands vanish without waiting for the
  *  next scan. Unified-package halves are not addressable this way — the agent
  *  uninstall prunes them. Resolves with the failure reason instead of throwing. */
-export async function uninstallDiskPlugin(pluginId: string): Promise<{ ok: boolean; error?: string }> {
+export async function uninstallDiskPlugin(
+  pluginId: string,
+  /** How the folder goes away. Native Desktop deletes it in Electron; a browser-hosted tab has no disk
+   *  of its own and passes the backend that serves it (`plugins.manage remove_desktop`). */
+  removeDesktop?: (payload: { name: string }) => Promise<{ ok: boolean; error?: string }>
+): Promise<{ ok: boolean; error?: string }> {
   const found = [...disk.entries()].find(([, record]) => record.id === pluginId || record.origin === pluginId)
 
   if (!found) {
@@ -994,7 +1008,7 @@ export async function uninstallDiskPlugin(pluginId: string): Promise<{ ok: boole
   }
 
   const [file, record] = found
-  const remove = window.hermesDesktop?.removeDesktopPlugin
+  const remove = removeDesktop ?? window.hermesDesktop?.removeDesktopPlugin
 
   if (!remove) {
     return { ok: false, error: 'this Hermes Desktop build cannot remove desktop plugins — delete the folder by hand' }
@@ -1007,6 +1021,20 @@ export async function uninstallDiskPlugin(pluginId: string): Promise<{ ok: boole
   }
 
   retireDiskPlugin(file, record)
+
+  // A reinstall under the same id must ask for its folders again (ctx.files).
+  // A revoke that fails is reported: the plugin's row is gone, so the user
+  // could not revoke it there any more.
+  if (record.id) {
+    try {
+      await window.hermesDesktop?.pluginFiles?.revoke(record.id)
+    } catch (error) {
+      return {
+        ok: false,
+        error: `removed, but its folder access could not be revoked: ${error instanceof Error ? error.message : String(error)}`
+      }
+    }
+  }
 
   return { ok: true }
 }

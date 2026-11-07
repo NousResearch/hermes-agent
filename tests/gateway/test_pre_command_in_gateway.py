@@ -256,12 +256,13 @@ def test_pre_command_fires_once_in_the_gateway_and_cli_plugins_reads_its_list(tm
 
 
 @pytest.mark.platforms("linux")
-def test_accepted_tui_cron_reads_fire_once_and_refused_writes_fire_nothing(tmp_path):
-    """A TUI session's ``/cron`` reads (main's sidecar text) fire once through both RPCs; a refused
-    ``/cron`` write, and ``/cron`` on a classic CLI session (refused there), fire nothing."""
+def test_accepted_cron_commands_fire_once_and_refused_ones_fire_nothing(tmp_path):
+    """``/cron`` runs on the owner for every local session (a TUI session's reads, a write the classic CLI
+    sends on its own command socket) and fires once through both RPCs; a ``/cron`` refused before it runs
+    (an unclosed quote) fires nothing."""
     from hermes_cli.gateway_client import GatewayClientError
     with _gateway(tmp_path) as (_proc, desc, home, work, _env, log, _peer):
-        wire = _Wire(home, desc)
+        wire, command_socket = _Wire(home, desc), _Wire(home, desc)
         try:
             tui = wire.call('session.create', request_id='cron-tui', source='tui', toolsets=[], cwd=str(work))['session_id']
             cli = wire.call('session.create', request_id='cron-cli', source='cli', toolsets=[], cwd=str(work))['session_id']
@@ -269,16 +270,18 @@ def test_accepted_tui_cron_reads_fire_once_and_refused_writes_fire_nothing(tmp_p
             wire.call('command.dispatch', session_id=tui, name='cron', arg='list')
             wire.call('slash.exec', session_id=tui, command='/cron list --all')
             wire.call('slash.exec', session_id=tui, command='/status')
-            for sid, command in ((tui, '/cron add 1h ping'), (cli, '/cron'), (cli, '/cron list')):
+            wire.call('slash.exec', session_id=cli, command='/cron list')
+            command_socket.call('command.dispatch', session_id=cli, name='cron', arg='remove job-1')
+            for sid, command in ((tui, '/cron add "1h ping'), (cli, '/cron remove "job-1')):
                 with pytest.raises(GatewayClientError):
-                    wire.call('slash.exec', session_id=sid, command=command)
-            with pytest.raises(GatewayClientError):
-                wire.call('command.dispatch', session_id=tui, name='cron', arg='remove job-1')
+                    command_socket.call('slash.exec', session_id=sid, command=command)
             fired = _hook_lines(log)
         finally:
+            command_socket.close()
             wire.close()
     assert [(r['command'], r['args_raw'], r['session_key']) for r in fired] == [
-        ('cron', '', tui), ('cron', 'list', tui), ('cron', 'list --all', tui), ('status', '', tui)], fired
+        ('cron', '', tui), ('cron', 'list', tui), ('cron', 'list --all', tui), ('status', '', tui),
+        ('cron', 'list', cli), ('cron', 'remove job-1', cli)], fired
 
 
 @pytest.mark.platforms("linux")

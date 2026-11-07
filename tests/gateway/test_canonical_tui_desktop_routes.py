@@ -33,6 +33,14 @@ def test_session_control_buttons_run_the_typed_command_handlers(tmp_path):
     assert probe(tmp_path, 'control')['controlled']
 
 
+def test_a_criterion_button_that_cannot_act_is_refused(tmp_path):
+    assert probe(tmp_path, 'control_refusals')['refused']
+
+
+def test_the_connection_card_drives_the_sessions_open_operation(tmp_path):
+    assert probe(tmp_path, 'connection_card')['card']
+
+
 @pytest.mark.platforms("posix")
 def test_exec_quick_and_plugin_commands_run_for_a_controlling_viewer(tmp_path):
     assert probe(tmp_path, 'commands')['commands']

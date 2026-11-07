@@ -38,11 +38,26 @@ class TerminalEnvironmentProvider(ProviderBase):
       spawns so a model-authored command can never read them.
     * ``session_isolated_when_nonpersistent`` — non-persistent mode gives each session its own
       sandbox identity; opt in when a shared name would let two ephemeral runs destroy each other.
+    * ``default_cwd`` — where commands start when ``terminal.cwd`` is unset or unusable there: an
+      absolute in-sandbox path, or ``"~"`` for each sandbox's own home. With ``"~"``,
+      ``create_environment`` receives ``cwd="~"`` (never expanded on the host) and the environment sets
+      ``self.cwd`` to the absolute home it resolved; commands may also arrive with ``cwd="~"``.
+      ``None`` keeps the generic ``/root``.
+    * ``supports_streams`` — environments implement ``exec_prefix(*, user=None, interactive=True)``:
+      a local argv that runs its remainder (``bash -c <script>``, passed through as separate words)
+      inside the sandbox with stdin/stdout open, or ``None`` when it cannot right now. Bot Desktop,
+      ``computer_use`` and the browser then follow the terminal into this backend, as they do for
+      docker/ssh, instead of refusing.
+
+    ``default_cwd`` home resolution and ``exec_prefix`` need the environment object itself, so they
+    work for in-process plugins only; under ``plugins.isolation: host`` the environment reaches Hermes
+    as an opaque placeholder and Bot Desktop placement refuses a ``supports_streams`` backend.
     """
 
     is_remote: bool = True
     is_container: bool = True
     session_isolated_when_nonpersistent: bool = False
+    supports_streams: bool = False
 
     @property
     def description(self) -> str:
@@ -55,6 +70,10 @@ class TerminalEnvironmentProvider(ProviderBase):
 
     @property
     def cache_path_base(self) -> Optional[str]:
+        return None
+
+    @property
+    def default_cwd(self) -> Optional[str]:
         return None
 
     @property

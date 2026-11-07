@@ -111,8 +111,9 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
             # The welcome line is printed before the input loop exists. Keys typed then land in the
             # still-cooked tty: the kernel echoes them (a plain transcript row) and hands the app
             # text + Enter in one read, which it takes for a pasted newline — the question sits
-            # unsent in a two-line draft. The status bar is painted by the running app, in raw mode.
-            wait_for("\u2624 fake-model \u2502", timeout=120)
+            # unsent in a two-line draft. The status bar is painted by the running app, in raw mode;
+            # its separator after the model differs by layout (glyph `·`, classic `│`), so match the name.
+            wait_for("\u2624 fake-model", timeout=120)
             time.sleep(2.0)
 
             ask(1)
@@ -145,6 +146,12 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
     expected = {f"t{t}w{i:03d}" for t, n in WORDS.items() for i in range(n)}
     assert sorted(w for w in expected if words[w] != 1) == [], final
     assert [final.count(f"zq{t}q") for t in WORDS] == [1, 1, 1], final
-    assert sum(1 for line in final.split("\n") if line.lstrip().startswith("❯")) == 1, final
-    blank_runs = [len(run) for run in re.findall(r"(?:^[ \t]*\n)+", final, flags=re.MULTILINE)]
+    # One composer row. The glyph layout also prints each sent message as a `❯ question` row.
+    sent = {f"question zq{t}q please" for t in WORDS}
+    assert sum(1 for line in final.split("\n")
+               if line.lstrip().startswith("❯") and line.strip()[1:].strip() not in sent) == 1, final
+    # Resizes touch only the transcript, so blank runs are judged from the first question on (the
+    # glyph layout's startup spacing under the welcome banner is printed before any resize).
+    turns = final[final.index("\u276f question zq1q"):]
+    blank_runs = [len(run) for run in re.findall(r"(?:^[ \t]*\n)+", turns, flags=re.MULTILINE)]
     assert max(blank_runs, default=0) <= 2, final  # the reply panel's own spacing, nothing more

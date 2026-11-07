@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 
 
 @pytest_asyncio.fixture
@@ -22,15 +22,16 @@ async def bot(tmp_path, monkeypatch):
     from hermes_state import SessionDB
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    # A following Bot Chat reads the profile config by path.
     monkeypatch.setattr(run, '_load_gateway_config',
-                        lambda: {'platform_toolsets': {'cli': []}, 'model': {'default': 'fixture'}})
+                        lambda *_path: {'platform_toolsets': {'cli': []}, 'model': {'default': 'fixture'}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     store._db = SessionDB(db_path=tmp_path / 'state.db')
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='fixture')
-    owner = Principal('uid:1000', 'default', frozenset({'session:create', 'session:read', 'session:submit'}), 'native')
+    owner = SessionActor('uid:1000', 'default', frozenset({'session:create', 'session:read', 'session:submit'}), 'native')
     try:
         yield SimpleNamespace(authority=authority, owner=owner, home=tmp_path)
     finally:

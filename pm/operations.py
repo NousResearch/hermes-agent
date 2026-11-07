@@ -59,7 +59,7 @@ def build_environment(
         cache=Path(cache) if cache is not None else None, env=env,
         offline=offline, explicit=explicit, output=sys.stderr,
     )
-    with _fresh_build(environment, sealed=sealed):
+    with _fresh_build(environment, sealed=sealed, lock=source / "uv.lock"):
         environment.sync(source, extras=extras, groups=groups, all_extras=all_extras,
                          no_install_project=no_install_project, frozen=frozen, timeout=timeout)
     return environment.executable

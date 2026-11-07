@@ -15,6 +15,7 @@ import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
+import { hostHas } from '@/lib/host-capabilities'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
 import { type AppearanceValues, applyAppearance, THEME_MODES } from '@/store/appearance-apply'
@@ -528,8 +529,10 @@ const previewRead: Handler = ({ request, sessionId }) => {
   const opts = { count: num(request.params.count), start: num(request.params.start) }
   const owner = previewOwnerFor(sessionId)
 
+  // A browser host has no pop-out and no readable surface to forward to, so
+  // asking would only wait out the pop-out timeout before the same answer.
   void (async () => {
-    const result = hasLivePreviewSurface(owner)
+    const result = hasLivePreviewSurface(owner) || !hostHas('webviewPreview')
       ? await readActivePreview(opts, owner)
       : ((await requestPopoutPreviewRead(opts, owner)) ?? (await readActivePreview(opts, owner)))
 
@@ -617,7 +620,21 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
   })()
 }
 
+/** read_window_below's `{error, platform}` answer on a browser host: the
+ *  agent relays it instead of retrying a call that can never succeed. */
+const BROWSER_WINDOW_READ_REFUSAL = {
+  error:
+    'read_window_below needs the Hermes desktop app: this session is in a browser tab, which cannot see the OS windows around it.',
+  platform: 'browser'
+}
+
 const windowRead: Handler = ({ request }) => {
+  if (!hostHas('osWindowEnumeration')) {
+    answerValue(request, BROWSER_WINDOW_READ_REFUSAL)
+
+    return
+  }
+
   // read_window_below tool: main owns native window enumeration. Empty =
   // unavailable (older shell without the handler, Wayland, …) — without an
   // answer the tool would stall its full 30s deadline.

@@ -27,6 +27,7 @@ vi.mock('./avatar-image', () => ({ isBackfilledFacePng: () => false }))
 
 import { $botMeta, $lastRoster } from './data'
 import { RoomBotAvatar } from './group-room-avatar'
+import { indexAliasRoutes } from './routing'
 import type { RosterRow } from './types'
 
 const PHOTO = 'data:image/png;base64,AAAA'
@@ -60,6 +61,34 @@ describe('a canonical group member face', () => {
     const { container } = render(<RoomBotAvatar connectionId="spare" name="ada" />)
 
     expect(photoOf(container)).toBeNull()
+  })
+
+  it('stays faceless when the room owner is absent from the roster', () => {
+    // The roster knows only another connection's same-named bot: a unique-name
+    // fallback would paint that gateway's photo into this room.
+    $lastRoster.set([rosterRow({ connectionId: 'spare' })])
+    $botMeta.set({ 'spare::ada': { image: PHOTO }, ada: { image: PHOTO } })
+
+    const { container } = render(<RoomBotAvatar connectionId="home" name="ada" />)
+
+    expect(photoOf(container)).toBeNull()
+  })
+
+  it('paints its cached scoped record before the roster loads', () => {
+    $botMeta.set({ 'home::ada': { image: PHOTO } })
+
+    const { container } = render(<RoomBotAvatar connectionId="home" name="ada" />)
+
+    expect(photoOf(container)).toBe(PHOTO)
+  })
+
+  it('reuses the alias mapping before the roster loads', () => {
+    indexAliasRoutes([{ connectionId: 'other', mode: 'remote', profile: 'helper', targetProfile: 'default' }])
+    $botMeta.set({ 'other::helper': { image: PHOTO } })
+
+    const { container } = render(<RoomBotAvatar connectionId="other" name="default" />)
+
+    expect(photoOf(container)).toBe(PHOTO)
   })
 
   it('resolves a unique name without the room connection (chips that only carry a profile)', () => {

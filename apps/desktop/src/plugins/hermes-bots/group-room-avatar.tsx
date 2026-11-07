@@ -14,11 +14,13 @@ import type { BotMeta, RosterRow } from './types'
  *  the name-derived shape/colour even though the Bots list shows the bot's own
  *  appearance (#148923). Resolve the member to its roster row and read through
  *  `botRosterMeta`, the pipeline `BotRow`/`groupSpeakerLabel` already use: with
- *  the room's connection the row is exact; without it a raw name resolves only
- *  while exactly ONE roster row carries it, so one connection's bot never
- *  borrows another's face. A bare-name key survives as the pre-migration rung,
- *  single-source rosters only — once rows are connection-scoped the bare key
- *  cannot say which machine it named. */
+ *  the room's connection the row is exact, and when the roster has not loaded
+ *  (or no longer lists the owner) the connection alone still keys the record —
+ *  and its alias map — so a cached appearance paints instead of borrowing the
+ *  face of a same-named bot on another gateway. Without a connection a raw name
+ *  resolves only while exactly ONE roster row carries it. A bare-name key
+ *  survives as the pre-migration rung, single-source rosters only — once rows
+ *  are connection-scoped the bare key cannot say which machine it named. */
 export function memberFaceMeta(
   name: string,
   roster: RosterRow[],
@@ -33,6 +35,7 @@ export function memberFaceMeta(
 
   const rows = Array.isArray(roster) ? roster.filter(row => row && !row.ghost) : []
   const connection = String(connectionId || '').trim()
+  const scopedRow = (row: RosterRow) => Boolean(row.sourceScoped || row.remoteSource)
 
   if (connection) {
     const keyed = `${connection}::${wanted}`
@@ -44,18 +47,32 @@ export function memberFaceMeta(
     if (exact) {
       return botRosterMeta(exact, allMeta)
     }
+
+    // No row names this member yet: the room's own connection still keys its
+    // meta record, and `botRosterMeta` also walks the alias map for it — so a
+    // cached appearance paints before the roster loads.
+    const owned = botRosterMeta({ connectionId: connection, name: wanted, sourceScoped: true } as RosterRow, allMeta)
+
+    if (owned) {
+      return owned
+    }
   }
 
   // `default` names the ACTIVE gateway's primary profile, so a scoped row must
   // never answer for it by bare name — the same rule `groupSpeakerLabel` applies.
+  // With the room's connection known, no row scoped to ANOTHER gateway may answer
+  // either: only unscoped (pre-migration) rows reach the unique-name rung.
   const isDefault = wanted.toLowerCase() === 'default'
-  const named = rows.filter(row => row.name === wanted && !(isDefault && (row.remoteSource || row.sourceScoped)))
+
+  const named = rows.filter(
+    row => row.name === wanted && !(isDefault && scopedRow(row)) && !(connection && scopedRow(row))
+  )
 
   if (named.length === 1) {
     return botRosterMeta(named[0], allMeta)
   }
 
-  const scoped = rows.some(row => row.sourceScoped || row.remoteSource)
+  const scoped = rows.some(scopedRow)
 
   return scoped ? undefined : allMeta?.[wanted]
 }
@@ -76,5 +93,13 @@ export function RoomBotAvatar({
   const appearance = botAppearance(name, memberFaceMeta(name, roster, allMeta, connectionId))
   const photo = appearance.image && !isBackfilledFacePng(appearance.image) ? appearance.image : null
 
-  return <BotFace color={avatarColor(appearance.color, name)} image={photo} name={name} shape={appearance.shape} size={size} />
+  return (
+    <BotFace
+      color={avatarColor(appearance.color, name)}
+      image={photo}
+      name={name}
+      shape={appearance.shape}
+      size={size}
+    />
+  )
 }

@@ -2,7 +2,8 @@
 
 OSC 9 (``ESC ] 9 ; <body> BEL``): Ghostty, iTerm2, Kitty and WezTerm raise an OS notification;
 others drop it. OSC 777 (``ESC ] 777 ; notify ; warp://cli-agent ; <json> BEL``): Warp's
-structured CLI-agent protocol (tab status + notification mailbox).
+structured CLI-agent protocol (tab status + notification mailbox). Inside tmux both go out wrapped in
+tmux's DCS passthrough (:func:`tmux_passthrough`), since tmux drops bare OSC notifications.
 
 Inside the running CLI, ``HermesCLI._ring_bell`` sends ``notification_sequence()`` through the
 prompt_toolkit output on the app loop (a second writer on the tty would splice into an in-flight kitty
@@ -67,10 +68,23 @@ def warp_osc777(event: str, detail: str, session_id: str = "") -> str:
     return f"\x1b]777;notify;warp://cli-agent;{json.dumps(payload, separators=(',', ':'))}\x07"
 
 
+def tmux_passthrough(seq: str, env=None) -> str:
+    """Wrap *seq* in tmux's DCS passthrough when running inside tmux.
+
+    tmux swallows unknown OSC sequences instead of forwarding them to the outer terminal; only
+    ``ESC P tmux; <seq with ESC doubled> ESC \\`` reaches it (and only with ``allow-passthrough on``,
+    tmux 3.3+; with it off the wrapped form is dropped just like the bare one).
+    """
+    env = os.environ if env is None else env
+    if not env.get("TMUX"):
+        return seq
+    return "\x1bPtmux;" + seq.replace("\x1b", "\x1b\x1b") + "\x1b\\"
+
+
 def notification_sequence(context: str, *, prompt: bool, session_id: str = "", detail: str = "") -> str:
     """OSC 9 (plus Warp OSC 777 when supported) for a blocking prompt or turn end."""
     seq = osc9(f"Hermes: {context}")
     if warp_supported():
         event = "permission_request" if prompt else "stop"
         seq += warp_osc777(event, detail or context, session_id)
-    return seq
+    return tmux_passthrough(seq)

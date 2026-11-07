@@ -15,7 +15,7 @@ _WARP_OK = {
 
 
 def _ring(monkeypatch, *, flag_on, env, **kwargs):
-    for key in _WARP_OK:
+    for key in (*_WARP_OK, "TMUX"):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -32,6 +32,14 @@ def test_osc9_body_emitted_and_sanitized_only_when_flag_on(monkeypatch):
     out = _ring(monkeypatch, flag_on=True, env={}, context="approval\x1b\x07\x00\x7f!")
     assert out == "\a\x1b]9;Hermes: approval!\x07"
     assert _ring(monkeypatch, flag_on=False, env={}, context="approval") == ""
+
+
+def test_inside_tmux_notification_is_wrapped_in_dcs_passthrough(monkeypatch):
+    """tmux swallows bare OSC 9; only the DCS-wrapped form (ESC doubled) reaches the outer terminal."""
+    out = _ring(monkeypatch, flag_on=True, env={"TMUX": "/tmp/tmux-1000/default,1,0"}, context="approval")
+    assert out == "\a\x1bPtmux;\x1b\x1b]9;Hermes: approval\x07\x1b\\"
+    monkeypatch.delenv("TMUX")
+    assert _ring(monkeypatch, flag_on=True, env={}, context="approval") == "\a\x1b]9;Hermes: approval\x07"
 
 
 def test_warp_osc777_only_under_supported_warp_build(monkeypatch):
@@ -55,7 +63,7 @@ def test_warp_osc777_only_under_supported_warp_build(monkeypatch):
 def test_running_app_gets_bell_and_osc9_on_its_loop_never_a_second_tty_writer(monkeypatch):
     """With the prompt_toolkit app live, the bell + notification must reach the tty through the
     app's output ON THE APP LOOP, never via a second writer from the calling thread."""
-    for key in _WARP_OK:
+    for key in (*_WARP_OK, "TMUX"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(terminal_notify, "write_tty", lambda seq: pytest.fail(f"stray tty write: {seq!r}"))
 

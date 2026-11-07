@@ -2093,7 +2093,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     entry = self._adopt(entry, persist=False, **_MARK_OK)
                     cleared_any = True
             if refresh and self._entry_needs_refresh(entry):
-                if self.provider in _TOKENS_SINGLETON_PROVIDERS:
+                if (
+                    self.provider in _TOKENS_SINGLETON_PROVIDERS
+                    or plugin_refresh_hook(self.provider) is not None
+                ):
                     pending_refresh.append(entry)
                     continue
                 refreshed = self._refresh_entry(entry, force=False)

@@ -287,8 +287,13 @@ _PLACEHOLDER_KEY_PREFIXES = ("sk-", "ghp_", "hf_")
 
 
 def _is_placeholder_shape(value: str) -> bool:
-    """True for the placeholder shapes shipped in .env.example and the docs."""
+    """True for the placeholder shapes shipped in .env.example and the docs, plus an
+    elided key copied from a console/README (``sk-ant...gQAA``).  Three consecutive dots
+    cannot occur in a real credential: API keys are opaque base64url (no dots at all) and
+    a JWT joins its segments with single dots, so ``...`` is always a human's ellipsis."""
     lowered = value.lower()
+    if "..." in value:
+        return True
     if lowered.startswith("your_") and lowered.endswith("_here"):
         return True
     for prefix in _PLACEHOLDER_KEY_PREFIXES:

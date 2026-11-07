@@ -16,6 +16,7 @@ import {
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
 import { translateNow } from '@/i18n/runtime'
+import { writeClipboardText } from '@/lib/clipboard'
 import { findBarClaimsCombo } from '@/lib/find-in-page'
 import {
   contributedKeybindHandler,
@@ -100,6 +101,7 @@ import {
 } from '../chat/composer/focus'
 import { handleComposerFocusChord } from '../chat/composer/focus-chord'
 import { handleWindowPaste } from '../chat/composer/paste-to-focus'
+import { shouldCopyUnfocusedSelection } from '../context-menu/copy-selection'
 import { openSession } from '../open-session'
 import {
   $workspaceIsPage,
@@ -615,6 +617,15 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         }
 
         event.preventDefault()
+
+        // A selection with no editable focus (transcript text) is invisible to
+        // Chromium's own copy command; answer it from the DOM selection so a
+        // shortcut that only synthesizes VK_C still copies.
+        if (actionId === 'view.copySelection' && shouldCopyUnfocusedSelection(event)) {
+          void writeClipboardText(document.getSelection()?.toString() ?? '')
+
+          return
+        }
 
         if (handler() === false && keybindAction(actionId)?.passthrough) {
           continue

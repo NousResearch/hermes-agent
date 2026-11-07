@@ -618,6 +618,7 @@ export const en: Translations = {
       'view.closeTerminal': 'Close terminal',
       'view.selectionToComposer': 'Send selection to composer',
       'view.terminalCopy': 'Copy terminal selection',
+      'view.copySelection': 'Copy selection',
       'view.terminalPaste': 'Paste into terminal',
       'view.closeTab': 'Close tab',
       'view.reopenTab': 'Reopen closed tab',

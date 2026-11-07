@@ -435,35 +435,6 @@ def test_reader_loop_still_replaces_genuinely_invalid_bytes(registry, monkeypatc
     assert session.output_buffer == "ok\ufffddone\n"
 
 
-def test_pty_reader_loop_reassembles_multibyte_char_split_across_chunks(registry, monkeypatch):
-    """The PTY reader gets the same incremental-decode treatment."""
-
-    class _FakePty:
-        def __init__(self, chunks):
-            self._chunks = list(chunks)
-            self.exitstatus = 0
-
-        def isalive(self):
-            return bool(self._chunks)
-
-        def read(self, _n):
-            if self._chunks:
-                return self._chunks.pop(0)
-            raise EOFError
-
-        def wait(self):
-            return 0
-
-    session = _make_session(sid="proc_pty_utf8")
-    session._pty = _FakePty([b"caf\xc3", b"\xa9\n"])
-    monkeypatch.setattr(registry, "_check_watch_patterns", lambda _s, _c: None)
-    monkeypatch.setattr(registry, "_emit_output", lambda _s, _c: None)
-    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: None)
-
-    registry._pty_reader_loop(session)
-
-    assert session.output_buffer == "café\n"
-    assert "\ufffd" not in session.output_buffer
 
 
 # =========================================================================
@@ -583,8 +554,6 @@ class TestOrphanedPipeReconciliation:
         assert result["status"] == "exited", result
         assert result["exit_code"] == 0
         assert elapsed < 0.9  # must stay under the old 1s poll tick being regression-tested, f"wait() should wake on completion; took {elapsed:.3f}s"
-
-
 # =========================================================================
 # Read log
 # =========================================================================

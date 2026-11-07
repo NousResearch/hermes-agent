@@ -179,6 +179,13 @@ def _plain(secret: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _kept_envelope(token: Any, existing: Optional[dict]) -> bool:
+    """*token* is the stored ``safeStorage`` envelope Desktop could not decrypt on import, kept as is
+    by an edit that did not touch the token: still a token (Desktop opens it once its keychain answers)."""
+    return (isinstance(token, dict) and token.get("encoding") == "safeStorage" and bool(token.get("value"))
+            and existing is not None and existing.get("token") == token)
+
+
 def _envelope(value: str) -> dict:
     return {"encoding": "plain", "value": value}
 
@@ -253,7 +260,8 @@ def save_connection(payload: dict) -> tuple[dict, dict]:
         if isinstance(payload.get("headers"), dict):
             data["headers"] = _incoming_headers(payload["headers"], (existing or {}).get("headers"))
         entry = normalize_connection_input(merge_connection_input(data, existing), registry)
-        if entry["kind"] == "remote" and entry.get("authMode") != "oauth" and not _plain(entry.get("token")):
+        if (entry["kind"] == "remote" and entry.get("authMode") != "oauth" and not _plain(entry.get("token"))
+                and not _kept_envelope(entry.get("token"), existing)):
             raise ConnectionStoreError("Remote gateway session token is required.")
         changed = bool(existing) and connection_dial_fields_changed(existing, entry)
         return upsert_connection(registry, entry), (entry, changed)

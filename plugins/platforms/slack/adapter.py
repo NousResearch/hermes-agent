@@ -62,10 +62,12 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .adapter_slash_payload import slash_command_text, slash_thread_id
     from .adapter_reactions_context import slack_reactions_marker
     from .adapter_forwarded import (
-        append_forwards, files_with_forwarded, forward_section, is_forward, slack_file_marker as _slack_file_marker)
+        append_forwards, files_with_forwarded, forward_section, is_forward, is_shared_message,
+        slack_file_marker as _slack_file_marker)
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from adapter_forwarded import (  # type: ignore
-        append_forwards, files_with_forwarded, forward_section, is_forward, slack_file_marker as _slack_file_marker)
+        append_forwards, files_with_forwarded, forward_section, is_forward, is_shared_message,
+        slack_file_marker as _slack_file_marker)
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
@@ -612,16 +614,16 @@ def _render_slack_table_block(
     return text
 
 
-def _extract_text_from_slack_attachments(attachments: list) -> str:
+def _extract_text_from_slack_attachments(attachments: list, bot_uid: str = "") -> str:
     """Extract readable text from legacy ``attachments`` (alert/CI bots post empty ``text``).
     Prefers structured fields; uses ``fallback`` only when nothing else exists."""
     if not attachments:
         return ""
     lines: list[str] = []
     for att in attachments:
-        if is_forward(att):  # a forward IS content: render it, never skip it as an unfurl
+        if is_shared_message(att, bot_uid):  # forwards/linked messages ARE content
             lines.append(forward_section(att, _extract_text_from_slack_blocks))
-        # Permalink unfurls repeat a message the agent already reads (inbound path skips them too).
+        # Other permalink unfurls echo our own message (inbound path skips them too).
         if not isinstance(att, dict) or att.get("is_msg_unfurl") or is_forward(att):
             continue
         got: list[str] = [str(att[key]) for key in ("pretext", "title", "text") if att.get(key)]
@@ -4570,7 +4572,9 @@ class SlackAdapter(BasePlatformAdapter):
             text = self._append_block_text(
                 text, blocks, self._team_bot_user_ids.get(dedup_team_id, self._bot_user_id) or "")
         # Forwards (``is_share``) carry the content the user is pointing at; unfurls are previews.
-        text = append_forwards(text, event.get("attachments"), _extract_text_from_slack_blocks)
+        text = append_forwards(
+            text, event.get("attachments"), _extract_text_from_slack_blocks,
+            self._team_bot_user_ids.get(dedup_team_id, self._bot_user_id) or "")
         text = self._append_link_unfurls(text, event.get("attachments") or [])
         ts = event.get("ts", "")
         outer_team_id = dedup_team_id
@@ -5758,7 +5762,7 @@ class SlackAdapter(BasePlatformAdapter):
         # Legacy ``attachments``: alerting/CI bots often post empty ``text`` with
         # the real content in attachment fields or nested blocks.
         attachments = msg.get("attachments") or []
-        attachments_text = _extract_text_from_slack_attachments(attachments).strip()
+        attachments_text = _extract_text_from_slack_attachments(attachments, bot_uid).strip()
         if attachments_text and _unseen(attachments_text, msg_text):
             extras.append(attachments_text)
         if blocks:

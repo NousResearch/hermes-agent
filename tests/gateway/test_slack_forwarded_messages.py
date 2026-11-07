@@ -269,6 +269,23 @@ async def test_permalink_unfurl_without_is_share_is_still_skipped(adapter):
 
 
 @pytest.mark.asyncio
+async def test_pasted_permalink_to_someone_elses_message_reaches_agent(adapter):
+    """Pasting a permalink (no Forward action) to another person's message: Slack's unfurl is the
+    agent's only copy when the bot is not in the source conversation; our own message stays an echo."""
+    other = {"is_msg_unfurl": True, "is_thread_root_unfurl": True, "author_id": "U0SCOUT",
+             "author_name": "Scout", "text": CI_BODY, "from_url": PERMALINK}
+    own = {"is_msg_unfurl": True, "author_id": "U_BOT", "text": "our own earlier reply"}
+    msg = await _delivered(adapter, _event(text=f"<@U_BOT> is this valid? <{PERMALINK}>",
+                                           attachments=[other, own]))
+    assert "[Linked Slack message from Scout]" in msg.text
+    assert CI_BODY in msg.text
+    assert "our own earlier reply" not in msg.text
+    rendered = adapter._render_message_text({"text": f"<{PERMALINK}>", "attachments": [other, own]},
+                                            bot_uid="U_BOT")
+    assert CI_BODY in rendered and "our own earlier reply" not in rendered
+
+
+@pytest.mark.asyncio
 async def test_forwarded_bot_mention_does_not_summon_the_bot(adapter):
     """A mention inside the forwarded content is someone else's words, not an address."""
     att = _share(text="<@U_BOT> please rerun", message_blocks=None)

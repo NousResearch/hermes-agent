@@ -19,6 +19,7 @@ import { useMessageReactions } from '@/components/assistant-ui/thread/use-messag
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { CopyButton } from '@/components/ui/copy-button'
 import { Tip } from '@/components/ui/tooltip'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
@@ -260,9 +261,10 @@ interface UserBubbleActionsProps {
   touch: boolean
 }
 
-/** Bottom-right cluster: when it was sent, then Stop or Restore. Its fill
+/** Bottom-right cluster: when it was sent, Copy, then Stop or Restore. Its fill
  *  masks the last line's tail while shown. Touch has no hover, so Stop/Restore
- *  stay visible there and a cluster with neither is not rendered. */
+ *  stay visible there and a cluster with neither is not rendered; Copy is
+ *  desktop-only because touch keeps the platform's long-press copy. */
 const UserBubbleActions: FC<UserBubbleActionsProps> = ({
   fullText,
   messageId,
@@ -274,6 +276,7 @@ const UserBubbleActions: FC<UserBubbleActionsProps> = ({
   touch
 }) => {
   const copy = useI18n().t.assistant.thread
+  const showCopy = !touch && fullText.length > 0
 
   if (touch && !showStop && !showRestore) {
     return null
@@ -288,7 +291,18 @@ const UserBubbleActions: FC<UserBubbleActionsProps> = ({
           : 'opacity-0 group-hover/user-message:opacity-100 group-hover/user-message:transition-none group-focus-within/user-message:opacity-100'
       )}
     >
-      {!touch && <MessageHoverTime className={cn(!showStop && !showRestore && 'pr-0.5')} />}
+      {!touch && <MessageHoverTime className={cn(!showCopy && !showStop && !showRestore && 'pr-0.5')} />}
+      {showCopy && (
+        <CopyButton
+          appearance="icon"
+          buttonSize="icon-xs"
+          className="pointer-events-auto"
+          label={copy.copy}
+          preventDefault
+          stopPropagation
+          text={fullText}
+        />
+      )}
       {showStop ? (
         <button
           aria-label={copy.stop}

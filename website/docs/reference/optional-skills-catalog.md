@@ -118,6 +118,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**agentmail**](../user-guide/skills/optional/email/email-agentmail.md) | Use when an agent needs AgentMail CLI email inboxes. |
+| [**aws-ses**](../user-guide/skills/optional/email/email-aws-ses.md) | Amazon SES setup: production access, DKIM/SPF, SMTP creds. |
 
 ## finance
 

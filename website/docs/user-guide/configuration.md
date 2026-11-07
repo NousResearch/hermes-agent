@@ -2556,7 +2556,7 @@ Direct OpenAI API requests and custom proxy endpoints are unchanged.
 ```yaml
 stt:
   enabled: true                # Auto-transcribe inbound voice messages (default: true)
-  echo_transcripts: true       # Post raw transcripts back to the chat as 🎙️ "..." (default: true)
+  echo_transcripts: true       # * Post raw transcripts (Telegram: collapsed quote; default: true)
   provider: "local"            # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra" | ...
   language: "en"               # Global hint; a nonempty provider language wins. Blank falls back to HERMES_LOCAL_STT_LANGUAGE, then auto-detect
   streaming: false             # live partial text while you speak (openai, xai, elevenlabs); see Voice Mode > Live transcription

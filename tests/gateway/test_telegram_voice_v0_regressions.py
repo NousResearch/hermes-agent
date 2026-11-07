@@ -4,7 +4,7 @@ import threading
 import types
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -13,12 +13,12 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
+from tests.gateway._telegram_stt_test_support import assert_stt_echo, telegram_adapter
 
 
 def _source():
@@ -38,31 +38,6 @@ def _runner(adapter=None):
     runner._thread_metadata_for_source = lambda *_args, **_kwargs: {}
     runner._reply_anchor_for_event = lambda _event: None
     return runner
-
-
-class _PendingVoiceAdapter(BasePlatformAdapter):
-    def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
-        self.sent = []
-
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
-        return True
-
-    async def disconnect(self) -> None:
-        self._mark_disconnected()
-
-    async def send(self, chat_id, content, reply_to=None, metadata=None):
-        self.sent.append((chat_id, content, metadata))
-        return SendResult(success=True, message_id="voice-echo")
-
-    async def send_typing(self, chat_id, metadata=None) -> None:
-        return None
-
-    async def stop_typing(self, chat_id) -> None:
-        return None
-
-    async def get_chat_info(self, chat_id):
-        return {"id": chat_id, "type": "dm"}
 
 
 class _PendingVoiceAgent:
@@ -123,7 +98,7 @@ def _run_agent_runner(adapter):
 
 @pytest.mark.asyncio
 async def test_pending_voice_interrupt_reuses_transcript_and_echo():
-    adapter = SimpleNamespace(send=AsyncMock())
+    adapter = telegram_adapter()
     runner = _runner(adapter)
     source = _source()
     event = MessageEvent(
@@ -164,11 +139,9 @@ async def test_pending_voice_interrupt_reuses_transcript_and_echo():
     assert drain_text == interrupt_text
     assert drain_transcripts == interrupt_transcripts == ["hello once"]
     mock_transcribe.assert_called_once_with("/tmp/telegram-voice.ogg", None, "gateway")
-    adapter.send.assert_awaited_once_with(
-        "12345",
-        '🎙️ "hello once"',
-        metadata=None,
-    )
+    assert len(adapter._bot.delivered) == 1
+    assert adapter._bot.delivered[0]["chat_id"] == 12345
+    assert_stt_echo(adapter._bot.delivered, "hello once")
 
 
 @pytest.mark.asyncio
@@ -181,7 +154,7 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
     monkeypatch.setitem(sys.modules, "dotenv", types.SimpleNamespace(load_dotenv=lambda: None))
     monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=_PendingVoiceAgent))
 
-    adapter = _PendingVoiceAdapter()
+    adapter = telegram_adapter()
     runner = _run_agent_runner(adapter)
     source = _source()
     session_key = "telegram:dm:12345"
@@ -217,7 +190,9 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
     assert result["final_response"] == "follow-up complete"
     assert _PendingVoiceAgent.messages == ["initial turn", '"hello once"']
     mock_transcribe.assert_called_once_with("/tmp/telegram-pending-voice.ogg", None, "gateway")
-    assert adapter.sent == [("12345", '🎙️ "hello once"', None)]
+    assert len(adapter._bot.delivered) == 1
+    assert adapter._bot.delivered[0]["chat_id"] == 12345
+    assert_stt_echo(adapter._bot.delivered, "hello once")
 
 
 @pytest.mark.asyncio

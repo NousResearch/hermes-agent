@@ -1140,7 +1140,7 @@ DEFAULT_CONFIG = {
 
     "stt": {
         "enabled": True,
-        # Echo the raw transcript of gateway voice messages back as a 🎙️ message.
+        # * Echo raw gateway voice transcripts (Telegram uses a collapsed quote).
         "echo_transcripts": True,
         # No seeded "provider" (a stored value is an explicit pick; unset = autodetect): local | groq |
         # openai | mistral | elevenlabs | deepinfra | xai. Global language hint unless a per-provider one

@@ -323,6 +323,7 @@ class FeishuAdapterSettings:
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
     allow_all_dm: bool = False  # resolved per-profile so multiplexed adapters honor their own .env
+    ignore_at_all: bool = True
 
 
 @dataclass
@@ -1420,6 +1421,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
+            ignore_at_all=_to_boolean(extra.get("ignore_at_all", _get_scoped_secret("FEISHU_IGNORE_AT_ALL", "true"))),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -3500,7 +3502,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
     def _mentions_self(self, message: Any) -> bool:
         # @_all is Feishu's @everyone placeholder.
         raw_content = getattr(message, "content", "") or ""
-        if "@_all" in raw_content:
+        if not getattr(self, "_ignore_at_all", True) and "@_all" in raw_content:
             return True
         mentions = getattr(message, "mentions", None) or []
         if mentions and self._message_mentions_bot(mentions):
@@ -3523,6 +3525,8 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         return False
 
     def _post_mentions_bot(self, mentions: list[FeishuMentionRef]) -> bool:
+        if not getattr(self, "_ignore_at_all", True) and any(m.is_all for m in mentions):
+            return True
         return any(m.is_self for m in mentions)
 
     def _bot_identity(self) -> _FeishuBotIdentity:

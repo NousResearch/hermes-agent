@@ -219,6 +219,21 @@ class TestEdgeCases:
             paths, _ = _extract(text)
             assert len(paths) == 1, f"Failed with suffix '{suffix}'"
 
+    def test_windows_path_with_apostrophe(self):
+        """Windows path containing apostrophe (e.g. project's) is matched."""
+        p = r"C:\Users\w0l4i\Documents\project's\hermes\test.png"
+        paths, cleaned = _extract(f"Here is {p} enjoy")
+        assert paths == [p]
+        assert p not in cleaned
+
+    def test_windows_quoted_path_with_spaces(self):
+        """Quoted path containing spaces is extracted and quotes are cleaned."""
+        p = r"C:\Users\test\My Documents\file.png"
+        paths, cleaned = _extract(f'See "{p}" here')
+        assert paths == [p]
+        assert f'"{p}"' not in cleaned
+        assert p not in cleaned
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

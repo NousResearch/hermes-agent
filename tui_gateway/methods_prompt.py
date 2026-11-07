@@ -813,8 +813,11 @@ def _lock_in_submit_turn(
 
 
 # Per-turn client surfaces that carry a model-bound note (session_notifications._hud_surface_note);
-# the canonical admission path shares the same set (gateway.session_surface).
+# the canonical admission path shares the same set and the same transcript clip (gateway.session_surface).
+# Aliased because bind_module publishes imported functions only under a different name, and the
+# handler body runs against server.py's globals.
 from gateway.session_surface import SURFACES as _CLIENT_SURFACES
+from gateway.session_surface import clip_voice_context as _clip_voice_context
 
 
 @method("prompt.submit")
@@ -868,7 +871,7 @@ def _(rid, params: dict) -> dict:
     # user row stays the words the user said); anything else clears it.
     voice_context = params.get("voice_context")
     session["voice_live_context"] = (
-        voice_context[:6000] if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
+        _clip_voice_context(voice_context) if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
     session["voice_turn"] = params.get("voice_turn") is True
     has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
     if has_truncation and isinstance(text, str):

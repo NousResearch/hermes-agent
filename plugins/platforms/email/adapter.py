@@ -594,10 +594,13 @@ class EmailAdapter(BasePlatformAdapter):
             logger.info("[Email] SMTP connection test passed.")
             return True
         except smtplib.SMTPAuthenticationError as e:
-            # Typed auth failure (535 & friends) can never self-heal, so drop out of the reconnect queue — unambiguous, unlike IMAP4.error.
+            # SMTP 4xx replies are transient; only permanent authentication failures should stop retries.
+            retryable = 400 <= e.smtp_code < 500
+            detail = f"SMTP authentication failed for {self._address}: {e}."
+            if not retryable:
+                detail += " Check EMAIL_PASSWORD (for Gmail/Outlook this must be an app password, not the account password)."
             return self._fail("[Email] SMTP authentication failed: %s", e, "email_auth_error",
-                              f"SMTP authentication failed for {self._address}: {e}. Check EMAIL_PASSWORD (for Gmail/Outlook "
-                              "this must be an app password, not the account password).", retryable=False)
+                              detail, retryable=retryable)
         except Exception as e:
             return self._fail("[Email] SMTP connection failed: %s", e, "email_smtp_connect_error",
                               f"SMTP connection to {self._smtp_host} failed: {e}", retryable=True)

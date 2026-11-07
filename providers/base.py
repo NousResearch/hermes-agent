@@ -278,6 +278,15 @@ class ProviderProfile:
     # *model*; ``()`` = no reasoning control, None = the generic ladder gated by models.dev.
     setup_reasoning_efforts: Callable[[str], Any] | None = None
 
+    # ── Usage accounting ─────────────────────────────────────
+    # Top-level response fields (beside ``usage``) that carry this provider's own per-call usage or billing
+    # report, e.g. a billed amount. Core copies each named field from the response, or from the stream
+    # chunk/event that carries it, into ``CanonicalUsage.raw_usage[<name>]`` for ``get_usage_cost()``.
+    # Names are lowercase identifiers; the response's own structure and fields core already reads
+    # (``usage``, ``service_tier``, ``cost``, ``model_*``, ``*_details``, ...) are ignored.
+    # Empty = nothing is captured (every provider that doesn't opt in).
+    usage_response_fields: tuple = ()
+
     # ── Hooks (override in subclass for complex providers) ───
 
     def fetch_account_usage(
@@ -394,7 +403,15 @@ class ProviderProfile:
         return None
 
     def get_usage_cost(self, model: str, usage: Any) -> Any | None:
-        """Optional CostResult from canonical usage; distinguish estimates from invoices."""
+        """Optional CostResult from canonical usage; distinguish estimates from invoices.
+
+        Return status ``actual`` (source ``provider_cost_api``) only for the amount the provider itself
+        reported as billed for this call (e.g. a field named in ``usage_response_fields``, read from
+        ``usage.raw_usage``); prices computed from rate tables stay ``estimated``. ``None`` = core pricing.
+        A result that is not a ``CostResult``, has a status outside ``CostStatus``, is ``actual`` without an
+        amount, or whose amount is not a finite non-negative number (at most USD 1000 for ``actual``) is
+        ignored with a warning and the call gets core pricing. An int or float amount is converted to ``Decimal``.
+        """
         return None
 
     def get_max_tokens(self, model: str | None) -> int | None:

@@ -42,6 +42,25 @@ def reset_accounting_context(token) -> None:
         _accounting.set(None)
 
 
+def aux_usage_fields(client: Any = None) -> Any:
+    """A ``usage_pricing.StreamUsageFields`` for the auxiliary call in flight: the provider's declared
+    top-level usage fields, captured by the aux adapters that rebuild a response (streamed chat
+    aggregation, the Responses and Anthropic adapters) so ``record_aux_usage`` still sees them. The
+    provider is this attempt's route (the Relay aux call context), else the client's auto-route tag."""
+    from agent.usage_pricing import StreamUsageFields
+
+    try:
+        from agent.auxiliary_client import _RELAY_AUX_CALL_CONTEXT
+
+        context = _RELAY_AUX_CALL_CONTEXT.get() or {}
+        provider = (context.get("stream_provider") or context.get("provider")
+                    or getattr(client, "_hermes_aux_effective_provider", None))
+    except Exception:  # health: allow BLE001 -- accounting metadata must never break an aux call
+        logger.debug("Aux usage-field provider lookup failed", exc_info=True)
+        provider = None
+    return StreamUsageFields(provider if isinstance(provider, str) else None)
+
+
 def record_aux_usage(
     response: Any, task: Optional[str], *, provider: Optional[str] = None,
     base_url: Optional[str] = None,
@@ -64,9 +83,12 @@ def record_aux_usage(
         if raw_usage is None:
             return
 
-        from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
+        from agent.usage_pricing import (
+            estimate_usage_cost, normalize_usage, with_response_usage_fields, with_served_service_tier,
+        )
 
-        usage = with_served_service_tier(normalize_usage(raw_usage, provider=provider), response)
+        usage = with_response_usage_fields(
+            with_served_service_tier(normalize_usage(raw_usage, provider=provider), response), response, provider)
         if not (
             usage.input_tokens or usage.output_tokens
             or usage.cache_read_tokens or usage.cache_write_tokens

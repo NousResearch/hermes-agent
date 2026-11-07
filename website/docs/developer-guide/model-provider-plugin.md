@@ -270,6 +270,7 @@ meaning says otherwise.
 | `save_device_login` | Persists the approved credential (core calls it in the session's profile scope) | `None` |
 | `model_setup_flow` | The provider's own `hermes model` step (credential prompt, catalog, persist) | `None` (generic flow for `auth_type`) |
 | `setup_reasoning_efforts` | Effort levels the setup picker offers for a model; `()` = no reasoning control | `None` (generic ladder) |
+| `usage_response_fields` | Top-level response fields (beside `usage`) core copies into `CanonicalUsage.raw_usage` for `get_usage_cost()`, from the response or the stream chunk/event carrying them | `()` |
 | `fetch_account_usage()` | `/usage` snapshot when no built-in usage fetcher owns the provider | `None` |
 | `resolve_aux_model()` | Live cheap-model id for auxiliary tasks; cached, never raises | `""` (use `default_aux_model`) |
 | `get_hostname()` | Provider hostname for URL detection | `hostname`, else from `base_url` |
@@ -280,7 +281,7 @@ meaning says otherwise.
 | `build_client_kwargs_extras()` | OpenAI-client kwargs defaults (explicit settings win; no I/O) | `{}` |
 | `default_vision_model()` | Provider's default vision model id | `None` |
 | `get_model_context_length()` | Provider-qualified context bound; explicit user overrides win | `None` |
-| `get_usage_cost()` | `CostResult` from canonical usage (estimates are never `actual`) | `None` |
+| `get_usage_cost()` | `CostResult` from canonical usage (`actual` only for a provider-reported billed amount) | `None` |
 | `get_max_tokens()` | Per-model max_tokens cap when the user set none | `default_max_tokens` |
 | `supported_reasoning_efforts()` | Effort vocabulary for a model: `None` unknown, `()` none, tuple = clamp; no I/O | `None` |
 | `api_mode_for_model()` | Wire this provider serves a model on; `api_key` given only at resolution time | `None` (static `api_mode`) |
@@ -451,7 +452,9 @@ Native clients may persist private assistant replay in `reasoning_details` with 
 
 Providers may override `get_model_context_length(model)` with a qualified positive token bound, or return `None` for the existing lookup chain. Explicit configuration and endpoint-scoped overrides take precedence; the provider bound is consulted before generic caches and HTTP probes. Do not confuse a catalog maximum with an account entitlement.
 
-For a nonstandard cost surface, `get_usage_cost(model, usage)` may return an `agent.usage_pricing.CostResult`, or `None` for normal pricing. `usage` is a `CanonicalUsage` whose `raw_usage` retains response metadata when available. Classify native list-price totals as `estimated`, never `actual` or `included`; missing invoice information is not proof of zero charges. The default hooks return `None`, preserving existing providers.
+For a nonstandard cost surface, `get_usage_cost(model, usage)` may return an `agent.usage_pricing.CostResult`, or `None` for normal pricing. `usage` is a `CanonicalUsage` whose `raw_usage` retains response metadata when available. Classify native list-price totals as `estimated`, never `actual` or `included`; missing invoice information is not proof of zero charges. The default hooks return `None`, preserving existing providers. Core prices the call as if the hook had returned `None` when the hook raises, returns something other than a `CostResult`, returns a status outside `CostStatus`, returns `actual` without an amount, or returns an amount that is not a finite, non-negative number (an `actual` amount is also capped at USD 1000 per call); it logs a warning the first time per provider and kind of failure. An `int` or `float` amount is converted to `Decimal`.
+
+A provider that reports the billed amount of each call in its own top-level response field (beside `usage`) names it in `usage_response_fields`, e.g. `("acme_billing",)`. Core copies that field into `usage.raw_usage["acme_billing"]` on the chat completions, Anthropic Messages and Responses wires, streamed or not, for main-loop and auxiliary calls: from the response object, or from whichever stream chunk or event carries it (the final usage chunk, `message_delta`, `response.completed`). `get_usage_cost` can then return that amount with `status="actual"` and `source="provider_cost_api"`, and fall back to an estimate (or `None`) when the field is absent. Names must be lowercase identifiers; the response's own structure and fields core already reads (`id`, `model`, `choices`, `usage`, `service_tier`, `cost`, `model_*`, `*_details`, ...) are ignored. The copied value is plain JSON data (at most 8 levels deep and 10,000 nodes; anything else is dropped).
 
 ## Hook reference examples
 

@@ -82,7 +82,7 @@ VALID_BUSY_POLICIES: frozenset[str] = frozenset({"dispatch", "reject", "interrup
 
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
-    CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
+    CommandDef("start", "Acknowledge platform start pings; a deep-link payload resumes that session", "Session",
                gateway_only=True, busy_policy="dispatch", busy_handler="start"),
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
                aliases=("reset",), args_hint="[name]",

@@ -833,6 +833,13 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                     command = new_command
                     _cmd_def, canonical = _canon(command)
 
+        # Telegram deep links (t.me/<bot>?start=<payload>) arrive as `/start <payload>`;
+        # route them through /resume so the normal slash-access and origin (IDOR) gates apply.
+        _args = event.get_command_args().strip()
+        if canonical == "start" and _args:
+            event.text = f"/resume {_args.removeprefix('r_')}"
+            command = canonical = "resume"
+
         if not (command and canonical and is_gateway_known_command(canonical)):
             return False, None, command, canonical
 

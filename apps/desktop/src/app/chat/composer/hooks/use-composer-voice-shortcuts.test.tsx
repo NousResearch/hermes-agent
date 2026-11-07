@@ -64,6 +64,8 @@ vi.mock('@/store/voice-live', async () => {
 
   return {
     $voiceLiveStatus: atom(null),
+    $voiceLiveGrokStatus: atom(null),
+    refreshAllVoiceLiveStatuses: vi.fn(async () => undefined),
     refreshVoiceLiveStatus: vi.fn(async () => undefined),
     selectedVoiceChatMode: vi.fn(() => 'chained')
   }

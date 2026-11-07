@@ -623,10 +623,16 @@ def register_live_transport(transport: Transport | None) -> None:
 
 
 def unregister_live_transport(transport: Transport | None) -> None:
-    """Stop tracking a transport (call on disconnect). Idempotent."""
+    """Stop tracking a transport and release transport-owned resources on disconnect."""
     with _live_transports_lock:
         _live_transports.discard(transport)
     _server_requests.forget(transport)
+    try:
+        # This helper is rebound onto server.py by methods_voice_grok.register;
+        # importing the split module here would clean a different registry copy.
+        globals()["drop_grok_bridges_for_transport"](transport)
+    except Exception:
+        logger.debug("grok-live transport cleanup failed", exc_info=True)
 
 
 def _broadcast_global_event(event: str, payload: dict | None = None, *, skip=frozenset()) -> None:
@@ -2001,7 +2007,8 @@ from hermes_state import _BARE_BILLING_PROVIDERS
 
 from . import (
     session_registry as _session_registry, agent_factory as _agent_factory,
-    slash_worker_client as _slash_worker_client, methods_voice as _methods_voice, methods_browser as _methods_browser, methods_slash as _methods_slash,
+    slash_worker_client as _slash_worker_client, methods_voice as _methods_voice, methods_voice_grok as _methods_voice_grok,
+    methods_browser as _methods_browser, methods_slash as _methods_slash,
     methods_complete_helpers as _methods_complete_helpers, session_auto_continue as _session_auto_continue,
     plugin_inject as _plugin_inject,
     rpc_dispatch as _rpc_dispatch,
@@ -2030,7 +2037,7 @@ for _m in (
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,
-    _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
+    _methods_complete_helpers, _methods_slash, _methods_voice, _methods_voice_grok, _methods_browser,
     _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_tools_plugin_servers, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,

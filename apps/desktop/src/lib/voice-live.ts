@@ -17,9 +17,15 @@ import { hermesApi } from '@/hermes'
  * `oai-events` data channel, transcript accumulation and the command
  * surface the conversation hook drives. Vendor contract:
  * https://developers.openai.com/api/docs/guides/live-delegation
+ *
+ * `grok-live` (see `voice-live-grok.ts`) is a sibling engine, not a branch
+ * here — the backend holds the xAI websocket exclusively, so its transport
+ * shape (relay over the existing JSON-RPC channel, not WebRTC) is different
+ * enough to warrant its own module. `VoiceChatMode` is the shared 3-way type
+ * both modules and the desktop store key off.
  */
 
-export type VoiceChatMode = 'chained' | 'gpt-live'
+export type VoiceChatMode = 'chained' | 'gpt-live' | 'grok-live'
 
 export interface VoiceLiveStatus {
   mode: VoiceChatMode
@@ -91,7 +97,7 @@ export async function fetchVoiceLiveStatus(): Promise<null | VoiceLiveStatus> {
 
     return {
       available: Boolean(response.available),
-      mode: response.mode === 'gpt-live' ? 'gpt-live' : 'chained',
+      mode: parseVoiceChatMode(response.mode),
       model: response.model,
       reason: response.reason ?? null,
       voice: response.voice
@@ -100,6 +106,16 @@ export async function fetchVoiceLiveStatus(): Promise<null | VoiceLiveStatus> {
     // Older backend without the endpoint → chained.
     return null
   }
+}
+
+/** Shared mode parser: the backend's `mode` field is the same 3-way resolver
+ *  behind both the gpt-live and grok-live status endpoints. */
+export function parseVoiceChatMode(value: unknown): VoiceChatMode {
+  if (value === 'gpt-live' || value === 'grok-live') {
+    return value
+  }
+
+  return 'chained'
 }
 
 /** Split a reply into append-sized chunks on sentence boundaries. */

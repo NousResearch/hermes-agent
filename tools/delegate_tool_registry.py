@@ -18,7 +18,8 @@ _active_subagents_lock = threading.Lock()
 # subagent_id -> mutable record tracking the live child agent.  Stays only
 # for the lifetime of the run; _run_single_child is the owner.
 _active_subagents: dict[str, dict[str, Any]] = {}
-# subagent_id -> {goal, delegation_id, owner_agent_session_id} retained AFTER the child finishes (bounded FIFO).
+# subagent_id -> {goal, delegation_id, owner_agent_session_id, resume?} retained AFTER the child finishes (bounded FIFO;
+# ``resume`` is what action='continue' rebuilds a delegate_task child from, see ``_resume_spec``).
 # Child-started background processes routinely outlive the child (its npm ci with notify_on_complete=true finishes
 # after the summary was delivered); their completion notifications reach the parent via the shared completion_queue
 # and need delegation attribution even though the live registry entry is gone.
@@ -66,8 +67,22 @@ def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
         if not sid:
             return
         _recent_subagents[sid] = {k: record.get(k) for k in ("goal", "delegation_id", "owner_agent_session_id")}
+        resume = _resume_spec(record)
+        if resume is not None:
+            _recent_subagents[sid]["resume"] = resume
         while len(_recent_subagents) > _RECENT_SUBAGENTS_CAP:
             _recent_subagents.pop(next(iter(_recent_subagents)), None)
+
+def _resume_spec(record: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Route, toolsets, goal/context (its system prompt), model and the session holding its transcript: what
+    action='continue' rebuilds a finished child from. None for children delegate_task did not build (no route
+    stamped by ``_build_children``) and for children without a session id."""
+    child = record.get("agent")
+    build = getattr(child, "_delegate_resume", None)
+    session_id = getattr(child, "session_id", None)
+    if not isinstance(build, dict) or "route" not in build or not isinstance(session_id, str) or not session_id:
+        return None
+    return {**build, "session_id": session_id, "model": record.get("model")}
 
 def _close_subagent_steering(subagent_id: str, agent: Any) -> Optional[str]:
     """Atomically close steer acceptance and drain its final durable artifact. ``steer_subagent`` holds the same
@@ -283,7 +298,7 @@ def _handle_control_action(action: str, subagent_id: Optional[str], message: Opt
         return tool_error("action='steer' requires a non-empty 'message' describing the course correction.")
     outcome = _CONTROL_OUTCOMES.get(action)
     if outcome is None:
-        return tool_error(f"Unknown action '{action}'. Use spawn, list, steer, or stop.")
+        return tool_error(f"Unknown action '{action}'. Use spawn, list, steer, stop, or continue.")
     status, note, failure = outcome
     ok = interrupt_subagent(sid) if action == "stop" else steer_subagent(sid, message.strip())
     if ok:
@@ -305,6 +320,6 @@ _CONTROL_OUTCOMES = {
         "never cut. If the child finishes before a delivery boundary remains, the text is reported back as "
         "missed_steer in its completion entry.", "Subagent '{sid}' is no longer accepting steering (finishing or "
         "already finished). Its result arrives as a normal completion "
-        "message; re-delegate a follow-up task if more work is needed.",
+        "message; once it has, action='continue' with this subagent_id gives it a follow-up.",
     ),
 }

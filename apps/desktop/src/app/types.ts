@@ -91,6 +91,8 @@ export interface SessionSteerResponse {
 }
 
 export interface SessionRedirectResponse {
+  /** Only explicit non-delivery permits a new-turn fallback. */
+  delivered?: boolean
   status?: 'redirected' | 'queued' | 'rejected'
   text?: string
   /** TUI-26: the text was a bare stop phrase that ended the LOCAL voice chat; no turn saw it. */

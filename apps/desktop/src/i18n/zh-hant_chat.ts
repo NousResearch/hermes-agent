@@ -2,6 +2,11 @@ import type { TranslationOverrides } from './define-locale'
 
 export const zhHantChat = {
   composer: {
+    steerNotSentTitle: '訊息未傳送',
+    steerExternalNotSentBody: '這則訊息未傳送，也未加入佇列。請複製文字後自行傳送。',
+    steerUnconfirmedTitle: '傳送未確認',
+    steerUnconfirmedBody: '無法確認是否已送達。請先檢查訊息和佇列，再決定是否重送。',
+    steerExternalUnconfirmedBody: '先前提交的訊息尚未確認。請複製文字並檢查訊息和佇列，再決定是否重送。',
     message: '訊息',
     wakingProfile: profile => `正在喚醒 ${profile}…`,
     placeholderStarting: '正在啟動 Hermes...',

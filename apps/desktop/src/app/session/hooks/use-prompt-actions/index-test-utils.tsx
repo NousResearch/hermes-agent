@@ -93,8 +93,10 @@ export function Harness({
   selectedStoredSessionIdRef: selectedStoredSessionIdRefProp,
   storedSessionId,
   activeSessionId,
-  createBackendSessionForSend
+  createBackendSessionForSend,
+  children
 }: {
+  children?: (actions: ReturnType<typeof usePromptActions>) => React.ReactNode
   activeSessionIdRef?: MutableRefObject<string | null>
   busyRef?: MutableRefObject<boolean>
   getRoutedStoredSessionId?: () => null | string
@@ -253,5 +255,5 @@ export function Harness({
     onReady
   ])
 
-  return null
+  return children?.(actions) ?? null
 }

@@ -232,6 +232,22 @@ def test_each_failed_request_is_classified_once(monkeypatch, is_async, stream):
     assert len(set(map(id, seen))) == len(seen) == outcome.attempts + outcome.fallback_attempts
 
 
+@pytest.mark.parametrize("route_tag", ["openrouter", "api-key", None])
+def test_pool_recovery_reuses_the_failed_requests_verdict(monkeypatch, route_tag):
+    """Credential-pool recovery on an auto route sizes the bench from the verdict the ladder holds: one hook
+    call per failed request, whatever label the client carries."""
+    seen = []
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_error_classification", lambda **kw: seen.append(kw["error"]))
+    client = MagicMock(base_url="https://openrouter.ai/api/v1", api_key="sk-primary")
+    client._hermes_aux_effective_provider = route_tag
+    client._hermes_aux_backend_provider = None
+    client.chat.completions.create = MagicMock(side_effect=[sdk(402, "Insufficient credits")] * 2)
+    pool = CredentialPool("openrouter", [Key("openrouter", f"k{i}", f"k{i}", "api_key", i, "manual",
+                                             f"sk-{i}" if i else "sk-primary") for i in range(2)])
+    outcome = run_ladder(None, provider="auto", pool=pool, client=client)
+    assert len(seen) == outcome.attempts == 2
+
+
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
 def test_observers_see_the_providers_own_error_when_its_stream_was_judged(monkeypatch, is_async):
     """A stream negotiation is classified where it failed; ``post_auxiliary_call`` still reports the provider's error."""

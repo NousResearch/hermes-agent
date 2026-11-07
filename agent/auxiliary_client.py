@@ -3534,8 +3534,8 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         return False
     if not pool or not pool.has_credentials():
         return False
-    if verdict is None or _normalize_aux_provider(verdict.provider) != normalized:
-        verdict = aux_errors.classify_attempt(exc, normalized, model=getattr(verdict, "model", None))
+    if verdict is None:  # the ladder hands in the failed request's own verdict: hooks fire once per request
+        verdict = aux_errors.classify_attempt(exc, normalized)
     status_code = verdict.status_code
     gated = verdict.reason is FailoverReason.model_entitlement
 

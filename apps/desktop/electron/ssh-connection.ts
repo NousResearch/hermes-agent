@@ -583,10 +583,10 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, command = 'ssh', stdin = 'ig
     }
 
     child.stdout?.on('data', d => {
-      stdout += stdoutDecoder.write(Buffer.isBuffer(d) ? d : Buffer.from(d))
+      stdout += stdoutDecoder.write(d)
     })
     child.stderr?.on('data', d => {
-      stderr += stderrDecoder.write(Buffer.isBuffer(d) ? d : Buffer.from(d))
+      stderr += stderrDecoder.write(d)
     })
     child.on('error', error => {
       if (settled) {
@@ -1129,7 +1129,7 @@ class SshConnection {
           return
         }
 
-        stderr = `${stderr}${stderrDecoder.write(Buffer.isBuffer(d) ? d : Buffer.from(d))}`.slice(-16_384)
+        stderr = `${stderr}${stderrDecoder.write(d)}`.slice(-16_384)
 
         if (readyPattern.test(stderr)) {
           readyConfirmed = true
@@ -1137,13 +1137,12 @@ class SshConnection {
         }
       })
       child.on('error', (error: any) => onDown(`tunnel process failed (${error?.message || error})`, error))
-      child.on('exit', (code: any) => {
-        stderr = `${stderr}${stderrDecoder.end()}`.slice(-16_384)
+      child.on('exit', (code: any) =>
         onDown(`tunnel process exited with code ${code}`, new Error(`tunnel process exited with code ${code}`))
-      })
+      )
       child.on('close', (code: any) => {
-        // decoder.end() is idempotent (a second call returns '') — this flushes
-        // only if 'exit' did not fire first.
+        // Flush only on 'close': 'exit' can fire before stderr is drained, and
+        // ending the decoder there turns a still-arriving character into U+FFFD.
         stderr = `${stderr}${stderrDecoder.end()}`.slice(-16_384)
         onDown(`tunnel process closed with code ${code}`, new Error(`tunnel process closed with code ${code}`))
       })

@@ -948,6 +948,48 @@ test.each(['exit', 'close'])('no-mux: tunnel stderr preserves UTF-8 split across
   }
 })
 
+test('no-mux: tunnel exit before stderr drains does not invent a replacement character', async () => {
+  const net = await import('node:net')
+  const srv = net.createServer()
+  await new Promise<void>(resolve => srv.listen(0, '127.0.0.1', resolve))
+  const localPort = (srv.address() as any).port
+
+  const spawnFn: any = (_cmd, args) => {
+    const child: any = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.exitCode = null
+
+    child.kill = () => {}
+
+    if (args.includes('-N')) {
+      setTimeout(() => {
+        // Real Node order: 'exit' can fire while stderr still holds the rest of a character.
+        const payload = Buffer.from(`bind [127.0.0.1]:${localPort}: conexión café`, 'utf8')
+        child.stderr.emit('data', payload.subarray(0, payload.length - 1))
+        child.exitCode = 255
+        child.emit('exit', 255)
+        child.stderr.emit('data', payload.subarray(payload.length - 1))
+        child.emit('close', 255)
+      }, 20)
+    }
+
+    return child
+  }
+
+  const conn = new SshConnection({ host: 'box' }, { spawnFn, mux: false, forwardTimeoutMs: 1000 })
+
+  try {
+    await assert.rejects(conn.forward(localPort, 9119), (err: any) => {
+      assert.match(err.message, /conexión caf/)
+      assert.ok(!err.message.includes('�'), 'a character still arriving must not become U+FFFD')
+
+      return true
+    })
+  } finally {
+    srv.close()
+  }
+})
+
 test('no-mux: tunnel death after readiness triggers a bounded restart, then unhealthy', async () => {
   const net = await import('node:net')
   const srv = net.createServer()

@@ -777,13 +777,21 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_r
             # git said and read the tree back rather than asserting it is clean (#124642 fixed the
             # same false diagnosis on the fast-forward path).
             _git_run(git_cmd, ["merge", "--abort"])
-            residue = (_git_run(git_cmd, ["status", "--porcelain"]).stdout or "").strip()
+            status_result = _git_run(git_cmd, ["status", "--porcelain"])
+            residue = (status_result.stdout or "").strip()
             print(f"✗ Merging origin/{branch} into '{_cur_branch}' failed — update stopped.")
             detail = (merge_result.stderr or merge_result.stdout or "").strip()
             if detail:
                 print(f"  {detail}")
             print(f"  Resolve manually: cd {_m().PROJECT_ROOT} && git merge origin/{branch}")
-            if residue:
+            if status_result.returncode != 0:
+                # An unreadable index (the `index.lock` case this print exists for) makes `git status`
+                # fail with empty stdout. Reading that as "clean" is exactly the false claim this
+                # branch removes, so the read-back has to fail closed on its own exit code.
+                print(f"  ⚠ Could not read the working tree: 'git status' exited "
+                      f"{status_result.returncode}. The tree's state is unknown — inspect with: "
+                      f"git -C {_m().PROJECT_ROOT} status")
+            elif residue:
                 print(f"  ⚠ 'git merge --abort' did not restore the tree: {len(residue.splitlines())} "
                       f"uncommitted path(s) remain from the failed merge. Every later update fails on "
                       f"them until the tree is clean again — inspect with: git -C {_m().PROJECT_ROOT} status")

@@ -125,6 +125,15 @@ def test_custom_branch_merge_failure_does_not_claim_an_unverified_tree(w):
     w.git("checkout", "-q", "-b", "local")
     w.git("commit", "-q", "--allow-empty", "-m", "local: work the update must preserve")
     before = w.head()
+    # Reach the code this cell is about. The in-place merge only runs for an operator who opted
+    # into it: with the shipped default ("switch") `_apply_parked_branch_guard` moves the checkout
+    # to main before merging, so the cell would ride the fast-forward path and its assertions would
+    # only ever exercise `_assert_failed_truthfully`, leaving this defect uncovered.
+    configured = w.sb.cli("config", "set", "updates.parked_branch_strategy", "update_in_place",
+                          timeout=300)
+    assert configured.returncode == 0, (
+        "could not opt into the in-place strategy:\n"
+        + (configured.stdout or "") + (configured.stderr or ""))
     w.publish("release: e2e truthful custom-branch merge", {"e2e-truthful-merge.txt": "release\n"})
     armed = w.srv.arm(FAULTS["cut-mid-checkout-lazy-fetch"]())
     mark = w.srv.mark()
@@ -135,6 +144,10 @@ def test_custom_branch_merge_failure_does_not_claim_an_unverified_tree(w):
         w.srv.clear_faults()
         out, diag = G.output(cp), w.diag(cp, mark)
         assert armed.fired, f"the fault never fired; the cell exercised nothing:\n{diag}"
+        # Proof the merge actually ran: this line is printed only from the in-place merge branch,
+        # so its absence means the cell never reached the lines it is meant to cover.
+        assert "Merging origin/main into 'local' failed" in out, \
+            f"the in-place merge path was never reached, so the cell proved nothing:\n{diag}"
         assert cp.returncode != 0, f"update exited 0 although the transfer failed:\n{diag}"
         assert G.SUCCESS not in out, f"success banner printed although the transfer failed:\n{diag}"
         assert w.head() == before and w.branch() == "local", \

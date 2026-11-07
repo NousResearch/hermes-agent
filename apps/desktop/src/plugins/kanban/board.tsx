@@ -80,13 +80,21 @@ import {
   patchTask,
   profilesKey,
   taskKey,
+  updateBoard,
   useKanbanScope
 } from './api'
 import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
-import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
+import {
+  type BoardMeta,
+  type BoardsResponse,
+  columnMeta,
+  type KanbanBoard,
+  type KanbanTask,
+  type TaskEstimate
+} from './types'
 import {
   $newTaskLane,
   ago,
@@ -273,6 +281,7 @@ function Card({
   const summary = task.latest_summary || task.body
   const fallback = useDefaultAssignee()
   const arc = arcState(task, fallback)
+  const estimate = task.estimate?.ok ? task.estimate : null
 
   return (
     <ContextMenu>
@@ -308,7 +317,19 @@ function Card({
             <span aria-hidden className={cn('kanban-arc', arc === 'stale' && 'kanban-arc--stale')} />
           )}
           <KanbanCardBadges card={task} tenants={tenants} />
-          <span className="line-clamp-2 text-[0.8125rem] font-medium leading-snug text-foreground">
+          {estimate?.complexity && (
+            <Tip
+              label={`~${compactNumber(estimate.est_tokens)} ${k.tokUnit} · ${estimate.rationale || k.roughEstimate}`}
+            >
+              <span
+                aria-label={k.complexity[estimate.complexity]}
+                className="absolute top-2 right-2 rounded border border-(--ui-border) bg-(--ui-bg-elevated) px-1.5 py-0.5 text-[0.6875rem] font-semibold text-(--ui-text-tertiary)"
+              >
+                {estimate.complexity}
+              </span>
+            </Tip>
+          )}
+          <span className="line-clamp-2 pr-8 text-[0.8125rem] font-medium leading-snug text-foreground">
             {task.title || task.id}
           </span>
           {summary && (
@@ -958,6 +979,87 @@ function FilterMenu({
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+  )
+}
+
+// ── board-header toggles ────────────────────────────────────────────────────
+
+/**
+ * Dispatch/Decompose/Review toggle row — the board's dispatcher controls,
+ * next to the filter kebab. Each switch writes immediately via its own
+ * mutation (POST-onSuccess cache update, not a pre-response optimistic
+ * /onMutate snapshot — the fields are booleans with no meaningful "revert
+ * from stale snapshot" story, so onSuccess + invalidate is the simpler and
+ * correct shape here) and invalidates the boards query key on success.
+ */
+export function BoardHeaderToggles({ board }: { board: BoardMeta }) {
+  const k = useKanban()
+  const qc = useQueryClient()
+  const scope = useKanbanScope()
+
+  const useToggle = (
+    field: 'auto_decompose_enabled' | 'auto_estimate_enabled' | 'dispatch_enabled' | 'review_dispatch_enabled'
+  ) =>
+    useMutation({
+      mutationFn: (checked: boolean) => updateBoard(board.slug, { [field]: checked }),
+      onError: err => host.notify({ kind: 'error', message: errText(err) }),
+      onSuccess: result => {
+        if (result.auto_estimate_queue_error) {
+          host.notify({ kind: 'warning', message: `${k.headerEstimate}: ${result.auto_estimate_queue_error}` })
+        } else if ((result.auto_estimate_queued ?? 0) > 0) {
+          host.notify({ kind: 'info', message: `${k.headerEstimate}: ${result.auto_estimate_queued} queued` })
+        }
+
+        qc.setQueryData<BoardsResponse>(boardsKey(scope), prev =>
+          prev ? { ...prev, boards: prev.boards.map(b => (b.slug === board.slug ? result.board : b)) } : prev
+        )
+        void qc.invalidateQueries({ queryKey: boardsKey(scope) })
+      }
+    })
+
+  const dispatchMut = useToggle('dispatch_enabled')
+  const decomposeMut = useToggle('auto_decompose_enabled')
+  const reviewMut = useToggle('review_dispatch_enabled')
+  const estimateMut = useToggle('auto_estimate_enabled')
+
+  const Row = ({
+    checked,
+    hint,
+    label,
+    mut
+  }: {
+    checked: boolean
+    hint?: string
+    label: string
+    mut: ReturnType<typeof useToggle>
+  }) => (
+    <label
+      className="flex cursor-pointer items-center gap-1.5 text-[0.75rem] text-(--ui-text-secondary)"
+      title={hint || k.headerEnforcementPendingHint}
+    >
+      <Switch
+        aria-label={label}
+        checked={checked}
+        disabled={mut.isPending}
+        onCheckedChange={value => mut.mutate(value)}
+        size="xs"
+      />
+      {label}
+    </label>
+  )
+
+  return (
+    <div className="flex items-center gap-3">
+      <Row checked={board.dispatch_enabled ?? true} label={k.headerDispatch} mut={dispatchMut} />
+      <Row checked={board.auto_decompose_enabled ?? true} label={k.headerDecompose} mut={decomposeMut} />
+      <Row checked={board.review_dispatch_enabled ?? true} label={k.headerReview} mut={reviewMut} />
+      <Row
+        checked={board.auto_estimate_enabled ?? false}
+        hint={k.estimateTipLong}
+        label={k.headerEstimate}
+        mut={estimateMut}
+      />
+    </div>
   )
 }
 

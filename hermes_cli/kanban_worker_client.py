@@ -147,6 +147,15 @@ async def _await_receipt(client, params, board_db, claim):
 def _exit_code(receipt, params, board_db):
     from hermes_cli.gateway_client import GatewayClientError
     if receipt['status'] == 'unknown':
+        # The receipt never settled, but the owner may have booked a result beside the attempt.
+        # Quote it when it names a dead skill pin instead of the bare "execution unknown" that
+        # the caller used to wrap — misleadingly — as an owner refusal.
+        from gateway.session_kanban import worker_result
+        booked = worker_result(board_db, params)
+        booked_output = str(booked.get('last_output') or '').strip()
+        if 'skill not found:' in booked_output:
+            print(booked_output, file=sys.stderr)
+            return booked.get('exit_code', 1)
         raise GatewayClientError('Kanban execution unknown; retained by owner')
     from gateway.session_kanban import worker_result
     result = worker_result(board_db, params)
@@ -173,6 +182,7 @@ def main():
 
 
 def _submit():
+    from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
     try:
         params = {'board': os.environ['HERMES_KANBAN_BOARD'], 'task_id': os.environ['HERMES_KANBAN_TASK'],
             'run_id': int(os.environ['HERMES_KANBAN_RUN_ID']), 'claim_lock': os.environ['HERMES_KANBAN_CLAIM_LOCK']}
@@ -185,6 +195,24 @@ def _submit():
         for key in ('HERMES_SESSION_SOURCE', 'HERMES_TENANT', 'TERMINAL_CWD'):
             os.environ.pop(key, None)
         return asyncio.run(run(params, board_db))
+    except GatewayRPCError as exc:
+        # The owner refused admission. ``detail`` names the check that fired (the wire
+        # contract of ``session_controls._refusal_data``). Only a skill-pin refusal is
+        # rewritten here: tonight that reason surfaced as a bare owner-refused line,
+        # which reads as a permission bug, not as "install this skill on the seat".
+        if str(exc) == 'kanban_skill_pin_unavailable':
+            detail = str(exc.data.get('detail') or '').strip()
+            print(detail or f'Kanban skill pin refused: {exc}', file=sys.stderr)
+            return 1
+        print(f'Kanban owner refused: {exc}', file=sys.stderr)
+        return 1
+    except GatewayClientError as exc:
+        # A submit/transport outcome (no ready owner, an unsettled receipt the owner
+        # retains) — not a refusal. ``GatewayClientError`` is a ``ValueError``, so this
+        # used to fall through to the label below and read "owner refused" for a
+        # condition the owner never judged.
+        print(f'Kanban submit failed: {exc}', file=sys.stderr)
+        return 1
     except (KeyError, ValueError, OSError) as exc:
         print(f'Kanban owner refused: {exc}', file=sys.stderr)
         return 1

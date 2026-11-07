@@ -535,6 +535,20 @@ class HermesTokenStorage:
         logger.info("Removed issuer-mismatched refresh token for %s (re-authorization will be required "
                     "when the access token expires)", self._server_name)
 
+    def discard_rejected_tokens(self, refresh_token: str | None) -> bool:
+        """Delete the token file if it still holds *refresh_token*, which the authorization server has
+        rejected: left on disk, every later load re-presents the dead grant. A file a peer rewrote with
+        another refresh token is kept, and so are the client registration and metadata, which
+        ``hermes mcp login`` reuses. True if the file was removed."""
+        data = _read_json(self._tokens_path())
+        if not refresh_token or not isinstance(data, dict) or data.get("refresh_token") != refresh_token:
+            return False
+        self._tokens_path().unlink(missing_ok=True)
+        logger.warning("MCP OAuth '%s': the authorization server rejected the stored refresh token "
+                       "(invalid_grant); removed it so reconnects stop re-sending it. Run "
+                       "`hermes mcp login %s` to re-authorize.", self._server_name, self._server_name)
+        return True
+
     @staticmethod
     def _coerce_secret_auth_method(data: dict) -> bool:
         """Set ``client_secret_post`` when a secret is present but no method is: some DCR providers

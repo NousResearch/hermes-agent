@@ -1366,6 +1366,27 @@ def _prepend_moa_picker_provider(providers: list[dict], current_provider: str = 
         return providers
 
 
+def _float_free_models_first(providers: list[dict]) -> None:
+    """Stable-partition every provider row's ``models`` so free entries lead (paid after).
+
+    Free means the model id carries the ``:free`` suffix (OpenRouter free SKUs) or the row's
+    ``pricing`` map (``{model_id: {free: bool, ...}}``, may be missing/None) flags it ``free``.
+    Relative order is preserved within each group. Only ``p["models"]`` is touched — row counts
+    and any other field stay as they are."""
+    for p in providers:
+        models = p.get("models")
+        if not models:
+            continue
+        pricing = p.get("pricing") or {}
+        free_list: list = []
+        paid_list: list = []
+        for mid in models:
+            entry = pricing.get(mid)
+            is_free = str(mid).endswith(":free") or (isinstance(entry, dict) and bool(entry.get("free")))
+            (free_list if is_free else paid_list).append(mid)
+        p["models"] = free_list + paid_list
+
+
 def list_picker_providers(
     current_provider: str = "", current_base_url: str = "", user_providers: dict | None = None,
     custom_providers: list | None = None, max_models: int | None = None, current_model: str = "",
@@ -1378,7 +1399,8 @@ def list_picker_providers(
     snapshot filtered against the live catalog) and rows left with no models are dropped — except
     custom endpoints, where the user may supply their own model set through config.
     ``non_blocking_catalogs`` makes every catalog read cache-only: provider catalogs warm in the
-    background, OpenRouter's stale disk copy is served as-is; the ``probe_*`` flags are forwarded."""
+    background, OpenRouter's stale disk copy is served as-is; the ``probe_*`` flags are forwarded.
+    Free models float to the front of each provider's models list (stable)."""
     from hermes_cli.model_switch import list_authenticated_providers
     from hermes_cli.models import fetch_openrouter_models
     providers = list_authenticated_providers(
@@ -1408,6 +1430,7 @@ def list_picker_providers(
 
     drop_unofferable_model_ids(filtered)
     _attach_window_model_notes(filtered)
+    _float_free_models_first(filtered)
     return filtered
 
 

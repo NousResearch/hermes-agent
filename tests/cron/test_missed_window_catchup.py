@@ -14,6 +14,7 @@ restarted scan sees a provably dead owner exactly as a gateway restart does.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 from datetime import timedelta
@@ -55,8 +56,10 @@ def slot_env(tmp_path, monkeypatch):
     S._running_futures.clear()
 
     counter = home / "fires.txt"
+    # POSIX-style path (and quoted): the script runs under bash on Windows too, where a
+    # backslash path is read as escape sequences and the redirect lands somewhere else.
     (home / "scripts" / "fire.sh").write_text(
-        f"#!/bin/sh\necho fired >> {counter}\necho fired\n", encoding="utf-8")
+        f"#!/bin/sh\necho fired >> {shlex.quote(counter.as_posix())}\necho fired\n", encoding="utf-8")
     (home / "scripts" / "fire.sh").chmod(0o755)
     job = J.create_job(prompt=None, schedule="every 1h", name="slot", script="fire.sh",
                        no_agent=True, deliver="local")

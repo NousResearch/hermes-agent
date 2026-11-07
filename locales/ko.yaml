@@ -682,6 +682,7 @@ gateway:
     session_storage_unavailable: "⚠️ 세션 저장소를 일시적으로 사용할 수 없어서 대화 기록을 보호하기 위해 이 턴을 중단했어요. 메시지는 이미 저장되어 있을 거예요 — 잠시 후 다시 보내 주세요."
     generic_failed: "⚠️ 문제가 발생해서 이 응답을 끝내지 못했어요. /retry로 다시 시도하거나, /new로 새 대화를 시작하세요. 기술적인 세부 정보는 게이트웨이 로그(`hermes logs`)에 있어요."
     interrupted_before_start: "⚠️ 처리가 시작되기 전에 메시지가 중단되었어요 (아마 최근의 /stop 때문일 거예요). 다시 보내 주세요."
+    interrupted_by_system: "⚠️ 이번 턴은 사용자가 아니라 시스템이 중단했어요 ({issuer}). 진행 중이던 작업이 완료되지 않았을 수 있어요. 이어서 하려면 메시지를 보내 주세요."
     processing_incomplete: "처리 미완료"
     stopped_before_finishing: "⚠️ 끝내기 전에 중단해야 했어요{reason}. /retry로 다시 시도하거나, 대화가 아주 길어졌다면 /compress를 사용하세요."
     no_response: "⚠️ 처리는 완료됐지만 응답이 생성되지 않았어요. 일시적인 오류일 수 있으니 메시지를 다시 보내 보세요."

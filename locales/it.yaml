@@ -682,6 +682,7 @@ gateway:
     session_storage_unavailable: "⚠️ L'archiviazione della sessione era temporaneamente non disponibile, quindi questo turno è stato interrotto per proteggere la cronologia della conversazione. Il tuo messaggio dovrebbe essere già salvato — invialo di nuovo tra un momento."
     generic_failed: "⚠️ Qualcosa è andato storto e non sono riuscito a completare questa risposta. Usa /retry per riprovare, oppure /new per iniziare una nuova conversazione. I dettagli tecnici sono nel log del gateway (`hermes logs`)."
     interrupted_before_start: "⚠️ Il tuo messaggio è stato interrotto prima dell'inizio dell'elaborazione (probabilmente da un /stop recente). Invialo di nuovo."
+    interrupted_by_system: "⚠️ Questo turno è stato interrotto dal sistema ({issuer}), non da te. Ciò che era in corso potrebbe essere incompleto. Invia un messaggio per continuare."
     processing_incomplete: "elaborazione incompleta"
     stopped_before_finishing: "⚠️ Ho dovuto fermarmi prima di finire{reason}. Usa /retry per riprovare, oppure /compress se questa conversazione è diventata molto lunga."
     no_response: "⚠️ Elaborazione completata ma nessuna risposta è stata generata. Potrebbe essere un errore temporaneo — prova a inviare di nuovo il messaggio."

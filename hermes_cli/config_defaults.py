@@ -1999,7 +1999,7 @@ DEFAULT_CONFIG = {
             # event-triggered built-ins; an explicit list replaces it wholesale and [] keeps every
             # tool eager. The runtime fallback in tools/tool_search.py derives from this value.
             "defer": [
-                "computer_use", "session_search", "image_generate",
+                "session_search", "image_generate",
                 "todo_list", "process_manage", "cronjob_manage", "browser_vault",
                 # Desktop GUI surface (desktop_ui, project and catalog toolsets)
                 "drive_preview", "gui_tour", "desktop_preview", "annotate_preview", "manage_catalog",

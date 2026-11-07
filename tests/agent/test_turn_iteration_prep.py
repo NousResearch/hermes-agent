@@ -7,6 +7,7 @@ iteration; nothing else in the turn loop counts them, so a flag that keeps re-ar
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -18,7 +19,7 @@ RESTART_FLAGS = ["restart_with_redirected_messages", "restart_with_rebuilt_messa
 MAX_RETRIES = 3
 
 
-def _apply(agent, flag: str | None, restart_count: int, response=None):
+def _apply(agent, flag: str | None, restart_count: int, response=None, _rate_limit_tail_wait_used=False):
     """Run one iteration's restart handling; ``flag=None`` with a response means the model answered."""
     _retry = TurnRetryState()
     if flag:
@@ -29,6 +30,7 @@ def _apply(agent, flag: str | None, restart_count: int, response=None):
         final_response=None, retry_count=0, max_retries=MAX_RETRIES, api_call_count=1,
         restart_count=restart_count, length_continue_retries=0,
         _preflight_compression_blocked=True, _turn_exit_reason="unknown",
+        _rate_limit_tail_wait_used=_rate_limit_tail_wait_used,
     )
 
 
@@ -66,6 +68,56 @@ def test_back_to_back_restart_refunds_are_bounded(flag):
     assert verdicts[-1]._turn_exit_reason.endswith("restart_limit_exceeded")
     # The correction that tripped the redirect cap is handed back as the next user turn.
     assert agent.steered == (["last correction"] if flag == "restart_with_redirected_messages" else [])
+
+
+def _rate_limited_agent(cooldown_s: float, *, interrupted: bool = False):
+    agent = _agent()
+    agent._rate_limited_until = time.monotonic() + cooldown_s
+    agent._interrupt_requested = interrupted
+    agent.restored = 0
+    agent._restore_primary_runtime = lambda: setattr(agent, "restored", agent.restored + 1)
+    return agent
+
+
+def test_cap_with_armed_cooldown_grants_exactly_one_wait():
+    """Whole chain failed fast but a short rate-limit cooldown is armed: the loop waits it out,
+    restores the primary, and re-issues the iteration once — instead of ending the turn on a
+    pending tool-result tail and telling the user to send ``continue`` themselves."""
+    agent = _rate_limited_agent(cooldown_s=1.2)
+    started = time.monotonic()
+    first = _apply(agent, "restart_with_rebuilt_messages", restart_count=MAX_RETRIES + 1)
+    waited = time.monotonic() - started
+    assert first.action == "continue"
+    assert first._rate_limit_tail_wait_used is True
+    assert first.api_call_count == 0  # refunded like a normal rebuilt restart
+    assert first._preflight_compression_blocked is False
+    assert agent.iteration_budget.refunds == 1
+    assert agent.restored == 1
+    assert waited >= 1.0  # actually slept out the cooldown
+
+    # The grant is one per turn: the next cap hit ends the turn as before.
+    second = _apply(agent, "restart_with_rebuilt_messages", restart_count=first.restart_count,
+                    _rate_limit_tail_wait_used=first._rate_limit_tail_wait_used)
+    assert second.action == "break"
+    assert second._turn_exit_reason == "rebuilt_restart_limit_exceeded"
+    assert agent.iteration_budget.refunds == 1  # no second refund
+
+
+def test_cap_wait_skipped_when_cooldown_exceeds_cap():
+    """A multi-hour cooldown must not hold the turn lease: the turn ends immediately."""
+    agent = _rate_limited_agent(cooldown_s=3600.0)
+    verdict = _apply(agent, "restart_with_rebuilt_messages", restart_count=MAX_RETRIES + 1)
+    assert (verdict.action, verdict._turn_exit_reason) == ("break", "rebuilt_restart_limit_exceeded")
+    assert agent.restored == 0 and agent.iteration_budget.refunds == 0
+
+
+def test_cap_wait_interrupt_ends_the_turn():
+    """An interrupt during the cooldown window keeps the cap's turn end, never a re-issue."""
+    agent = _rate_limited_agent(cooldown_s=1.2, interrupted=True)
+    verdict = _apply(agent, "restart_with_rebuilt_messages", restart_count=MAX_RETRIES + 1)
+    assert verdict.action == "break"
+    assert verdict._turn_exit_reason == "rebuilt_restart_limit_exceeded"
+    assert agent.restored == 0 and agent.iteration_budget.refunds == 0
 
 
 def _interrupted_agent(tool_interrupt_reason):

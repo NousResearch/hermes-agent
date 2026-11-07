@@ -1152,6 +1152,23 @@ export const $sessionsLoading = atom(true)
 export const $sessionsLoadError = atom(false)
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
+
+/** One model pick, as the composer's model menu commits it. `sessionId` is the runtime id of a
+ *  tile's session; omitted/null targets the primary surface (its live session, or — with no
+ *  session yet — the fresh draft, whose `session.create` then carries the pick). */
+export interface ComposerModelSelection {
+  model: string
+  provider: string
+  sessionId?: null | string
+}
+
+/** The model menu's own `selectModel`, registered by the main window's wiring (null until then,
+ *  and in auxiliary windows). It is THE switch path: it paints the composer selection and the
+ *  session together, writes `config.set` to that session, confirms guarded models and rolls back a
+ *  failed write. `host.composer.selectModel` routes plugins through it so a plugin pick can never
+ *  leave the pill showing one model while the session runs another. Resolves true when the switch
+ *  applied now (false: refused, failed, or waiting on the user's confirm). */
+export const $composerSelectModelAction = atom<((selection: ComposerModelSelection) => Promise<boolean>) | null>(null)
 export interface ActiveSessionStoredIdRotation {
   nextStoredSessionId: string
   previousStoredSessionId: string

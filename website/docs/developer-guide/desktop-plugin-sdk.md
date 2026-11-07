@@ -616,6 +616,12 @@ const sent = host.composer.submit('sess-1', 'ship it')
 // focus a visible surface they paint; use this to return the caret after a
 // plugin popover closes or from a "go to input" keybind.
 host.composer.focus(null)
+
+// Switch a chat's model exactly like the user's own pick in the model menu:
+// the pill and the session move together, guarded models get the app's
+// confirm dialog. Same addressing; 'new' presets the fresh draft's model so
+// its session is created on it. true = applied now.
+const switched = await host.composer.selectModel(null, { model: 'org/model', provider: 'tensorfold' })
 ```
 
 ```ts
@@ -625,8 +631,21 @@ host.composer: {
   insertText(sessionId: string | null, text: string, opts?: { mode?: 'block' | 'inline' | 'prefix' }): Promise<boolean>
   submit(sessionId: string | null, text: string): boolean
   focus(sessionId: string | null): void
+  selectModel(sessionId: string | null, selection: { model: string; provider: string }): Promise<boolean>
 }
 ```
+
+**Switching a chat's model.** Use `selectModel`, not a raw
+`host.request('config.set', { key: 'model', … })`. The raw RPC moves the
+session but not the composer's model selection, so the pill keeps showing the
+old model until the next turn repaints it. `selectModel` is the model menu's own
+path: optimistic paint, `config.set` to that session, rollback on a failed
+write, the shared confirm flow for guarded models, and the menu's scope rules
+(the primary chat lets the gateway decide persistence — session-only unless
+`model.persist_switch_by_default` — and a tile is always session-only). It
+resolves `false` when the address owns no surface, the input is empty, the write
+failed, or the switch waits on the user's confirm (the dialog then finishes it).
+Feature-detect on older hosts: `host.composer.selectModel?.(…)`.
 
 **Arbitration.** Every verb is fail-closed on its address: a request is
 answered only by the mounted composer that owns that session (its tile, or the

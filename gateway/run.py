@@ -1333,14 +1333,36 @@ def _select_cached_agent_history(
     the shorter persisted copy causes immediate same-session amnesia. Length alone does not trigger
     retention.
     """
-    if isinstance(live_history, list) and len(live_history) > len(persisted_history):
-        from agent.session_persistence import _is_ephemeral_scaffolding
+    if not isinstance(live_history, list):
+        return persisted_history
 
+    from agent.session_persistence import _is_ephemeral_scaffolding
+
+    # Compare REPLAYABLE rows, not the raw in-memory list. A gateway restore
+    # handoff leaves an empty user row in ``_session_messages`` which
+    # ``_build_gateway_agent_history`` drops from the persisted replay. Counting
+    # it makes the live list permanently one longer than the persisted copy, so
+    # the comparison below reports a false disk=N/memory=N+1 lag on every tick
+    # and replaces the cleaned history with the dirty live copy. Rows that are
+    # empty but carry tool payloads are kept: those are real replay content.
+    replayable_live = [
+        msg for msg in live_history
+        if isinstance(msg, dict)
+        and msg.get("role") not in {None, "", "system", "session_meta"}
+        and (bool(msg.get("content")) or "tool_calls" in msg
+             or "tool_call_id" in msg or msg.get("role") == "tool")
+    ]
+    if len(replayable_live) > len(persisted_history):
+        # Only prefer the live copy when it holds a real, non-ephemeral
+        # UNPERSISTED row: a longer all-durable list is an expected
+        # replay-filtering delta, not amnesia. The empty restore-handoff row is
+        # already excluded by the replayable filter above, so it cannot satisfy
+        # this on its own.
         has_unpersisted_row = any(
-            isinstance(message, dict) and not message.get("_db_persisted")
-            and not _is_ephemeral_scaffolding(message) for message in live_history)
+            not msg.get("_db_persisted") and not _is_ephemeral_scaffolding(msg)
+            for msg in replayable_live)
         if has_unpersisted_row:
-            return list(live_history)
+            return replayable_live
     return persisted_history
 
 

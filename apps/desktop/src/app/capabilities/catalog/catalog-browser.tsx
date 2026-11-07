@@ -55,6 +55,8 @@ interface CatalogBrowserProps {
   headerActions?: ReactNode
   installedPending?: boolean
   notice?: ReactNode
+  /** Skills only: the community-registries opt-in, shown beside the source chips. */
+  communityToggle?: ReactNode
   renderInstalledDetail?: (entry: CatalogEntry) => ReactNode
   renderInstalledAction?: (entry: CatalogEntry) => ReactNode
   selectedEntryId?: string | null
@@ -318,6 +320,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   headerActions,
   installedPending,
   notice,
+  communityToggle,
   renderInstalledDetail,
   renderInstalledAction,
   selectedEntryId,
@@ -465,6 +468,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
           <CatalogFilterBar
             actions={actions}
             categories={catalogCategories(visible)}
+            communityToggle={communityToggle}
             facets={facets}
             kind={kind}
             onCategory={filters.toggleCategory}

@@ -8,11 +8,12 @@ import { queryClient } from '@/lib/query-client'
 import { PageSearchShell } from '../../page-search-shell'
 
 import { CatalogBrowser } from './catalog-browser'
-import { type CatalogKind, parseCatalog } from './catalog-data'
-import { $catalogCardView } from './store'
+import { catalogFeed, type CatalogKind, parseCatalog } from './catalog-data'
+import { $catalogCardView, $skillsCommunityFeed } from './store'
 
 beforeEach(() => {
   $catalogCardView.set(true)
+  $skillsCommunityFeed.set(false)
 })
 
 afterEach(() => {
@@ -38,7 +39,7 @@ function setup(kind: CatalogKind) {
     }))
   )
 
-  queryClient.setQueryData(['public-catalog', kind], entries)
+  queryClient.setQueryData(['public-catalog', catalogFeed(kind)], entries)
   const onInstall = vi.fn()
 
   function Harness() {

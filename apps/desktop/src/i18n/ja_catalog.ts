@@ -30,6 +30,7 @@ export const jaCatalog = {
   install: 'インストール',
   installed: 'インストール済み',
   searchSkills: 'スキルを検索',
+  showCommunity: 'コミュニティレジストリを表示',
   searchPlugins: 'プラグインを検索',
   allSources: 'すべての提供元',
   allCategories: 'すべてのカテゴリ',

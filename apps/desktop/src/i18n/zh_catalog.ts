@@ -28,6 +28,7 @@ export const zhCatalog = {
   install: '安装',
   installed: '已安装',
   searchSkills: '搜索技能',
+  showCommunity: '显示社区注册表',
   searchPlugins: '搜索插件',
   allSources: '所有来源',
   allCategories: '所有分类',

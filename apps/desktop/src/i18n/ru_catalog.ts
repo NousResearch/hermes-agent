@@ -35,6 +35,7 @@ export const ruCatalog = {
   install: 'Установить',
   installed: 'Установленные',
   searchSkills: 'Поиск навыков',
+  showCommunity: 'Показать реестры сообщества',
   searchPlugins: 'Поиск плагинов',
   allSources: 'Все источники',
   allCategories: 'Все категории',

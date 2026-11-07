@@ -98,6 +98,45 @@ def test_unified_skills_keep_source_identifiers_and_match_cli_install_targets(mo
 
 
 # --------------------------------------------------------------------------
+# skills-official.json (desktop first-party feed, #142192)
+# --------------------------------------------------------------------------
+
+def test_official_snapshot_is_first_party_subset_of_full_feed(mod, tmp_path, monkeypatch):
+    """Regression for #142192: the docs build publishes a first-party-only
+    companion of skills.json. It must be the same rows (a subset, never a
+    second source of truth) and carry no community-source entries."""
+    for directory in ("skills", "optional-skills"):
+        skill = tmp_path / directory / "creative" / "example"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            f"---\nname: {directory}-example\ndescription: Example\n---\nBody."
+        )
+    # A community row so the "no community entries in the official feed"
+    # invariant has something to exclude.
+    index = tmp_path / "skills-index.json"
+    index.write_text(json.dumps({
+        "skills": [{"source": "clawhub", "identifier": "community-skill", "name": "Community"}]
+    }))
+
+    monkeypatch.setattr(mod, "REPO_ROOT", str(tmp_path))
+    out = tmp_path / "out"
+    monkeypatch.setattr(mod, "OUTPUT", str(out / "skills.json"))
+    monkeypatch.setattr(mod, "OFFICIAL_OUTPUT", str(out / "skills-official.json"))
+    monkeypatch.setattr(mod, "META_OUTPUT", str(out / "skills-meta.json"))
+    monkeypatch.setattr(mod, "UNIFIED_INDEX_PATH", str(index))
+    monkeypatch.setattr(mod, "LEGACY_INDEX_CACHE_DIR", str(tmp_path / "missing-cache"))
+
+    mod.main()
+
+    full = json.loads((out / "skills.json").read_text())
+    official = json.loads((out / "skills-official.json").read_text())
+
+    assert official, "the first-party snapshot must be populated when local skills exist"
+    assert [row for row in full if row["source"] in mod.FIRST_PARTY_SOURCES] == official
+    assert all(row["source"] in mod.FIRST_PARTY_SOURCES for row in official)
+
+
+# --------------------------------------------------------------------------
 # _source_url
 # --------------------------------------------------------------------------
 

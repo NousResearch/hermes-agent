@@ -270,6 +270,7 @@
   "catalog.searchPlugins": ["de","es","fr"],
   "catalog.searchSkills": ["de","es","fr"],
   "catalog.seeAll": ["de","es","fr"],
+  "catalog.showCommunity": ["de","es","fr"],
   "catalog.skillsFor": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "catalog.slideOf": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "catalog.snapshotHint": ["de","es","fr"],

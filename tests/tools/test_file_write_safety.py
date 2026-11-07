@@ -306,6 +306,26 @@ class TestAtomicWrite:
         assert target.read_text(encoding="utf-8") == "a = 1\nb = 22\nc = 3\n"
         assert (os.stat(target).st_mode & 0o777) == 0o600
 
+    @pytest.mark.platforms("posix")
+    @pytest.mark.parametrize("native", ["1", "0"])
+    def test_rename_keeps_plain_write_semantics(self, ops, tmp_path: Path, monkeypatch, native):
+        # A rename needs only the directory's permission and swaps the inode: a read-only target
+        # must still be refused, and every hard-linked name must see the new content.
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", native)
+        ro = tmp_path / "ro.txt"
+        ro.write_text("orig\n", encoding="utf-8")
+        os.chmod(ro, 0o444)
+        a, b = tmp_path / "a.txt", tmp_path / "b.txt"
+        a.write_text("orig\n", encoding="utf-8")
+        os.link(a, b)
+        if os.geteuid() != 0:  # root bypasses the write bit for a plain open() too
+            assert "Permission denied" in (ops.write_file(str(ro), "new\n").error or "")
+            assert ro.read_text(encoding="utf-8") == "orig\n"
+        assert ops.write_file(str(a), "new\n").error is None
+        assert b.read_text(encoding="utf-8") == "new\n"
+        assert os.stat(a).st_ino == os.stat(b).st_ino
+        assert [p for p in os.listdir(tmp_path) if ".hermes-tmp" in p] == []
+
 
 class TestBomHandling:
     """UTF-8 BOM is stripped on read and preserved across write/patch.

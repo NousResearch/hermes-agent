@@ -73,6 +73,39 @@ def _read_or_none(path: Path) -> Optional[bytes]:
         return None
 
 
+# Everything this process still imports once the tree has moved: the receipt finalize, the
+# shallow-checkout count after a branch switch, and the resume of the gateways it paused (systemd,
+# launchd, Windows; a bare replay's environment is built by the pause). Loaded at the commit point,
+# while the tree is still the code this process runs; ``test_update_post_swap_imports`` drives each.
+POST_MOVE_MODULES = (
+    "gateway.runtime_ownership",
+    "gateway.status",
+    "hermes_cli.gateway",
+    "hermes_cli.gateway_windows",
+    "hermes_cli.github_api",
+    "hermes_cli.source_check",
+    "hermes_cli.update_cmd_fleet_unit_budget",
+    "hermes_cli.update_serve_obligations",
+    "pm.lock",
+)
+
+
+def load_post_move_modules() -> None:
+    """Import :data:`POST_MOVE_MODULES` now: after the move, a module not yet loaded is the new tree's."""
+    import importlib
+
+    for name in POST_MOVE_MODULES:
+        try:
+            importlib.import_module(name)
+        except Exception as exc:  # health: allow BLE001 -- protection, not a gate: the step that needs it reports it
+            logger.warning("Could not load %s before the checkout moves: %s", name, exc)
+
+
+def past_commit_point() -> bool:
+    """True once this run armed its commit point: the checkout may hold code this process never loaded."""
+    return _armed_snapshot is not None
+
+
 def arm_commit_obligations(root: Path, expected_sha: str) -> None:
     """Owe the completion tail and the fleet restart for ``expected_sha`` BEFORE the tree moves.
 
@@ -87,6 +120,8 @@ def arm_commit_obligations(root: Path, expected_sha: str) -> None:
     from hermes_cli.update_cmd_fleet import _write_fleet_restart_pending_marker
     from hermes_cli.venv_sync import arm_completion
 
+    if _armed_snapshot is None:  # a re-arm runs after a move: too late to load anything
+        load_post_move_modules()
     root = Path(root)
     if _owns_live_checkout(root):
         return

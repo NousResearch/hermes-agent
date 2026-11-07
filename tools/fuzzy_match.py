@@ -304,6 +304,23 @@ _PRECISE_STRATEGIES = [entry for entry in STRATEGIES if entry[0] not in SIMILARI
 _SIMILARITY_TIER = [entry for entry in STRATEGIES if entry[0] in SIMILARITY_STRATEGIES]
 _WHOLE_LINE_STRATEGIES = [entry for entry in STRATEGIES if entry[0] == "line_trimmed"]
 
+# These same two strategies are also the only ones that can accept a region whose
+# *content* differs from old_string by more than formatting. They are reached only after
+# every formatting-tolerant strategy has already failed, so when they fire, old_string is
+# not present except as an approximate shape. A match that is the same block with a line
+# or two drifted is a useful rescue; a block that merely shares its first/last line with
+# old_string (block_anchor accepts a middle only 0.50 similar), or a short line that is
+# only 0.80 similar (context_aware's per-line floor), means we would overwrite text the
+# caller never named. Require the matched region to be substantially the same text.
+_FUZZY_CONTENT_FLOOR = 0.90
+
+
+def _normalized_similarity(region: str, pattern: str) -> float:
+    """Similarity of two strings ignoring unicode form and whitespace runs."""
+    def _norm(s: str) -> str:
+        return re.sub(r"\s+", " ", _unicode_normalize(s)).strip()
+    return SequenceMatcher(None, _norm(region), _norm(pattern)).ratio()
+
 
 def boundary_note(strategies: Iterable[Optional[str]], target: str = "old_string's",
                   where: str = "") -> Optional[str]:
@@ -442,6 +459,20 @@ def _run_strategy_chain(content: str, old_string: str, new_string: str, replace_
             drift_err = _detect_escape_drift(content, matches, old_string, new_string)
             if drift_err:
                 return content, 0, None, drift_err
+
+        # Content-divergence guard. Drop any similarity-strategy match that is not
+        # substantially the same text as old_string, comparing with unicode form and
+        # whitespace runs normalized away so legitimate reflow, indentation and
+        # smart-quote drift still pass. If nothing survives, fall through to the next
+        # strategy and ultimately the no-match path, which prompts a re-read instead of
+        # editing the wrong place.
+        if strategy_name in SIMILARITY_STRATEGIES:
+            matches = [
+                (start, end) for (start, end) in matches
+                if _normalized_similarity(content[start:end], old_string) >= _FUZZY_CONTENT_FLOOR
+            ]
+            if not matches:
+                continue
 
         effective_new = _maybe_unescape_new_string(new_string, content, matches)
         new_content = _apply_replacements(

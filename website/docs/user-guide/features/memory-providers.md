@@ -560,7 +560,7 @@ Local SQLite fact store with FTS5 full-text search, trust scoring, and HRR (Holo
 | | |
 |---|---|
 | **Best for** | Local-only memory with advanced retrieval, no external dependencies |
-| **Requires** | Nothing (SQLite is always available). NumPy optional for HRR algebra. |
+| **Requires** | SQLite (always available); NumPy for HRR structural recall (baked into the Docker image — see [NumPy, HRR, and Docker](#numpy-hrr-and-docker)). |
 | **Data storage** | Local SQLite |
 | **Cost** | Free |
 
@@ -589,6 +589,29 @@ hermes config set memory.provider holographic
 - Trust scoring with asymmetric feedback (+0.05 helpful / -0.10 unhelpful)
 
 The catalog plugin has its own release notes and options beyond this list; see its [README](https://github.com/itpartypattaya/hermes-plugin-holographic) for the current tool actions and settings.
+
+#### NumPy, HRR, and Docker
+
+HRR structural recall — the `probe` / `related` / `reason` / `contradict` actions and the per-fact vectors that power them — needs **NumPy**. SQLite and FTS5 keyword search always work, so without NumPy the provider still runs, but **silently in FTS-only mode**: vectors are never written and structural recall is off (retrieval weight is redistributed onto FTS/Jaccard).
+
+- **Docker:** the official image bakes NumPy into its sealed environment via the `holographic` extra, so Holographic has full HRR out of the box — including offline/air-gapped containers where the plugin's own dependencies cannot be installed on demand (#136707).
+- **Source installs:** NumPy is installed lazily with the plugin. If lazy installs are disabled or the host is offline, install the `holographic` extra into the Hermes environment.
+- **Check health:** confirm NumPy with `/opt/hermes/.venv/bin/python -c "import numpy"` and vector coverage with `SELECT count(*), sum(hrr_vector IS NOT NULL) FROM facts;` (the second number equals the first only when HRR vectors are being written). `hermes doctor` / `hermes memory status` also report the HRR state.
+
+##### Why `PYTHONPATH` does not work in the container
+
+The Hermes launcher deliberately clears `PYTHONPATH`/`PYTHONHOME` before starting the interpreter (a hardening measure), so mounting a NumPy directory through `PYTHONPATH` or a Compose `environment:` block has no effect. The one injection point that survives is a `.pth` file **inside the environment's `site-packages`**. Bind-mount a one-line `zz-pylibs.pth` pointing at a directory that contains NumPy:
+
+```text
+# /opt/hermes/.venv/lib/python3.14/site-packages/zz-pylibs.pth  (bind-mounted)
+/mnt/pylibs
+```
+
+Prefer an image that already bakes NumPy; use the `.pth` mount only when you cannot change the image.
+
+##### Backfilling facts stored without vectors
+
+Facts written while NumPy was missing keep `hrr_vector = NULL` even after NumPy is installed. You do not need to delete and re-add them: updating a fact with its **same text** recomputes and stores the vector in place, preserving the fact id, timestamps, and trust. Use the `fact_store` update action (`update_fact(fid, content=<same text>)`) over the existing rows.
 
 #### Migrating from bundled Holographic
 

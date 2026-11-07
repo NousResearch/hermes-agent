@@ -34,6 +34,21 @@ def max_verify_nudges(config: Optional[dict[str, Any]] = None) -> int:
         return DEFAULT_MAX_VERIFY_NUDGES
 
 
+def pre_verify_always(config: Optional[dict[str, Any]] = None) -> bool:
+    """Whether ``pre_verify`` may fire on turns that edited no files.
+
+    Default ``False`` preserves the historical scope: the gate only opens after
+    the agent edited code. Set ``agent.pre_verify_always: true`` when a hook
+    implements a policy that is not about file edits at all — a programmatic job
+    runner, for example, that must not let a turn end while work the job was
+    launched for is still unfinished. Hooks still receive ``changed_paths`` and
+    can ``return None`` immediately when they only care about edits, so enabling
+    this costs nothing for hooks that do not opt in. ``max_verify_nudges`` keeps
+    bounding the loop either way.
+    """
+    return is_truthy_value(_agent_cfg(config).get("pre_verify_always", False), default=False)
+
+
 def coding_verify_guidance(config: Optional[dict[str, Any]] = None) -> Optional[str]:
     """Return the optional guidance appended to verification-stop nudges."""
     if not is_truthy_value(_agent_cfg(config).get("verify_guidance", True), default=True):
@@ -53,4 +68,4 @@ def _agent_cfg(config: Optional[dict[str, Any]]) -> dict[str, Any]:
     return agent_cfg if isinstance(agent_cfg, dict) else {}
 
 
-__all__ = ["CODING_VERIFY_GUIDANCE", "DEFAULT_MAX_VERIFY_NUDGES", "coding_verify_guidance", "max_verify_nudges"]
+__all__ = ["CODING_VERIFY_GUIDANCE", "DEFAULT_MAX_VERIFY_NUDGES", "coding_verify_guidance", "max_verify_nudges", "pre_verify_always"]

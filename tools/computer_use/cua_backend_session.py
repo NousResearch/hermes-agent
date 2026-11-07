@@ -445,19 +445,26 @@ class _CuaDriverSession:
         from tools.environments.local import _sanitize_subprocess_env
 
         call_args, shot_file = dict(args), None
-        if name == "get_window_state" and "screenshot_out_file" not in call_args:
-            fd, shot_file = _tempfile.mkstemp(prefix="cua_shot_", suffix=".png")
-            os.close(fd)
-            call_args["screenshot_out_file"] = shot_file
-        driver_command = _driver.resolve_cua_driver_cmd()
-        if not driver_command:
-            raise RuntimeError(_driver.cua_driver_install_hint())
-        child_env, socket_args = _cb.cua_driver_child_env(), []
         daemon = getattr(self, "_embedded_daemon", None)
-        if daemon is not None:
-            driver_command, child_env = daemon.proxy_invocation()[0], daemon.child_env()
-            socket_args = ["--socket", daemon.socket_path]
-        cmd = [driver_command, "call", name, json.dumps(call_args), *socket_args]
+        socket_args = ["--socket", daemon.socket_path] if daemon is not None else []
+        # Same placement as the MCP transport this falls back from: inside the sandbox when the Bot Desktop lives
+        # there, never a bare host driver.
+        placed = _cb.sandbox_invocation(["cua-driver", "call", name, json.dumps(call_args), *socket_args], interactive=False)
+        if placed is not None:  # (a host screenshot temp file would be invisible to the sandboxed driver)
+            (command, cli_args), child_env = placed
+            cmd = [command, *cli_args]
+        else:
+            if name == "get_window_state" and "screenshot_out_file" not in call_args:
+                fd, shot_file = _tempfile.mkstemp(prefix="cua_shot_", suffix=".png")
+                os.close(fd)
+                call_args["screenshot_out_file"] = shot_file
+            driver_command = _driver.resolve_cua_driver_cmd()
+            if not driver_command:
+                raise RuntimeError(_driver.cua_driver_install_hint())
+            child_env = _cb.cua_driver_child_env()
+            if daemon is not None:
+                driver_command, child_env = daemon.proxy_invocation()[0], daemon.child_env()
+            cmd = [driver_command, "call", name, json.dumps(call_args), *socket_args]
         try:
             return _cli_result(_cli_run_json(cmd, _sanitize_subprocess_env(child_env), name, timeout), shot_file)
         finally:

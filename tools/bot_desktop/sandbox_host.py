@@ -318,11 +318,11 @@ def open_rfb_stream(env: Any, profile: str) -> subprocess.Popen:
     return streams.open_stream(env, ["python3", "-c", _RELAY, f"{rdir}/rfb.sock"], user=_user_for(env))
 
 
-def cua_mcp_invocation(env: Any, profile: str, published: dict[str, str]) -> tuple[str, list[str]]:
-    """``(command, args)`` for ``StdioServerParameters``: the backend's exec prefix running ``cua-driver mcp`` on
-    the sandbox display."""
-    argv = streams.remote_command(env, ["cua-driver", "mcp", "--no-overlay"], child_env=published,
-                                  user=_user_for(env), interactive=True)
-    if argv is None:
+def cua_invocation(env: Any, published: dict[str, str], argv: list[str], *, interactive: bool) -> tuple[str, list[str]]:
+    """``(command, args)`` running ``argv`` (a ``cua-driver`` command line) on the sandbox display: the backend's
+    exec prefix with ``published`` exported first. ``interactive`` holds stdin open for a stdio server (``mcp``,
+    ``serve``); a one-shot (``call``, ``status``, ``stop``) does not need it."""
+    command = streams.remote_command(env, argv, child_env=published, user=_user_for(env), interactive=interactive)
+    if command is None:
         raise RuntimeError(f"{type(env).__name__} cannot host cua-driver")
-    return argv[0], argv[1:]
+    return command[0], command[1:]

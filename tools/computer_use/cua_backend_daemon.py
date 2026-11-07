@@ -27,6 +27,10 @@ logger = logging.getLogger("tools.computer_use.cua_backend")
 _CUA_DRIVER_BUNDLE_ID = CUA_DRIVER_BUNDLE_ID
 _CUA_DRIVER_TEAM_IDS = ("4YEC26S9KF", "YCK386LBJ7")
 _QUIET_ERRORS = (OSError, subprocess.SubprocessError)
+# Inside a sandbox, killing the exec client does not end the daemon behind it. Hold the client's stdin open and stop
+# the daemon when it closes, so a sandboxed daemon dies with the Hermes that started it, as a host one does.
+# (A backgrounded command's stdin is /dev/null unless redirected, hence the explicit fd 3.)
+_SANDBOX_DAEMON_SH = 'exec 3<&0; "$@" 3<&- & p=$!; (cat <&3 >/dev/null; kill $p 2>/dev/null) & wait $p'
 
 def _cb():
     """Facade module (config/policy helpers), looked up lazily to avoid the import cycle."""
@@ -100,7 +104,12 @@ class _EmbeddedCuaDaemon:
     Hermes YOLO (``--dangerously-bypass-approvals``); ``bounded`` = a user-reviewed capability manifest approved
     at launch is the authorization boundary, not a runtime prompt. The manifest is a ceiling, not a mode: it "can
     narrow a profile but never widen it", so a configured v3 manifest is forwarded even for ``unrestricted``
-    (bounding an approval-bypassed run). Mandatory for ``bounded``, optional everywhere else."""
+    (bounding an approval-bypassed run). Mandatory for ``bounded``, optional everywhere else.
+
+    Where it runs follows the Bot Desktop placement, never the permission mode: with a sandboxed terminal
+    backend the daemon is spawned INSIDE the sandbox (next to the screen it drives) through the backend's exec
+    prefix, so approvals off / ``--yolo`` widens what the driver may do in the sandbox without moving it to the
+    host. Only a gateway-hosted desktop spawns the host binary."""
 
     _START_TIMEOUT_SECONDS = 15.0
 
@@ -125,16 +134,38 @@ class _EmbeddedCuaDaemon:
         self._mcp_args: list[str] = list(_driver._CUA_DRIVER_ARGS)
         self._process: Any = None
         self._owns_runtime = self._running = False
+        self._sandboxed = False  # decided by start(): the daemon, its socket and every probe live in the sandbox
         self._stderr_tail: deque[str] = deque(maxlen=20)
-        token = uuid.uuid4().hex[:12]
-        self.socket_path = (rf"\\.\pipe\hermes-cua-{token}" if sys.platform == "win32"
-                            else os.path.join(tempfile.gettempdir(), f"hc-{token}.sock"))
+        self._socket_token = uuid.uuid4().hex[:12]
+        self.socket_path = self._host_socket_path()
 
-    def child_env(self) -> dict[str, str]:
-        env = {**_cb().cua_driver_child_env(), "CUA_DRIVER_PERMISSION_MODE": self.permission_mode}
+    def _host_socket_path(self) -> str:
+        return (rf"\\.\pipe\hermes-cua-{self._socket_token}" if sys.platform == "win32"
+                else os.path.join(tempfile.gettempdir(), f"hc-{self._socket_token}.sock"))
+
+    def _sandbox_socket_path(self) -> str:
+        # The sandbox's own /tmp: a host TMPDIR (or the Hermes scratch dir) is not mounted there.
+        return f"/tmp/hc-{self._socket_token}.sock"  # no-tmp: ok — sandbox-side path
+
+    def _permission_env(self) -> dict[str, str]:
+        env = {"CUA_DRIVER_PERMISSION_MODE": self.permission_mode}
         if self.permission_mode == "unrestricted":
             env["CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"] = "1"
         return env
+
+    def child_env(self) -> dict[str, str]:
+        if self._sandboxed:  # the driver's env is exported inside the sandbox; the exec client needs only PATH
+            return {"PATH": os.environ.get("PATH", "")}
+        return {**_cb().cua_driver_child_env(), **self._permission_env()}
+
+    def _in_sandbox(self, argv: list[str], *, interactive: bool, env: Optional[dict[str, str]] = None
+                    ) -> tuple[list[str], dict[str, str]]:
+        """``(host argv, host env)`` running ``cua-driver <argv>`` inside the sandbox this daemon lives in."""
+        placed = _cb().sandbox_invocation(["cua-driver", *argv], interactive=interactive, extra_env=env)
+        if placed is None:
+            raise RuntimeError("the terminal backend's sandbox is gone; start the session again")
+        (command, args), host_env = placed
+        return [command, *args], host_env
 
     def _sanitized_env(self) -> dict[str, str]:
         from tools.environments.local import _sanitize_subprocess_env
@@ -148,9 +179,11 @@ class _EmbeddedCuaDaemon:
                     self._stderr_tail.append(text)
                     logger.debug("embedded cua-driver: %s", text)
 
-    def _serve_args(self) -> list[str]:
+    def _serve_args(self, *, sandboxed: bool = False) -> list[str]:
         serve_args = ["serve", "--embedded", "--socket", self.socket_path, "--no-permissions-gate", "--permission-mode",
                       self.permission_mode, *(["--dangerously-bypass-approvals"] if self.permission_mode == "unrestricted" else [])]
+        if sandboxed:  # no host binary to probe; the sandboxed MCP server makes the same unconditional choice
+            return [*serve_args, "--no-overlay"]
         if self.manifest_applies:
             serve_args += ["--capability-manifest", str(self.capability_manifest), "--approve-capability-manifest"]
         # The private daemon owns the cursor overlay, so the overlay policy must apply to this long-lived serve
@@ -161,23 +194,43 @@ class _EmbeddedCuaDaemon:
     def start(self) -> None:
         if self._running:
             return
-        # Keep an explicit command fixed, but reselect managed drivers on every
-        # launch: PM may have acquired a new pin since construction or last stop.
-        driver_cmd = self._driver_cmd or _driver.resolve_cua_driver_cmd()
-        if not driver_cmd:
-            raise RuntimeError(_driver.cua_driver_install_hint())
-        self._command, self._mcp_args = _driver._resolve_mcp_invocation(driver_cmd)
-        env = self._sanitized_env()
-        command = _embedded_daemon_spawn_command(self._command, self._serve_args(), platform=sys.platform)
-        popen_kwargs: dict[str, Any] = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        # Placement decides where it runs, not the permission mode (see the class docstring).
+        self.socket_path = self._sandbox_socket_path()
+        placed = _cb().sandbox_invocation(["sh", "-c", _SANDBOX_DAEMON_SH, "sh", "cua-driver", *self._serve_args(sandboxed=True)],
+                                          interactive=True, extra_env=self._permission_env())
+        self._sandboxed = placed is not None
+        if placed is not None:
+            if self.manifest_applies:
+                # The manifest is a host path the sandbox cannot see; dropping it would silently widen the
+                # session, so refuse instead of guessing.
+                raise RuntimeError(
+                    "computer_use.capability_manifest cannot be applied to a cua-driver running inside the "
+                    "terminal backend's sandbox (the manifest is a host file). Remove the manifest and "
+                    "permission_mode: bounded, or set bot_desktop.placement: gateway to run the driver on the "
+                    "gateway host.")
+            (command, args), env = placed
+            command = [command, *args]
+        else:
+            self.socket_path = self._host_socket_path()
+            # Keep an explicit command fixed, but reselect managed drivers on every
+            # launch: PM may have acquired a new pin since construction or last stop.
+            driver_cmd = self._driver_cmd or _driver.resolve_cua_driver_cmd()
+            if not driver_cmd:
+                raise RuntimeError(_driver.cua_driver_install_hint())
+            self._command, self._mcp_args = _driver._resolve_mcp_invocation(driver_cmd)
+            env = self._sanitized_env()
+            command = _embedded_daemon_spawn_command(self._command, self._serve_args(), platform=sys.platform)
+        stdin = subprocess.PIPE if self._sandboxed else subprocess.DEVNULL
+        popen_kwargs: dict[str, Any] = dict(stdin=stdin, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                             text=True, encoding="utf-8", errors="replace", env=env)
-        if sys.platform == "darwin":
+        if sys.platform == "darwin" and not self._sandboxed:
             # `open` hands the daemon to LaunchServices: it is launchd's child, never in our tree, so there is no
             # group of ours to own. The daemon's own --embedded lifetime is the only bound there.
             self._process = subprocess.Popen(command, **popen_kwargs)
         else:
             # Owned: the daemon dies with this process however it dies. It used to be stopped only by stop()
             # (session release / atexit), so a SIGKILLed or OOM-killed Hermes left a YOLO-mode daemon running.
+            # (For a sandboxed daemon this owns the exec client; stop() ends the daemon inside the sandbox.)
             self._process = spawn_owned(command, purpose="cua-driver-embedded", **popen_kwargs)
         self._owns_runtime = True
         threading.Thread(target=self._drain_stderr, args=(self._process,), name="hermes-cua-daemon-stderr", daemon=True).start()
@@ -199,23 +252,40 @@ class _EmbeddedCuaDaemon:
 
     def _socket_ready(self, env: dict[str, str]) -> bool:
         """``cua-driver status --socket`` exits 0 once the private daemon accepts connections."""
-        probe = _cb()._run_quiet([self._command, "status", "--socket", self.socket_path], timeout=2.0, env=env, swallow=_QUIET_ERRORS)
+        if self._sandboxed:
+            argv, env = self._in_sandbox(["status", "--socket", self.socket_path], interactive=False)
+        else:
+            argv = [self._command, "status", "--socket", self.socket_path]
+        probe = _cb()._run_quiet(argv, timeout=5.0 if self._sandboxed else 2.0, env=env, swallow=_QUIET_ERRORS)
         return probe is not None and probe.returncode == 0
 
     def proxy_invocation(self) -> tuple[str, list[str]]:
         if not self._running:
             raise RuntimeError("embedded cua-driver daemon is not running")
+        if self._sandboxed:
+            argv, _ = self._in_sandbox(["mcp", "--embedded", "--socket", self.socket_path], interactive=True)
+            return argv[0], argv[1:]
         return self._command, [*self._mcp_args, "--embedded", "--socket", self.socket_path]
 
     def stop(self) -> None:
         process, self._process = self._process, None
         owns_runtime, self._owns_runtime, self._running = self._owns_runtime, False, False
         if owns_runtime:
-            _cb()._run_quiet([self._command, "stop", "--socket", self.socket_path], timeout=3.0, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, env=self._sanitized_env(), swallow=_QUIET_ERRORS)
+            if self._sandboxed:
+                # Killing the exec client does not end the daemon inside the sandbox, so ask it to stop. The sandbox
+                # may already be gone, and stop() must not raise.
+                with contextlib.suppress(Exception):
+                    argv, env = self._in_sandbox(["stop", "--socket", self.socket_path], interactive=False)
+                    _cb()._run_quiet(argv, timeout=5.0, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     env=env, swallow=_QUIET_ERRORS)
+            else:
+                _cb()._run_quiet([self._command, "stop", "--socket", self.socket_path], timeout=3.0, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, env=self._sanitized_env(), swallow=_QUIET_ERRORS)
         if process is not None:
+            if self._sandboxed:
+                process.stdin.close()  # the sandboxed daemon's lifetime tether (_SANDBOX_DAEMON_SH)
             _wait_or_kill(process)
             release_process_group_once_empty(process.pid, proc=process)  # stopped it ourselves (a no-op for the macOS `open` launcher)
-        if sys.platform != "win32" and os.path.exists(self.socket_path):
+        if sys.platform != "win32" and not self._sandboxed and os.path.exists(self.socket_path):
             with contextlib.suppress(OSError):
                 os.remove(self.socket_path)

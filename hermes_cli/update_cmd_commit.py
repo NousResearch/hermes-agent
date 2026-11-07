@@ -387,7 +387,7 @@ def _requires_python_spec(pyproject: bytes | str | None) -> str | None:
     return spec if isinstance(spec, str) else None
 
 
-MISSING_STARTUP_FILE = "the tree lists this startup file in [tool.hermes] update-startup-files but does not contain it"
+MISSING_STARTUP_FILE = "the tree lists this startup file in [tool.hermes] update-startup-files but it is missing or could not be read"
 INVALID_STARTUP_FILES = "pyproject.toml must be valid TOML whose [tool.hermes] update-startup-files is a list of file paths"
 
 

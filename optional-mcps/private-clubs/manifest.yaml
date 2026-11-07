@@ -1,0 +1,42 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: private-clubs
+description: Search 39,500+ private clubs worldwide by place, type, amenities and waitlist status.
+source: https://www.theprivateclubs.com/mcp
+
+# Official vendor-hosted remote MCP (URL-only, Hermes never spawns a local
+# process for this entry). Free and read-only, no authentication required
+# (verified live: initialize and tools/list succeed anonymously). Five tools:
+#   search_clubs         search by place, type, amenities and waitlist status
+#   get_club             one club's profile (course, architect, amenities, website)
+#   get_clubs_by_state   up to 100 clubs in a US state or Canadian province, best known first
+#   compare_clubs        two or three clubs side by side
+#   get_membership_info  waitlist status and where to see membership fees
+# None of the tools write anything, so the install-time checklist starts with
+# all five checked.
+transport:
+  type: http
+  url: https://www.theprivateclubs.com/api/mcp
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - private club
+    - country club
+    - yacht club
+    - club membership
+  hosts:
+    - theprivateclubs.com
+
+post_install: |
+  Restart your Hermes session so the Private Clubs tools are loaded, then try:
+    "Find private golf clubs in Florida with an open waitlist"
+    "Compare Seminole Golf Club and Augusta National"
+
+  Membership fees are not returned by the tools; each club's profile on
+  theprivateclubs.com shows them to account holders.

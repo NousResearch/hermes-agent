@@ -33,10 +33,14 @@ def _cfg_path() -> str:
     it re-homes the process to the sticky ``active_profile``; ``get_hermes_home()`` would emit the
     "[HERMES_HOME fallback] ... wrong profile" warning on every ``hermes`` command for that
     throwaway help string. Read the process home directly: after the override it IS the profile home.
+
+    ``%`` is doubled because argparse %-formats every help string (Python 3.14 validates it inside
+    ``add_argument``): a home such as ``~/100%/hermes`` otherwise raised ``badly formed help string``
+    while building the parser, so every ``hermes`` command died before it ran.
     """
     from hermes_constants import display_hermes_home, get_process_hermes_home
 
-    return f"{display_hermes_home(get_process_hermes_home())}/config.yaml"
+    return f"{display_hermes_home(get_process_hermes_home())}/config.yaml".replace("%", "%%")
 
 
 @lru_cache(maxsize=1)

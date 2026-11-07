@@ -38,3 +38,19 @@ def test_help_text_names_the_profile_config_once_the_process_is_re_homed(sticky_
     monkeypatch.setenv("HERMES_HOME", str(sticky_profile_home / "profiles" / "coder"))
 
     assert _cfg_path() == "~/.hermes/profiles/coder/config.yaml"
+
+
+def test_a_percent_in_the_home_still_builds_and_renders_the_parser(tmp_path, monkeypatch):
+    """argparse %-formats help text; the home path is user data and must reach the help verbatim."""
+    from hermes_cli._parser import build_top_level_parser
+    from hermes_constants import display_hermes_home
+
+    home = tmp_path / "100%d #x %(prog)s"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("COLUMNS", "1000")  # keep the path on one help line
+
+    parser, _subparsers, chat_parser = build_top_level_parser()
+
+    for rendered in (parser.format_help(), chat_parser.format_help()):
+        assert f"Ignore {display_hermes_home(home)}/config.yaml and fall back" in rendered

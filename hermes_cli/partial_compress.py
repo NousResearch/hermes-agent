@@ -163,9 +163,11 @@ def rejoin_compressed_head_and_tail(
     The head compressor's output shape isn't contractually guaranteed (a plugin engine could end on
     a user turn). If the last head message and first tail message share a user/assistant role, the
     tail's first string content is folded onto the head's last message; non-string (multimodal)
-    content gets a minimal bridging turn instead so nothing is lost. ``tool`` messages are left
-    alone — consecutive tool entries are the one legal repetition (parallel results).
+    content, or a head message carrying the todo snapshot, gets a minimal bridging turn instead so
+    nothing is lost (the next boundary strips everything after the snapshot header). ``tool``
+    messages are left alone — consecutive tool entries are the one legal repetition (parallel results).
     """
+    from tools.todo_tool import TODO_INJECTION_HEADER
     if not tail:
         return list(compressed_head)
     if not compressed_head:
@@ -179,7 +181,8 @@ def rejoin_compressed_head_and_tail(
     if last_role == first_role and last_role in ("user", "assistant"):
         last_content = last.get("content")
         first_content = first.get("content")
-        if isinstance(last_content, str) and isinstance(first_content, str):
+        if (isinstance(last_content, str) and isinstance(first_content, str)
+                and TODO_INJECTION_HEADER not in last_content):
             head[-1] = {**last, "content": f"{last_content}\n\n{first_content}"}
             rest = rest[1:]
         else:

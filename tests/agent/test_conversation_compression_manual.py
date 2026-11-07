@@ -228,6 +228,24 @@ def test_in_place_here_n_folds_the_seam_once(session_db):
     assert _live(durable[-3:]) == _live(history[-3:])
 
 
+def test_in_place_here_n_keeps_the_first_kept_message_out_of_the_todo_snapshot(session_db):
+    """An active todo list ends the head on its snapshot row. Folding the first kept message into that row puts
+    it after the snapshot header, and the next boundary strips everything after the header with the old snapshot."""
+    from agent.conversation_compression import finalize_context_engine_compression_notification
+    history = _exchanges(10)
+    agent, loaded = _stored_agent(session_db, history)
+    agent._todo_store.write([{"id": "1", "content": "Ship the fruit report", "status": "in_progress"}])
+    result = _compress_here(agent, loaded, 2)
+    assert result.status == "compressed"
+    assert _live(session_db.get_messages_as_conversation("sid")[-4:]) == _live(history[-4:])
+
+    finalize_context_engine_compression_notification(agent, committed=True)
+    agent._flush_messages_to_session_db([*result.after_messages, *_exchanges(11)[-2:]], None)
+    assert _compress_here(agent, session_db.get_messages_as_conversation("sid"), 1).status == "compressed"
+    model_history, _ = session_db.get_resume_conversations("sid")
+    assert [m["content"] for m in model_history].count(history[-4]["content"]) == 1
+
+
 FOREIGN_TURN = [("user", "[from Telegram] the vault code is 7741"), ("assistant", "Noted: the vault code is 7741.")]
 
 

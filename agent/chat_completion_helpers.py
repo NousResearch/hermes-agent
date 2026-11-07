@@ -1516,6 +1516,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         getattr(agent, "provider", None),
         getattr(agent, "base_url", None),
         getattr(agent, "session_id", None),
+        turn_id=getattr(agent, "_current_turn_id", None),
     )
 
 

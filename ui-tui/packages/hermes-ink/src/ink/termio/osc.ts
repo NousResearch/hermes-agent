@@ -186,8 +186,13 @@ function tmuxPassthrough(payload: string): string {
 /**
  * Load text into tmux's paste buffer via `tmux load-buffer`.
  * -w (tmux 3.2+) propagates to the outer terminal's clipboard via tmux's
- * own OSC 52 emission. -w is dropped for iTerm2: tmux's OSC 52 emission
- * crashes the iTerm2 session over SSH.
+ * own OSC 52 emission. -w is dropped for iTerm2 builds older than 3.5:
+ * tmux's OSC 52 emission crashed iTerm2 sessions over SSH, fixed in the
+ * 3.5 line (late 2023). iTerm2 exports `LC_TERMINAL_VERSION`; when it is
+ * missing (no shell integration, or SSH without SendEnv) we fall back to
+ * the legacy no-`-w` behavior for iTerm2 — conservative, and the DCS
+ * passthrough path in setClipboard() still covers those cases when the
+ * user has `allow-passthrough on`.
  *
  * Returns true if the buffer was loaded successfully.
  */
@@ -196,7 +201,10 @@ export async function tmuxLoadBuffer(text: string): Promise<boolean> {
     return false
   }
 
-  const args = process.env['LC_TERMINAL'] === 'iTerm2' ? ['load-buffer', '-'] : ['load-buffer', '-w', '-']
+  const legacyIterm2 =
+    process.env['LC_TERMINAL'] === 'iTerm2' && parseFloat(process.env['LC_TERMINAL_VERSION'] ?? '0') < 3.5
+
+  const args = legacyIterm2 ? ['load-buffer', '-'] : ['load-buffer', '-w', '-']
 
   const { code } = await execFileNoThrow('tmux', args, {
     input: text,

@@ -7,6 +7,7 @@ use <command>" instead of a silent non-update), and exits 2 on CLI surfaces.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -79,12 +80,72 @@ def _steward_refusal(steward: str) -> UpdateRefusal:
     return UpdateRefusal(code=steward, message=steward_update_message(steward), update_command=command)
 
 
+UPDATE_HOLDS_DIRNAME = "hermes-update-holds"
+_HOLD_MESSAGE_LIMIT = 2000
+
+
+def update_holds_dir(project_root: Path) -> Optional[Path]:
+    """Where integrations that patch this checkout hold its updates: ``<git common dir>/hermes-update-holds``.
+
+    The holds live beside the checkout lock, outside the working tree, so they are neither
+    stashed by an update nor reported as local changes. ``None`` when ``project_root`` is no checkout.
+    """
+    from hermes_cli.update_lock import _git_common_dir
+
+    common = _git_common_dir(Path(project_root))
+    return None if common is None else common / UPDATE_HOLDS_DIRNAME
+
+
+def _hold_refusal(project_root: Path) -> Optional[UpdateRefusal]:
+    """Refuse while any integration holds updates for this checkout.
+
+    Each hold is ``<holder>.json`` with ``{"holder": str, "message": str}``. An integration that
+    patches the checkout places one until it has qualified the next Hermes version, because an
+    update would carry its patches onto an untested base or park them. A hold that cannot be read
+    still refuses: an integrity defect is never permission to update.
+    """
+    directory = update_holds_dir(project_root)
+    if directory is None or not (directory.exists() or directory.is_symlink()):
+        return None
+    if directory.is_symlink() or not directory.is_dir():
+        return UpdateRefusal("update-hold-invalid", f"✗ In-place update is held, but {directory} is not a directory.", "")
+    holds = []
+    for path in sorted(directory.iterdir()):
+        if path.suffix != ".json":
+            continue
+        try:
+            value = json.loads(path.read_text(encoding="utf-8-sig"))
+            holder, message = value["holder"], value["message"]
+            if (not isinstance(holder, str) or not holder.strip() or not isinstance(message, str)
+                    or not message.strip() or len(holder) + len(message) > _HOLD_MESSAGE_LIMIT):
+                raise ValueError("hold fields must be bounded text")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            return UpdateRefusal(
+                "update-hold-invalid",
+                f"✗ In-place update is held, but the hold {path} cannot be read ({exc}).",
+                "",
+            )
+        holds.append(f"  {holder.strip()}: {message.strip()}")
+    if not holds:
+        return None
+    return UpdateRefusal("update-hold", "✗ In-place update is held by an integration that patches this install:\n"
+                         + "\n".join(holds), "")
+
+
 def evaluate_update_admission(project_root: Path) -> Optional[UpdateRefusal]:
     """Return an :class:`UpdateRefusal` when in-place update must not run.
 
     ``None`` means the install is eligible for in-place update (git checkout or unknown-but-
     mutable). Never raises; on any internal error it falls back to the heuristic layer only.
+    An update hold (layer 0) fails closed instead: an unreadable hold still refuses.
     """
+    try:
+        held = _hold_refusal(project_root)
+    except OSError as exc:
+        held = UpdateRefusal("update-hold-invalid", f"✗ In-place update holds cannot be checked ({exc}).", "")
+    if held is not None:
+        return held
+
     if is_commit_build(project_root):
         return UpdateRefusal("commit-build", COMMIT_BUILD_UPDATE_MESSAGE, "")
 

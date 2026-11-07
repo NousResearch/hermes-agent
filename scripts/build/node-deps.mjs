@@ -128,7 +128,11 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
   }
   // The root project is always installed with a filtered install. The release-age
   // policy is enforced where the lockfile is written (CI), not re-fetched per user.
+  // pnpm's --os replaces the host platform, and pnpm 12 infers optional-dep
+  // platforms from package names: get-windows (no os field) is treated as
+  // win32-only, but Desktop needs its macOS helper. List host + win32.
   const args = ['install', '--frozen-lockfile', '--trust-lockfile', '--prod=false',
+    '--os', process.platform === 'win32' ? 'win32' : `${process.platform},win32`,
     ...selected.flatMap(workspace => ['--filter', `{./${workspace}}...`]),
   ]
   // This receipt certifies dependency preparation, never compiled product freshness.

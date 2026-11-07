@@ -1166,7 +1166,9 @@ def _shape_context(c: _Ctx, verdict: Verdict, *, hooked: bool) -> dict[str, Any]
         extra["statusless_structured"] = True
     if hooked:
         return {**extra, "hook_declines_fallback": True} if verdict.get("should_fallback") is False else extra
-    if c.status_code in (None, 402, 403, 404, 429) and any(p in c.msg for p in _QUOTA_WINDOW_PATTERNS):
+    # An upstream's quota behind a healthy aggregator key (OpenRouter's wrapper) benches nothing.
+    if (c.status_code in (None, 402, 403, 404, 429) and reason is not _R.upstream_rate_limit
+            and any(p in c.msg for p in _QUOTA_WINDOW_PATTERNS)):
         extra["quota_exhausted"] = True
     if (c.status_code in (None, 400) and reason in (_R.format_error, _R.unknown)
             and any(p in c.msg for p in _ROUTE_MODEL_REJECTION_PATTERNS)

@@ -304,6 +304,45 @@ class TestScanSkillCommands:
 
     # -- core-command collision guard (#31204 / #53450) ---------------------
 
+    def test_bundled_collision_logs_at_debug(self, tmp_path, caplog, monkeypatch):
+        """A bundled skill colliding with a built-in must not log a WARNING.
+
+        Hermes ships documentation skills whose names match built-in commands (the ``kanban``
+        skill vs ``/kanban``). The guard still skips auto-registration — the skill can never win
+        the slug — but the overlap is ours, permanent and harmless, so it logs at DEBUG rather
+        than warning on every session start.
+        """
+        import logging
+
+        monkeypatch.setattr("tools.skill_usage.is_bundled", lambda _name: True)
+        _make_skill(tmp_path, "kanban")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), \
+                caplog.at_level(logging.DEBUG, logger="agent.skill_commands"):
+            result = scan_skill_commands()
+        assert "/kanban" not in result
+        collisions = [r for r in caplog.records
+                      if "collides with a core Hermes command" in r.getMessage()]
+        assert len(collisions) == 1, [r.getMessage() for r in collisions]
+        assert collisions[0].levelno == logging.DEBUG
+
+    def test_third_party_collision_still_warns(self, tmp_path, caplog, monkeypatch):
+        """An unknown skill claiming a built-in name keeps its WARNING.
+
+        The severity split must not silence the actionable case: a skill the user installed that
+        tries to shadow a built-in command is news, because its /command silently will not exist.
+        """
+        import logging
+
+        monkeypatch.setattr("tools.skill_usage.is_bundled", lambda _name: False)
+        _make_skill(tmp_path, "kanban")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), \
+                caplog.at_level(logging.DEBUG, logger="agent.skill_commands"):
+            result = scan_skill_commands()
+        assert "/kanban" not in result
+        collisions = [r for r in caplog.records
+                      if "collides with a core Hermes command" in r.getMessage()]
+        assert len(collisions) == 1, [r.getMessage() for r in collisions]
+        assert collisions[0].levelno == logging.WARNING
 
     # -- inter-skill slug collision dedup (#50304 / #63305) ------------------
 

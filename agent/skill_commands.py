@@ -476,6 +476,20 @@ def skill_command_collision_note(name: str) -> Optional[str]:
     return f"slash command /{cmd_name} unavailable — name taken by built-in; use /skill {name}"
 
 
+def _skill_is_bundled(name: str) -> bool:
+    """True when *name* ships with Hermes (``.bundled_manifest``); never fatal.
+
+    Decides only the log severity of a collision, so a missing or unreadable manifest must never
+    turn a log line into a scan failure: any error means "treat it as third-party" and warn.
+    """
+    try:
+        from tools.skill_usage import is_bundled
+
+        return is_bundled(name)
+    except Exception:
+        return False
+
+
 def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dict[str, dict[str, Any]]) -> None:
     """Register one SKILL.md in *commands* (no-op when filtered or colliding)."""
     from tools.skills_tool import _parse_frontmatter, skill_matches_apps, skill_matches_platform, skill_matches_environment
@@ -499,8 +513,13 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dic
     # A collision with a core command (name or alias) skips auto-registration; the skill stays
     # loadable via /skill <name>. The same predicate feeds the /skills + palette notes.
     if skill_command_collision_note(name) is not None:
-        logger.warning("Skill %r generates slash command '/%s' which collides with a core Hermes command; "
-                       "skipping auto-registration. Use '/skill %s' instead.", name, cmd_name, name)
+        # Severity follows provenance. A bundled skill colliding with a built-in is an overlap we
+        # ship ourselves (the ``kanban`` skill vs the built-in ``/kanban``) — permanent, expected
+        # and harmless, so it belongs at DEBUG. An unknown skill claiming a built-in name is
+        # actionable news for the user, so it keeps its WARNING.
+        log = logger.debug if _skill_is_bundled(name) else logger.warning
+        log("Skill %r generates slash command '/%s' which collides with a core Hermes command; "
+            "skipping auto-registration. Use '/skill %s' instead.", name, cmd_name, name)
         return
     # Dedup on the slug too: "git_helper" and "git-helper" normalize the same.
     # First-wins preserves project > local > external precedence.

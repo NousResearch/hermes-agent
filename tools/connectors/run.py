@@ -1,7 +1,7 @@
 """The one lifecycle every ``manage_connections`` operation follows, whatever the target kind.
 
 ``run_operation`` mints the op, registers it in ``live``, lets the kind prepare its targets (a
-managed mint, an MCP catalog check), emits the card through the session callback, then loops:
+managed mint, an MCP configuration check), emits the card through the session callback, then loops:
 sleep on ``op.wake`` for at most one tick, run the kind's ``observe`` hook, settle when every
 target is resolved or the deadline passes. ``connection.respond`` reaches the loop by transitioning
 the op through ``live`` and setting ``wake``; ``/stop`` sets the thread interrupt flag."""

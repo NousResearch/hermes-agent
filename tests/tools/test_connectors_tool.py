@@ -93,10 +93,10 @@ def test_mcp_actions_belong_to_mcp_targets_only():
     # The MCP verbs are in the enum for mcp:true targets only. The callback that an earlier
     # fold could not reach through registry.dispatch now arrives via the inline executor.
     enum = MANAGE_CONNECTIONS_SCHEMA["parameters"]["properties"]["action"]["enum"]
-    assert {"install", "enable", "authorize"} <= set(enum)
+    assert {"enable", "authorize"} <= set(enum) and "install" not in enum
 
-    out = json.loads(manage_connections({"action": "install", "connectors": ["linear"]}))
-    assert "mcp" in out["error"] and "install" in out["error"]
+    out = json.loads(manage_connections({"action": "enable", "connectors": ["linear"]}))
+    assert "mcp" in out["error"] and "enable" in out["error"]
 
     out = json.loads(
         manage_connections({"action": "connect", "connectors": [{"name": "linear", "mcp": True}]})

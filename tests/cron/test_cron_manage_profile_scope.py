@@ -1,6 +1,6 @@
 """cron.manage optional ``profile`` param — per-profile store scoping.
 
-Mirrors ``skills.manage`` / ``mcp.catalog``: when a ``profile`` is passed the
+Mirrors ``skills.manage`` / ``mcp.servers.list``: when a ``profile`` is passed the
 handler resolves ``get_profile_dir(profile)`` and wraps the action dispatch in
 ``set_hermes_home_override`` / ``reset_hermes_home_override``. Because
 ``cronjob()`` -> ``list_jobs()`` keys off ``get_hermes_home()``, the list action

@@ -125,7 +125,7 @@ class FeishuChoiceCardsMixin:
         if self._clarify_state.pop(clarify_id, None) is None:
             return self._card_response()  # a concurrent tap won
         answer = str(choices[int(token)])
-        if not clarify_gateway.resolve_gateway_clarify(clarify_id, answer):
+        if not clarify_gateway.resolve_gateway_clarify(clarify_id, answer, session_key=state.get("session_key")):
             return self._card_response(self._settled_clarify_card(state, t("gateway.clarify.expired"), "grey"))
         logger.info("Feishu clarify button resolved (id=%s, choice=%r, user=%s)", clarify_id, answer, user_name)
         return self._card_response(self._settled_clarify_card(state, f"**{user_name}:** {answer}", "green"))

@@ -15,9 +15,9 @@ import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
   gatewayGroupOpen: {
-    opening: "正在開啟群組聊天…",
-    lookupFailed: "無法在閘道上查找此群組，請重試。",
-    missing: "此群組聊天已不存在。"
+    opening: '正在開啟群組聊天…',
+    lookupFailed: '無法在閘道上查找此群組，請重試。',
+    missing: '此群組聊天已不存在。'
   },
 
   catalog: {

@@ -1,0 +1,25 @@
+name: hermes-detox
+repo: https://github.com/kellycryptos/hermes-detox
+sha: c111793798efbb088c3a1b02b6623e1ca2dfdbd2
+version: "0.1.0"
+title: "Hermes Detox"
+description: >-
+  The Zero-Loss Diagnostic Firewall for Hermes Agent. Eliminates 88% of tool noise while guaranteeing 100% preservation of critical failure signals. Intercepts oversized tool and terminal outputs before context flooding occurs, archives full raw text in zero-network local SQLite WAL storage, and provides compact diagnostic reports with 0.16 ms surgical line retrieval.
+maintainer: kellycryptos
+tier: community
+category: tools
+requires_hermes: ">=0.19.0"
+docs_url: https://github.com/kellycryptos/hermes-detox#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - detox_inspect
+    - detox_search
+    - detox_status
+  provides_hooks:
+    - transform_terminal_output
+    - transform_tool_result
+    - on_session_reset
+  provides_middleware: []
+  requires_env: []

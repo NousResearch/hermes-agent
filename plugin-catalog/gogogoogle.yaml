@@ -1,32 +1,42 @@
 name: gogogoogle
 repo: https://github.com/josefacero/hermes-gogogoogle
-sha: 41a8d15028488fef0d3fb3af44fd4c707e3395cd
+sha: 692936baa1d60becbd719dba30a56a920eba8a90
 description: >-
-  Hand bulk work to Google Antigravity's agy CLI as a worker agent, then have a fresh model on another family
-  check it against the real files and the git diff. Hermes keeps its own model. Background jobs, resume of
-  timed-out runs, a git-based check that read-only roles did not edit files, failure classes (quota, model,
-  auth) that move the verifier to the next model, and per-run stats. Disclosure — runs agy with all
-  permissions auto-approved, so it can edit or delete files in the working folder (git is the undo); task
-  text, files agy reads and a git diff excerpt go to Google through agy; runs read-only git commands in the
-  working folder; writes runs.jsonl and background job files under the plugin data directory; refuses a
-  drive root, the home folder and paths under GOGOGOOGLE_BLOCKED_ROOTS; no credentials stored, no telemetry,
-  no self-update.
+  Hand bulk work to Google Antigravity's agy CLI as a worker agent on your
+  Antigravity quota while Hermes keeps its own model, then have a fresh agy
+  conversation verify the result against the real files and git diff. Roles do,
+  research and review; background jobs; resume after timeout; a verifier chain
+  that skips models out of quota until their reset; a git check that fails
+  read-only runs that changed files; per-run stats. Disclosure: each delegation
+  asks for Hermes approval; do runs auto-approve agy permissions, while research,
+  review and verification run without that flag under session rules denying
+  writes and shell commands. agy can read files outside the working directory;
+  task text, files read and a diff excerpt go to Google. Not an OS sandbox. Runs
+  git and writes run metadata and background job records under the plugin data
+  directory. No credentials stored, no telemetry, no self-update.
 maintainer: josefacero
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/josefacero/hermes-gogogoogle#readme
-version: "0.2.1"
+version: "0.3.1"
 readme: true
 known_issues:
-  - "Needs the Antigravity CLI (agy) installed and signed in; runs count against that Antigravity plan's quota."
-  - "research and review roles are told not to edit files; the plugin detects a change afterwards in git repos and warns, but does not revert it."
-  - "Background jobs end if Hermes restarts. Edits inside an already-untracked file are not seen by the change check."
+  - "Requires agy and an authenticated Antigravity account; runs use that account's quota."
+  - "Hermes approval policy and other installed plugins can affect the approval boundary; see README."
+  - "Research and review permission rules depend on agy behavior and are not an OS sandbox."
+  - "Git checks can miss ignored, untracked or binary content changes and do not revert edits."
+  - "After a plugin restart job state may be unknown and a subprocess may still be running."
+  - "Hermes' CLI approval panel can truncate a long task; the prompt shows task length and hash so truncation is visible."
+  - "Research/review rules block writes and shell commands (agy 1.5.1) but not reads outside the working directory; blocked actions are listed in the result."
+  - "Developed and tested on Windows 11 only. Elsewhere a timed-out run ends agy itself but not necessarily its child processes."
+  - "agy's browser tool can leave a .playwright-mcp/ folder in the working directory; the change check ignores it and the result says so."
 capabilities:
   provides_tools:
     - antigravity_delegate
     - antigravity_job
     - antigravity_stats
-  provides_hooks: []
+  provides_hooks:
+    - pre_tool_call
   provides_middleware: []
   requires_env: []

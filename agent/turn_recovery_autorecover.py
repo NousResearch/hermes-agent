@@ -98,6 +98,9 @@ def auto_recover_after_exhaustion(
     # plus the live wait line (spinner / thinking.delta / activity heartbeat).
     agent._emit_diagnostic_status(notice)
     agent._emit_diagnostic_wait(notice)
+    from agent import provider_events
+    provider_events.emit(agent, "retry", attempt=cycle, max=total, wait_seconds=round(float(wait_s), 1),
+                         reason=provider_events.error_class(api_error), phase="recovery")
     logger.warning(
         "%sProvider unavailable (%s) — auto-recovery cycle %d/%d, retrying in %.0fs %s",
         agent.log_prefix, classified.reason.value, cycle, total, wait_s, agent._client_log_context(),

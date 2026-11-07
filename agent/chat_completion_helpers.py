@@ -2090,6 +2090,11 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
                 remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
                 notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."
             _buffer_fallback_notice(agent, notice)
+            from agent import provider_events
+            provider_events.emit(
+                agent, "fallback", provider=str(old_provider or ""), model=str(old_model or ""),
+                to_provider=str(fb_provider), to_model=str(fb_model),
+                reason=getattr(reason, "value", None) or (str(reason) if reason else None))
             # ``_fallback_activated`` is also reused by `/model --once` restoration; separate
             # provenance so the restore path only emits a recovery notice after a real fallback.
             agent._provider_fallback_active = True

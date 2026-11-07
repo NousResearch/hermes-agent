@@ -51,6 +51,7 @@ _STATIC_FEATURE_FLAGS = {
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
+    "run_model_lock": True,
     "reasoning_streaming": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
@@ -2251,6 +2252,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
+        # Read by agent.provider_events: a pinned turn fails fast instead of waiting on a fallback.
+        agent._model_locked = bool(confirmed_runtime_lock)
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
             else "session_model_override" if session_override
@@ -3605,12 +3608,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if confirmed_runtime_lock:
             requested_provider = self._clean_runtime_id(
                 route.get("provider") or requested_runtime.get("provider"), max_len=80)
+            expected_model = self._clean_runtime_id(route.get("model") or requested_runtime.get("model"))
+            if not resolved_provider and requested_provider:
+                # Agents built by the gateway runner (the /v1/runs admission path) are not made by
+                # _create_agent and carry no _hermes_api_runtime. Resolve the requested slug through
+                # the same provider catalog, or a named custom provider (ollama-launch -> "custom")
+                # fails the literal comparison after the model has already answered.
+                with suppress(Exception):
+                    catalog = self._resolve_provider_runtime(
+                        requested_provider, target_model=expected_model or None, required=False)
+                    resolved_provider = self._clean_runtime_id((catalog or {}).get("provider"), max_len=80)
             # _create_agent records the provider after resolving the request through the
             # provider catalog. Compare that identity with the agent's actual runtime so
             # aliases and named custom providers do not fail a literal-string check.
             expected_provider = self._clean_runtime_id(
                 resolved_provider or requested_provider, max_len=80)
-            expected_model = self._clean_runtime_id(route.get("model") or requested_runtime.get("model"))
             if (expected_provider and actual_provider != expected_provider) or (
                 expected_model and actual_model != expected_model):
                 raise RuntimeError(

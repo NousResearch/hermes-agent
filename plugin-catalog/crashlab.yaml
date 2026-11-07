@@ -1,21 +1,23 @@
 name: crashlab
 title: CrashLab
 repo: https://github.com/dolepee/crashlab
-sha: 7d41ae03226f7bfaa6a46852c56d643d55ee7f1d
-description: Guide Hermes through a local app repair, replay one frozen retry case, and keep verification current after edits.
+sha: 443dee443336f1d0bc3ca3f9f942424c4d82aeac
+description: Test recovery before delivery, after commit and across restart; inspect saved records, verify the repair and keep a reusable regression.
 maintainer: dolepee
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.4.0"
-docs_url: https://github.com/dolepee/crashlab/blob/7d41ae03226f7bfaa6a46852c56d643d55ee7f1d/README.md
+version: "0.5.0"
+docs_url: https://github.com/dolepee/crashlab/blob/443dee443336f1d0bc3ca3f9f942424c4d82aeac/README.md
 platforms:
   - linux
   - macos
 screenshots:
-  - https://raw.githubusercontent.com/dolepee/crashlab/7d41ae03226f7bfaa6a46852c56d643d55ee7f1d/docs/dashboard-desktop.png
-  - https://raw.githubusercontent.com/dolepee/crashlab/7d41ae03226f7bfaa6a46852c56d643d55ee7f1d/docs/dashboard-mobile.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/443dee443336f1d0bc3ca3f9f942424c4d82aeac/docs/dashboard-desktop.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/443dee443336f1d0bc3ca3f9f942424c4d82aeac/docs/dashboard-mobile.png
 known_issues:
+  - "Restart needs an owned foreground process group and record-level observation; numeric-only HTTP counts are rejected."
+  - "Replay requires identical evaluator hashes and a direct Python launch; dependencies remain separate."
   - "Kist and Flaskr are externally sourced repair examples, not adoption or general autonomous-repair evidence."
   - "Flaskr repair covers fresh databases; existing databases need migration and legacy tokenless POSTs are unprotected."
   - "Project freshness covers tracked and nonignored untracked files, not ignored files, dependencies or runtime configuration."
@@ -23,7 +25,7 @@ known_issues:
   - "The web dashboard is exercised in Hermes; the current native Desktop pane is SDK-validated but not visually verified in an installed Desktop app."
   - "External application templates require their own checkout, dependencies and case configuration."
   - "HTTP state observers trust application responses; SQLite observers read directly but are not an operating-system isolation boundary."
-  - "Browser campaigns are validation-only; the inventory campaign runs HTTP concurrency against a loopback fixture with a deliberate test-only scheduling gate."
+  - "Legacy mixed browser/inventory campaigns remain validation-only; inventory uses a deliberate fixture scheduling gate. Recovery campaigns execute supported local apps."
   - "Requires Node.js 20+, playwright-core and local Chromium; uses --no-sandbox, so run only trusted fixtures in isolation."
   - "Only the first matching request is interrupted; other fault.occurrence values are unsupported."
 capabilities:
@@ -39,6 +41,9 @@ capabilities:
     - crashlab_experiment_run
     - crashlab_experiment_status
     - crashlab_experiment_watch
+    - crashlab_experiment_report
+    - crashlab_experiment_export
+    - crashlab_experiment_import
   provides_hooks:
     - pre_verify
   provides_middleware: []

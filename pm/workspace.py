@@ -339,6 +339,11 @@ def _same_member_source(a: Path, b: Path) -> bool:
         if (path / "pyproject.toml").is_file():
             for directory, dirs, files in os.walk(path):
                 dirs[:] = sorted(set(dirs) - set(_member_equality_ignored(directory, dirs)))
+                # copytree preserves directory symlinks; their targets are build inputs too.
+                for name in dirs:
+                    entry = Path(directory) / name
+                    if entry.is_symlink():
+                        yield entry.relative_to(path).as_posix(), os.readlink(entry)
                 for name in sorted(set(files) - set(_member_equality_ignored(directory, files))):
                     entry = Path(directory) / name
                     yield entry.relative_to(path).as_posix(), (

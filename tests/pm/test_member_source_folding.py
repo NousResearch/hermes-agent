@@ -56,3 +56,33 @@ def test_folding_respects_installed_path_sources(tmp_path, staged, kind):
         if kind == "internal":
             assert (root / member / "local-dep" / "data.txt").read_text(encoding="utf-8") == "same"
     assert actual_paths == expected_paths
+
+@pytest.mark.platforms("posix")
+def test_buildable_twins_with_distinct_directory_symlinks_stay_separate(tmp_path):
+    """Two profiles can have identical files but select different linked package trees."""
+    core = tmp_path / "core"
+    core.mkdir()
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="hermes-agent"\nversion="1"\n', encoding="utf-8")
+
+    plugins = []
+    for profile, selected in (("rio", "version_one"), ("alignsynch", "version_two")):
+        plugin = tmp_path / profile / "plugins" / "stewardship"
+        plugin.mkdir(parents=True)
+        (plugin / "pyproject.toml").write_text(
+            '[project]\nname="hermes-project-stewardship"\nversion="1"\n'
+            '[build-system]\nrequires=[]\nbuild-backend="backend"\n', encoding="utf-8")
+        for version in ("version_one", "version_two"):
+            package = plugin / version
+            package.mkdir()
+            (package / "__init__.py").write_text(f'VERSION = {version!r}\n', encoding="utf-8")
+        (plugin / "stewardship").symlink_to(selected, target_is_directory=True)
+        plugins.append(plugin)
+
+    root = tmp_path / "workspace"
+    _generate_pyproject(plugins, root, source=core)
+    members = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))[
+        "tool"]["uv"]["workspace"]["members"]
+    assert len(members) == 2
+    assert {(root / member / "stewardship").readlink().as_posix() for member in members} == {
+        "version_one", "version_two"}

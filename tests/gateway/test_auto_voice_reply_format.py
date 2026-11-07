@@ -200,3 +200,27 @@ def _make_event(platform: Platform, chat_id: str = "123", message_type: MessageT
         message_type=message_type,
         message_id="456",
     )
+
+
+@pytest.mark.parametrize("mode,auto_tts,message_type,spoken", [
+    (None, False, MessageType.VOICE, False),
+    (None, True, MessageType.VOICE, True),   # voice.auto_tts on a voice note
+    (None, True, MessageType.TEXT, True),    # the global default speaks every reply
+    ("voice_only", True, MessageType.TEXT, False),
+    ("voice_only", True, MessageType.VOICE, True),
+    ("all", True, MessageType.TEXT, True),
+    ("off", True, MessageType.VOICE, False),
+])
+def test_turn_is_marked_spoken_exactly_when_its_reply_goes_out_as_audio(mode, auto_tts, message_type, spoken):
+    """The turn-start ``spoken_reply`` mark (the model's brief-reply note) uses the same gate as the
+    voice delivery itself, so the model is never told it is heard when the reply is text-only."""
+    runner = _make_runner()
+    if mode:
+        runner._voice_mode["telegram:123"] = mode
+    adapter = _make_adapter(Platform.TELEGRAM)
+    adapter._should_auto_tts_for_chat = MagicMock(return_value=auto_tts)
+    runner.adapters[Platform.TELEGRAM] = adapter
+    event = _make_event(Platform.TELEGRAM, chat_id="123", message_type=message_type)
+
+    assert runner._reply_will_be_spoken(event.source, message_type) is spoken
+    assert runner._should_send_voice_reply(event, "hello", [], already_sent=True) is spoken

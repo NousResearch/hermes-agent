@@ -1217,14 +1217,14 @@ DEFAULT_CONFIG = {
         # Desktop remote clients call STT/TTS providers DIRECTLY (config + key fetched over
         # authenticated REST at session start) instead of relaying via the gateway.
         "client_direct": True,
+        "concise_responses": True,  # brief-spoken-reply note when the reply is heard (agent/voice_turn_route.py)
         "beep_enabled": True,  # record start/stop beeps in CLI voice mode
         "beep_volume": 0.3,  # beep amplitude multiplier, 0.0-1.0
         "thinking_sound": True,  # ambient bubble sound while the agent works (volume = beep_volume)
         "silence_threshold": 200,  # RMS below this = silence (0-32767)
         "silence_duration": 3.0,  # seconds of silence before auto-stop
         "barge_in": True,  # interrupt the agent / stop TTS when the user starts talking
-        # Trip suppression after TTS onset (mic stays live the whole turn).
-        "barge_in_grace_seconds": 0.5,
+        "barge_in_grace_seconds": 0.5,  # trip suppression after TTS onset (mic stays live the whole turn)
         # Speech trigger = quiet-room floor x this (floor calibrated BEFORE playback).
         "barge_in_threshold_multiplier": 3.0,
         # Saying EXACTLY one of these (case-insensitive, punctuation ignored) ends the voice chat

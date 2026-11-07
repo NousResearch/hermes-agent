@@ -368,29 +368,24 @@ class GatewayVoiceMixin:
             channel_prompt=channel_prompt, auto_skill=auto_skill)
         await adapter.handle_message(event)
 
-    def _should_send_voice_reply(
-        self, event: MessageEvent, response: str, agent_messages: list, already_sent: bool = False
-    ) -> bool:
-        """False when voice_mode is off for this chat, the response is empty/an error, the agent
-        already called text_to_speech this turn, or voice input + base adapter auto-TTS handled it
-        — UNLESS streaming consumed the response (already_sent): then the runner must do it."""
-        if not response or response.startswith("Error:"):
-            return False
+    def _reply_will_be_spoken(self, source: SessionSource, message_type: object) -> bool:
+        """Whether this chat's reply goes out as audio (mode gate of ``_should_send_voice_reply``;
+        also read at turn start so the model is told its reply will be heard)."""
         # A2A is agent-to-agent text. The adapter has no native send_voice, so
         # global voice.auto_tts (Desktop "Read replies aloud") would synthesize
         # an MP3 and then fail delivery with "Couldn't deliver the audio
         # attachment." — the peer sees the failure instead of the text reply the
         # agent already produced (#90103). Keep /voice scoped to human platforms.
-        if getattr(event.source.platform, "value", None) == "a2a":
+        if getattr(source.platform, "value", None) == "a2a":
             return False
         # A local session's speech plays in its own client: LocalSessionAdapter has no audio delivery,
         # so an owner-side synthesis would be a paid provider call nobody hears.
-        if event.source.platform == Platform.LOCAL:
+        if source.platform == Platform.LOCAL:
             return False
-        chat_id = event.source.chat_id
-        voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))
-        is_voice_input = event.message_type == MessageType.VOICE
-        adapter = self._delivery_adapter_for(event.source)
+        chat_id = source.chat_id
+        voice_mode = self._voice_mode.get(self._voice_key_for_source(source))
+        is_voice_input = str(getattr(message_type, "value", message_type) or "").lower() == "voice"
+        adapter = self._delivery_adapter_for(source)
         adapter_auto_tts = False
         with suppress(Exception):  # adapters without the probe read as False
             adapter_auto_tts = bool(adapter._should_auto_tts_for_chat(chat_id))
@@ -400,8 +395,21 @@ class GatewayVoiceMixin:
                 or (voice_mode is None and adapter_auto_tts)):
             logger.debug(
                 "Auto voice reply skipped: mode=%s adapter_auto_tts=%s chat=%s platform=%s",
-                voice_mode, adapter_auto_tts, chat_id, event.source.platform.value)
+                voice_mode, adapter_auto_tts, chat_id, source.platform.value)
             return False
+        return True
+
+    def _should_send_voice_reply(
+        self, event: MessageEvent, response: str, agent_messages: list, already_sent: bool = False
+    ) -> bool:
+        """False when voice_mode is off for this chat, the response is empty/an error, the agent
+        already called text_to_speech this turn, or voice input + base adapter auto-TTS handled it
+        — UNLESS streaming consumed the response (already_sent): then the runner must do it."""
+        if not response or response.startswith("Error:"):
+            return False
+        if not self._reply_will_be_spoken(event.source, event.message_type):
+            return False
+        is_voice_input = event.message_type == MessageType.VOICE
         # Dedup: agent already called the TTS tool in THIS turn (from the last user message on).
         start = next((i for i, m in reversed(list(enumerate(agent_messages)))
                       if m.get("role") == "user"), 0)

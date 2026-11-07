@@ -947,12 +947,13 @@ def _merge_gateway_notes(
     agent: Any, messages: list[Any], current_turn_user_idx: int, plugin_user_context: str
 ) -> str:
     """Must-deliver per-turn notes ride the user-message injection channel (one-shot) so the
-    ephemeral system prompt stays byte-stable: the gateway's staged notes, plugin go-live notices no
+    ephemeral system prompt stays byte-stable: the spoken-turn note, the gateway's staged notes, plugin go-live notices no
     tool result carried, then the surface-switch correction. Multimodal (list) content can't take the
     string sidecar — append a durable text part instead."""
     forward_lsp_verdicts(agent)  # late LSP verdicts on last turn's edits ride the plugin-notice queue
+    from agent.voice_turn_route import voice_turn_note
     _turn_notes = "\n\n".join(
-        part for part in (consume_gateway_turn_context_notes(agent), pop_plugin_notices(agent),
+        part for part in (voice_turn_note(agent), consume_gateway_turn_context_notes(agent), pop_plugin_notices(agent),
                           consume_surface_switch_note(agent),
                           consume_skills_index_note(agent)) if part
     )

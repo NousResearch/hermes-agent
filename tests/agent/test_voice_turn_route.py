@@ -136,3 +136,32 @@ def test_mid_voice_turn_reports_the_sessions_own_route(tmp_path, monkeypatch, se
         finally:
             end_voice_turn_route(agent)
         assert _session_info(agent, {})["reasoning_effort"] == "low"
+
+
+@pytest.mark.parametrize("concise", [True, False])
+def test_spoken_reply_note_rides_only_the_spoken_turns_user_message(tmp_path, monkeypatch, concise):
+    """A turn whose reply is heard carries the brief-spoken-reply note on its user message; the next
+    typed turn does not, the system prompt never varies, and ``voice.concise_responses: false``
+    withholds it."""
+    from agent.voice_turn_route import VOICE_TURN_NOTE
+
+    with FakeLLMServer([Text("one"), Text("two"), Text("three")]) as main:
+        extra = "" if concise else "voice:\n  concise_responses: false\n"
+        home = write_hermes_home(tmp_path / ".hermes", main.base_url, extra_config=extra)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        agent = _agent(home, main.base_url)
+
+        first = agent.run_conversation("typed question")
+        agent._spoken_reply_pending = True
+        spoken = agent.run_conversation("spoken question", conversation_history=first["messages"])
+        agent.run_conversation("typed again", conversation_history=spoken["messages"])
+
+        def last_user(body):
+            content = next(m["content"] for m in reversed(body["messages"]) if m["role"] == "user")
+            return content if isinstance(content, str) else "".join(p.get("text", "") for p in content)
+
+        users = [last_user(body) for body in main.main_requests()]
+        assert [VOICE_TURN_NOTE in u for u in users] == [False, concise, False]
+        assert len({body["messages"][0]["content"] for body in main.main_requests()}) == 1
+        # The persisted transcript keeps what the user said.
+        assert all(VOICE_TURN_NOTE not in str(m.get("content")) for m in spoken["messages"])

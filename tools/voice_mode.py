@@ -1494,6 +1494,7 @@ _NATIVE_STT_LABELS = {
     "xai": "xAI Grok STT",
     "elevenlabs": "ElevenLabs Scribe",
     "deepinfra": "DeepInfra",
+    "mittwald": "mittwald AI Hosting",
 }
 
 

@@ -1,0 +1,5 @@
+name: mittwald-provider
+kind: model-provider
+version: 1.0.0
+description: mittwald AI Hosting — EU-hosted OpenAI-compatible inference
+author: Nous Research

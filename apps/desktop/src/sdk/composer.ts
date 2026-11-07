@@ -7,6 +7,12 @@ import {
   requestComposerSetDraft,
   requestComposerSubmit
 } from '@/app/chat/composer/focus'
+import {
+  captureResponseSelection,
+  formatResponseAnnotations,
+  onResponseAnnotationsOpen,
+  parseResponseAnnotations
+} from '@/lib/response-annotations'
 import { freshDraftScope, takeSessionDraft } from '@/store/composer'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
@@ -63,6 +69,14 @@ const resolveComposerAddress = (
  *  resolves to no live surface returns `null`/`false` (or is dropped, for
  *  `focus`) — it never broadcasts and never throws. */
 export const composerHost = {
+  /** Self-contained annotation chips; feature-detect this on older desktops. */
+  annotations: {
+    version: 1,
+    captureSelection: captureResponseSelection,
+    format: formatResponseAnnotations,
+    parse: parseResponseAnnotations,
+    onOpen: onResponseAnnotationsOpen
+  },
   /** The live draft text of one composer, or null when nothing holds it.
    *  Mounted surfaces answer with their in-DOM text (current, incl.
    *  unsaved keystrokes); an unmounted session falls back to its debounced

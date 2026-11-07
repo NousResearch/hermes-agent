@@ -189,7 +189,13 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
     CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
-               args_hint="[model|reset] [--provider name] [--reasoning level] [--global|--session] [--refresh]",
+               args_hint="[<model> | reset] [--provider name] [--reasoning level] [--global|--session] [--refresh]",
+               # `reset` is the only real subcommand; a model name is free text, so the hint keeps the
+               # placeholder out of the pipe fallback (which would offer `/model model`) while the
+               # explicit list keeps `/model reset` completable. `argument_mode="text"` is required
+               # BESIDE a subcommand list: infer_argument_mode would otherwise answer "options" and
+               # the desktop composer would stop accepting an arbitrary model name.
+               subcommands=("reset",), argument_mode="text",
                busy_policy="reject", busy_handler="model", desktop="hidden"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",), args_hint="[auto|codex_app_server]",

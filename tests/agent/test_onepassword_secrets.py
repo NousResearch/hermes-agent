@@ -43,6 +43,8 @@ def _clean_op_env(monkeypatch):
     monkeypatch.delenv("OP_ACCOUNT", raising=False)
     monkeypatch.delenv("OP_CONNECT_HOST", raising=False)
     monkeypatch.delenv("OP_CONNECT_TOKEN", raising=False)
+    monkeypatch.delenv("OP_LOAD_DESKTOP_APP_SETTINGS", raising=False)
+    monkeypatch.delenv("OP_BIOMETRIC_UNLOCK_ENABLED", raising=False)
     yield
 
 
@@ -73,6 +75,35 @@ def test_validate_references_filters_bad_names_and_refs():
         "WHITESPACE": "op://Private/z/field",
     }
     assert len(warnings) == 3
+
+
+def test_op_child_env_forwards_desktop_integration_switches(monkeypatch):
+    """Both desktop-integration switches must reach the child process."""
+    monkeypatch.setenv("OP_LOAD_DESKTOP_APP_SETTINGS", "false")
+    monkeypatch.setenv("OP_BIOMETRIC_UNLOCK_ENABLED", "false")
+
+    child_env = op._op_child_env("")
+
+    assert child_env["OP_LOAD_DESKTOP_APP_SETTINGS"] == "false"
+    assert child_env["OP_BIOMETRIC_UNLOCK_ENABLED"] == "false"
+
+
+def test_op_child_env_still_withholds_unrelated_credentials(monkeypatch):
+    """Keep provider credentials out of the minimal child environment."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-must-not-reach-op")
+    monkeypatch.setenv("OP_BIOMETRIC_UNLOCK_ENABLED", "false")
+
+    child_env = op._op_child_env("ops-token")
+
+    assert "OPENAI_API_KEY" not in child_env
+    assert child_env["OP_SERVICE_ACCOUNT_TOKEN"] == "ops-token"
+
+
+def test_op_child_env_omits_switches_when_user_did_not_set_them():
+    child_env = op._op_child_env("")
+
+    assert "OP_BIOMETRIC_UNLOCK_ENABLED" not in child_env
+    assert "OP_LOAD_DESKTOP_APP_SETTINGS" not in child_env
 
 
 # ---------------------------------------------------------------------------

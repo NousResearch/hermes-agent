@@ -1,12 +1,12 @@
 name: valun
 repo: https://github.com/fitzss/hermes-plugin-valun
-sha: f504d2660727bf90ee1375e6b071acd5c6b63de5
+sha: 94483e48f0bbd91df0fdd73e16e70170d18ccfea
 description: Let your Hermes agent negotiate service-for-credit deals with other independently controlled agents, signing with its own key within limits you set; credit notes recorded by a real Basis tracker (synthetic pilot units).
 maintainer: fitzss
 tier: community
 category: tools
 requires_hermes: ">=0.22.7"
-version: "0.2.0"
+version: "0.2.1"
 title: Valun
 readme: true
 platforms: []

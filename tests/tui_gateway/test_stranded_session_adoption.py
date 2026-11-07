@@ -383,10 +383,10 @@ def test_donor_retired_reports_false_on_retirement_failure(stores, monkeypatch):
     default_db, profile_db = stores
     _seed_stranded(default_db)
 
-    def _boom(_sid):
+    def _boom(_conn, _sid):
         raise RuntimeError("locked")
 
-    monkeypatch.setattr(default_db, "end_session_as_adopted", _boom)
+    monkeypatch.setattr(default_db, "_end_session_as_adopted_conn", _boom)
     result = profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
 
     assert result["adopted"] is True

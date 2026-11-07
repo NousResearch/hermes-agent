@@ -144,3 +144,39 @@ def test_profile_resume_retries_partial_retirement_with_queued_ancestor(gateway,
         assert len(target.get_messages(tip, include_inactive=True)) == 2
     finally:
         target.close()
+
+
+def test_resume_reopens_valid_half_retired_queued_donor(gateway, monkeypatch):
+    mod, donor, profile_home = gateway
+    root, tip = "half-retired-root", "half-retired-tip"
+    _seed_compression_lineage(donor, root, tip)
+    donor._conn.execute("UPDATE messages SET display_metadata=? WHERE session_id=? AND role='user'", ('{"_queued_prompt":true}', root))
+    donor._conn.commit()
+    target = SessionDB(profile_home / "state.db")
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(SessionDB, "_retire_donor_segment", _retire_fails_for(root))
+            first = target.adopt_session_lineage_from(donor, tip)
+        assert first["adopted"] and first["pending_ids"] == [root, tip]
+        assert target.get_messages(root, include_inactive=True)[0]["active"] == 1
+        assert donor.end_session_as_adopted(root)
+        assert donor.get_session(root)["end_reason"] == "adopted_by_profile"
+        assert not donor.get_session(root)["archived"]
+        assert donor.get_messages(root, include_inactive=True)[0]["active"] == 0
+    finally:
+        target.close()
+    donor_path = donor.db_path
+    donor.close()
+    reopened = SessionDB(donor_path)
+    mod._db = reopened
+    try:
+        response = _resume(mod, root, "half-retired-retry")
+        assert not response.get("error"), response.get("error")
+        assert all(reopened.get_session(mid)["archived"] for mid in (root, tip))
+        with SessionDB(profile_home / "state.db") as verified:
+            assert [len(verified.get_messages(mid, include_inactive=True)) for mid in (root, tip)] == [2, 2]
+            # Resuming the root retires its own undrained queued prompt normally.
+            assert verified.get_messages(root, include_inactive=True)[0]["active"] == 0
+    finally:
+        reopened.close()
+        mod._db = donor

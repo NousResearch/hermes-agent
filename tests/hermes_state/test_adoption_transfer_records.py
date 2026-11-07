@@ -403,3 +403,58 @@ def test_recorded_malformed_queue_marker_cannot_authorize_activity_mismatch(home
     finally:
         donor.close()
         target.close()
+
+
+def test_archive_failure_rolls_back_entire_retirement_and_retry(home):
+    donor, target = _open(home, default=True), _open(home)
+    root, tip = "atomic-retire-root", "atomic-retire-tip"
+    try:
+        _seed_compression_lineage(donor, root, tip)
+        donor._conn.execute("UPDATE messages SET display_metadata=? WHERE session_id=? AND role='user'", ('{"_queued_prompt":true}', root))
+        donor._conn.execute("CREATE TRIGGER fail_retire_archive BEFORE UPDATE OF archived ON sessions "
+                            "WHEN NEW.archived=1 BEGIN SELECT RAISE(ABORT, 'injected archive fault'); END")
+        donor._conn.commit()
+        old = donor.get_session(root)
+        first = target.adopt_session_lineage_from(donor, tip)
+        assert first["adopted"] and not first["donor_retired"]
+        after = donor.get_session(root)
+        assert (after["ended_at"], after["end_reason"], after["archived"]) == (old["ended_at"], old["end_reason"], old["archived"])
+        assert donor.get_messages(root, include_inactive=True)[0]["active"] == 1
+        donor._conn.execute("DROP TRIGGER fail_retire_archive")
+        donor._conn.commit()
+        done = target.adopt_session_lineage_from(donor, root)
+        assert done["donor_retired"] and done["member_ids"] == [root, tip]
+        assert all(donor.get_session(mid)["archived"] for mid in (root, tip))
+        assert [len(target.get_messages(mid, include_inactive=True)) for mid in (root, tip)] == [2, 2]
+    finally:
+        donor.close()
+        target.close()
+
+
+def test_half_retired_legacy_mismatch_without_witness_stays_pending(home, monkeypatch):
+    import json
+
+    donor, target = _open(home, default=True), _open(home)
+    root, tip = "legacy-half-root", "legacy-half-tip"
+    try:
+        _seed_compression_lineage(donor, root, tip)
+        donor._conn.execute("UPDATE messages SET display_metadata=? WHERE session_id=? AND role='user'", ('{"_queued_prompt":true}', root))
+        donor._conn.commit()
+        with monkeypatch.context() as patch:
+            patch.setattr(SessionDB, "_retire_donor_segment", _retire_fails_for(root))
+            assert target.adopt_session_lineage_from(donor, tip)["pending_ids"] == [root, tip]
+        row = target._conn.execute("SELECT transfer_id, manifest_json FROM adoption_transfers WHERE manifest_json IS NOT NULL").fetchone()
+        manifest = json.loads(row[1])
+        for member in manifest["members"]:
+            del member["source_count"]
+            del member["target_active_digest"]
+        target._conn.execute("UPDATE adoption_transfers SET manifest_json=? WHERE transfer_id=? AND manifest_json IS NOT NULL", (json.dumps(manifest), row[0]))
+        target._conn.commit()
+        assert donor.end_session_as_adopted(root)
+        result = target.adopt_session_lineage_from(donor, root)
+        assert result["conflict"] and "activity witness" in result["error"]
+        assert not donor.get_session(root)["archived"] and donor.get_session(tip)["end_reason"] is None
+        assert target._conn.execute("SELECT count(*) FROM adoption_transfers").fetchone()[0] == 2
+    finally:
+        donor.close()
+        target.close()

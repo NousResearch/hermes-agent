@@ -463,30 +463,29 @@ class SessionSessionsMixin:
 
     def end_session_as_adopted(self: Any, session_id: str) -> bool:
         """Retire an adopted donor without reopening it, even if it already has an end stamp."""
+        # The cross-profile move holds the full lineage guard; callers retain the
+        # existing public operation while adoption can reuse its transaction body.
+        return bool(self._execute_write(lambda conn: self._end_session_as_adopted_conn(conn, session_id)))
+
+    def _end_session_as_adopted_conn(self, conn, session_id: str) -> bool:
         reason = "adopted_by_profile"
-
-        def _do(conn):
-            row = conn.execute("SELECT ended_at, end_reason FROM sessions WHERE id = ?", (session_id,)).fetchone()
-            if row is None:
-                return False
-            self._retire_undrained_queue_rows_conn(conn, session_id)
-            if row["ended_at"] is None:
-                self._end_and_bump(
-                    conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
-                    (time.time(), reason, session_id), session_id, reason,
-                )
-            elif row["end_reason"] != reason:
-                changed = conn.execute(
-                    "UPDATE sessions SET end_reason = ? WHERE id = ? AND end_reason IS NOT ?",
-                    (reason, session_id, reason),
-                ).rowcount
-                if changed:
-                    self._bump_conversation_generation(conn, session_id, reason)
-            return True
-
-        # This is called by the cross-profile move while its outer session_lineage_guard
-        # still covers import and retirement; do not add an independent nested ownership check.
-        return bool(self._execute_write(_do))
+        row = conn.execute("SELECT ended_at, end_reason FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        if row is None:
+            return False
+        self._retire_undrained_queue_rows_conn(conn, session_id)
+        if row["ended_at"] is None:
+            self._end_and_bump(
+                conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
+                (time.time(), reason, session_id), session_id, reason,
+            )
+        elif row["end_reason"] != reason:
+            changed = conn.execute(
+                "UPDATE sessions SET end_reason = ? WHERE id = ? AND end_reason IS NOT ?",
+                (reason, session_id, reason),
+            ).rowcount
+            if changed:
+                self._bump_conversation_generation(conn, session_id, reason)
+        return True
 
     def _end_and_bump(self, conn, sql: str, params: tuple, session_id: str, reason: str) -> int:
         """Run an end-stamp UPDATE; only a boundary this call actually wrote advances the

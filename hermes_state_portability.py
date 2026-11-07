@@ -123,14 +123,15 @@ def _adoption_history_covers(donor_conn, target_conn, session_id, *, retired_wit
         from hermes_state_adoption_records import AdoptionConflict, activity_digest
         from hermes_state_common import _sql_json_extract, QUEUED_PROMPT_METADATA_KEY
         source_state = donor_conn.execute(
-            "SELECT end_reason, archived FROM sessions WHERE id=?", (session_id,)).fetchone()
+            "SELECT ended_at, end_reason, archived FROM sessions WHERE id=?", (session_id,)).fetchone()
         count = retired_witness.get("source_count")
         witness = retired_witness.get("target_active_digest")
         if count is None or witness is None:
             raise AdoptionConflict("Saved adoption has no activity witness; inspect history before recovery")
         if count != len(donor) or activity_digest(target_conn, session_id, count) != witness:
             raise AdoptionConflict("Saved adoption activity witness differs; inspect history before recovery")
-        if source_state and source_state[0] == "adopted_by_profile" and source_state[1] == 1:
+        if (source_state and source_state[0] is not None and source_state[1] == "adopted_by_profile"
+                and source_state[2] in (0, 1)):
             expression = _sql_json_extract('display_metadata', '$.' + QUEUED_PROMPT_METADATA_KEY)
             allowed_retired_rows = {row[0] for row in donor_conn.execute(
                 "SELECT id FROM messages WHERE session_id=? AND role='user' AND active=0 "
@@ -762,25 +763,30 @@ class SessionPortabilityMixin:
                 "member_ids": members, "pending_ids": pending}
 
     def _retire_donor_segment(self, donor_db: Any, seg_id: str) -> bool:
-        """Archive a copied member only while its complete donor history remains on target."""
+        """Retire a copied member atomically while its full history remains on target."""
+        from hermes_state_adoption_records import find_in
         try:
             with donor_db._read_ctx() as donor_conn, self._read_ctx() as target_conn:
-                if (not _adoption_history_covers(donor_conn, target_conn, seg_id)
-                        or not _adoption_accounting_covers(donor_conn, target_conn, seg_id)):
+                covered = _adoption_history_covers(donor_conn, target_conn, seg_id)
+                if not covered:
+                    # Only an already-validated recorded transfer can explain the
+                    # old two-commit retirement's queued-row activity change.
+                    record = find_in(target_conn, seg_id, donor_db, self)
+                    member = next((m for m in record["manifest"]["members"] if m["id"] == seg_id), None) if record else None
+                    covered = member is not None and _adoption_history_covers(
+                        donor_conn, target_conn, seg_id, retired_witness=member)
+                if not covered or not _adoption_accounting_covers(donor_conn, target_conn, seg_id):
                     logger.warning("adoption divergence at retirement for segment %s; leaving donor unretired", seg_id)
                     return False
-            # Stamp the adoption boundary without reopening the donor: a concurrent target
-            # owner must never see the donor become live again between import and retirement.
-            if not donor_db.end_session_as_adopted(seg_id):
-                return False
-            # The session lives on in the adopting profile: not a delete for plugins.
-            # _attempt_lineage_adoption still holds the complete, transfer-validated
-            # member set. The public archive API must refuse this donor once the
-            # target owns it. Retire this one recorded member under that guard;
-            # the caller visits every member, including compression continuations.
-            donor_db._execute_write(lambda conn: conn.execute(
-                'UPDATE sessions SET archived=1, auto_archived=0 WHERE id=?', (seg_id,)))
-            return True
+
+            def retire(conn):
+                if not donor_db._end_session_as_adopted_conn(conn, seg_id):
+                    return False
+                conn.execute('UPDATE sessions SET archived=1, auto_archived=0 WHERE id=?', (seg_id,))
+                return True
+
+            # The complete transfer guard remains held through this donor commit.
+            return bool(donor_db._execute_write(retire))
         except Exception:
             logger.warning("failed to retire donor segment %s after adoption", seg_id, exc_info=True)
             return False

@@ -31,16 +31,6 @@ from typing import Any, Dict, List, Optional, Tuple
 _PROFILE_REJECTED = object()
 
 
-def _prefix_names_served_profile(profile: str) -> bool:
-    """True when a /p/<profile>/ prefix names the profile this gateway serves. Fail closed: a
-    single-profile gateway answering /p/<x>/ served the owner's toolsets under another URL."""
-    try:
-        from hermes_cli.profiles import profile_matches_home
-        return profile_matches_home(profile)
-    except Exception:
-        return False
-
-
 # Per-request /p/<profile>/ selection: set by the profile-prefix middleware, read by handlers.
 _api_request_profile: ContextVar[Optional[str]] = ContextVar(
     "api_server_request_profile", default=None)
@@ -3659,6 +3649,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
         tool_complete_callback=None, interim_assistant_callback=None, reasoning_callback=None,
         status_callback=None, agent_ref: Optional[list] = None, active_run_id: Optional[str] = None,
+        admission_future=None,
         gateway_session_key: Optional[str] = None, requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None, model_options: Optional[dict[str, Any]] = None,
         route: Optional[dict[str, Any]] = None, session_model: Optional[str] = None,
@@ -3698,7 +3689,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 bind_declared_conversation=bind_declared_conversation, request_id=request_id, run_owner_scope=run_owner_scope,
                 history_from_session=history_from_session, session_history_delivery=session_history_delivery,
                 turn_author=turn_author, resume_unanswered_turn=resume_unanswered_turn, relay_metadata=relay_metadata,
-                approval_notify_callback=approval_notify_callback, approval_session_key=approval_session_key)
+                approval_notify_callback=approval_notify_callback, approval_session_key=approval_session_key,
+                admission_future=admission_future)
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()

@@ -24,7 +24,7 @@ Fresh install, no configuration — these protections are active:
 
 **Secrets are redacted from output.** `security.redact_secrets` is on by default: patterns that look like API keys, tokens, and passwords in tool output are redacted before they enter the conversation context and logs.
 
-**Your data goes only where you point it.** API calls go **only to the LLM provider you configure**. Hermes Agent does not collect telemetry, usage data, or analytics. Your conversations, memory, and skills are stored locally in `~/.hermes/`. See the [FAQ](../reference/faq.md#is-my-data-sent-anywhere).
+**Your conversations go only where you point them.** Model calls go to the LLM provider you configure, and tool inputs to the tool backends you select. Your conversations, memory, and skills are stored locally in `~/.hermes/`. Usage metrics are off unless you opt in (`telemetry.shared_metrics`). Update checks and the model catalog download are on by default. [Privacy and Data](../user-guide/privacy.md) lists every outbound path and the key that turns it off.
 
 :::info
 There's more below the surface — SSRF protection on all URL-capable tools, filtered environments for MCP subprocesses, prompt-injection scanning of context files. The [Security](../user-guide/security.md) page documents every layer.

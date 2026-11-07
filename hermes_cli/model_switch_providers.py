@@ -989,6 +989,24 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False)
 
 
+def _picker_slug_for_key(provider_key: str) -> str:
+    """``slug`` (the ``--provider`` value) of a ``providers:`` entry: its config key, unless a
+    built-in claims that name.
+
+    ``runtime_provider_custom._shadowed_by_builtin`` deliberately routes a raw name that IS a
+    canonical built-in id to the BUILT-IN, so a row offered under a colliding bare key made every
+    client persist a provider whose first turn resolved to the built-in and failed on its own
+    missing credential (#150823). The ``custom:`` spelling is exempt there and is one of this
+    entry's own aliases, so the picker and the resolver agree by construction.
+    """
+    from hermes_cli.runtime_provider_custom import _shadowed_by_builtin
+
+    key = str(provider_key or "").strip()
+    if not key or not _shadowed_by_builtin(key.lower()):
+        return key
+    return custom_provider_slug(key)
+
+
 def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
     """Section 3: ``providers:`` dict entries, grouped by (api_url, credential, api_mode,
     extra_headers) so keyed providers on one endpoint with the same wire protocol collapse into
@@ -1010,7 +1028,7 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
             # slug = first ep_name encountered; probe key from the first member (inline api_key,
             # else key_env through the per-profile secret scope).
             ep_groups[group_key] = {
-                "slug": ep_name, "name": _group_display_name(display_name), "api_url": api_url, "models": [],
+                "slug": _picker_slug_for_key(ep_name), "name": _group_display_name(display_name), "api_url": api_url, "models": [],
                 "has_explicit_models": False,
                 "api_key": inline_api_key or _scoped_key_env(key_env),
                 "headers": headers, "api_mode": ep_cfg.get("api_mode"),

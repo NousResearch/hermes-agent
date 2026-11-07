@@ -1478,7 +1478,7 @@ def test_lmstudio_providers_block_with_explicit_endpoint_still_uses_section3(mon
         user_providers={"lmstudio": {"base_url": "http://remote-box:1234/v1", "discover_models": True}},
     )
 
-    rows = [p for p in providers if p["slug"] == "lmstudio"]
+    rows = [p for p in providers if p["slug"] == "custom:lmstudio"]
     assert len(rows) == 1
     assert rows[0]["is_user_defined"] is True
     assert rows[0]["models"] == ["remote-model"]

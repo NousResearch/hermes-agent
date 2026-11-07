@@ -282,6 +282,13 @@ function PreviewDocumentBody(props: ComponentProps<typeof LocalFilePreview>) {
   )
 }
 
+/** The in-app browser cookie jar for the tab owned by `sessionId`: its owning profile's partition,
+ *  resolved through compression rotations. Per-profile so one profile's sign-ins never land in
+ *  another's jar (#150283 P1-3). Module-level so it reads the live stores at webview creation. */
+function previewPartitionForTab(sessionId: null | string | undefined): string {
+  return previewPartitionForProfile(knownSessionProfile(ownerLookupSessionRows(), currentSessionId(sessionId)))
+}
+
 export function PreviewPane({
   embedded = false,
   onClose,
@@ -317,11 +324,7 @@ export function PreviewPane({
   // the live address through this mirror instead of a stale closure.
   const targetUrlRef = useRef(target.url)
   targetUrlRef.current = target.url
-  // The tab's owning profile is fixed for the tab's lifetime; the guest-creation
-  // effect reads it through this mirror so the partition is resolved at webview
-  // creation without adding sessionId to the effect's deps (which would recreate
-  // the guest and lose the page). (#150283 P1-3)
-  const ownerSessionIdRef = useRef(sessionId)
+  const ownerSessionIdRef = useRef(sessionId)  // tab owner, read by the guest effect to resolve its partition
   ownerSessionIdRef.current = sessionId
   const [devtoolsOpen, setDevtoolsOpen] = useState(false)
   const [history, setHistory] = useState({ back: false, forward: false })
@@ -1111,12 +1114,8 @@ export function PreviewPane({
     const webview = document.createElement('webview') as PreviewWebview
     // A page with no background of its own shows white, as in a browser and the remote HTML frame below.
     webview.className = 'flex h-full w-full flex-1 bg-white'
-    // Per-profile cookie jar: the tab's owning profile gets its own partition so
-    // one profile's in-app sign-ins never land in another's jar (#150283 P1-3).
-    webview.setAttribute(
-      'partition',
-      previewPartitionForProfile(knownSessionProfile(ownerLookupSessionRows(), currentSessionId(ownerSessionIdRef.current)))
-    )
+    // Per-profile cookie jar so one profile's in-app sign-ins never land in another's jar (#150283 P1-3).
+    webview.setAttribute('partition', previewPartitionForTab(ownerSessionIdRef.current))
     webview.setAttribute('src', initialUrl)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
 

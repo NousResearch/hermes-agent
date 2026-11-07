@@ -329,6 +329,11 @@ export function dropPreviewTabsForProfile(profile: string) {
   } else {
     forgetGonePendingTabs()
   }
+
+  // P2-7 (#150283): the imported real-profile sign-ins record + per-profile cookie jar live in
+  // Electron main (userData); signal main to drop them so a later same-named profile does not
+  // inherit the cookies. Called from a profile-delete handler, never at module load.
+  void window.hermesDesktop?.dropPreviewSigninsForProfile?.({ profile: key })?.catch(() => undefined)
 }
 
 /** Move one profile's rail to another. Rename counterpart of the tiles store's
@@ -363,6 +368,10 @@ export function migratePreviewTabsForProfile(oldProfile: string, newProfile: str
   if (wasInView) {
     $previewTabs.set(tabsByProfile[to] ?? [])
   }
+
+  // P2-7 (#150283): move the imported sign-ins record + per-profile cookie jar (Electron main,
+  // userData) old→new so the rename does not strand or orphan the cookies.
+  void window.hermesDesktop?.migratePreviewSigninsForProfile?.({ oldProfile: from, newProfile: to })?.catch(() => undefined)
 }
 
 if (typeof window !== 'undefined') {

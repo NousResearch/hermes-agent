@@ -175,7 +175,18 @@ def _errors_to_500(prefix: str) -> Iterator[None]:
 # one workflow definition. A status missing here gets mis-bucketed into ``todo``.
 BOARD_COLUMNS: list[str] = list(kanban_workflow.DEFAULT_WORKFLOW.keys())
 
+# Finished-work statuses older versions wrote and no workflow column shows (kanban_db_workspace treats them as
+# terminal too): they sit with the archive, never in a live queue where they read as stalled work.
+_RETIRED_STATUSES = frozenset({"failed", "cancelled"})
+
 _CARD_SUMMARY_PREVIEW_CHARS = 200
+
+
+def _board_column(status: str, columns: dict[str, list[dict]]) -> Optional[str]:
+    """The column a card of ``status`` goes in; None when the board does not show it (the archive is toggled off)."""
+    if status in _RETIRED_STATUSES:
+        return "archived" if "archived" in columns else None
+    return status if status in columns else "todo"
 
 
 def _task_dict(task: kanban_db.Task, *, latest_summary: Optional[str] = None,
@@ -331,7 +342,9 @@ def get_board(
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
             _attach_diagnostics(d, diagnostics_per_task.get(t.id))
-            columns[t.status if t.status in columns else "todo"].append(d)
+            column = _board_column(t.status, columns)
+            if column is not None:
+                columns[column].append(d)
 
         # Queue lanes keep the list_tasks dispatch order; the done column is
         # history, so order it newest-completed-first. Two stable sorts compose

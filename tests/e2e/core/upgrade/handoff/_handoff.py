@@ -414,7 +414,8 @@ def receipt(inst: Install) -> dict:
 
 _LOG_TIME = r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3}) "
 _WAIT_OPENED = re.compile(_LOG_TIME + r".*Restart requested with \d+ active work unit\(s\); deferring stop\(\)", re.MULTILINE)
-_WAIT_CLOSED = re.compile(_LOG_TIME + r".*(Restart deferred wait complete|Restart after-turn wait timed out)", re.MULTILINE)
+_WAIT_CLOSED = re.compile(_LOG_TIME + r".*(Restart deferred wait complete|Restart after-turn wait timed out"
+                          r"|Restart deferred wait: \d+ excluded work unit)", re.MULTILINE)
 _WAIT_HOLDERS = re.compile(r"Restart deferred: waiting on .*?: (\[.*\])$", re.MULTILINE)
 
 

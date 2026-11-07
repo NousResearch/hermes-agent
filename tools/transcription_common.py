@@ -13,7 +13,7 @@ from tools.tts_command_provider import _get_provider_section as _get_stt_section
 logger = logging.getLogger("tools.transcription_tools")
 
 DEFAULT_PROVIDER = "local"
-DEFAULT_LOCAL_MODEL = "base"
+DEFAULT_LOCAL_MODEL = "large-v3-turbo"
 DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")

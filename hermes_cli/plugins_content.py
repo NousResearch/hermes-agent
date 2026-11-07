@@ -48,7 +48,12 @@ def register_skill(
     # (PluginManifest.path is stored as str); the registry and find_plugin_skill()
     # promise a Path downstream.
     path = Path(path)
-    if not path.exists():
+    if path.is_dir():
+        # Plugin register() helpers commonly pass the skill directory; normalize
+        # to its SKILL.md so the registry and find_plugin_skill() only ever hold
+        # a live file path (dir entries die silently in the command scan).
+        path = path / "SKILL.md"
+    if not path.is_file():
         raise FileNotFoundError(f"SKILL.md not found at {path}")
     namespace = _portable_slug(self.manifest.name) if self.manifest.portable else self.manifest.name
     qualified = f"{namespace}:{name}"

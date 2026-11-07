@@ -63,7 +63,7 @@ def selected_tool_inputs(request: BuildRequest) -> list[Path]:
     from pm.build_operations import verified_tools
     from pm.lock import Lockfile
 
-    selection = verified_tools(["python", "node", "npm"], source_store=request.cache / "tools",
+    selection = verified_tools(["python", "node", "pnpm"], source_store=request.cache / "tools",
                                target=request.target, lock=Lockfile(request.source / "pm/lock.json"))
     return [entry.path for entry in selection.entries.values()]
 
@@ -337,7 +337,7 @@ def prepare_in_worker(request: BuildRequest) -> Path:
     request.validate_channel()
     python, node, env = prepare_tools(request.source, request.work, request.cache, os.environ)
     env = identity_environment(request, request.variant, env)
-    native_toolchain = Path(env["UV_CACHE_DIR"]).name
+    native_toolchain = Path(env["UV_CACHE_DIR"]).resolve().name
     run([str(node), "scripts/build/node-deps.mjs", "--source", str(request.source), "--reuse",
          "--native-toolchain", native_toolchain,
          *[arg for name in request.workspaces() for arg in ("--workspace", name)]], cwd=request.source, env=env)

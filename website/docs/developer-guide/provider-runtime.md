@@ -63,7 +63,6 @@ Current provider families include (see `plugins/model-providers/` for the comple
 - OpenRouter
 - Nous Portal
 - OpenAI Codex
-- Copilot / Copilot ACP
 - Anthropic (native)
 - Google / Gemini (`gemini`)
 - Alibaba / DashScope (`alibaba`, `alibaba-coding-plan`)
@@ -166,9 +165,7 @@ Codex uses a separate Responses API path:
 Auxiliary tasks such as:
 
 - vision
-- web extraction summarization
 - context compression summaries
-- skills hub operations
 - MCP helper operations
 - memory flushes
 

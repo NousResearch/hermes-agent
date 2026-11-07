@@ -10,12 +10,11 @@
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process'
 import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
-import * as net from 'node:net'
 import * as path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import * as zlib from 'node:zlib'
 
-import { type CoreSandbox, REPO_ROOT } from './harness'
+import { type CoreSandbox, freePort, REPO_ROOT } from './harness'
 
 export interface RemoteBackend {
   url: string
@@ -51,17 +50,6 @@ function python(): string {
   }
 
   throw new Error(`no selected E2E Python or checkout venv under ${REPO_ROOT} (source ./activate in an isolated HERMES_HOME)`)
-}
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer()
-    server.on('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address() as net.AddressInfo
-      server.close(() => resolve(port))
-    })
-  })
 }
 
 async function waitReady(url: string, token: string, child: ChildProcess, log: string[]): Promise<void> {

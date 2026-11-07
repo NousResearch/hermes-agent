@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from agent.prompt_cache_scope import conversation_id
 from tools.arg_coercion import coerce_tool_args
 
 
@@ -25,6 +26,7 @@ def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) ->
         "tool_call_id": tool_call_id or "",
         "turn_id": getattr(agent, "_current_turn_id", "") or "",
         "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
+        "conversation_id": conversation_id(agent),
     }
 
 
@@ -129,7 +131,7 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
     return _call_tool(
         "tools.session_search_tool", "session_search", args,
         (
-            ("query", "query", ""), ("role_filter", "role_filter"), ("limit", "limit", 3),
+            ("query", "query", ""), ("role_filter", "role_filter"), ("limit", "limit"),
             ("session_id", "session_id"), ("around_message_id", "around_message_id"),
             ("window", "window", 5), ("sort", "sort"), ("profile", "profile"),
             ("detail", "detail", "adaptive"), ("after", "after"), ("before", "before"),
@@ -259,6 +261,8 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
     # Chat session carries the schema, and the tool re-gates on the title.
     "message_agent": _tool(
         "tools.bot_mode_dm", "message_agent_tool", ("target", "target", ""), ("message", "message", ""),
+        ("expects_reply", "expects_reply", True), ("cancel", "cancel", ""),
+        ("constraints", "constraints", ""), ("expecting", "expecting", ""),
         task_id=lambda agent, ctx: ctx.effective_task_id, agent=lambda agent, ctx: agent,
     ),
     "session_search": _session_search,

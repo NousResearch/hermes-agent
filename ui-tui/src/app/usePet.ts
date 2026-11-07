@@ -1,7 +1,7 @@
 import { useStdout } from '@hermes/ink'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import type { PetGrid } from '../components/petSprite.js'
+import type { CellGrid } from '../components/cellImage.js'
 import { createPetSingleFlight, requestPetUpdate } from '../lib/petPolling.js'
 
 import { useGateway } from './gatewayContext.js'
@@ -66,7 +66,7 @@ interface PetCellsResult {
   enabled?: boolean
   frameMs?: number
   // unicode mode: cell grids; kitty mode: transmit-escape strings.
-  frames?: PetGrid[] | string[]
+  frames?: CellGrid[] | string[]
   graphics?: string
   imageId?: number
   placeholder?: string[]
@@ -76,7 +76,7 @@ interface PetCellsResult {
 }
 
 type CacheEntry =
-  | { kind: 'cells'; frameMs: number; frames: PetGrid[] }
+  | { kind: 'cells'; frameMs: number; frames: CellGrid[] }
   | { kind: 'kitty'; frameMs: number; frames: string[]; placeholder: string[]; color: string }
 
 const FRAME_MS = 160
@@ -89,7 +89,7 @@ const IS_TTY = Boolean(process.stdout?.isTTY)
 
 export interface PetRender {
   enabled: boolean
-  grid: PetGrid | null
+  grid: CellGrid | null
   kitty: KittyView | null
 }
 
@@ -112,7 +112,7 @@ export function usePet(): PetRender {
   const { gw } = useGateway()
   const { write } = useStdout()
   const [enabled, setEnabled] = useState(false)
-  const [grid, setGrid] = useState<PetGrid | null>(null)
+  const [grid, setGrid] = useState<CellGrid | null>(null)
   const [kitty, setKitty] = useState<KittyView | null>(null)
 
   const cache = useRef<Map<string, CacheEntry>>(new Map())
@@ -279,7 +279,7 @@ export function usePet(): PetRender {
         } else if (res.frames?.length) {
           cache.current.set(`${slug}:${state}`, {
             frameMs: res.frameMs ?? FRAME_MS,
-            frames: res.frames as PetGrid[],
+            frames: res.frames as CellGrid[],
             kind: 'cells'
           })
         }

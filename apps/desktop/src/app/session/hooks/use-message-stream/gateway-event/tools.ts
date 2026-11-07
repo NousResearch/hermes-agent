@@ -11,8 +11,6 @@ import { recordPreviewArtifact, reofferPreviewArtifact } from '@/store/preview-s
 import { $sessionStates, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { setupBeatResult } from '@/store/setup-beat'
 import { isTerminalSubagentCompletion, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
-import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
-import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 import { clearSessionToolProgress, clearToolProgress, setToolProgress } from '@/store/tool-progress'
@@ -164,10 +162,16 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
       flushQueuedDeltas(sessionId)
 
       const state = $sessionStates.get()[sessionId]
+
       // Read before the upsert seals the part: only a completion that resolves
       // a still-pending call is a fresh production; a duplicate or replayed
-      // completion may never re-offer a dismissed target.
-      const pendingProduction = !event.replayed && Boolean(toolCallOwnerMessageId(state?.messages ?? [], payload))
+      // completion may never re-offer a dismissed target. This call site only
+      // ever handles `tool.complete`, so the phase is always 'complete' — the
+      // running-phase restriction in `toolCallOwnerMessageId` is never
+      // evaluated here, and the #113035 late completion classification is
+      // unchanged.
+      const pendingProduction =
+        !event.replayed && Boolean(toolCallOwnerMessageId(state?.messages ?? [], payload, 'complete'))
 
       upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, occurredAt)
 
@@ -201,23 +205,9 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
 
     // The agent just created/deleted/renamed a skill, which adds or removes
     // its `/name` command. Drop the composer's cached `/` list so the new
-    // skill is offerable now rather than after the hour-long TTL — and the
-    // skill-suggestion provider's index with it.
+    // skill is offerable now rather than after the hour-long TTL.
     if (payload?.name === 'skill_manage') {
       invalidateSlashCompletions()
-      invalidateSkillSuggestionIndex()
-    }
-
-    // MCP tool outcomes feed the connection-repair suggestion provider:
-    // an auth/connection-shaped failure offers a reconnect pill; a later
-    // success against the same server withdraws it.
-    if (sessionId && typeof payload?.name === 'string' && payload.name.startsWith('mcp__')) {
-      reportMcpToolResult(
-        sessionId,
-        payload.name,
-        Boolean(payload.error),
-        [payload.error, payload.result].filter(part => typeof part === 'string').join(' ')
-      )
     }
 
     // A file-mutating tool just finished — nudge the git-mirroring surfaces

@@ -96,7 +96,13 @@ def transition(tmp_path):
     )
     (package / "source_build.py").write_text(
         "from hermes_cli.probe import event\n"
-        "def build_update_products(root, *, desktop): event('build', desktop=desktop)\n"
+        "def build_update_products(root, *, desktop, after_dependencies=None):\n"
+        "    after_dependencies()\n"
+        "    event('build', desktop=desktop)\n"
+    )
+    (package / "update_launch_files.py").write_text(
+        "from hermes_cli.probe import event\n"
+        "def refresh_launch_files(): event('launch_files')\n"
     )
     (package / "source_stamp.py").write_text(
         "from hermes_cli.probe import event\n"

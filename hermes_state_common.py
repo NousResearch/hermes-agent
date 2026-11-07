@@ -794,6 +794,15 @@ BEGIN
     -- cache keys on (conversation_revision). Whoever wrote the row, old builds included.
     UPDATE sessions SET transcript_revision = transcript_revision + 1 WHERE id = new.session_id;
 END;
+DROP TRIGGER IF EXISTS messages_display_revision_update;
+CREATE TRIGGER IF NOT EXISTS messages_display_revision_update
+AFTER UPDATE OF codex_reasoning_items, codex_message_items, display_kind, display_metadata ON messages
+BEGIN
+    -- A reaction, a display rewrite or checkpoint pruning: a transcript poller's cursor
+    -- (transcript_cursor_state) keys on these too. Its own name, so an older build's open, which
+    -- recreates the trigger above with that build's column list, leaves this one in place.
+    UPDATE sessions SET transcript_revision = transcript_revision + 1 WHERE id = new.session_id;
+END;
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_display_page

@@ -19,12 +19,19 @@ from gateway.hosted_rooms_common import DbPath, compact_json, fenced_update
 
 
 MAX_ACTIVE_POLICY_EVENTS = 64
+# ``turn.deferred`` receipts come from explicit user retries, not from the configured reply
+# budget, so they are bounded on their own: sizing the reply budget exactly must leave room.
+MAX_ACTIVE_RETRY_RECEIPTS = 64
 MAX_THREAD_TRANSCRIPT_EVENTS = 24
-_TRANSCRIPT_SCHEMA_VERSION = 4
+_TRANSCRIPT_SCHEMA_VERSION = 5  # 5: rebuild threads an old settle closed under a newer message
 MAX_TRANSCRIPT_POLICY_EVENTS = MAX_THREAD_TRANSCRIPT_EVENTS * (MAX_ACTIVE_POLICY_EVENTS + 2)
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
+# What a Continue restores into a reopened discussion's active projection (the cap's activity is not one).
+_REOPENED_KINDS = (*sorted(_TERMINAL_KINDS), "message.member", "room.assignment", "room.routed", "room.continued")
 
 _SCHEMA_DDL = (
+    """CREATE TABLE IF NOT EXISTS hosted_room_policy_capacity (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1), max_active_events INTEGER NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS hosted_room_policy_cursors (
         room_id TEXT PRIMARY KEY, through_seq INTEGER NOT NULL DEFAULT 0,
         stopped_through_seq INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL DEFAULT 0)""",
@@ -108,11 +115,23 @@ def _settled_message(
 
 class HostedRoomPolicyCheckpoint:
     """Incrementally index room policy without compacting visible history."""
-    def __init__(self, db_path: DbPath) -> None:
+    def __init__(self, db_path: DbPath, *, max_active_events: int = MAX_ACTIVE_POLICY_EVENTS) -> None:
+        if isinstance(max_active_events, bool) or not isinstance(max_active_events, int) or max_active_events < 1:
+            raise ValueError("max_active_events must be a positive integer")
         self.db_path = Path(db_path)
+        # LIMIT also reads one overflow sentinel; keep its parameter inside SQLite's integer range.
+        capacity = min(2**63 - 2, max(MAX_ACTIVE_POLICY_EVENTS, max_active_events))
         with self._transaction() as conn:
             for ddl in _SCHEMA_DDL:
                 conn.execute(ddl)
+            # Preserve replay capacity across restarts with a lower scheduling budget.
+            conn.execute("""INSERT INTO hosted_room_policy_capacity(singleton, max_active_events)
+                VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET
+                max_active_events=MAX(max_active_events, excluded.max_active_events)""", (capacity,))
+            self.max_active_events = int(conn.execute(
+                "SELECT max_active_events FROM hosted_room_policy_capacity WHERE singleton=1").fetchone()[0])
+        self.max_transcript_policy_events = min(
+            2**63 - 2, MAX_THREAD_TRANSCRIPT_EVENTS * (self.max_active_events + MAX_ACTIVE_RETRY_RECEIPTS + 2))
 
     def _connect(self) -> sqlite3.Connection:
         # Late import: a gateway that outlives an on-disk upgrade has the OLD sqlite_util cached.
@@ -156,14 +175,20 @@ class HostedRoomPolicyCheckpoint:
         self, conn: sqlite3.Connection, *, room_id: str, thread_id: str, discussion_event_id: str, bound_error: str
     ) -> list[dict[str, Any]]:
         """Merge the thread transcript with the active projection, ordered by seq."""
-        active_rows = conn.execute("""SELECT event_json FROM hosted_room_policy_events
-               WHERE room_id=? AND discussion_event_id=? ORDER BY seq LIMIT ?""",
-            (room_id, discussion_event_id, MAX_ACTIVE_POLICY_EVENTS + 1)).fetchall()
-        if len(active_rows) > MAX_ACTIVE_POLICY_EVENTS:
-            raise RuntimeError(bound_error)
+        active_rows = []
+        for receipts, bound in ((0, self.max_active_events), (1, MAX_ACTIVE_RETRY_RECEIPTS)):
+            rows = conn.execute("""SELECT event_json FROM hosted_room_policy_events
+                   WHERE room_id=? AND discussion_event_id=?
+                     AND (json_extract(event_json, '$.kind') = 'turn.deferred') = ?
+                   ORDER BY seq LIMIT ?""",
+                (room_id, discussion_event_id, receipts, bound + 1)).fetchall()
+            if len(rows) > bound:
+                raise RuntimeError(bound_error)
+            active_rows.extend(rows)
         rows = conn.execute(_TRANSCRIPT_EVENTS_SQL,
-                            (room_id, thread_id, room_id, thread_id, room_id, MAX_TRANSCRIPT_POLICY_EVENTS + 1)).fetchall()
-        if len(rows) > MAX_TRANSCRIPT_POLICY_EVENTS:
+                            (room_id, thread_id, room_id, thread_id, room_id,
+                             self.max_transcript_policy_events + 1)).fetchall()
+        if len(rows) > self.max_transcript_policy_events:
             raise RuntimeError("thread policy transcript exceeded its bound")
         events_by_seq = {
             int(event["seq"]): event
@@ -229,8 +254,45 @@ class HostedRoomPolicyCheckpoint:
     def _apply_room_activity(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
         room_id, thread_id = str(event["room_id"]), _text(payload, "thread_id")
-        conn.execute(_DELETE_ACTIVE_EVENTS_SQL, (room_id, _text(payload, "discussion_event_id")))
-        conn.execute("DELETE FROM hosted_room_policy_threads WHERE room_id=? AND thread_id=?", (room_id, thread_id))
+        discussion_event_id = _text(payload, "discussion_event_id")
+        conn.execute(_DELETE_ACTIVE_EVENTS_SQL, (room_id, discussion_event_id))
+        # A newer message on this thread may already have reopened it under its own discussion: the
+        # old discussion's completion (planned before that message) must not close the new one.
+        conn.execute("DELETE FROM hosted_room_policy_threads WHERE room_id=? AND thread_id=? AND discussion_event_id=?",
+                     (room_id, thread_id, discussion_event_id))
+
+    def _apply_continued(
+        self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
+        """Continue reopens a discussion its cap completed: restore its thread row and active projection
+        from the room log (the cap's ``room.activity`` dropped both)."""
+        room_id, discussion_event_id = str(event["room_id"]), _text(payload, "discussion_event_id")
+        source = conn.execute(f"SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND event_id=?",
+                              (room_id, discussion_event_id)).fetchone()
+        if source is None or source["kind"] != "message.user":
+            return
+        source_event = _event_from_room_row(source)
+        thread_id = _text(source_event["payload"], "thread_id")
+        # A Continue written by an older build after a newer message on the thread (the router now
+        # refuses those) must not hand the thread back: the newer discussion owns it.
+        if conn.execute("""SELECT 1 FROM hosted_room_events WHERE room_id=? AND seq>? AND seq<=?
+                AND kind='message.user' AND json_extract(payload_json, '$.thread_id')=? LIMIT 1""",
+                (room_id, int(source_event["seq"]), int(event["seq"]), thread_id)).fetchone():
+            return
+        conn.execute("""INSERT INTO hosted_room_policy_threads(
+                   room_id, thread_id, discussion_event_id, latest_user_seq, completed
+               ) VALUES (?, ?, ?, ?, 0)
+               ON CONFLICT(room_id, thread_id) DO UPDATE SET
+                   discussion_event_id=excluded.discussion_event_id,
+                   latest_user_seq=excluded.latest_user_seq, completed=0""",
+            (room_id, thread_id, discussion_event_id, int(source_event["seq"])))
+        self._store_active_event(conn, event=source_event, thread_id=thread_id, discussion_event_id=discussion_event_id)
+        for row in conn.execute(f"""SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events
+                WHERE room_id=? AND seq>? AND seq<=? AND kind IN ({",".join("?" * len(_REOPENED_KINDS))})
+                  AND json_extract(payload_json, '$.discussion_event_id')=? ORDER BY seq""",
+                (room_id, int(source_event["seq"]), int(event["seq"]), *_REOPENED_KINDS,
+                 discussion_event_id)).fetchall():
+            self._store_active_event(conn, event=_event_from_room_row(row), thread_id=thread_id,
+                                     discussion_event_id=discussion_event_id)
 
     def _apply_stop_requested(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
@@ -241,6 +303,9 @@ class HostedRoomPolicyCheckpoint:
     _APPLY_BY_KIND: dict[str, Callable[..., None]] = {
         "message.user": _apply_user_message, "message.member": _apply_discussion_event,
         **dict.fromkeys(_TERMINAL_KINDS, _apply_discussion_event), "room.activity": _apply_room_activity,
+        # The lead's assignment joins its discussion's projection so the planner sees who takes round 0.
+        "room.assignment": _apply_discussion_event,
+        "room.routed": _apply_discussion_event, "room.continued": _apply_continued,
         "room.stop_requested": _apply_stop_requested}
 
     def _apply_event(self, conn: sqlite3.Connection, event: Mapping[str, Any]) -> None:

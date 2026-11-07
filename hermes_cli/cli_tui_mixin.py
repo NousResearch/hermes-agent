@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- usage-window plans: /model picker hooks only (a multi-row hint, Large/Free row labels); the logic lives in hermes_cli/model_picker_usage.py
 """prompt_toolkit TUI construction, key-binding handlers, and overlay display fragments for the
 interactive CLI. Mixin bound onto ``HermesCLI`` via the MRO; cli.py-internal symbols are imported
 LAZILY inside each method (``from cli import ...``) — never at module load (import cycle)."""
@@ -38,6 +39,8 @@ from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.widgets import TextArea
 from typing import Optional
 
+from hermes_cli import cli_enter_burst as _enter_burst
+from hermes_cli.cli_enter_burst import RAPID_INPUT_ENTER_WINDOW_S as _RAPID_INPUT_ENTER_WINDOW_S
 from hermes_cli.cli_footer_split import FooterSplit
 from hermes_cli.cli_panel import _Panel
 from hermes_cli.cli_tui_wrap import _prefix_wrapped_rows, _wrap_rows
@@ -45,8 +48,6 @@ from hermes_cli.cli_tui_wrap import _prefix_wrapped_rows, _wrap_rows
 # Rows below an overlay panel taken by spinner/tool-progress, status bar, input, separators and
 # prompt symbol (measured ~6 during live PTY approval prompts) — shared by every panel budget.
 _PANEL_RESERVED_BELOW = 6
-# Enter within this many seconds of the last buffer change is a pasted/dictated newline, not a submit.
-_RAPID_INPUT_ENTER_WINDOW_S = 0.05
 _TYPING_CHARS = string.digits + string.ascii_letters + "-_.:/ "
 
 # Approval-choice identifiers (protocol tokens, never translated) → catalog keys for their labels.
@@ -524,7 +525,9 @@ class CLITuiMixin:
         (e.g. Ollama Cloud's 36+ models). ``state["_scroll_offset"]`` is updated in place.
         """
         from cli import HermesCLI, _panel_box_width, _wrap_panel_text
-        box_width = _panel_box_width(title, [hint] + labels, min_width=min_width, max_width=max_width)
+        # ``hint`` may be several rows (a window plan's limit line above the usual hint).
+        hints = list(hint) if isinstance(hint, (list, tuple)) else [hint]
+        box_width = _panel_box_width(title, hints + labels, min_width=min_width, max_width=max_width)
         # ``_Panel.row`` pads every row to ``box_width - 2``, so that is the real
         # body width. Keep the wrap budget in sync with it and reserve the
         # leading cell for the cursor/indent applied below, rather than the old
@@ -538,12 +541,14 @@ class CLITuiMixin:
         except Exception:
             term_rows = _term_rows()
         scroll_offset, visible = HermesCLI._compute_model_picker_viewport(
-            selected, state.get("_scroll_offset", 0), len(labels), term_rows)
+            selected, state.get("_scroll_offset", 0), len(labels), term_rows,
+            panel_chrome=5 + len(hints))
         state["_scroll_offset"] = scroll_offset
 
         panel = _Panel('class:clarify-border', box_width, title, 'class:clarify-title')
         panel.blank()
-        panel.row('class:clarify-hint', hint)
+        for line in hints:
+            panel.row('class:clarify-hint', line)
         panel.blank()
         for idx in range(scroll_offset, min(scroll_offset + visible, len(labels))):
             style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
@@ -600,13 +605,18 @@ class CLITuiMixin:
             filtered_pairs = self._filter_model_picker_entries(model_list, _query)
             state["_filtered_pairs"] = filtered_pairs
             model_labels = [e for (_i, e) in filtered_pairs]
-            choices = list(model_labels) + [t("cli.shared.back"), t("cli.shared.cancel")]
+            from hermes_cli.model_picker_usage import annotate_window_plan_rows
+            row_labels, limit_line = annotate_window_plan_rows(provider_data, model_labels)
+            choices = row_labels + [t("cli.shared.back"), t("cli.shared.cancel")]
             if _query:
                 hint = t("cli.tui.picker_filter_hint", query=_query, shown=len(model_labels), total=len(model_list))
             elif model_list:
                 hint = t("cli.tui.picker_select_hint", count=len(model_list))
             else:
                 hint = t("cli.tui.picker_empty")
+            # Window plan past an allowance: say once what happens next (pay as you go or wait), above the hint.
+            if limit_line:
+                hint = [limit_line, hint]
         return self._render_scroll_list_panel(
             state, title, hint, choices, min_width=46, max_width=84, indent='  ')
 
@@ -1386,10 +1396,7 @@ class CLITuiMixin:
         redirect / interrupt queue / next-turn queue); idle → ``_pending_input``. Slash and bang
         commands always take the local-dispatch path (never steer/interrupt text to the model).
         """
-        from cli import (
-            _apply_backslash_line_continuation,
-            _is_backslash_line_continuation,
-            _looks_like_slash_command)
+        from cli import _apply_backslash_line_continuation, _is_backslash_line_continuation
         if self._tui_enter_overlay(event):
             return
         buf = event.app.current_buffer
@@ -1405,14 +1412,15 @@ class CLITuiMixin:
             buf.cursor_position = len(continued)
             event.app.invalidate()
             return
-        # Paste without bracketed-paste (tmux strips it) and IME/voice dictation deliver each
-        # newline as its own Enter key event; the buffer collapse in _tui_on_text_changed only
-        # sees whole-chunk pastes. Text still arriving (<50 ms since the last change) means this
-        # Enter is a line break inside one message, not a submit (#10994).
-        if time.monotonic() - getattr(self, "_tui_last_text_change", 0.0) < _RAPID_INPUT_ENTER_WINDOW_S:
-            buf.insert_text("\n")
-            return
-        text = raw_text.strip()
+        # Enter mid-burst: a pasted newline (#10994), or the end of a scripted `text`+Enter write.
+        from hermes_cli.cli_enter_burst import handle_burst_enter
+        if not handle_burst_enter(self, event, buf):
+            self._tui_submit_buffer(event, buf)
+
+    def _tui_submit_buffer(self, event, buf):
+        """Submit the composer: inline commands, busy routing or ``_pending_input``."""
+        from cli import _looks_like_slash_command
+        text = buf.text.strip()
         has_images = bool(self._attached_images)
         if not (text or has_images):
             return
@@ -1715,7 +1723,7 @@ class CLITuiMixin:
         tick), or the newline count jumped by 4+ (terminals that feed characters individually
         but batch newlines; Alt+Enter adds 1 newline per event so never trips it).
         """
-        self._tui_last_text_change = time.monotonic()
+        self._tui_last_text_change = _enter_burst.note_text_change(self)
         from cli import _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
         text = _strip_leaked_bracketed_paste_wrappers(buf.text)
         text, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(text)
@@ -1807,6 +1815,7 @@ class CLITuiMixin:
 
     def _tui_init_run_state(self):
         """Reset the per-run REPL state (queues, modal states, voice state, config watcher)."""
+        from hermes_cli.config_backend import config_version_or_none
         self._agent_running = False
         self._pending_input = queue.Queue()     # normal input (commands + new queries)
         self._interrupt_queue = queue.Queue()   # messages typed while the agent is running
@@ -1825,9 +1834,8 @@ class CLITuiMixin:
 
         # Config file watcher — detect mcp_servers changes and auto-reload.
         from hermes_cli.config import get_config_path as _get_config_path
-        from utils import file_signature
         _cfg_path = _get_config_path()
-        self._config_sig: tuple | None = file_signature(_cfg_path.stat()) if _cfg_path.exists() else None
+        self._config_sig: tuple | None = config_version_or_none(_cfg_path)
         self._config_mcp_servers: dict = self.config.get("mcp_servers") or {}
         self._last_config_check: float = 0.0  # monotonic time of last check
 
@@ -2051,7 +2059,7 @@ class CLITuiMixin:
         # conflict with Ctrl+R readline reverse-search). Config spellings (ctrl/control/alt/option/opt) are
         # normalized to prompt_toolkit's c-x / a-x format via
         # ``normalize_voice_record_key_for_prompt_toolkit`` so the same config value binds identically in
-        # the TUI and CLI (Copilot round-9 review on #19835). ``super``/``win``/``windows`` configs silently
+        # the TUI and CLI (review round-9 on #19835). ``super``/``win``/``windows`` configs silently
         # fall back to the default here since prompt_toolkit has no super modifier — log a warning so users
         # notice the TUI/CLI split instead of a silent mismatch (round-11).
         _raw_key: object = "ctrl+b"
@@ -2076,7 +2084,7 @@ class CLITuiMixin:
             _voice_key = "c-b"
         # Cache the UI label here — same ``_raw_key`` that drives the prompt_toolkit binding below. Every
         # status / placeholder / recording-hint render reads this cached value so display can never drift
-        # from the live keybinding even if the user edits voice.record_key mid-session (Copilot round-13 on
+        # from the live keybinding even if the user edits voice.record_key mid-session (review round-13 on
         # #19835).
         self.set_voice_record_key_cache(_raw_key)
         return pt_key_to_sequence(_voice_key)

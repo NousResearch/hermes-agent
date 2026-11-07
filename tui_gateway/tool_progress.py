@@ -353,6 +353,10 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary
+    from agent.display import _detect_tool_failure
+    from agent.terminal_image import tool_image_path
+    if image_path := tool_image_path(name, args, payload["result"], is_error=_detect_tool_failure(name, result)[0]):
+        payload["image_path"] = image_path
     if _session_verbose(sid) and (result_text := _tool_result_text(result)):
         payload["result_text"] = result_text
     from tools.todo_tool import is_todo_tool_name
@@ -362,9 +366,10 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         payload.update(todo_state)
         if session is not None:
             _cache_todo_state(session, todo_state)
+    from agent.display import is_neutral_failure
     if (_tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
             or is_todo_tool_name(name) or _connector_tool_lifecycle(name, args)
-            or _tool_result_needs_user(result)):
+            or (_tool_result_needs_user(result) and not is_neutral_failure(name, result))):
         _emit_tool_lifecycle("tool.complete", sid, name, args, payload)
     # Task state is application data, not tool-progress chrome: a dedicated full-snapshot event lets
     # every client reconcile without parsing tool args.

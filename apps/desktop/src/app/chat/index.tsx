@@ -275,18 +275,41 @@ export function ChatRuntimeBoundary({
     [ownerConnection, ownerProfile]
   )
 
-  // A Bot chat opened IN PLACE in the main pane (openStoredBotChat) keeps the
-  // active profile, so the ambient scope carries no owner. Publish the session
-  // owner hint's (connection, profile) here so voice playback speaks with the
-  // Bot's own voice; a tile's scope already names its owner and is kept as is.
+  // A Bot Chat opened IN PLACE in the main pane (openStoredBotChat) keeps the
+  // app's active profile while its route is recorded on the Bot's own profile,
+  // so the ambient-scoped lookup above MISSES it entirely — the surface then
+  // dialed the active profile's voice, which is why clicking the Bot's profile
+  // in the app "fixed" it. Fall back to the id's UNIQUE recorded owner: an id
+  // with several recorded owners stays unresolved, because ambiguity must not
+  // pick one.
+  const recordedOwnerRoute = storedId && !ownerRoute ? getSessionOwnerHint(storedId) : undefined
+
+  // The chat's OWNER wins the composer scope whenever it is known — voice
+  // playback, read-aloud, auto-speak and dictation all read (connection,
+  // profile) off this scope, so the scope is what decides whose voice speaks.
+  // A tile's scope already names its owner and resolves to the same route, so
+  // this is a no-op for tiles. A chat with no resolvable owner keeps the
+  // parent scope exactly as it was.
+  //
+  // ONLY the composer scope widens: `tailProfile` above keeps the scoped
+  // lookup, so which backend the transcript/history reads come from is
+  // untouched — this is client-side scope precedence only.
+  //
+  // Derived as PRIMITIVES, not routes: every owner lookup returns a fresh
+  // object, so a route in the dependency list would mint a new scope (and
+  // re-render every scope consumer) on every render — the same cost the
+  // `tailProfile` memo above avoids.
   const parentScope = useComposerScope()
+
+  const scopeOwnerConnection = ownerConnection ?? recordedOwnerRoute?.connectionId
+  const scopeOwnerProfile = ownerProfile ?? recordedOwnerRoute?.targetProfile ?? recordedOwnerRoute?.profile
 
   const composerScope = useMemo(
     () =>
-      parentScope.profile || !ownerProfile
-        ? parentScope
-        : { ...parentScope, connectionId: ownerConnection || undefined, profile: ownerProfile },
-    [ownerConnection, ownerProfile, parentScope]
+      scopeOwnerProfile
+        ? { ...parentScope, connectionId: scopeOwnerConnection || undefined, profile: scopeOwnerProfile }
+        : parentScope,
+    [parentScope, scopeOwnerConnection, scopeOwnerProfile]
   )
 
   const history = useHistoryWindow({

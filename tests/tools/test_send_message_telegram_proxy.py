@@ -160,3 +160,47 @@ class TestSendTelegramStandaloneProxy:
         assert "get_updates_request" not in call_kwargs
         httpx_request_factory.assert_not_called()
         bot.send_message.assert_awaited_once()
+
+    def test_custom_bot_api_base_is_forwarded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Telegram-compatible plugins can reuse the full standalone sender."""
+        from tools.send_message_tool import _send_telegram
+
+        for var in (
+            "BALE_PROXY",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(
+            "gateway.platforms.base._detect_macos_system_proxy", lambda: None
+        )
+
+        bot = _make_bot()
+        bot_factory = MagicMock(return_value=bot)
+        httpx_request_factory = MagicMock()
+        _install_telegram_mock_with_request(
+            monkeypatch, bot_factory, httpx_request_factory
+        )
+
+        result = asyncio.run(
+            _send_telegram(
+                "tok",
+                "123",
+                "hello world",
+                base_url="https://tapi.bale.ai/bot",
+                base_file_url="https://tapi.bale.ai/bot",
+                proxy_env_var="BALE_PROXY",
+            )
+        )
+
+        assert result["success"] is True
+        assert bot_factory.call_args.kwargs["base_url"] == "https://tapi.bale.ai/bot"
+        assert bot_factory.call_args.kwargs["base_file_url"] == "https://tapi.bale.ai/bot"

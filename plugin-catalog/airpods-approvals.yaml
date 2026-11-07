@@ -1,13 +1,14 @@
 name: airpods-approvals
 title: AirPods Approvals
 repo: https://github.com/cineglobe/hermes-airpods-approvals
-sha: bb43d9a6d3666a494522405c3a1c3590b91d109d
+sha: ee02dc0b56157ccd3c2e97639fc9e0d19f550119
 description: >-
   Hear Hermes approvals and questions in your AirPods and answer with your head: nod to approve,
   shake to deny. Gestures are recognised by rhythm, with a tap in each ear as you go, and drive the
   real approval through approval.respond. A nod only ever approves once, and a timeout or lost
   AirPods sends nothing. Desktop-only plugin with a small native helper built from source on your
-  Mac, because head motion isn't reachable from a plugin. Disclosure — the helper runs without a
+  Mac, because head motion isn't reachable from a plugin: Install in the plugin's settings opens
+  the bundled desktop/Install Helper.command in Terminal, which builds and starts it. Disclosure — the helper runs without a
   window or menu bar item only while Hermes Desktop is open, listens on 127.0.0.1 with a paired
   handshake, and reads head motion only during a question, which never leaves the Mac. Prompts are
   written and spoken by Gemini: the approval's description and Hermes-redacted command are sent to
@@ -19,10 +20,10 @@ tier: community
 category: voice
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/cineglobe/hermes-airpods-approvals#readme
-version: "1.1.0"
-image: https://raw.githubusercontent.com/cineglobe/hermes-airpods-approvals/bb43d9a6d3666a494522405c3a1c3590b91d109d/docs/banner.png
+version: "1.2.0"
+image: https://raw.githubusercontent.com/cineglobe/hermes-airpods-approvals/ee02dc0b56157ccd3c2e97639fc9e0d19f550119/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/cineglobe/hermes-airpods-approvals/bb43d9a6d3666a494522405c3a1c3590b91d109d/docs/settings.png
+  - https://raw.githubusercontent.com/cineglobe/hermes-airpods-approvals/ee02dc0b56157ccd3c2e97639fc9e0d19f550119/docs/settings.png
 platforms: [macos]
 capabilities:
   provides_tools: []

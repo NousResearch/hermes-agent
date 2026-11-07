@@ -74,6 +74,27 @@ def test_notify_sub_delivery_mode_persists_and_last_write_wins(kanban_home):
     finally:
         conn.close()
 
+def test_notify_subscribe_cli_progress_is_opt_in_and_toggleable(kanban_home):
+    """The public flag defaults off and can update an existing subscription."""
+    import argparse
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="progress subscription", assignee="worker")
+
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers(dest="command"))
+    base = [
+        "kanban", "notify-subscribe", tid,
+        "--platform", "telegram", "--chat-id", "chat-1",
+    ]
+
+    for flag, expected in ((None, False), ("--progress", True), ("--no-progress", False)):
+        args = parser.parse_args(base + ([flag] if flag else []))
+        assert kc.kanban_command(args) == 0
+        with kbc.connect() as conn:
+            sub = kbn.list_notify_subs(conn, tid)[0]
+        assert sub["notify_progress"] is expected
+
 def test_notify_subscribe_cli_records_discord_multiplex_anchors(kanban_home):
     """The CLI must persist thread route anchors without dropping existing metadata."""
     import argparse
@@ -981,7 +1002,7 @@ def test_migration_backfill_runs_only_on_first_add(kanban_home):
 
 # ---------------------------------------------------------------------------
 # Issue #73030: _inherit_notify_subs (link_tasks / decompose path) must copy
-# EVERY routing column — chat_type, user_id_alt, delivery_mode, and
+# EVERY routing column — chat_type, user_id_alt, delivery_mode, progress, and
 # delivery_metadata. Before the fix it copied only platform/chat/thread/user/
 # profile, so a DM-originated child completion fell back to chat_type='group'
 # and woke a fresh group-scoped session instead of the originating DM, and
@@ -994,6 +1015,7 @@ def _add_full_parent_sub(kb, conn, parent):
         thread_id="topic1", user_id="user1", user_id_alt="alt-1",
         chat_type="dm", notifier_profile="default",
         delivery_mode="notify+wake",
+        notify_progress=True,
         delivery_metadata={"reply_fallback": "general", "topic_name": "ops"},
     )
 
@@ -1010,6 +1032,7 @@ def _assert_full_inherited_sub(subs):
         "group-scoped session instead of the originating DM (issue #73030)"
     )
     assert s["delivery_mode"] == "notify+wake"
+    assert s["notify_progress"] is True
     md = s["delivery_metadata"]
     assert md and md.get("reply_fallback") == "general", (
         "delivery_metadata dropped during inheritance (issue #73030)"

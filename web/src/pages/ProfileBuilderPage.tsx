@@ -19,11 +19,13 @@ import type {
 import {
   buildMcpServerCreate,
   emptyMcpServerDraft,
+  MCP_AUTH_LABELS,
   type McpServerDraft,
   type McpTransport,
 } from "@/lib/mcp-server-create";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
+import { McpTokenAuthInput } from "@/components/McpTokenAuthInput";
 
 // Profile name rule mirrors the backend (`^[a-z0-9][a-z0-9_-]{0,63}$`).
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -208,7 +210,8 @@ export default function ProfileBuilderPage() {
     setMcpDraft((draft) => ({
       ...draft,
       httpAuth,
-      bearerToken: httpAuth === "header" ? draft.bearerToken : "",
+      bearerToken:
+        httpAuth === "header" || httpAuth === "query" ? draft.bearerToken : "",
     }));
   };
 
@@ -602,7 +605,7 @@ export default function ProfileBuilderPage() {
                     <div className="grid gap-1.5">
                       <Label>Authentication</Label>
                       <div
-                        className="grid grid-cols-3 border border-border bg-background/30 p-0.5 md:max-w-md"
+                        className="grid grid-cols-4 border border-border bg-background/30 p-0.5 md:max-w-md"
                         role="group"
                         aria-label="HTTP authentication"
                       >
@@ -610,6 +613,7 @@ export default function ProfileBuilderPage() {
                           [
                             ["none", "None"],
                             ["header", "Bearer token"],
+                            ["query", "URL token"],
                             ["oauth", "OAuth"],
                           ] as const
                         ).map(([value, label]) => (
@@ -630,30 +634,16 @@ export default function ProfileBuilderPage() {
                         ))}
                       </div>
                     </div>
-                    {mcpDraft.httpAuth === "header" && (
-                      <div className="grid gap-1.5">
-                        <Label htmlFor="pb-mcp-bearer-token">
-                          Bearer token
-                        </Label>
-                        <Input
-                          id="pb-mcp-bearer-token"
-                          type="password"
-                          autoComplete="new-password"
-                          placeholder="Token or Bearer token"
-                          value={mcpDraft.bearerToken}
-                          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                            setMcpDraft({
-                              ...mcpDraft,
-                              bearerToken: e.target.value,
-                            })
-                          }
-                        />
-                        <p className="text-xs text-muted-foreground">
-                          Stored in the new profile&apos;s .env; config.yaml
-                          keeps only an environment-variable reference.
-                        </p>
-                      </div>
-                    )}
+                    <McpTokenAuthInput
+                      auth={mcpDraft.httpAuth}
+                      id="pb-mcp-bearer-token"
+                      value={mcpDraft.bearerToken}
+                      onChange={(bearerToken) =>
+                        setMcpDraft({ ...mcpDraft, bearerToken })
+                      }
+                      profile="the new profile"
+                      className="grid gap-1.5"
+                    />
                     {mcpDraft.httpAuth === "oauth" && (
                       <p className="text-xs text-muted-foreground">
                         After creating the profile, open its MCP page and use
@@ -727,7 +717,7 @@ export default function ProfileBuilderPage() {
                           </Badge>
                           {s.auth && (
                             <Badge tone="outline">
-                              auth: {s.auth === "header" ? "bearer" : s.auth}
+                              auth: {MCP_AUTH_LABELS[s.auth]}
                             </Badge>
                           )}
                         </span>

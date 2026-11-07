@@ -37,7 +37,9 @@ def _clean_state(tmp_path):
 
 def _probe(db_path):
     assert dbfile._pread_db_header(db_path, 16) == b"SQLite format 3\x00"
-    return dbfile._HEADER_PROBE_FDS[str(db_path)][0]
+    fd = dbfile._HEADER_PROBE_FDS[str(db_path)][0]
+    os.set_inheritable(fd, True)  # a marker: os.open never sets it, so a re-opened probe lacks it
+    return fd
 
 
 def _is_open(fd):
@@ -46,6 +48,14 @@ def _is_open(fd):
     except OSError:
         return False
     return True
+
+
+def _assert_probe_kept(db_path, entry):
+    """The same probe, not just an open fd: a closed probe's number can be reused by the next open,
+    even by a re-probe that rebuilds an identical (fd, dev, ino) entry, so check _probe's marker too."""
+    assert dbfile._HEADER_PROBE_FDS.get(str(db_path)) == entry
+    assert _is_open(entry[0])
+    assert os.get_inheritable(entry[0]), "the probe was closed and re-opened"
 
 
 def _home(tmp_path, name):
@@ -83,12 +93,12 @@ def test_probe_kept_while_another_descriptor_holds_the_inode(tmp_path):
     """A connection the registry cannot see (a bare sqlite3 one) keeps the probe open."""
     home, db_path = _home(tmp_path, "busy")
     fd = _probe(db_path)
+    entry = dbfile._HEADER_PROBE_FDS[str(db_path)]
     conn = sqlite3.connect(db_path)
     conn.execute("SELECT 1 FROM sqlite_master").fetchall()
     try:
         registry.close_all_under(home)
-        assert _is_open(fd)
-        assert str(db_path) in dbfile._HEADER_PROBE_FDS
+        _assert_probe_kept(db_path, entry)
     finally:
         conn.close()
 
@@ -100,13 +110,13 @@ def test_probe_kept_while_another_descriptor_holds_the_inode(tmp_path):
 def test_probe_kept_when_a_tracked_connection_opens_after_the_scan(tmp_path, monkeypatch):
     """A tracked connection the fd scan missed (it opened after the scan) keeps the probe open."""
     home, db_path = _home(tmp_path, "tracked")
-    fd = _probe(db_path)
+    _probe(db_path)
+    entry = dbfile._HEADER_PROBE_FDS[str(db_path)]
     conn = dbfile._connect_tracked_db(db_path)
     monkeypatch.setattr(dbfile, "inodes_with_other_descriptors", lambda identities: set(), raising=False)
     try:
         registry.close_all_under(home)
-        assert _is_open(fd)
-        assert str(db_path) in dbfile._HEADER_PROBE_FDS
+        _assert_probe_kept(db_path, entry)
     finally:
         conn.close()
 
@@ -129,6 +139,7 @@ def test_hard_link_alias_opened_after_scan_keeps_probe(tmp_path, monkeypatch):
     alias = tmp_path / "alias.db"  # outside the swept home
     os.link(db_path, alias)
     _probe(db_path)
+    entry = dbfile._HEADER_PROBE_FDS[str(db_path)]
     from hermes_cli.sqlite_safe_read import connect_tracked
 
     writers: list = []
@@ -146,7 +157,7 @@ def test_hard_link_alias_opened_after_scan_keeps_probe(tmp_path, monkeypatch):
     monkeypatch.setattr(dbfile, "inodes_with_other_descriptors", _scan_then_open_alias)
     try:
         registry.close_all_under(home)
-        assert str(db_path) in dbfile._HEADER_PROBE_FDS
+        _assert_probe_kept(db_path, entry)
         locked = subprocess.run([sys.executable, "-c", _LOCKF_CHILD, str(db_path)],
                                 capture_output=True, text=True, check=True).stdout.strip()
         assert locked == "BLOCKED"
@@ -160,7 +171,8 @@ def test_hard_link_alias_opened_after_scan_keeps_probe(tmp_path, monkeypatch):
 def test_probe_kept_when_a_writer_is_published_after_the_sweep(tmp_path, monkeypatch):
     """The #127811 shape: a caller acquires the path after the sweep tore it down."""
     home, db_path = _home(tmp_path, "reopened")
-    fd = _probe(db_path)
+    _probe(db_path)
+    entry = dbfile._HEADER_PROBE_FDS[str(db_path)]
     late: list = []
     sweep = registry._teardown_swept_generations
 
@@ -172,8 +184,7 @@ def test_probe_kept_when_a_writer_is_published_after_the_sweep(tmp_path, monkeyp
     monkeypatch.setattr(registry, "_teardown_swept_generations", _sweep_then_reopen)
     registry.close_all_under(home)
     assert late and late[0]._conn is not None
-    assert _is_open(fd)
-    assert str(db_path) in dbfile._HEADER_PROBE_FDS
+    _assert_probe_kept(db_path, entry)
     registry.release(late[0])
 
 
@@ -181,7 +192,8 @@ def test_probe_kept_when_a_writer_is_published_after_the_sweep(tmp_path, monkeyp
 def test_probe_kept_while_an_open_is_in_flight(tmp_path, monkeypatch):
     """An acquire that is mid-open when the release runs keeps the probe open."""
     home, db_path = _home(tmp_path, "opening")
-    fd = _probe(db_path)
+    _probe(db_path)
+    entry = dbfile._HEADER_PROBE_FDS[str(db_path)]
     entered, resume = threading.Event(), threading.Event()
     real_open = registry._open_session_db
 
@@ -207,7 +219,7 @@ def test_probe_kept_while_an_open_is_in_flight(tmp_path, monkeypatch):
     finally:
         resume.set()
     assert opened and opened[0]._conn is not None
-    assert _is_open(fd)
+    _assert_probe_kept(db_path, entry)
     registry.release(opened[0])
 
 
@@ -215,11 +227,11 @@ def test_probe_kept_while_an_open_is_in_flight(tmp_path, monkeypatch):
 def test_probes_outside_the_swept_home_are_untouched(tmp_path):
     home, _db_path = _home(tmp_path, "one")
     _other_home, other_db = _home(tmp_path, "two")
-    other_fd = _probe(other_db)
+    _probe(other_db)
+    other_entry = dbfile._HEADER_PROBE_FDS[str(other_db)]
 
     registry.close_all_under(home)
-    assert _is_open(other_fd)
-    assert str(other_db) in dbfile._HEADER_PROBE_FDS
+    _assert_probe_kept(other_db, other_entry)
 
 
 @pytest.mark.platforms("posix")

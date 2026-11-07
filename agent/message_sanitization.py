@@ -906,6 +906,32 @@ def _reasoning_shape(msg: dict) -> tuple:
     return tuple(msg.get(key) for key in REASONING_CARRIERS)
 
 
+def current_turn_start(api_messages: list) -> int:
+    """Index of the first message this turn appended: the row after the last ``user`` message.
+
+    Assistant rows before it belong to earlier turns. Their reasoning is a conclusion reached
+    against a DIFFERENT tool surface and a different conversation state; replaying its text
+    makes the model obey that stale conclusion — measured on the group bot (2026-11-06), a
+    session whose history reasoned "I can't create a file / the image isn't arriving" answered
+    with ``vision_analyze`` while ``render_chart`` sat in the same request, and dropped the
+    echo and called ``render_chart``. 0 (no user row: a bare replay) scopes nothing, so a
+    caller without a turn anchor keeps the old behaviour.
+    """
+    for index in range(len(api_messages) - 1, -1, -1):
+        msg = api_messages[index]
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            return index + 1
+    return 0
+
+
+def _without_reasoning_text(msg: dict) -> dict:
+    """The row minus its reasoning *text*, keeping everything the policy reads (``role``,
+    ``tool_calls``) so a must-echo route still gets its pad while no stale conclusion rides
+    along. ``reasoning_details`` is left alone: those entries carry signatures/opaque state
+    that must be replayed intact for the turns that legitimately own them."""
+    return {key: value for key, value in msg.items() if key not in (RC, R)}
+
+
 def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool, carriers: frozenset | None = None) -> int:
     """Reconcile already-built assistant turns with the ACTIVE route.
 
@@ -913,16 +939,24 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool, carrier
     field rejection changes the route, so baked-in keys are reconciled both ways: TO a must-echo
     provider the pad is re-applied (else 400), TO a strict one the keys are stripped (else 422),
     and a carrier the new route reads is restored from the text that is still present.
-    Idempotent. Returns the number of assistant turns changed.
+
+    Reasoning TEXT is replayed for the turn in flight only (:func:`current_turn_start`). Earlier
+    turns keep the must-echo field — padded, never their original text — because that text is
+    what the model believes about itself, and a stale belief outlives the tool surface it was
+    formed on. Idempotent. Returns the number of assistant turns changed.
     """
     changed = 0
-    for api_msg in api_messages:
-        if api_msg.get("role") != "assistant":
+    turn_start = current_turn_start(api_messages)
+    for index, api_msg in enumerate(api_messages):
+        if not isinstance(api_msg, dict) or api_msg.get("role") != "assistant":
             continue
         before = _reasoning_shape(api_msg)
-        if carriers is None and needs_thinking_pad and api_msg.get(RC):
+        stale = index < turn_start and _replayable_reasoning_text(api_msg) is not None
+        if not stale and carriers is None and needs_thinking_pad and api_msg.get(RC):
             continue
-        apply_reasoning_content_policy(api_msg, api_msg, needs_thinking_pad, carriers)
+        apply_reasoning_content_policy(
+            _without_reasoning_text(api_msg) if stale else api_msg, api_msg,
+            needs_thinking_pad, carriers)
         changed += _reasoning_shape(api_msg) != before
     return changed
 

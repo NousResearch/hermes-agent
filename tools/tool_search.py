@@ -1,10 +1,12 @@
-"""Progressive tool disclosure ("tool search"): MCP/plugin tools and a curated set of
-event-triggered core tools are replaced in the model-visible array by three bridge tools —
-tool_search / tool_describe / tool_call. Invariants: core tools (``toolsets._HERMES_CORE_TOOLS``)
-and session-gated GUI toolsets never defer unless named in ``defer``; ANY deferrable tool
-activates the bridge (the listing scales with budget, not activation); the catalog is
-stateless — rebuilt from the live tool-defs every assembly (a session-keyed one drifts and
-silently drops tools); bridge calls route through ``model_tools.handle_function_call``."""
+"""Progressive tool disclosure ("tool search"): MCP tools and a curated set of event-triggered
+core tools are replaced in the model-visible array by three bridge tools — tool_search /
+tool_describe / tool_call. Invariants: core tools (``toolsets._HERMES_CORE_TOOLS``),
+session-gated GUI toolsets and plugin-provided tools never defer unless named in ``defer``
+(a plugin's tools belong to this installation, are few, and a capability the model cannot see
+is one it does not have); ANY deferrable tool activates the bridge (the listing scales with
+budget, not activation); the catalog is stateless — rebuilt from the live tool-defs every
+assembly (a session-keyed one drifts and silently drops tools); bridge calls route through
+``model_tools.handle_function_call``."""
 
 from __future__ import annotations
 
@@ -148,9 +150,15 @@ _DEFAULT_DEFERRED_TOOLS = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defe
 
 
 def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) -> bool:
-    """True if a tool is *eligible* for deferral: named in ``defer_tools`` (curated set or
-    user override), OR an MCP tool, OR neither core nor a session-gated GUI surface (i.e. a
-    plugin tool). Bridge names never defer."""
+    """True if a tool is *eligible* for deferral: named in ``defer_tools`` (curated set or user
+    override), OR an MCP tool. Core tools, session-gated GUI surfaces and **plugin-provided
+    tools** stay direct: a plugin registers a handful of tools for this installation, and a
+    tool missing from the model-visible array is a capability the model does not have —
+    search is a lexical guess that can miss it (measured on the group bot, 2026-11-06: the
+    tool_search query "create image chart plot file" returned ``matches: []`` while
+    ``render_chart`` was connected). An operator who wants a specific plugin tool deferred
+    names it in ``defer``; it is then indexed and returned like any other deferred tool.
+    Bridge names never defer."""
     if name in BRIDGE_TOOL_NAMES:
         return False
     if defer_tools is not None and name in defer_tools:
@@ -158,8 +166,9 @@ def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) 
     if name in _core_tool_names():
         return False
     toolset = _registry_toolset(name)  # None (unregistered/malformed) never defers
-    return toolset is not None and (
-        toolset.startswith("mcp-") or toolset not in _DIRECT_SURFACE_TOOLSETS)
+    if toolset is None or toolset in _DIRECT_SURFACE_TOOLSETS:
+        return False
+    return toolset.startswith("mcp-")
 
 
 def _tool_def_names(tool_defs: Iterable[dict[str, Any]]) -> Iterable[str]:

@@ -1968,8 +1968,8 @@ DEFAULT_CONFIG = {
     },
     # Tool Search replaces deferred tools in the model-facing array with the
     # tool_search / tool_describe / tool_call bridges and surfaces them on demand.
-    # Working-set core tools stay eager, while the explicit ``defer`` list below
-    # may include cold, event-triggered built-ins as well as plugin/MCP tools.
+    # Working-set core and plugin tools stay eager; MCP tools and the explicit
+    # ``defer`` list below are deferred (name a plugin tool there to opt it in).
     "tools": {
         "tool_search": {
             # Tiered: tier 0 (no deferred tools) = everything eager; tier 1 = bridge + a

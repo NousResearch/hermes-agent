@@ -96,6 +96,7 @@ from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
 from hermes_constants import get_hermes_home
+from plugins.platforms.feishu.feishu_message_rules import reply_expected, text_batch_is_compatible
 from utils import atomic_json_write, env_float, env_int
 
 from gateway.platforms._shared import (
@@ -2702,6 +2703,11 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             media_text_inlined=media_text_inlined,
             reply_to_message_id=reply_to_message_id, reply_to_text=reply_to_text,
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
+            reply_expected=reply_expected(
+                chat_type=chat_type, is_command=inbound_type == MessageType.COMMAND,
+                mentions_self=any(ref.is_self or ref.is_all for ref in mentions),
+                is_reply=bool(thread_id or reply_to_message_id),
+            ),
             timestamp=datetime.now(),
         )
         await self._dispatch_inbound_event(normalized)
@@ -2726,7 +2732,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
 
     @staticmethod
     def _media_batch_is_compatible(existing: MessageEvent, incoming: MessageEvent) -> bool:
-        return existing.message_type == incoming.message_type and FeishuAdapter._text_batch_is_compatible(existing, incoming)
+        return existing.message_type == incoming.message_type and text_batch_is_compatible(existing, incoming)
 
     async def _enqueue_media_event(self, event: MessageEvent) -> None:
         key = self._media_batch_key(event)
@@ -2743,6 +2749,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
         existing.media_text_inlined.extend(event.media_text_inlined)
+        existing.absorb_reply_expected(event)
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
         existing.timestamp = event.timestamp
@@ -2966,15 +2973,6 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         return True
 
     # --- Text batching ---
-    @staticmethod
-    def _text_batch_is_compatible(existing: MessageEvent, incoming: MessageEvent) -> bool:
-        """Only merge text events when reply/thread context is identical."""
-        return (
-            existing.reply_to_message_id == incoming.reply_to_message_id
-            and existing.reply_to_text == incoming.reply_to_text
-            and existing.source.thread_id == incoming.source.thread_id
-        )
-
     async def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Debounce rapid Feishu text bursts into a single MessageEvent."""
         key = self._text_batch_key(event)
@@ -2990,7 +2988,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             _start_batch()
             return
-        if not self._text_batch_is_compatible(existing, event):
+        if not text_batch_is_compatible(existing, event):
             await self._flush_text_batch_now(key)
             _start_batch()
             return
@@ -3007,6 +3005,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
         existing.media_text_inlined.extend(event.media_text_inlined)
+        existing.absorb_reply_expected(event)
         existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
         existing.timestamp = event.timestamp
         if event.message_id:

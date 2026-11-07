@@ -2113,7 +2113,9 @@ def _print_version_info(*, check_updates: bool = True) -> None:
 
 def cmd_version(args):
     """Show version (--version/-V flag)."""
-    _print_version_info(check_updates=True)
+    # The version command is a local identity probe; update status belongs to
+    # the interactive banner/notice path and must not block discovery.
+    _print_version_info(check_updates=False)
 
 
 def cmd_uninstall(args):
@@ -3040,7 +3042,9 @@ def _try_termux_fast_cli_launch() -> bool:
         return False
 
     if _startup_fast.is_global_fast_version_argv(argv):
-        _print_version_info(check_updates=True)
+        # A global --version is also used as Desktop's installation probe. It
+        # must identify the local install without consulting release metadata.
+        _print_version_info(check_updates=False)
         return True
 
     first = _first_positional_argv()

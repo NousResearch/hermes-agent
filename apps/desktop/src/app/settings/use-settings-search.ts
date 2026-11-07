@@ -6,16 +6,16 @@ import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { $pluginRecords } from '@/contrib/plugins-store'
 import { getEnvVars, getHermesConfigSchema } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { type IconComponent, Monitor, Package, Palette, Settings2, Wrench } from '@/lib/icons'
+import { type IconComponent, Monitor, Package, Settings2, Wrench } from '@/lib/icons'
 import { $agentPlugins, isDesktopRelevantPlugin, loadAgentPlugins } from '@/store/agent-plugins'
 import { $gatewayState } from '@/store/session'
 
 import { useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
-import { appearanceSearchTargets } from './appearance-subpages'
 import { SECTIONS } from './constants'
 import { OTHER_SUBPAGES } from './other-subpages'
+import { settingSearchTargets } from './settings-manifest'
 import { buildConfigSearchEntries, buildCredentialSearchEntries, type SettingsSearchEntry } from './settings-search'
 import { settingsSubpages } from './subpages'
 import type { SettingsView } from './types'
@@ -116,18 +116,6 @@ export function useSettingsSearchCatalog(enabled: boolean) {
           sections: t.settings.sections
         })
 
-  const appearanceContext = t.settings.sections.appearance
-
-  // Every hand-built Appearance row, straight from the manifest that also
-  // routes and ids them — the palette cannot drift from the page.
-  const appearanceEntries: SettingsSearchEntry[] = appearanceSearchTargets(t).map(({ id, ...entry }) => ({
-    ...entry,
-    context: appearanceContext,
-    icon: Palette,
-    id: `setting:${id}`,
-    target: { setting: id, view: 'config:appearance' }
-  }))
-
   const credentialEntries = buildCredentialSearchEntries(
     envVarsFetching || envVarsError ? null : envVars,
     {
@@ -137,16 +125,10 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     { settings: Settings2, tools: Wrench }
   )
 
-  const pageLabels: Record<string, string> = {
-    ...t.settings.nav,
-    sessions: t.settings.nav.archivedChats
-  }
+  const pageLabels: Record<string, string> = t.settings.nav
 
-  // A page named after its one setting (Appearance › Theme) would show up as
-  // two identical rows; the setting wins because it lands on the row itself.
-  const settingLabels = new Set(appearanceEntries.map(entry => `${entry.context}\u0000${entry.label}`))
-
-  const subpageEntries: SettingsSearchEntry[] = [
+  // The pages that own rows: config sections and the standalone views.
+  const parents = [
     ...SECTIONS.map(section => ({
       view: `config:${section.id}` as SettingsView,
       label: t.settings.sections[section.id] ?? section.label,
@@ -158,6 +140,28 @@ export function useSettingsSearchCatalog(enabled: boolean) {
       icon: Settings2
     }))
   ]
+
+  const parentOf = (view: SettingsView) => parents.find(parent => parent.view === view)
+
+  // Every hand-built settings row, straight from the manifest that also
+  // routes and ids them — the palette cannot drift from the pages.
+  const settingEntries: SettingsSearchEntry[] = settingSearchTargets(t).map(({ id, view, ...entry }) => {
+    const parent = parentOf(view)
+
+    return {
+      ...entry,
+      context: parent?.label ?? view,
+      icon: parent?.icon ?? Settings2,
+      id: `setting:${id}`,
+      target: { setting: id, view }
+    }
+  })
+
+  // A page named after its one setting (Appearance › Theme) would show up as
+  // two identical rows; the setting wins because it lands on the row itself.
+  const settingLabels = new Set(settingEntries.map(entry => `${entry.context}\u0000${entry.label}`))
+
+  const subpageEntries: SettingsSearchEntry[] = parents
     .flatMap(parent =>
       settingsSubpages(parent.view).map(page => ({
         context: parent.label,
@@ -171,23 +175,8 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     .filter(entry => !settingLabels.has(`${entry.context}\u0000${entry.label}`))
 
   return {
-    subpageEntries: [
-      ...subpageEntries,
-      ...(window.hermesDesktop?.hudModifier
-        ? [
-            {
-              context: t.keybinds.title,
-              icon: Settings2,
-              id: 'setting:hud-modifier',
-              keywords: ['HUD', 'summon', 'modifier', 'tap', 'Ctrl', 'Alt', 'Command', 'Option'],
-              label: t.settings.hudModifier.title,
-              description: t.settings.hudModifier.description,
-              target: { view: 'keybinds' as const, subpage: 'hud-gesture', setting: 'hud-modifier' }
-            }
-          ]
-        : [])
-    ],
-    appearanceEntries,
+    subpageEntries,
+    settingEntries,
     configEntries,
     credentialEntries,
     pluginEntries

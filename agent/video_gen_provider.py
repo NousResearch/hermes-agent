@@ -30,12 +30,12 @@ logger = logging.getLogger(__name__)
 
 # Advertised as an enum hint in the tool schema; providers may accept a narrower
 # or wider set and are responsible for clamping.
-COMMON_ASPECT_RATIOS: Tuple[str, ...] = (
+COMMON_ASPECT_RATIOS: tuple[str, ...] = (
     "16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "21:9"
 )
 DEFAULT_ASPECT_RATIO = "16:9"
 
-COMMON_RESOLUTIONS: Tuple[str, ...] = ("480p", "540p", "720p", "768p", "1080p")
+COMMON_RESOLUTIONS: tuple[str, ...] = ("480p", "540p", "720p", "768p", "1080p")
 DEFAULT_RESOLUTION = "720p"
 
 
@@ -44,7 +44,7 @@ class VideoGenProvider(CatalogProviderBase):
     and :meth:`generate`. ``list_models`` entries are **model families** and may
     add ``speed`` / ``strengths`` / ``price`` / advisory ``modalities``."""
 
-    def capabilities(self) -> Dict[str, Any]:
+    def capabilities(self) -> dict[str, Any]:
         """Supported features (keys below, all optional) used for soft validation,
         capability-gated params in the dynamic ``video_generate`` schema, and the
         picker. Default fails closed: text-only, no optional features."""
@@ -58,25 +58,28 @@ class VideoGenProvider(CatalogProviderBase):
     @abc.abstractmethod
     def generate(
         self, prompt: str, *, model: Optional[str] = None, image_url: Optional[str] = None,
-        reference_image_urls: Optional[List[str]] = None, duration: Optional[int] = None,
+        reference_image_urls: Optional[list[str]] = None, duration: Optional[int] = None,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO, resolution: str = DEFAULT_RESOLUTION,
         negative_prompt: Optional[str] = None, audio: Optional[bool] = None,
         seed: Optional[int] = None, **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate a video from a prompt, or animate ``image_url`` when given; return
         :func:`success_response` / :func:`error_response`. Unknown ``kwargs`` MUST be
         ignored. Known optional kwarg ``upscale`` (bool): a post-generation high-res
         pass; providers that honor it report ``upscaled: True`` in ``extra``."""
 
 
+_GENERATED_VIDEO_KIND = f"{provider_media.GENERATED_SUBDIR}/videos"
+
+
 def save_b64_video(b64_data: str,*, prefix: str="video", extension: str="mp4") -> Path:
-    """Decode base64 video data into ``$HERMES_HOME/cache/videos/``; return the path."""
-    return provider_media.save_b64("videos", b64_data, prefix=prefix, extension=extension)
+    """Decode base64 video data into ``$HERMES_HOME/cache/generated/videos/``; return the path."""
+    return provider_media.save_b64(_GENERATED_VIDEO_KIND, b64_data, prefix=prefix, extension=extension)
 
 
 def save_bytes_video(raw: bytes,*, prefix: str="video", extension: str="mp4") -> Path:
     """Write raw video bytes (e.g. an HTTP download body) to the cache."""
-    return provider_media.save_bytes("videos", raw, prefix=prefix, extension=extension)
+    return provider_media.save_bytes(_GENERATED_VIDEO_KIND, raw, prefix=prefix, extension=extension)
 
 
 _URL_VIDEO_CONTENT_TYPES = {
@@ -90,16 +93,16 @@ def save_url_video(
     prefix: str = "video",
     timeout: float = 180.0,
     max_bytes: int = 200 * 1024 * 1024,
-    headers: Optional[Dict[str, str]] = None,
+    headers: Optional[dict[str, str]] = None,
     require_video_content_type: bool = False,
     trusted_origin: bool = False,
 ) -> Path:
-    """Download an (often ephemeral) video URL into ``$HERMES_HOME/cache/videos/``;
+    """Download an (often ephemeral) video URL into ``$HERMES_HOME/cache/generated/videos/``;
     raises on network / HTTP / oversize / empty errors so callers can fall back to the URL.
     ``trusted_origin`` is only for URLs built from the operator's configured provider
     ``base_url`` (see ``provider_media.save_url``)."""
     return provider_media.save_url(
-        "videos", url, prefix=prefix, timeout=timeout, max_bytes=max_bytes,
+        _GENERATED_VIDEO_KIND, url, prefix=prefix, timeout=timeout, max_bytes=max_bytes,
         chunk_size=256 * 1024, content_types=_URL_VIDEO_CONTENT_TYPES,
         url_extensions=("mp4", "webm", "mov", "mkv"), default_extension="mp4",
         label="Video", empty_error="Video at {url} was empty (0 bytes).",
@@ -110,10 +113,10 @@ def save_url_video(
 
 def success_response(
     *, video: str, model: str, prompt: str, modality: str = "text", aspect_ratio: str = "",
-    duration: int = 0, provider: str, extra: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    duration: int = 0, provider: str, extra: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """Uniform success dict; ``extra`` keys are added without overriding standard ones."""
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "success": True, "video": video, "model": model, "prompt": prompt, "modality": modality,
         "aspect_ratio": aspect_ratio, "duration": int(duration) if duration else 0, "provider": provider,
     }
@@ -125,7 +128,7 @@ def success_response(
 def error_response(
     *, error: str, error_type: str = "provider_error", provider: str = "", model: str = "",
     prompt: str = "", aspect_ratio: str = "",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build a uniform error response dict."""
     return {
         "success": False, "video": None, "error": error, "error_type": error_type, "model": model,
@@ -159,7 +162,7 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
     def is_available(self) -> bool:
         return bool(self._api_key())
 
-    def _create_and_poll(self, client: Any, call_kwargs: Dict[str, Any]) -> Any:
+    def _create_and_poll(self, client: Any, call_kwargs: dict[str, Any]) -> Any:
         """Create the job and poll to a terminal status (any); raise
         :class:`TimeoutError` when ``_poll_deadline_s`` passes first."""
         video = client.videos.create(**call_kwargs)
@@ -181,11 +184,11 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
 
     def generate(
         self, prompt: str, *, model: Optional[str] = None, image_url: Optional[str] = None,
-        reference_image_urls: Optional[List[str]] = None, duration: Optional[int] = None,
+        reference_image_urls: Optional[list[str]] = None, duration: Optional[int] = None,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO, resolution: str = DEFAULT_RESOLUTION,
         negative_prompt: Optional[str] = None, audio: Optional[bool] = None,
         seed: Optional[int] = None, **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if not prompt or not prompt.strip():
             return error_response(error="prompt is required", error_type="invalid_request", provider=self.name)
         if not self._api_key():
@@ -196,7 +199,7 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
             import openai
         except ImportError:
             return error_response(
-                error="openai Python package not installed (pip install openai)",
+                error="openai Python package not installed. Run: hermes pm repair",
                 error_type="missing_dependency", provider=self.name,
             )
 
@@ -207,7 +210,7 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
                 error_type="no_model", provider=self.name,
             )
 
-        def fail(error: str, error_type: str) -> Dict[str, Any]:
+        def fail(error: str, error_type: str) -> dict[str, Any]:
             return error_response(
                 error=error, error_type=error_type, provider=self.name, model=model_id, prompt=prompt,
                 aspect_ratio=aspect_ratio,
@@ -223,7 +226,7 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
             }.items()
             if v is not None
         }
-        call_kwargs: Dict[str, Any] = {"model": model_id, "prompt": prompt}
+        call_kwargs: dict[str, Any] = {"model": model_id, "prompt": prompt}
         if duration:
             call_kwargs["seconds"] = str(duration)
         if resolution:
@@ -235,7 +238,7 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
         # must not swallow a local/custom ``<NAME>_BASE_URL`` (#64888).
         from agent.process_bootstrap import build_keepalive_http_client
 
-        client_kwargs: Dict[str, Any] = {"api_key": self._api_key(), "base_url": self._base_url()}
+        client_kwargs: dict[str, Any] = {"api_key": self._api_key(), "base_url": self._base_url()}
         http_client = build_keepalive_http_client(client_kwargs["base_url"])
         if http_client is not None:
             client_kwargs["http_client"] = http_client
@@ -243,7 +246,7 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
         try:
             try:
                 video = self._create_and_poll(client, call_kwargs)
-            except Exception as exc:  # noqa: BLE001 - surface any SDK/API/timeout failure uniformly
+            except Exception as exc:
                 logger.debug("%s video generation failed", self.name, exc_info=True)
                 return fail(f"{self.name} video generation failed: {exc}", "api_error")
 
@@ -269,7 +272,7 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
                 else:
                     raw = client.videos.download_content(video.id).read()
                     video_ref = str(save_bytes_video(raw, prefix=self.name))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 if not url:
                     return fail(f"{self.name} video job succeeded but no output could be retrieved: {exc}", "empty_response")
                 logger.debug("%s: saving video locally failed (%s); returning URL", self.name, exc)
@@ -284,13 +287,3 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
             close = getattr(client, "close", None)
             if callable(close):
                 close()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import base64  # noqa: F401,E402
-import datetime  # noqa: F401,E402
-import uuid  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

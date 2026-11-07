@@ -8,7 +8,7 @@ These tests pin the new behavior: reads and writes land in the REQUESTED
 profile's HERMES_HOME, and the dashboard's own profile stays untouched.
 """
 import pytest
-import yaml
+import hermes_yaml as yaml
 import hermes_cli.web_server_gateway as _web_server_gateway
 import hermes_cli.web_server_profiles as _web_server_profiles
 
@@ -86,11 +86,80 @@ class TestProfileScopedSkills:
     def test_scope_restores_module_globals(self, client, isolated_profiles):
         """The SKILLS_DIR swap is per-request; the module global must be
         restored even after a scoped call (cron-style locked swap)."""
-        import tools.skills_tool as skills_tool
+        from tools import skills_tool
 
         before = skills_tool.SKILLS_DIR
         client.get("/api/skills", params={"profile": "worker_alpha"})
         assert skills_tool.SKILLS_DIR == before
+
+    @pytest.mark.parametrize("method,path,body", [
+        ("PUT", "/api/learning/node", {"id": "shared-skill", "content": "EDITED"}),
+        ("DELETE", "/api/learning/node", {"id": "shared-skill"}),
+        ("PUT", "/api/skills/content", {"name": "shared-skill", "content": "EDITED"}),
+        ("POST", "/api/skills", {"name": "shared-skill-2", "content": "EDITED"}),
+    ])
+    def test_query_profile_scopes_skill_writes(self, client, isolated_profiles, method, path, body):
+        """A shared-backend Desktop names the profile in the query only; the write must land in
+        that profile and leave the same-named skill of the dashboard's own profile alone."""
+        skill_md = (
+            "---\nname: {name}\ndescription: edited\n---\n\n# EDITED\n").format(
+                name=body.get("name", body.get("id")))
+        if "content" in body:
+            body = {**body, "content": skill_md}
+        for home in isolated_profiles.values():
+            _write_skill(home / "skills", "shared-skill")
+        default_md = isolated_profiles["default"] / "skills" / "shared-skill" / "SKILL.md"
+        before = default_md.read_text()
+
+        resp = client.request(method, path, params={"profile": "worker_alpha"}, json=body)
+
+        assert resp.status_code == 200, resp.text
+        worker_skills = isolated_profiles["worker_alpha"] / "skills"
+        if method == "DELETE":
+            assert not (worker_skills / "shared-skill").exists()
+        else:
+            target = body.get("name", body.get("id"))
+            assert "# EDITED" in (worker_skills / target / "SKILL.md").read_text()
+        assert default_md.read_text() == before
+        assert not (isolated_profiles["default"] / "skills" / "shared-skill-2").exists()
+
+    def test_lock_round_trips_in_target_profile_and_list_carries_it(
+            self, client, isolated_profiles, monkeypatch):
+        """PUT /api/skills/lock keys the record by DIRECTORY (what the write guards resolve)
+        in the requested profile; GET /api/skills maps it back onto the row's load name."""
+        from tools import skill_usage
+
+        worker_skills = isolated_profiles["worker_alpha"] / "skills"
+        d = worker_skills / "dir-name"  # declared name differs from the directory
+        d.mkdir()
+        (d / "SKILL.md").write_text("---\nname: shown-name\ndescription: x\n---\n\n# x\n")
+
+        resp = client.put("/api/skills/lock", params={"profile": "worker_alpha"},
+                          json={"name": "shown-name", "locked": True})
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"ok": True, "name": "shown-name", "locked": True}
+        monkeypatch.setenv("HERMES_HOME", str(isolated_profiles["worker_alpha"]))
+        assert skill_usage.is_locked("dir-name")
+        monkeypatch.setenv("HERMES_HOME", str(isolated_profiles["default"]))
+        assert not skill_usage.is_locked("dir-name")
+
+        rows = client.get("/api/skills", params={"profile": "worker_alpha"}).json()
+        assert {r["name"]: r["locked"] for r in rows} == {"worker-skill": False, "shown-name": True}
+
+        resp = client.put("/api/skills/lock", params={"profile": "worker_alpha"},
+                          json={"name": "shown-name", "locked": False})
+        assert resp.status_code == 200
+        monkeypatch.setenv("HERMES_HOME", str(isolated_profiles["worker_alpha"]))
+        assert not skill_usage.is_locked("dir-name")
+
+    def test_lock_unknown_skill_404_and_corrupt_sidecar_lists_unlocked(
+            self, client, isolated_profiles):
+        resp = client.put("/api/skills/lock", json={"name": "ghost", "locked": True})
+        assert resp.status_code == 404
+        (isolated_profiles["default"] / "skills" / ".usage.json").write_text("{not json")
+        resp = client.get("/api/skills")
+        assert resp.status_code == 200
+        assert [r["locked"] for r in resp.json()] == [False]
 
 
 class TestProfileScopedHubActions:
@@ -100,7 +169,7 @@ class TestProfileScopedHubActions:
         """Hub installs must go through a fresh ``hermes -p <profile>``
         subprocess — the in-process scope can't reach skills_hub's
         import-time SKILLS_DIR binding."""
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         calls = []
 
@@ -131,3 +200,35 @@ class TestProfileScopedHubActions:
             json={"identifier": "official/demo", "profile": "ghost"},
         )
         assert resp.status_code == 404
+
+    def test_hub_install_scoped_to_default_still_carries_the_selector(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """``default`` is a real named profile, not an alias for "the dashboard's own".
+        A pooled ``hermes -p worker_alpha serve`` dashboard answering a hub action with
+        ``profile=default`` must still emit ``-p default``: without it the child's env
+        carries this process's home verbatim and the install lands on worker_alpha."""
+        calls = []
+
+        class _FakeProc:
+            pid = 4242
+
+        def _fake_spawn(subcommand, name):
+            calls.append(list(subcommand))
+            return _FakeProc()
+
+        # Ambient home of a dashboard serving under the named profile.
+        monkeypatch.setenv("HERMES_HOME", str(isolated_profiles["worker_alpha"]))
+        monkeypatch.setattr(_web_server_gateway, "_spawn_hermes_action", _fake_spawn)
+        resp = client.post(
+            "/api/skills/hub/install",
+            json={"identifier": "official/demo", "profile": "default"},
+        )
+        assert resp.status_code == 200
+        assert calls == [
+            ["-p", "default", "skills", "install", "official/demo", "--yes"]
+        ]
+        # The spawn-path env pin must land the child on the default home, not the
+        # ambient one it would inherit from a selector-less argv.
+        env = _web_server_gateway._profile_action_environment(calls[0])
+        assert env["HERMES_HOME"] == str(isolated_profiles["default"])

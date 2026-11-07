@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import type { ComponentProps } from 'react'
+import { type ComponentProps, useCallback, useEffect } from 'react'
 
 import { TreeSkeleton } from '@/components/chat/skeletons'
 import { ErrorBoundary } from '@/components/error-boundary'
@@ -10,10 +10,12 @@ import { useDelayedTrue } from '@/hooks/use-delayed-true'
 import { useI18n } from '@/i18n'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
+import { refreshRepoStatus, registerRepoStatusCwd } from '@/store/coding-status'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
-import { $currentCwd, $selectedStoredSessionId, $workspaceCwdOwner } from '@/store/session'
+import { openFolderAsProject } from '@/store/projects'
+import { $focusedWorkspaceCwd } from '@/store/session-states'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
@@ -29,14 +31,8 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
   const { t } = useI18n()
   const r = t.rightSidebar
   const panesFlipped = useStore($panesFlipped)
-  const currentCwd = useStore($currentCwd).trim()
-  const selectedStoredSessionId = useStore($selectedStoredSessionId)
-  const workspaceCwdOwner = useStore($workspaceCwdOwner)
-
-  // A transition intentionally retains the old CWD until the new session
-  // confirms its workspace. Do not issue a filesystem read against that path:
-  // under a gateway switch it may belong to a different remote machine.
-  const hasWorkspace = Boolean(currentCwd) && (workspaceCwdOwner ?? null) === (selectedStoredSessionId ?? null)
+  const targetCwd = useStore($focusedWorkspaceCwd)
+  const hasWorkspace = Boolean(targetCwd)
 
   const {
     collapseAll,
@@ -51,7 +47,26 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
     setNodeOpen,
     setShowIgnored,
     showIgnored
-  } = useProjectTree(hasWorkspace ? currentCwd : '')
+  } = useProjectTree(hasWorkspace ? targetCwd : '')
+
+  useEffect(() => {
+    const activeCwd = effectiveCwd || (hasWorkspace ? targetCwd : '')
+
+    if (!activeCwd) {
+      return
+    }
+
+    return registerRepoStatusCwd(activeCwd)
+  }, [effectiveCwd, hasWorkspace, targetCwd])
+
+  const handleRefresh = useCallback(() => {
+    void refreshRoot()
+    const activeCwd = effectiveCwd || (hasWorkspace ? targetCwd : '')
+
+    if (activeCwd) {
+      void refreshRepoStatus(activeCwd)
+    }
+  }, [effectiveCwd, hasWorkspace, refreshRoot, targetCwd])
 
   const cwdName =
     effectiveCwd
@@ -100,7 +115,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
         onLoadChildren={loadChildren}
         onNodeOpenChange={setNodeOpen}
         onPreviewFile={previewFile}
-        onRefresh={() => void refreshRoot()}
+        onRefresh={handleRefresh}
         onToggleShowIgnored={() => setShowIgnored(!showIgnored)}
         openState={openState}
         showIgnored={showIgnored}
@@ -149,10 +164,22 @@ function FilesystemTab({
   const { t } = useI18n()
   const r = t.rightSidebar
 
-  // No working directory (a bare/detached chat) → no tree, just a terse hint.
-  // Switching workspace is a project/worktree action, never a raw folder picker.
+  // No working directory (a bare/detached chat) → no tree, but keep a way back
+  // into a folder (#53004): the projects paradigm removed the old folder picker,
+  // which stranded global sessions on a dead-end "No project open" pane. The
+  // affordance is the project-shaped one — ⌘O's open-folder-as-project flow,
+  // which upserts/enters the project and anchors a fresh session at the picked
+  // folder — entirely decoupled from $currentCwd.
   if (!hasWorkspace) {
-    return <PaneEmptyState label={r.noProjectOpen} />
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 text-center">
+        <SidebarPanelLabel className="pl-0 text-(--ui-text-quaternary)">{r.noProjectOpen}</SidebarPanelLabel>
+        <Button className="h-7 gap-1.5 text-xs" onClick={() => void openFolderAsProject()} size="sm" variant="outline">
+          <Codicon name="folder-opened" size="0.8125rem" />
+          {r.openFolder}
+        </Button>
+      </div>
+    )
   }
 
   return (

@@ -23,7 +23,6 @@ from agent.system_prompt import (
     build_system_prompt_parts,
 )
 
-
 def _stable_prompt(agent):
     with (
         patch("agent.prompt_builder.load_soul_md", return_value=""),
@@ -31,7 +30,6 @@ def _stable_prompt(agent):
         patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
     ):
         return build_system_prompt_parts(agent)["stable"]
-
 
 def _make_agent(platform="", **overrides):
     base = dict(
@@ -54,14 +52,6 @@ def _make_agent(platform="", **overrides):
     base.update(overrides)
     return SimpleNamespace(**base)
 
-
-
-
-
-
-
-
-
 class TestPlatformHintResolutionInStablePrompt:
     """End-to-end through ``build_system_prompt_parts`` — the platform tag on
     the agent drives BOTH which PLATFORM_HINTS entry gets appended AND
@@ -77,7 +67,6 @@ class TestPlatformHintResolutionInStablePrompt:
         assert "Runtime surface:" not in stable
         assert "embedded terminal pane" not in stable
 
-
     def test_embedded_tui_yields_tui_hint_with_clarifier(self, monkeypatch):
         monkeypatch.setenv("HERMES_DESKTOP", "1")
         monkeypatch.setenv("HERMES_DESKTOP_TERMINAL", "1")
@@ -85,8 +74,6 @@ class TestPlatformHintResolutionInStablePrompt:
         assert PLATFORM_HINTS["tui"] in stable
         assert "embedded terminal pane" in stable
         assert "Shift-drag" in stable or "Option-drag" in stable or "⌥" in stable
-
-
 
 class TestEmbeddedTuiPaneClarifier:
     """When ``HERMES_DESKTOP_TERMINAL=1``, a standalone ``hermes --tui`` is
@@ -97,10 +84,6 @@ class TestEmbeddedTuiPaneClarifier:
     string (which is shared with every standalone TUI session and must
     stay byte-stable)."""
 
-
-
-
-
     @pytest.mark.parametrize("val", ["0", "false", ""])
     def test_falsy_env_does_not_trigger_clarifier(self, monkeypatch, val):
         monkeypatch.setenv("HERMES_DESKTOP_TERMINAL", val)
@@ -108,5 +91,3 @@ class TestEmbeddedTuiPaneClarifier:
         assert out == PLATFORM_HINTS["tui"], (
             f"HERMES_DESKTOP_TERMINAL={val!r} should not trigger clarifier"
         )
-
-

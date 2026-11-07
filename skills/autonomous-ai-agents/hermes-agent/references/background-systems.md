@@ -98,4 +98,6 @@ sessions still have zero `kanban_*` schema footprint unless configured.
   `HERMES_KANBAN_BOARD` pinned in env); tenant is a soft namespace
   within a board for workspace-path + memory-key isolation.
 
+Project-linked tasks (worktree + branch by default under a Project's primary folder, when it has one):
+`references/projects-and-folders.md`.
 User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban

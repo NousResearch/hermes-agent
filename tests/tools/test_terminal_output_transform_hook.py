@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 import hermes_cli.plugins as plugins_mod
 import tools.terminal_tool as terminal_tool_module
 from tools.environments.local import LocalEnvironment
@@ -19,7 +21,6 @@ def _make_env_config(tmp_path, **overrides):
         "host_cwd": None,
         "modal_mode": "auto",
         "docker_image": "",
-        "singularity_image": "",
         "modal_image": "",
         "daytona_image": "",
     }
@@ -91,6 +92,7 @@ def test_terminal_output_transform_still_runs_strip_and_redact(monkeypatch, tmp_
     assert "abc123def456" not in result["output"]  # secret body is gone
 
 
+@pytest.mark.platforms("linux")
 def test_large_process_output_is_bounded_before_sudo_and_plugin_hooks(
     monkeypatch, tmp_path
 ):
@@ -170,7 +172,7 @@ def test_terminal_output_transform_does_not_change_approval_or_exit_code_meaning
 
 
 def test_terminal_output_transform_integration_with_real_plugin(monkeypatch, tmp_path):
-    import yaml
+    import hermes_yaml as yaml
 
     hermes_home = Path(os.environ["HERMES_HOME"])
     plugins_dir = hermes_home / "plugins"

@@ -1,12 +1,31 @@
 // IPC surface for the pop-out pet overlay (mascot window). Extracted from
 // main.ts; window handles stay injected because main.ts owns their lifecycle.
-import { type BrowserWindow, ipcMain } from 'electron'
+import { type BrowserWindow, ipcMain, screen } from 'electron'
+
+import { petOverlayClickThrough, resolvePetOverlayBounds } from './pet-overlay'
 
 export interface PetOverlayIpcDeps {
   getMainWindow: () => BrowserWindow | null
   getPetOverlayWindow: () => BrowserWindow | null
   openPetOverlay: (bounds: unknown) => void
   closePetOverlay: () => void
+}
+
+// Where the overlay may actually sit: `bounds` kept wholly on a connected
+// display, or re-centered on the main window's display when it is on none
+// (see resolvePetOverlayBounds). Null for garbage bounds.
+export function placePetOverlay(bounds, mainWindow: BrowserWindow | null) {
+  let anchor = null
+
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      anchor = mainWindow.getContentBounds()
+    }
+  } catch {
+    // Resolve falls back to the primary display when the anchor is unknown.
+  }
+
+  return resolvePetOverlayBounds(bounds, screen.getAllDisplays(), anchor)
 }
 
 export function registerPetOverlayIpc({
@@ -40,6 +59,13 @@ export function registerPetOverlayIpc({
       // Fall back to raw bounds if the window geometry is unavailable.
     }
 
+    // Both paths land wholly inside a display's work area: a fresh pop-out near
+    // the window edge or a spot saved on a since-unplugged monitor would
+    // otherwise open the transparent, non-activating overlay (mostly)
+    // off-screen where the pet can't be found. The corrected bounds are echoed
+    // so the renderer persists the on-screen spot (self-healing).
+    screenBounds = placePetOverlay(screenBounds, mainWindow) ?? screenBounds
+
     openPetOverlay(screenBounds)
 
     return { ok: true, bounds: screenBounds }
@@ -62,9 +88,14 @@ export function registerPetOverlayIpc({
       return
     }
 
+    const next = placePetOverlay(bounds, getMainWindow())
+
+    if (!next) {
+      return
+    }
+
     const win = petOverlayWindow
-    const width = Math.max(80, Math.round(bounds.width))
-    const height = Math.max(80, Math.round(bounds.height))
+    const { width, height } = next
     const [curW, curH] = win.getSize()
     const resizing = width !== curW || height !== curH
 
@@ -72,7 +103,7 @@ export function registerPetOverlayIpc({
       win.setResizable(true)
     }
 
-    win.setBounds({ x: Math.round(bounds.x), y: Math.round(bounds.y), width, height })
+    win.setBounds(next)
 
     if (resizing) {
       win.setResizable(false)
@@ -83,6 +114,11 @@ export function registerPetOverlayIpc({
   // the sprite so transparent margins pass clicks to whatever is behind.
   ipcMain.on('hermes:pet-overlay:ignore-mouse', (_event, ignore) => {
     const petOverlayWindow = getPetOverlayWindow()
+
+    // No forward on Linux: an ignoring overlay could never be re-armed.
+    if (Boolean(ignore) && !petOverlayClickThrough()) {
+      return
+    }
 
     if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
       petOverlayWindow.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
@@ -144,6 +180,12 @@ export function registerPetOverlayIpc({
 
       mainWindow.show()
       mainWindow.focus()
+    }
+
+    // A drag/resize end reports the rect the overlay asked for; persist where
+    // set-bounds actually put it (clamped on-screen), not the raw request.
+    if (payload && payload.type === 'bounds') {
+      payload = { ...payload, bounds: placePetOverlay(payload.bounds, mainWindow) ?? payload.bounds }
     }
 
     mainWindow.webContents.send('hermes:pet-overlay:control', payload)

@@ -9,12 +9,10 @@ the view-core tests plus manual verification).
 
 from __future__ import annotations
 
-
 import pytest
 
 from agent.account_usage import build_credits_view
 from hermes_cli.nous_account import NousPortalAccountInfo, NousPaidServiceAccessInfo
-
 
 def _account(**kwargs) -> NousPortalAccountInfo:
     kwargs.setdefault("logged_in", True)
@@ -22,7 +20,6 @@ def _account(**kwargs) -> NousPortalAccountInfo:
     kwargs.setdefault("fresh", True)
     kwargs.setdefault("portal_base_url", "https://portal.example.test")
     return NousPortalAccountInfo(**kwargs)
-
 
 @pytest.fixture
 def _logged_in_account(monkeypatch):
@@ -40,11 +37,7 @@ def _logged_in_account(monkeypatch):
 
     return _install
 
-
 # ── build_credits_view core ─────────────────────────────────────────────────
-
-
-
 
 def test_view_built_with_org_pinned_url_and_identity(_logged_in_account):
     _logged_in_account(
@@ -69,19 +62,10 @@ def test_view_built_with_org_pinned_url_and_identity(_logged_in_account):
     assert view.depleted is False
     assert "$30.00" in "\n".join(view.balance_lines)
 
-
-
-
-
-
-
-
 # ── gateway _handle_topup_command (the messaging billing surface) ────────────
-
 
 class _FakeEvent:
     pass
-
 
 def _make_gateway_stub():
     """Minimal object exposing the mixin's _handle_topup_command."""
@@ -93,13 +77,4 @@ def _make_gateway_stub():
 
     return _Stub()
 
-
-
-
-
-
-
-
 # ── command registry ────────────────────────────────────────────────────────
-
-

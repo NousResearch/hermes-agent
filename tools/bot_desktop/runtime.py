@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import math
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -24,9 +26,11 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
+from agent.deadline import poll_until
 from hermes_constants import get_hermes_home
+from tools.bot_desktop import placement
 
 logger = logging.getLogger(__name__)
 
@@ -140,18 +144,20 @@ class DesktopStatus:
     socket: Optional[str]
     geometry: str
     install_command: Optional[str]
-    browser: Optional[str]  # headed Chromium the dock's Browser icon and agent-browser share; None = no headed browser
+    browser: Optional[str]  # headed Chromium the dock's Browser icon and the agent's browser share; None = no headed browser
     blocker: Optional[str] = None  # why start() would refuse right now (memory); None = may start
     memory_available_mb: Optional[int] = None
     memory_limit_mb: Optional[int] = None
+    placement: str = "gateway"  # "gateway" | "terminal:<backend>" — where Xvnc runs
+    image_switch: Optional[dict[str, object]] = None  # pending default-image switch the pane can approve
 
-    def as_dict(self) -> Dict[str, object]:
+    def as_dict(self) -> dict[str, object]:
         return dict(self.__dict__)
 
 
 def _read(path: Path) -> Optional[str]:
     try:
-        return path.read_text(encoding="utf-8").strip() or None
+        return path.read_text(encoding="utf-8-sig").strip() or None
     except OSError:
         return None
 
@@ -174,10 +180,10 @@ def _create_time(pid: int) -> Optional[float]:
         return None
 
 
-def _launcher_pid() -> Optional[int]:
-    """The live launcher's pid, or None. ``launcher.pid`` holds ``"<pid> <create_time>"``: a recycled pid
-    with a different start time is somebody else's process and must never be reported as ours nor
-    killed by :func:`stop`. The pre-identity single-number format is treated as not running."""
+def _launcher_identity() -> Optional[tuple[int, float]]:
+    """``(pid, create_time)`` of the live launcher, or None. ``launcher.pid`` holds ``"<pid> <create_time>"``:
+    a recycled pid with a different start time is somebody else's process and must never be reported as
+    ours nor killed by :func:`stop`. The pre-identity single-number format is treated as not running."""
     raw = _read(state_dir() / "launcher.pid")
     pid_s, _, born_s = (raw or "").partition(" ")
     if not pid_s.isdigit() or not born_s:
@@ -187,7 +193,13 @@ def _launcher_pid() -> Optional[int]:
     except ValueError:
         return None
     actual = _create_time(pid)
-    return pid if actual is not None and abs(actual - born) < 0.01 and _pid_alive(pid) else None
+    return (pid, born) if actual is not None and abs(actual - born) < 0.01 and _pid_alive(pid) else None
+
+
+def _launcher_pid() -> Optional[int]:
+    """The live launcher's pid, or None (see :func:`_launcher_identity`)."""
+    identity = _launcher_identity()
+    return identity[0] if identity is not None else None
 
 
 def _recorded_launcher_pid() -> Optional[int]:
@@ -202,7 +214,7 @@ _X_UNIX_TABLE = Path("/proc/net/unix")  # the kernel's list of bound Unix socket
 
 def _x_lock_pid(num: int) -> Optional[int]:
     try:
-        return int((_X_LOCK_DIR / f".X{num}-lock").read_text(encoding="utf-8").strip())
+        return int((_X_LOCK_DIR / f".X{num}-lock").read_text(encoding="utf-8-sig").strip())
     except (OSError, ValueError):
         return None
 
@@ -212,7 +224,7 @@ def _x_socket_bound(num: int) -> bool:
     kernel drops it only when the process exits. A /tmp reaper can remove the lock file under a live Xvnc,
     and only this binding then still says the number is taken (a new server on it dies 'already running')."""
     try:
-        lines = _X_UNIX_TABLE.read_text(encoding="utf-8").splitlines()
+        lines = _X_UNIX_TABLE.read_text(encoding="utf-8-sig").splitlines()
     except OSError:
         return False
     # no-tmp: ok — detects the X server's display socket at the path the X11 protocol fixes
@@ -291,13 +303,13 @@ def _kill_group_then_wait(pgid: Optional[int], pid: int, grace: float = 2.0) -> 
         with contextlib.suppress(ChildProcessError, OSError):
             os.waitpid(pid, os.WNOHANG)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
 
-    _signal(signal.SIGTERM)
-    deadline = time.monotonic() + grace
-    while time.monotonic() < deadline:
+    def _gone() -> bool:
         _reap_if_ours()
-        if not _anything_left():
-            return
-        time.sleep(0.05)
+        return not _anything_left()
+
+    _signal(signal.SIGTERM)
+    if poll_until(_gone, grace, 0.05):
+        return
     _signal(signal.SIGKILL)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
     time.sleep(0.1)
     _reap_if_ours()
@@ -338,7 +350,7 @@ def _allocate_display() -> int:
         return _pick_display()
 
 
-def desktop_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def desktop_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
     """``base_env`` (default ``os.environ``) with this profile's DISPLAY/XAUTHORITY/DBUS_SESSION_BUS_ADDRESS
     merged in when its desktop is running. Unchanged otherwise, so hosts with a real seat keep it.
     Pure: never starts anything (it is called from env builders, status probes and tests)."""
@@ -348,18 +360,29 @@ def desktop_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         touch_activity()  # a browser / cua-driver spawn is the agent using its screen
         env.update(published)
         env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
-        from tools.bot_desktop.browser import env_for_agent
-        env_for_agent(env)  # same binary + user-data-dir as the dock's Browser icon
     return env
 
 
 def ensure_started_for_tool() -> None:
-    """Tool-boundary hook (``computer_use`` dispatch and the headed Chromium spawn sites of the browser tool): with
-    ``bot_desktop.auto_start`` (opt-in, default off) a Linux host that has NO display and the packages installed gets
-    its screen started on first use, so a headless gateway works the first time instead of answering "no DISPLAY is
-    set". Failure is not an error here; the tool's own "no display" diagnosis is the right message then."""
-    if published_env():
+    """Tool-boundary hook (``computer_use`` dispatch and the headed Chromium spawn sites of the browser tool).
+
+    Under ``terminal`` placement the sandbox screen is brought up on first use unconditionally: the sandbox is
+    the boundary the user chose, a screen inside it touches nothing outside it, and the tools below refuse
+    rather than run on the host when it is not up. On the gateway host, ``bot_desktop.auto_start`` (opt-in,
+    default off) starts a Linux host's screen when it has NO display and the packages installed, so a headless
+    gateway works the first time. Host failure is not an error here (the tool's own "no display" diagnosis is
+    the right message then); a sandbox start failure is logged and left for :func:`tool_placement` to raise."""
+    if published_env().get("DISPLAY"):
         touch_activity()
+        return
+    where = placement.resolve()
+    if where.where == placement.REFUSED:
+        return  # tool_placement() raises the reason at the spawn site
+    if where.where == placement.TERMINAL:
+        try:
+            start()
+        except Exception as exc:
+            logger.info("Bot Desktop sandbox start deferred to the tool: %s", exc)
         return
     if not _should_auto_start(os.environ):
         return
@@ -369,7 +392,23 @@ def ensure_started_for_tool() -> None:
         logger.info("Bot Desktop auto-start skipped: %s", exc)
 
 
-def _should_auto_start(env: Dict[str, str]) -> bool:
+def tool_placement() -> str:
+    """Where the browser / cua-driver a tool is about to spawn MUST run: ``placement.GATEWAY`` or
+    ``placement.TERMINAL``. Policy first, liveness second: a ``terminal`` placement whose screen is down gets
+    it started here (raising with the blocker when it cannot come up) and a ``refused`` placement raises its
+    reason. Neither ever yields the host — a screen that happens to be down is not permission to run the
+    agent's browser outside the sandbox the user chose."""
+    where = placement.resolve()
+    if where.where == placement.REFUSED:
+        raise RuntimeError(where.reason)
+    if where.where == placement.GATEWAY:
+        return placement.GATEWAY
+    if not sandbox_screen_running() or not published_env().get("DISPLAY"):
+        start()
+    return placement.TERMINAL
+
+
+def _should_auto_start(env: dict[str, str]) -> bool:
     if not is_supported_host() or env.get("DISPLAY") or env.get("WAYLAND_DISPLAY"):
         return False
     if missing_binaries():
@@ -382,9 +421,19 @@ def _should_auto_start(env: Dict[str, str]) -> bool:
 # ---- idle auto-stop -------------------------------------------------------------------------------
 # A desktop nobody is using still holds ~220 MiB (plus whatever browser was left open). Every use —
 # a computer_use action, a browser spawn onto the screen, a viewer attached, a human takeover — stamps
-# ``activity``; the gateway's display watcher stops a screen idle past ``bot_desktop.idle_stop_minutes``
-# unless a human holds it. The next use starts it again (auto_start or the pane's Start).
+# ``activity``; :func:`stop_if_idle` stops a screen idle past ``bot_desktop.idle_stop_minutes`` unless a
+# human is using it (see the lease lapse below). Two callers apply it: the gateway's display watcher and
+# the screen's own launcher (``idle_watch``), so a screen whose gateway never came back still stops. The
+# next use starts it again.
 DEFAULT_IDLE_STOP_MINUTES = 30
+# A human holding the screen is never timed out while there is evidence of one: an attached viewer stamps
+# ``activity`` (every RFB update it receives, at most once a minute; the panel clock repaints every minute).
+# A human lease with no stamp for this many windows, and never less than HUMAN_LEASE_ABANDONED_MIN_S, is
+# a link that dropped and never came back, or a corrupt lease file (which reads as human): the screen is
+# stopped like any idle one. The floor keeps a short window (idle_stop_minutes: 0.1) from timing out a
+# human between two viewer stamps, which can be up to about two minutes apart.
+HUMAN_LEASE_ABANDONED_WINDOWS = 4
+HUMAN_LEASE_ABANDONED_MIN_S = 600.0
 
 
 def touch_activity() -> None:
@@ -414,33 +463,84 @@ def idle_stop_seconds() -> float:
         minutes = float(cfg.get("idle_stop_minutes", DEFAULT_IDLE_STOP_MINUTES))
     except (TypeError, ValueError):
         minutes = DEFAULT_IDLE_STOP_MINUTES
-    return max(0.0, minutes) * 60
+    # .inf ("never") is off, like 0, and so are .nan and a window too large to convert to seconds (1e308): none
+    # can ever be due, and the launcher's next-check arithmetic would raise on them and fail start().
+    seconds = minutes * 60
+    return seconds if math.isfinite(seconds) and seconds > 0 else 0.0
 
 
-def stop_if_idle() -> bool:
-    """Stop this profile's screen when it has been idle past the limit and no human holds it. True when
-    it was stopped."""
+def _idle_due(launcher: Optional[tuple[int, float]]) -> Optional[float]:
+    """Idle seconds when the screen is due for the idle stop now, else None. ``launcher`` (``(pid,
+    create_time)``) limits it to that one screen: a replacement started since is never due."""
     limit = idle_stop_seconds()
-    if limit <= 0 or _launcher_pid() is None:
-        return False
+    if limit <= 0 or not is_running():
+        return None
+    if launcher is not None:
+        current = _launcher_identity()
+        if current is None or current[0] != launcher[0] or abs(current[1] - launcher[1]) >= 0.01:
+            return None
     idle = idle_seconds()
     if idle is None or idle < limit:
+        return None
+    from tools.bot_desktop import lease as _bd_lease
+    abandoned_after = max(limit * HUMAN_LEASE_ABANDONED_WINDOWS, HUMAN_LEASE_ABANDONED_MIN_S)
+    if _bd_lease.get().holder == _bd_lease.HUMAN and idle < abandoned_after:
+        return None
+    return idle
+
+
+def stop_if_idle(launcher: Optional[tuple[int, float]] = None) -> bool:
+    """Stop this profile's screen when it has been idle past the limit and no human holds it (a human lease
+    with no use for ``HUMAN_LEASE_ABANDONED_WINDOWS`` windows, and at least ``HUMAN_LEASE_ABANDONED_MIN_S``,
+    counts as abandoned). True when it was stopped. ``launcher`` names the screen the caller judges (the
+    launcher's own check passes it). Stopping a screen for an abandoned human lease also hands that lease back
+    to the agent.
+
+    The decision is taken again under ``start.lock`` before anything is killed: a check that waited on the
+    lock while the screen was stopped and started again (or used) must not kill the screen it finds then."""
+    idle = _idle_due(launcher)
+    if idle is None:
         return False
     from tools.bot_desktop import lease as _bd_lease
-    if _bd_lease.get().holder == _bd_lease.HUMAN:
-        return False
+    held: Optional[_bd_lease.Lease] = None  # the lease the final decision saw
+
+    def still_due() -> bool:
+        nonlocal held
+        # Read before _idle_due reads it: a takeover landing between the two reads then carries a newer
+        # epoch than the one released below, so it is kept instead of being handed back.
+        held = _bd_lease.get()
+        return _idle_due(launcher) is not None
+
     logger.info("Bot Desktop for profile %s idle for %.0f min; stopping", _profile_name(), idle / 60)
-    return stop()
+    if not stop(still_due=still_due):
+        return False
+    if held is not None and held.holder == _bd_lease.HUMAN:
+        # An abandoned human lease stopped the screen. Left in place it would fence the agent out of the next
+        # screen ("a human has control"); only the lease generation judged abandoned goes, so any takeover
+        # since (another viewer, or the same one handing back and taking over again) is kept.
+        try:
+            _bd_lease.release(held.viewer_id, epoch=held.epoch)
+        except OSError as exc:  # the screen is already stopped: a full or read-only home must not undo that
+            logger.warning("Bot Desktop for profile %s stopped, but its abandoned lease was not released: %s",
+                           _profile_name(), exc)
+    return True
 
 
-def published_env() -> Dict[str, str]:
-    """Variables the launcher wrote once Xfce's private bus existed; empty when the desktop is down."""
+def published_env() -> dict[str, str]:
+    """Variables the launcher wrote once Xfce's private bus existed; empty when the desktop is down.
+
+    Pure file reads on the common path: this is called from every browser / cua-driver env builder, so it
+    must not load config (that initializes HERMES_HOME). A sandbox-hosted screen leaves a host-side marker at
+    start; only its presence routes to the sandbox probe."""
+    from tools.bot_desktop import sandbox_host
+    if sandbox_host._read_marker():
+        return _sandbox_published_env()
     if _launcher_pid() is None:
         return {}
     raw = _read(state_dir() / "env")
     if not raw:
         return {}
-    out: Dict[str, str] = {}
+    out: dict[str, str] = {}
     for line in raw.splitlines():
         key, sep, value = line.partition("=")
         if sep:
@@ -449,8 +549,66 @@ def published_env() -> Dict[str, str]:
 
 
 def rfb_socket_path() -> Optional[Path]:
+    """Host path of the RFB socket; None when down OR when the screen lives in a sandbox (use
+    :func:`open_rfb_stream` there: the socket is not on this filesystem)."""
+    from tools.bot_desktop import sandbox_host
+    if sandbox_host._read_marker():
+        return None
     sock = state_dir() / "rfb.sock"
     return sock if _launcher_pid() is not None and sock.exists() else None
+
+
+def in_sandbox() -> bool:
+    """True when this profile's screen is placed inside the terminal backend (policy; reads config)."""
+    return placement.resolve().where == placement.TERMINAL
+
+
+def sandbox_screen_running() -> bool:
+    """True when a sandbox-hosted screen is UP for this profile: the start marker exists AND the sandbox it
+    names is alive — registered in this process, or (after a gateway restart emptied the registry) the
+    marker's recorded container still running. Only a sandbox that is provably gone (its container removed
+    out from under us) drops the marker, so the next start rebuilds instead of the browser exec-ing into a
+    dead container; an unregistered-but-alive one is re-attached by ``_sandbox_env(create=True)`` at the
+    next spawn (the terminal planner reuses the persisted container by label)."""
+    from tools.bot_desktop import sandbox_host
+    marker = sandbox_host._read_marker()
+    if not marker:
+        return False
+    if _sandbox_env(create=False) is not None:
+        return True
+    if sandbox_host.marker_sandbox_alive(marker):
+        return True
+    sandbox_host._marker().unlink(missing_ok=True)
+    return False
+
+
+def _owned_sandbox_env():
+    """The environment hosting the screen the marker records, re-attaching after a restart when the recorded
+    sandbox is still alive; None when there is no marker or its sandbox is gone. Never builds a sandbox for
+    a screen that is not there."""
+    from tools.bot_desktop import sandbox_host
+    marker = sandbox_host._read_marker()
+    if not marker:
+        return None
+    env = _sandbox_env(create=False)
+    if env is not None:
+        return env
+    if sandbox_host.marker_sandbox_alive(marker):
+        return _sandbox_env(create=True)
+    return None
+
+
+def is_running() -> bool:
+    return bool(published_env().get("DISPLAY"))
+
+
+def open_rfb_stream() -> subprocess.Popen:
+    """Popen whose stdin/stdout carry RFB bytes for a sandbox-hosted screen (``in_sandbox()`` only)."""
+    from tools.bot_desktop import sandbox_host
+    env = _sandbox_env(create=False)
+    if env is None:
+        raise RuntimeError("the sandbox hosting this screen is not running")
+    return sandbox_host.open_rfb_stream(env, _profile_name())
 
 
 def geometry() -> str:
@@ -462,6 +620,12 @@ def geometry() -> str:
 def status(profile: Optional[str] = None) -> DesktopStatus:
     from tools.bot_desktop import browser as _bd_browser
     from tools.bot_desktop import resources
+    from tools.bot_desktop import sandbox_host
+    where = placement.resolve()
+    if where.where == placement.TERMINAL or sandbox_host._read_marker():
+        # A screen already running inside a sandbox is reported (and stoppable) even after the placement
+        # setting moved: the recorded owner wins over the current policy until it is stopped.
+        return _sandbox_status(profile, where)
     missing: list[str] = missing_binaries() if is_supported_host() else list(REQUIRED_BINARIES)
     pid = _launcher_pid()
     env = published_env()
@@ -486,6 +650,55 @@ def status(profile: Optional[str] = None) -> DesktopStatus:
     )
 
 
+def _sandbox_status(profile: Optional[str], where) -> DesktopStatus:
+    """Status of a sandbox-placed screen. Package presence is only known once the sandbox exists; before
+    that the pane shows "installed" with the image hint carried in ``install_command`` so Start can explain."""
+    from tools.bot_desktop import sandbox_host
+    env = _owned_sandbox_env() or _sandbox_env(create=False)
+    missing = sandbox_host.missing_binaries(env) if env is not None else []
+    published = sandbox_host.published_env(env, profile or _profile_name()) if env is not None else {}
+    running = bool(published.get("DISPLAY"))
+    # No install_command: the pane's Install button runs apt on the HOST, which is the wrong machine here.
+    # A sandbox missing the stack is a blocker (shown in place of Start) naming the image that has it.
+    blocker = None
+    image_switch = None
+    if missing:
+        advice = sandbox_host.plugin_image_advice(where.backend) or (
+            f"use {sandbox_host.SANDBOX_IMAGE_HINT} as terminal.{where.backend}_image (the default sandbox base "
+            f"plus the desktop stack)")
+        blocker = (f"The terminal backend's sandbox image lacks {', '.join(missing)}. {advice[0].upper()}{advice[1:]}, "
+                   f"or set bot_desktop.placement: gateway.")
+        if where.backend == "docker":
+            # The usual reason on an upgraded install: the persisted container predates the default
+            # flip and was kept on purpose. The pane offers the switch instead of a config hint.
+            from hermes_cli.sandbox_image_switch import pending
+            sw = pending()
+            if sw is not None:
+                image_switch = {"current_image": sw.current_image, "target_image": sw.target_image,
+                                "containers": len(sw.containers)}
+                blocker = (f"Your sandbox container still runs {sw.current_image}, which has no desktop. "
+                           f"Switch it to {sw.target_image}: files in /root and /workspace stay, packages "
+                           f"installed inside the container are reinstalled on demand.")
+    return DesktopStatus(
+        profile=profile or _profile_name(),
+        supported=True,
+        installed=True,
+        missing=missing,
+        running=running,
+        pid=None,
+        display=published.get("DISPLAY"),
+        socket=None,
+        geometry=geometry(),
+        install_command=None,
+        browser=None,
+        blocker=blocker,
+        memory_available_mb=None,
+        memory_limit_mb=None,
+        placement=f"{placement.TERMINAL}:{where.backend}",
+        image_switch=image_switch,
+    )
+
+
 def _profile_name() -> str:
     try:
         from hermes_cli.profiles import get_active_profile_name
@@ -504,11 +717,20 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
     """Start this profile's desktop (idempotent). Blocks until the launcher publishes its env file or
     ``wait_seconds`` pass; raises ``RuntimeError`` naming the blocker.
 
+    ``bot_desktop.placement`` decides WHERE: inside the configured terminal backend (docker/ssh/a streaming plugin backend;
+    ``sandbox_host``), or on the gateway host (the rest of this function). A sandbox backend that cannot host
+    a screen refuses rather than silently falling back to the host beside it.
+
     Two locks: the per-profile ``start.lock``, held from the running-check to the launcher's publish so two
     start() calls for one profile spawn one launcher (the loser sees it running), and the host-wide
     display-allocation lock, held only until this Xvnc has written ``/tmp/.X<n>-lock`` (a second profile
     picking the same number before that would fail and its stale-lock cleanup could remove our socket).
     Holding it for the whole Xfce bring-up serialized every profile's start behind one desktop launch."""
+    where = placement.resolve()
+    if where.where == placement.REFUSED:
+        raise RuntimeError(where.reason)
+    if where.where == placement.TERMINAL:
+        return _start_in_sandbox(wait_seconds)
     if not is_supported_host():
         raise RuntimeError("Bot Desktop runs on Linux gateway hosts only")
     missing = missing_binaries()
@@ -561,8 +783,15 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
         env_file = sd / "env"
         env_file.unlink(missing_ok=True)
 
-        child_env = {k: v for k, v in os.environ.items() if k not in {
-            "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER"}}
+        # The agent drives this desktop and its dock opens a terminal, so it starts from the
+        # scrubbed child env like any other agent child, keeping the user's HOME.
+        from tools.environments.local import served_profile_child_env
+        child_env = served_profile_child_env(inherit_credentials=False)
+        child_env["HOME"] = child_env["HERMES_REAL_HOME"]
+        for key in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER"):
+            child_env.pop(key, None)
+        from hermes_cli._launchers import installation_command
+        from tools.bot_desktop.idle_watch import next_check_in
         child_env.update({
             "HERMES_BD_PROFILE": _profile_name(),
             "HERMES_BD_DISPLAY_NUM": str(num),
@@ -571,17 +800,32 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
             "HERMES_BD_ENV_FILE": str(env_file),
             "HERMES_BD_CONFIG_HOME": str(sd / "xdg"),
             "HERMES_BD_GEOMETRY": geometry(),
+            # The launcher's idle self-stop runs tools.bot_desktop.idle_watch through the install's stable
+            # command (the ``hermes --run-module`` launcher on a store install, which follows Python pin changes
+            # and picks the current dependency generation at every run; this interpreter elsewhere), in this
+            # home, first once the screen could be due (nothing is idle at start). The screen outlives updates,
+            # so the inherited PYTHONPATH generation is never pinned, and on a store install neither is this
+            # interpreter.
+            "HERMES_BD_IDLE_CMD": shlex.join(installation_command(
+                Path(__file__).resolve().parents[2], module="tools.bot_desktop.idle_watch")),
+            "HERMES_BD_HOME": str(get_hermes_home()),
+            "HERMES_BD_IDLE_FIRST_DELAY": str(next_check_in(idle_stop_seconds(), 0.0)),
         })
         from tools.bot_desktop.browser import dock_exec_line, dock_launch
         if (browser := dock_launch()) is not None:
             # The bare executable (the launcher checks it exists) and the ready-made, spec-quoted Exec= line.
             child_env["HERMES_BD_BROWSER_EXEC"] = browser[0]
             child_env["HERMES_BD_BROWSER_EXEC_LINE"] = dock_exec_line(*browser)
-        # Truncated per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise.
-        log = open(sd / "launcher.log", "wb")  # noqa: SIM115 — handed to the child, closed by it
+        # A new file per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise. Not
+        # truncated in place: the old screen's idle check (in a session of its own) may still hold the old file
+        # open, and its late write would land in this one behind a run of NUL bytes.
+        (sd / "launcher.log").unlink(missing_ok=True)
+        log = open(sd / "launcher.log", "wb")
+        # The profile's screen outlives whichever CLI/gateway started it, on purpose: launcher.pid carries
+        # (pid, create_time) so any later process reports/stops it, and the idle stop (idle_stop_minutes) ends it.
         proc = subprocess.Popen(  # windows-footgun: ok — Linux-only runtime (is_supported_host)
             ["bash", str(_LAUNCHER)], env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-            start_new_session=True, close_fds=True)
+            start_new_session=True, close_fds=True)  # detached-spawn: ok — per-profile screen, outlives its starter
         log.close()
         born = _create_time(proc.pid)
         (sd / "launcher.pid").write_text(f"{proc.pid} {born if born is not None else 0}", encoding="utf-8")
@@ -608,14 +852,66 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
         raise RuntimeError(f"Bot Desktop did not publish its display within {wait_seconds:.0f}s (see {sd / 'launcher.log'})")
 
 
-def stop() -> bool:
+def _sandbox_env(*, create: bool):
+    """The terminal environment hosting this profile's screen, or None. ``create=False`` for status probes
+    (a status call must never build a container)."""
+    return placement.terminal_environment(create=create)
+
+
+def _start_in_sandbox(wait_seconds: float) -> DesktopStatus:
+    from tools.bot_desktop import sandbox_host
+    env = _sandbox_env(create=True)
+    if env is None:
+        raise RuntimeError("the terminal backend's sandbox could not be started, so there is nowhere to put the screen")
+    sd = state_dir()
+    sd.mkdir(parents=True, exist_ok=True)
+    os.chmod(sd, 0o700)
+    with _flocked(sd / "start.lock"):
+        # The dock's Browser icon runs the sandbox's own Playwright Chromium on the profile the agent's browser
+        # uses there: the human's browser is the bot's browser, as on the host.
+        from tools.bot_desktop.browser import dock_exec_line
+        exe = sandbox_host.chromium_executable(env)
+        browser = (exe, dock_exec_line(exe, sandbox_host.browser_profile_dir(env), sandbox_bypass=True)) if exe else (None, None)
+        published = sandbox_host.start(env, _profile_name(), geometry=geometry(), wait_seconds=max(wait_seconds, 20.0),
+                                       browser_exec=browser[0], browser_exec_line=browser[1])
+    (sd / "env").write_text("".join(f"{k}={v}\n" for k, v in published.items()), encoding="utf-8")
+    touch_activity()
+    return status()
+
+
+def _sandbox_published_env() -> dict[str, str]:
+    """Published env of a sandbox-hosted screen (the caller saw the host-side marker written at start)."""
+    from tools.bot_desktop import sandbox_host
+    env = _sandbox_env(create=False)
+    if env is None:
+        return {}
+    return sandbox_host.published_env(env, _profile_name())
+
+
+def stop(still_due: Optional[Callable[[], bool]] = None) -> bool:
     """Stop this profile's desktop; True when a running launcher (or the X server a dead one left behind)
-    was signalled."""
+    was signalled. ``still_due`` is asked again before anything is killed (under ``start.lock`` for a screen on
+    this host); False there leaves the screen running."""
+    from tools.bot_desktop import sandbox_host
+    if sandbox_host._read_marker() or placement.resolve().where == placement.TERMINAL:
+        if still_due is not None and not still_due():
+            return False
+        # The marker names the sandbox that owns the screen; stop THAT one (re-attaching after a restart),
+        # whatever the placement setting says now. A marker whose sandbox is gone is simply dropped.
+        env = _owned_sandbox_env()
+        stopped = sandbox_host.stop(env, _profile_name()) if env is not None else False
+        sandbox_host._marker().unlink(missing_ok=True)
+        for name in ("env", "activity"):
+            (state_dir() / name).unlink(missing_ok=True)
+        return stopped
     if not is_supported_host():
         return False
     sd = state_dir()
     sd.mkdir(parents=True, exist_ok=True)
     with _flocked(sd / "start.lock"):
+        if still_due is not None and not still_due():
+            logger.info("Bot Desktop for profile %s changed while the idle stop waited; kept", _profile_name())
+            return False
         return _stop_locked(sd)
 
 
@@ -627,6 +923,6 @@ def _stop_locked(sd: Path) -> bool:
         return reaped
     # The launcher runs in its own session; killing the group takes Xvnc, dbus and Xfce with it.
     _kill_group_then_wait(pid, pid, grace=5.0)
-    for name in ("launcher.pid", "env", "activity"):
+    for name in ("launcher.pid", "env", "activity", "idle-watch.out"):
         (sd / name).unlink(missing_ok=True)
     return True

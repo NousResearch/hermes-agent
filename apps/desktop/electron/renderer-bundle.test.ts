@@ -7,6 +7,7 @@ import {
   missingRendererAssets,
   parseLazyChunkRefs,
   parseModuleAssetRefs,
+  presentRendererIndexes,
   type RendererBundleDeps
 } from './renderer-bundle'
 
@@ -122,6 +123,59 @@ test('missingRendererAssets: an unreadable index is not treated as torn', () => 
   }
 
   assert.deepEqual(missingRendererAssets(INDEX_PATH, deps), [])
+})
+
+// #96857: a stat on a path inside app.asar goes through Electron's asar shim, which constructs the
+// deprecated fs.Stats and prints DEP0180 on every packaged launch. Choosing a renderer copy must
+// answer from reads and existence checks alone, for the in-archive copy as much as the unpacked one.
+test('renderer index probes never stat, so app.asar paths never construct fs.Stats', () => {
+  const resources = path.join('/opt', 'Hermes', 'resources')
+  const copies = ['app.asar.unpacked', 'app.asar'].map(root => path.join(resources, root, 'dist'))
+  const files = new Map<string, string>()
+
+  for (const dir of copies) {
+    files.set(path.join(dir, 'index.html'), INDEX_HTML)
+
+    for (const chunk of ['assets/index-a1b2c3.js', 'assets/shiki-block-COiz1pEN.js']) {
+      files.set(path.join(dir, chunk), '')
+    }
+  }
+
+  const statted: string[] = []
+
+  const stat = (file: string) => {
+    statted.push(file)
+    throw new Error('DEP0180: fs.Stats constructor is deprecated')
+  }
+
+  const fsStub = {
+    readFileSync: (file: string) => {
+      const body = files.get(file)
+
+      if (body === undefined) {
+        throw Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' })
+      }
+
+      return body
+    },
+    existsSync: (file: string) => files.has(file),
+    statSync: stat,
+    lstatSync: stat
+  }
+
+  const [unpackedIndex, asarIndex] = copies.map(dir => path.join(dir, 'index.html'))
+
+  const present = presentRendererIndexes(
+    [unpackedIndex, asarIndex, unpackedIndex, path.join('/nope', 'index.html')],
+    fsStub
+  )
+
+  assert.deepEqual(present, [unpackedIndex, asarIndex])
+  assert.deepEqual(
+    present.map(index => missingRendererAssets(index, fsStub)),
+    [[], []]
+  )
+  assert.deepEqual(statted, [])
 })
 
 // ---------------------------------------------------------------------------

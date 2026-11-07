@@ -11,7 +11,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from batch_runner import BatchRunner, _process_batch_worker
 
-
 @pytest.fixture
 def runner(tmp_path):
     """Create a BatchRunner with all paths pointing at tmp_path."""
@@ -26,7 +25,6 @@ def runner(tmp_path):
     r.prompts_file = prompts_file
     return r
 
-
 class TestSaveCheckpoint:
     """Verify _save_checkpoint writes valid, atomic JSON."""
 
@@ -38,15 +36,12 @@ class TestSaveCheckpoint:
         assert result["run_name"] == "test"
         assert result["completed_prompts"] == [1, 2, 3]
 
-
     def test_overwrites_previous_checkpoint(self, runner):
         runner._save_checkpoint({"run_name": "test", "completed_prompts": [1]})
         runner._save_checkpoint({"run_name": "test", "completed_prompts": [1, 2, 3]})
 
         result = json.loads(runner.checkpoint_file.read_text())
         assert result["completed_prompts"] == [1, 2, 3]
-
-
 
     def test_creates_parent_dirs(self, tmp_path):
         runner_deep = BatchRunner.__new__(BatchRunner)
@@ -64,10 +59,8 @@ class TestSaveCheckpoint:
                      if ".tmp" in f.name]
         assert len(tmp_files) == 0
 
-
 class TestLoadCheckpoint:
     """Verify _load_checkpoint reads existing data or returns defaults."""
-
 
     def test_loads_existing_checkpoint(self, runner):
         data = {"run_name": "test_run", "completed_prompts": [5, 10, 15],
@@ -84,9 +77,6 @@ class TestLoadCheckpoint:
         result = runner._load_checkpoint()
         # Should return empty/default, not crash
         assert isinstance(result, dict)
-
-
-
 
 class TestBatchWorkerResumeBehavior:
     def test_discarded_no_reasoning_prompts_are_marked_completed(self, tmp_path, monkeypatch):
@@ -164,5 +154,3 @@ class TestBatchWorkerResumeBehavior:
 
         assert filtered_entries == [], "discarded prompt was rescheduled on resume"
         assert skipped_indices == [0]
-
-

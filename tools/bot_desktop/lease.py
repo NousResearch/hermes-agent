@@ -53,11 +53,11 @@ class Lease:
     reason: str = ""
     epoch: int = 0
 
-    def as_dict(self) -> Dict[str, object]:
+    def as_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
-def public_view(lease: Lease) -> Dict[str, object]:
+def public_view(lease: Lease) -> dict[str, object]:
     """The lease as anything outside the gateway may see it (RPC results, the ``display.lease`` broadcast,
     the CLI): the holder's viewer id is a capability — whoever presents it co-drives or releases the lease —
     so it is replaced by a short hash the holder can match against its own id to know it is in control."""
@@ -69,7 +69,7 @@ def public_view(lease: Lease) -> Dict[str, object]:
 
 
 _lock = threading.Condition()
-_listeners: List[Callable[[str, Lease], None]] = []
+_listeners: list[Callable[[str, Lease], None]] = []
 
 
 def _path(profile_key: Optional[str]) -> Path:
@@ -84,7 +84,7 @@ def _read(path: Path) -> Lease:
     or tampering: fail CLOSED (human holds) — an unreadable lease must never let the agent act on a
     screen a human may be using; the next successful write repairs it."""
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return Lease()
     except OSError:
@@ -132,7 +132,7 @@ class _locked:
         if fcntl is None:
             return self
         _private_dir(self._lockfile)
-        self._fh = open(self._lockfile, "a+", encoding="utf-8", opener=_open_private)  # noqa: SIM115 — closed in __exit__
+        self._fh = open(self._lockfile, "a+", encoding="utf-8", opener=_open_private)
         fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
         return self
 
@@ -161,7 +161,12 @@ def on_change(listener: Callable[[str, Lease], None]) -> Callable[[], None]:
 
 
 def _notify(key: str, lease: Lease) -> None:
-    for cb in list(_listeners):
+    # Snapshot under the lock: a viewer disconnecting on another thread runs unsubscribe()
+    # concurrently with this loop; removing an entry from the live list mid-iteration skips
+    # the next listener, and a still-connected viewer misses the lease transition.
+    with _lock:
+        listeners = list(_listeners)
+    for cb in listeners:
         try:
             cb(key, lease)
         except Exception:  # a broken subscriber must not wedge the handoff
@@ -197,13 +202,18 @@ def acquire(viewer_id: str, *, profile_key: Optional[str] = None, reason: str = 
 
 
 def release(viewer_id: Optional[str] = None, *, profile_key: Optional[str] = None,
-            unless_human: bool = False) -> Lease:
+            unless_human: bool = False, epoch: Optional[int] = None) -> Lease:
     """Return control to the agent. With ``viewer_id`` only that holder may release (a stale viewer
     closing its window must not yank control from the one who took over after it). ``unless_human``
     makes a bare release a no-op while any human holds: the decision is taken under the file lock,
-    so a takeover racing a check-then-release cannot be silently revoked. Callers read the returned
-    lease's holder to learn whether anything happened."""
+    so a takeover racing a check-then-release cannot be silently revoked. ``epoch`` releases only the
+    lease generation the caller judged: any transition since (a takeover, a hand-back and re-take by the
+    same viewer) keeps the lease. Callers read the returned lease's holder to learn whether anything
+    happened."""
     def _m(lease: Lease) -> bool:
+        if epoch is not None and lease.epoch != epoch:
+            logger.info("bot-desktop lease: release of epoch %d ignored, the lease changed since", epoch)
+            return False
         if unless_human and lease.holder == HUMAN:
             logger.info("bot-desktop lease: bare release ignored, a human holds")
             return False

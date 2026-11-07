@@ -316,6 +316,30 @@ def test_turn_author_reaches_the_agent_through_the_real_facade(monkeypatch):
     assert agent._turn_author is None
 
 
+# ── on_turn_start model kwarg ────────────────────────────────────────────────
+# The prologue (the only on_turn_start caller) passes model=agent.model.
+
+
+def test_on_turn_start_forwards_model_kwarg():
+    agent, mm = _agent_with_memory_manager()
+    _build(agent, user_message="what did we decide about the deploy pipeline?")
+    mm.on_turn_start.assert_called_once()
+    _args, kwargs = mm.on_turn_start.call_args
+    assert kwargs.get("model") == agent.model == "test/model"
+
+
+def test_on_turn_start_model_kwarg_defaults_to_empty_string_when_absent():
+    """Agents whose `model` attribute is falsy (e.g. unset during subagent
+    scaffolding) must not raise — the call site falls back to "" rather
+    than propagating None into the memory-provider contract."""
+    agent, mm = _agent_with_memory_manager()
+    agent.model = None
+    _build(agent, user_message="what did we decide about the deploy pipeline?")
+    mm.on_turn_start.assert_called_once()
+    _args, kwargs = mm.on_turn_start.call_args
+    assert kwargs.get("model") == ""
+
+
 def test_turn_start_replaces_stale_parent_history_with_compression_child():
     agent = _FakeAgent()
     stale_history = [{"role": "user", "content": "stale parent"}]
@@ -455,7 +479,7 @@ def test_between_turns_refresh_adds_late_tool_when_servers_registered():
     new_def = {"type": "function", "function": {"name": "mcp_x_tool", "description": "", "parameters": {}}}
 
     import model_tools
-    import tools.mcp_tool  # noqa: F401 — the prologue's import-cost gate requires it in sys.modules
+    import tools.mcp_tool
     with patch("tools.mcp_tool_discovery.has_registered_mcp_tools", return_value=True), \
          patch.object(model_tools, "get_tool_definitions", return_value=[new_def]):
         _build(agent)
@@ -504,6 +528,29 @@ def test_prologue_does_not_title_machine_driven_runs(platform):
     overwritten or never read.
     """
     assert not _title_turn(platform).called
+
+
+def test_prologue_names_a_subagent_run_after_its_goal_without_a_model_call():
+    """A delegate run gets ``Subagent: <goal>`` at derived authority so it reads as machinery
+    wherever ``sessions.show_subagents`` lists it, instead of staying untitled (#97202)."""
+    from agent import turn_context
+
+    agent = _TitlingAgent("subagent")
+    agent._session_db.set_auto_title.return_value = True
+    with patch("agent.title_generator.maybe_auto_title") as titler:
+        turn_context._maybe_title_session_at_turn_start(
+            agent, [{"role": "user", "content": "Audit the billing module\n\nContext: ..."}])
+    assert not titler.called
+    agent._session_db.set_auto_title.assert_called_once_with(
+        "sess-1", "Subagent: Audit the billing module", source="derived")
+
+
+def test_prologue_leaves_cron_runs_untitled():
+    agent = _TitlingAgent("cron")
+    from agent import turn_context
+
+    turn_context._maybe_title_session_at_turn_start(agent, [{"role": "user", "content": "Run the job"}])
+    assert not agent._session_db.set_auto_title.called
 
 
 def test_prologue_forwards_the_submit_title_preview_to_the_titler():

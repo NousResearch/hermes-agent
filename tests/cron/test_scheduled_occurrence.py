@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 import pytest
+from datetime import UTC
 
 
 _FIRE = """
@@ -48,7 +49,7 @@ def _fire(home, mode):
     env['HERMES_HOME'] = str(home)
     env['PYTHONPATH'] = str(Path(__file__).resolve().parents[2])
     result = subprocess.run([sys.executable, '-c', _FIRE, mode], env=env,
-                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90)
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -167,13 +168,13 @@ def test_completion_before_occurrence_does_not_prove_slot_completed(tmp_path, mo
 
     monkeypatch.setattr(executions, 'EXECUTIONS_FILE', tmp_path / 'executions.db')
     slot = '2026-01-05T00:00:00+00:00'
-    monkeypatch.setattr(executions, '_hermes_now', lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
+    monkeypatch.setattr(executions, '_hermes_now', lambda: datetime(2026, 1, 1, tzinfo=UTC))
     poisoned = executions.create_execution('job', source='control', scheduled_instant=slot)
     executions.finish_execution(poisoned['id'], success=True)
 
     assert not completed_occurrence({'id': 'job'}, slot)
 
-    monkeypatch.setattr(executions, '_hermes_now', lambda: datetime(2026, 1, 5, tzinfo=timezone.utc))
+    monkeypatch.setattr(executions, '_hermes_now', lambda: datetime(2026, 1, 5, tzinfo=UTC))
     legitimate = executions.create_execution('job', source='builtin', scheduled_instant=slot)
     executions.finish_execution(legitimate['id'], success=True)
 

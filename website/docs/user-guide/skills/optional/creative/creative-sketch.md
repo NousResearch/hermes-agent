@@ -107,14 +107,18 @@ Each variant is a **single self-contained HTML file**:
 
 Open it in a browser. If it looks broken, fix it before showing the user.
 
-**Verify variants visually — use Hermes' browser tools.** Don't just write HTML and hope it renders; load each variant and look at it:
+**Verify variants visually — use Hermes' `browser_exec`.** Don't just write HTML and hope it renders; load each variant and look at it:
 
 ```
-browser_navigate(url="file:///absolute/path/to/sketches/001-calm-editorial/index.html")
-browser_vision(question="Does this layout look clean and readable? Any visible bugs (overlapping text, unstyled elements, broken images)?")
+browser_exec(code='''
+# Checking sketch 001 renders cleanly
+new_tab("file:///absolute/path/to/sketches/001-calm-editorial/index.html")
+wait_for_load()
+capture_screenshot()
+''')
 ```
 
-`browser_vision` returns an AI description of what's actually on the page plus a screenshot path — catches layout bugs that pure source inspection misses (e.g. a font import that silently failed, a flex container that collapsed). Fix and re-navigate until each variant looks right.
+Look at the attached screenshot and ask: does this layout look clean and readable, any visible bugs (overlapping text, unstyled elements, broken images)? (non-vision models: `vision_analyze` the printed path with that question). It catches layout bugs that pure source inspection misses (e.g. a font import that silently failed, a flex container that collapsed). Fix and reload (`goto_url(...)` with the same URL) until each variant looks right.
 
 **Default CSS reset + system font stack** for fast starts:
 
@@ -229,8 +233,8 @@ Propose 2-4 named candidates. Let the user pick.
 terminal("mkdir -p sketches/001-calm-editorial")
 write_file("sketches/001-calm-editorial/index.html", "<!doctype html>...")
 write_file("sketches/001-calm-editorial/README.md", "## Variant: Calm editorial\n...")
-browser_navigate(url="file://$(pwd)/sketches/001-calm-editorial/index.html")
-browser_vision(question="How does this look? Any obvious layout issues?")
+browser_exec(code='new_tab("file:///abs/path/sketches/001-calm-editorial/index.html"); wait_for_load(); capture_screenshot()')
+# then check the screenshot: any obvious layout issues?
 ```
 
 Repeat for each variant, then present the comparison table.

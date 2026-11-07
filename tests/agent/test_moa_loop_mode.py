@@ -124,20 +124,20 @@ moa:
         raise AssertionError("MoA restore must not build a real OpenAI client")
 
     monkeypatch.setattr(agent, "_create_openai_client", fail_openai_rebuild)
-    setattr(agent, "_fallback_activated", True)
-    setattr(agent, "provider", "zai")
-    setattr(agent, "model", "glm-5.2")
+    agent._fallback_activated = True
+    agent.provider = "zai"
+    agent.model = "glm-5.2"
     agent.base_url = "https://api.z.ai/api/coding/paas/v4"
     agent.api_key = "fallback-key"
-    setattr(agent, "_client_kwargs", {"api_key": "fallback-key", "base_url": agent.base_url})
+    agent._client_kwargs = {"api_key": "fallback-key", "base_url": agent.base_url}
     agent.client = SimpleNamespace(close=lambda: None, _client=SimpleNamespace(is_closed=True))
 
     assert agent._restore_primary_runtime() is True
-    assert getattr(agent, "provider") == "moa"
-    assert getattr(agent, "model") == "review"
+    assert agent.provider == "moa"
+    assert agent.model == "review"
     assert agent.client is not primary_client
     assert hasattr(agent.client.chat, "completions")
-    assert getattr(agent, "_fallback_activated") is False
+    assert agent._fallback_activated is False
 
 
 def test_moa_restored_facade_still_emits_reference_events(monkeypatch, tmp_path):
@@ -181,12 +181,12 @@ moa:
     )
 
     # Simulate a fallback to a real provider, then restore.
-    setattr(agent, "_fallback_activated", True)
-    setattr(agent, "provider", "zai")
-    setattr(agent, "model", "glm-5.2")
+    agent._fallback_activated = True
+    agent.provider = "zai"
+    agent.model = "glm-5.2"
     agent.base_url = "https://api.z.ai/api/coding/paas/v4"
     agent.api_key = "fallback-key"
-    setattr(agent, "_client_kwargs", {"api_key": "fallback-key", "base_url": agent.base_url})
+    agent._client_kwargs = {"api_key": "fallback-key", "base_url": agent.base_url}
     agent.client = SimpleNamespace(close=lambda: None, _client=SimpleNamespace(is_closed=True))
     assert agent._restore_primary_runtime() is True
 
@@ -454,6 +454,54 @@ def test_reference_messages_drops_system_but_renders_tools_as_text():
     assert view[-1]["role"] == "user"
 
 
+def test_reference_view_keeps_the_data_use_requirement_of_a_folded_tool_result():
+    from agent.message_metadata import data_use_requirement
+    from agent.moa_loop import _reference_messages
+
+    messages = [
+        {"role": "user", "content": "read my mail"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "inbox", "data_use": ["no_training"]},
+    ]
+
+    assert data_use_requirement(_reference_messages(messages)) == {"no_training"}
+
+
+def test_max_iterations_summary_keeps_the_data_use_requirement_on_every_moa_slot(monkeypatch, tmp_path):
+    from agent.chat_completion_helpers import handle_max_iterations
+    from agent.message_metadata import data_use_requirement
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "moa:\n  default_preset: review\n  presets:\n    review:\n"
+        "      reference_models:\n        - provider: nous\n          model: ref-model\n"
+        "      aggregator:\n        provider: nous\n        model: agg-model\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append((kwargs["task"], data_use_requirement(kwargs["messages"])))
+        return _response("summary")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    agent = AIAgent(
+        api_key="moa-virtual-provider", base_url="moa://local", model="review", provider="moa",
+        quiet_mode=True, skip_context_files=True, skip_memory=True, enabled_toolsets=["file"], max_iterations=1,
+    )
+    messages = [
+        {"role": "user", "content": "read my mail"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "inbox", "data_use": ["no_training"]},
+    ]
+
+    assert handle_max_iterations(agent, messages, 1) == "summary"
+    assert calls == [("moa_reference", {"no_training"}), ("moa_aggregator", {"no_training"})]
+
+
 def test_reference_messages_ends_with_user_not_assistant_prefill():
     """Advisory reference views must never end on an assistant turn.
 
@@ -515,7 +563,7 @@ def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
 
     monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
 
-    label, text, _acct = _run_reference(
+    _label, text, _acct = _run_reference(
         {"provider": "openai-codex", "model": "gpt-5.5"},
         [{"role": "user", "content": "review this PR"}],
     )
@@ -669,7 +717,7 @@ def test_slot_runtime_anthropic_oauth_routes_through_provider_branch(monkeypatch
 
     # The chokepoint preserves anthropic identity despite the explicit base_url,
     # so call_llm routes through the anthropic provider branch (not custom).
-    resolved_provider, _model, base_url, _api_key, _mode = _resolve_task_provider_model(
+    resolved_provider, _model, _base_url, _api_key, _mode = _resolve_task_provider_model(
         task="moa_reference",
         provider="anthropic",
         model="claude-opus-4-8",
@@ -725,7 +773,7 @@ def test_run_reference_captures_usage_and_cost(monkeypatch):
         lambda *a, **k: SimpleNamespace(amount_usd=0.0123, status="estimated", source="table"),
     )
 
-    label, text, acct = _run_reference(
+    _label, text, acct = _run_reference(
         {"provider": "openrouter", "model": "vendor/adv-model"},
         [{"role": "user", "content": "state?"}],
     )
@@ -1019,6 +1067,7 @@ def test_late_completing_interrupted_reference_feeds_accounting_sink(monkeypatch
     """A reference still in flight at interrupt time gets a placeholder in
     the results, but its eventual REAL accounting must reach the sink."""
     import threading
+    import time
 
     from agent import moa_loop
 
@@ -1065,10 +1114,14 @@ def test_late_completing_interrupted_reference_feeds_accounting_sink(monkeypatch
 
     # …then completes late; its real billed usage must reach the sink.
     release.set()
-    assert sink_seen.wait(timeout=5), "late accounting sink never called"
-    label, acct = sink_calls[0]
-    assert "wedged" in label
-    assert acct.usage.input_tokens == 21
+    # Under load the poll loop can see the interrupt before it collects the fast slot too, so fast may
+    # also arrive late and first; the contract is about the wedged slot's row, not sink ordering.
+    deadline = time.monotonic() + 5
+    while not any("wedged" in label for label, _ in sink_calls) and time.monotonic() < deadline:
+        sink_seen.wait(timeout=0.2)
+    wedged = [acct for label, acct in sink_calls if "wedged" in label]
+    assert wedged, f"late accounting for the wedged slot never reached the sink: {[l for l, _ in sink_calls]}"
+    assert wedged[0].usage.input_tokens == 21
 
 
 def test_facade_does_not_cache_interrupted_reference_results(monkeypatch, tmp_path):

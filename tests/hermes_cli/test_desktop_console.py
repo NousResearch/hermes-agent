@@ -9,7 +9,7 @@ import pytest
 from hermes_cli.desktop_console import desktop_console_output, desktop_launch_notice
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_packaged_console_output_drains_both_streams(caplog, monkeypatch):
     caplog.set_level(logging.INFO, logger="hermes_cli.desktop")
 
@@ -30,7 +30,7 @@ def test_packaged_console_output_drains_both_streams(caplog, monkeypatch):
     assert any("diagnostic" in message for message in messages)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.parametrize("level", [logging.WARNING, logging.ERROR])
 def test_stderr_survives_logging_threshold(caplog, level):
     caplog.set_level(level, logger="hermes_cli.desktop")
@@ -46,7 +46,7 @@ def test_stderr_survives_logging_threshold(caplog, level):
     assert not any("ordinary-output" in message for message in messages)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.parametrize("stream", ["stdout", "stderr"])
 def test_complete_records_reach_redacted_logs(tmp_path, monkeypatch, caplog, stream):
     import hermes_logging

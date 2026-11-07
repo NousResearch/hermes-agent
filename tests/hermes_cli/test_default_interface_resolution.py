@@ -20,9 +20,9 @@ violation" on every attempt).
 These tests pin that precedence at every layer that makes the decision:
 
   * ``_resolve_use_tui(args)``  — the canonical args-aware resolver used by
-    ``cmd_chat`` and the Termux fast-TUI path.
+    ``cmd_chat`` and the fast-TUI path.
   * ``_wants_tui_early(argv)``  — the dependency-free early resolver used by
-    mouse-residue suppression and the Termux fast paths, before argparse and
+    mouse-residue suppression and the fast paths, before argparse and
     ``hermes_cli.config`` are importable.
   * the argument parser   — both ``--cli`` and ``--tui`` parse at the top
     level and under the ``chat`` subcommand and are relaunch-inherited.
@@ -169,12 +169,24 @@ class TestParserFlags:
         args = self._parser().parse_args(["chat", "--tui"])
         assert args.tui is True
 
+    def test_native_flag_at_both_parser_levels(self):
+        parser = self._parser()
+        assert parser.parse_args(["--native"]).tui_native is True
+        assert parser.parse_args(["chat", "--tui-native"]).tui_native is True
+
     def test_cli_and_tui_are_relaunch_inherited(self):
         from hermes_cli.relaunch import _INHERITED_FLAGS_TABLE
 
         inherited = {flag for flag, _takes_value in _INHERITED_FLAGS_TABLE}
         assert "--cli" in inherited
         assert "--tui" in inherited
+
+    def test_native_flag_is_relaunch_inherited(self):
+        from hermes_cli.relaunch import _INHERITED_FLAGS_TABLE
+
+        inherited = {flag for flag, _takes_value in _INHERITED_FLAGS_TABLE}
+        assert "--native" in inherited
+        assert "--tui-native" in inherited
 
 
 # ---------------------------------------------------------------------------

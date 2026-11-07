@@ -21,16 +21,13 @@ import pytest
 
 from cli import HermesCLI
 
-
 @pytest.fixture
 def bare_cli():
     """A HermesCLI with no __init__ — we only exercise the recovery helper."""
     return object.__new__(HermesCLI)
 
-
 class TestRecoverTerminalAfterInterrupt:
     """Directly exercise HermesCLI._recover_terminal_after_interrupt()."""
-
 
     def test_redraw_still_runs_when_flush_fails(self, bare_cli):
         """A flush_stdin failure (no TTY, non-POSIX) must not skip the redraw.
@@ -69,5 +66,3 @@ class TestRecoverTerminalAfterInterrupt:
         from hermes_cli.curses_ui import flush_stdin
 
         flush_stdin()  # must not raise in a non-TTY test environment
-
-

@@ -4,16 +4,11 @@ from __future__ import annotations
 
 import copy
 import logging
-import os
 import ssl
-import sys
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
-from pathlib import Path
 from typing import Any
-
-from utils import file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +16,6 @@ logger = logging.getLogger(__name__)
 # custom provider headers routinely carry credentials under arbitrary names.
 _CROSS_ORIGIN_SAFE_HEADERS = frozenset({"accept", "user-agent"})
 _DEFAULT_PORTS = {"http": 80, "https": 443}
-_CA_BUNDLE_ENV_VARS = ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
 
 
 def url_origin(url: str) -> tuple[str, str, int | None]:
@@ -84,101 +78,27 @@ class _CrossOriginRequestSanitizer(urllib.request.BaseHandler):
     https_request = _sanitize
 
 
-# Building the context parses the whole CA bundle (~4 ms for certifi) on EVERY Hermes-owned request,
-# since no opener is ever installed globally. Memoise on the preferred bundle's ``_bundle_signature``
-# (the only file a memoised context was built from) so a rotated/reconfigured bundle is still picked
-# up. The context is shared and never mutated by callers. No lock: a race costs one duplicate parse.
-_HTTPS_CONTEXT_CACHE: tuple[tuple, ssl.SSLContext] | None = None
-
-
-def _ca_bundle_candidates() -> tuple[str, ...]:
-    """Bundles to try in order; empty keeps the stdlib default.
-
-    Resolving the candidates and loading them are split so the memo below can key on the files that
-    are actually going to be read — one precedence rule, not one for the loader and a second for the
-    cache key that could drift away from it.
-    """
-    candidates: list[str] = []
-    ca_bundle = next((value for name in _CA_BUNDLE_ENV_VARS if (value := os.getenv(name, "").strip())), "")
-    if ca_bundle:
-        ca_path = Path(ca_bundle).expanduser()
-        if ca_path.is_file():
-            candidates.append(str(ca_path))
-        else:
-            logger.warning("CA bundle path does not exist: %s — falling back to default certificates", ca_bundle)
-
-    # Python on macOS has no usable system root store, so certifi stays the last resort even when a
-    # configured bundle was found but turns out to be unloadable.
-    if sys.platform == "darwin":
-        try:
-            import certifi
-
-            candidates.append(certifi.where())
-        except ImportError as exc:
-            logger.warning(
-                "Could not load certifi for urllib HTTPS verification: %s — falling back to default certificates",
-                exc,
-            )
-    return tuple(candidates)
-
-
-def _bundle_signature(path: str) -> tuple:
-    """``(path, *file_signature(stat))`` so an edited or rotated bundle invalidates the memo.
-
-    ``utils.file_signature`` adds inode and ctime to mtime + size, so a timestamp-preserving
-    replacement (``cp -p``, ``rsync -t``) of the bundle is caught as well. Unreadable → ``(path, None)``.
-    """
-    try:
-        return (path, *file_signature(Path(path).stat()))
-    except OSError:
-        return (path, None)
-
-
 def _resolved_https_context() -> ssl.SSLContext | None:
-    """Return the shared explicit-CA context for Hermes-owned urllib openers.
+    """TLS context for Hermes-owned urllib openers.
 
-    Memoised on the preferred bundle's signature only: that is the one file a memoised context was
-    built from, so a change to a fallback bundle (certifi on macOS) that was never read must not
-    invalidate it — and costs no stat per request. The returned context is shared and must not be
-    mutated by callers.
+    None means "use urllib's default", which — with the OS trust store
+    installed process-wide — already verifies against the platform's
+    certificates. There is nothing to resolve here any more.
     """
-    global _HTTPS_CONTEXT_CACHE
+    from agent.ssl_verify import install_truststore
 
-    candidates = _ca_bundle_candidates()
-    if not candidates:
-        return None
-    key = _bundle_signature(candidates[0])
-    cached = _HTTPS_CONTEXT_CACHE
-    if cached is not None and cached[0] == key:
-        return cached[1]
-    context, used_path = _build_https_context(candidates)
-    if used_path == candidates[0]:
-        # Only a context built from the preferred bundle is memoised (used_path is None whenever
-        # context is None, so this also excludes a failed load). A failed (possibly transient)
-        # load — whether it left us with no context or with a fallback bundle (certifi on macOS) —
-        # must be retried on the next request, not pinned until the file's mtime/size changes.
-        _HTTPS_CONTEXT_CACHE = (key, context)
-    return context
-
-
-def _build_https_context(candidates: tuple[str, ...]) -> tuple[ssl.SSLContext | None, str | None]:
-    """Return ``(context, path)`` for the first loadable candidate, or ``(None, None)``."""
-    for path in candidates:
-        try:
-            return ssl.create_default_context(cafile=path), path
-        except (OSError, ssl.SSLError) as exc:
-            logger.warning("CA bundle could not be loaded from %s: %s — trying the next bundle", path, exc)
-    if candidates:
-        logger.warning("No configured CA bundle could be loaded — falling back to default certificates")
-    return None, None
+    install_truststore()
+    return None
 
 
 def _secure_opener_from_installed_policy(original_url: str, *, ssl_context=None):
     """Clone the installed opener's handlers, replacing redirect policy only.
 
-    ``ssl_context`` rebinds the cloned HTTPS handler so per-provider TLS settings
-    (``ssl_ca_cert``/``ssl_verify``) apply; with None a Hermes-owned opener gets the explicit CA
-    default from ``_resolved_https_context`` and an application-installed opener keeps its TLS.
+    When ``ssl_context`` is provided, the cloned HTTPS handler is replaced with
+    one bound to that context so per-provider TLS settings (``ssl_ca_cert`` /
+    ``ssl_verify``) apply to this request. When it is None, Hermes-owned
+    openers verify against the OS trust store; an application-installed
+    opener's TLS policy is preserved unchanged.
     """
     installed = getattr(urllib.request, "_opener", None)
     if installed is None:
@@ -214,9 +134,16 @@ def open_credentialed_url(
 ):
     """Open a request without forwarding credentials across origins.
 
-    Preserves an application-installed opener's proxy/TLS/cookies/handlers while replacing its
-    redirect handler. ``opener_factory`` is an explicit test seam (security is never disabled
-    based on global ``urlopen`` identity); ``ssl_context`` overrides TLS for this request only.
+    The default preserves an application-installed opener's proxy, TLS,
+    cookies, custom protocol handlers, and instrumentation while replacing its
+    redirect handler. ``opener_factory`` is an explicit test seam; security is
+    never disabled based on global ``urlopen`` identity.
+
+    ``ssl_context`` (an ``ssl.SSLContext``) overrides the HTTPS handler's TLS
+    policy for this request only. It is used to honor a custom provider's
+    ``ssl_ca_cert`` / ``ssl_verify`` on the ``/models`` discovery path, which
+    otherwise falls back to the process-wide platform trust store
+    (``agent.ssl_verify.install_truststore``).
     """
     if opener_factory is None:
         opener = _secure_opener_from_installed_policy(request.full_url, ssl_context=ssl_context)

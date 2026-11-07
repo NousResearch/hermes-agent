@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
-from datetime import datetime, timezone
+import time
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import httpx
 
 from agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
 from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
+from hermes_cli.auth_codex import _codex_pool_route_base_url
 from hermes_cli.runtime_provider import resolve_runtime_provider
 from hermes_time import safe_strftime
+
+from agent.usage_gauges import BP_FULL
 
 if TYPE_CHECKING:
     from typing import TypeGuard
@@ -19,10 +23,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEPLETED_LINE = "Status: access depleted — top up to restore"
+# Usage-window plans: allowances are shown as percent used.
+_WINDOW_TOP_TIER_USED_UP = "Monthly large-model usage is used up."
+_WINDOW_PAUSED_LINE = ("Status: included usage paused. Your subscription payment failed. Update your card to restore it. "
+                       "Until then, Hermes uses your credits.")
+_WINDOW_PAUSED_OTHER_LINE = "Status: included usage paused. See Billing in the Portal. Until then, Hermes uses your credits."
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 @dataclass(frozen=True)
@@ -31,6 +40,10 @@ class AccountUsageWindow:
     used_percent: Optional[float] = None
     reset_at: Optional[datetime] = None
     detail: Optional[str] = None
+    # ``account``: exhausting this window exhausts the whole login (Codex session/weekly).
+    # ``model``: the window caps only one model family (Anthropic Opus/Sonnet weekly) and can
+    # never imply the account itself is out of quota.
+    scope: str = "account"
 
 
 @dataclass(frozen=True)
@@ -43,9 +56,16 @@ class AccountUsageSnapshot:
     windows: tuple[AccountUsageWindow, ...] = ()
     details: tuple[str, ...] = ()
     unavailable_reason: Optional[str] = None
+    # Stable account identity of the credential the snapshot was fetched with (e.g. a decoded
+    # Codex JWT principal), when the provider supports one. Never a secret; ``None`` = the
+    # fetcher cannot tell accounts apart, so the snapshot belongs to the provider's legacy slot.
+    identity: Optional[str] = None
     # Exact decoded provider response body (no headers/credentials) for integrations that need
     # fields Hermes does not normalize yet. Only populated by providers that fetch a JSON body.
     raw: Optional[dict] = None
+    # Usage-window plans only: the stacked bar layout. Every other snapshot
+    # renders exactly as before.
+    usage_window: bool = False
 
     @property
     def available(self) -> bool:
@@ -65,13 +85,13 @@ def _parse_dt(value: Any) -> Optional[datetime]:
     if value in {None, ""}:
         return None
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        return datetime.fromtimestamp(float(value), tz=UTC)
     if not isinstance(value, str) or not (text := value.strip()):
         return None
     text = text[:-1] + "+00:00" if text.endswith("Z") else text
     try:
         dt = datetime.fromisoformat(text)
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
     except ValueError:
         return None
 
@@ -91,9 +111,23 @@ def _format_reset(dt: Optional[datetime]) -> str:
     return f"in {hours}h {minutes}m ({stamp})" if hours else f"in {minutes}m ({stamp})"
 
 
+def _reset_phrase(dt: Optional[datetime]) -> str:
+    """``resets in 23h`` — no wall-clock stamp (those wrap and collide in the TUI)."""
+    if not dt:
+        return "resets soon"
+    try:
+        from hermes_cli.model_picker_usage import format_resets_in
+        return format_resets_in(int(dt.timestamp() * 1000))
+    except Exception:
+        logger.debug("Reset phrase formatting failed", exc_info=True)
+        return f"resets {_format_reset(dt)}"
+
+
 def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, markdown: bool = False) -> list[str]:
     if not snapshot:
         return []
+    if snapshot.usage_window:
+        return _render_usage_window_lines(snapshot)
     bold = "**" if markdown else ""
     plan = f" ({snapshot.plan})" if snapshot.plan else ""
     lines = [f"📈 {bold}{snapshot.title}{bold}", f"Provider: {snapshot.provider}{plan}"]
@@ -114,6 +148,38 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
     return lines
 
 
+def _render_usage_window_lines(snapshot: AccountUsageSnapshot) -> list[str]:
+    """Usage-window plans: plain stacked bar lines for CLI ``/usage`` and the TUI panel. No emoji,
+    no ANSI, no markdown — Ink ``<Text>`` would otherwise count escape bytes as width and smear the wrap."""
+    if snapshot.plan:
+        lines = [snapshot.plan]
+    else:
+        lines = [snapshot.title, f"Provider: {snapshot.provider}"]
+    label_w = max((len(window.label) for window in snapshot.windows), default=0)
+    for window in snapshot.windows:
+        label = f"{window.label:<{label_w}}" if label_w else window.label
+        if window.used_percent is None:
+            base = f"{label}  unavailable"
+        else:
+            used = max(0.0, min(100.0, float(window.used_percent))) / 100.0
+            try:
+                from hermes_cli.model_picker_usage import format_percent_used, render_bar
+                bar, pct = render_bar(used), format_percent_used(used)
+            except Exception:
+                logger.debug("Usage bar rendering failed", exc_info=True)
+                bar, pct = "", f"{int(used * 100)}%"
+            base = f"{label}  {bar}  {pct} used" if bar else f"{label}  {pct} used"
+        if window.reset_at:
+            base += f"  ·  {_reset_phrase(window.reset_at)}"
+        elif window.detail:
+            base += f"  ·  {window.detail}"
+        lines.append(base)
+    lines.extend(snapshot.details)
+    if snapshot.unavailable_reason:
+        lines.append(f"Unavailable: {snapshot.unavailable_reason}")
+    return lines
+
+
 def _fmt_usd(d: float) -> str:
     return f"${d:,.2f}"
 
@@ -127,16 +193,77 @@ def _is_finite_num(v: Any) -> TypeGuard[float]:
     return _is_num(v) and not isinstance(v, bool) and math.isfinite(v)
 
 
-def _nous_snapshot(windows: list, details: list, tail: list, *, source: str, plan: Optional[str] = None) -> Optional[AccountUsageSnapshot]:
+def _nous_snapshot(windows: list, details: list, tail: list, *, source: str, plan: Optional[str] = None,
+                   usage_window: bool = False) -> Optional[AccountUsageSnapshot]:
     """Nous snapshot with *tail* lines appended, or None when there is nothing to show."""
     if not windows and not details:
         return None
-    return _snapshot("nous", source, windows, details + tail, title="Nous credits", plan=plan)
+    return _snapshot("nous", source, windows, details + tail, title="Nous credits", plan=plan, usage_window=usage_window)
+
+
+def _bp_window(label: str, used_bp: Any, resets_at_ms: Any) -> Optional[AccountUsageWindow]:
+    """One usage-window gauge row from basis points + an epoch-ms reset (already bounded by
+    ``usage_gauges.parse_gauges``); None when the percent is not an int. An unknown reset keeps the row,
+    shown without a reset."""
+    if isinstance(used_bp, bool) or not isinstance(used_bp, int):
+        return None
+    known = isinstance(resets_at_ms, int) and not isinstance(resets_at_ms, bool)
+    reset_at = datetime.fromtimestamp(resets_at_ms / 1000, tz=UTC) if known else None
+    return AccountUsageWindow(label=label, used_percent=max(0.0, min(100.0, used_bp / BP_FULL * 100.0)),
+                              reset_at=reset_at)
+
+
+def _window_top_tier_line(reset_at: Optional[datetime], keep_going_on_credits: Any = None) -> str:
+    """``Monthly large-model usage is used up. Resets Nov 3. Past this, large models use your credits.`` (local
+    date). With Keep going on credits off, credits don't unlock it, so the line points at the other included models."""
+    resets = ""
+    if isinstance(reset_at, datetime):
+        local = reset_at.astimezone()
+        resets = f" Resets {local:%b} {local.day}."
+    tail = " Your other included usage is still available." if keep_going_on_credits is False else " Past this, large models use your credits."
+    return f"{_WINDOW_TOP_TIER_USED_UP}{resets}{tail}"
+
+
+_WINDOW_KEEP_GOING_OFF_LINE = "Keep going on credits: off. Hermes waits for the reset (turn on in /topup)."
+_WINDOW_KEEP_GOING_ON_LINE = "Keep going on credits: on. Uses your credits when included usage runs out."
+
+
+def _usage_window_rows(gauges: Any, *, paused_reason: Any,
+                       keep_going_on_credits: Any = None) -> tuple[list[AccountUsageWindow], list[str]]:
+    """One row per server allowance, in the server's order, plus the top-tier, payment-paused and top-up-off
+    lines. Empty unless the list has an allowance that stops every model. ``keep_going_on_credits``: the
+    account setting (None: an older server)."""
+    from agent.usage_gauges import SCOPE_TOP_TIER, all_scope, gauge_title, parse_gauges
+    parsed = parse_gauges(gauges)
+    if not parsed or not all_scope(parsed):
+        return [], []
+    out: list[AccountUsageWindow] = []
+    top_row: Optional[AccountUsageWindow] = None
+    top_full = False
+    for g in parsed:
+        row = _bp_window(gauge_title(g), g.used_bp, g.resets_at_ms)
+        if row is None:
+            continue
+        out.append(row)
+        if g.scope == SCOPE_TOP_TIER:
+            top_row, top_full = row, g.full
+    lines: list[str] = []
+    if top_full:
+        lines.append(_window_top_tier_line(top_row.reset_at if top_row else None, keep_going_on_credits))
+    if isinstance(paused_reason, str) and paused_reason:
+        from agent.usage_gauges import paused_for_payment
+        lines.append(_WINDOW_PAUSED_LINE if paused_for_payment(paused_reason) else _WINDOW_PAUSED_OTHER_LINE)
+    elif keep_going_on_credits is False:
+        lines.append(_WINDOW_KEEP_GOING_OFF_LINE)
+    elif keep_going_on_credits is True:
+        lines.append(_WINDOW_KEEP_GOING_ON_LINE)
+    return out, lines
 
 
 def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
     """NousPortalAccountInfo → /usage snapshot: dollar magnitudes + renewal date + portal CTA, plus a ``% used``
-    gauge when the portal supplies ``monthly_credits``. Fail-open → None."""
+    gauge when the portal supplies ``monthly_credits``. A usage-window account (``usage_window`` present) shows
+    its allowances as percent used, the large-model line and its top-up balance instead. Fail-open → None."""
     try:
         from hermes_cli.nous_account import nous_portal_topup_url
         if account_info is None or not getattr(account_info, "logged_in", False):
@@ -145,6 +272,24 @@ def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
         sub = getattr(account_info, "subscription", None)
         windows: list[AccountUsageWindow] = []
         details: list[str] = []
+        uw = getattr(account_info, "usage_window", None)
+        if uw is not None:
+            windows, window_lines = _usage_window_rows(
+                getattr(uw, "gauges", None), paused_reason=getattr(uw, "paused_reason", None),
+                keep_going_on_credits=getattr(uw, "keep_going_on_credits", None),
+            )
+        if windows:  # usage-window account: percents, plus the top-up balance
+            details.extend(window_lines)
+            topup = getattr(access, "purchased_credits_remaining", None) if access is not None else None
+            if _is_finite_num(topup):
+                details.append(f"Top-up credits: {_fmt_usd(topup)}")
+            if getattr(account_info, "paid_service_access", None) is False and not window_lines:
+                details.append(_DEPLETED_LINE)
+            if sub is not None and (period_end := getattr(sub, "current_period_end", None)):
+                from agent.billing_usage import format_renews
+                details.append(f"Renews: {format_renews(period_end) or period_end}")
+            return _nous_snapshot(windows, details, ["Top up via /topup"], source="portal-account",
+                                  plan=getattr(sub, "plan", None) if sub is not None else None, usage_window=True)
         # Gauge needs a positive cap AND a finite remaining <= cap (numeric fields, NOT a server *_usd); used =
         # cap - remaining clamped [0,100] so debt reads 100%. NaN/Inf (json.loads accepts bare NaN → "$nan") and
         # remaining > cap (rollover makes the cap a meaningless denominator) fall back to the magnitudes lines.
@@ -212,26 +357,91 @@ def _fetch_portal_account(timeout: float):
         pool.shutdown(wait=False)
 
 
-def nous_credits_lines(*, markdown: bool = False, timeout: float = 10.0) -> list[str]:
+def _header_gauge_percent(bp: Any) -> Optional[float]:
+    if isinstance(bp, bool) or not isinstance(bp, int):
+        return None
+    return max(0.0, min(100.0, bp / BP_FULL * 100.0))
+
+
+def apply_header_gauge(snapshot: Optional[AccountUsageSnapshot], credits_state: Any) -> Optional[AccountUsageSnapshot]:
+    """Raise window percents to the last response headers when those are ahead of the portal.
+
+    The portal counter waits on spend-log ingestion. The headers already include finished included
+    calls, and a large-model call that drew top-up reports that allowance full."""
+    if snapshot is None or not snapshot.usage_window or credits_state is None:
+        return snapshot
+    if not getattr(credits_state, "from_header", False) or not getattr(credits_state, "is_usage_window", False):
+        return snapshot
+    # Row title → (header used bp, that gauge's reset). A header from before its gauge reset describes the
+    # old window: the portal's fresh number stands.
+    from agent.usage_gauges import gauge_title
+    mapping = {gauge_title(g): (g.used_bp, g.resets_at_ms) for g in getattr(credits_state, "gauges", ()) or ()}
+    now_ms = int(time.time() * 1000)
+    windows: list[AccountUsageWindow] = []
+    changed = False
+    for window in snapshot.windows:
+        bp, resets_at_ms = mapping.get(window.label, (None, None))
+        stale = isinstance(resets_at_ms, int) and not isinstance(resets_at_ms, bool) and now_ms >= resets_at_ms
+        header = None if stale else _header_gauge_percent(bp)
+        current = window.used_percent
+        if header is None or current is None or header <= float(current):
+            windows.append(window)
+            continue
+        changed = True
+        windows.append(replace(window, used_percent=header))
+    if not changed:
+        return snapshot
+    details = snapshot.details
+    top_gauge = getattr(credits_state, "top_tier_gauge", None)
+    top = next((w for w in windows if top_gauge is not None and w.label == gauge_title(top_gauge)), None)
+    if top is not None and (top.used_percent or 0) >= 100:
+        if not any(line.startswith(_WINDOW_TOP_TIER_USED_UP) for line in details):
+            details = details + (_window_top_tier_line(top.reset_at, getattr(credits_state, "keep_going_on_credits", None)),)
+    return replace(snapshot, windows=tuple(windows), details=details)
+
+
+def nous_credits_lines(*, markdown: bool = False, timeout: float = 10.0, credits_state: Any = None) -> list[str]:
     """Rendered Nous-credits /usage lines, or [] when there's nothing to show. Independent of any live agent
     (logged-in gate, then a bounded portal fetch); shared by CLI ``_show_usage`` and the TUI ``session.usage`` RPC.
-    Fail-open: any hiccup or timeout → []. HERMES_DEV_CREDITS_FIXTURE renders from the fixture instead of the portal."""
+    Fail-open: any hiccup or timeout → []. HERMES_DEV_CREDITS_FIXTURE renders from the fixture instead of the portal.
+    ``credits_state`` is the last response's header gauge; when it is ahead of the portal, the bars use it."""
+    return nous_credits_view(markdown=markdown, timeout=timeout, credits_state=credits_state)[0]
+
+
+def nous_credits_view(*, markdown: bool = False, timeout: float = 10.0, credits_state: Any = None) -> tuple[list[str], bool]:
+    """``nous_credits_lines`` plus whether they are the usage-window layout (callers keep today's
+    presentation for everyone else). Fail-open → ``([], False)``."""
     try:
         from agent.credits_tracker import dev_fixture_credits_state
         fixture = dev_fixture_credits_state()
     except Exception:
+        logger.debug("Dev credits fixture unavailable", exc_info=True)
         fixture = None
     if fixture is not None:
-        return render_account_usage_lines(_snapshot_from_credits_state(fixture), markdown=markdown)
+        snapshot = _snapshot_from_credits_state(fixture)
+        return render_account_usage_lines(snapshot, markdown=markdown), bool(snapshot and snapshot.usage_window)
     if not _nous_logged_in():
-        return []
+        return [], False
     try:
-        snapshot = build_nous_credits_snapshot(_fetch_portal_account(timeout))
-        return render_account_usage_lines(snapshot, markdown=markdown)
+        snapshot = apply_header_gauge(
+            build_nous_credits_snapshot(_fetch_portal_account(timeout)), credits_state,
+        )
+        return render_account_usage_lines(snapshot, markdown=markdown), bool(snapshot and snapshot.usage_window)
     except Exception:
         # Fail-open; breadcrumb so a dead /usage credits block is diagnosable.
         logger.debug("credits ▸ /usage portal fetch/render failed (fail-open)", exc_info=True)
-        return []
+        return [], False
+
+
+def nous_credits_usage_fields(agent: Any = None) -> dict[str, Any]:
+    """The ``session.usage`` fields for the Nous credits block: ``credits_lines`` (when there are any) and
+    ``credits_usage_window`` for the usage-window layout. Reads *agent*'s live credits headers. Never raises."""
+    try:
+        lines, is_window = nous_credits_view(credits_state=getattr(agent, "_credits_state", None) if agent else None)
+    except Exception:
+        logger.debug("credits ▸ /usage fields unavailable", exc_info=True)
+        return {}
+    return ({"credits_lines": lines} | ({"credits_usage_window": True} if is_window else {})) if lines else {}
 
 
 def _snapshot_from_credits_state(state) -> Optional[AccountUsageSnapshot]:
@@ -242,6 +452,18 @@ def _snapshot_from_credits_state(state) -> Optional[AccountUsageSnapshot]:
             return None
         windows: list[AccountUsageWindow] = []
         details: list[str] = []
+        if getattr(state, "is_usage_window", False):
+            windows, window_lines = _usage_window_rows(
+                state.gauges, paused_reason=state.paused_reason,
+                keep_going_on_credits=getattr(state, "keep_going_on_credits", None),
+            )
+            details.extend(window_lines)
+            if getattr(state, "purchased_usd", None):
+                details.append(f"Top-up credits: ${state.purchased_usd}")
+            if getattr(state, "paid_access", True) is False and not window_lines:
+                details.append(_DEPLETED_LINE)
+            return _nous_snapshot(windows, details, ["(dev fixture — HERMES_DEV_CREDITS_FIXTURE)"], source="dev-fixture",
+                                  usage_window=True)
         uf = getattr(state, "used_fraction", None)
         sub_usd = getattr(state, "subscription_usd", None)
         cap_usd = getattr(state, "subscription_limit_usd", None)
@@ -291,7 +513,7 @@ def build_credits_view(*, markdown: bool = False, timeout: float = 10.0) -> Cred
     balance_lines = [
         line
         for line in render_account_usage_lines(build_nous_credits_snapshot(account), markdown=markdown)
-        if not line.lstrip().startswith(("Top up:", "(or run"))
+        if not line.lstrip().startswith(("Top up:", "Top up via", "(or run"))
     ]
     who = [str(v) for v in (getattr(account, "email", None),) if v]
     org_name = getattr(account, "org_name", None)
@@ -333,7 +555,7 @@ def _resolve_codex_usage_credentials(
             entry = load_pool("openai-codex").try_refresh_matching(api_key_hint=explicit_key)
             if entry is None:
                 raise RuntimeError("Could not refresh the Codex credential this session runs on")
-            return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
+            return entry.runtime_api_key, _codex_pool_route_base_url(entry.runtime_base_url or base_url), None
     # Only AuthError is caught so tier 3 can run: a broad except would mask a transient refresh/network failure
     # and hand back a DIFFERENT pool account's usage; such errors must propagate to the fail-open outer guard.
     # account_id is best-effort: a partial singleton store must not sink a usable credential.
@@ -362,7 +584,8 @@ def _resolve_codex_usage_credentials(
     entry = load_pool("openai-codex").select()
     if entry is None:
         raise RuntimeError("No available openai-codex credential in credential pool")
-    return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
+    # Pool rows keep the canonical URL; a gateway key must go to its route host, not chatgpt.com (#121486).
+    return entry.runtime_api_key, _codex_pool_route_base_url(entry.runtime_base_url or base_url), None
 
 
 def _codex_banked_resets(payload: dict) -> int:
@@ -385,9 +608,11 @@ def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
 
 
 def _usage_windows(
-    source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False
+    source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False,
+    model_scoped: frozenset[str] | set[str] = frozenset(),
 ) -> list[AccountUsageWindow]:
-    """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent."""
+    """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent.
+    ``model_scoped`` keys build windows that cap only a model family, never the account."""
     windows: list[AccountUsageWindow] = []
     for key, label in mapping:
         window = source.get(key) or {}
@@ -397,7 +622,10 @@ def _usage_windows(
         used = float(used)
         if fraction and used <= 1:
             used *= 100
-        windows.append(AccountUsageWindow(label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key))))
+        windows.append(AccountUsageWindow(
+            label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key)),
+            scope="model" if key in model_scoped else "account",
+        ))
     return windows
 
 
@@ -430,6 +658,22 @@ def _plural(count: int) -> str:
 def _fetch_codex_account_usage(
     base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
+    return _fetch_codex_account_usage_impl(base_url, api_key, read_only=False)
+
+
+def _fetch_codex_account_usage_read_only(
+    base_url: Optional[str] = None, api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    """Picker-cache variant: a 401 is reported, never repaired. The live-agent path
+    (``_fetch_codex_account_usage``) retries via a forced credential refresh because the
+    session it serves owns that credential; a per-credential read of the pool must NOT
+    rotate, refresh or mutate anything — it just marks that account unknown."""
+    return _fetch_codex_account_usage_impl(base_url, api_key, read_only=True)
+
+
+def _fetch_codex_account_usage_impl(
+    base_url: Optional[str] = None, api_key: Optional[str] = None, *, read_only: bool = False,
+) -> Optional[AccountUsageSnapshot]:
     token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
     try:
         payload = _get_json(
@@ -437,6 +681,9 @@ def _fetch_codex_account_usage(
         )
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code != 401:
+            raise
+        if read_only:
+            # Never refresh/rotate on the picker's read-only path — surface the failure.
             raise
         token, resolved_base_url, account_id = _resolve_codex_usage_credentials(
             base_url, api_key, force_refresh=True,
@@ -456,7 +703,17 @@ def _fetch_codex_account_usage(
     elif credits.get("has_credits") and credits.get("unlimited"):
         details.append("Credits balance: unlimited")
     return _snapshot("openai-codex", "usage_api", windows, details, plan=_title_case_slug(payload.get("plan_type")),
-                     raw=payload)
+                     identity=_codex_snapshot_identity(token), raw=payload)
+
+
+def _codex_snapshot_identity(token: str) -> Optional[str]:
+    """Trusted per-account identity of a Codex credential: the decoded JWT principal
+    (``chatgpt_account_id`` + ``sub``), never the token itself. Two credentials for one
+    workspace member share it, so pool accounts are counted once, honestly."""
+    from agent.credential_pool import _codex_principal_identity
+
+    principal = _codex_principal_identity(token)
+    return f"codex:{principal[0]}:{principal[1]}" if principal else None
 
 
 @dataclass(frozen=True)
@@ -587,7 +844,12 @@ def redeem_codex_reset_credit(
 def _fetch_anthropic_account_usage(
     base_url: Optional[str] = None, api_key: Optional[str] = None
 ) -> Optional[AccountUsageSnapshot]:
-    token = (resolve_anthropic_token() or "").strip()
+    # An explicit api_key (live agent / per-credential pool read) must not be shadowed by
+    # the ambient OAuth singleton: fetch_account_usage(base_url, api_key) promises to
+    # report THAT credential's usage. An API key answers the OAuth usage endpoint with
+    # 401, so only an OAuth-shaped token reaches the fetch.
+    explicit = str(api_key or "").strip()
+    token = explicit or (resolve_anthropic_token() or "").strip()
     if not token:
         return None
     if not _is_oauth_token(token):
@@ -599,6 +861,7 @@ def _fetch_anthropic_account_usage(
     windows = _usage_windows(
         payload, (("five_hour", "Current session"), ("seven_day", "Current week"), ("seven_day_opus", "Opus week"),
                   ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at", fraction=True,
+        model_scoped={"seven_day_opus", "seven_day_sonnet"},
     )
     details: list[str] = []
     extra = payload.get("extra_usage") or {}
@@ -650,6 +913,12 @@ _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[Acc
     "openrouter": _fetch_openrouter_account_usage,
 }
 
+# Picker per-credential variants: same parsers/fetch shape, but a failure is never repaired by
+# rotating/refreshing a credential (see ``fetch_account_usage(read_only=True)``).
+_READ_ONLY_USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
+    "openai-codex": _fetch_codex_account_usage_read_only,
+}
+
 
 # Wall-clock bound on a plugin profile's ``fetch_account_usage`` hook. The built-in fetchers above carry
 # their own httpx timeouts; a plugin hook is arbitrary code, and the gateway/TUI ``/usage`` paths await
@@ -674,14 +943,33 @@ def _call_plugin_usage_hook(profile, base_url: Optional[str], api_key: Optional[
 
 def fetch_account_usage(
     provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
+    read_only: bool = False, identity_id: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
-    fetcher = _USAGE_FETCHERS.get(str(provider or "").strip().lower())
+    from agent.account_usage_cache import remember_account_usage
+
+    slug = str(provider or "").strip().lower()
+    # The picker's per-credential path resolves variants that never rotate/refresh a credential
+    # on failure (Codex 401), so a read cannot repair or bench a pool entry it does not own.
+    fetcher = _READ_ONLY_USAGE_FETCHERS.get(slug) if read_only else None
+    if fetcher is None:
+        fetcher = _USAGE_FETCHERS.get(slug)
+    import time as _time
+
+    started = _time.monotonic()
     try:
         if fetcher:
-            return fetcher(base_url, api_key)
-        from providers import get_provider_profile
+            snapshot = fetcher(base_url, api_key)
+        else:
+            from providers import get_provider_profile
 
-        profile = get_provider_profile(str(provider or "").strip().lower())
-        return _call_plugin_usage_hook(profile, base_url, api_key) if profile else None
+            profile = get_provider_profile(slug)
+            snapshot = _call_plugin_usage_hook(profile, base_url, api_key) if profile else None
     except Exception:
         return None
+    # Every fetch (``/usage``, the per-turn ``session.usage``) keeps the picker's cache current.
+    # A per-credential fetch is remembered under its account slot only; the provider-wide fetch
+    # keeps both the legacy gauge slot and (when the fetcher identifies the account) that
+    # account's slot current.
+    remember_account_usage(provider, snapshot, identity_id=identity_id, base_url=base_url,
+                           started_monotonic=started)
+    return snapshot

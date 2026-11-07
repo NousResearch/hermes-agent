@@ -142,7 +142,9 @@ def test_save_json_restores_compacted_history_as_archived(tmp_path, monkeypatch,
         assert "max_export_messages" in save(db, "json", tmp_path / "capped.json")
     finally:
         db.close()
-    restored = SessionDB(db_path=tmp_path / "restored.db")
+    restored_home = tmp_path / "restored-home"
+    monkeypatch.setenv("HERMES_HOME", str(restored_home))
+    restored = SessionDB(db_path=restored_home / "state.db")
     try:
         assert restored.import_sessions([snapshot])["ok"]
         assert shape(restored, include_compacted=True) == shown

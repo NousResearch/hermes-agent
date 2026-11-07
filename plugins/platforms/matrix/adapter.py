@@ -9,6 +9,8 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_ALLOWED_USERS, MATRIX_ALLOWED_ROOMS (whitelist; DMs exempt), MATRIX_IGNORE_USER_PATTERNS
   (regexes for bridge ghosts), MATRIX_HOME_ROOM (cron delivery), MATRIX_REACTIONS (default true);
   MATRIX_REQUIRE_MENTION (default true), MATRIX_THREAD_REQUIRE_MENTION, MATRIX_FREE_RESPONSE_ROOMS,
+  MATRIX_PASSIVE_ROOMS (mention-gate drops persist as ambient context rows, never a turn; the room
+  must also be in MATRIX_GROUP_ALLOWED_CHATS so its mention turns are admitted);
   MATRIX_PROCESS_NOTICES, MATRIX_ALLOW_ROOM_MENTIONS, MATRIX_ALLOW_PUBLIC_ROOMS (all default false);
   MATRIX_AUTO_THREAD (default true), MATRIX_DM_AUTO_THREAD, MATRIX_DM_MENTION_THREADS,
   MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_MAX_MESSAGE_LENGTH (UTF-8 bytes, default/max 15000),
@@ -78,6 +80,8 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from plugins.platforms.matrix.clock_skew import ClockSkewMixin
+from plugins.platforms.matrix.passive_rooms import PassiveRoomObservationMixin
 from gateway.platforms.helpers import ThreadParticipationTracker
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
@@ -792,7 +796,7 @@ def ensure_matrix_deps() -> bool:
     return True
 
 
-class MatrixAdapter(BasePlatformAdapter):
+class MatrixAdapter(ClockSkewMixin, PassiveRoomObservationMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
     serial_receive_loop = True  # _sync_loop reads the next sync only after this sync's handlers return
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -860,6 +864,8 @@ class MatrixAdapter(BasePlatformAdapter):
         self._require_mention: bool = self._parse_require_mention(config)
         self._thread_require_mention: bool = self._parse_thread_require_mention(config)
         self._free_rooms: set[str] = _extra_csv_set(config, "free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS")
+        # Passive rooms: mention-gate drops persist as ambient context (observed rows), never a turn.
+        self._passive_rooms: set[str] = _extra_csv_set(config, "passive_rooms", "MATRIX_PASSIVE_ROOMS")
         # If non-empty, bot ONLY responds in these rooms (whitelist); DMs exempt.
         self._allowed_rooms: set[str] = _extra_csv_set(config, "allowed_rooms", "MATRIX_ALLOWED_ROOMS")
         self._allow_room_mentions: bool = _env_truthy("MATRIX_ALLOW_ROOM_MENTIONS", "false")
@@ -1983,40 +1989,6 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.debug("Matrix: could not resolve room identity for allowlist check in %s: %s", room_id, exc)
             return False
 
-    def _reset_clock_skew_detector(self) -> None:
-        """State for _note_late_grace_drop: consecutive-drop count, their skew, and the once-only warning."""
-        # Clock-skew detection: count grace-check drops that happen well after startup (i.e. not
-        # initial-sync backfill). If the host's system clock is set ahead of real time, the startup grace
-        # check `event_ts < startup_ts - 5` silently drops every live message. See #12614 — the symptom is
-        # "bot joins rooms but never replies". Drops only count when their skew matches the first sampled
-        # drop (within 60s), so varied-age backfill from freshly-invited rooms doesn't trip the heuristic.
-        self._late_grace_drops: int = 0
-        self._late_grace_skew: float = 0.0
-        self._clock_skew_warned: bool = False
-
-    def _note_late_grace_drop(self, event_ts: float) -> None:
-        """Clock-skew heuristic for grace-check drops well after startup. A host clock set ahead of
-        real time makes every live event look "older than startup" and the bot silently never
-        replies. Warn once when drops keep happening >30s after startup with a *consistent* skew —
-        unlike backfill from a freshly invited room, whose event ages vary widely and reset the counter."""
-        if self._clock_skew_warned or time.time() - self._startup_ts <= 30:
-            return
-        skew = self._startup_ts - event_ts
-        if not (5 < skew < 86400):  # ignore malformed/absurd timestamps
-            return
-        if self._late_grace_drops and abs(skew - self._late_grace_skew) < 60:
-            self._late_grace_drops += 1
-        else:
-            self._late_grace_skew = skew
-            self._late_grace_drops = 1
-        if self._late_grace_drops >= 3:
-            logger.warning(
-                "Matrix: dropped %d consecutive live events as 'too old' more than 30s after startup "
-                "(skew ≈ %.0fs). The host system clock is likely set ahead of real time, which causes "
-                "the startup grace filter to silently discard every incoming message. Run "
-                "`timedatectl set-ntp true` (or sync NTP) and restart the bot.", self._late_grace_drops, skew)
-            self._clock_skew_warned = True
-
     async def _on_room_message(self, event: Any) -> None:
         room_id = str(getattr(event, "room_id", ""))
         sender = str(getattr(event, "sender", ""))
@@ -2060,6 +2032,11 @@ class MatrixAdapter(BasePlatformAdapter):
             return
         # m.notice is the conventional bot-response msgtype; ignoring it prevents bot-to-bot loops.
         if msgtype == "m.notice" and not self._process_notices:
+            if self._is_ambient_passive_room(room_id):
+                body = source_content.get("body", "") or ""
+                # Unmentioned notices become ambient context; a mentioned notice still never gets a turn.
+                if not self._content_mentions_bot(body, source_content):
+                    await self._observe_passive_room_message(room_id, sender, event_id, body, source_content)
             return
         if msgtype in ("m.image", "m.audio", "m.video", "m.file"):
             await self._handle_media_message(room_id, sender, event_id, event_ts, source_content, relates_to, msgtype)
@@ -2071,14 +2048,15 @@ class MatrixAdapter(BasePlatformAdapter):
         relates_to: dict, mention_claimed: bool = False,
         voice_gate: Optional[VoiceGate] = None) -> Optional[tuple]:
         """Shared mention/thread/DM gating. Returns (body, is_dm, chat_type, thread_id,
-        display_name, source) or None when the message should be dropped. ``mention_claimed``
-        marks a parked voice claimed by the sender's follow-up bare @mention; ``voice_gate`` is
-        the in-flight mark of a parkable voice, released once the park decision is made."""
+        display_name, source, is_mentioned, in_bot_thread) or None when the message should be dropped.
+        ``mention_claimed`` marks a parked voice claimed by the sender's follow-up bare @mention;
+        ``voice_gate`` is the in-flight mark of a parkable voice, released once the park decision is made."""
         identity = await self._resolve_room_identity(room_id)
         is_dm = await self._is_dm_room(room_id)
         chat_type = "dm" if is_dm else "group"
         thread_id = _thread_root(relates_to)
         is_mentioned = mention_claimed or self._content_mentions_bot(body, source_content)
+        in_bot_thread = False  # group-only; the room's bot-thread state is known after the DM check
         if not is_dm:
             # Whitelist first: non-listed rooms are dropped even when @mentioned (DMs exempt).
             if self._allowed_rooms and room_id not in self._allowed_rooms:
@@ -2091,6 +2069,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 if not is_mentioned and not body.startswith("/"):
                     if voice_gate is not None:  # parkable voice: a bare @mention may follow (Element X)
                         self._parked_voices.park(room_id, sender, voice_gate, event_id, source_content, relates_to)
+                    elif room_id in self._passive_rooms:
+                        # A parked voice must never yield an ambient row; passive rooms persist the drop.
+                        await self._observe_passive_room_message(room_id, sender, event_id, body, source_content)
                     logger.debug(
                         "Matrix: ignoring message %s in %s — no @mention "
                         "(set MATRIX_REQUIRE_MENTION=false to disable)", event_id, room_id)
@@ -2133,7 +2114,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
         self._background_read_receipt(room_id, event_id)
-        return body, is_dm, chat_type, thread_id, display_name, source
+        return body, is_dm, chat_type, thread_id, display_name, source, is_mentioned, in_bot_thread
 
     async def _extract_reply_context(
         self, room_id: str, body: str, relates_to: dict
@@ -2162,7 +2143,7 @@ class MatrixAdapter(BasePlatformAdapter):
             ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
         if ctx is None:
             return None
-        body, _is_dm, _chat_type, _thread_id, display_name, source = ctx
+        body, _is_dm, _chat_type, _thread_id, display_name, source, is_mentioned, in_bot_thread = ctx
         body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name = (
             await self._extract_reply_context(room_id, body, relates_to))
         media_msgtype = extra.pop("media_msgtype", None)
@@ -2172,12 +2153,14 @@ class MatrixAdapter(BasePlatformAdapter):
             extra["message_type"] = MessageType.COMMAND if body.startswith("/") else MessageType.TEXT
         elif _is_bare_media_filename(media_msgtype, body):
             body = ""  # transport filename, not user text
-        return MessageEvent(
+        event = MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply_to, reply_to_text=reply_to_text, reply_to_author_id=reply_to_author_id,
             reply_to_author_name=reply_to_author_name,
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
             user_id=sender, user_name=display_name, **extra)
+        self._apply_passive_room_attribution(event, room_id, is_mentioned, in_bot_thread)
+        return event
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
@@ -2215,6 +2198,8 @@ class MatrixAdapter(BasePlatformAdapter):
         url = source_content.get("url", "")
         if url and not str(url).startswith("mxc://"):
             logger.warning("[Matrix] Rejecting inbound media %s with non-MXC URL", event_id)
+            if self._is_ambient_passive_room(room_id):  # ambient note row (free rooms never ambient)
+                await self._observe_passive_room_message(room_id, sender, event_id, body, source_content)
             return
         content_info = source_content.get("info", {})
         if not isinstance(content_info, dict):
@@ -2228,12 +2213,16 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.warning(
                 "[Matrix] Rejecting oversized inbound media %s (%d > %d bytes)", event_id, event_size_int,
                 self._max_media_bytes)
+            if self._is_ambient_passive_room(room_id):  # size-cap note row records the attempt (free rooms never ambient)
+                await self._observe_passive_room_message(room_id, sender, event_id, body, source_content)
             return
         file_content = source_content.get("file", {})  # encrypted media carries file.url
         if not url and isinstance(file_content, dict):
             url = file_content.get("url", "") or ""
             if url and not str(url).startswith("mxc://"):
                 logger.warning("[Matrix] Rejecting inbound encrypted media %s with non-MXC URL", event_id)
+                if self._is_ambient_passive_room(room_id):
+                    await self._observe_passive_room_message(room_id, sender, event_id, body, source_content)
                 return
         is_encrypted_media = bool(file_content and isinstance(file_content, dict) and file_content.get("url"))
         msg_type, media_type, is_voice_message = self._classify_inbound_media(msgtype, event_mimetype, source_content)
@@ -3240,6 +3229,7 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("session_scope", "MATRIX_SESSION_SCOPE", "lower"), ("auto_thread", "MATRIX_AUTO_THREAD", "lower"),
     ("dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "lower"),
     ("allowed_users", "MATRIX_ALLOWED_USERS", "csv"), ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS", "csv"),
+    ("passive_rooms", "MATRIX_PASSIVE_ROOMS", "csv"), ("group_allowed_chats", "MATRIX_GROUP_ALLOWED_CHATS", "csv"),
     ("allowed_rooms", "MATRIX_ALLOWED_ROOMS", "csv"), ("ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "csv"),
     ("max_message_length", "MATRIX_MAX_MESSAGE_LENGTH", "str"),
 )

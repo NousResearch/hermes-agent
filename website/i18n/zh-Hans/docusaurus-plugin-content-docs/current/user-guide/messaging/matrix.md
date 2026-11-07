@@ -20,7 +20,7 @@ Hermes 兼容任何 Matrix homeserver——Synapse、Conduit、Dendrite 或 matr
 | 场景 | 行为 |
 |---------|----------|
 | **私聊（DM）** | Hermes 响应每条消息，无需 `@提及`。每个 DM 有独立的会话。设置 `MATRIX_DM_MENTION_THREADS=true` 可在 DM 中被 `@提及` 时创建线程。 |
-| **房间** | 默认情况下，Hermes 需要 `@提及` 才会响应。设置 `MATRIX_REQUIRE_MENTION=false` 或将房间 ID 添加到 `MATRIX_FREE_RESPONSE_ROOMS` 可开启自由响应模式。房间邀请会被自动接受。 |
+| **房间** | 默认情况下，Hermes 需要 `@提及` 才会响应。设置 `MATRIX_REQUIRE_MENTION=false` 或将房间 ID 添加到 `MATRIX_FREE_RESPONSE_ROOMS` 可开启自由响应模式，或添加到 `MATRIX_PASSIVE_ROOMS` 将其设为被动房间（未提及的消息仅作为环境上下文记录——不触发 agent 轮次、不回复、不发送已读回执）。房间邀请会被自动接受。 |
 | **线程** | Hermes 支持 Matrix 线程（MSC3440）。在线程中回复时，Hermes 会将线程上下文与主房间时间线隔离。机器人已参与的线程无需提及即可响应。 |
 | **自动线程** | 默认情况下，Hermes 会为其在房间中响应的每条消息自动创建线程，以保持对话隔离。设置 `MATRIX_AUTO_THREAD=false` 可禁用此功能。设置 `MATRIX_DM_AUTO_THREAD=true`（默认 false）可同时为私聊消息自动创建线程——这与 `MATRIX_DM_MENTION_THREADS` 不同，后者仅在私聊中 @提及 Bot 时才创建线程。 |
 | **多用户共享房间** | 默认情况下，Hermes 在房间内按用户隔离会话历史。同一房间中的两个人不会共享同一对话记录，除非你明确禁用该功能。 |
@@ -65,6 +65,8 @@ matrix:
   require_mention: true           # 在房间中要求 @提及（默认：true）
   free_response_rooms:            # 免除提及要求的房间
     - "!abc123:matrix.org"
+  passive_rooms:                  # 被动房间：未提及的消息作为环境上下文记录
+    - "!def456:matrix.org"
   auto_thread: true               # 自动为响应创建线程（默认：true）
   dm_mention_threads: false       # 在 DM 中被 @提及时创建线程（默认：false）
 ```
@@ -74,6 +76,8 @@ matrix:
 ```bash
 MATRIX_REQUIRE_MENTION=true
 MATRIX_FREE_RESPONSE_ROOMS=!abc123:matrix.org,!def456:matrix.org
+MATRIX_PASSIVE_ROOMS=!def456:matrix.org
+MATRIX_GROUP_ALLOWED_CHATS=!def456:matrix.org  # 授权被动房间的共享会话（提及轮次）
 MATRIX_AUTO_THREAD=true
 MATRIX_DM_MENTION_THREADS=false
 MATRIX_REACTIONS=true          # 默认：true——处理过程中发送 emoji 反应
@@ -86,6 +90,21 @@ MATRIX_REACTIONS=true          # 默认：true——处理过程中发送 emoji 
 :::note
 如果你从没有 `MATRIX_REQUIRE_MENTION` 的版本升级，机器人之前会响应房间中的所有消息。要保留该行为，请设置 `MATRIX_REQUIRE_MENTION=false`。
 :::
+
+### 被动房间
+
+被动房间将房间中的消息转化为上下文，而不是让机器人开口。将房间加入 `config.yaml` 的 `passive_rooms` 或 `MATRIX_PASSIVE_ROOMS`（逗号分隔的房间 ID）后，未 `@提及` 机器人的消息（斜杠命令除外）会被记录到房间共享的记录中，作为环境上下文——不触发 agent 轮次、不回复、不发送已读回执。之后在该房间中 `@提及` 机器人时，整个房间记录（包括发布的文件）都会被看到，对模型呈现为"仅观察的上下文，而非请求"。
+
+行为说明：
+
+- **仅记录为环境上下文**：未提及的消息永不触发 agent 轮次、回复或已读回执。斜杠命令仍会正常处理。
+- **文件在到达时缓存**：未提及发布的媒体和文件会在到达时下载并缓存，受 `MATRIX_MAX_MEDIA_BYTES` 限制（默认 100 MB）。记录行保存缓存的本地路径，之后机器人被提及时可以通过 `read_file`、视觉分析或终端访问该文件。超出限制的媒体不会缓存，记录行中会写入"文件过大"的提示行。
+- **自由响应优先**：同时列在 `passive_rooms` 和 `free_response_rooms` 中的房间按自由响应房间处理——每条消息都会触发一次对话。
+- **`m.notice` 交互**：在被动房间中，即使 `process_notices` 为 `false`，未提及的 `m.notice` 消息也会作为环境上下文被记录；`m.notice` 中的提及仍永不触发对话。
+- **一个共享会话**：被动房间使用一个共享的房间级会话（即房间记录）；这些房间中被提及触发的对话同样是房间级的。
+- **共享会话授权**：被动房间中的 `@mention` 轮次落在该共享会话中，其来源不携带用户身份（与 Telegram 的组观察模式相同）。房间必须同时列入 `MATRIX_GROUP_ALLOWED_CHATS`（或 `config.yaml` 中 `matrix:` 下的 `group_allowed_chats`），否则已授权发送者的环境上下文仍会被记录，但提及轮次不会被受理。
+- **仅上下文，不扩大访问**：记录不会扩大访问权限——`MATRIX_ALLOWED_ROOMS`、`MATRIX_ALLOWED_USERS`/配对以及 bot/system/`m.notice` 流量过滤器照常生效。环境内容被视为不可信上下文，永不会被当作指令执行。
+- **不影响其他行为**：DM、`MATRIX_REQUIRE_MENTION=false`、机器人已参与的线程、斜杠命令和语音暂挂流程均不受影响。
 
 本指南将引导你完成完整的设置流程——从创建机器人账户到发送第一条消息。
 

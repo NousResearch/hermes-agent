@@ -371,13 +371,15 @@ def _tool_search_scoped_names(agent) -> frozenset:
     except Exception:
         return frozenset()
     try:
-        return _ts.scoped_deferrable_names(model_tools.get_tool_definitions(
+        names = _ts.scoped_deferrable_names(model_tools.get_tool_definitions(
             enabled_toolsets=getattr(agent, "enabled_toolsets", None),
             disabled_toolsets=getattr(agent, "disabled_toolsets", None),
             quiet_mode=True, skip_tool_search_assembly=True,
         ) or [])
     except Exception:
-        return frozenset()
+        names = frozenset()
+    extra = {t.get("function", {}).get("name") for t in getattr(agent, "_deferred_post_build_tools", [])}
+    return names | {n for n in extra if n}
 
 
 def _canonical_tool_name(function_name: str) -> str:
@@ -418,7 +420,9 @@ def _unwrap_tool_search_call(
             return function_name, function_args, _ts.scope_block_reason(underlying)
         # Validate before unwrapping: the generic bridge hides the concrete
         # parameter schema from provider-native tool-call validation.
-        scope_block = _ts.validate_deferred_call_args(underlying, underlying_args)
+        schema = next((t for t in getattr(agent, "_deferred_post_build_tools", [])
+                       if t.get("function", {}).get("name") == underlying), None)
+        scope_block = _ts.validate_deferred_call_args(underlying, underlying_args, schema=schema)
         if scope_block is None:
             return underlying, underlying_args, None
         if flatten_probe:
@@ -1727,6 +1731,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 tool_request_middleware_trace=list(middleware_trace),
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                extra_tool_defs=getattr(agent, "_deferred_post_build_tools", None) or None,
             )
 
     return _SequentialDispatch(

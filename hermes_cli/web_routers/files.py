@@ -632,9 +632,9 @@ def list_managed_files(request: Request, path: Optional[str] = None):
                 entries.append(metadata)
 
     entries.sort(key=lambda item: (not item["is_directory"], str(item["name"]).lower()))
-    locked_root = policy.locked_root
+    locked_roots = policy.locked_roots
     parent = None
-    if target.parent != target and (locked_root is None or target != locked_root):
+    if target.parent != target and (locked_roots is None or target not in locked_roots):
         parent = str(target.parent)
     return {"path": display_path, "parent": parent, "entries": entries, **_managed_response_meta(policy)}
 
@@ -966,7 +966,7 @@ def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
 @router.delete("/api/files")
 def delete_managed_file(payload: ManagedFileDelete, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request)
-    if policy.locked_root is not None and target == policy.locked_root:
+    if policy.locked_roots is not None and target in policy.locked_roots:
         raise HTTPException(status_code=400, detail="Cannot delete the managed files root")
     if target.parent == target:
         raise HTTPException(status_code=400, detail="Cannot delete the filesystem root")

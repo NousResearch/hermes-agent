@@ -93,6 +93,8 @@ def test_git_reads_filter_credentials_without_losing_safe_diffs(
             response = client.get(endpoint, params={"path": str(root), "file": file, "staged": change != "unstaged"})
             assert "PRIVATE_EXAMPLE" not in response.text
 
+    (tmp_path / "other").mkdir(exist_ok=True)
     monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(tmp_path / "other"))
+    assert client.get("/api/git/review/list", params={"path": str(root)}).status_code == 403
     response = client.get("/api/git/review/commit-context", params={"path": str(root)})
     assert response.status_code == 403

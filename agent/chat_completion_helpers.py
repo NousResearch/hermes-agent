@@ -1435,6 +1435,7 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
 
 
 def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
+    from tools.schema_sanitizer import sanitize_tool_schemas
     transport = agent._get_transport()
     tools_for_api = _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api)
 
@@ -1454,7 +1455,6 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         _fixed_temp = None if _omit_temp else _ft
 
     _prefs = _provider_preferences_for_agent(agent)
-
     _qwen_meta = {"sessionId": agent.session_id or "hermes", "promptId": str(uuid.uuid4())} if _is_qwen else None
     _profile = None
     with contextlib.suppress(Exception):
@@ -1467,7 +1467,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     # Strip image parts for non-vision models on BOTH paths (registered
     # providers with profiles used to bypass it).
     _common = dict(model=agent.model, messages=agent._prepare_messages_for_non_vision_model(api_messages),
-        tools=tools_for_api, base_url=agent.base_url, timeout=agent._resolved_api_call_timeout(),
+        tools=sanitize_tool_schemas(tools_for_api), base_url=agent.base_url, timeout=agent._resolved_api_call_timeout(),
         max_tokens=agent.max_tokens, ephemeral_max_output_tokens=_ephemeral_out,
         max_tokens_param_fn=agent._max_tokens_param, reasoning_config=reasoning_config,
         request_overrides=request_overrides, session_id=getattr(agent, "session_id", None),

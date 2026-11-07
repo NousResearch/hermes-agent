@@ -1561,6 +1561,83 @@ def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_ho
         conn.close()
 
 
+def test_legacy_notify_subs_rebuild_keeps_park_columns(kanban_home):
+    """A legacy ``last_event_id TEXT`` board rebuilt by the drift migration
+    must keep the delivery-park columns.
+
+    The rebuild recreates ``kanban_notify_subs`` from ``_REBUILD_SPECS`` and
+    copies only old∩new columns, so a park column missing from the canonical
+    CREATE is dropped right after the ALTER pass added it — and every later
+    ``add_notify_sub`` / ``record_notify_failure`` then raises ``no such
+    column: delivery_failures`` for the rest of the process (critic t_e323f1ed
+    finding 1: exactly the legacy boards the rebuild exists for).
+    """
+    from hermes_cli import kanban_db_notify as kbn
+
+    db_path = kanban_home / "legacy-notify.db"
+    seed = sqlite3.connect(db_path)
+    seed.execute(
+        "CREATE TABLE kanban_notify_subs ("
+        " task_id TEXT NOT NULL, platform TEXT NOT NULL, chat_id TEXT NOT NULL,"
+        " thread_id TEXT NOT NULL DEFAULT '', user_id TEXT,"
+        " notifier_profile TEXT, delivery_mode TEXT NOT NULL DEFAULT 'notify',"
+        " created_at INTEGER NOT NULL, last_event_id TEXT,"
+        " PRIMARY KEY (task_id, platform, chat_id, thread_id))"
+    )
+    seed.execute(
+        "INSERT INTO kanban_notify_subs (task_id, platform, chat_id, thread_id,"
+        " created_at, last_event_id) VALUES ('t_legacy1', 'telegram', 'legacy-chat', '', 1, '7')"
+    )
+    seed.commit()
+    seed.close()
+
+    conn = kbc.connect(db_path)  # runs the ALTER pass, then the drift rebuild
+    try:
+        info = {r["name"]: r for r in conn.execute("PRAGMA table_info(kanban_notify_subs)")}
+        assert info["last_event_id"]["type"].upper() == "INTEGER", "legacy table must be rebuilt"
+        assert info["delivery_failures"]["type"].upper() == "INTEGER", (
+            "rebuild dropped delivery_failures — _REBUILD_SPECS is out of step with _NOTIFY_SUB_COLUMNS"
+        )
+        assert info["retry_after"]["type"].upper() == "REAL", (
+            "rebuild dropped retry_after — _REBUILD_SPECS is out of step with _NOTIFY_SUB_COLUMNS"
+        )
+        # The rebuilt shape matches a fresh SCHEMA_SQL board column-for-column,
+        # so neither canonical CREATE can drift from the other again.
+        fresh = sqlite3.connect(":memory:")
+        fresh.executescript(kb.SCHEMA_SQL)
+        fresh_cols = [tuple(r)[1:6] for r in fresh.execute("PRAGMA table_info(kanban_notify_subs)")]
+        rebuilt_cols = [tuple(r)[1:6] for r in conn.execute("PRAGMA table_info(kanban_notify_subs)")]
+        assert rebuilt_cols == fresh_cols
+        # The legacy row survived with park defaults and a cast cursor.
+        row = conn.execute(
+            "SELECT delivery_failures, retry_after, last_event_id"
+            " FROM kanban_notify_subs WHERE task_id = 't_legacy1'"
+        ).fetchone()
+        assert row[0] == 0 and row[1] is None
+        assert int(row[2]) == 7
+        # Both writers that broke on the dropped column succeed post-rebuild.
+        kbn.add_notify_sub(conn, task_id="t_new", platform="telegram", chat_id="new-chat")
+        before = time.time()
+        failures, retry_after = kbn.record_notify_failure(
+            conn, task_id="t_new", platform="telegram", chat_id="new-chat",
+            base_delay=5.0, cap_delay=3600.0,
+        )
+        assert failures == 1
+        assert before < retry_after <= time.time() + 3600.0
+    finally:
+        conn.close()
+    # A second connect (the next process) is a no-op and the columns stick.
+    conn = kbc.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT delivery_failures, retry_after FROM kanban_notify_subs"
+            " WHERE task_id = 't_new'"
+        ).fetchone()
+        assert row[0] == 1 and row[1] == retry_after
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Dispatcher spawn invocation — _resolve_hermes_argv()
 #

@@ -11,6 +11,7 @@ Residual insight extracted from closed PR #84191 (@MaximCrabbe).
 """
 
 import asyncio
+import time
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
@@ -59,7 +60,6 @@ def _make_runner(adapter):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._running = True
     runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._kanban_sub_fail_counts = {}
     runner._kanban_dispatcher_lock_handle = object()
     return runner
 
@@ -110,6 +110,29 @@ def _subs(tid):
         conn.close()
 
 
+def conn_row(tid):
+    conn = kbc.connect()
+    try:
+        return conn.execute(
+            "SELECT delivery_failures, retry_after FROM kanban_notify_subs WHERE task_id = ?",
+            (tid,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def _backdate_park(tid):
+    conn = kbc.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE kanban_notify_subs SET retry_after = ? WHERE task_id = ?",
+                (time.time() - 1.0, tid),
+            )
+    finally:
+        conn.close()
+
+
 def test_wake_only_success_advances_cursor_single_wake(tmp_path, monkeypatch):
     """Wake succeeds: exactly one wake, no text ping, cursor advanced."""
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-ok.db"))
@@ -125,11 +148,13 @@ def test_wake_only_success_advances_cursor_single_wake(tmp_path, monkeypatch):
     assert _unseen_terminal_events(tid) == [], (
         "cursor must advance after a successful wake-only delivery"
     )
-    assert runner._kanban_sub_fail_counts == {}
+    row = conn_row(tid)
+    assert row["delivery_failures"] == 0 and row["retry_after"] is None
 
 
-def test_wake_only_failure_rewinds_and_redelivers(tmp_path, monkeypatch):
-    """Wake fails: cursor rewound, counter bumped, event retried next tick."""
+def test_wake_only_failure_rewinds_counts_and_parks(tmp_path, monkeypatch):
+    """Wake fails: cursor rewound, failure counted durably, sub parked on
+    backoff — one attempt per backoff step, never dropped."""
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-fail.db"))
     kb.init_db()
     tid = _make_completed_task("wake")
@@ -145,17 +170,23 @@ def test_wake_only_failure_rewinds_and_redelivers(tmp_path, monkeypatch):
         "is redelivered on a later tick — it was permanently lost before "
         "this fix (cursor advanced before the best-effort wake)"
     )
-    assert list(runner._kanban_sub_fail_counts.values()) == [1], (
-        "failure counter must bump on a failed wake-only delivery"
-    )
+    row = conn_row(tid)
+    assert row["delivery_failures"] == 1, "failure counter must bump on a failed wake-only delivery"
+    assert row["retry_after"] is not None and row["retry_after"] > time.time()
     assert len(_subs(tid)) == 1, "one transient failure must not drop the sub"
 
-    # Next tick: the same event is claimed and the wake retried.
+    # Parked: the next tick claims nothing until the backoff window passes.
     runner2 = _make_runner(adapter)
-    runner2._kanban_sub_fail_counts = runner._kanban_sub_fail_counts
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner2))
-    assert len(adapter.handled) == 2, "event must be redelivered next tick"
-    assert list(runner2._kanban_sub_fail_counts.values()) == [2]
+    assert len(adapter.handled) == 1, "parked subscription must not be re-attempted"
+
+    # Backoff expiry: the same event is claimed and the wake retried, counted.
+    _backdate_park(tid)
+    runner2._running = True
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner2))
+    assert len(adapter.handled) == 2, "event must be redelivered after the backoff window"
+    row = conn_row(tid)
+    assert row["delivery_failures"] == 2
 
 
 def test_notify_wake_failure_retries_without_repeating_ping(tmp_path, monkeypatch):
@@ -171,33 +202,43 @@ def test_notify_wake_failure_retries_without_repeating_ping(tmp_path, monkeypatc
     assert len(adapter.sent) == 1, "text ping delivered"
     assert len(adapter.handled) == 1, "wake attempted after the ping"
     assert len(_unseen_terminal_events(tid)) == 1
-    assert list(runner._kanban_sub_fail_counts.values()) == [1]
+    assert conn_row(tid)["delivery_failures"] == 1
     runner._running = True
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
-    assert len(adapter.sent) == 1
+    assert len(adapter.sent) == 1, "parked tick sends nothing"
+    _backdate_park(tid)
+    runner._running = True
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert len(adapter.sent) == 1, "ping checkpoint holds across parked retries"
     assert len(adapter.handled) == 2
-    assert list(runner._kanban_sub_fail_counts.values()) == [2]
+    assert conn_row(tid)["delivery_failures"] == 2
 
 
-def test_wake_only_failure_cap_drops_subscription(tmp_path, monkeypatch):
-    """After MAX_SEND_FAILURES consecutive wake failures the sub is dropped."""
+def test_wake_only_failure_cap_parks_at_one_hour(tmp_path, monkeypatch):
+    """Backoff is capped: after many consecutive failures the sub stays alive,
+    parked, retried at most hourly — never deleted."""
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-cap.db"))
     kb.init_db()
     tid = _make_completed_task("wake")
 
     adapter = FailingWakeAdapter()
     runner = _make_runner(adapter)
-    # Simulate 11 prior consecutive failures (MAX_SEND_FAILURES = 12).
-    runner._kanban_sub_fail_counts = {
-        (tid, "telegram", "chat-1", ""): 11,
-    }
+    # Simulate 11 prior consecutive failures directly on the durable row.
+    conn = kbc.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE kanban_notify_subs SET delivery_failures = 11, retry_after = ?"
+                " WHERE task_id = ?",
+                (time.time() - 1.0, tid),
+            )
+    finally:
+        conn.close()
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert len(adapter.handled) == 1
-    assert _subs(tid) == [], (
-        "subscription must drop after MAX_SEND_FAILURES consecutive "
-        "wake-only delivery failures, like text sends do"
-    )
-    assert runner._kanban_sub_fail_counts == {}, (
-        "counter entry must clear when the subscription is dropped"
-    )
+    row = conn_row(tid)
+    assert row is not None, "a dead destination is parked, never unsubscribed"
+    assert row["delivery_failures"] == 12
+    # 5s * 2**11 ≫ 1h — the 12th backoff is capped at the hourly ceiling.
+    assert time.time() + 3599.0 <= row["retry_after"] <= time.time() + 3601.0

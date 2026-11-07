@@ -1178,3 +1178,29 @@ def test_gc_purges_blocked_task_that_never_done(kanban_home):
         assert kbn.list_notify_subs(conn, tid) == []
     finally:
         conn.close()
+
+def test_gc_purges_archived_task_with_dead_destination(kanban_home):
+    """Archived is terminal: delivery failures park rather than unsubscribe,
+    so a dead destination on an archived task would be probed on capped
+    backoff forever with nothing else to reap the row — the GC covers it on
+    the same settled clock as done/blocked."""
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="archived dead", assignee="worker1")
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="c-arch",
+            notifier_profile="default",
+        )
+        _set_task_status(kb, conn, tid, "archived")
+        _backdate_task(kb, conn, tid, days=45)
+
+        purged = kbn.purge_stale_done_notify_subs(conn, max_age_days=30)
+
+        assert purged == 1
+        assert kbn.list_notify_subs(conn, tid) == []
+    finally:
+        conn.close()

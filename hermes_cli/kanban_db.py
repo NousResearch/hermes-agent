@@ -968,6 +968,13 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     last_ping_event_id INTEGER NOT NULL DEFAULT 0,
+    -- Durable delivery-failure parking: consecutive failures counted on the
+    -- row (NULL retry_after = not parked); a successful delivery or a
+    -- re-subscribe clears both. Keep in step with _NOTIFY_SUB_COLUMNS in
+    -- kanban_db_connect.py and _REBUILD_SPECS, which rebuild legacy boards
+    -- from this shape.
+    delivery_failures INTEGER NOT NULL DEFAULT 0,
+    retry_after REAL,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 

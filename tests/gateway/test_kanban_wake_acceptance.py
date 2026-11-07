@@ -1,5 +1,6 @@
 """Push admission and durable notifier retries use real adapter/SQLite lifecycles."""
 import asyncio
+import time
 
 import pytest
 
@@ -110,14 +111,21 @@ async def test_notifier_retries_unaccepted_wake_without_repeating_pings(tmp_path
     finally:
         conn.close()
 
-    failures = {}
-
     async def tick():
         deliveries = await asyncio.to_thread(_notifier_collect, runner, kb,
             notifier_profile=None, gc_due=False, gc_retention_days=30)
         for delivery in deliveries:
-            await _KanbanNotification(runner, delivery, platform_cls=Platform,
-                                      sub_fail_counts=failures).deliver()
+            await _KanbanNotification(runner, delivery, platform_cls=Platform).deliver()
+
+    def sub_row():
+        conn = kbc.connect()
+        try:
+            return conn.execute(
+                "SELECT delivery_failures, retry_after FROM kanban_notify_subs WHERE task_id = ?",
+                (tids["notify+wake"],),
+            ).fetchone()
+        finally:
+            conn.close()
 
     def unseen(mode):
         conn = kbc.connect()
@@ -137,7 +145,9 @@ async def test_notifier_retries_unaccepted_wake_without_repeating_pings(tmp_path
         await tick()
     assert len(adapter.wire) == 2
     assert unseen("notify+wake") and unseen("wake")
-    assert failures == {}
+    # Transient unaccepted wakes (no handler installed yet) are never counted.
+    assert sub_row()["delivery_failures"] == 0
+    assert sub_row()["retry_after"] is None
     received = []
 
     async def handler(event):
@@ -178,8 +188,7 @@ async def test_suppressed_ping_has_no_sent_receipt_but_wake_executes(tmp_path, m
         deliveries = await asyncio.to_thread(_notifier_collect, runner, kb,
             notifier_profile=None, gc_due=False, gc_retention_days=30)
         for delivery in deliveries:
-            await _KanbanNotification(runner, delivery, platform_cls=Platform,
-                                      sub_fail_counts={}).deliver()
+            await _KanbanNotification(runner, delivery, platform_cls=Platform).deliver()
         await drain(adapter)
         assert len(work) == 1
         assert work[0].metadata["notification_category"] == "diagnostic"
@@ -191,5 +200,83 @@ async def test_suppressed_ping_has_no_sent_receipt_but_wake_executes(tmp_path, m
             assert row["last_event_id"] > 0
         finally:
             conn.close()
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_store_refusal_codes_park_or_retry_by_permanence(tmp_path, monkeypatch):
+    """The store's refusal codes ride WakeNotAccepted.reason through deliver_wake's
+    RuntimeStoreError wrap. Final codes (not_found) park the subscription durably;
+    self-clearing codes (runtime_draining) keep bf1bf7515a's uncounted retry."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "park-by-reason.db"))
+    runner, adapter, _source, key = setup_route()
+    adapter.gateway_runner = runner
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="by reason", assignee="worker", session_id=key)
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="42",
+                           user_id="42", chat_type="dm", delivery_mode="notify+wake")
+        kb.complete_task(conn, tid, summary="handoff")
+    finally:
+        conn.close()
+
+    from hermes_state_runtime import RuntimeStoreError
+
+    refusals = {"reason": "not_found", "calls": 0}
+
+    async def refusing_admit(runner_, adapter_, source, text, wake_kind, category=None):
+        refusals["calls"] += 1
+        raise RuntimeStoreError(refusals["reason"], detail="simulated store refusal")
+
+    monkeypatch.setattr("gateway.session_automation.admit_route_wake", refusing_admit)
+
+    def park_state():
+        conn = kbc.connect()
+        try:
+            return conn.execute(
+                "SELECT delivery_failures, retry_after FROM kanban_notify_subs WHERE task_id = ?",
+                (tid,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+    async def tick():
+        deliveries = await asyncio.to_thread(_notifier_collect, runner, kb,
+            notifier_profile=None, gc_due=False, gc_retention_days=30)
+        for delivery in deliveries:
+            await _KanbanNotification(runner, delivery, platform_cls=Platform).deliver()
+
+    await adapter.connect()
+    try:
+        # Permanent leg: one counted attempt parks; parked ticks stay quiet.
+        await tick()
+        await tick()
+        assert refusals["calls"] == 1
+        row = park_state()
+        assert row["delivery_failures"] == 1
+        assert row["retry_after"] is not None and row["retry_after"] > time.time()
+        assert len(adapter.wire) == 1, "the notify ping still went out once"
+
+        # Transient leg: a self-clearing code never counts and retries per tick.
+        refusals["reason"] = "runtime_draining"
+        conn = kbc.connect()
+        try:
+            with kb.write_txn(conn):
+                conn.execute("UPDATE kanban_notify_subs SET retry_after = ?, delivery_failures = 0"
+                             " WHERE task_id = ?", (time.time() - 1.0, tid))
+        finally:
+            conn.close()
+        await tick()
+        await tick()
+        assert refusals["calls"] == 3, "draining refusals retry every tick"
+        row = park_state()
+        assert row["delivery_failures"] == 0, "draining refusals are never counted"
+        assert not row["retry_after"] or row["retry_after"] <= time.time(), (
+            "draining refusals never (re)park; only the stale expired window remains"
+        )
+        assert len(adapter.wire) == 1, (
+            "the checkpointed ping is never repeated across parked/draining retries"
+        )
     finally:
         await adapter.disconnect()

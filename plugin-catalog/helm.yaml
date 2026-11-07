@@ -1,6 +1,6 @@
 name: helm
 repo: https://github.com/ASV-Labs/hermes-helm
-sha: ce0605a6cf16a566f66c1468ad0a9ab431d395da
+sha: 0f68da9b485870059be2bef71f284a81ad771fdd
 title: helm
 description: >-
   A redesigned Hermes Desktop. A Desk home page (greeting and crew status, a prompt that hands work to any
@@ -14,7 +14,7 @@ description: >-
   approval.pending, session.history (the focused chat's plan), cron.manage action list only (never adds,
   pauses or removes a job), host.onEvent for approval/clarify/todo events; approval.respond and
   clarify.respond only when you click Approve, Allow session, Deny or Send; profiles.create only from New
-  bot; profiles.set_asset to set a robot avatar, never over an uploaded photo; sends a chat message only
+  bot; profiles.set_asset to set a robot avatar, never over an uploaded photo (profiles.get_asset re-reads each bot's avatar once a minute so a robot Bot Mode's own 160 px face replaced is restored); sends a chat message only
   from the Desk prompt on Enter or Send. The theme layer is the SDK theme customCSS and selects the app's
   data-slot names in CSS only (validate warns on these selectors); JS never queries, observes or edits app
   markup. Writes its own ctx.storage and, when changed in its settings, the app's sessionListDensity and
@@ -26,16 +26,16 @@ maintainer: ASV-Labs
 tier: community
 category: desktop
 requires_hermes: ">=0.22.0"
-version: "1.0.3"
+version: "1.0.5"
 docs_url: https://github.com/ASV-Labs/hermes-helm/tree/main/docs/guides
-image: https://raw.githubusercontent.com/ASV-Labs/hermes-helm/ce0605a6cf16a566f66c1468ad0a9ab431d395da/docs/hero.png
+image: https://raw.githubusercontent.com/ASV-Labs/hermes-helm/0f68da9b485870059be2bef71f284a81ad771fdd/docs/hero.png
 screenshots:
-  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/ce0605a6cf16a566f66c1468ad0a9ab431d395da/docs/screens/app-desk.png
-  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/ce0605a6cf16a566f66c1468ad0a9ab431d395da/docs/screens/desk.png
-  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/ce0605a6cf16a566f66c1468ad0a9ab431d395da/docs/screens/app-customize-look.png
-  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/ce0605a6cf16a566f66c1468ad0a9ab431d395da/docs/screens/app-bots-board.png
-  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/ce0605a6cf16a566f66c1468ad0a9ab431d395da/docs/screens/session-pane.png
-  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/ce0605a6cf16a566f66c1468ad0a9ab431d395da/docs/demo.gif
+  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/0f68da9b485870059be2bef71f284a81ad771fdd/docs/screens/app-desk.png
+  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/0f68da9b485870059be2bef71f284a81ad771fdd/docs/screens/desk.png
+  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/0f68da9b485870059be2bef71f284a81ad771fdd/docs/screens/app-customize-look.png
+  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/0f68da9b485870059be2bef71f284a81ad771fdd/docs/screens/app-bots-board.png
+  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/0f68da9b485870059be2bef71f284a81ad771fdd/docs/screens/session-pane.png
+  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/0f68da9b485870059be2bef71f284a81ad771fdd/docs/demo.gif
 platforms: []
 known_issues:
   - "The robot renders come from the plugin's dashboard half, which mounts when the gateway starts; until one Hermes restart after install the Bots board shows flat SVG robots."

@@ -1,5 +1,6 @@
 """Retirement is atomic across connections and health checks leave writers free."""
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -161,8 +162,9 @@ def test_no_usable_temporary_directory_is_not_reported_as_damage(cjk_db, monkeyp
     assert isinstance(reason, repair.HealthCheckUnavailable) and "No usable temporary directory" in reason
 
 
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes into chmod 500 dirs")
 def test_a_copy_sqlite_cannot_write_is_not_reported_as_damage(cjk_db, monkeypatch, tmp_path):
-    import os
     import tempfile
 
     unwritable = tmp_path / "unwritable"
@@ -183,3 +185,34 @@ def test_a_copy_sqlite_cannot_write_is_not_reported_as_damage(cjk_db, monkeypatc
         for child in unwritable.iterdir():
             os.chmod(child, 0o700)
     assert isinstance(reason, repair.HealthCheckUnavailable), reason
+
+
+
+@pytest.mark.parametrize("damage", ["missing", "unreadable"])
+def test_base_fts_damage_beside_the_retired_index_routes_to_repair(cjk_db, damage):
+    with sqlite3.connect(cjk_db, isolation_level=None) as conn:
+        if damage == "missing":
+            conn.execute("DROP TABLE messages_fts_config")
+        else:
+            conn.execute("DELETE FROM messages_fts_config")
+            conn.execute("INSERT INTO messages_fts_config VALUES ('version', 99)")
+    reason = repair._db_opens_cleanly(cjk_db)
+    assert reason is not None and not isinstance(reason, repair.HealthCheckUnavailable), reason
+    assert "messages_fts" in reason
+
+
+
+def test_repair_heals_base_fts_damage_beside_the_retired_index(cjk_db, monkeypatch):
+    import contextlib
+    import gc
+
+    gc.collect()  # the fixture's outside-write probe leaves a raw connection for GC
+    with contextlib.closing(sqlite3.connect(cjk_db, isolation_level=None)) as conn:
+        conn.execute("DELETE FROM messages_fts_config")
+        conn.execute("INSERT INTO messages_fts_config VALUES ('version', 99)")
+    monkeypatch.setattr(repair, "_live_writer_holds_db", lambda _path: False)
+    report = repair.repair_state_db_schema(cjk_db, backup=False)
+    assert report["repaired"], report
+    assert repair._db_opens_cleanly(cjk_db) is None
+    with sqlite3.connect(cjk_db) as raw:
+        assert raw.execute("SELECT content FROM messages").fetchall() == [("东京都",)]

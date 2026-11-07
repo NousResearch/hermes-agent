@@ -1,0 +1,43 @@
+name: gogogoogle
+repo: https://github.com/josefacero/hermes-gogogoogle
+sha: 5ef8b28284c1319aa9a9e1cb2cbb5c622dfbc49b
+description: >-
+  Hand bulk work to Google Antigravity's agy CLI as a worker agent on your
+  Antigravity quota while Hermes keeps its own model, then have a fresh agy
+  conversation verify the result against the real files and git diff. Roles do,
+  research and review; background jobs; resume after timeout; a verifier chain
+  that skips models out of quota until their reset; a git check that fails
+  read-only runs that changed files; per-run stats. Disclosure: each delegation
+  asks for Hermes approval; do runs auto-approve agy permissions, while research,
+  review and verification run without that flag under session rules denying
+  writes and shell commands. agy can read files outside the working directory;
+  task text, files read and a diff excerpt go to Google. Not an OS sandbox. Runs
+  git and writes run metadata and background job records under the plugin data
+  directory. No credentials stored, no telemetry, no self-update.
+maintainer: josefacero
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/josefacero/hermes-gogogoogle#readme
+version: "0.4.0"
+readme: true
+known_issues:
+  - "Requires agy and an authenticated Antigravity account; runs use that account's quota."
+  - "Hermes approval policy and other installed plugins can affect the approval boundary; see README."
+  - "Research and review permission rules depend on agy behavior and are not an OS sandbox."
+  - "Git checks can miss ignored, untracked or binary content changes and do not revert edits."
+  - "After a plugin restart job state may be unknown and a subprocess may still be running."
+  - "Hermes' CLI approval panel can truncate a long task; the prompt shows task length and hash so truncation is visible."
+  - "Research/review rules block writes and shell commands (tested on agy 1.5.1 and 1.5.2) but not reads outside the working directory; blocked actions are listed in the result."
+  - "Developed and tested on Windows 11 only. Elsewhere a timed-out run ends agy itself but not necessarily its child processes."
+  - "Research, review and verification can use agy's Playwright browser (headless by default; setting browser_mode: headless, visible or off). Page text is untrusted. Playwright tools that run code, type or upload files are denied and every other agy MCP server is denied, but a Playwright tool a later release adds stays allowed until listed. The browser can reach your local network."
+  - "The plugin points the browser's snapshot files at a temp folder; an older setup may still leave a .playwright-mcp/ folder in the working directory, which the change check ignores."
+capabilities:
+  provides_tools:
+    - antigravity_delegate
+    - antigravity_job
+    - antigravity_stats
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

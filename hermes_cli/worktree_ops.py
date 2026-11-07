@@ -817,11 +817,13 @@ def _tree_still_served(db_path: str, worktree_path: str) -> Optional[str]:
     import sqlite3
     from urllib.parse import quote
 
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
     path = Path(db_path)
     chats: set = set()
     if path.is_file():
         try:
-            conn = sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=2)
+            conn = connect_tracked(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=2, tracking_path=path)
             try:
                 conn.create_function("hermes_inside_tree", 1, _inside_tree(worktree_path), deterministic=True)
                 if conn.execute(_SERVED_TREE_SQL).fetchone():
@@ -869,12 +871,14 @@ def _retained_tree_is_live(db_path: str, worktree_path: str, *, pending_only: bo
     import sqlite3
     from urllib.parse import quote
 
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
     path = Path(db_path)
     if not path.is_file():
         return False
     inside = _inside_tree(worktree_path)
     try:
-        conn = sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=2)
+        conn = connect_tracked(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=2, tracking_path=path)
         try:
             conn.create_function("hermes_inside_tree", 1, inside, deterministic=True)
             row = conn.execute(

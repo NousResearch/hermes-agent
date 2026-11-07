@@ -109,7 +109,9 @@ def referenced_spillover_names(spill_dir) -> set | None:
         return set()
     try:
         # as_uri(): a plain f"file:{path}" breaks on Windows drive letters
-        conn = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True, timeout=5.0)
+        from hermes_cli.sqlite_safe_read import connect_tracked  # tracked: raw byte probes must see this reader
+
+        conn = connect_tracked(f"{db_path.as_uri()}?mode=ro", uri=True, timeout=5.0, tracking_path=db_path)
         try:
             rows = conn.execute(
                 f"SELECT content, api_content FROM messages WHERE {SPILLOVER_SQL_FILTER} LIMIT 20001"

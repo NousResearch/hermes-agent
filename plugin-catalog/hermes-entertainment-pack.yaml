@@ -1,0 +1,17 @@
+name: hermes-entertainment-pack
+repo: https://github.com/meyjeancodes/hermes-entertainment-pack
+sha: 28384a1907b53d695bfdc09ca5610ee39cc1e945
+description: Retro-futuristic entertainment pack — TV hub with 10 channels, Nous Boy games, gallery, Mixtape (Spotify), Discord.
+maintainer: BlackCat Robotics
+tier: community
+category: desktop
+docs_url: https://github.com/meyjeancodes/hermes-entertainment-pack#readme
+version: "1.0.0"
+requires_hermes: ">=0.19"
+platforms: [macos, linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - DISCORD_BOT_TOKEN

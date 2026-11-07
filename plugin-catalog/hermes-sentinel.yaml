@@ -1,12 +1,9 @@
 name: hermes-sentinel
 repo: https://github.com/SaltProphet/hermes-sentinel
-sha: "39ab266298d6aaa511fe9b812ab799987f55f158"
-description: "Deterministic loop circuit breaker, tool-result redaction/truncation, and local SQLite execution audit. Disclosure: inspects prompts/history and tool arguments/results; stores sanitized argument previews and event metadata locally; no plugin network requests or telemetry."
-maintainer: SaltProphet
+sha: "39fade2083fc0033b2b2b537ec54e7634825cd88"
 tier: community
-category: tools
-version: "0.1.0"
-platforms: [windows]
+maintainer: Justin Strange
+description: "Deterministic runtime circuit breaker, loop trap prevention, and execution truth auditor for Hermes Agent."
 capabilities:
   provides_tools: []
   provides_hooks:

@@ -34,6 +34,31 @@ _EXTRA_FIELDS = (
 )
 
 
+VOICE_TURN_NOTE = (
+    "[Voice: the user is talking with you by voice and your reply is likely read aloud. Answer the "
+    "way you would in conversation: a few short sentences, no tables, code blocks or heavy markdown "
+    "unless asked. Before long tool work, say in one short sentence what you are about to do; finish "
+    "with a brief spoken answer, not a written report.]"
+)
+
+
+def voice_turn_note(agent: Any) -> str:
+    """Pop the spoken-reply marker (``agent._spoken_reply_pending``, set by the surface that will speak
+    the reply) and return the note for it; ``""`` when unmarked or ``voice.concise_responses`` is off.
+    Rides the user message, so the system prompt stays byte-stable."""
+    if getattr(agent, "_spoken_reply_pending", False) is not True:
+        return ""
+    agent._spoken_reply_pending = False
+    try:
+        from hermes_cli.config import load_config_readonly
+        voice = load_config_readonly().get("voice")
+    except ImportError:
+        return VOICE_TURN_NOTE
+    from utils import is_truthy_value
+    enabled = voice.get("concise_responses", True) if isinstance(voice, dict) else True
+    return VOICE_TURN_NOTE if is_truthy_value(enabled, default=True) else ""
+
+
 def _route_target(agent: Any, cfg: dict[str, Any]) -> Optional[dict[str, Any]]:
     """The entry to bind, or None when the slot follows the main model (``auto`` + no model)."""
     provider = str(cfg.get("provider") or "").strip().lower()

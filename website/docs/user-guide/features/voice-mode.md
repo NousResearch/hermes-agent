@@ -159,14 +159,19 @@ The record key is configurable via `voice.record_key` in `~/.hermes/config.yaml`
 
 ### Response guidance
 
-By default, classic-CLI microphone requests include brief, conversational response guidance. To make classic-CLI dictation behave like typed input, disable only that guidance:
+When your reply will be heard rather than read, Hermes adds a short note to that one message telling the model to answer the way it would out loud: a few sentences, no tables or code blocks, a one-line heads-up before long tool work, and a brief spoken answer at the end. It applies to:
+
+- a spoken turn in the CLI, the TUI or a Desktop voice conversation;
+- a messaging chat whose reply goes out as audio (`/voice tts`, `/voice on` for a voice message, or `voice.auto_tts` when the chat has no `/voice` mode).
+
+Typed turns and text-only chats are unchanged. The note rides the user message, never the system prompt, so the prompt cache is unaffected. To make dictation behave like typed input, turn the note off:
 
 ```yaml
 voice:
   concise_responses: false
 ```
 
-This does not change speech recognition, language hints, editable transcription, TTS, tool use, or conversation history. The setting only removes the API-call-local instruction limiting voice replies to 2–3 sentences without Markdown or code blocks.
+This does not change speech recognition, language hints, editable transcription, TTS, tool use, the `auxiliary.voice_chat` model route, or conversation history.
 
 ### Silence Detection
 
@@ -508,7 +513,7 @@ voice:
   record_key: "ctrl+b"            # Key to start/stop recording
   max_recording_seconds: 120       # Maximum recording length
   auto_tts: false                  # Auto-enable TTS when voice mode starts
-  concise_responses: true          # Keep classic-CLI microphone replies concise and conversational
+  concise_responses: true          # Brief, speakable replies when the reply is heard (CLI, TUI, Desktop, messaging)
   beep_enabled: true               # Play record start/stop beeps
   silence_threshold: 200           # RMS level (0-32767) below which counts as silence
   silence_duration: 3.0            # Seconds of silence before auto-stop

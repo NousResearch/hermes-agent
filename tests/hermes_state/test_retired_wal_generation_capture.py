@@ -300,6 +300,50 @@ def test_capture_does_not_write_into_tombstoned_profile_home(tmp_path, force_wal
         db.close()
 
 
+@not_windows
+def test_close_retry_never_resurrects_a_removed_profile_home(tmp_path, force_wal):
+    """Production sequence reported on 0.22.6: close attempt #1 runs while the tombstone is already
+    written but the home still exists — the capture fails, the handle stays pinned, and the retry
+    only happens at a later shutdown, after the lifecycle has removed the home entirely. Pre-guard,
+    the retry's ``staging.mkdir(parents=True)`` resurrected the home and left an empty, marker-less
+    profile directory behind. Both attempts must refuse without creating anything, and the home
+    must stay absent."""
+    root = tmp_path / "hermes"
+    root.mkdir()
+    (root / "config.yaml").write_text("{}\n", encoding="utf-8")
+    home = root / "profiles" / "profile"
+    home.mkdir(parents=True)
+    path = home / "state.db"
+    db = make_db(path, "gw-0", "seed")
+    try:
+        require_wal(db)
+        _wal_only_sentinel(db, "gw-0")
+        mark_named_profile_deleted(home)
+        lose_sidecars(path, rename=False)
+
+        # Attempt #1: tombstoned-but-present home — refused, handle stays open, nothing written.
+        with pytest.raises(RetiredGenerationCaptureError, match="could not write"):
+            db.close()
+        assert db._conn is not None
+        assert home.exists()
+        assert not list(home.glob("state.db.retired-wal-*"))
+
+        # The lifecycle then removes the home; the later retry must not mkdir it back into existence.
+        shutil.rmtree(home)
+        with pytest.raises(RetiredGenerationCaptureError, match="could not write"):
+            db.close()
+        assert db._conn is not None
+        assert not home.exists()
+        assert not list(path.parent.glob("state.db.retired-wal-*"))
+        assert not list(path.parent.glob("*.partial"))
+    finally:
+        # The capture can never succeed now, so close() would keep refusing to settle; release the
+        # raw connection the way close() itself does once the generation is settled.
+        conn, db._conn = getattr(db, "_conn", None), None
+        if conn is not None:
+            db._close_connection_quietly(conn)
+
+
 # ── Recoverable after the writer process has exited ──────────────────────────────────────────────────
 #
 # The gateway writer A runs in its OWN process, seeds + checkpoints history, leaves rows only in its WAL

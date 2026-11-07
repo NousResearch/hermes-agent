@@ -198,6 +198,8 @@ export function truncateSubmitParams(
 }
 
 interface DurableHistoryMessage {
+  archived?: boolean
+  archived_truncated?: boolean
   display_kind?: string
   role?: string
   row_id?: unknown
@@ -215,7 +217,10 @@ interface DurableHistoryMessage {
  * ambiguity prefers the LAST match only when `expectedOrdinal` says the target
  * is the latest persisted turn (the edit-after-interrupt shape — the just-sent
  * message is by definition the newest). Anything else returns undefined and the
- * caller degrades to a plain resubmit, never a guessed cut.
+ * caller degrades to a plain resubmit, never a guessed cut. Rows a compression
+ * archived (`archived: true`) are display-only, never a rewind target, so they
+ * never match; they still count in the ordinal space, which is the rendered
+ * transcript's (compacted and ancestor rows included).
  */
 export async function resolveDurableRowId(
   requestGateway: RequestGateway,
@@ -239,7 +244,7 @@ export async function resolveDurableRowId(
     return undefined
   }
 
-  const durableUsers = messages.filter(
+  const users = messages.filter(
     message =>
       message.role === 'user' &&
       !message.display_kind &&
@@ -247,16 +252,23 @@ export async function resolveDurableRowId(
       Number.isInteger(message.row_id)
   )
 
+  const durableUsers = users.filter(message => message.archived !== true)
   const matches = durableUsers.filter(message => (message.text ?? '').trim() === wanted)
 
   if (matches.length === 1) {
     return matches[0].row_id as number
   }
 
-  if (matches.length > 1 && typeof expectedOrdinal === 'number' && expectedOrdinal >= durableUsers.length - 1) {
+  // A budgeted history omits older turns; its ordinal space cannot prove
+  // which duplicate the complete rendered transcript addressed.
+  if (messages.some(message => message.archived_truncated === true)) {
+    return undefined
+  }
+
+  if (matches.length > 1 && typeof expectedOrdinal === 'number' && expectedOrdinal >= users.length - 1) {
     const last = matches[matches.length - 1]
 
-    return durableUsers[durableUsers.length - 1] === last ? (last.row_id as number) : undefined
+    return users[users.length - 1] === last ? (last.row_id as number) : undefined
   }
 
   return undefined

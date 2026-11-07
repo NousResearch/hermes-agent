@@ -119,7 +119,7 @@ async def export_session(connection, ref, params):
 
 
 async def session_history(connection, ref, params):
-    """Main's ``session.history``: the display transcript of the conversation's current physical row (compression tip or local receipt entry), ancestors included, each row with its durable ``row_id``; Desktop's edit resolves its turn by it."""
+    """Main's ``session.history``: the display transcript of the conversation's current physical row (compression tip or local receipt entry), ancestors included, each row with its durable ``row_id``; Desktop's edit resolves its turn by it. Rows outside the live set (ancestors, and the rows an in-place compaction archived) carry ``archived: true``: shown, never live. The rows follow the display lineage, as ``session.attach``'s do: every live row stays, and so does every row main returned that the display lineage shows; the rows main never returned fill what those leave of ``RESUME_HISTORY_BYTES`` (``session.attach``'s budget), newest first, and the first message carries ``archived_truncated: true`` when older ones were left out."""
     _live_ref(connection, ref, params, {'session_id', 'profile'}, 'session:read')
     authority = connection.authority
     from gateway.session_local_recovery import transcript_target
@@ -128,8 +128,33 @@ async def session_history(connection, ref, params):
 
     def read():
         from gateway.session_controls import display_projection
-        rows = authority.db.get_messages_as_conversation(target, include_ancestors=True, include_row_ids=True)
-        return {'count': len(rows), 'messages': display_projection(rows, authority.profile_id)}
+        from gateway.session_local_recovery import _fit_archive, _merge_live_in_stored_order
+        db = authority.db
+
+        def rows():
+            return (db.get_messages_as_conversation(target, include_ancestors=True, include_compacted=True,
+                                                    include_row_ids=True),
+                    db.get_messages_as_conversation(target, include_row_ids=True))
+        # A lineage row the live read no longer holds that was live before the reads, or born during them, was
+        # retired in between (a rewind or compaction): read once more, as ``local_history`` re-reads after its prepare.
+        # With no live row before the reads, every such row counts as born: that rare state always reads twice.
+        before = set(db.get_active_message_ids(target))
+        newest = max(before, default=0)
+        for _ in range(2):
+            lineage, live = rows()
+            live_ids = {row['_row_id'] for row in live}
+            if not any(row['_row_id'] not in live_ids and (row['_row_id'] in before or row['_row_id'] > newest)
+                       for row in lineage):
+                break
+        truncated = False
+        if any(row['_row_id'] not in live_ids for row in lineage):  # ancestors, or rows a compaction archived
+            # Rows main returned are never budgeted; the others fill what those leave of the resume byte budget.
+            lineage, truncated = _fit_archive(
+                db.get_messages_as_conversation(target, include_ancestors=True, include_row_ids=True), lineage)
+        messages = display_projection(_merge_live_in_stored_order(lineage, live), authority.profile_id)
+        if truncated and messages:
+            messages[0]['archived_truncated'] = True  # older archived rows were left out (the byte budget)
+        return {'count': len(messages), 'messages': messages}
     return await asyncio.to_thread(read)
 
 

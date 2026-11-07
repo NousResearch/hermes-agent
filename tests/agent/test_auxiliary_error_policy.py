@@ -13,7 +13,6 @@ from agent.auxiliary_client import _try_openrouter, async_call_llm, call_llm
 from agent.credential_pool import CredentialPool, PooledCredential as Key
 from agent.error_classifier import FailoverReason
 from agent.errors import InvalidProviderResponseError
-from tests.agent.conftest import sdk_status_error as sdk
 
 _REQ = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
 _MESSAGES = [{"role": "user", "content": "hi"}]
@@ -21,6 +20,18 @@ _MESSAGES = [{"role": "user", "content": "hi"}]
 
 class _Plain(Exception):
     pass
+
+
+def sdk(status: int, message: str, *, wrapped: bool = False, **error_fields):
+    """An error shaped like openai-python's ``_make_status_error`` output (``wrapped``: a relay that keeps
+    the ``{"error": ...}`` envelope on the exception body)."""
+    body = {"message": message, **error_fields}
+    if wrapped:
+        body = {"error": body}
+    by_status = {400: openai.BadRequestError, 401: openai.AuthenticationError, 403: openai.PermissionDeniedError,
+                 404: openai.NotFoundError, 429: openai.RateLimitError}
+    cls = by_status.get(status, openai.InternalServerError if status >= 500 else openai.APIStatusError)
+    return cls(f"Error code: {status} - {{'error': {body!r}}}", response=httpx.Response(status, request=_REQ), body=body)
 
 
 def _ok():

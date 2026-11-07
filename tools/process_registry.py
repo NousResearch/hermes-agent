@@ -703,15 +703,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # first consumer through restore_completions() (#123265). Importing the module is
         # side-effect free and keeps its import-order contract for later completion writers.
         import tools.async_delegation
-        # Completions the agent already consumed via wait()/read_log() (output in
-        # hand): drain loops AND gateway/tui watchers skip them.
+        # Completions the agent already consumed via wait()/read_log() (output in hand).
         self._completion_consumed: set = set()
-        # Sessions merely *observed* exited via poll(). poll() is read-only and must NOT
-        # mark consumed (a status check would suppress the watcher's autonomous delivery
-        # turn), but the CLI has the poll result inline in the same turn, so
-        # drain_notifications() skips these to avoid a duplicate [SYSTEM: ...];
-        # gateway/tui watchers deliberately ignore this set.
-        # See #8228.
+        # Sessions observed exited via poll(). poll() stays read-only: a poll taken while the
+        # process RUNS records nothing, so the exit notification still fires (#10156). A poll
+        # taken AFTER the exit already returned the exit code and output tail, so every
+        # announcing surface treats it like a consumed completion (#8228, #94455). See
+        # completion_already_observed().
         self._poll_observed: set = set()
         # Global watch-match circuit breaker across all sessions.
         self._global_watch_lock = threading.Lock()
@@ -1659,6 +1657,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         """Check if a completion notification was already consumed via wait/log."""
         return session_id in self._completion_consumed
 
+    def completion_already_observed(self, session_id: str) -> bool:
+        """Whether the agent already has this completion: output consumed via wait/log, or
+        the exit seen by a poll() taken after the process exited. Every surface that would
+        announce the completion (CLI drain, gateway watcher, TUI router, batch renderer)
+        asks this one predicate, so an already-handled result never starts another turn."""
+        return session_id in self._completion_consumed or session_id in self._poll_observed
+
     def is_session_waiting(self, session_id: str) -> bool:
         """Whether a goal loop (``hermes_cli.goals`` wait barrier) should stay parked on
         this session: still running AND, with ``watch_patterns``, none matched yet (a
@@ -1764,17 +1769,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         """Linger (s) for one-shot exits with pending notify_on_complete processes; 0 disables."""
         return ProcessRegistry._config_seconds("oneshot_completion_wait_seconds", 600.0)
 
-    def _drain_should_skip(self, session_id: str, *, skip_poll_observed: bool = True) -> bool:
-        """Skip a completion the CLI agent already has this turn — consumed via wait/log
-        or observed inline via poll(). Gateway/tui watchers check only
-        ``is_completion_consumed`` so a read-only poll never suppresses their turn.
-
-        Skips when the agent has either truly consumed the output (wait/log → ``_completion_consumed``) or
-        observed the exit inline via poll() (``_poll_observed``). In both cases the CLI agent already has
-        the result this turn, so injecting a [SYSTEM: ...] completion would be a duplicate (#8228).
-        """
-        return session_id in self._completion_consumed or (skip_poll_observed and session_id in self._poll_observed)
-
     @staticmethod
     def _surface_child_process_notifications() -> bool:
         """``delegation.surface_child_process_notifications``; False on any config
@@ -1823,11 +1817,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             reset_hermes_home_override(token)
 
     def drain_notifications(
-        self, session_key: str = "", owns_event=None, *, skip_poll_observed: bool = True,
+        self, session_key: str = "", owns_event=None,
     ) -> list[tuple[dict, str]]:
         """Pop all pending events and return ``(raw_event, formatted_text)`` pairs.
-        Skips completions per ``_drain_should_skip`` (gateway/TUI pass
-        ``skip_poll_observed=False``). Routing (``_owns_event``): async-delegation events
+        Skips completions per ``completion_already_observed``. Routing (``_owns_event``): async-delegation events
         always need ownership proof, ordinary events once they carry ``session_key`` or
         ``origin_ui_session_id``; ``owns_event(evt)`` (strongest; the TUI passes a
         compression-chain-aware check) consumes ONLY on True, ``session_key`` uses plain
@@ -1851,8 +1844,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # Routing happened first so a foreign session cannot drop the owner's
             # event via its own consumed/observed state.
             _evt_sid = evt.get("session_id", "")
-            if evt.get("type") == "completion" and self._drain_should_skip(
-                _evt_sid, skip_poll_observed=skip_poll_observed):
+            if evt.get("type") == "completion" and self.completion_already_observed(_evt_sid):
                 continue
             # Subagent-owned process notifications are suppressed by default — the
             # child's delegation result is the deliverable. Judge ownership on
@@ -2004,10 +1996,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             "uptime_seconds": int(time.time() - session.started_at), "output_preview": output_preview}
         if exited:
             result.update(self._exit_fields(session))
-            # Read-only: record in _poll_observed (CLI inline dedup) but NOT in
-            # _completion_consumed, or a status check would suppress the watcher's
-            # autonomous delivery turn. See __init__. A preview taken before the reader's
-            # final drain is partial and must not suppress the full completion.
+            # Read-only: record in _poll_observed, not _completion_consumed. The caller now
+            # has the exit code and output tail, so no surface announces this completion
+            # again. See __init__. A preview taken before the reader's final drain is
+            # partial and must not suppress the full completion.
             if not finalizing:
                 self._poll_observed.add(session_id)
         if session.detached and not session.output_log:
@@ -2451,7 +2443,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             return [s for s in self._finished.values()
                     if s.owner_task_id == owner_task_id and s.notify_on_complete
                     and s.exit_code is not None
-                    and s.id not in self._completion_consumed and s.id not in self._poll_observed]
+                    and not self.completion_already_observed(s.id)]
 
     def transfer_ownership(self, session_id: str, *, from_owner: str, to_owner: str, to_task_id: str,
                            to_session_key: str, note: str = "") -> Optional[ProcessSession]:

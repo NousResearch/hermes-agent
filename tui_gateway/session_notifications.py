@@ -638,7 +638,7 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     if not owned and _notification_event_requires_owner(evt) and not _session_owns_notification_event(sid, session, evt):
         _notif_unowned_event(sid, evt, deferred)
         return True
-    if evt_type == "completion" and registry.is_completion_consumed(evt.get("session_id", "")):
+    if evt_type == "completion" and registry.completion_already_observed(evt.get("session_id", "")):
         return True
     text = fmt(evt)
     if not text:

@@ -121,7 +121,10 @@ _FIELD_POINT_JS = (
 
 _READ_PASSWORD_VALUE_JS = (
     "(() => { const p = document.querySelector('input[type=password]');"
-    " return p ? String(p.value || '') : ''; })()"
+    " const u = document.querySelector("
+    "   'input[autocomplete=username], input[type=email], input[name*=user i], input[name*=email i]');"
+    " return JSON.stringify({password: p ? String(p.value || '') : '',"
+    "   username: u ? String(u.value || '') : ''}); })()"
 )
 
 
@@ -129,7 +132,12 @@ def resolve_login_password(cdp_url: str, origin: str, username: str) -> Optional
     """Return the saved password for ``(origin, username)`` by letting the real-profile browser
     autofill it on ``origin`` and reading the field value over CDP. ``None`` when nothing autofills
     (the credential is gone, the origin blocks forms, or several accounts need a chooser). The browser
-    decrypts its own store; this code never decrypts."""
+    decrypts its own store; this code never decrypts.
+
+    When the saved login carried a username, the autofilled username must match it before the password
+    is returned: a site with several saved accounts autofills its preferred one, so returning whatever
+    landed could hand back a DIFFERENT account's password for this handle. On a mismatch (or a chooser
+    that fills nothing) the caller gets ``None`` and the fill refuses, which is safe."""
     from websockets.sync.client import connect
 
     from agent.proxy_bypass import loopback_connect_kwargs
@@ -151,5 +159,17 @@ def resolve_login_password(cdp_url: str, origin: str, username: str) -> Optional
         time.sleep(_AUTOFILL_SETTLE_S)
         read = _cdp_call(ws, 5, "Runtime.evaluate",
                          {"expression": _READ_PASSWORD_VALUE_JS, "returnByValue": True})
-    value = read.get("result", {}).get("value")
-    return value if isinstance(value, str) and value else None
+    raw = read.get("result", {}).get("value")
+    if not isinstance(raw, str):
+        return None
+    try:
+        filled = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    password = filled.get("password")
+    if not password:
+        return None
+    # Guard against a multi-account origin autofilling the wrong account.
+    if username and filled.get("username") and filled["username"] != username:
+        return None
+    return password

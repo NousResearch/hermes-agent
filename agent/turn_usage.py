@@ -172,8 +172,9 @@ def record_response_usage(
         ctx = compressor.context_length
         if getattr(compressor, "_context_probe_persistable", False):
             from agent.model_metadata import save_provider_context_length
+            from agent.copilot_context import context_cache_url
 
-            save_provider_context_length(agent.model, agent.base_url, ctx, agent.provider)
+            save_provider_context_length(agent.model, context_cache_url(agent), ctx, agent.provider)
             agent._safe_print(f"{agent.log_prefix}💾 Cached context length: {ctx:,} tokens for {agent.model}")
         compressor._context_probed = False
         compressor._context_probe_persistable = False

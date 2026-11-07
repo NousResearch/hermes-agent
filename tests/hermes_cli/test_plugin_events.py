@@ -6,9 +6,12 @@ A plugin backend pushes events to its own desktop half through
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from hermes_cli import plugin_events
+from tests.waiting import wait_until
 
 
 class _Peer:
@@ -33,6 +36,8 @@ def test_broadcast_reaches_a_registered_client_as_a_namespaced_global_event():
     try:
         plugin_events.broadcast_plugin_event("rss-reader", "feed.updated", {"count": 3})
         plugin_events.broadcast_plugin_event("kanban", "changed")
+        # Global broadcasts queue per peer and drain on a fanout thread: wait for delivery before disconnecting.
+        assert wait_until(lambda: len(peer.frames) == 2, timeout=5)
     finally:
         server.unregister_live_transport(peer)
 
@@ -85,6 +90,7 @@ def test_broadcast_from_a_turn_isolation_child_reaches_the_parent_gateways_clien
     server.register_live_transport(peer)
     try:
         server._relay_compute_host_rpc(relayed[0]["message"])
+        assert wait_until(lambda: len(peer.frames) == 1, timeout=5)
     finally:
         server.unregister_live_transport(peer)
     assert [f["params"]["type"] for f in peer.frames] == ["plugin.rss-reader.feed.updated"]

@@ -192,12 +192,37 @@ def _relay_compute_host_response(frame: dict) -> bool:
         return False
     sid, session = located
     with _history_lock(session):
+        mirrored = session.get("_compute_host_open_request")
+        method = mirrored.get("method") if isinstance(mirrored, dict) else None
         session.pop("_compute_host_open_request", None)
+    # Vault-secret egress across the process boundary (#150283): a UI key-button fill registers the
+    # filled password in THIS (parent) process's redaction registry, keyed by the owning profile; the
+    # compute-host child has a separate registry, so a preview read/action it runs would forward an
+    # echoed password unredacted. Scrub the window's reply here, in the owning profile's scope, before it
+    # reaches the child — the same vault-secret boundary every browser result crosses.
+    forwarded = _scrub_preview_vault_reply(session, method, frame)
     try:
-        _get_compute_host_supervisor().respond(sid, {"frame": dict(frame)})
+        _get_compute_host_supervisor().respond(sid, {"frame": dict(forwarded)})
     except Exception:
         logger.debug("compute-host response relay failed sid=%s", sid, exc_info=True)
     return True
+
+
+def _scrub_preview_vault_reply(session: dict, method: str | None, frame: dict) -> dict:
+    """Redact registered vault secrets from a ``preview.read`` / ``preview.act`` reply before it is
+    forwarded to the compute-host child, under the request-owning profile's scope. Any other method, or a
+    frame with no scrubbable ``result.value``, is returned unchanged."""
+    if method not in ("preview.read", "preview.act"):
+        return frame
+    result = frame.get("result")
+    if not isinstance(result, dict) or not isinstance(result.get("value"), str):
+        return frame
+    from tools.browser_vault_preview import redact_preview_result
+    with _session_profile_runtime_scope(session):
+        scrubbed = redact_preview_result(result["value"])
+    if scrubbed == result["value"]:
+        return frame
+    return {**frame, "result": {**result, "value": scrubbed}}
 
 
 def _cancel_session_requests(sid: str, reason: str, *, method: str) -> None:

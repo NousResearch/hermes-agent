@@ -121,3 +121,54 @@ def test_preview_vault_request_is_live_only_and_still_resolves(monkeypatch, rela
     assert json.loads(result) == {"success": True}
     assert server._open_requests(sid) == []
     assert server_requests.open_request_count() == 0
+
+
+def _forward_preview_read(monkeypatch, method, echoed_value):
+    """Drive one child preview reply through the parent's compute-host response relay and return the
+    value the supervisor was handed for the child."""
+    server = srv
+    sid = "preview-read-isolation"
+    session = {"history_lock": threading.Lock(), "profile_home": "",
+               "_compute_host_open_request": {"id": "srq-abc", "method": method}}
+    monkeypatch.setitem(server._sessions, sid, session)
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+    captured = {}
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda: types.SimpleNamespace(
+        respond=lambda _sid, params: captured.__setitem__("frame", params["frame"])))
+    assert server._relay_compute_host_response({"id": "srq-abc", "result": {"value": echoed_value}})
+    return captured["frame"]["result"]["value"]
+
+
+@pytest.mark.parametrize("method", ["preview.read", "preview.act"])
+def test_isolated_preview_read_is_redacted_in_the_owning_profile_before_the_child(monkeypatch, method):
+    """#150283 P1-5: a UI key-button fill registers the password in the PARENT's redaction registry; a
+    compute-host child's separate registry has no record, so the parent must scrub a forwarded preview
+    reply that echoes the filled value. The echo can land in text, a nested label, or a diagnostic field."""
+    from agent.redact import clear_vault_redaction_values, register_vault_redaction_value
+
+    secret = "synthetic-isolated-fill-pw-150283"
+    register_vault_redaction_value(secret)
+    try:
+        echoed = json.dumps({"success": True, "text": secret, "elements": [{"label": secret}],
+                             "error": f"login failed for {secret}"})
+        forwarded = _forward_preview_read(monkeypatch, method, echoed)
+    finally:
+        clear_vault_redaction_values()
+    srv._sessions.pop("preview-read-isolation", None)
+    assert secret not in forwarded and "redacted-vault-secret" in forwarded
+
+
+def test_non_preview_relayed_reply_is_forwarded_untouched(monkeypatch):
+    """The scrub is scoped to preview replies: an unrelated relayed response passes through verbatim
+    (mutant guard — the fix must not blanket-redact every forwarded frame)."""
+    from agent.redact import clear_vault_redaction_values, register_vault_redaction_value
+
+    secret = "synthetic-isolated-fill-pw-150283"
+    register_vault_redaction_value(secret)
+    try:
+        value = json.dumps({"ok": True, "note": secret})  # a clarify/other reply, not a preview read
+        forwarded = _forward_preview_read(monkeypatch, "clarify", value)
+    finally:
+        clear_vault_redaction_values()
+    srv._sessions.pop("preview-read-isolation", None)
+    assert forwarded == value

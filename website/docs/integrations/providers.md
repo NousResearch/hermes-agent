@@ -1063,7 +1063,7 @@ Windows Firewall treats WSL2 as a separate network (in both NAT and mirrored mod
 New-NetFirewallRule -DisplayName "Allow WSL2 to Model Server" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 11434
 ```
 
-Common ports: Ollama `11434`, vLLM `8000`, SGLang `30000`, llama-server `8080`, LM Studio `1234`.
+Common ports: Ollama `11434`, vLLM `8000`, SGLang `30000`, llama-server `9931` (`8080` on builds before the default changed), LM Studio `1234`.
 
 #### Quick Verification
 

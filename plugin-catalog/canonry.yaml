@@ -1,7 +1,7 @@
 name: canonry
 title: Canonry
 repo: https://github.com/Canonry/canonry
-sha: 7799c5d57896e8084a8189daa66f52e8fe68d5b1
+sha: 3bd7d9bc47a109ddbcbfa8f2f3d95aa3c80c926e
 subdir: plugins/canonry
 description: >-
   Open-source, agent-first Answer Engine Optimization (AEO) platform. Measure

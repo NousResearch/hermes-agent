@@ -59,6 +59,11 @@ class TestGetToolset:
 
 class TestResolveToolset:
 
+    def test_skills_read_and_manage_split_the_skills_toolset(self):
+        assert set(resolve_toolset("skills_read")) == {"skills_list", "skill_view"}
+        assert resolve_toolset("skills_manage") == ["skill_manage"]
+        assert set(resolve_toolset("skills")) == set(resolve_toolset("skills_read")) | set(resolve_toolset("skills_manage"))
+
     def test_cycle_detection(self):
         # Create a cycle: A includes B, B includes A
         TOOLSETS["_cycle_a"] = {"description": "test", "tools": ["t1"], "includes": ["_cycle_b"]}

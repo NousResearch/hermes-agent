@@ -265,6 +265,23 @@ class TestBuildSkillsSystemPrompt:
 
 
 
+    def test_read_only_skills_index_does_not_offer_skill_management(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "daily-brief"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: daily-brief\ndescription: Prepare a daily brief\n---\n")
+
+        read_only = build_skills_system_prompt(
+            available_tools={"skills_list", "skill_view"}, available_toolsets={"skills"})
+        managed = build_skills_system_prompt(
+            available_tools={"skills_list", "skill_view", "skill_manage"}, available_toolsets={"skills"})
+
+        assert "daily-brief" in read_only and "daily-brief" in managed
+        assert "Skills are read-only in this session." in read_only
+        assert "skill_manage" not in read_only
+        assert "fix it with skill_manage(action='patch')" in managed
+        assert "read-only" not in managed
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"

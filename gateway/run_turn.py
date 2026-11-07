@@ -314,6 +314,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 response=response, agent_failed_early=agent_failed_early,
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
+                turn_session_id=_run_start_session_id,
             )
             await self._record_room_silence_decision(
                 session_key, agent_result, _intentional_silence,

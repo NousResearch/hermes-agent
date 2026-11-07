@@ -503,10 +503,16 @@ class GatewayTurnPersistenceMixin:
     async def _hmwa_persist_turn_transcript(
         self, *, event, source, session_entry, session_key, agent_result, agent_messages,
         prepared, response, agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure,
+        turn_session_id=None,
     ):
         """Persist this turn to the transcript (session_meta on first turn, user-only on transient
         failure, nothing on context overflow), update last_prompt_tokens, and re-baseline the
-        cached agent's message count."""
+        cached agent's message count.
+
+        ``turn_session_id`` is the session the agent actually ran under. A compression-exhaustion
+        reset can rotate the route to a NEW session before this write lands; the provider reading
+        still describes the OLD transcript, so it must not be stamped onto the new entry.
+        """
         from gateway.run import _resolve_gateway_model
         ts = time.time()  # Unix epoch float — consistent with DB storage
         store = self.async_session_store
@@ -597,8 +603,17 @@ class GatewayTurnPersistenceMixin:
                         await store.append_to_transcript(sid, entry, skip_db=agent_persisted)
 
         # The agent persists token counts/model itself; keep only last_prompt_tokens for hygiene.
+        # A compression-exhaustion reset rotates the route to a NEW session mid-turn (see
+        # _hmwa_compression_exhaustion_reset). The provider reading in agent_result describes the
+        # transcript the agent ran under, NOT the session the route now points at. Stamping it onto
+        # the new entry hands the successor a token count it never had: gateway hygiene then reads
+        # it as "actual" usage and auto-compresses that fresh session on every turn until the count
+        # is cleared. Only the reading that belongs to the routed session may land.
+        _prompt_tokens_for_entry = agent_result.get("last_prompt_tokens", 0)
+        if turn_session_id is not None and session_entry.session_id != turn_session_id:
+            _prompt_tokens_for_entry = 0
         await store.update_session(
-            session_entry.session_key, last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+            session_entry.session_key, last_prompt_tokens=_prompt_tokens_for_entry,
             touch_activity=not bool(getattr(event, "internal", False)),
         )
 

@@ -238,7 +238,6 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
-    YUANBAO = "yuanbao"
     RELAY = "relay"  # generic relay adapter fronted by the connector (EXPERIMENTAL)
 
     @classmethod
@@ -313,6 +312,9 @@ PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {"feishu": "webhook"}
 # Port-binders whose /p/<profile>/ surface is a MIRROR served by the default's own adapter; a secondary
 # never gets an instance of these (api_server: /p/<profile>/v1/..., webhook: profile-bound routes).
 SHARED_LISTENER_MIRROR_PLATFORMS = frozenset({"api_server", "webhook"})
+# Everything a served profile reads from the default's own entry: the listener mirrors plus Relay,
+# process-level shared ingress whose one adapter serves every profile (no per-profile URL).
+SERVED_PROFILE_MIRROR_PLATFORMS = SHARED_LISTENER_MIRROR_PLATFORMS | frozenset({"relay"})
 # Path a client appends to ``<default listener>/p/<profile>`` to reach each mirror.
 SHARED_LISTENER_MIRROR_PATHS: dict[str, str] = {"api_server": "/v1", "webhook": "/webhooks/<route>"}
 
@@ -420,6 +422,9 @@ class PlatformConfig:
     typing_status_text: Optional[str] = None
     channel_overrides: dict[str, ChannelOverride] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)  # Platform-specific settings
+    # Runtime-only, never serialized: set when the GATEWAY_RELAY_URL relay-exclusive rule
+    # (config_env._relay) switched an enabled platform off, so surfaces can say why (#141175).
+    disabled_by_relay: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         result = {

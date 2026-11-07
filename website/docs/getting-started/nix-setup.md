@@ -938,7 +938,7 @@ The flake provides an editable Python venv with the `dev` dependency group, runn
 on the interpreter `pm/lock.json` pins. `HERMES_PYTHON` and `VIRTUAL_ENV` point at it,
 and it needs no `PYTHONPATH`. It does not install
 Python dependencies into a repository-local `.venv`. The shell also provides
-Node.js and runtime tools. Its npm hook refreshes JS workspaces when their inputs change.
+Node.js and runtime tools. Its pnpm hook refreshes JS workspaces when their inputs change.
 
 ```bash
 cd hermes-agent
@@ -955,8 +955,26 @@ The included `.envrc` activates the dev shell automatically:
 ```bash
 cd hermes-agent
 direnv allow    # one-time
-# Nix reuses its built Python environment; the npm hook checks JS inputs.
+# Nix reuses its built Python environment; the pnpm hook checks JS inputs.
 ```
+
+### Updating the pnpm Lockfile
+
+The flake builds every JavaScript surface from one fixed-output pnpm store whose
+hash is in `nix/pnpm-deps-hash`. A `pnpm-lock.yaml` change that adds, removes or
+re-resolves a package changes that hash, and every frontend build fails with a
+hash mismatch until it is updated. `hermes pm update --pnpm`, a plain
+`pnpm install` and the `nix develop` shell hook rewrite the lockfile but not the
+hash. From the checkout, run:
+
+```bash
+nix run .#update-pnpm-lockfile
+```
+
+It brings `pnpm-lock.yaml` up to date with the manifests, rebuilds `.#pnpm-deps`
+to take the new hash, writes `nix/pnpm-deps-hash`, and builds `.#tui`, `.#web`,
+`.#webapp` and `.#desktop`. Without Nix, copy the hash the `nix` CI workflow's
+`pnpm-deps-hash` job prints.
 
 ### Flake Checks
 

@@ -18,7 +18,7 @@ import asyncio
 import re
 from contextlib import contextmanager
 from typing import Any, Optional
-from urllib.parse import parse_qsl, quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
 
 from hermes_constants import get_hermes_home_override
 from utils import is_truthy_value
@@ -65,32 +65,6 @@ def normalize_url_for_request(url: str) -> str:
     safe = "/%:@!$&'()*+,;="
     return urlunsplit((parsed.scheme, netloc, quote(parsed.path, safe=safe),
                        quote(parsed.query, safe=safe + "?"), quote(parsed.fragment, safe=safe + "?")))
-
-
-# Unambiguously credential-bearing query param names. Deliberately narrow: bare
-# English words that double as page facets (``code``, ``key``, ``auth``,
-# ``session``, ``sig``) are EXCLUDED so ordinary browsing is not blocked.
-_SENSITIVE_QUERY_PARAM_NAMES = frozenset({
-    "access_token", "api_key", "apikey", "auth_token", "authorization", "awsaccesskeyid",
-    "client_secret", "credential", "credentials", "jwt", "password", "passwd", "secret",
-    "session_id", "signature", "token", "x_amz_security_token", "x_amz_signature",
-    "x-amz-security-token", "x-amz-signature"})
-
-
-def sensitive_query_param_name(url: str) -> Optional[str]:
-    """First credential-named query parameter in ``url`` (with a value), if any. Checked before
-    handing URLs to third-party fetch/browser backends: catches opaque magic links, OAuth codes,
-    signed-URL signatures and custom ``?token=...`` values that prefix-based redaction misses."""
-    if not isinstance(url, str) or "?" not in url:
-        return None
-    try:
-        parsed = urlsplit(url.strip())
-    except ValueError:
-        return None
-    if parsed.scheme.lower() not in _HTTP_SCHEMES or not parsed.query:
-        return None
-    return next((key for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-                 if value and unquote(key).lower() in _SENSITIVE_QUERY_PARAM_NAMES), None)
 
 
 # Cloud metadata hostnames — always blocked regardless of DNS or config toggle.

@@ -7495,7 +7495,7 @@ def _ladder_parameter_rungs(
     Returns a :class:`_ParameterRepair`."""
     client, task, tag = route.client, route.task, route.tag
     rungs, repaired = list(_parameter_rungs(client, max_tokens)), False
-    while rungs:
+    while rungs and not aux_errors.resend_cannot_help(first_err.verdict):
         hit = next((rung for rung in rungs
                     if rung[0](first_err.error) and rung[1](kwargs) is not None), None)
         if hit is None:

@@ -44,7 +44,8 @@ def classify_attempt(error: Exception, provider: Optional[str], client: Any = No
     slug = str(provider or "").strip().lower()
     url, key = getattr(client, "base_url", None), getattr(client, "api_key", None)
     if isinstance(error, InterruptedError):  # a cancelled task: no retry, no other provider
-        return ClassifiedError(_R.unknown, provider=slug, retryable=False, message=str(error))
+        return ClassifiedError(_R.unknown, provider=slug, retryable=False, message=str(error),
+                               error_context={"interrupted": True})
     return classify_api_error(
         error, provider="" if slug == "auto" else slug, model=model if isinstance(model, str) else "",
         base_url=str(url) if isinstance(url, (str, httpx.URL)) and str(url) else str(base_url or ""),
@@ -61,6 +62,11 @@ def auth_refresh(verdict: ClassifiedError) -> bool:
 
 def same_key_retry(verdict: ClassifiedError) -> bool:
     return verdict.reason is _R.rate_limit and verdict.retryable and not verdict.error_context.get("quota_exhausted")
+
+
+def resend_cannot_help(verdict: ClassifiedError) -> bool:
+    """A cancelled task or a policy refusal: no stripped field or stream flag changes the answer."""
+    return verdict.reason in (_R.data_policy_denied, _R.content_policy_blocked) or bool(verdict.error_context.get("interrupted"))
 
 
 def benches_provider(verdict: ClassifiedError) -> bool:
@@ -102,4 +108,5 @@ def stream_negotiation_reraises(verdict: ClassifiedError) -> bool:
     """A failed stream negotiation that is the provider's answer (or a certificate no stream flag repairs):
     re-raised, not re-sent non-streaming."""
     return (verdict.reason in _PROVIDER_REFUSALS or verdict.reason is _R.ssl_cert_verification
-            or verdict.status_code == 429 or benches_provider(verdict) or "welcome_refusal" in verdict.error_context)
+            or verdict.status_code == 429 or benches_provider(verdict) or "welcome_refusal" in verdict.error_context
+            or resend_cannot_help(verdict))

@@ -113,3 +113,41 @@ def test_missing_current_module_keeps_its_import_error(tree, monkeypatch):
         importlib.import_module("compat_probe_old.missing")
 
     assert raised.value.name == "compat_probe_tree.cli.missing"
+
+
+@pytest.mark.parametrize("swap", [
+    {"compat_probe_old.a": "compat_probe_tree.cli.b", "compat_probe_old.b": "compat_probe_tree.cli.a"},
+    {"compat_probe_old.a": "compat_probe_tree.cli.a.impl"},
+], ids=["children-swapped", "child-into-its-own-subpackage"])
+def test_a_current_module_is_never_redirected_by_a_derived_child_name(tree, monkeypatch, swap):
+    (tree.parent / "a").mkdir()
+    (tree.parent / "a" / "__init__.py").write_text("NAME = 'a'\n", encoding="utf-8")
+    (tree.parent / "a" / "impl.py").write_text("NAME = 'impl'\n", encoding="utf-8")
+    (tree.parent / "b.py").write_text("NAME = 'b'\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "meta_path", [Finder({**MOVES, **swap}), *sys.meta_path])
+
+    for old, new in swap.items():
+        assert importlib.import_module(old) is importlib.import_module(new)
+    assert importlib.import_module("compat_probe_tree.cli.a").NAME == "a"
+
+
+@pytest.mark.parametrize("old_name", ["compat_probe_old", "compat_probe_old.entry"])
+def test_launch_uses_the_current_package_when_a_module_moves_apart(tree, monkeypatch, old_name):
+    current_name = "compat_probe_tree.cli.main"
+    moves = {"compat_probe_old": "compat_probe_tree", old_name: current_name}
+    tree.write_text("from .helper import VALUE\n", encoding="utf-8")
+    (tree.parent / "helper.py").write_text("VALUE = 'current'\n", encoding="utf-8")
+    (tree.parent.parent / "helper.py").write_text("VALUE = 'wrong package'\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "meta_path", [Finder(moves), *sys.meta_path])
+
+    result = runpy.run_module(old_name, run_name="__main__")
+
+    assert result["VALUE"] == "current"
+    assert result["__package__"] == "compat_probe_tree.cli"
+    assert result["__file__"] == str(tree)
+    assert current_name not in sys.modules
+    old = importlib.import_module(old_name)
+    current = importlib.import_module(current_name)
+    assert old is current
+    assert importlib.reload(old) is current
+    assert current.__spec__.name == current_name

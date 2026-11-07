@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.abc
+import importlib.machinery
 import importlib.util
 
 
@@ -16,8 +17,8 @@ def current_name(name: str, moves: dict[str, str]) -> str | None:
     return None
 
 
-def _with_child_names(moves: dict[str, str]) -> dict[str, str]:
-    """Add the name ``from <old package> import <child>`` asks for when the child moved apart from its package.
+def _child_names(moves: dict[str, str]) -> dict[str, str]:
+    """The name ``from <old package> import <child>`` asks for when the child moved apart from its package.
 
     That form imports ``<package.__name__>.<child>``: the child's name under the package's CURRENT name.
     """
@@ -25,9 +26,10 @@ def _with_child_names(moves: dict[str, str]) -> dict[str, str]:
     for old, new in moves.items():
         parent, _, child = old.rpartition(".")
         moved_parent = current_name(parent, moves) if parent else None
-        if moved_parent is not None and f"{moved_parent}.{child}" != new:
-            derived[f"{moved_parent}.{child}"] = new
-    return {**derived, **moves}
+        name = f"{moved_parent}.{child}" if moved_parent is not None else None
+        if name is not None and name != new and name not in moves:
+            derived[name] = new
+    return derived
 
 
 def _canonical(spec):
@@ -55,15 +57,34 @@ class _Alias(importlib.abc.Loader):
         return _canonical(importlib.util.find_spec(self.target)).loader.get_code(self.target)
 
 
+class _AliasSpec(importlib.machinery.ModuleSpec):
+    def __init__(self, name: str, target: str, spec) -> None:
+        # The real origin keeps ``__file__``; the package flag lets ``runpy`` run an old package's ``__main__``.
+        super().__init__(name, _Alias(target), origin=spec.origin,
+                         is_package=spec.submodule_search_locations is not None)
+        self._current_parent = spec.parent
+
+    @property
+    def parent(self):
+        # runpy executes the current code, whose relative imports need the current package.
+        return self._current_parent
+
+
 class Finder(importlib.abc.MetaPathFinder):
     """Alias old names to current ones; with ``strict``, refuse an old name and name the new one."""
 
     def __init__(self, moves: dict[str, str], *, strict: bool = False) -> None:
-        self.moves = _with_child_names(moves)
+        self.moves = moves
+        self.child_names = _child_names(moves)
         self.strict = strict
 
     def find_spec(self, fullname, path=None, target=None):
         new = current_name(fullname, self.moves)
+        if new is None and fullname in self.child_names:
+            # A derived name is a current-package spelling: a module that really exists there wins.
+            if importlib.machinery.PathFinder.find_spec(fullname, path) is not None:
+                return None
+            new = self.child_names[fullname]
         if new is None:
             return None
         if self.strict:
@@ -71,6 +92,4 @@ class Finder(importlib.abc.MetaPathFinder):
         spec = importlib.util.find_spec(new)
         if spec is None:
             raise ModuleNotFoundError(f"No module named {new!r}", name=new)
-        # The real origin keeps ``__file__``; the package flag lets ``runpy`` run an old package's ``__main__``.
-        return importlib.util.spec_from_loader(
-            fullname, _Alias(new), origin=spec.origin, is_package=spec.submodule_search_locations is not None)
+        return _AliasSpec(fullname, new, _canonical(spec))

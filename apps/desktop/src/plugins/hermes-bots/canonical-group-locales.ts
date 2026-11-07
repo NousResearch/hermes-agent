@@ -1312,7 +1312,7 @@ export const CANONICAL_GROUP_LOCALES = {
     peerStartWithoutRetry: 'Verwenden Sie für diese Bots im neuen Gruppenchat „Erneut versuchen“.',
     peerStartWithoutKept: 'Der neue Gruppenchat wurde erstellt und der ursprüngliche Gruppenchat bleibt erhalten. {reason} Lösen Sie den ursprünglichen Gruppenchat auf, wenn Sie bereit sind.',
     peerNotJoinedBadge: 'nicht beigetreten',
-    peerOfflineBadge: 'offline',
+    peerOfflineBadge: 'nicht erreichbar',
     peerRejoinBadge: 'Zugriff abgelaufen',
     peerNotJoined: '{name} ist diesem Gruppenchat noch nicht beigetreten.',
     peerRejoin: 'Der Zugriff von {name} auf diesen Gruppenchat ist abgelaufen. Um das Mitglied erneut einzuladen, wählen Sie „Erneut versuchen“ in einem Desktop, der mit seinem Computer verbunden ist.',

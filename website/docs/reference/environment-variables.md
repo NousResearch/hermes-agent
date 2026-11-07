@@ -387,6 +387,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `WHATSAPP_ALLOW_ALL_USERS` | Allow all WhatsApp senders without an allowlist (`true`/`false`) |
 | `WHATSAPP_GROUP_POLICY` | Group intake: `pairing` (default, forwards nothing from groups), `allowlist` (group JIDs below), `open` (every group; participants still need `WHATSAPP_ALLOWED_USERS`, pairing, or `WHATSAPP_ALLOW_ALL_USERS`), or `disabled` |
 | `WHATSAPP_GROUP_ALLOWED_USERS` | Comma-separated group JIDs (e.g. `120363001234567890@g.us`) admitted under `WHATSAPP_GROUP_POLICY=allowlist` |
+| `WHATSAPP_GROUP_ALLOWED_SENDERS` | Comma-separated sender phone numbers (or `*`) authorized in admitted groups only (does NOT grant DM access). Config: `whatsapp.group_allowed_senders` |
 | `WHATSAPP_HOME_CHANNEL` | Default chat ID for cron / notification delivery. |
 | `WHATSAPP_HOME_CHANNEL_NAME` | Display name for the WhatsApp home channel. |
 | `WHATSAPP_DEBUG` | Log raw message events in the bridge for troubleshooting (`true`/`false`) |

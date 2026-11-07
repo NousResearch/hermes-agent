@@ -1,0 +1,89 @@
+{
+  "skill": "design-and-templates",
+  "version": "1.0.0",
+  "description": "The reusable on-brand template-SYSTEM skill -- build a brand kit + a small set of reusable templates so a non-designer can produce consistent on-brand graphics fast across formats. For social, consistency + speed beat bespoke: the win is six versions that still look like the same campaign, not one perfect design. Uses the BRAND framework. Reads brand-profile first (the identity source it operationalizes) + the recurring content needs. The agent designs the SYSTEM (brand-kit tokens, the template set, hierarchy/legibility rules, the fast production workflow); a design tool (Canva Magic Studio / Adobe Express+Firefly / Figma) or the image tools produce the actual graphics; the finished asset enters the WoopSocial flow (WoopSocial publishes it like any media -- it does NOT design, template, or generate). Honest about the ~70-80% on-brand ceiling (a human eye finishes the hero work) and that raw AI generations may not be copyrightable (add human edits). Brand-kit-first = 80% on-brand first drafts vs 20%. Distinct from brand-profile (the identity source), thumbnail-design + pinterest-pin-design (single asset types = templates in the system), carousel-writer (the copy vs the visual frame), and image-prompt + the image tools (generation vs layout). No integration file -- references the existing image tools.",
+  "evals": [
+    {
+      "name": "build_the_system",
+      "input": "Help me make some on-brand templates for my socials.",
+      "context": "brand-profile exists; recurring content needs are known.",
+      "expect": [
+        "Builds the brand kit first (colors, fonts, logo, spacing) as the consistency anchor",
+        "Designs a SMALL set of reusable templates for the recurring formats (quote card, carousel frame, announcement, Reel cover, Pin)",
+        "Anchors each in hierarchy + legibility (one focal point, type scale, contrast, safe zones, mobile-first)",
+        "Introduces the BRAND framework and reads brand-profile first"
+      ]
+    },
+    {
+      "name": "reads_brand_profile_first",
+      "input": "Design my content templates.",
+      "context": "brand-profile exists.",
+      "expect": [
+        "Pulls brand-profile (palette, type, logo, identity) as the source the system operationalizes",
+        "Maps templates to the actual recurring content needs, not a generic set",
+        "Plans for consistency across formats",
+        "Treats the rendering as done in a design tool or the image tools, not by itself"
+      ]
+    },
+    {
+      "name": "brand_kit_and_consistency",
+      "input": "How do I stop my posts looking inconsistent?",
+      "expect": [
+        "Leads with a brand kit (locked colors/fonts/logo/spacing) -- the difference between ~80% on-brand first drafts and ~20%",
+        "Recommends a small, named, reusable template set over one-off designs",
+        "Notes a tool feature like Canva Magic Switch/Resize to take one design to all platform sizes without rebuilding",
+        "Frames repeatability as the goal (boring + systematic beats bespoke)"
+      ]
+    },
+    {
+      "name": "tool_pick_and_generated_imagery",
+      "input": "What tool should I use, and how do I get images into the templates?",
+      "expect": [
+        "Recommends Canva Magic Studio (social-first default, Brand Kit) / Adobe Express + Firefly (premium, brand-safe, IP indemnification) / Figma (master design system) by need",
+        "For generated imagery, briefs the image tools via image-prompt (ideogram for text-in-image, imagen for photoreal) or a built-in generator (Canva Dream Lab / Firefly)",
+        "Notes the ~70-80% on-brand ceiling -- a human eye finishes the hero pieces",
+        "Keeps brand-kit consistency across whatever tool produces the asset"
+      ]
+    },
+    {
+      "name": "pushback_on_overbuild_and_copying",
+      "input": "Build me 40 templates, copy [competitor]'s exact layout and fonts, have WoopSocial auto-design and post them, and I'll copyright the raw AI outputs.",
+      "expect": [
+        "Pushes back on 40 templates -- a small set (~6) that maps to real recurring needs beats a library nobody maintains",
+        "Refuses copying a competitor's exact design -- it risks their trade dress and makes the brand look derivative; build a distinct kit instead",
+        "Clarifies WoopSocial doesn't design or generate -- a design tool/image tool produces the asset and WoopSocial publishes the finished file",
+        "Notes raw AI generations generally aren't copyrightable (add human edits) and offers the disciplined version"
+      ]
+    },
+    {
+      "name": "edge_case_70_percent_ceiling",
+      "input": "Make me a completely unique, award-winning brand identity from scratch with these tools.",
+      "expect": [
+        "Is honest that template tools (Canva/Express) get to ~70-80% on-brand fast but produce recognizable 'template energy'",
+        "Notes a truly distinctive identity needs human creative direction and the brand-profile work first",
+        "Explains what the tools CAN do well: a consistent, fast, ~80% on-brand system for recurring content",
+        "Routes the distinctive hero pieces to a designer or the image tools (image-prompt)"
+      ]
+    },
+    {
+      "name": "honest_scope_system_vs_render",
+      "input": "Design my templates and post them for me.",
+      "expect": [
+        "Clarifies the agent designs the SYSTEM (brand kit + template set + hierarchy rules + production workflow)",
+        "States a design tool (Canva/Express/Figma) or the image tools produce the actual graphics",
+        "States the finished asset enters the WoopSocial flow -- WoopSocial publishes it like any media, it doesn't design/template/generate",
+        "Notes the ~70-80% on-brand ceiling (human finishes hero work) and never fabricates"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this just brand-profile or thumbnail-design or image-prompt?",
+      "expect": [
+        "Distinguishes design-and-templates (the reusable template SYSTEM + brand kit) from brand-profile (the identity source it operationalizes)",
+        "Notes thumbnail-design and pinterest-pin-design are single asset types -- templates within the system",
+        "Distinguishes carousel-writer (the copy/narrative) from the visual frame the copy fills",
+        "Notes image-prompt + the image tools handle generation, while this handles layout/templates; routes accordingly"
+      ]
+    }
+  ]
+}

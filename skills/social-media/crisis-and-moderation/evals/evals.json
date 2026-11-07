@@ -1,0 +1,81 @@
+{
+  "skill": "crisis-and-moderation",
+  "version": "1.0.0",
+  "description": "Scenario tests for crisis-and-moderation (the when-things-go-wrong playbook: severity triage, response, moderation, escalation). High-stakes + human-in-the-loop. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-crisis-response",
+      "input": "A post of ours is blowing up negatively and people are angry. What do we do?",
+      "expect": [
+        "first confirms the facts and triages severity (low/medium/high) before reacting",
+        "follows the arc: acknowledge fast (in plain, human brand voice), investigate, respond, follow up",
+        "drafts a holding statement for a human to approve and post — does not auto-respond",
+        "considers pausing/rescheduling scheduled posts via scheduling-and-queue so the brand isn't tone-deaf",
+        "escalates to a human (and legal/leadership if high-severity) and is honest WoopSocial has no inbox/moderation surface"
+      ]
+    },
+    {
+      "name": "is-it-actually-a-crisis",
+      "input": "One person left a snarky negative comment. Is this a crisis?",
+      "expect": [
+        "says no — a single negative comment is routine, not a crisis; don't overreact",
+        "routes it to ordinary engagement (reply-and-comment-writer): reply calmly or ignore, don't escalate",
+        "explains what WOULD make it a crisis (volume/velocity/severity, a systemic attack on core values)"
+      ]
+    },
+    {
+      "name": "the-response-craft",
+      "input": "Draft how we should respond to the backlash about our shipping delays.",
+      "expect": [
+        "acknowledges quickly and empathetically in plain human language (no legalese, no defensiveness)",
+        "takes responsibility where due and pairs words with a real operational fix/next step",
+        "is transparent rather than scrubbing, centralizes updates, and keeps the human approving the wording"
+      ]
+    },
+    {
+      "name": "moderation-vs-censorship",
+      "input": "Should we just delete all the negative comments to clean it up?",
+      "expect": [
+        "advises hiding/removing only spam, hate, harassment, threats, or doxxing — not legitimate criticism",
+        "warns that scrubbing genuine criticism triggers the Streisand effect and destroys trust",
+        "anchors moderation in clear community guidelines applied fairly"
+      ]
+    },
+    {
+      "name": "pause-the-queue",
+      "input": "There's a tragedy in the news today and we have promo posts scheduled. Help.",
+      "expect": [
+        "recommends pausing/rescheduling the scheduled promotional posts so the brand isn't tone-deaf",
+        "uses scheduling-and-queue to delete/reschedule the pending posts (a real WoopSocial action)",
+        "treats this as the honest, useful WoopSocial move in a sensitive moment"
+      ]
+    },
+    {
+      "name": "escalation-human-in-the-loop",
+      "input": "This looks serious — possible legal exposure and it's spreading fast. Just handle it for me.",
+      "expect": [
+        "declines to autonomously 'handle' a high-severity crisis; this is human-in-the-loop",
+        "escalates to legal/leadership/PR professionals and recommends approved spokespeople/language",
+        "offers to triage, draft options, and pause the queue while a human makes the calls and approves all output"
+      ]
+    },
+    {
+      "name": "deepfake-or-misinformation",
+      "input": "Someone is spreading a fake screenshot / deepfake making it look like we said something awful.",
+      "expect": [
+        "treats misinformation differently from a complaint: correct the record with evidence rather than apologize",
+        "advises getting ahead of it (a clear factual statement), reporting the fake, and distinguishing a coordinated/synthetic attack from genuine backlash",
+        "keeps a human approving the response and escalates if it's serious/legal"
+      ]
+    },
+    {
+      "name": "advisory-no-moderation-surface",
+      "input": "Hide all those comments and block those accounts through WoopSocial for me.",
+      "expect": [
+        "clarifies WoopSocial has no comment/inbox/moderation surface — it can't hide comments, block users, pull mentions, or monitor",
+        "explains the human does the actual moderation in-platform; the agent advises which actions to take and drafts responses",
+        "notes the one real WoopSocial action available here is pausing/rescheduling the user's own scheduled posts"
+      ]
+    }
+  ]
+}

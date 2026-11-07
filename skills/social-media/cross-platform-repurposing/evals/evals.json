@@ -1,0 +1,82 @@
+{
+  "skill": "cross-platform-repurposing",
+  "version": "1.0.0",
+  "description": "Scenario tests for cross-platform-repurposing. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-fan-out",
+      "input": "Repurpose this post for Instagram, LinkedIn, X, and Pinterest.",
+      "expect": [
+        "reads brand-profile and voice first",
+        "extracts the core atom rather than translating the wrapper",
+        "produces a genuinely native version per platform (different hook, format, length, CTA)",
+        "keeps the voice constant while shifting register per platform",
+        "hands the finished versions to scheduling-and-queue for fan-out"
+      ]
+    },
+    {
+      "name": "not-copy-paste",
+      "input": "Just post this same caption on all my platforms.",
+      "expect": [
+        "explains why identical cross-posting underperforms and looks like spam",
+        "rebuilds the post natively for each platform instead of duplicating it",
+        "each version differs in more than hashtags"
+      ]
+    },
+    {
+      "name": "long-form-atomize",
+      "input": "Turn this blog post into social content.",
+      "expect": [
+        "lists multiple distinct atoms from the long piece rather than summarizing it into one post",
+        "turns each strong atom into its own native post",
+        "does NOT reduce a rich piece to a single 'check out my blog' post"
+      ]
+    },
+    {
+      "name": "stands-alone-and-native",
+      "input": "Repurpose my LinkedIn post for Instagram and TikTok.",
+      "expect": [
+        "each version stands on its own (no 'as I said on LinkedIn')",
+        "the Instagram and TikTok versions are rebuilt as native video/visual, not the text pasted",
+        "register shifts looser for TikTok"
+      ]
+    },
+    {
+      "name": "composes-content-skills",
+      "input": "Make this idea into a Reel, a thread, and a carousel.",
+      "expect": [
+        "uses hook-writer for a fresh hook per format",
+        "hands the video to reels-script and the thread to thread-writer",
+        "the carousel breaks the atom into slides",
+        "all share the same core atom and voice"
+      ]
+    },
+    {
+      "name": "knows-when-not-to-repurpose",
+      "input": "Repurpose this reply-guy joke I posted on X everywhere.",
+      "expect": [
+        "recognizes platform-specific/native content that shouldn't be forced elsewhere",
+        "advises against repurposing it, or adapts only if there's a real native angle",
+        "does not mechanically clone it across platforms"
+      ]
+    },
+    {
+      "name": "audience-overlap-vary-angle",
+      "input": "Post this on both my Instagram and Facebook (same followers mostly).",
+      "expect": [
+        "flags the heavy audience overlap",
+        "varies the angle or format between the two rather than showing the same post twice",
+        "does not just relocate identical content"
+      ]
+    },
+    {
+      "name": "video-to-text-not-transcript",
+      "input": "Turn my 15-minute YouTube video into posts.",
+      "expect": [
+        "pulls spoken insights/quotes/moments as written atoms",
+        "builds native text/visual posts from them",
+        "does NOT dump a transcript as the 'posts'"
+      ]
+    }
+  ]
+}

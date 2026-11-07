@@ -1,0 +1,64 @@
+---
+name: {{snake_case_name}}
+description: "{{one_line_description}}"
+version: "0.1.0"
+author: "{{github_handle}}"
+license: "MIT"
+platforms: [linux, macos, windows]
+category: "{{category}}"
+tags: [{{tag1}}, {{tag2}}]
+depends_on: []
+compatibility:
+  hermes: ">=0.18.0"
+  claude-code: ">=1.0.0"
+  codex: ">=1.0.0"
+  opencode: ">=0.5.0"
+maturity: "beta"
+homepage: "https://github.com/..."
+repository: "https://github.com/..."
+---
+
+# {{Title Case Name}}
+
+> {{one_line_description}}
+
+## Prerequisites
+- {{prereq1}}
+- {{prereq2}}
+
+## Installation
+```bash
+# Standard installation
+hermes skill install {{name}}
+# Or manual
+git clone {{repository}} ~/.hermes/skills/{{name}}
+```
+
+## Configuration
+| Environment Variable | Required | Description | Example |
+|----------------------|----------|-------------|---------|
+| `{{ENV_VAR}}` | Yes/No | Description | `value` |
+
+## Usage
+### {{command_name}}
+```bash
+# Example usage
+```
+
+## API / Tools
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `tool_name` | Description | `param: type` |
+
+## Examples
+```bash
+# Complete example
+```
+
+## Troubleshooting
+| Symptom | Cause | Solution |
+|---------|-------|----------|
+
+## Changelog
+### v0.1.0 ({{date}})
+- Initial release

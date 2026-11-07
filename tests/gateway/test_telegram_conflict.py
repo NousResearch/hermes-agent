@@ -281,6 +281,12 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
         f"count={adapter._polling_conflict_count}"
     )
     assert adapter.has_fatal_error is True
+    assert adapter.fatal_error_retryable is True, (
+        "A 409 getUpdates conflict is transient single-writer contention, not a permanent config "
+        "error: the runner must re-queue it for background reconnection. Non-retryable here drops "
+        "the platform with no recovery path (not queued, and the stranded-platform net is also "
+        "gated on retryable), leaving telegram dead until a manual gateway restart."
+    )
     fatal_handler.assert_awaited_once()
     await _cancel_heartbeat(adapter)
 

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import cfg_get, get_process_hermes_home
+from hermes_cli.tailnet_identity import connection_login
 from utils import env_var_enabled
 
 # Serve assets with explicit MIME types: the host's map (on Windows the
@@ -194,6 +195,13 @@ def mount_spa(application: FastAPI):
         withheld = (gated or bool(getattr(_server().app.state, "withhold_session_token", False))
                     or not policy(application.state).html_token)
         token_js = "" if withheld else f'window.__HERMES_SESSION_TOKEN__="{_server()._SESSION_TOKEN}";'
+        if surface == "webapp" and connection_login(request, application.state):
+            # tailscale serve proxied a listed login (webapp.tailscale_logins): sign this tab in as the
+            # Webapp's one-use launch link would, under the key browser-launch-session.ts reads.
+            base = prefix if not prefix or prefix.startswith("/") else f"/{prefix}"
+            key_js = json.dumps(base.rstrip("/"))
+            token_js += ("try{sessionStorage.setItem('hermes.webapp.session.v1:'+JSON.stringify("
+                         f"[location.origin,{key_js}]),{json.dumps(_server()._SESSION_TOKEN)})}}catch(e){{}};")
         # Launcher-preselected profile (``--open-profile``): the SPA's fallback scope when the URL
         # omits ``?profile=`` (#73085). ``</`` escaped so a hostile name cannot close the script tag.
         initial_profile_js = json.dumps(str(getattr(application.state, "initial_profile", "") or "")).replace("</", "<\\/")

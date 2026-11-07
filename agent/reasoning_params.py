@@ -198,8 +198,11 @@ class ReasoningParamsMixin:
     def _reasoning_echo_opt_in(self) -> bool:
         """``model.reasoning_echo``: treat the *current* provider as must-echo (pad tool-call turns) — for
         gateways proxying DeepSeek/Kimi/MiMo that the host rules miss. Replay itself is on by default;
-        fallback activation swaps the flag and ``restore_primary_runtime()`` restores it."""
-        return bool(getattr(self, "_reasoning_echo_flag", False))
+        fallback activation swaps the flag and ``restore_primary_runtime()`` restores it. Also true for a
+        (provider, host, model) that answered this session with a must-echo 400 (``learned_reasoning_echo``)."""
+        from agent.message_sanitization import learned_reasoning_echo
+
+        return bool(getattr(self, "_reasoning_echo_flag", False)) or learned_reasoning_echo(self)
 
     @staticmethod
     def _read_reasoning_echo_from_config() -> bool:

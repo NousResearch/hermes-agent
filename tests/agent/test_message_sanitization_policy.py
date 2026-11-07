@@ -161,8 +161,17 @@ class TestReasoningEchoFamily:
         ("openrouter", "deepseek/deepseek-v3", "https://openrouter.ai", "deepseek"),
         ("custom", None, "https://api.deepseek.com", "deepseek"),
         ("xiaomi", None, "https://x", "mimo"),
-        ("custom", "MiMo-7B", "https://x", "mimo"),
+        ("custom", "MiMo-7B", "https://gateway.example.com/v1", "mimo"),
         ("custom", None, "https://api.xiaomimimo.com/v1", "mimo"),
+        # A model name alone never makes a self-hosted server must-echo: it renders the template (the pad
+        # would land in the prompt) and does not 400. Provider and host matches still count anywhere.
+        ("custom", "deepseek-v4.1-flash", "http://127.0.0.1:8888/v1", None),
+        ("custom", "DeepSeek-V4-Flash", "http://192.168.1.20:8000/v1", None),
+        ("custom", "deepseek-v4-flash", "http://vllm:8000/v1", None),
+        ("lmstudio", "deepseek-r2-distill", "http://localhost:1234/v1", None),
+        ("custom", "MiMo-V2-Flash", "http://100.101.102.103:8080/v1", None),
+        ("deepseek", "deepseek-v4-pro", "http://127.0.0.1:4000/v1", "deepseek"),
+        ("custom", "deepseek-v4-pro", "https://gateway.example.com/v1", "deepseek"),
         # Ollama has no echo-back requirement: replayed (as reasoning + reasoning_content) but never padded.
         ("ollama-cloud", "kimi-k3", "https://x", None),
         ("custom", "kimi-k3", "https://ollama.com/v1", None),

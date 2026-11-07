@@ -226,6 +226,34 @@ class TestTerminalToolConfig:
         finally:
             env.cleanup()
 
+    def test_ssh_sync_files_respects_config(self, monkeypatch):
+        """TERMINAL_SSH_SYNC_FILES=false disables SSH file sync."""
+        monkeypatch.setenv("TERMINAL_SSH_SYNC_FILES", "false")
+        from tools.terminal_tool import _get_env_config
+        assert _get_env_config()["ssh_sync_files"] is False
+
+    @pytest.mark.parametrize("setting, expected", [(None, True), ("false", False)])
+    def test_ssh_sync_files_reaches_the_environment(self, monkeypatch, setting, expected):
+        """terminal.ssh_sync_files (bridged to TERMINAL_SSH_SYNC_FILES) reaches SSHEnvironment."""
+        from tools.terminal_tool import _get_env_config
+        from tools.terminal_tool_lifecycle import _create_configured_env
+        monkeypatch.setenv("TERMINAL_SSH_HOST", "example.com")
+        monkeypatch.setenv("TERMINAL_SSH_USER", "alice")
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/alice")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+        monkeypatch.setattr(ssh_env, "FileSyncManager", lambda **kw: type("M", (), {"sync": lambda self, **k: None})())
+        if setting is None:
+            monkeypatch.delenv("TERMINAL_SSH_SYNC_FILES", raising=False)
+        else:
+            monkeypatch.setenv("TERMINAL_SSH_SYNC_FILES", setting)
+        config = _get_env_config()
+        env = _create_configured_env(config, "ssh", image="", cwd="~", timeout=30,
+                                     task_id="ssh-sync-files-config", host_cwd=None)
+        assert (env._sync_manager is not None) is expected
+
 
 class TestSSHPreflight:
     def test_ensure_ssh_available_raises_clear_error_when_missing(self, monkeypatch):

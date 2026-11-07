@@ -2005,7 +2005,7 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
         "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",
         "ssh_port": "TERMINAL_SSH_PORT",
-        "ssh_key": "TERMINAL_SSH_KEY",
+        "ssh_key": "TERMINAL_SSH_KEY", "ssh_sync_files": "TERMINAL_SSH_SYNC_FILES",
         "container_cpu": "TERMINAL_CONTAINER_CPU",
         "container_memory": "TERMINAL_CONTAINER_MEMORY",
         "container_disk": "TERMINAL_CONTAINER_DISK",

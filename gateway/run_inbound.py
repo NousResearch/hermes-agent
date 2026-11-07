@@ -26,6 +26,7 @@ from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_
 from gateway.run_busy import approval_input_words
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_inbound_hooks import GatewayInboundHooksMixin
+from gateway.run_inbound_secret import GatewayInboundSecretMixin
 from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
 from gateway.run_inbound_unauthorized import (
@@ -74,7 +75,8 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text.removeprefix(prefix)
 
 
-class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionMixin, GatewayPluginInjectionMixin):
+class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionMixin, GatewayInboundSecretMixin,
+                          GatewayPluginInjectionMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
     async def _hm_offer_pairing_code(self, source: SessionSource) -> None:
@@ -374,7 +376,13 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         except Exception:
             return None
         if _pending_clarify is None:
+            return await self._hm_late_secret_reply(event, source, _quick_key)
+        _owner = _pending_clarify.owner_user_id
+        if _owner is not None and str(source.user_id or "") != _owner:
+            # Bound prompt (vault): only the person asked may answer; anyone else's message routes normally.
             return None
+        if _pending_clarify.secret:
+            return await self._hm_secret_clarify_reply(event, source, _pending_clarify)
         _clarify_has_audio = bool(self._pending_event_audio_paths(event))
         _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
 

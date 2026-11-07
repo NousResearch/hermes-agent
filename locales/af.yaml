@@ -664,10 +664,19 @@ gateway:
     option_line: "  {index}. {choice}"
     question: "❓ {question}"
     answered: "✅ geantwoord: {response}"
+    answered_secret: "✅ received"
     cancelled: "↩️ Verduideliking gekanselleer — jou boodskap sal as 'n opvolg hanteer word."
     expired: "⏳ Hierdie prompt het verval — stuur asseblief 'n nuwe versoek."
     native_stream_placeholder: "💬 Wag vir jou keuse..."
     skip_hint: 'Antwoord "skip" om hierdie vraag oor te slaan.'
+  vault_prompt:
+    unlock: "🔐 Unlock {name}.\n\nSend your master password in your next message, typed (not dictated). Your message is deleted from this chat as soon as it arrives; the password is passed to `{backend}` once to open the vault and is not stored."
+    login_identifier: "🔑 Login for {host} (1/2)\n\nWhat email or username should I save for this site?"
+    login_password: "🔑 Login for {host} (2/2)\n\nNow the password, in your next message, typed (not dictated). Your message is deleted from this chat as soon as it arrives; the password is stored encrypted in the vault and typed straight into the page."
+    code: "🔢 {site} sent you a one-time code.\n\nSend it here and I'll enter it into the page. Your message is deleted as soon as it arrives.{detail}"
+    not_deleted: "⚠️ I could not delete your message containing the secret. Delete it yourself now (long-press → Delete)."
+    voice_refused: "🎙️ A secret is never taken from a voice message: I deleted yours without transcribing it. Type it instead."
+    expired: "⏳ That request had already ended: your message was deleted and not used. Ask again."
   errors:
     rate_limited: "⏱️ Die KI-modeldiens beperk tans die tempo van versoeke. Wag 'n oomblik en gebruik dan /retry."
     auth_failed: "⚠️ Aanmelding by die KI-modeldiens het misluk. Gebruik /login om weer aan te meld, of vra die persoon wat hierdie bot bedryf om `hermes doctor` op die gasheer uit te voer."

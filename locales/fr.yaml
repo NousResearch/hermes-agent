@@ -773,10 +773,19 @@ gateway:
     option_line: "  {index}. {choice}"
     question: "❓ {question}"
     answered: "✅ réponse : {response}"
+    answered_secret: "✅ reçu"
     cancelled: "↩️ Clarification annulée — votre message sera traité comme une suite de la conversation."
     expired: "⏳ Cette demande a expiré — veuillez envoyer une nouvelle requête."
     native_stream_placeholder: "💬 En attente de votre choix..."
     skip_hint: 'Répondez « skip » pour passer cette question.'
+  vault_prompt:
+    unlock: "🔐 Déverrouiller {name}.\n\nEnvoyez votre mot de passe maître dans votre prochain message, tapé (pas dicté). Votre message est supprimé de ce chat dès sa réception ; le mot de passe est passé une fois à `{backend}` pour ouvrir le coffre et n'est pas conservé."
+    login_identifier: "🔑 Identifiants pour {host} (1/2)\n\nQuel e-mail ou nom d'utilisateur dois-je enregistrer pour ce site ?"
+    login_password: "🔑 Identifiants pour {host} (2/2)\n\nMaintenant le mot de passe, dans votre prochain message, tapé (pas dicté). Votre message est supprimé de ce chat dès sa réception ; le mot de passe est chiffré dans le coffre et tapé directement dans la page."
+    code: "🔢 {site} vous a envoyé un code à usage unique.\n\nEnvoyez-le ici et je le saisis dans la page. Votre message est supprimé dès sa réception.{detail}"
+    not_deleted: "⚠️ Je n'ai pas pu supprimer votre message qui contient le secret. Supprimez-le vous-même maintenant (appui long → Supprimer)."
+    voice_refused: "🎙️ Un secret n'est jamais pris dans un message vocal : j'ai supprimé le vôtre sans le transcrire. Tapez-le plutôt."
+    expired: "⏳ Cette demande était déjà terminée : votre message a été supprimé et n'a pas été utilisé. Redemandez."
   errors:
     rate_limited: "⏱️ Le service de modèle IA limite le débit des requêtes. Patientez un instant, puis utilisez /retry."
     auth_failed: "⚠️ La connexion au service de modèle IA a échoué. Utilisez /login pour vous reconnecter, ou demandez à la personne qui gère ce bot de lancer `hermes doctor` sur l'hôte."

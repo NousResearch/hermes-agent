@@ -664,10 +664,19 @@ gateway:
     option_line: "  {index}. {choice}"
     question: "❓ {question}"
     answered: "✅ respondido: {response}"
+    answered_secret: "✅ received"
     cancelled: "↩️ Aclaración cancelada — tu mensaje se tratará como un mensaje de seguimiento."
     expired: "⏳ Esta pregunta expiró — envía una nueva solicitud."
     native_stream_placeholder: "💬 Esperando tu elección..."
     skip_hint: 'Responde "skip" para omitir esta pregunta.'
+  vault_prompt:
+    unlock: "🔐 Unlock {name}.\n\nSend your master password in your next message, typed (not dictated). Your message is deleted from this chat as soon as it arrives; the password is passed to `{backend}` once to open the vault and is not stored."
+    login_identifier: "🔑 Login for {host} (1/2)\n\nWhat email or username should I save for this site?"
+    login_password: "🔑 Login for {host} (2/2)\n\nNow the password, in your next message, typed (not dictated). Your message is deleted from this chat as soon as it arrives; the password is stored encrypted in the vault and typed straight into the page."
+    code: "🔢 {site} sent you a one-time code.\n\nSend it here and I'll enter it into the page. Your message is deleted as soon as it arrives.{detail}"
+    not_deleted: "⚠️ I could not delete your message containing the secret. Delete it yourself now (long-press → Delete)."
+    voice_refused: "🎙️ A secret is never taken from a voice message: I deleted yours without transcribing it. Type it instead."
+    expired: "⏳ That request had already ended: your message was deleted and not used. Ask again."
   errors:
     rate_limited: "⏱️ El servicio del modelo de IA está limitando la tasa de solicitudes. Espera un momento y luego usa /retry."
     auth_failed: "⚠️ Falló el inicio de sesión en el servicio del modelo de IA. Usa /login para iniciar sesión de nuevo, o pide a quien administra este bot que ejecute `hermes doctor` en el host."

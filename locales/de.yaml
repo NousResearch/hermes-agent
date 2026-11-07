@@ -664,10 +664,19 @@ gateway:
     option_line: "  {index}. {choice}"
     question: "❓ {question}"
     answered: "✅ beantwortet: {response}"
+    answered_secret: "✅ received"
     cancelled: "↩️ Rückfrage abgebrochen — Ihre Nachricht wird als Folgenachricht behandelt."
     expired: "⏳ Diese Abfrage ist abgelaufen — bitte senden Sie eine neue Anfrage."
     native_stream_placeholder: "💬 Warte auf Ihre Auswahl..."
     skip_hint: 'Antworte mit „skip“, um diese Frage zu überspringen.'
+  vault_prompt:
+    unlock: "🔐 Unlock {name}.\n\nSend your master password in your next message, typed (not dictated). Your message is deleted from this chat as soon as it arrives; the password is passed to `{backend}` once to open the vault and is not stored."
+    login_identifier: "🔑 Login for {host} (1/2)\n\nWhat email or username should I save for this site?"
+    login_password: "🔑 Login for {host} (2/2)\n\nNow the password, in your next message, typed (not dictated). Your message is deleted from this chat as soon as it arrives; the password is stored encrypted in the vault and typed straight into the page."
+    code: "🔢 {site} sent you a one-time code.\n\nSend it here and I'll enter it into the page. Your message is deleted as soon as it arrives.{detail}"
+    not_deleted: "⚠️ I could not delete your message containing the secret. Delete it yourself now (long-press → Delete)."
+    voice_refused: "🎙️ A secret is never taken from a voice message: I deleted yours without transcribing it. Type it instead."
+    expired: "⏳ That request had already ended: your message was deleted and not used. Ask again."
   errors:
     rate_limited: "⏱️ Der KI-Modelldienst begrenzt derzeit die Anfragerate. Warten Sie einen Moment und verwenden Sie dann /retry."
     auth_failed: "⚠️ Die Anmeldung beim KI-Modelldienst ist fehlgeschlagen. Verwenden Sie /login, um sich erneut anzumelden, oder bitten Sie den Betreiber dieses Bots, `hermes doctor` auf dem Host auszuführen."

@@ -384,10 +384,12 @@ async def test_canonical_sse_projects_the_turn_reasoning(api, owner, path, body,
             _runner=SimpleNamespace(_service_tier=None, _consume_pending_turn_sidecar_notes=lambda key: []),
             _make_bg_review_callbacks=lambda: (lambda message: None, lambda: None),
             _merge_turn_request_overrides=TurnRunner._merge_turn_request_overrides,
-            _clarify_callback_sync=None, _notice_callback_sync=None,
+            _clarify_callback_sync=None, _vault_ask_sync=None, _notice_callback_sync=None,
             _attach_session_title_callback=lambda agent, ctx: None)
         assert api_execution.get() is not None
         TurnRunner._wire_turn_agent_callbacks(holder, agent, {}, None, None, None, False)
+        from gateway.vault_prompts import clear_vault_prompt_callbacks
+        clear_vault_prompt_callbacks()  # thread-local: the turn's finally drops them at runtime
         if agent.reasoning_callback:  # AIAgent._fire_reasoning_delta calls it only when wired
             agent.reasoning_callback('THINKING')
         execution_result.get()['result'] = {'final_response': 'ANSWER', 'messages': []}

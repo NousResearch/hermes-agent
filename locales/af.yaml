@@ -1710,10 +1710,10 @@ slash:
     description: "Verlaat die CLI (gebruik --delete om ook sessiegeskiedenis te verwyder)"
 cli:
   backtrack:
-    title: "↺ Spoel terug — kies 'n vroeëre opdrag"
-    keys_hint: "↑/↓ kies · Enter wysig & stuur weer · f vurk van hier · Esc sluit"
-    preview_label: "Opdrag {number} van {total}:"
-    more_lines: "… ({count} meer reëls)"
+    title: "↺ Transkripsie — kies 'n opdrag om te wysig"
+    keys_hint: "Blaai deur transkripsie · ↑↓/jk rol · ←→/hl opdragte · ↵ wysig · f vurk · esc terug"
+    prime_hint: "esc weer om die vorige boodskap te wysig"
+    no_previous: "Geen vorige boodskap om te wysig nie."
     editing_hint: "↺ Wysig opdrag {number} — Enter spoel hierheen terug en stuur · Esc Esc kanselleer"
     edit_cancelled: "↺ Terugspoel gekanselleer; niks is verwyder nie."
     rewound: "↺ Teruggespoel na opdrag {number} ({count} boodskap(pe) geargiveer); stuur die wysiging."

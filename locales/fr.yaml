@@ -1962,10 +1962,10 @@ slash:
     description: "Quitter la CLI (--delete supprime aussi l'historique de session)"
 cli:
   backtrack:
-    title: "↺ Rembobiner — choisir un prompt précédent"
-    keys_hint: "↑/↓ choisir · Enter modifier et renvoyer · f bifurquer d'ici · Esc fermer"
-    preview_label: "Prompt {number} sur {total} :"
-    more_lines: "… ({count} lignes de plus)"
+    title: "↺ Transcription — choisir un prompt à modifier"
+    keys_hint: "Parcours de la transcription · ↑↓/jk défiler · ←→/hl prompts · ↵ modifier · f bifurquer · esc retour"
+    prime_hint: "esc à nouveau pour modifier le message précédent"
+    no_previous: "Aucun message précédent à modifier."
     editing_hint: "↺ Modification du prompt {number} — Enter rembobine ici et envoie · Esc Esc annule"
     edit_cancelled: "↺ Rembobinage annulé ; rien n'a été supprimé."
     rewound: "↺ Rembobiné au prompt {number} ({count} message(s) archivé(s)) ; envoi de la modification."

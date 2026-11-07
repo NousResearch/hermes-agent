@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { normalizeSlashSearchQuery, rankSlashItems, scoreSlashMenuItem, tokenizeSearchText } from './fuzzyScore.js'
+import { normalizeSlashSearchQuery, rankSlashItems, scoreSlashMenuItem, tokenizeSearchText } from './slash-score'
 
 describe('normalizeSlashSearchQuery', () => {
   it('trims, strips leading slashes, and lowercases', () => {

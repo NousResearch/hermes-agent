@@ -438,10 +438,18 @@ pnpm --dir ui-tui run build
 pnpm --dir apps/desktop run dev
 ```
 
-Activation provides the pnpm version root `package.json` pins in `devEngines`.
-Hermes's builds and `hermes update` refuse any other pnpm version (a direct
-`pnpm install` does not check it), and the root `preinstall` script refuses
-`npm install` (npx and other npm commands only warn).
+Activation provides the pnpm version `pm/lock.json` pins. An install that runs
+lifecycle scripts refuses any other pnpm, a direct or filtered `pnpm install`
+included: the root `preinstall` script requires the `pm/lock.json` pnpm and refuses
+`npm install`, and pnpm 10 and 11 also refuse the root `engines.pnpm` range (`^12`;
+pnpm 12 does not compare `engines.pnpm` with itself). pnpm 12 runs no root
+`preinstall` under `--ignore-scripts`, `--lockfile-only` (install, add, remove and
+update) or `pnpm fetch`, so another pnpm 12 passes those. The backstop for a
+lockfile written that way is CI: every change to `pnpm-lock.yaml` runs the JS checks,
+which install it with the pinned pnpm under `--frozen-lockfile` (with
+`--lockfile-only` when the installed tree is cached). That proves the lockfile matches
+the manifests and the release-age policy, not which pnpm wrote it. A user agent
+overridden through `pnpm_config_user_agent` is refused as well.
 
 The website is a separate npm project: `npm ci --prefix website`, then
 `npm run build:fast --prefix website`. PM activation supplies tools, not these
@@ -659,10 +667,29 @@ without upload times, it stops with `has no publish time`; use
 `https://pypi.org/simple` for that step.
 
 JavaScript workspace dependencies follow the same rule through
-`minimumReleaseAge` in `pnpm-workspace.yaml` (in minutes: `20160` is 14 days),
-with exemptions listed in `minimumReleaseAgeExclude`. CI enforces it when it
-installs `pnpm-lock.yaml`; source, bundle and Docker installs trust the
-committed lock.
+`minimumReleaseAge` in `pnpm-workspace.yaml` (in minutes: `20160` is 14 days).
+When a range's only matches are younger than that, `hermes pm update --pnpm`
+stops and prints the entries that would let it through, for example
+`- pele@1.13.0  # <why it cannot wait>` (it lists them by repeating the update
+on a scratch copy of the manifests and lock). To exempt one, add it to
+`minimumReleaseAgeExclude` as that exact `name@version` (never a bare name or a
+glob, which would exempt every future release), with the reason as an inline
+comment on the same line, then run the update again. The update drops an entry
+once the lockfile no longer holds that version, in the same change as the lock.
+pnpm's own `minimumReleaseAgeExcludePrune` stays off, because it would rewrite
+`pnpm-workspace.yaml` on every install, users' builds included. CI enforces the
+policy when it installs `pnpm-lock.yaml`; source, bundle and Docker installs
+trust the committed lock.
+
+PM's own npm-hosted tools (pnpm and npm) are pinned to `registry.npmjs.org`
+URLs in `pm/lock.json`, but PM downloads them from your npm registry:
+`npm_config_registry`, else `registry=` in the npmrc that `npm_config_userconfig`
+names, else `~/.npmrc`. That registry may be plain `http://` (a LAN Verdaccio or
+Nexus). The bytes must match the lock's SHA256 before PM uses them, a plain-http
+download over 256 MiB is abandoned, and a plain-http redirect must stay on the
+registry's host. When the registry is unreachable, lacks the file, sends too much
+or redirects elsewhere, PM falls back to its own pinned HTTPS archive. Every other
+download stays HTTPS-only.
 
 ## Diagnostics
 

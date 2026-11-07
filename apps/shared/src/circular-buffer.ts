@@ -1,13 +1,15 @@
 export class CircularBuffer<T> {
   private buf: T[]
+  private readonly capacity: number
   private head = 0
   private len = 0
 
-  constructor(private capacity: number) {
+  constructor(capacity: number) {
     if (!Number.isInteger(capacity) || capacity <= 0) {
       throw new RangeError(`CircularBuffer capacity must be a positive integer, got ${capacity}`)
     }
 
+    this.capacity = capacity
     this.buf = new Array<T>(capacity)
   }
 

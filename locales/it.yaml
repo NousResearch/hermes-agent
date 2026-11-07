@@ -1710,10 +1710,10 @@ slash:
     description: "Esci dalla CLI (usa --delete per eliminare anche la cronologia della sessione)"
 cli:
   backtrack:
-    title: "↺ Riavvolgi — scegli un prompt precedente"
-    keys_hint: "↑/↓ scegli · Enter modifica e reinvia · f dirama da qui · Esc chiudi"
-    preview_label: "Prompt {number} di {total}:"
-    more_lines: "… (altre {count} righe)"
+    title: "↺ Trascrizione — scegli un prompt da modificare"
+    keys_hint: "Navigazione trascrizione · ↑↓/jk scorri · ←→/hl prompt · ↵ modifica · f dirama · esc indietro"
+    prime_hint: "esc di nuovo per modificare il messaggio precedente"
+    no_previous: "Nessun messaggio precedente da modificare."
     editing_hint: "↺ Modifica del prompt {number} — Enter riavvolge fin qui e invia · Esc Esc annulla"
     edit_cancelled: "↺ Riavvolgimento annullato; non è stato rimosso nulla."
     rewound: "↺ Riavvolto al prompt {number} ({count} messaggio/i archiviato/i); invio della modifica."

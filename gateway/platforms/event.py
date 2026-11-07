@@ -4,6 +4,7 @@ A leaf module: adapters, helpers and the runner import it, so it must not import
 gateway.platforms.*.
 """
 
+import dataclasses
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -41,6 +42,32 @@ def clean_attachment_filename(name: object) -> str:
         keep = f"{dot}{ext}" if stem and len(ext) <= 16 else ""
         base = base[: _MAX_FILENAME_CHARS - len(keep)] + keep
     return base
+
+
+def envelope_sender_id(event: Any) -> Optional[str]:
+    """Envelope author id of *event*: the sender an adapter preserved when it re-scoped ``source``
+    (``MessageEvent.envelope_sender``), else ``source.user_id``."""
+    sender = getattr(event, "envelope_sender", None) or getattr(event, "source", None)
+    user_id = getattr(sender, "user_id", None)
+    return str(user_id) if isinstance(user_id, (str, int)) else None  # non-id stand-ins read as unknown
+
+
+def same_envelope_sender(a: Any, b: Any) -> bool:
+    """True when two events come from the same author."""
+    return envelope_sender_id(a) == envelope_sender_id(b)
+
+
+def absorb_envelope_sender(accumulated: Any, incoming: Any) -> None:
+    """Call wherever *incoming* is merged into *accumulated*. A batch holding more than one author
+    has no single verified sender: its ``envelope_sender`` becomes an id-less stand-in, so no
+    gateway-verified sender note is emitted (the text is still defanged). Sticky: once cleared,
+    no later event restores an id."""
+    if same_envelope_sender(accumulated, incoming):
+        return
+    base = getattr(accumulated, "envelope_sender", None) or getattr(accumulated, "source", None)
+    if isinstance(base, SessionSource):
+        accumulated.envelope_sender = dataclasses.replace(
+            base, user_id=None, user_name=None, user_id_alt=None, is_bot=False)
 
 
 class MessageType(Enum):
@@ -137,6 +164,10 @@ class MessageEvent:
     # unknown). For adapters whose ``media_urls`` are random cache names (relay); the name is
     # display data only, never a path. Appended for positional compat.
     media_filenames: list[str] = field(default_factory=list)
+    # Authenticated author when an adapter re-scopes ``source`` to a sender-less shared source
+    # (Telegram observed-group mode): the gateway-verified sender note and sender-aware batching
+    # read it. None means ``source`` still carries the sender.
+    envelope_sender: Optional[SessionSource] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
@@ -151,6 +182,11 @@ class MessageEvent:
         """One turn now answers *other* too: an addressed message wins, then an unknown one."""
         if self.reply_expected is not True and other.reply_expected is not False:
             self.reply_expected = other.reply_expected
+
+    def absorb_merged(self, other: "MessageEvent") -> None:
+        """*other* was merged into this turn: carry its reply expectation and envelope sender."""
+        self.absorb_reply_expected(other)
+        absorb_envelope_sender(self, other)
 
     def extend_media(self, other: "MessageEvent") -> None:
         """Append *other*'s attachments (urls, types and original names) to this event's. Names are

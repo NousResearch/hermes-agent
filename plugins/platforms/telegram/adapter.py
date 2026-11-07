@@ -6237,7 +6237,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             return dataclasses.replace(event, channel_prompt=channel_prompt)
         return dataclasses.replace(
             event, text=self._telegram_group_observe_attributed_text(event),
-            source=self._telegram_group_observe_shared_source(event.source), channel_prompt=channel_prompt)
+            source=self._telegram_group_observe_shared_source(event.source), channel_prompt=channel_prompt,
+            envelope_sender=event.envelope_sender or event.source)  # keeps the verified-sender note
 
     def _media_message_type(self, msg: Message) -> MessageType:
         """Classify a Telegram media message into a MessageType (first present attachment wins)."""
@@ -6654,13 +6655,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             lambda ev: logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(ev.media_urls)))
 
     def _merge_into_pending(self, pending: dict, key: str, event: MessageEvent) -> None:
-        """Merge ``event`` into ``pending[key]`` (media, caption, reply expectation) or seed it."""
+        """Merge ``event`` into ``pending[key]`` (media, caption, reply expectation, sender) or seed it."""
         if (existing := pending.get(key)) is None:
             pending[key] = event
             return
-        existing.absorb_reply_expected(event)
-        existing.media_urls.extend(event.media_urls)
-        existing.media_types.extend(event.media_types)
+        existing.absorb_merged(event)
+        existing.extend_media(event)
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
 

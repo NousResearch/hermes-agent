@@ -476,8 +476,8 @@ def get_env_path() -> Path:
 
 
 def get_project_root() -> Path:
-    """Get the project installation directory."""
-    return Path(__file__).parent.parent.resolve()
+    from hermes_cli._startup_fast import project_root_str
+    return Path(project_root_str())
 
 
 def _secure_dir(path):

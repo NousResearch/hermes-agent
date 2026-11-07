@@ -13,6 +13,7 @@ import logging
 import os
 import secrets
 import sqlite3
+import sys
 import threading
 from collections import deque
 from pathlib import Path
@@ -200,8 +201,12 @@ def connect_tracked(
             _track_key(resolved)
             release = _ReleaseOnClose(resolved)
             try:
+                # Confirm registration without running SQL (a statement would read the schema and
+                # wait on locks): sqlite3 holds a reference to the callable while it is registered.
+                before = sys.getrefcount(release)
                 conn.create_function(_RELEASE_FUNCTION, 0, release)
-                conn.execute(f"SELECT {_RELEASE_FUNCTION}()").fetchone()  # registered for real
+                if sys.getrefcount(release) == before:  # dropped: nothing would release the entry
+                    raise sqlite3.ProgrammingError("connection factory did not register the release function")
             except Exception:
                 _track_key(resolved, -1)  # the release object can never fire: take the count back
                 raise

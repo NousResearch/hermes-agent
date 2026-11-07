@@ -15,6 +15,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -265,9 +266,57 @@ def test_a_factory_that_drops_the_release_function_is_refused(db):
         def create_function(self, *args, **kwargs):
             return None
 
-    with pytest.raises(sqlite3.OperationalError):
+    with pytest.raises(sqlite3.ProgrammingError):
         connect_tracked(str(db), tracking_path=db, factory=Silent)
     assert not has_live_connection(db)
+
+
+def test_connect_tracked_runs_no_sql(db):
+    # Any statement makes SQLite read the schema, so a malformed one would fail the connect
+    # before the repair that opens through it could run.
+    statements = []
+
+    class Traced(sqlite3.Connection):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.set_trace_callback(statements.append)
+
+    connect_tracked(str(db), tracking_path=db, factory=Traced).close()
+    assert statements == []
+
+    setup = sqlite3.connect(db)
+    setup.execute("CREATE TABLE t(x)")
+    setup.execute("PRAGMA writable_schema=ON")
+    setup.execute("INSERT INTO sqlite_master SELECT * FROM sqlite_master WHERE name='t'")
+    setup.commit()
+    setup.close()
+    connect_tracked(str(db), tracking_path=db).close()  # malformed schema: still opens
+
+
+_EXCLUSIVE_HOLDER = """import sqlite3, sys
+c = sqlite3.connect(sys.argv[1], isolation_level=None)
+c.execute("CREATE TABLE t(x)")
+c.execute("BEGIN EXCLUSIVE")
+c.execute("INSERT INTO t VALUES (1)")
+print("HELD", flush=True)
+sys.stdin.read()
+"""
+
+
+def test_connect_does_not_wait_on_a_locked_database(db):
+    # A schema read inside connect_tracked would wait out the busy timeout under _live_lock.
+    holder = subprocess.Popen([sys.executable, "-c", _EXCLUSIVE_HOLDER, str(db)],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "HELD"
+        start = time.monotonic()
+        connect_tracked(str(db), tracking_path=db, timeout=2).close()
+        elapsed = time.monotonic() - start
+    finally:
+        holder.stdin.close()
+        holder.wait(10)
+        holder.stdout.close()
+    assert elapsed < 0.5
 
 
 def test_connection_in_a_cycle_is_released_by_the_collector(db):

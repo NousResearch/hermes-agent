@@ -296,11 +296,12 @@ function DialogTitle({
         Icon && 'flex items-center gap-2',
         className
       )}
+      data-bidi-prose=""
       data-slot="dialog-title"
       {...props}
     >
       {Icon ? <Icon className="size-4 shrink-0 text-primary" /> : null}
-      {children}
+      {Icon ? <span className="min-w-0 flex-1" data-bidi-prose="">{children}</span> : children}
     </DialogPrimitive.Title>
   )
 }
@@ -312,6 +313,7 @@ function DialogDescription({ className, ...props }: React.ComponentProps<typeof 
         'text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)',
         className
       )}
+      data-bidi-prose=""
       data-slot="dialog-description"
       {...props}
     />

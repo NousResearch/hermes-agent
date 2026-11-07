@@ -33,7 +33,10 @@ export function ClarifyToolSettled(props: ToolCallMessagePartProps) {
           <div className="grid gap-1" key={`${index}-${row.question ?? ''}`}>
             {row.question ? (
               <ClarifyLine icon={MessageQuestion}>
-                <span className="whitespace-pre-wrap font-medium leading-(--conversation-line-height)">
+                <span
+                  className="whitespace-pre-wrap font-medium leading-(--conversation-line-height)"
+                  data-bidi-prose=""
+                >
                   {row.question}
                 </span>
               </ClarifyLine>
@@ -44,6 +47,7 @@ export function ClarifyToolSettled(props: ToolCallMessagePartProps) {
                   'whitespace-pre-wrap leading-(--conversation-line-height)',
                   blank ? 'italic text-(--ui-text-tertiary)' : 'text-(--ui-text-secondary)'
                 )}
+                data-bidi-prose=""
                 data-clarify-answer=""
               >
                 {blank ? (row.unanswered && !cancelled ? copy.noAnswer : copy.skipped) : answer}

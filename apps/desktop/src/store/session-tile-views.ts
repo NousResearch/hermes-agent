@@ -139,6 +139,14 @@ export function viewMainSession(view: string): null | string | undefined {
   return key in memory ? memory[key] : undefined
 }
 
+/** Drop a view's main chat that the backend says is gone, unless the first
+ *  tab has moved on to another chat since. */
+export function forgetViewMain(view: string, storedSessionId: string): void {
+  if (isTileStoreWriter() && viewMainSession(view) === storedSessionId) {
+    rememberViewMain(view, null)
+  }
+}
+
 function restoreViewMain(view: string): boolean {
   const storedSessionId = viewMainSession(view)
 

@@ -684,7 +684,7 @@ trust the committed lock.
 PM's own npm-hosted tools (pnpm and npm) are pinned to `registry.npmjs.org`
 URLs in `pm/lock.json`, but PM downloads them from your npm registry:
 `npm_config_registry`, else `registry=` in the npmrc that `npm_config_userconfig`
-names, else `~/.npmrc`. That registry may be plain `http://` (a LAN Verdaccio or
+names, else `$HERMES_HOME/npmrc` when it exists, else `~/.npmrc`. That registry may be plain `http://` (a LAN Verdaccio or
 Nexus). The bytes must match the lock's SHA256 before PM uses them, a plain-http
 download over 256 MiB is abandoned, and a plain-http redirect must stay on the
 registry's host. When the registry is unreachable, lacks the file, sends too much

@@ -1556,23 +1556,15 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
-    """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
+    """Return why a ready/review task cannot respawn, otherwise None.
 
-    Called per ready/review row before any claim attempt. Priority order:
-    ``"infrastructure_cooldown"`` (latest run is a ``spawn_failed`` the host
-    refused — no restart-safe scope — within the cooldown; never counted),
-    ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
-    checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
-    ``last_failure_error`` that would otherwise park the task forever — that
-    path never increments ``consecutive_failures``), ``"blocker_auth"``
-    (quota/auth pattern; the breaker still trips eventually), then for the
-    ready lane only ``"recent_success"`` (completed run within the window, unless
-    a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
-    handoff event followed the comment: the named profile must work on that
-    PR). The review lane skips the last two: they are the *inputs* to a review
-    handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
-    passes own those.
+    Infrastructure and rate-limit cooldowns precede auth: neutral quota
+    retries retain an error stamp. Later progress supersedes only a proven
+    historical quota/crash stamp, never an unmatched current auth error; budgets stay intact.
+    Ready-only ``recent_success`` and ``active_pr`` prevent duplicate work;
+    later explicit requeue/handoff events override their respective guards.
+    Review skips these last two because success and a PR are its inputs.
+    Stale claims belong to reclamation, not this guard.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1590,9 +1582,9 @@ def check_respawn_guard(
     #    reaches the breaker.
     rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
     latest_run = conn.execute(
-        "SELECT outcome, ended_at, metadata FROM task_runs "
+        "SELECT id, outcome, ended_at, metadata FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC LIMIT 1",
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
     if latest_run is not None and latest_run["outcome"] == "spawn_failed":
@@ -1619,7 +1611,14 @@ def check_respawn_guard(
     # benign commands such as ``claude auth status`` (#117097).
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+    # Successful handoffs supersede a matching historical stamp, not a fresh auth
+    # error (PR acceptance can write one without ending another run).
+    superseded_failure = err and latest_outcome in {"review_requested", "changes_requested", "completed"} and conn.execute(
+        "SELECT 1 FROM task_runs WHERE task_id=? AND outcome IN ('rate_limited', 'crashed') "
+        "AND id<? AND ended_at<=? AND substr(error,1,500)=? LIMIT 1",
+        (task_id, latest_run["id"], latest_run["ended_at"], err),
+    ).fetchone()
+    if err and latest_outcome != "crashed" and not superseded_failure and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL

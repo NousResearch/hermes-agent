@@ -1735,7 +1735,18 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             raise _PollingLifecycleAbort("Telegram polling teardown started")
 
         def _generation_error_callback(error: Exception) -> None:
-            if self._teardown_started or generation != self._polling_generation or error_callback is None:
+            if self._teardown_started:
+                return
+            if generation != self._polling_generation:
+                # A handler exception landing while a polling rebuild is in flight was
+                # discarded silently — that window is exactly when media downloads (network
+                # dependent) are most likely to fail. Record it; the old generation's errors
+                # can no longer be acted on, but the traceback is diagnostic gold.
+                logger.warning("[%s] handler error during polling-generation rebuild (gen=%s current=%s): %s",
+                               self.name, generation, self._polling_generation,
+                               _redact_telegram_error_text(error), exc_info=error)
+                return
+            if error_callback is None:
                 return
             callback_context_token = _POLLING_GENERATION_CONTEXT.set(None)
             try:
@@ -6619,6 +6630,28 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
         msg = self._effective_update_message(update)  # channel posts arrive as update.channel_post
+        if not msg:
+            return
+        # Always-on receipt: a confirmed-but-never-logged media update is otherwise
+        # indistinguishable from "user never sent it" (2026-11-07: a photo+caption
+        # message was acked by the poller and left no trace anywhere downstream).
+        logger.info("[%s] Media inbound: update=%s msg=%s chat=%s kind=%s caption_chars=%d",
+                    getattr(self, "name", "?"), getattr(update, "update_id", None),
+                    getattr(msg, "message_id", None), getattr(getattr(msg, "chat", None), "id", None),
+                    self._media_message_type(msg).value if hasattr(self._media_message_type(msg), "value") else self._media_message_type(msg),
+                    len(msg.caption or ""))
+        try:
+            await self._handle_media_message_body(update, context)
+        except Exception:
+            # Never let a media update die silently: PTB routes handler exceptions to the
+            # error callback, which a polling-generation rebuild discards by design — the
+            # traceback below is the only guaranteed record.
+            logger.exception("[%s] Unhandled exception in media handler (msg=%s chat=%s)",
+                             self.name, msg.message_id, msg.chat.id if msg.chat else "?")
+            raise
+
+    async def _handle_media_message_body(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        msg = update.message
         if not msg:
             return
         if not self._is_user_authorized_from_message(msg):

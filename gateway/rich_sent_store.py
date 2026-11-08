@@ -19,10 +19,12 @@ import time
 from typing import Optional
 from utils import atomic_json_write
 
-_MAX_ENTRIES = 1000
+_MAX_ENTRIES = 20000
 _MAX_TEXT_CHARS = 2000
-# ``HERMES_RICH_SENT_MAX_ENTRIES`` overrides the cap for long-lived gateways (the default
-# keeps roughly a few days of sent messages at Hermes' current outbound volume).
+# ``HERMES_RICH_SENT_MAX_ENTRIES`` overrides the cap for long-lived gateways. The default
+# must cover the practical quote-reply window: at Hermes' outbound volume a busy DM exhausts
+# a 1000-entry FIFO in days, after which every quote of an older message is unrecoverable
+# (Telegram gives bots no history fetch) and the agent answers without the quoted context.
 _MAX_ENTRIES_ENV = "HERMES_RICH_SENT_MAX_ENTRIES"
 
 

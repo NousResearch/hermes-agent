@@ -145,7 +145,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error, unauthorized_action_notice,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
-    SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, fit_prefix, utf16_len,
+    SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
 
 # Telegram truncates ``answerCallbackQuery`` text at 200 chars; ``BotCommand`` descriptions at 256.
@@ -5165,7 +5165,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
 
     @staticmethod
     def _caption_1024(caption: Optional[str]) -> Optional[str]:
-        return fit_prefix(caption, 1024, utf16_len, suffix="") if caption else None  # Bot API counts UTF-16 units
+        return caption[:1024] if caption else None
 
     async def _send_voice_bubble(self, audio_file, chat_id, reply_to, metadata, caption, duration_secs):
         """sendVoice with caption variants: MarkdownV2 when it fits 1024 chars, plain fallback when the
@@ -5182,7 +5182,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                     _caption_variants.append((_formatted_caption, ParseMode.MARKDOWN_V2))
             except Exception:
                 logger.debug("[%s] voice caption MarkdownV2 formatting failed; sending plain caption", self.name, exc_info=True)
-            _caption_variants.append((self._caption_1024(caption), None))
+            _caption_variants.append((caption[:1024], None))
         else:
             _caption_variants.append((None, None))
         _last_parse_error: Optional[Exception] = None

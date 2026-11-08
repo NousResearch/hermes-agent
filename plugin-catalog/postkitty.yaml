@@ -1,6 +1,6 @@
 name: postkitty
 repo: https://github.com/mertkayacs/postkitty
-sha: 0f7a9fb0e7fe21bd61c1d5f8a288d66a0b4e5327
+sha: 490d8f992387b610c3b6f32cd87d800dc58c8010
 title: postkitty
 description: 'One post in, every platform out. Fixes and rewrites your draft for each platform and counts the
   copy with each platform''s own rule, splitting long posts into threads. Crops photos and reframes landscape video
@@ -14,10 +14,10 @@ category: tools
 version: "0.1.0"
 requires_hermes: ">=0.22.7"
 docs_url: https://postkitty.mertkayacs.com
-image: https://raw.githubusercontent.com/mertkayacs/postkitty/0f7a9fb0e7fe21bd61c1d5f8a288d66a0b4e5327/docs/banner.png
+image: https://raw.githubusercontent.com/mertkayacs/postkitty/490d8f992387b610c3b6f32cd87d800dc58c8010/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/mertkayacs/postkitty/0f7a9fb0e7fe21bd61c1d5f8a288d66a0b4e5327/docs/board.png
-  - https://raw.githubusercontent.com/mertkayacs/postkitty/0f7a9fb0e7fe21bd61c1d5f8a288d66a0b4e5327/docs/before-after.jpg
+  - https://raw.githubusercontent.com/mertkayacs/postkitty/490d8f992387b610c3b6f32cd87d800dc58c8010/docs/board.png
+  - https://raw.githubusercontent.com/mertkayacs/postkitty/490d8f992387b610c3b6f32cd87d800dc58c8010/docs/before-after.jpg
 known_issues:
   - Needs ffmpeg and ffprobe on PATH for video.
 capabilities:

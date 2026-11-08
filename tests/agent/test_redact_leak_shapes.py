@@ -159,3 +159,36 @@ class TestPrefixedKeyAfterSeparator:
                                       "deploy-sk-prod-deployment-01", "build_hf_transformers_cache"])
     def test_identifiers_kept(self, text):
         _assert_unchanged(text)
+
+
+class TestUserinfoStopsAtQuote:
+    """A ``"`` ends a JSON string, so ``"https://a.com","u:pw@y"`` holds no ``user:pass@`` userinfo."""
+
+    @pytest.mark.parametrize("text", ['["https://a.com","u:longpassword1@y"]',
+                                      '"https://example.com","x@y.com"'])
+    def test_adjacent_json_strings_stay_intact(self, text):
+        _assert_unchanged(text)
+        # Strict mode (memory context) masks every userinfo, and must stop at the quote too.
+        assert redact_sensitive_text(text, redact_url_credentials=True) == text
+        assert redact_sensitive_text('{"@context":"https://schema.org","@type":"Thing"}',
+                                     redact_url_credentials=True) == '{"@context":"https://schema.org","@type":"Thing"}'
+
+    def test_userinfo_password_still_masked(self):
+        _assert_masked("https://user:FakeSecret9876@host/path", "FakeSecret9876")
+
+class TestNetworkPathUserinfo:
+    """#125664 residual: scheme-less ``//user:pass@host/share`` (SMB/CIFS mounts) under force."""
+
+    @pytest.mark.parametrize("text", ["//user:FakeSecret9876@host/share",
+                                      "mount -t cifs //user:FakeSecret9876@host/share /mnt",
+                                      'src="//user:FakeSecret9876@host/share"', "`//user:FakeSecret9876@host`",
+                                      "[//user:FakeSecret9876@host/a, //user:FakeSecret9876@host/b]"])
+    def test_forced_network_path_password_masked(self, text):
+        _assert_masked(text, "FakeSecret9876")
+        assert "//user:***@host" in redact_sensitive_text(text, force=True)
+
+    @pytest.mark.parametrize("text", ["// TODO: user:note@x", "//user:note@x", "//cdn.example.com/lib.js",
+                                      '<a href="//example.com">', "a//user:FakeSecret9876@h",
+                                      "//user:${SMB_PASSWORD}@host/share", "//user:%SMB_PASSWORD%@host/share"])
+    def test_comments_relative_urls_and_placeholders_unchanged(self, text):
+        _assert_unchanged(text)

@@ -33,6 +33,7 @@ from agent.context_compressor_summary import _accepts_keyword_argument
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
 from agent.conversation_compression_codex import _compress_context_via_codex_app_server
 from agent.conversation_compression_deadline import resolve_context_compression_timeouts
+from agent.conversation_compression_scaffolding import _SYNTHETIC_USER_FLAGS, _message_text, is_user_role_scaffolding
 from agent.conversation_compression_telemetry import (
     _emit_aborted_attempt_telemetry, _emit_blocked_attempt_telemetry, _emit_bypassed_attempt_telemetry,
     _emit_compression_attempt_telemetry, _record_committed_attempt_effect, _snapshot_compression_effect_input,
@@ -2145,40 +2146,13 @@ def conversation_history_after_compression(
     return None
 
 
-_SYNTHETIC_USER_PREFIXES = (
-    "[System: Your previous response was truncated", "[System: The previous response was cut off",
-    "[System: Your previous tool call", "[Your active task list was preserved across context compression]",
-    "[IMPORTANT: Background process ",
-)
-
-
-def _message_text(message: Any) -> str:
-    content = message.get("content") if isinstance(message, dict) else None
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(
-            str(part.get("text") or part.get("content") or "") for part in content if isinstance(part, dict)
-        )
-    return ""
-
-
-_SYNTHETIC_USER_FLAGS = (
-    "_todo_snapshot_synthetic", "_empty_recovery_synthetic", "_verification_stop_synthetic", "_pre_verify_synthetic",
-    "_dropped_toolcall_nudge",
-)
-
-
 def _is_real_user_message(message: Any) -> bool:
     """Distinguish human intent from user-role runtime scaffolding.
     A compaction summary flipped to ``role="user"`` for alternation is scaffolding and must not short-circuit
     anchor restoration."""
     if not isinstance(message, dict) or message.get("role") != "user":
         return False
-    if any(message.get(flag) for flag in _SYNTHETIC_USER_FLAGS):
-        return False
-    text = _message_text(message).strip()
-    if not text or text.startswith(_SYNTHETIC_USER_PREFIXES):
+    if is_user_role_scaffolding(message) or not _message_text(message).strip():
         return False
     from agent.context_compressor import ContextCompressor
     return not ContextCompressor._is_synthetic_compression_user_turn(message)

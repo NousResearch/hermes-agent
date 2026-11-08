@@ -47,3 +47,19 @@ def test_bold_without_quote_keeps_its_markers(adapter):
 )
 def test_rich_payload_escapes_currency_but_keeps_math_and_code(adapter, markdown, expected):
     assert adapter._rich_message_payload(markdown)["markdown"] == expected
+
+
+@pytest.mark.parametrize(
+    ("markdown", "expected"),
+    [
+        ("***bold* rest**", "*_bold_ rest*"),
+        ("***bold** rest*", "_*bold* rest_"),
+        ("**a *b***", "*a _b_*"),
+        ("*a **b***", "_a *b*_"),
+    ],
+)
+def test_combined_emphasis_closing_at_different_places_parses(adapter, markdown, expected):
+    """A delimiter run opening two styles that close separately emits every closing mark."""
+    out = adapter.format_message(markdown)
+    assert out == expected
+    assert mdv2_error(out) is None

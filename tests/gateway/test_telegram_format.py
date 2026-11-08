@@ -318,10 +318,11 @@ class TestFormatMessageBoldItalic:
         assert "bold" not in result.strip("*") and result.startswith("\\*")
 
     def test_nested_double_emphasis(self, adapter):
-        """**outer *mid **deep** mid* outer** nests instead of swallowing inner markers."""
+        """**outer *mid **deep** mid* outer** keeps the italic; the inner bold merges into the outer
+        one because MarkdownV2 reads a * inside bold as its closer."""
         assert (
             adapter.format_message("**outer *mid **deep** mid* outer**")
-            == "*outer _mid *deep* mid_ outer*"
+            == "*outer _mid deep mid_ outer*"
         )
 
     def test_italic_wrapping_bold(self, adapter):

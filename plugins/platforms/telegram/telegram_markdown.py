@@ -9,6 +9,7 @@ _EXPANDABLE_QUOTE = "\x00EQ\x00"
 
 # Every char MarkdownV2 requires backslash-escaped outside code spans/fences.
 _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
+_EMPHASIS_MARK = {"bold": "*", "italic": "_"}
 
 
 def _resolve_emphasis(text: str, stash, escape) -> str:
@@ -16,9 +17,6 @@ def _resolve_emphasis(text: str, stash, escape) -> str:
     inner markers (***x*** → _*x*_, **a *i* b** → *a _i_ b*) instead of the bold pass swallowing
     them. Bold may span a single newline within a paragraph; italic stays single-line; unmatched
     markers survive as literal text."""
-
-    def _mark(kind: str) -> str:
-        return "*" if kind == "bold" else "_"
 
     tokens = []  # ("t", s) literal | ["d", start, end, can_open, can_close, remaining, opens, closes]
     pos = 0
@@ -69,40 +67,57 @@ def _resolve_emphasis(text: str, stash, escape) -> str:
         if remaining > 0 and can_open:
             stack.append(idx)
 
-    def render_range(lo: int, hi: int) -> str:
-        parts = []
-        i = lo
-        while i < hi:
-            tok = tokens[i]
-            if tok[0] == "t":
-                parts.append(tok[1])
-                i += 1
-                continue
-            remaining, opens = tok[5], tok[6]
-            if not opens:
-                parts.append("*" * remaining)
-                i += 1
-                continue
-            # MarkdownV2 cannot nest an entity inside itself: ****x**** pairs bold on bold,
-            # so collapse same-kind marks into one instead of emitting an empty entity.
-            open_kinds = []
-            for kind, _ in reversed(opens):
-                if kind not in open_kinds:
-                    open_kinds.append(kind)
-            open_marks = "".join(_mark(kind) for kind in open_kinds)
-            outer_close = max(partner for _, partner in opens)
-            close_kinds = []
-            for kind, _ in tokens[outer_close][7]:
-                if kind not in close_kinds:
-                    close_kinds.append(kind)
-            close_marks = "".join(_mark(kind) for kind in close_kinds)
-            inner = render_range(i + 1, outer_close)
-            parts.append("*" * remaining)
-            parts.append(stash(open_marks + escape(inner) + close_marks))
-            i = outer_close  # the closer may itself open a further span
-        return "".join(parts)
+    return _render_emphasis(tokens, stash, escape)
 
-    return render_range(0, len(tokens))
+
+def _emphasis_marks(tok, depth: dict) -> tuple:
+    """The style kinds a delimiter run closes (innermost first) and opens (outermost first).
+
+    A style that is the last to close and the first to reopen at one run continues unbroken;
+    emitting both marks would read as "__" (underline) or an empty bold to Telegram."""
+    closes = [kind for kind, _ in tok[7]]
+    opens = [kind for kind, _ in reversed(tok[6])]
+    for kind in ("bold", "italic"):
+        if closes[-1:] == opens[:1] == [kind] and closes.count(kind) == depth[kind]:
+            closes.remove(kind)
+            opens.remove(kind)
+    return closes, opens
+
+
+def _render_emphasis(tokens: list, stash, escape) -> str:
+    """Emit each delimiter's own boundary marks so combined runs that end at different places
+    (***a* b**) keep every closing mark. MarkdownV2 cannot nest an entity inside itself, so a kind
+    already open adds no further marks (****x**** -> *x*). Each outermost emphasized span is escaped
+    and stashed whole, so later passes cannot cross it."""
+    depth = {"bold": 0, "italic": 0}
+    parts, group = [], None
+
+    def emit_literal(value: str) -> None:
+        if group is None:
+            parts.append(value)
+        else:
+            group.append(escape(value))
+
+    for tok in tokens:
+        if tok[0] == "t":
+            emit_literal(tok[1])
+            continue
+        closes, opens = _emphasis_marks(tok, depth)
+        for kind in closes:
+            depth[kind] -= 1
+            if depth[kind] == 0:
+                group.append(_EMPHASIS_MARK[kind])
+        if group is not None and not any(depth.values()):
+            parts.append(stash("".join(group)))
+            group = None
+        emit_literal("*" * tok[5])
+        for kind in opens:
+            if group is None:
+                group = []
+            if depth[kind] == 0:
+                group.append(_EMPHASIS_MARK[kind])
+            depth[kind] += 1
+    return "".join(parts)
 
 
 def _escape_mdv2(text: str) -> str:
@@ -197,11 +212,7 @@ def to_markdown_v2(content: str) -> str:
     text = re.sub(r'(?m)^\*\*(?=>{1,3} )', _EXPANDABLE_QUOTE, text)
     # 5) Bold **text** and *italic* resolve together so nested emphasis survives; unmatched
     # markers stay literal (bullet lists rely on that); 6) Strikethrough; 7) Spoiler kept as-is.
-    text = _resolve_emphasis(
-        text,
-        lambda payload: _ph(payload),
-        _escape_mdv2,
-    )
+    text = _resolve_emphasis(text, _ph, _escape_mdv2)
     text = re.sub(r'~~(.+?)~~', _ph_wrap('~', '~'), text)
     text = re.sub(r'\|\|(.+?)\|\|', _ph_wrap('||', '||'), text)
     # 9) Blockquotes: protect leading > from escaping; expandable quotes (**> starts, || ends the block's LAST line).

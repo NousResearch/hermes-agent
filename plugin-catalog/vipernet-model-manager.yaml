@@ -17,13 +17,25 @@
 # descartadas em silencio.
 #
 # ---------------------------------------------------------------------------
-# ESTADO MEDIDO 2026-11-07 23:01 WET
+# ESTADO MEDIDO 2026-11-08 12:15 WET
 # ---------------------------------------------------------------------------
-# Pin: commit que junta duas coisas sobre a 3.47.6 do PR #14: as tres capturas
-#   do painel em `assets/` (com a seccao de capturas nos dois README) e a
-#   correccao dos documentos de catalogo que ainda davam lacunas ja fechadas.
-#   Codigo identico ao pin anterior: `63c2e4be..54aef209` sao imagens, prosa e
-#   esta entrada — nenhum `.py` no diff.
+# Pin: `main` do repositorio do plugin depois do merge do PR #25, que leva a
+#   3.47.13. Desde o pin anterior (d28494b4 / 3.47.11):
+#   - 3.47.12 — botao «Testar ligacao» no formulario de um modelo: sonda real ao
+#     provider com o par escrito (pedido minimo, max_tokens 8), devolve latencia
+#     e estado HTTP, e nunca devolve a chave (mascarada por `***`). Nao grava
+#     nada e nao exige que a rota exista.
+#   - 3.47.13 — a sonda passa a resolver providers custom declarados em
+#     `providers.custom` do perfil (`base_url` + `api_mode` + chave por
+#     `key_env` via `agent.secret_scope.get_secret`), nao so os do pool. Antes,
+#     um provider custom falhava com «sem credencial neste processo».
+#   Medido com chamadas reais, nao simuladas: `inception/mercury-3` responde
+#   200 em ~485 ms pela via `providers.inception/key_env`; `deepseek/
+#   deepseek-flash` continua 200; modelo inexistente devolve 400 com a lista
+#   que o provider aceita; provider desconhecido falha limpo.
+#   Regra 2 e regra 9 como abaixo; `hermes plugins validate` no pin responde
+#   `Validation passed` (16 verificacoes, `no core override`, security scan
+#   `safe`).
 #
 # Regra 2 (repo clonavel por https, anonimamente): OK no GitHub.
 #   Provado por clone anonimo, nao pelo auto-relato do espelho:
@@ -33,34 +45,42 @@
 #   `__init__.py`, `dashboard/manifest.json`, `README.md`.
 #
 # Regra 9 (so superficies publicas): OK, sem excecao. `seams.py` usa
-#   `agent.credential_pool.load_pool` desde a 3.47.0; `hermes plugins validate`
-#   responde `no core override` e nao assinala nenhum import nem chamada privada.
+#   `agent.credential_pool.load_pool`, `agent.secret_scope.get_secret` e
+#   `hermes_cli.config.get_compatible_custom_providers` — todas na lista de
+#   superficies publicas do validador. `hermes plugins validate` responde
+#   `no core override` e nao assinala nenhum import nem chamada privada.
+#
+# Regra 10 (credenciais pela via do Hermes, nunca de ficheiros): a sonda de
+#   ligacao obtem a chave por `seams.resolver_provider` -> `secret_scope`
+#   (honra o perfil activo) e so cai para `os.environ` no caso de perfil unico
+#   (`UnscopedSecretError`), como o proprio core faz. Nao le `.env`, `auth.json`
+#   nem o login de outra ferramenta.
 #
 # Pagina de documentacao: e' construida a partir do `README.md` DESTE commit
 #   (`readme: true`), e a seccao «Public catalogue readiness» ja' diz o estado
 #   medido — nao ha ressalva pendente.
 #
-# `screenshots:` — tres capturas do painel na versao pinada, tiradas de uma
-#   instalacao viva (v3.47.6, separador Model Manager), guardadas em `assets/`
-#   e servidas por `raw.githubusercontent.com` no sha do pin. O nome completo do
-#   dono sai substituido pelo handle publico (`proldan`) nas imagens, e a
-#   substituicao esta declarada nos dois README.
+# `screenshots:` — tres capturas do painel, tiradas de uma instalacao viva e
+#   guardadas em `assets/`, servidas por `raw.githubusercontent.com` no sha do
+#   pin. O nome completo do dono sai substituido pelo handle publico
+#   (`proldan`) nas imagens, e a substituicao esta declarada nos dois README.
+#   As imagens sao as da 3.47.8: abrem no sha novo (os bytes sao os mesmos,
+#   `assets/` nao mudou desde entao) mas nao mostram o botao «Testar ligacao»
+#   nem o campo de provider em texto livre. Fica declarado — recapturar exige
+#   uma sessao com o painel a 3.47.13 em carga.
 #
-# NOTA DE CONSTRUCAO: o `sha` do campo nao pode conter o proprio commit (um
-#   ficheiro nao se cita a si mesmo). O commit que acrescenta esta versao do
-#   ficheiro ao `main` vem depois na linhagem e difere so' neste ficheiro —
-#   medido com `git diff --stat 54aef209 <esse commit>`, 1 ficheiro. O pin
-#   submetido no PR e' o `sha` do campo: 54aef209, cuja arvore tem o codigo da
-#   3.47.6, as tres capturas e os documentos de catalogo ja' corrigidos.
+# NOTA DE CONSTRUCAO: o `sha` abaixo nao pode apontar para o commit que contem
+#   esta versao do ficheiro (um ficheiro nao se cita a si mesmo). Aponta para o
+#   `main` que ja' traz a 3.47.13; o commit que acrescenta esta versao da entrada
+#   difere desse pin apenas neste ficheiro.
 # ---------------------------------------------------------------------------
 
 name: vipernet-model-manager
 repo: https://github.com/ptv1p3r/vipernet-model-manager.git
 
-# Commit EXATO do catalogo, 40 hex — resolvido por `git rev-parse` nos dois
-# lados (Gitea e GitHub), nunca completado de memoria. Capturas e documentos
-# de catalogo no `main`, 2026-11-07.
-sha: "54aef209e84c3f549a2032fe63bea6655766b476"
+# Commit EXATO do catalogo, 40 hex — resolvido por `git ls-remote` no GitHub,
+# nunca completado de memoria. `main` do GitHub relido a 2026-11-08: 19c75a72.
+sha: "19c75a72cccc056714f2a6f1e8ef1a3bacdde7d2"
 
 description: >-
   Picks the provider and model for each turn from the profile's own catalog,
@@ -73,16 +93,16 @@ maintainer: proldan
 tier: community
 category: models
 requires_hermes: ">=0.22.0"
-version: "3.47.6"
+version: "3.47.13"
 title: Vipernet Model Manager
 readme: true
 
 # Galeria de /docs/plugins/vipernet-model-manager. URLs no sha do pin: um bump
 # de pin obriga a re-pinar as imagens (regra 4).
 screenshots:
-  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/54aef209e84c3f549a2032fe63bea6655766b476/assets/01-visao-geral.png
-  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/54aef209e84c3f549a2032fe63bea6655766b476/assets/02-configuracao.png
-  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/54aef209e84c3f549a2032fe63bea6655766b476/assets/03-registo.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/19c75a72cccc056714f2a6f1e8ef1a3bacdde7d2/assets/01-visao-geral.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/19c75a72cccc056714f2a6f1e8ef1a3bacdde7d2/assets/02-configuracao.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/19c75a72cccc056714f2a6f1e8ef1a3bacdde7d2/assets/03-registo.png
 
 # Capacidades = o que o plugin regista de facto em `__init__.py`. O validador
 # confirma-as no pin (`declared hooks/middleware — matches registrations`).

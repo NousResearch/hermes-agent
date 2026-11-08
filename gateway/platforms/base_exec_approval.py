@@ -114,5 +114,6 @@ async def send_full_command(adapter: Any, chat_id: str, command: str, metadata: 
     card whose preview is truncated. False when it cannot be shown verbatim or a chunk failed."""
     if "```" in command:  # it would close the fence early and the rest would render as markdown
         return False
-    result = await adapter.send(chat_id, f"```\n{command}\n```", metadata=metadata)
+    # A mid-turn send: unmarked, a stream-is-the-message adapter seals the live response with it.
+    result = await adapter.send(chat_id, f"```\n{command}\n```", metadata={**(metadata or {}), "_interim_send": True})
     return bool(getattr(result, "success", False))

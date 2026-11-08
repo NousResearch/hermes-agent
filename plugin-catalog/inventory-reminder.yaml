@@ -1,6 +1,6 @@
 name: inventory-reminder
 repo: https://github.com/ether-btc/inventory-reminder
-sha: 6b5169d618ddbbe6575974ce2232bc385dd79f27
+sha: 57704f3a3788f9b6da519a9c873c45bac936cc22
 subdir: ""
 description: >-
   Live, evidence-backed inventory of the host an agent is running on: repos (cloned vs

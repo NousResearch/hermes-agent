@@ -40,7 +40,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult,
+    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, describe_proxy_error,
     cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
@@ -79,6 +79,10 @@ from gateway.platforms._shared import get_scoped_secret as _resolve_qq_secret
 
 def check_qq_requirements() -> bool:
     return AIOHTTP_AVAILABLE and HTTPX_AVAILABLE
+
+
+def _ws_proxy() -> str | None:  # the WebSocket honours proxy env vars (WSL setups need this)
+    return next((v for v in map(os.getenv, ("WSS_PROXY", "wss_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")) if v), None)
 
 
 _VOICE_EXTENSIONS = (".silk", ".amr", ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".speex", ".flac")
@@ -216,9 +220,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             self._wire_plugin_handlers(None)
             return True
         except Exception as exc:
-            message = f"QQ startup failed: {exc}"
+            message = f"QQ startup failed: {(shown := describe_proxy_error(exc, _ws_proxy())) or exc}"  # may echo a proxy secret
             self._set_fatal_error("qq_connect_error", message, retryable=True)
-            logger.error("[%s] %s", self._log_tag, message, exc_info=True)
+            logger.error("[%s] %s", self._log_tag, message, exc_info=not shown)
             await self._cleanup()
             self._release_platform_lock()
             return False
@@ -306,13 +310,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def _open_ws(self, gateway_url: str) -> None:
         await self._close_ws()
-        # Honor proxy env vars for the WebSocket (WSL setups need this).
         self._session = aiohttp.ClientSession(trust_env=gateway_trust_env())
-        proxy_vars = ("WSS_PROXY", "wss_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
-        ws_proxy = next((v for v in map(os.getenv, proxy_vars) if v), None)
         self._ws = await self._session.ws_connect(
-            gateway_url, headers={"User-Agent": build_user_agent()}, timeout=CONNECT_TIMEOUT_SECONDS, proxy=ws_proxy,
-        )
+            gateway_url, headers={"User-Agent": build_user_agent()}, timeout=CONNECT_TIMEOUT_SECONDS, proxy=_ws_proxy())
         logger.info("[%s] WebSocket connected to %s", self._log_tag, gateway_url)
 
     async def _listen_loop(self) -> None:
@@ -421,7 +421,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             logger.info("[%s] Reconnected", self._log_tag)
             return True
         except Exception as exc:
-            logger.warning("[%s] Reconnect failed: %s", self._log_tag, exc)
+            logger.warning("[%s] Reconnect failed: %s", self._log_tag, describe_proxy_error(exc, _ws_proxy()) or exc)
             return False
 
     async def _read_events(self) -> None:

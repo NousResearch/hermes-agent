@@ -30,7 +30,7 @@ HTTPX_AVAILABLE = httpx is not None
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, bounded_put, send_chunks
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
-from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
+from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult, describe_proxy_error, resolve_proxy_url
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_float
 
@@ -177,9 +177,9 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
             logger.info("[%s] Connected to %s", self.name, self._ws_url)
             self._wire_plugin_handlers(None)  # ctx.register_platform_handler hooks
             return True
-        except Exception as exc:
-            self._set_fatal_error("wecom_connect_error", f"WeCom startup failed: {exc}", retryable=True)
-            logger.error("[%s] Failed to connect: %s", self.name, exc, exc_info=True)
+        except Exception as exc:  # the raw text may echo an env proxy's secret
+            self._set_fatal_error("wecom_connect_error", f"WeCom startup failed: {(shown := describe_proxy_error(exc, resolve_proxy_url())) or exc}", retryable=True)
+            logger.error("[%s] Failed to connect: %s", self.name, shown or exc, exc_info=not shown)
             await self._teardown()
             return False
 

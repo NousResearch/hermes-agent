@@ -10,7 +10,15 @@ import { setMutableRef } from '@/lib/mutable-ref'
 import { adoptPendingRuntimeTabs, rekeyPreviewTabsSession } from '@/store/preview'
 import {
   $activeSessionId,
+  $currentFastMode,
+  $currentModel,
+  $currentPersonality,
+  $currentProvider,
+  $currentReasoningEffort,
+  $currentReasoningEffortWire,
+  $currentServiceTier,
   $messages,
+  $yoloActive,
   setActiveSessionStoredIdRotation,
   setCurrentFastMode,
   setCurrentModelTransient,
@@ -67,14 +75,61 @@ function syncRuntimeMetadataToView(state: ClientSessionState) {
   // resolved identity (e.g. the generic `custom` billing class), not a user
   // pick. The persisting setters would silently overwrite the composer's
   // sticky localStorage selection with that runtime value (#102793).
-  setCurrentModelTransient(state.model ?? '')
-  setCurrentProviderTransient(state.provider ?? '')
-  setCurrentReasoningEffort(state.reasoningEffort ?? '')
-  setCurrentReasoningEffortWire(state.reasoningEffortWire ?? '')
-  setCurrentServiceTier(state.serviceTier ?? '')
-  setCurrentFastMode(state.fast ?? false)
-  setYoloActive(state.yolo ?? false)
-  setCurrentPersonality(state.personality ?? '')
+  //
+  // This is called twice per published state (staging + flush) and on every
+  // streamed delta, while its inputs almost never change. Each persisting
+  // setter does a localStorage read+write, so compare against the live atom
+  // first: the value is mirrored only when it actually differs.
+  const model = state.model ?? ''
+
+  if ($currentModel.get() !== model) {
+    setCurrentModelTransient(model)
+  }
+
+  const provider = state.provider ?? ''
+
+  if ($currentProvider.get() !== provider) {
+    setCurrentProviderTransient(provider)
+  }
+
+  const reasoningEffort = state.reasoningEffort ?? ''
+
+  // The effort setter also clears the wire level (an optimistic pick invalidates
+  // the gateway-stamped value). Only take that path when the effort itself
+  // moved; an unchanged effort must not flicker the wire atom.
+  if ($currentReasoningEffort.get() !== reasoningEffort) {
+    setCurrentReasoningEffort(reasoningEffort)
+  }
+
+  const reasoningEffortWire = state.reasoningEffortWire ?? ''
+
+  if ($currentReasoningEffortWire.get() !== reasoningEffortWire) {
+    setCurrentReasoningEffortWire(reasoningEffortWire)
+  }
+
+  const serviceTier = state.serviceTier ?? ''
+
+  if ($currentServiceTier.get() !== serviceTier) {
+    setCurrentServiceTier(serviceTier)
+  }
+
+  const fast = state.fast ?? false
+
+  if ($currentFastMode.get() !== fast) {
+    setCurrentFastMode(fast)
+  }
+
+  const yolo = state.yolo ?? false
+
+  if ($yoloActive.get() !== yolo) {
+    setYoloActive(yolo)
+  }
+
+  const personality = state.personality ?? ''
+
+  if ($currentPersonality.get() !== personality) {
+    setCurrentPersonality(personality)
+  }
 }
 
 export function useSessionStateCache({

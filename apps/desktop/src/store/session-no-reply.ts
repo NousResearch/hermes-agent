@@ -7,6 +7,57 @@ import type { ErrorSurface } from '@/lib/error-surface'
 const NO_REPLY_SURFACE: ErrorSurface = { code: 'no_reply', layer: 'runtime', retryable: true }
 const NO_REPLY_ERROR = 'Hermes ended this turn without a reply.'
 
+/** The inferred card this module stamps, not a failure the backend reported:
+ *  both fields must match, since a later bare error replaces only the text. */
+function isNoReplyNotice(message: ChatMessage): boolean {
+  return message.error === NO_REPLY_ERROR && message.errorSurface?.code === NO_REPLY_SURFACE.code
+}
+
+/** The bubble without its inferred card: what a real outcome of the turn
+ *  (answer text, a reported failure) starts from. */
+export function withoutNoReplyNotice(message: ChatMessage, outcome = true): ChatMessage {
+  return outcome && isNoReplyNotice(message) ? { ...message, error: undefined, errorSurface: undefined } : message
+}
+
+/** A terminal frame with an answer or a reported failure ends the turn's card. */
+export function turnOutcome(finalText: string, completionError: null | string | undefined): boolean {
+  return Boolean(finalText || completionError)
+}
+
+/** What a completion leaves as the settled id. Only one case keeps it: an
+ *  empty frame of the settled turn itself (no answer, no failure, no newer
+ *  turn live or armed) while that turn still has no reply, because the
+ *  watchdog's pending history recovery owes it a no-reply card. A stream the
+ *  turn's own late progress opened is not a newer turn. A turn whose kept
+ *  bubble already holds its reply needs no card, and the id would let a later
+ *  turn's output land on that bubble. */
+export function settledIdAfterCompletion(state: ClientSessionState, outcome: boolean): null | string {
+  const owed = !outcome && !state.turnLive && !state.awaitingResponse && !turnHasReply(state.messages)
+
+  return owed ? (state.heartbeatSettledStreamId ?? null) : null
+}
+
+/** A card bubble that now holds answer text is the turn's reply, not a card.
+ *  Reasoning and tool rows are not answer text, so they keep the card. */
+export function dropAnsweredNoReplyNotice(message: ChatMessage): ChatMessage {
+  return isNoReplyNotice(message) && chatMessageText(message).trim() ? withoutNoReplyNotice(message) : message
+}
+
+/** Late output of the turn the watchdog or a running=false heartbeat settled
+ *  goes to that turn's bubble (its card included). Only while nothing newer
+ *  is live or armed: a running=true heartbeat or a submitted prompt keeps the
+ *  id until its message.start, and that turn's output is its own. A reserved
+ *  id that names no bubble yet falls through to the ordinary stream. */
+export function settledTurnTarget(state: ClientSessionState): null | string {
+  const settledId = state.heartbeatSettledStreamId
+
+  if (!settledId || state.streamId || state.turnLive || state.awaitingResponse) {
+    return null
+  }
+
+  return state.messages.some(message => message.id === settledId) ? settledId : null
+}
+
 function turnHasReply(messages: ChatMessage[]): boolean {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]

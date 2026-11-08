@@ -36,6 +36,13 @@ import { turnDoneNotificationBody } from '@/lib/turn-done-notification-body'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
+import {
+  dropAnsweredNoReplyNotice,
+  settledIdAfterCompletion,
+  settledTurnTarget,
+  turnOutcome,
+  withoutNoReplyNotice
+} from '@/store/session-no-reply'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { registerStreamDeltaFlush } from '@/store/stream-delta-flush'
 import { upsertSubagent } from '@/store/subagents'
@@ -174,7 +181,6 @@ export function useMessageStream({
       seed: () => ChatMessagePart[],
       opts: {
         pending?: (message: ChatMessage) => boolean
-        replyArrived?: boolean
         // Resolve the message an event should mutate by payload identity
         // rather than by the current stream position. A late `tool.complete`
         // that crosses an interim/settle boundary must attach to the bubble
@@ -225,13 +231,7 @@ export function useMessageStream({
                 return m
               }
 
-              const patched = {
-                ...m,
-                ...(opts.replyArrived && m.errorSurface?.code === 'no_reply'
-                  ? { error: undefined, errorSurface: undefined }
-                  : {}),
-                parts: transform(m.parts, m)
-              }
+              const patched = dropAnsweredNoReplyNotice({ ...m, parts: transform(m.parts, m) })
 
               // A bubble a steer sealed stays pending only while its own tools run.
               return {
@@ -349,20 +349,7 @@ export function useMessageStream({
             parts
           )
 
-        const replyArrived = queued.some(delta => delta.type === 'assistant' && delta.text.trim())
-
-        mutateStream(
-          id,
-          applyQueued,
-          () => applyQueued([]),
-          {
-            replyArrived,
-            // Only the just-settled turn may reclaim its retry card. message.start
-            // clears this identity, so output in a newer turn cannot erase an old failure.
-            eventTarget: state => (replyArrived && !state.streamId ? (state.heartbeatSettledStreamId ?? null) : null)
-          },
-          queued[0]?.occurredAt
-        )
+        mutateStream(id, applyQueued, () => applyQueued([]), { eventTarget: settledTurnTarget }, queued[0]?.occurredAt)
       }
     },
     [mutateStream]
@@ -588,7 +575,7 @@ export function useMessageStream({
           return appendReasoningPart(parts, delta, occurredAt)
         },
         () => [reasoningPart(delta, occurredAt)],
-        {},
+        { eventTarget: settledTurnTarget },
         occurredAt
       )
     },
@@ -658,7 +645,8 @@ export function useMessageStream({
           // of clobbering the prior turn's command. With no turn live, a start
           // carrying a sealed row's exact arguments is a late copy of that call.
           eventTarget: state =>
-            toolEventOwnerMessageId(state.messages, payload, phase, state.turnLive, state.turnAnchorId),
+            toolEventOwnerMessageId(state.messages, payload, phase, state.turnLive, state.turnAnchorId) ??
+            settledTurnTarget(state),
           // A copy of a call this turn already finished (re-delivered start or
           // completion) would otherwise draw that call a second time. A queued
           // prompt row is passed over only until its own turn starts; from then
@@ -824,7 +812,10 @@ export function useMessageStream({
           return terminalState
         }
 
-        const streamId = state.streamId ?? state.heartbeatSettledStreamId ?? null
+        // A reordered terminal frame (#119569) settles onto its turn's kept
+        // bubble, never once a newer turn is live or armed: that frame is the
+        // newer turn's own.
+        const streamId = state.streamId ?? settledTurnTarget(state)
         const finalText = renderMediaTags(text).trim()
         // Structured failure from the terminal frame wins over the legacy text
         // heuristic ("Error: <provider detail>" texts don't match the regexes).
@@ -836,6 +827,7 @@ export function useMessageStream({
         const interimBoundaryPending = state.interimBoundaryPending
         // A failed turn's text is the retained buffer, never a reused response.
         const reusedResponse = Boolean(responseReused && finalText && !completionError)
+        const outcome = turnOutcome(finalText, completionError)
 
         // Wall-clock seconds this turn actually ran (message.start stamped
         // turnStartedAt). Read BEFORE the state return below nulls it.
@@ -886,10 +878,8 @@ export function useMessageStream({
         // reply — clear `interim` so it regains the action footer.
         const completeMessage = (message: ChatMessage): ChatMessage => {
           const settled = {
-            ...message,
-            ...(!completionError && finalText && message.errorSurface?.code === 'no_reply'
-              ? { error: undefined, errorSurface: undefined }
-              : {}),
+            // A real outcome (answer or reported failure) replaces the inferred card.
+            ...withoutNoReplyNotice(message, outcome),
             completedAt: occurredAt,
             parts: completeOpenTimelineParts(message.parts, occurredAt),
             pending: false,
@@ -1157,7 +1147,7 @@ export function useMessageStream({
           ...state,
           messages: nextMessages,
           adoptedRunningTurn: false,
-          heartbeatSettledStreamId: null,
+          heartbeatSettledStreamId: settledIdAfterCompletion(state, outcome),
           streamId: null,
           pendingBranchGroup: null,
           awaitingResponse: false,
@@ -1244,7 +1234,8 @@ export function useMessageStream({
           ? prev.map(message =>
               message.id === targetId
                 ? {
-                    ...message,
+                    // A bare error has no descriptor: it must not inherit the inferred card's.
+                    ...withoutNoReplyNotice(message),
                     completedAt: occurredAt,
                     error,
                     ...errorSurface,

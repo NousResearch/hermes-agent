@@ -1,6 +1,6 @@
 name: proof-run
 repo: https://github.com/raffieeey/hermes-proof-run
-sha: 0e69f7623dea6aedffa9f97181dc7816ddf401a3
+sha: f7e0cbac6b6e61bc19bac99645f993ca337ad6f0
 description: "Turn a successful Hermes run into a live execution contract. Capture the tool-call sequence and success evidence once, then gate later mutating calls on the recorded preconditions so a changed world blocks instead of silently improvising. Operator-reviewed contracts, rebind on intentional drift, no network, no credentials. Demo: record → contract → gate → rebind. Hermes Agent Plugin Hackathon entry."
 maintainer: raffieeey
 tier: community

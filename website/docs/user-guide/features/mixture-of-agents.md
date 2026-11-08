@@ -10,6 +10,10 @@ Mixture of Agents is a virtual model provider. Each named MoA preset appears as 
 
 When you select a MoA preset, the preset's aggregator is the acting model. It is the model that writes the assistant response and emits tool calls. Reference models run first and provide analysis for the aggregator to use.
 
+:::info Who pays for a MoA run
+The **aggregator is billed for the whole run**: it runs every step of the tool loop, so almost all of a preset's cost lands on the aggregator's provider. References only advise once per user turn (with the default `fanout`). If your main model is on a subscription provider but the aggregator sits elsewhere, the run is billed to the aggregator's provider, not to your subscription — `hermes moa configure` and `hermes moa list` print a one-line notice whenever the aggregator's provider differs from `model.provider`, and the Desktop editor, `hermes model`, and `/model` mark the aggregator slot as the acting, billed model.
+:::
+
 Use MoA when a hard task benefits from multiple model perspectives but still needs Hermes' normal agent loop: tool calls, follow-up iterations, interrupts, transcript persistence, and the same session context as any other message.
 
 ## Select a MoA preset as your model
@@ -214,6 +218,12 @@ hermes moa configure review       # create or update a named preset
 hermes moa delete review
 ```
 
+`hermes moa list` marks the aggregator as the acting model that carries almost all of the cost and lists references as advising once per user turn (by default). When the aggregator's provider differs from your main `model.provider`, both `list` and `configure` add:
+
+```text
+Aggregator is on nous; the whole tool loop will be billed there, not to openai-codex.
+```
+
 ## Benchmarks
 
 On HermesBench, a two-model MoA preset — `claude-opus-4.8` aggregating over a `gpt-5.5` reference — outscores either model run on its own:
@@ -233,9 +243,11 @@ MoA is built so the **main conversation's prompt cache is never broken**. Select
 Both internal call types cache normally:
 
 - **Reference models** receive a trimmed, deterministic view of the conversation (system prompt and tool transcript stripped — see the loop above). Because that view is a stable function of the stable history, a reference model's prompt prefix repeats across iterations and caches normally. References are short advisory calls with no tools.
-- **The aggregator** is the acting model. The reference outputs are appended to the *end* of the latest user turn as private guidance. Because that text sits at the tail — below the entire stable prefix (system prompt + prior history) — it does not invalidate any cached prefix: the aggregator gets a cache hit on everything above the injection, and only the freshly appended tail is new. That is exactly how every normal turn behaves, where each new user message is also uncached tail tokens.
+- **The aggregator** is the acting model. The reference outputs are appended as their *own* trailing user message of private guidance — never merged into your message. Because that block sits at the tail — below the entire stable prefix (system prompt + your message + prior tool history) — it does not invalidate any cached prefix: every request in a tool loop is a byte-identical extension of the previous one minus its guidance block, so the aggregator gets a cache hit on everything above the injection and only the freshly appended tail is new. That is exactly how every normal turn behaves, where each new user message is also uncached tail tokens. Aggregators on the Anthropic Messages, Bedrock Converse or native Gemini wire merge the two adjacent user turns into one message, but as separate content blocks: your message's block is byte-identical to the one later iterations replay, and the guidance block follows it, so the cached prefix still runs through your message.
 
-So MoA does not sacrifice prompt caching on either call type. Its only real cost is the extra reference calls per iteration — you pay for multiple model perspectives, not for broken caches. The long-lived conversation prefix shared with the rest of Hermes is fully intact.
+  On the OpenAI-compatible wire the request ends `user(your message), user(guidance)` on the first iteration of a turn. A few chat templates that enforce strict user/assistant alternation (llama.cpp and vLLM Jinja templates, some OpenRouter routes) reject that with a 400 such as `Conversation roles must alternate`. Hermes recovers on its own: it retries that one request with the two adjacent user messages merged, remembers that aggregator destination (endpoint + model) for the rest of the session so later turns are merged up front, and leaves every other destination on the split, cache-stable shape. The merge is applied only where a destination demanded it, because merging everywhere would reintroduce the prefix divergence described above.
+
+So MoA does not sacrifice prompt caching on either call type. Its only real cost is the extra reference calls (once per user turn with the default `fanout`) — you pay for multiple model perspectives, not for broken caches. The long-lived conversation prefix shared with the rest of Hermes is fully intact.
 
 ## Notes
 
@@ -244,3 +256,4 @@ So MoA does not sacrifice prompt caching on either call type. Its only real cost
 - A preset's aggregator cannot be another MoA preset. Recursive MoA trees are intentionally blocked.
 - Credential failures on one reference model do not abort the turn. Hermes includes the failure in the reference context and continues with whatever models returned.
 - MoA increases model-call count. A single model iteration can involve multiple reference calls plus the aggregator call.
+- A preset can be a fallback entry (`fallback_providers: [{provider: moa, model: <preset>}]`). When the primary fails, Hermes activates the preset itself — references and aggregator, with `moa://local` as the virtual endpoint — the same way `/model <preset> --provider moa` does. The entry is skipped when the preset does not resolve or its aggregator has no credentials.

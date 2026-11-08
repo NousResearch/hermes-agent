@@ -72,7 +72,7 @@ def check_bang_approval(command: str) -> dict:
     """Run *command* through the terminal tool's approval gate.
 
     Reuses ``tools.terminal_tool._check_all_guards`` — exactly what ``terminal_tool()`` calls — so the
-    hardline blocklist, user deny rules, tirith findings, and the dangerous-command prompt all apply
+    hardline blocklist, user deny rules and the dangerous-command prompt all apply
     to user-typed bang commands too. Returns the gate's ``{"approved": bool, "message": ...}``;
     falls back to *approved* only when the gate itself cannot be imported (a broken install, not a
     policy decision).
@@ -90,13 +90,11 @@ def _bang_env() -> dict:
     """Environment for a bang command with Hermes-managed secrets filtered.
 
     The CLI process holds every provider API key; a user-typed command may still run a third-party
-    script, so reuse the sanitizer ``quick_commands`` and the local terminal backend use.
+    script, so reuse the sanitizer ``quick_commands`` and the local terminal backend use. If that
+    boundary is unavailable, let the launch fail rather than passing the CLI's full environment.
     """
-    try:
-        from tools.environments.local import build_subprocess_env
-        return build_subprocess_env()  # == _sanitize_subprocess_env(os.environ.copy())
-    except Exception:
-        return os.environ.copy()  # tools package unimportable: run the user's command anyway
+    from tools.environments.local import build_subprocess_env
+    return build_subprocess_env()
 
 
 def run_bang_command(command: str, *, cwd: Optional[str] = None, timeout: int = DEFAULT_TIMEOUT, writer=None) -> int:

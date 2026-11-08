@@ -12,7 +12,7 @@ export interface TooltipIconButtonProps extends ComponentPropsWithRef<typeof But
 }
 
 export const TooltipIconButton = forwardRef<HTMLButtonElement, TooltipIconButtonProps>(
-  ({ children, tooltip, side = 'bottom', className, ...rest }, ref) => {
+  ({ children, tooltip, side, className, ...rest }, ref) => {
     return (
       <Tip label={tooltip} side={side}>
         <Button

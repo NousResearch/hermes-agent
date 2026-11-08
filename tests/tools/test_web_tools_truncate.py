@@ -110,3 +110,31 @@ class _AsyncTrue:
     """Async callable that always returns True (re-awaitable per call)."""
     async def __call__(self, *a, **k):
         return True
+
+
+def test_binary_payload_is_refused_but_prose_with_short_signature_prefix_passes():
+    """A backend that fetched a raw SQLite/zip file hands its bytes back as text; that must become an
+    error naming the type, while ordinary pages (even ones starting with 'BM' or 'MZ') pass untouched."""
+    results = [
+        {"url": "u", "raw_content": "SQLite format 3\x10\x01" + "x" * 5000},  # backend already dropped the NUL
+        {"url": "z", "raw_content": "PK\x03\x04" + "y" * 50},
+        {"url": "v", "raw_content": "BMW reviews are fine"},
+        {"url": "w", "raw_content": "# hi"},
+    ]
+    web_tools_truncate._truncate_results(results, 5000, {"pages_truncated": 0, "truncation_metrics": []})
+    assert results[0]["content"] == "" and "SQLite database" in results[0]["error"]
+    assert results[1]["content"] == "" and "ZIP archive" in results[1]["error"]
+    assert results[2]["error"] is None if "error" in results[2] else True
+    assert results[2]["content"] == "BMW reviews are fine"
+    assert results[3]["content"] == "# hi"
+
+
+
+def test_origin_error_page_keeps_its_error_and_stays_inside_the_budget():
+    body = "\n".join(f"error page line {i}" for i in range(4000))
+    results = [{"url": "https://example.com/forbidden", "content": body, "raw_content": body,
+                "error": "HTTP 403 from origin: Forbidden"}]
+    web_tools_truncate._truncate_results(results, 2000, {"pages_truncated": 0, "truncation_metrics": []})
+    assert results[0]["error"] == "HTTP 403 from origin: Forbidden"
+    assert "error page line 0" in results[0]["content"]
+    assert len(results[0]["content"]) < len(body) // 4

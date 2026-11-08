@@ -25,12 +25,8 @@
  *
  * Kept in a standalone ts module (no Electron imports, dependencies passed
  * as parameters) so it can be unit-tested with `node --test` without
- * mocking Electron or the filesystem, same pattern as backend-probes.ts and
- * backend-command.ts.
+ * mocking Electron or the filesystem, same pattern as backend-probes.ts.
  */
-
-import fs from 'node:fs'
-import path from 'node:path'
 
 /**
  * Build the ordered list of extensions findOnPath() should try when
@@ -71,99 +67,11 @@ export function buildPathExtCandidates(pathext: string | undefined, isWindows: b
  * @returns {string[]} updater argv, e.g. ['--update', '--branch', 'main'].
  */
 export interface BootstrapRecoverySignals {
-  hasBootstrapMarker: boolean
-  hasVenvHermes: boolean
-  hasVenvPython: boolean
+  runtimeUsable: boolean
 }
 
 export function chooseUpdaterArgs(signals: BootstrapRecoverySignals, branch: string): string[] {
-  const canRunUpdater = signals.hasVenvHermes && signals.hasVenvPython
-
-  return canRunUpdater ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
-}
-
-/**
- * Resolve the site-packages directory entries for a Python venv.
- *
- * On Windows, venv layout is `<venvRoot>/Lib/site-packages`.
- * On POSIX, it's `<venvRoot>/lib/python<version>/site-packages` where
- * `<version>` (e.g. `3.12`) is read from the venv's `pyvenv.cfg`
- * `version_info` field.
- *
- * Returns only directories that actually exist on disk. Returns an empty
- * array when `venvRoot` is falsy or no matching site-packages dir is found.
- *
- * Extracted from main.ts so the platform branching can be tested without
- * reading source text. `isWindows` and `directoryExists` are injectable;
- * `readFile` defaults to `fs.readFileSync` but can be overridden for tests.
- */
-export function getVenvSitePackagesEntries(
-  venvRoot: string | undefined | null,
-  opts: {
-    isWindows?: boolean
-    directoryExists?: (p: string) => boolean
-    readFile?: (p: string) => string | undefined
-  } = {}
-): string[] {
-  const entries: string[] = []
-
-  if (!venvRoot) {
-    return entries
-  }
-
-  const isWindows = opts.isWindows ?? process.platform === 'win32'
-
-  const directoryExists =
-    opts.directoryExists ??
-    ((p: string) => {
-      try {
-        return fs.statSync(p).isDirectory()
-      } catch {
-        return false
-      }
-    })
-
-  const readFile =
-    opts.readFile ??
-    ((p: string) => {
-      try {
-        return fs.readFileSync(p, 'utf8')
-      } catch {
-        return undefined
-      }
-    })
-
-  if (isWindows) {
-    const sitePackages = path.join(venvRoot, 'Lib', 'site-packages')
-
-    if (directoryExists(sitePackages)) {
-      entries.push(sitePackages)
-    }
-
-    return entries
-  }
-
-  const cfg = readFile(path.join(venvRoot, 'pyvenv.cfg'))
-
-  const version = (() => {
-    if (!cfg) {
-      return null
-    }
-
-    const match = cfg.match(/^version_info\s*=\s*(\d+\.\d+)/im)
-
-    return match ? match[1].trim() : null
-  })()
-
-  if (version) {
-    const sitePackages = path.join(venvRoot, 'lib', `python${version}`, 'site-packages')
-
-    if (directoryExists(sitePackages)) {
-      entries.push(sitePackages)
-    }
-  }
-
-  return entries
+  return signals.runtimeUsable ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
 }
 
 export interface ResolveVenvHermesCommandDeps {
@@ -171,15 +79,9 @@ export interface ResolveVenvHermesCommandDeps {
   isCommandScript: (command: string) => boolean
   fileExists: (filePath: string) => boolean
   directoryExists: (filePath: string) => boolean
-  canImportHermesCli: (python: string, opts?: { env?: Record<string, string> }) => boolean
+  canImportHermesCli: (python: string, opts?: { env?: Record<string, string>; cwd?: string }) => Promise<boolean>
   getVenvPython: (venvRoot: string) => string
-  getVenvSitePackagesEntries: (venvRoot: string) => string[]
-  buildDesktopBackendEnv: (opts: {
-    hermesHome: string
-    pythonPathEntries: string[]
-    venvRoot: string
-  }) => Record<string, string>
-  hermesHome: string
+  buildDesktopBackendEnv: () => Record<string, string>
   resolvePath: (...segments: string[]) => string
   dirname: (p: string) => string
   basename: (p: string) => string
@@ -198,18 +100,18 @@ export interface ResolveVenvHermesCommandDeps {
  * install" re-resolves the same broken venv forever instead of falling
  * through to the bootstrap installer.
  *
- * Mirrors isActiveRuntimeUsable(): probes with the checkout on PYTHONPATH so
+ * Mirrors isSourceRuntimeUsable() in main.ts: probes with the checkout on PYTHONPATH so
  * a healthy source-tree venv passes.
  *
  * Returns null when `command` is not a venv hermes shim, the underlying
  * python doesn't exist, or the import probe fails. Otherwise returns the
  * resolved backend descriptor.
  */
-export function resolveVenvHermesCommand(
+export async function resolveVenvHermesCommand(
   command: string,
   backendArgs: string[],
   deps: ResolveVenvHermesCommandDeps
-): {
+): Promise<{
   label: string
   command: string
   args: string[]
@@ -218,7 +120,7 @@ export function resolveVenvHermesCommand(
   kind: 'python'
   root: string
   shell: false
-} | null {
+} | null> {
   const {
     isWindows,
     isCommandScript,
@@ -226,9 +128,7 @@ export function resolveVenvHermesCommand(
     directoryExists,
     canImportHermesCli,
     getVenvPython,
-    getVenvSitePackagesEntries,
     buildDesktopBackendEnv,
-    hermesHome,
     resolvePath,
     dirname,
     basename,
@@ -260,15 +160,9 @@ export function resolveVenvHermesCommand(
 
   const root = dirname(venvRoot)
 
-  if (
-    !canImportHermesCli(python, {
-      env: {
-        PYTHONPATH: [...(directoryExists(root) ? [root] : []), process.env.PYTHONPATH]
-          .filter((entry): entry is string => Boolean(entry))
-          .join(path.delimiter)
-      }
-    })
-  ) {
+  // Probe with the same semantics the real spawn uses: venv interpreter,
+  // cwd at the checkout root, no PYTHONPATH.
+  if (!(await canImportHermesCli(python, { cwd: directoryExists(root) ? root : undefined }))) {
     rememberLog?.(
       `Ignoring venv Hermes at ${python}: runtime import probe failed (broken/partial venv); falling through to bootstrap.`
     )
@@ -281,11 +175,7 @@ export function resolveVenvHermesCommand(
     command: python,
     args: ['-m', 'hermes_cli.main', ...backendArgs],
     bootstrap: false,
-    env: buildDesktopBackendEnv({
-      hermesHome,
-      pythonPathEntries: [...(directoryExists(root) ? [root] : []), ...getVenvSitePackagesEntries(venvRoot)],
-      venvRoot
-    }),
+    env: buildDesktopBackendEnv(),
     kind: 'python',
     root,
     shell: false

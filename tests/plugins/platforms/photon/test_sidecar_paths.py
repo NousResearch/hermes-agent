@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-import plugins.platforms.photon.sidecar_paths as sidecar_paths
+from plugins.platforms.photon import sidecar_paths
 
 
 def _seed_source(source: Path, *, with_node_modules: bool = False) -> None:
@@ -88,6 +88,7 @@ def test_mirror_refresh_updates_changed_files_and_keeps_node_modules(
     assert (mirror / "node_modules" / "installed.txt").exists()
 
 
+@pytest.mark.platforms("linux")
 def test_dir_writable_probe(tmp_path) -> None:
     assert sidecar_paths.dir_writable(tmp_path) is True
     ro = tmp_path / "ro"

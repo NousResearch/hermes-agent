@@ -4,7 +4,7 @@
 # The Setup app is Tauri (Rust + system webview), so Playwright/Electron
 # attach never works. Launch the binary bare in the background (it inherits
 # the redirect env), click "Install Hermes ->" with native input, then watch
-# the install land on disk: checkout + venv console script.
+# the install land on disk: checkout + installed source launcher + app.
 #
 # Usage:
 #   drive-dmg-install.sh --app-bin <path> --install-dir <path> \
@@ -40,7 +40,12 @@ shot() {
 "$APP_BIN" &
 SETUP_PID=$!
 log "launched $APP_BIN (pid $SETUP_PID)"
-cleanup() { kill "$SETUP_PID" 2>/dev/null || true; }
+cleanup() {
+  kill "$SETUP_PID" 2>/dev/null || true
+  if [ -d "$HOME/.hermes/logs" ]; then
+    cp -R "$HOME/.hermes/logs" "$PROOF_DIR/bootstrap-logs"
+  fi
+}
 trap cleanup EXIT
 
 # Wait for the installer window, then click the install button. The webview's
@@ -77,10 +82,10 @@ click_install() {
   set -- $geo
   local x=$1 y=$2 wd=$3 ht=$4
   if [ -n "$LAST_ERR" ]; then
-    # Error screen: Retry install sits left of center at ~59% height
-    # (measured: button x 359-492, y 402-441 in the 880x620 window).
-    local cx=$((x + wd * 48 / 100))
-    local cy=$((y + ht * 59 / 100))
+    # Measured against the published installer: screen rect 359..492,391..430
+    # for a window at 72,58 sized 880x620.
+    local cx=$((x + wd * 40 / 100))
+    local cy=$((y + ht * 57 / 100))
     cliclick "c:${cx},${cy}" 2>&1 || true
     echo "clicked retry ${cx},${cy} (window ${x},${y} ${wd}x${ht})"
     return 0
@@ -92,10 +97,14 @@ click_install() {
   echo "clicked ${cx},${cy} (window ${x},${y} ${wd}x${ht})"
 }
 
-HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
-# The bootstrap runs 11 stages; checkout + venv land in the first few and
-# the desktop app build is near the end, so success requires all three or
-# the EXIT trap kills the installer mid-build.
+# Use the same source-launcher selection as the later read-only checkpoint:
+# PM installs publish .hermes/bin/hermes; older releases use venv/bin/hermes.
+# The first packaged app can land before the products stage finishes (and can
+# be rebuilt again). Wait for native bootstrap completion, not install.sh's
+# marker (historical releases predate it, and it precedes the native handoff).
+# The published native bootstrap logs completion only after every stage succeeds.
+# shellcheck source=source-driver.sh
+source "$(dirname "${BASH_SOURCE[0]}")/source-driver.sh"
 installed_app() {
   local cand
   for cand in \
@@ -106,8 +115,20 @@ installed_app() {
   done
   return 1
 }
+BOOTSTRAP_LOG="$HOME/.hermes/logs/bootstrap-installer.log"
+bootstrap_completed() {
+  [ -f "$BOOTSTRAP_LOG" ] || return 1
+  local line
+  while IFS= read -r line; do
+    [[ "$line" == *"bootstrap complete install_root=$INSTALL_DIR" ]] && return 0
+  done < "$BOOTSTRAP_LOG"
+  return 1
+}
 install_complete() {
-  [ -d "$INSTALL_DIR/.git" ] && [ -x "$HERMES_BIN" ] && installed_app
+  bootstrap_completed \
+    && [ -d "$INSTALL_DIR/.git" ] \
+    && source_hermes "$INSTALL_DIR" >/dev/null 2>&1 \
+    && installed_app
 }
 # The bootstrap parks on an error screen instead of exiting when a stage
 # fails (e.g. a transient 429 downloading install.sh), with a Retry button
@@ -115,7 +136,6 @@ install_complete() {
 # watch for new failure lines, let the regular click drive the retry, and
 # give up after a few so a persistent failure reports the real error
 # instead of burning the whole install timeout.
-BOOTSTRAP_LOG="$HOME/.hermes/logs/bootstrap-installer.log"
 bootstrap_error() {
   [ -f "$BOOTSTRAP_LOG" ] || return 0
   # Match REAL failure shapes only: the structured stage log's state=Failed,
@@ -134,7 +154,7 @@ FIRST_SHOT=0
 CLICKS=0
 while :; do
   if install_complete; then
-    log "install landed: checkout + venv console script + Hermes.app present"
+    log "install landed: checkout + source launcher + Hermes.app present"
     shot "02-install-landed"
     break
   fi

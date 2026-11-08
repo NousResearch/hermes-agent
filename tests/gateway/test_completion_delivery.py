@@ -15,9 +15,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gateway import run_notifications
 from gateway.config import Platform
 from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from tests.module_clock import install_module_clock
 from tools.process_registry import ProcessRegistry, ProcessSession
 
 
@@ -94,12 +95,16 @@ def _completion_event(*, started_at, session_id="proc_reused"):
     }
 
 
-def _stop_after_sleeps(monkeypatch, runner, count):
+def _stop_after_sleeps(monkeypatch, runner, count, *, minutes_apart=False):
+    """``minutes_apart``: each watcher tick is a minute later, so a refused retry's backoff is due."""
     sleep_calls = 0
+    clock = install_module_clock(monkeypatch, run_notifications) if minutes_apart else None
 
     async def _bounded_sleep(_delay):
         nonlocal sleep_calls
         sleep_calls += 1
+        if clock is not None:
+            clock.now += 60
         if sleep_calls >= count:
             runner._running = False
 
@@ -178,7 +183,7 @@ def test_failed_async_injection_is_retried_and_only_success_is_acked(
         handle_message=AdmittingHandler(side_effect=[RuntimeError("temporary"), None])
     )
     runner = _runner(adapter)
-    _stop_after_sleeps(monkeypatch, runner, count=3)
+    _stop_after_sleeps(monkeypatch, runner, count=3, minutes_apart=True)
 
     from tools import async_delegation
 
@@ -851,7 +856,7 @@ def test_failed_coalesced_async_batch_releases_claims_and_retries(
         handle_message=AdmittingHandler(side_effect=[RuntimeError("temporary"), None])
     )
     runner = _runner(adapter)
-    _stop_after_sleeps(monkeypatch, runner, count=3)
+    _stop_after_sleeps(monkeypatch, runner, count=3, minutes_apart=True)
 
     asyncio.run(runner._async_delegation_watcher(interval=0))
 
@@ -913,7 +918,7 @@ def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavail
 
     adapter = SimpleNamespace(handle_message=AdmittingHandler())
     api = SimpleNamespace(supports_async_delivery=False, _ensure_session_db=lambda: None)
-    for _restart in range(10):
+    for _restart in range(3):
         runner = _runner(adapter)
         runner.adapters = {Platform.API_SERVER: api} if unavailable == "api_db" else {}
         if unavailable == "owner_db":
@@ -987,6 +992,14 @@ def test_watch_drain_retries_transport_failure(monkeypatch, isolated_registry):
     evt = dict(_completion_event(started_at=1), type="watch_match", pattern="READY", output="READY")
     isolated_registry.completion_queue.put(evt)
     _stop_after_sleeps(monkeypatch, runner, count=3)
+    # The refused event backs off (#140899): each watcher tick is a minute later, so the retry is due.
+    clock = install_module_clock(monkeypatch, run_notifications)
+    bounded_sleep = asyncio.sleep
+
+    async def minute_later(delay):
+        clock.now += 60
+        await bounded_sleep(delay)
+    monkeypatch.setattr(asyncio, "sleep", minute_later)
     asyncio.run(runner._async_delegation_watcher(interval=0))
     assert adapter.handle_message.await_count == 2
     assert isolated_registry.completion_queue.empty()

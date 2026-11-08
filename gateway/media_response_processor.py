@@ -6,7 +6,7 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Optional
 
-from gateway.platforms.base import BasePlatformAdapter, MEDIA_TAG_CLEANUP_RE
+from gateway.platforms.base import BasePlatformAdapter, MEDIA_TAG_CLEANUP_RE, _terminal_sentinel_start
 
 
 MediaReplacement = Callable[[str], Awaitable[Optional[str]]]
@@ -131,6 +131,11 @@ class MediaResponseProcessor:
         if not text or "MEDIA:" not in text:
             return text
 
+        # A terminal control token is not part of the final media path.
+        sentinel_start = _terminal_sentinel_start(text)
+        source_text = text
+        if sentinel_start >= 0:
+            text = text[:sentinel_start]
         scan_text = BasePlatformAdapter._mask_protected_spans(text)
         scan_text = BasePlatformAdapter._mask_json_string_media(scan_text)
         matches = [
@@ -146,7 +151,7 @@ class MediaResponseProcessor:
                 continue
             matches.append((match.start(), match.end(), match.group("path")))
         if not matches:
-            return text
+            return source_text
         matches.sort(key=lambda item: item[0])
 
         rendered: list[str] = []
@@ -160,7 +165,8 @@ class MediaResponseProcessor:
             rendered.append(replacement if replacement is not None else text[start:end])
             cursor = end
         rendered.append(text[cursor:])
-        return "".join(rendered)
+        output = "".join(rendered)
+        return source_text if output == text else output
 
     async def feed(self, chunk: str) -> str:
         if self._buffer is None:

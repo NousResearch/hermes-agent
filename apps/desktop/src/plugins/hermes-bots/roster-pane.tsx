@@ -15,6 +15,9 @@ import {
   parseRosterKey,
   saveSelectedRosterBot
 } from './bot-state'
+import { $canonicalRoomLive } from './canonical-group-details'
+import { bindGatewayGroupRoom, useGatewayGroupRooms } from './canonical-group-registry'
+import { CanonicalGroupRow } from './canonical-group-row'
 /**
  * The Bots pane itself: the roster's selection reconciliation, the
  * workspace-ownership reads its lifecycle keys off, and the pane that lists
@@ -35,13 +38,13 @@ import {
 import { $groupChats, $groupChatWorkspace, $groupClarify, $groupNeedsYou } from './group-chat'
 import { GroupChatWorkspace, openGroupChat } from './group-chat-view'
 import { groupChatMemberBots } from './group-membership'
-import { $groupMainTabsRev, shouldRenderGroupChatInPane } from './group-panes'
+import { $groupMainTabsRev, groupOpenOrigin, shouldRenderGroupChatInPane } from './group-panes'
 import { $activeGroupMemberKeys } from './group-presence'
 import { $showHiddenBots, isBotHidden } from './hidden-bots'
 import { useBots } from './i18n'
 import { $activityToasts } from './roster-actions'
 import { renderRosterContent } from './roster-pane-content'
-import { deriveRosterPresentation, deriveRosterRows, sortRosterBots } from './roster-pane-derivation'
+import { deriveRosterPresentation, deriveRosterRows, type RosterGroupRow, sortRosterBots } from './roster-pane-derivation'
 import { renderRosterDialogs } from './roster-pane-dialogs'
 import { RosterGroupRowView } from './roster-pane-groups'
 import { $lastSources, usePublishRosterSnapshot } from './roster-pane-lifecycle'
@@ -51,7 +54,13 @@ import { botNeedsHandleLabel, rosterGatewayOptions } from './roster-sections'
 import { botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { activeBots, useTurnBusy } from './row-helpers'
 import type { BotMeta, GatewaySource, GroupMember, RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
-import { $botSections, $draggingBot } from './user-sections'
+import {
+  $botSections,
+  $draggingBot,
+  adoptBotSectionsFromMeta,
+  backfillBotSectionNames,
+  type SectionDialogState
+} from './user-sections'
 import { useEscapeCancelsBotDrag } from './user-sections-ui'
 
 // ── roster pane ──────────────────────────────────────────────────────────────
@@ -244,10 +253,8 @@ export function BotsPane() {
   useEscapeCancelsBotDrag()
 
   // The one name dialog serves both New section (optionally filing the bot
-  // whose menu opened it) and Rename.
-  const [sectionDialog, setSectionDialog] = useState<
-    null | { bot?: RosterRow; mode: 'create' } | { id: string; mode: 'rename'; name: string }
-  >(null)
+  // or group whose menu opened it) and Rename.
+  const [sectionDialog, setSectionDialog] = useState<SectionDialogState>(null)
 
   const [grouping, setGrouping] = useState<null | RosterRow>(null)
   const [query, setQuery] = useState('')
@@ -266,6 +273,8 @@ export function BotsPane() {
   const groupNeedsYou = useValue($groupNeedsYou)
   const groupClarify = useValue($groupClarify)
   const groupRooms = useValue($groupChats)
+  const gatewayRooms = useGatewayGroupRooms()
+  const gatewayRoomLive = useValue($canonicalRoomLive)
   const rememberedSources = useValue($lastSources)
   const rosterHydrated = useValue($rosterHydrated)
   const selectionHydrated = useValue($selectedRosterHydrated)
@@ -292,6 +301,17 @@ export function BotsPane() {
     selectionHydrated && rosterHydrated ? rosterWithSelectedOwner(source, sourceSnapshot, selectedRosterKey) : source
 
   const { roster, activityOf, isPinned } = sortRosterBots(sourceWithSelectedOwner, allMeta)
+
+  // Sections made on ANOTHER desktop arrive as id + name on each member's
+  // ui_meta; rebuild the records this machine has never seen so the roster
+  // draws the same folders instead of a flat list (#114355). Then the reverse:
+  // members filed here before names rode along carry only the id — stamp the
+  // name from this machine's records so other desktops can rebuild them too.
+  // Each stamp is a one-time write: once sectionName is set it is skipped.
+  useEffect(() => {
+    adoptBotSectionsFromMeta(roster, allMeta)
+    backfillBotSectionNames(roster, allMeta)
+  }, [roster, allMeta])
 
   // React Query can briefly report neither loading nor data while the plugin
   // and the persisted connection registry hydrate. Keep that transition in a
@@ -332,6 +352,8 @@ export function BotsPane() {
     activityFilter,
     rowKindFilter,
     groupRooms,
+    gatewayRooms,
+    gatewayRoomLive,
     activeRosterKeys,
     gatewayOptions,
     activityOf,
@@ -397,7 +419,7 @@ export function BotsPane() {
   useReconcileRosterOwner(data, error, selectionHydrated, roster, sourceSnapshot, allMeta)
 
   const staleNotice =
-    error && !live && roster.length
+    error && !live && (roster.length || gatewayRooms.length)
       ? 'Roster refresh failed — showing the last good list.' +
         (gatewayUp ? '' : ' Waiting for the gateway to reconnect…')
       : null
@@ -405,7 +427,7 @@ export function BotsPane() {
   const groupChatMembers = groupChatName ? groupChatMemberBots(groupChatName, roster, allMeta) : []
 
   if (shouldRenderGroupChatInPane(groupChatName) && groupChatMembers.length) {
-    return <GroupChatWorkspace group={groupChatName} members={groupChatMembers} />
+    return <GroupChatWorkspace group={groupChatName} members={groupChatMembers} origin={groupOpenOrigin(groupChatName)} />
   }
 
   const renderBotRow = (bot: RosterRow, keyPrefix = '') => (
@@ -420,7 +442,17 @@ export function BotsPane() {
     />
   )
 
-  const renderGroupRow = (row: { members: GroupMember[]; name: string }) => (
+  // Move up / down reorders Desktop rooms; gateway rooms keep recency order.
+  const desktopGroupRows = sortedGroupRows.filter(row => !row.gateway)
+
+  const renderGroupRow = ({ gateway, ...row }: RosterGroupRow) => gateway ? (
+    <CanonicalGroupRow
+      active={groupChatName === gateway.key}
+      key={gateway.key}
+      onOpen={() => openGroupChat(bindGatewayGroupRoom(gateway), 'key')}
+      room={gateway}
+    />
+  ) : (
     <RosterGroupRowView
       active={groupChatName === row.name}
       b={b}
@@ -431,8 +463,9 @@ export function BotsPane() {
       key={`group:${row.name}`}
       members={row.members}
       onDisband={setDeletingGroup}
-      onOpen={openGroupChat}
-      sortedGroupRows={sortedGroupRows}
+      onNewSection={target => setSectionDialog({ group: target, mode: 'create' })}
+      onOpen={group => openGroupChat(group, 'name')}
+      sortedGroupRows={desktopGroupRows}
     />
   )
 
@@ -442,6 +475,7 @@ export function BotsPane() {
       userSections,
       roster,
       allMeta,
+      groupRooms,
       dragging,
       rosterSectionCollapsed,
       toggleRosterSection,
@@ -457,6 +491,7 @@ export function BotsPane() {
         b,
         activityToasts,
         activeSourceRoster,
+        roster,
         setCreateOpen,
         setGroupCreateOpen,
         setSectionDialog,
@@ -479,7 +514,7 @@ export function BotsPane() {
         staleNotice,
         isLoading,
         initialRosterLoading,
-        roster,
+        listedCount: roster.length + gatewayRooms.length,
         error,
         gatewayUp,
         refetch,

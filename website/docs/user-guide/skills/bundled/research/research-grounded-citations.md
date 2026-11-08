@@ -21,7 +21,7 @@ Ground answers and documents in cited, verifiable sources.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Research`, `Citations`, `Grounding`, `Sources`, `Web`, `Reports` |
-| Related skills | [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv), [`pdf`](/docs/user-guide/skills/bundled/productivity/productivity-pdf), [`reddit-reading`](/docs/user-guide/skills/optional/social-media/social-media-reddit-reading), [`rss-feeds`](/docs/user-guide/skills/optional/research/research-rss-feeds), [`youtube-content`](/docs/user-guide/skills/bundled/media/media-youtube-content) |
+| Related skills | [`arxiv`](../../bundled/research/research-arxiv.md), [`pdf`](../../bundled/productivity/productivity-pdf.md), [`reddit-reading`](../../optional/social-media/social-media-reddit-reading.md), [`rss-feeds`](../../optional/research/research-rss-feeds.md), [`youtube-content`](../../bundled/media/media-youtube-content.md) |
 
 ## Reference: full SKILL.md
 
@@ -65,7 +65,7 @@ Mention a URL only if the user would plausibly want the link.
 
 None beyond the standard toolset. `scripts/sources.py` is stdlib-only Python 3.
 Retrieval comes from whatever is configured: `web_search`, `web_extract`,
-`browser_navigate`, or `terminal` (curl, CLIs).
+`browser_exec`, or `terminal` (curl, CLIs).
 
 Ledger location: `$HERMES_HOME/cache/citations/ledger.json` (profile-aware).
 Override per task with `--ledger <path>` or `HERMES_CITATION_LEDGER`.
@@ -108,7 +108,7 @@ answer or document. Skip the reset when continuing work whose ids are already
 in a draft — reusing the ledger keeps the numbering stable.
 
 ② **Register every source at retrieval time.** After each `web_search` /
-`web_extract` / `browser_navigate` / fetch, pass the URLs to `sources.py add`
+`web_extract` / `browser_exec` / fetch, pass the URLs to `sources.py add`
 (or pipe the raw JSON through `sources.py ingest`). Do this *before* writing
 prose. Registering later, from memory, is the failure mode this skill exists to
 prevent.

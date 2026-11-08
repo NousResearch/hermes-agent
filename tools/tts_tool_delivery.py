@@ -35,7 +35,7 @@ def _origin():
     return tts_tool
 
 
-def _section(tts_config: Any, key: str) -> Dict[str, Any]:
+def _section(tts_config: Any, key: str) -> dict[str, Any]:
     """``tts.<key>`` as a dict (``null``/non-dict sections read as empty)."""
     section = tts_config.get(key) if isinstance(tts_config, dict) else None
     return section if isinstance(section, dict) else {}
@@ -44,7 +44,7 @@ def _section(tts_config: Any, key: str) -> Dict[str, Any]:
 FALLBACK_MAX_TEXT_LENGTH = 4000  # provider not recognised at all
 
 # Per-provider input-character caps (official docs); override: ``tts.<provider>.max_text_length``.
-PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
+PROVIDER_MAX_TEXT_LENGTH: dict[str, int] = {
     "edge": 5000,         # edge-tts practical sync limit
     "openai": 4096,       # https://platform.openai.com/docs/guides/text-to-speech
     "xai": 15000,         # https://docs.x.ai/developers/model-capabilities/audio/text-to-speech
@@ -58,7 +58,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
-ELEVENLABS_MODEL_MAX_TEXT_LENGTH: Dict[str, int] = {
+ELEVENLABS_MODEL_MAX_TEXT_LENGTH: dict[str, int] = {
     "eleven_v3": 5000, "eleven_ttv_v3": 5000,
     "eleven_multilingual_v2": 10000, "eleven_multilingual_v1": 10000,
     "eleven_english_sts_v2": 10000, "eleven_english_sts_v1": 10000,
@@ -70,7 +70,7 @@ def _positive_int(value: Any) -> Optional[int]:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
-def _resolve_max_text_length(provider: Optional[str], tts_config: Optional[Dict[str, Any]] = None) -> int:
+def _resolve_max_text_length(provider: Optional[str], tts_config: Optional[dict[str, Any]] = None) -> int:
     """Input-character cap for *provider*: ``tts.<provider>.max_text_length`` > ElevenLabs model
     table > ``PROVIDER_MAX_TEXT_LENGTH`` > command provider's own ``max_text_length`` (else
     ``DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH``) > ``FALLBACK_MAX_TEXT_LENGTH``. Non-positive /
@@ -122,14 +122,14 @@ class AudioDeliveryProfile:
         return max(1, int(self.max_file_bytes * self.safety_ratio))
 
 
-_PLATFORM_AUDIO_DEFAULTS: Dict[str, Dict[str, Any]] = {
+_PLATFORM_AUDIO_DEFAULTS: dict[str, dict[str, Any]] = {
     "discord": {"max_file_bytes": 10 * 1024 * 1024, "safety_ratio": 0.85},
     "telegram": {"max_file_bytes": 50 * 1024 * 1024, "safety_ratio": 0.85},
     "default": {"max_file_bytes": 10 * 1024 * 1024, "safety_ratio": 0.85}}
 
 
 def _resolve_audio_delivery_profile(
-    platform: Optional[str], tts_config: Optional[Dict[str, Any]] = None) -> AudioDeliveryProfile:
+    platform: Optional[str], tts_config: Optional[dict[str, Any]] = None) -> AudioDeliveryProfile:
     """Resolve upload constraints, including optional ``tts.delivery_profiles`` overrides."""
     key = (platform or "default").lower().strip() or "default"
     defaults = dict(_PLATFORM_AUDIO_DEFAULTS.get(key) or _PLATFORM_AUDIO_DEFAULTS["default"])
@@ -144,11 +144,11 @@ def _resolve_audio_delivery_profile(
     return AudioDeliveryProfile(platform=key, max_file_bytes=max_file_bytes, safety_ratio=float(safety_ratio))
 
 
-def _pack_under_cap(pieces: List[str], max_chars: int, *, slice_oversized: bool = False) -> List[str]:
+def _pack_under_cap(pieces: list[str], max_chars: int, *, slice_oversized: bool = False) -> list[str]:
     """Greedily join *pieces* with single spaces, starting a new chunk past *max_chars*. With
     ``slice_oversized`` an over-long piece flushes the running chunk and emits its hard slices as
     their own chunks (the tail slice is not merged with following pieces)."""
-    chunks: List[str] = []
+    chunks: list[str] = []
     current = ""
     for piece in pieces:
         if slice_oversized and len(piece) > max_chars:
@@ -168,12 +168,12 @@ def _pack_under_cap(pieces: List[str], max_chars: int, *, slice_oversized: bool 
     return chunks
 
 
-def _split_oversized_sentence(sentence: str, max_chars: int) -> List[str]:
+def _split_oversized_sentence(sentence: str, max_chars: int) -> list[str]:
     """Split one over-limit sentence on word boundaries, then hard boundaries."""
     return _pack_under_cap(sentence.split(), max_chars, slice_oversized=True)
 
 
-def _split_text_for_tts(text: str, max_chars: int) -> List[str]:
+def _split_text_for_tts(text: str, max_chars: int) -> list[str]:
     """Split text under a provider cap without dropping normalized content."""
     if max_chars <= 0:
         max_chars = FALLBACK_MAX_TEXT_LENGTH
@@ -182,7 +182,7 @@ def _split_text_for_tts(text: str, max_chars: int) -> List[str]:
         return []
     if len(normalized) <= max_chars:
         return [normalized]
-    expanded: List[str] = []
+    expanded: list[str] = []
     for sentence in filter(None, (s.strip() for s in re.split(r"(?<=[.!?;:,])\s+", normalized))):
         if len(sentence) <= max_chars:
             expanded.append(sentence)
@@ -191,10 +191,10 @@ def _split_text_for_tts(text: str, max_chars: int) -> List[str]:
     return _pack_under_cap(expanded, max_chars)
 
 
-def _pack_audio_files_for_delivery(audio_paths: List[str], profile: AudioDeliveryProfile) -> List[List[str]]:
+def _pack_audio_files_for_delivery(audio_paths: list[str], profile: AudioDeliveryProfile) -> list[list[str]]:
     """Group final-encoded chunks under the size target; never mixes suffixes (can't concat-copy)."""
-    groups: List[List[str]] = []
-    current: List[str] = []
+    groups: list[list[str]] = []
+    current: list[str] = []
     current_size, current_suffix = 0, ""
     for path in audio_paths:
         size, suffix = Path(path).stat().st_size, Path(path).suffix.lower()
@@ -208,7 +208,7 @@ def _pack_audio_files_for_delivery(audio_paths: List[str], profile: AudioDeliver
 
 # --- ffmpeg encoding helpers ---
 def _ffmpeg_run(
-    ffmpeg: str, args: List[str], *, timeout: int = 30, check: bool = False, capture: bool = True,
+    ffmpeg: str, args: list[str], *, timeout: int = 30, check: bool = False, capture: bool = True,
 ) -> subprocess.CompletedProcess:
     """Run ``ffmpeg <args>`` headless (no stdin, hidden window on Windows)."""
     return subprocess.run([ffmpeg, *args], capture_output=capture, check=check, timeout=timeout,
@@ -288,35 +288,8 @@ def _write_wav_bytes_as(wav_bytes: bytes, output_path: str) -> str:
 
 def _convert_to_opus(mp3_path: str) -> Optional[str]:
     """Convert any ffmpeg-readable audio file to OGG Opus next to it; None on failure."""
-    return _ffmpeg_transcode_to_opus(mp3_path, mp3_path.rsplit(".", 1)[0] + ".ogg")
-
-
-def _ffmpeg_transcode_to_opus(input_path: str, ogg_path: str) -> Optional[str]:
-    """Transcode *input_path* to real Ogg/Opus at *ogg_path* (in-place safe via temp file); None on failure."""
-    if shutil.which("ffmpeg") is None:
-        return None
-    in_place = os.path.abspath(input_path) == os.path.abspath(ogg_path)
-    work_path = ogg_path + ".tmp.ogg" if in_place else ogg_path
-    try:
-        result = _ffmpeg_run("ffmpeg", ["-i", input_path, *_OPUS_VOICE_ARGS, "-f", "ogg", work_path, "-y"])
-        if result.returncode != 0:
-            logger.warning("ffmpeg conversion failed with return code %d: %s",
-                           result.returncode, result.stderr.decode('utf-8', errors='ignore')[:200])
-            return None
-        if os.path.exists(work_path) and os.path.getsize(work_path) > 0:
-            if in_place:
-                os.replace(work_path, ogg_path)
-            return ogg_path
-    except subprocess.TimeoutExpired:
-        logger.warning("ffmpeg OGG conversion timed out after 30s")
-    except FileNotFoundError:
-        logger.warning("ffmpeg not found in PATH")
-    except Exception as e:
-        logger.warning("ffmpeg OGG conversion failed: %s", e, exc_info=True)
-    finally:
-        if in_place and os.path.exists(work_path):
-            _remove_quietly(work_path)
-    return None
+    from gateway.platforms.base import transcode_to_ogg_opus
+    return transcode_to_ogg_opus(mp3_path, bitrate="48k", timeout=30, output_path=mp3_path.rsplit(".", 1)[0] + ".ogg")
 
 
 # --- Container sniffing / repair ---
@@ -341,7 +314,8 @@ def _repair_ogg_container(file_str: str) -> str:
     if container in ("ogg", "unknown"):
         return file_str
     logger.info("TTS wrote %s bytes into a .ogg path (%s) — transcoding to real Ogg/Opus", container, file_str)
-    repaired = _ffmpeg_transcode_to_opus(file_str, file_str)
+    from gateway.platforms.base import transcode_to_ogg_opus
+    repaired = transcode_to_ogg_opus(file_str, bitrate="48k", timeout=30, output_path=file_str)
     if repaired:
         return repaired
     honest = f"{file_str[:-4]}.{container}"
@@ -355,7 +329,7 @@ def _repair_ogg_container(file_str: str) -> str:
 
 
 # --- Long-form audio combination and delivery packing ---
-def _concat_audio_files(audio_paths: List[str], output_path: str, *, voice_compatible: bool = False) -> Optional[str]:
+def _concat_audio_files(audio_paths: list[str], output_path: str, *, voice_compatible: bool = False) -> Optional[str]:
     """Combine independently encoded chunks with ffmpeg (never byte-joined). OGG/Opus is always
     re-encoded (even without voice opt-in); matching MP3 chunks keep their frames (``-c:a copy``).
     None when ffmpeg is missing/fails so callers keep the valid parts."""
@@ -395,8 +369,8 @@ def _concat_audio_files(audio_paths: List[str], output_path: str, *, voice_compa
 
 
 def _build_audio_delivery_files(
-    audio_paths: List[str], output_path: str, profile: AudioDeliveryProfile, *, voice_compatible: bool = False,
-) -> Tuple[List[str], bool]:
+    audio_paths: list[str], output_path: str, profile: AudioDeliveryProfile, *, voice_compatible: bool = False,
+) -> tuple[list[str], bool]:
     """Pack final-encoded chunks under the hard upload limit -> ``(final_paths, combined_any)``.
 
     Groups are packed against the conservative target, then each combined artifact is checked
@@ -411,10 +385,10 @@ def _build_audio_delivery_files(
                 f"Final-encoded TTS chunk exceeds {profile.platform} delivery "
                 f"limit ({size} > {profile.max_file_bytes} bytes): {path}")
     base = Path(output_path)
-    scratch_outputs: List[str] = []
+    scratch_outputs: list[str] = []
     combined_any, combine_index = False, 0
 
-    def emit(group: List[str]) -> List[str]:
+    def emit(group: list[str]) -> list[str]:
         nonlocal combined_any, combine_index
         if len(group) == 1:
             return list(group)
@@ -432,7 +406,7 @@ def _build_audio_delivery_files(
         return emit(group[:midpoint]) + emit(group[midpoint:])
     groups = _pack_audio_files_for_delivery(audio_paths, profile)
     packed = [path for group in groups for path in emit(group)]
-    final_paths: List[str] = []
+    final_paths: list[str] = []
     for index, source in enumerate(packed, start=1):
         destination = base
         if len(packed) > 1:

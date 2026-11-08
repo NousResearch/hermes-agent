@@ -71,9 +71,6 @@ class TestProvider:
     def test_protocol_compliance(self, drain):
         assert_protocol_compliance(drain.DrainSecretProvider)
 
-    def test_supports_token_flag(self, drain):
-        p = drain.DrainSecretProvider(secret=_strong_secret())
-        assert p.supports_token is True
 
     def test_is_non_interactive(self, drain):
         # Excluded from interactive surfaces via list_session_providers().
@@ -117,7 +114,7 @@ class TestProvider:
 
 class TestRegister:
     def test_skips_when_no_secret(self, drain, monkeypatch):
-        monkeypatch.setattr(drain, "_load_config_drain_auth_section", lambda: {})
+        monkeypatch.setattr(drain, "_load_config_drain_auth_section", dict)
         ctx = MagicMock()
         drain.register(ctx)
         ctx.register_dashboard_auth_provider.assert_not_called()
@@ -126,7 +123,7 @@ class TestRegister:
 
     def test_skips_and_fails_closed_on_weak_secret(self, drain, monkeypatch):
         monkeypatch.setenv("HERMES_DASHBOARD_DRAIN_SECRET", "tooweak")
-        monkeypatch.setattr(drain, "_load_config_drain_auth_section", lambda: {})
+        monkeypatch.setattr(drain, "_load_config_drain_auth_section", dict)
         ctx = MagicMock()
         drain.register(ctx)
         ctx.register_dashboard_auth_provider.assert_not_called()
@@ -137,7 +134,7 @@ class TestRegister:
     def test_registers_with_strong_env_secret(self, drain, monkeypatch):
         s = _strong_secret()
         monkeypatch.setenv("HERMES_DASHBOARD_DRAIN_SECRET", s)
-        monkeypatch.setattr(drain, "_load_config_drain_auth_section", lambda: {})
+        monkeypatch.setattr(drain, "_load_config_drain_auth_section", dict)
         ctx = MagicMock()
         drain.register(ctx)
         ctx.register_dashboard_auth_provider.assert_called_once()

@@ -1,0 +1,15 @@
+name: aihubmix
+repo: https://github.com/AIhubmix/hermes-provider-aihubmix
+sha: b55e916362ebd0528c5d8981d12f3b8f7268b847
+subdir: aihubmix
+description: AIHubMix — unified OpenAI-compatible access to 400+ models; /model picker filtered to tool-capable routes.
+maintainer: AIHubMix
+tier: community
+category: models
+docs_url: https://github.com/AIhubmix/hermes-provider-aihubmix#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - AIHUBMIX_API_KEY

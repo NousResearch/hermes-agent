@@ -1,0 +1,34 @@
+name: hermes-tripo
+title: Hermes Tripo
+repo: https://github.com/Adolanium/hermes-tripo
+sha: 09b26f6b3b2662a0fe86dc782283bc4cddf7a196
+description: "Tripo 3D tools on Tripo's v3 API (openapi.tripo3d.ai). Text, photo or multiview to 3D, image edits, retexturing, splitting into parts, Smart UV, auto-rigging, preset animations, retopology, format conversion (FBX, USDZ, STL, 3MF, OBJ, GLTF) and downloads, with an inline 3D viewer in Hermes Desktop that shows whether a model is really rigged, a library pane that shows where each model came from (the steps behind it, its prompt, a jump back to the chat that made it, and one-click next steps), a local model inspector, and a status-bar chip with the Tripo balance and this chat's spend. Every credit-spending call goes through Hermes's approval prompt with its estimated cost, and a per-chat limit (a setting under Settings → Plugins, default 100 credits) makes it ask again past it. Needs TRIPO_API_KEY. Unofficial; not affiliated with Tripo or VAST. Disclosure — sends prompts and the local images or 3D model files you or the agent name (up to 50 MB; every local-file upload, free calls included, goes through Hermes's approval prompt) to Tripo's API at openapi.tripo3d.ai with TRIPO_API_KEY; saves downloaded models to $HERMES_HOME/tripo/ or a folder the agent picks (never overwriting: a clash gets a \" (2)\" suffix), and the Desktop viewer's save button copies models into your Downloads/Tripo folder (or the folder set in its settings); keeps a local task history in $HERMES_HOME/tripo/history.json (chat id, tool, prompt, parent task, estimated cost, saved file paths; at most 2,000 tasks, never sent anywhere); the Desktop library opens local .glb/.fbx/.obj/.stl files only from inside your home folder, $HERMES_HOME/tripo/ or the viewer's download folder, and uploads nothing; the status-bar chip reads your Tripo balance every two minutes and after each Tripo tool call; no shell commands, background processes or telemetry."
+maintainer: Adolanium
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Adolanium/hermes-tripo#readme
+version: "0.4.0"
+image: https://raw.githubusercontent.com/Adolanium/hermes-tripo/09b26f6b3b2662a0fe86dc782283bc4cddf7a196/assets/catalog-banner.png
+capabilities:
+  provides_tools:
+    - tripo_generate_model
+    - tripo_generate_image
+    - tripo_texture
+    - tripo_rig_check
+    - tripo_rig
+    - tripo_animate
+    - tripo_retopology
+    - tripo_convert
+    - tripo_parts
+    - tripo_uv
+    - tripo_multiview
+    - tripo_task
+    - tripo_download
+    - tripo_balance
+  provides_hooks:
+    - pre_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env:
+    - TRIPO_API_KEY

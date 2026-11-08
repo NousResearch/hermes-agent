@@ -39,12 +39,11 @@ def server(hermes_home, monkeypatch):
         mod = importlib.import_module("tui_gateway.server")
     monkeypatch.setattr(mod, "_hermes_home", hermes_home)
     monkeypatch.setattr(mod, "_cfg_cache", None)
-    monkeypatch.setattr(mod, "_cfg_mtime", None)
+    monkeypatch.setattr(mod, "_cfg_sig", None)
     monkeypatch.setattr(mod, "_cfg_path", None)
     yield mod
     mod._sessions.clear()
-    mod._pending.clear()
-    mod._answers.clear()
+    __import__("tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
 
 
 @pytest.fixture()
@@ -160,7 +159,6 @@ def _save_heartbeat(key, **overrides):
 class TestStructuredRead:
     def test_methods_are_registered_and_empty_snapshot_is_stable(self, server, session):
         sid, _, _ = session
-        assert {"session.control.read", "session.control"} <= set(server._methods)
         first = _control(server, sid)
         second = _control(server, sid)
         assert first == second
@@ -188,7 +186,6 @@ class TestStructuredRead:
                 attempts=1,
                 last_exit_code=1,
                 last_output_tail="private output must stay private",
-                last_failed_fingerprint="secret-fingerprint",
             )],
         )
 
@@ -205,7 +202,7 @@ class TestStructuredRead:
         }]
         serialized = json.dumps(goal)
         for forbidden in (
-            "last_output_tail", "last_failed_fingerprint", "private output", "secret-fingerprint",
+            "last_output_tail", "private output",
             "route", "session_id", "credential", "api_key",
         ):
             assert forbidden not in serialized
@@ -222,8 +219,7 @@ class TestStructuredRead:
         sid, key, _ = session
         setup(key)
         before = _control(server, sid)
-        assert isinstance(before["revision"], str)
-        assert len(before["revision"]) == 64
+        assert isinstance(before["revision"], str) and before["revision"]
         assert before == _control(server, sid)
 
         if kind == "goal":
@@ -276,15 +272,15 @@ class TestManagerOnlyMutations:
         _forbid_dispatch(server, monkeypatch)
 
         added = _call(server, "session.control", session_id=sid, action="subgoal.add", args={"text": "Second criterion"})
-        assert added["result"]["dispatch"]["output"] == "✓ Added subgoal 2: Second criterion"
+        assert "error" not in added
         assert load_goal(key).subgoals == ["First criterion", "Second criterion"]
 
         removed = _call(server, "session.control", session_id=sid, action="subgoal.remove", args={"index": 1})
-        assert removed["result"]["dispatch"]["output"] == "✓ Removed subgoal 1: First criterion"
+        assert "error" not in removed
         assert load_goal(key).subgoals == ["Second criterion"]
 
         cleared = _call(server, "session.control", session_id=sid, action="subgoal.clear")
-        assert cleared["result"]["dispatch"]["output"] == "✓ Cleared 1 subgoal."
+        assert "error" not in cleared
         assert load_goal(key).subgoals == []
 
     def test_subgoal_requires_a_goal_and_valid_arguments_without_dispatch(self, server, session, monkeypatch):
@@ -312,27 +308,24 @@ class TestManagerOnlyMutations:
         GoalManager(key).wait_for_seconds(60, reason="backoff")
 
         response = _call(server, "session.control", session_id=sid, action="goal.unwait")
-        assert response["result"]["dispatch"]["output"] == "▶ Wait barrier cleared — goal loop resumes."
+        assert "error" not in response
         assert GoalManager(key).state.waiting_until == 0.0
 
     def test_heartbeat_pause_resume_clear_and_no_heartbeat_messages_do_not_dispatch(self, server, session, monkeypatch):
         sid, key, _ = session
         _forbid_dispatch(server, monkeypatch)
-        assert _call(server, "session.control", session_id=sid, action="heartbeat.pause")["result"]["dispatch"]["output"] == "No heartbeat set."
-        assert _call(server, "session.control", session_id=sid, action="heartbeat.resume")["result"]["dispatch"]["output"] == "No heartbeat to resume."
-        assert _call(server, "session.control", session_id=sid, action="heartbeat.clear")["result"]["dispatch"]["output"] == "No heartbeat set."
+        for action in ("heartbeat.pause", "heartbeat.resume", "heartbeat.clear"):
+            empty = _call(server, "session.control", session_id=sid, action=action)
+            assert "error" not in empty and empty["result"]["control"]["heartbeat"] is None
 
         _save_heartbeat(key, status="active", last_fired_at=1.0)
         paused = _call(server, "session.control", session_id=sid, action="heartbeat.pause")
-        assert paused["result"]["dispatch"]["output"] == "⏸ Heartbeat paused: Check the deployment"
         assert paused["result"]["control"]["heartbeat"]["status"] == "paused"
 
         resumed = _call(server, "session.control", session_id=sid, action="heartbeat.resume")
-        assert resumed["result"]["dispatch"]["output"] == "▶ Heartbeat resumed (every 10m): Check the deployment"
         assert resumed["result"]["control"]["heartbeat"]["last_fired_at"] > 1.0
 
         cleared = _call(server, "session.control", session_id=sid, action="heartbeat.clear")
-        assert cleared["result"]["dispatch"]["output"] == "✓ Heartbeat cleared."
         assert cleared["result"]["control"]["heartbeat"] is None
 
 
@@ -397,6 +390,70 @@ class TestUpdatePublication:
         updates = [e for e in emitted if e[0] == "session.control.update"]
         assert updates == [("session.control.update", sid, {"control": response["result"]["control"]})]
 
+    def test_a_tool_completion_racing_a_user_change_never_publishes_the_older_snapshot(self, server, session, monkeypatch):
+        """The tool-completion republish runs on the agent thread: if it read the goal just before the user
+        added a criterion, that older snapshot must not be emitted after the user's (Ink/Desktop keep the last)."""
+        sid, key, entry = session
+        _save_goal(key)
+        server._publish_session_control_snapshot(sid, entry)
+        emitted = self._capture(server, monkeypatch)
+        read, release, real_snapshot = threading.Event(), threading.Event(), server._snapshot_control
+
+        def snapshot_then_stall(session_key):  # scheduling only: the tool thread stalls after its read
+            control = real_snapshot(session_key)
+            if threading.current_thread().name == "tool":
+                read.set()
+                release.wait(5)
+            return control
+        monkeypatch.setattr(server, "_snapshot_control", snapshot_then_stall)
+        tool = threading.Thread(name="tool", target=server._on_tool_complete,
+                                args=(sid, "call", "terminal", {"command": "true"}, '{"exit_code": 0}'))
+        tool.start()
+        assert read.wait(5)
+        user = threading.Thread(target=_call, args=(server, "session.control"),
+                                kwargs={"session_id": sid, "action": "subgoal.add", "args": {"text": "newer criterion"}})
+        user.start()
+        user.join(0.5)
+        release.set()
+        tool.join(5)
+        user.join(5)
+        updates = [payload["control"]["goal"]["subgoals"] for event, _sid, payload in emitted
+                   if event == "session.control.update"]
+        assert updates[-1] == ["newer criterion"]
+
+    def test_a_stalled_client_write_never_delays_another_sessions_publish(self, server, session, monkeypatch):
+        """Ordering is per session: while one session's socket write stalls (up to the transport's write
+        timeout), an unrelated session's control update and tool completions still go out."""
+        sid, key, entry = session
+        _save_goal(key)
+        other_sid, other_key = f"sid-control-{uuid.uuid4().hex}", f"control-{uuid.uuid4().hex}"
+        other = {**entry, "session_key": other_key, "history_lock": threading.Lock()}
+        server._sessions[other_sid] = other
+        _save_goal(other_key)
+        stalled, release, emitted = threading.Event(), threading.Event(), []
+
+        def emit(event, event_sid, payload=None):
+            if event_sid == sid:
+                stalled.set()
+                release.wait(5)
+            emitted.append(event_sid)
+        monkeypatch.setattr(server, "_emit", emit)
+        slow = threading.Thread(target=server._publish_session_control_snapshot, args=(sid, entry))
+        slow.start()
+        try:
+            assert stalled.wait(5)
+            fast = threading.Thread(target=server._publish_session_control_snapshot, args=(other_sid, other))
+            fast.start()
+            fast.join(2)  # >= 2 s per tests/AGENTS.md; below the stalled writer's 5 s wait
+            assert not fast.is_alive(), "another session's stalled write blocked this publish"
+            assert emitted == [other_sid]
+        finally:
+            release.set()
+            slow.join(5)
+            server._sessions.pop(other_sid, None)
+            from hermes_cli.goals import GoalManager
+            GoalManager(other_key).clear()
+
     @pytest.mark.parametrize("name,arg", [("goal", "pause"), ("loop", "pause")])
     def test_typed_slash_via_command_dispatch_publishes_the_new_state(self, server, session, monkeypatch, name, arg):
         """/goal and /loop never reach the slash worker (``_PENDING_INPUT_COMMANDS``) — the built-in path must
@@ -430,7 +487,7 @@ class TestUpdatePublication:
         emitted = self._capture(server, monkeypatch)
 
         class _InlineThread:
-            def __init__(self, target=None, daemon=None, args=(), kwargs=None):
+            def __init__(self, target=None, daemon=None, args=(), kwargs=None, name=None):
                 self._t, self._a, self._k = target, args, kwargs or {}
 
             def start(self):

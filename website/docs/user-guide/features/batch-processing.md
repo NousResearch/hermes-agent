@@ -35,7 +35,7 @@ python batch_runner.py --list_distributions
 ```
 
 :::tip Predictable cost at scale
-Batch runs spin up many concurrent agent sessions, each making model calls and tool calls. A [Nous Portal](/user-guide/features/tool-gateway) subscription bundles model access plus web search, image gen, TTS, and cloud browsers under one bill — useful when you want stable cost-per-trajectory without juggling rate limits across five vendor accounts. Set up with `hermes setup --portal`, then point `--model` at a Nous model.
+Batch runs spin up many concurrent agent sessions, each making model calls and tool calls. A [Nous Portal](./tool-gateway.md) subscription bundles model access plus web search, image gen, TTS, and cloud browsers under one bill — useful when you want stable cost-per-trajectory without juggling rate limits across five vendor accounts. Set up with `hermes setup --portal`, then point `--model` at a Nous model.
 :::
 
 ## Dataset Format
@@ -49,7 +49,7 @@ The input dataset is a JSONL file (one JSON object per line). Each entry must ha
 ```
 
 Entries can optionally include:
-- `image` or `docker_image`: A container image to use for this prompt's sandbox (works with Docker, Modal, and Singularity backends)
+- `image` or `docker_image`: A container image to use for this prompt's sandbox (works with Docker, Modal, Daytona and plugin backends such as Singularity)
 - `cwd`: Working directory override for the task's terminal session
 
 ## Configuration Options

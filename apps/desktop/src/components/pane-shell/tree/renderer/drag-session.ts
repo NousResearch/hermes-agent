@@ -49,7 +49,9 @@ const DRAG_THRESHOLD_PX = 4
 const CENTER_RADIUS = 0.62
 
 export function snapshotZones(): EngineZone[] {
-  return [...document.querySelectorAll<HTMLElement>('[data-tree-group]')].map(el => {
+  // Stable guest bodies carry group identity for focus/tooltip lookup, but
+  // only the tree's placement owns the full zone (including its tab strip).
+  return [...document.querySelectorAll<HTMLElement>('[data-tree-group]:not([data-pane-host])')].map(el => {
     const r = el.getBoundingClientRect()
 
     return { id: el.dataset.treeGroup!, rect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom } }

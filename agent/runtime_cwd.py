@@ -13,6 +13,8 @@ from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Any
 
+from hermes_cli._startup_fast import project_root_str
+
 logger = logging.getLogger(__name__)
 
 _UNSET: Any = object()
@@ -22,7 +24,7 @@ _SESSION_CWD: ContextVar = ContextVar("HERMES_SESSION_CWD", default=_UNSET)
 # The package/source root (<root>/agent/runtime_cwd.py). A backend launched from or
 # self-spawned into this tree (desktop default) must never let an os.getcwd() fallback
 # inject this repo's contributor AGENTS.md as project context.
-_PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+_PACKAGE_ROOT = Path(project_root_str())
 
 
 def _is_install_tree(p: Path) -> bool:
@@ -42,6 +44,21 @@ def set_session_cwd(cwd: str | None) -> Token:
 
 def clear_session_cwd() -> None:
     _SESSION_CWD.set("")
+
+
+def scoped_session_cwd() -> str:
+    """Return the current session's declared cwd without local path validation.
+
+    Remote and container paths may not exist on the Hermes host. Callers that only need
+    logical workspace identity should preserve the declared value instead of resolving it.
+    """
+    value = _SESSION_CWD.get()
+    return "" if value is _UNSET else str(value).strip()
+
+
+def reset_session_cwd(token: Token) -> None:
+    """Restore the logical cwd that was active before the matching ``set_session_cwd``."""
+    _SESSION_CWD.reset(token)
 
 
 def scope_terminal_cwd() -> str:
@@ -66,18 +83,23 @@ def _existing_dir(raw: str, label: str) -> Path | None:
     return None
 
 
-def _resolve_configured_cwd(*, override_is_final: bool) -> Path | None:
+def _resolve_configured_cwd(
+    *, override_is_final: bool, include_session_override: bool = True,
+) -> Path | None:
     """Session override, then TERMINAL_CWD; each validated as a real directory.
 
     ``override_is_final``: a set-but-missing session override yields None
     instead of falling through to TERMINAL_CWD.
+    ``include_session_override``: skip a session cwd known to be a launch artifact
+    while still consulting the active profile's TERMINAL_CWD.
     """
-    override = _SESSION_CWD.get()
-    override = "" if override is _UNSET else str(override).strip()
-    if override:
-        p = _existing_dir(override, "configured working directory")
-        if p is not None or override_is_final:
-            return p
+    if include_session_override:
+        override = _SESSION_CWD.get()
+        override = "" if override is _UNSET else str(override).strip()
+        if override:
+            p = _existing_dir(override, "configured working directory")
+            if p is not None or override_is_final:
+                return p
     raw = scope_terminal_cwd().strip()
     return _existing_dir(raw, "TERMINAL_CWD") if raw else None
 
@@ -87,8 +109,14 @@ def resolve_agent_cwd() -> Path:
     return _resolve_configured_cwd(override_is_final=False) or Path(os.getcwd())
 
 
-def resolve_context_cwd() -> Path | None:
+def resolve_context_cwd(*, include_session_override: bool = True) -> Path | None:
     """Configured cwd for context-file discovery, or None (build_context_files_prompt then falls back to the
     launch dir). An existing configured path is honored verbatim — including the Hermes source tree, a
-    legitimate workspace when developing Hermes; fallback-directory policy lives in the caller."""
-    return _resolve_configured_cwd(override_is_final=True)
+    legitimate workspace when developing Hermes; fallback-directory policy lives in the caller.
+
+    Launch-artifact callers can skip the session override while still honoring the active profile's
+    TERMINAL_CWD.
+    """
+    return _resolve_configured_cwd(
+        override_is_final=True, include_session_override=include_session_override,
+    )

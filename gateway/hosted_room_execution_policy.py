@@ -38,7 +38,7 @@ class RoomExecutionPolicy:
     policy_digest: str
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "RoomExecutionPolicy":
+    def from_mapping(cls, value: Mapping[str, Any]) -> RoomExecutionPolicy:
         if not isinstance(value, Mapping) or set(value) != _POLICY_FIELDS:
             raise RoomExecutionPolicyError("execution policy fields are invalid")
         if value["version"] != POLICY_VERSION:
@@ -68,11 +68,30 @@ class RoomExecutionPolicy:
         return {**asdict(self), "enabled_toolsets": list(self.enabled_toolsets)}
 
 
+def _served_profile_scope(target_profile: str):
+    """Runtime scope of the SERVED profile: a no-op when it is the active home, else the profile's
+    own home + secret scope (fail closed on an unknown profile). The advertised policy is signed
+    for ``target_profile``, so its config and credentials must be read there, never from the
+    launch profile's env or whatever home happens to be active (#116900)."""
+    from contextlib import nullcontext
+    from hermes_cli.profiles import get_profile_dir, normalize_profile_name, profile_exists, profile_matches_home
+    # "default" is the launch home (a `-p x` multiplexer hosts it too), never a switch to ~/.hermes.
+    if normalize_profile_name(target_profile) == "default" or profile_matches_home(target_profile):
+        return nullcontext()
+    if not profile_exists(target_profile):
+        raise RoomExecutionPolicyError(f"target_profile {target_profile!r} is not a live profile")
+    from gateway.run import _profile_runtime_scope
+    return _profile_runtime_scope(get_profile_dir(target_profile))
+
+
 def execution_policy_mapping(*, target_profile: str, config: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Resolve the effective API-server policy from the target's own config."""
+    """Resolve the effective API-server policy from the served ``target_profile``'s own config."""
+    target_profile = _identifier(target_profile, field="target_profile")
     if config is None:
         from gateway.run import _load_gateway_config
-        config = _load_gateway_config()
+        with _served_profile_scope(target_profile):
+            config = _load_gateway_config()
+            return execution_policy_mapping(target_profile=target_profile, config=config)
     if not isinstance(config, Mapping):
         raise RoomExecutionPolicyError("gateway config is invalid")
     from hermes_cli.config import resolve_turn_limit
@@ -110,12 +129,3 @@ __all__ = [
     "MAX_POLICY_ITERATIONS", "POLICY_VERSION", "RoomExecutionPolicy", "RoomExecutionPolicyError",
     "bind_room_execution_policy", "current_room_execution_policy", "execution_policy_mapping",
     "reset_room_execution_policy"]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import json  # noqa: F401,E402
-import re  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

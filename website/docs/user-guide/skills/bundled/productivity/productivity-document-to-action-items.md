@@ -15,13 +15,13 @@ Extract cited obligations, deadlines, tasks from documents.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity\document-to-action-items` |
+| Path | `skills/productivity/document-to-action-items` |
 | Version | `0.1.0` |
 | Author | Ben Barclay (benbarclay), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Documents`, `OCR`, `Action-Items`, `Deadlines`, `Extraction` |
-| Related skills | [`pdf`](/docs/user-guide/skills/bundled/productivity/productivity-pdf), [`pdf`](/docs/user-guide/skills/bundled/productivity/productivity-pdf), [`docx`](/docs/user-guide/skills/bundled/productivity/productivity-docx), [`notion`](/docs/user-guide/skills/bundled/productivity/productivity-notion) |
+| Related skills | [`pdf`](../../bundled/productivity/productivity-pdf.md), [`microsoft-office`](../../bundled/productivity/productivity-microsoft-office.md) |
 
 ## Reference: full SKILL.md
 
@@ -31,7 +31,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # Document to Action Items
 
-Turn documents into cited facts and proposed actions. Extraction is not legal advice, and low-confidence OCR or ambiguous language must remain visible. The `pdf` / `pdf` / `docx` skills own extraction mechanics; this skill owns what happens to the extracted content.
+Turn documents into cited facts and proposed actions. Extraction is not legal advice, and low-confidence OCR or ambiguous language must remain visible. The `pdf` and `microsoft-office` skills own extraction mechanics; this skill owns what happens to the extracted content.
 
 ## When to Use
 
@@ -81,7 +81,7 @@ Present structured facts, high-risk clauses, low-confidence fields, and proposed
 
 ### 7. Create and verify records
 
-Use the user's approved destination — `notion`, a calendar, a spreadsheet via `xlsx`, or another task tracker. Attach document/page provenance and avoid copying unnecessary sensitive text. Read records back from the provider and verify owner/date/link. If a write times out ambiguously, search for the expected record before retrying. Done when every approved action is verified.
+Use the user's approved destination — Notion, a calendar, a spreadsheet via `xlsx`, or another task tracker. Attach document/page provenance and avoid copying unnecessary sensitive text. Read records back from the provider and verify owner/date/link. If a write times out ambiguously, search for the expected record before retrying. Done when every approved action is verified.
 
 ## Pitfalls
 

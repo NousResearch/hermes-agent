@@ -10,11 +10,11 @@ import pytest
 
 pytest.importorskip("aiohttp")
 
-from aiohttp import web  # noqa: E402
-from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig  # noqa: E402
-from gateway.outbound_files import (  # noqa: E402
+from gateway.config import PlatformConfig
+from gateway.outbound_files import (
     Base64OutboundFileProvider,
     OmittedOutboundFileProvider,
     OutboundFileExporter,
@@ -22,7 +22,7 @@ from gateway.outbound_files import (  # noqa: E402
     create_outbound_file_provider,
     OutboundFilesConfig,
 )
-from gateway.platforms.api_server import APIServerAdapter  # noqa: E402
+from gateway.platforms.api_server import APIServerAdapter
 
 
 def _openai_app(adapter: APIServerAdapter) -> web.Application:
@@ -66,6 +66,18 @@ async def test_media_tag_is_inlined_as_a_data_url(tmp_path):
 
     encoded = base64.b64encode(contents).decode("ascii")
     assert rendered == f"Here: ![image](data:image/png;base64,{encoded})"
+
+
+@pytest.mark.asyncio
+async def test_terminal_control_token_does_not_become_part_of_media_path(tmp_path):
+    path = tmp_path / "shot.png"
+    path.write_bytes(b"png")
+    adapter = _adapter_for_provider("base64")
+    clean = f"Here: MEDIA:{path}"
+
+    assert await adapter._render_outbound_text(clean + "<|eos|>") == (
+        await adapter._render_outbound_text(clean)
+    )
 
 
 @pytest.mark.asyncio
@@ -314,7 +326,7 @@ async def test_responses_streaming_endpoint_renders_split_media(
 
 @pytest.mark.asyncio
 async def test_responses_stream_replaces_split_media_before_writing(tmp_path):
-    import gateway.platforms.api_server as api_server
+    from gateway.platforms import api_server
     from gateway.config import PlatformConfig
 
     path = tmp_path / "chart.png"

@@ -1,4 +1,4 @@
-import { profileScoped } from '@/api/client'
+import { type OwnerScope, ownerScoped, profileScoped } from '@/api/client'
 import { hermesApi } from '@/hermes'
 
 /**
@@ -213,6 +213,11 @@ async function waitForIceGathering(connection: RTCPeerConnection): Promise<void>
 
 export class VoiceLiveSession {
   readonly audio: HTMLAudioElement
+  /** Whose (connection, profile) this session dials; null → the active scope.
+   *  A Bot chat runs its GPT-Live session on the Bot's own profile, so the
+   *  voice configured there is the voice that answers. */
+  private readonly owner: null | OwnerScope
+  private readonly handlers: VoiceLiveHandlers
   private peer: null | RTCPeerConnection = null
   private events: null | RTCDataChannel = null
   private microphone: null | MediaStream = null
@@ -230,7 +235,9 @@ export class VoiceLiveSession {
    *  older id are dropped by the conversation hook. */
   activeDelegationId: null | string = null
 
-  constructor(private readonly handlers: VoiceLiveHandlers) {
+  constructor(handlers: VoiceLiveHandlers, owner: null | OwnerScope = null) {
+    this.handlers = handlers
+    this.owner = owner
     this.audio = new Audio()
     this.audio.autoplay = true
   }
@@ -271,6 +278,13 @@ export class VoiceLiveSession {
   async start(history: LiveHistoryMessage[]): Promise<void> {
     if (this.peer) {
       throw new Error('GPT-Live session already started')
+    }
+
+    // An insecure origin (a Webapp opened over plain HTTP from another machine) has no
+    // mediaDevices. Fail before opening a peer, with the error the recorder's copy maps to
+    // "microphone unsupported", instead of a TypeError on the missing API.
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new DOMException('Microphone capture is unavailable here', 'NotSupportedError')
     }
 
     const connection = new RTCPeerConnection()
@@ -321,7 +335,7 @@ export class VoiceLiveSession {
       session?: { id: string }
       transport?: { sdp: string; type: string }
     }>({
-      ...profileScoped(),
+      ...ownerScoped(this.owner ?? undefined),
       body: { history, sdp },
       method: 'POST',
       path: '/api/audio/voice-live/session',

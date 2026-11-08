@@ -12,7 +12,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from hermes_cli._startup_fast import project_root_str
+
+_PROJECT_ROOT = Path(project_root_str())
 _boot_fingerprint: str | None = None
 
 
@@ -38,6 +40,15 @@ def _short(fingerprint: str) -> str:
     """Render a ``git:<ref>:<sha>`` fingerprint as a compact label."""
     sha = fingerprint.rsplit(":", 1)[-1]
     return sha[:10] if sha and sha != "unresolved" and len(sha) > 10 else (sha or fingerprint)
+
+
+def current_code_sha() -> str | None:
+    """Full SHA for the checkout currently on disk, or None when unresolved."""
+    fingerprint = _fingerprint()
+    if fingerprint is None:
+        return None
+    sha = fingerprint.rsplit(":", 1)[-1]
+    return sha if sha and sha != "unresolved" else None
 
 
 def detect_code_skew() -> tuple[str, str] | None:

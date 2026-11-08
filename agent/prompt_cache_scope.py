@@ -13,6 +13,8 @@ import hashlib
 import logging
 from typing import Any, Optional
 
+from utils import base_url_hostname
+
 logger = logging.getLogger(__name__)
 
 _MEMO_ATTR = "_prompt_cache_scope_memo"
@@ -35,6 +37,35 @@ def _lineage_root(session_id: str, session_db: Any) -> Optional[str]:
     return None
 
 
+def conversation_id(agent: Any) -> str:
+    """The id plugins key per-conversation state on: the compression-lineage root of ``agent.session_id``
+    (the cache scope's walk, plus ``--source tool`` rotations), so compression rotation keeps it while
+    ``/new`` and ``/branch`` start a new one. A delegated child or review fork reports its parent's, stamped
+    at spawn. Memoized per physical id."""
+    inherited = getattr(agent, "_inherited_conversation_id", None)
+    if isinstance(inherited, str) and inherited:
+        return inherited
+    sid = str(getattr(agent, "session_id", None) or "")
+    memo = getattr(agent, "_conversation_id_memo", None)
+    if isinstance(memo, tuple) and len(memo) == 2 and memo[0] == sid:
+        return memo[1]
+    # A plugin hook can ask first from a tool callback Relay drives on its loop, where WorkerRPC
+    # refuses a synchronous read for the rest of the turn (#139029): both walks run off the loop.
+    from agent.runtime_session_store import call_off_event_loop
+    db = getattr(agent, "_session_db", None)
+    root = call_off_event_loop(_lineage_root, sid, db) if sid else None
+    if root == sid:
+        try:
+            root = call_off_event_loop(db.get_tool_rotation_root, sid)
+        except Exception:
+            # Not memoized: the physical id is right for now, and a later call retries the walk.
+            logger.debug("tool-source rotation walk failed", exc_info=True)
+            return sid
+    if root is not None:
+        agent._conversation_id_memo = (sid, root)
+    return root or sid
+
+
 def _agent_source(
     agent: Any, session_id: str, session_db: Any, row_source: Optional[str] = None
 ) -> str:
@@ -55,16 +86,8 @@ def _agent_source(
     if row_source:
         return row_source
     platform = getattr(agent, "platform", None)
-    try:
-        # Lazy: run_agent imports this module.
-        from run_agent import _session_source_for_agent
-
-        source = str(_session_source_for_agent(platform) or "").strip()
-        if source:
-            return source
-    except Exception:
-        logger.debug("declared-scope source authority unavailable", exc_info=True)
-    return str(platform or "").strip()
+    from agent.session_source import session_source_for
+    return str(session_source_for(platform)).strip()
 
 
 def _conversation_generation(session_key: str, source: str, session_db: Any) -> str:
@@ -90,7 +113,18 @@ def declared_conversation_scope(agent: Any) -> Optional[str]:
     when no key is declared, for a background-review fork (``_persist_disabled``), for an
     explicit fork child, and on any DB error (fail closed rather than merge a fork onto its
     parent's key).
+
+    The one sanctioned exception is a same-model cache-parity fork (#109964): its whole purpose
+    is prefix parity with the parent, yet ``_persist_disabled`` + ``_session_db=None`` made both
+    resolvers key it into a different bucket (one cold ~full-context request per review).
+    ``build_cache_parity_fork`` stamps the parent's ALREADY-RESOLVED scope as
+    ``_inherited_cache_scope`` (no DB access from the fork). Only a ``gwk_`` value is a declared
+    scope; a physical lineage root stays out of the affinity header so the fork publishes
+    exactly what its parent publishes (None → consumers fall back to the conversation root).
     """
+    inherited = getattr(agent, "_inherited_cache_scope", None)
+    if isinstance(inherited, str) and inherited.startswith(_DECLARED_SCOPE_PREFIX):
+        return inherited
     key = str(getattr(agent, "_gateway_session_key", "") or "").strip()
     if not key or getattr(agent, "_persist_disabled", False):
         return None
@@ -130,8 +164,12 @@ def declared_conversation_scope(agent: Any) -> Optional[str]:
 
 
 def resolve_prompt_cache_scope(agent: Any) -> str:
-    """Rotation-stable cache-scope id: declared scope, else the compression-lineage root of
-    ``agent.session_id`` (the physical id without ancestry/DB). Memoized on the agent."""
+    """Rotation-stable cache-scope id: the inherited parent scope of a same-model cache-parity
+    fork, else the declared scope, else the compression-lineage root of ``agent.session_id``
+    (the physical id without ancestry/DB). Memoized on the agent."""
+    inherited = getattr(agent, "_inherited_cache_scope", None)
+    if isinstance(inherited, str) and inherited:
+        return _apply_fork_tag(agent, inherited)
     sid = str(getattr(agent, "session_id", None) or "")
     if not sid:
         return ""
@@ -140,7 +178,7 @@ def resolve_prompt_cache_scope(agent: Any) -> str:
     key = (sid, db is not None)
     memo = getattr(agent, _MEMO_ATTR, None)
     if isinstance(memo, tuple) and len(memo) == 2 and memo[0] == key:
-        return memo[1]
+        return _apply_fork_tag(agent, memo[1])
     root = declared_conversation_scope(agent) or _lineage_root(sid, db)
     scope = root or sid
     # Memoize on success, with no DB, or when the agent never persists a row. A failed/empty
@@ -151,7 +189,53 @@ def resolve_prompt_cache_scope(agent: Any) -> str:
             setattr(agent, _MEMO_ATTR, (key, scope))
         except Exception:
             pass  # frozen/slotted doubles: resolution works, just unmemoized
-    return scope
+    return _apply_fork_tag(agent, scope)
+
+
+# ``<scope>::<tag>`` — double colon so gateway session keys that already contain single
+# colons are never mistaken for a fork scope.
+FORK_SCOPE_SEPARATOR = "::"
+
+# Aggregator slugs that front xAI Grok (OpenRouter and friends).
+GROK_AGGREGATOR_MODEL_PREFIXES = ("x-ai/grok-", "xai/grok-")
+
+
+def is_slot_keyed_cache_route(provider: Any, model: Any, base_url: Any = "") -> bool:
+    """True when the cache key selects ONE server-side slot per conversation.
+
+    xAI (``xai``/``xai-oauth``, ``api.x.ai``, or Grok via OpenRouter ``x-ai/grok-*``) pins its
+    prompt cache to the server picked by ``x-grok-conv-id`` / ``prompt_cache_key``: two divergent
+    request streams under one key evict each other. Anthropic, DeepSeek and Gemini caches are
+    content-addressed and OpenAI's ``prompt_cache_key`` only routes over a prefix match, so the
+    shared scope (#109964) stays a win there. Only the OpenRouter profile reads ``cache_scope_id``
+    for the sticky header; other aggregators fronting Grok change only the body key.
+    """
+    if str(provider or "").strip().lower() in {"xai", "xai-oauth"}:
+        return True
+    if base_url_hostname(str(base_url or "")) == "api.x.ai":
+        return True
+    return str(model or "").strip().lower().startswith(GROK_AGGREGATOR_MODEL_PREFIXES)
+
+
+def is_fork_cache_scope(scope: Any) -> bool:
+    """True when *scope* is a fork-derived scope (``<scope>::<tag>``)."""
+    return isinstance(scope, str) and FORK_SCOPE_SEPARATOR in scope
+
+
+def _apply_fork_tag(agent: Any, scope: str) -> str:
+    """``<scope>::<tag>`` for a tagged fork on a slot-keyed route, once the fork's OWN compaction
+    committed: before it the fork extends the parent's prefix (warm read, #109964); after it the
+    rewritten stream would evict the parent's xAI slot. Read per call, so fallbacks re-evaluate."""
+    tag = getattr(agent, "_prompt_cache_fork_tag", None)
+    if not scope or not isinstance(tag, str) or not tag:
+        return scope
+    if getattr(getattr(agent, "context_compressor", None), "compression_count", 0) < 1:
+        return scope
+    if not is_slot_keyed_cache_route(
+        getattr(agent, "provider", ""), getattr(agent, "model", ""), getattr(agent, "base_url", ""),
+    ):
+        return scope
+    return f"{scope}{FORK_SCOPE_SEPARATOR}{tag}"
 
 
 def declared_conversation_scope_safe(agent: Any) -> Optional[str]:

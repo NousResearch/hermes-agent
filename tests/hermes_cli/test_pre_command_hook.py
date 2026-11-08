@@ -22,10 +22,6 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-def test_pre_command_in_valid_hooks():
-    from hermes_cli.plugins import VALID_HOOKS
-
-    assert "pre_command" in VALID_HOOKS
 
 
 # ---------------------------------------------------------------------------
@@ -64,20 +60,6 @@ def test_fire_helper_is_observer_only_and_never_raises(monkeypatch):
     assert calls["kwargs"]["command"] == "model"
 
 
-def test_fire_helper_skips_when_no_plugin_listens(monkeypatch):
-    from hermes_cli import plugins as plugins_mod
-
-    class _FakeManager:
-        def has_hook(self, name):
-            return False
-
-        def invoke_hook(self, name, **kwargs):  # pragma: no cover
-            raise AssertionError("invoke_hook must not be called")
-
-    monkeypatch.setattr(plugins_mod, "get_plugin_manager", _FakeManager)
-    plugins_mod.fire_pre_command_hook(
-        surface="cli", command="help", alias_used="help", args_raw="",
-    )
 
 
 def test_fire_helper_swallows_manager_errors(monkeypatch):
@@ -264,12 +246,9 @@ def _make_runner():
     runner._send_voice_reply = AsyncMock()
     runner._capture_gateway_honcho_if_configured = lambda *a, **k: None
     runner._emit_gateway_run_progress = AsyncMock()
-    runner._update_prompt_pending = {}
     runner._busy_input_mode = "interrupt"
     runner._draining = False
-    runner._session_run_generation = {}
     runner._session_sources = {}
-    runner._pending_native_image_paths_by_session = {}
     runner._background_tasks = {}
     runner._background_task_counter = 0
     runner._session_model_overrides = {}

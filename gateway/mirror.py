@@ -8,6 +8,7 @@ agent knows what was sent.  Standalone: works from CLI, cron and gateway context
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
@@ -16,6 +17,16 @@ logger = logging.getLogger(__name__)
 
 _SESSIONS_DIR = get_hermes_home() / "sessions"
 _SESSIONS_INDEX = _SESSIONS_DIR / "sessions.json"
+_SESSIONS_INDEX_AT_IMPORT = _SESSIONS_INDEX
+
+
+def _resolve_sessions_index() -> Path:
+    """Active profile's ``sessions.json`` at call time: the patched ``_SESSIONS_INDEX`` when a test
+    changed it, else live profile-scoped HERMES_HOME — under the multiplexed gateway one process
+    serves every profile, so the import-time constant would resolve every profile's pre-migration
+    session lookup against the launch profile's index."""
+    return (_SESSIONS_INDEX if _SESSIONS_INDEX != _SESSIONS_INDEX_AT_IMPORT
+            else get_hermes_home() / "sessions" / "sessions.json")
 
 
 def _origin_user_id(entry: dict) -> str:
@@ -86,10 +97,11 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     except Exception as e:
         logger.debug("Mirror state.db session lookup failed: %s", e)
 
-    if not _SESSIONS_INDEX.exists():
+    sessions_index = _resolve_sessions_index()
+    if not sessions_index.exists():
         return None
     try:
-        data = json.loads(_SESSIONS_INDEX.read_text(encoding="utf-8"))
+        data = json.loads(sessions_index.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
 

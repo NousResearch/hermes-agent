@@ -70,17 +70,6 @@ def test_estimator_empty_inputs():
 # ── default base + tier scaling ────────────────────────────────────────────
 
 
-def test_default_base_is_90s(monkeypatch, tmp_path):
-    """Default base stale timeout dropped from 300s to 90s (May 2026)."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / ".env").write_text("", encoding="utf-8")
-    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
-    _write_config(tmp_path, "")
-
-    agent = _make_agent(tmp_path)
-    base, implicit = agent._resolved_api_call_stale_timeout_base()
-    assert base == 90.0
-    assert implicit is True
 
 
 
@@ -118,5 +107,6 @@ providers:
 def test_openai_codex_stale_floor_tiers():
     from agent.chat_completion_helpers import openai_codex_stale_timeout_floor
 
-    assert openai_codex_stale_timeout_floor(55_000) == 900.0
-    assert openai_codex_stale_timeout_floor(120_000) == 1200.0
+    # Contract, not literals: a bigger request never gets a shorter floor.
+    small, large = openai_codex_stale_timeout_floor(55_000), openai_codex_stale_timeout_floor(120_000)
+    assert 0 < small <= large

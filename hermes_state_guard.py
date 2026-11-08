@@ -6,6 +6,7 @@ state.db; env-based so subprocess children are protected too."""
 import os
 import sys
 import threading
+import weakref
 from pathlib import Path
 from typing import Any, Optional
 
@@ -62,6 +63,11 @@ def _running_under_pytest() -> bool:
 #: pytest launcher names, matched against each argv token's *basename* so
 #: ``/tmp/pytest-of-dev/...`` paths cannot false-positive.
 _PYTEST_LAUNCHER_NAMES = frozenset({"pytest", "py.test", "pytest.exe", "py.test.exe"})
+#: The repo's test runner: under its fork server (HERMES_TEST_FORKSERVER) a test
+#: process has no ``python -m pytest`` ancestor, only ``python .../run_tests_parallel.py``.
+#: It counts only as the script a Python interpreter runs: a prompt or an editor
+#: naming the file (``hermes chat -q "fix scripts/run_tests_parallel.py"``) is no test.
+_TEST_RUNNER_SCRIPT = "run_tests_parallel.py"
 
 #: Memoised ancestry answer: the tree above us doesn't change; keep the hot path free.
 _PYTEST_ANCESTOR: Optional[bool] = None
@@ -74,15 +80,19 @@ def _process_looks_like_pytest(proc: Any) -> bool:
         cmdline = proc.cmdline() or []
     except Exception:
         return False
+    names = []
     for arg in cmdline:
         try:
             # Split on both separators on every host so the answer is platform-independent.
-            name = str(arg).strip('"').strip("'").replace("\\", "/").rsplit("/", 1)[-1].lower()
+            names.append(str(arg).strip('"').strip("'").replace("\\", "/").rsplit("/", 1)[-1].lower())
         except Exception:
-            continue
-        if name in _PYTEST_LAUNCHER_NAMES:
-            return True
-    return False
+            names.append("")
+    if any(name in _PYTEST_LAUNCHER_NAMES for name in names):
+        return True
+    if not names or not names[0].startswith("python"):
+        return False
+    script = next((name for name in names[1:] if not name.startswith("-")), "")
+    return script == _TEST_RUNNER_SCRIPT
 
 
 def _has_pytest_ancestor() -> bool:
@@ -123,6 +133,30 @@ def _is_production_state_db(resolved: Path, root: Path) -> bool:
     except ValueError:
         return False
     return len(parts) == 3 and parts[0] == "profiles"
+
+
+# Test-only SessionDB instance registry. Under the hermetic suite every
+# successfully constructed SessionDB is added to this WeakSet so the autouse
+# teardown in tests/conftest.py (_close_leaked_session_dbs) can close whatever
+# a test forgot to close. Dozens of tests build SessionDB() directly and never
+# close it; each instance holds a writer connection plus pooled readers, and a
+# single-process run over tests/hermes_cli/ accumulated 16-25 GB RSS (OOM
+# incident 20260816). The per-file runner masks this in CI; the registry fixes
+# the class at the source instead of patching ~40 test files.
+#
+# Population is gated on the isolation marker (exported by tests/conftest.py
+# before any test module imports). Production processes never populate it;
+# do not "simplify" the gate away. WeakSet membership never pins an instance.
+_test_instance_registry: weakref.WeakSet[Any] = weakref.WeakSet()
+
+
+def _register_test_instance(db: Any) -> None:
+    """Track *db* for suite-level teardown closing (test-isolation runs only)."""
+    if os.environ.get(_TEST_ISOLATION_MARKER_ENV):
+        try:
+            _test_instance_registry.add(db)
+        except Exception:  # pragma: no cover — registry must never break init
+            pass
 
 
 # Last SessionDB() init error, per-process; surfaced by /resume-style slash

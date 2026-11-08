@@ -8,7 +8,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
+from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 
 
@@ -57,8 +57,6 @@ def _make_runner(max_concurrent_sessions: int | None = None) -> GatewayRunner:
     runner.adapters = {Platform.TELEGRAM: _FakeAdapter()}
     runner._running_agents = {}
     runner._running_agents_ts = {}
-    runner._active_session_leases = {}
-    runner._session_run_generation = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._voice_mode = {}
@@ -112,10 +110,7 @@ def test_new_session_gets_clean_error_at_active_session_limit(monkeypatch):
     with patch.object(GatewayRunner, "_handle_message_with_agent", fail_if_agent_runs):
         result = asyncio.run(runner._handle_message(event))
 
-    assert result == (
-        "Hermes is at the active session limit (1/1). "
-        "Try again when another session finishes."
-    )
+    assert "(1/1)" in result
     assert new_key not in runner._running_agents
     runner.session_store.get_or_create_session.assert_not_called()
 

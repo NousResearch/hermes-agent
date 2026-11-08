@@ -479,8 +479,8 @@ def test_prompt_row_id_rewind_preserves_scaffold_before_regeneration(
             }
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
-            self._target = target
+        def __init__(self, target=None, daemon=None, args=(), kwargs=None, name=None):
+            self._target = lambda: target(*args, **(kwargs or {}))
 
         def start(self):
             self._target()
@@ -508,5 +508,11 @@ def test_prompt_row_id_rewind_preserves_scaffold_before_regeneration(
     assert seen["history"][0]["display_kind"] == "hidden"
     assert "REAL ASK" not in seen["history"][0]["content"]
     active = db.get_messages_as_conversation(session_key, include_row_ids=True)
-    assert len(active) == 1
-    assert active[0]["display_kind"] == "hidden"
+    # The cut keeps only the scaffold; the edited prompt is then durable at submit (#111868),
+    # written AFTER the truncation, so it is the single active user turn after the scaffold.
+    assert [(m.get("display_kind"), m["content"]) for m in active] == [
+        ("hidden", active[0]["content"]),
+        (None, "EDITED ASK"),
+    ]
+    assert "REAL ASK" not in active[0]["content"]
+    assert active[1]["_row_id"] > target_row_id

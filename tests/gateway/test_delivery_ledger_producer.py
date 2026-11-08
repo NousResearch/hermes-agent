@@ -132,7 +132,7 @@ class TestProducerHook:
         replacement = _Adapter()
         replacement._owner_profile = "reviewer"
         runner = MagicMock()
-        runner._adapter_for_source.side_effect = [adapter, replacement]
+        runner._delivery_adapter_for.side_effect = [adapter, replacement]
         runner._redeliver_failed_obligations_for_platform = AsyncMock(return_value=1)
         adapter.gateway_runner = runner
         adapter.send = AsyncMock(

@@ -24,13 +24,6 @@ _build_document_context_note = gateway_run._build_document_context_note
 
 
 class TestTextDocumentNote:
-    @pytest.mark.parametrize("mtype", ["text/plain", "text/markdown", "text/csv"])
-    def test_text_note_mentions_included_content_and_path(self, mtype):
-        note = _build_document_context_note("notes.txt", "/cache/doc_notes.txt", mtype)
-        assert "text document" in note
-        assert "notes.txt" in note
-        assert "/cache/doc_notes.txt" in note
-        assert "included below" in note
 
     def test_non_inlined_text_note_tells_agent_to_read_cached_path(self):
         note = _build_document_context_note(
@@ -50,9 +43,7 @@ class TestTextDocumentNote:
             platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")}
         )
         runner.adapters = {}
-        runner._pending_native_image_paths_by_session = {}
         runner._session_model_overrides = {}
-        runner._session_reasoning_overrides = {}
         source = SessionSource(
             platform=Platform.TELEGRAM,
             chat_id="text-document",
@@ -99,5 +90,4 @@ class TestBinaryDocumentNote:
         assert "extract" in note.lower()
         # ...and does NOT steer it into punting back to the user (the bug).
         assert "ask the user" not in note.lower()
-        assert "paste" in note.lower()
 

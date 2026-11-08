@@ -14,8 +14,8 @@ Skills 是 agent 在需要时可以加载的按需知识文档。它们遵循**�
 
 另请参阅：
 
-- [捆绑 Skills 目录](/reference/skills-catalog)
-- [官方可选 Skills 目录](/reference/optional-skills-catalog)
+- [捆绑 Skills 目录](../../reference/skills-catalog.md)
+- [官方可选 Skills 目录](../../reference/optional-skills-catalog.md)
 
 ## 使用 Skills
 
@@ -156,7 +156,7 @@ metadata:
 | `requires_toolsets` | 当列出的 toolsets 不可用时，skill **隐藏**。可用时显示。 |
 | `requires_tools` | 同上，但检查单个工具。 |
 
-**示例：** 内置的 `duckduckgo-search` skill 使用 `fallback_for_toolsets: [web]`。当你设置了 `FIRECRAWL_API_KEY` 时，web toolset 可用，agent 使用 `web_search`——DuckDuckGo skill 保持隐藏。如果 API key 缺失，web toolset 不可用，DuckDuckGo skill 会自动作为 fallback 出现。
+**示例：** 一个声明了 `fallback_for_toolsets: [web]` 的基于 curl 的搜索 skill，在 web toolset 可用时保持隐藏，仅在其被禁用时出现，确保 agent 仍有搜索途径。
 
 没有任何条件字段的 skills 行为与之前完全相同——始终显示。
 
@@ -174,7 +174,7 @@ required_environment_variables:
 
 当遇到缺失的值时，Hermes 仅在本地 CLI 中实际加载 skill 时才会安全地请求输入。你可以跳过设置并继续使用该 skill。消息平台不会在聊天中请求密钥——它们会告诉你改用本地的 `hermes setup` 或 `~/.hermes/.env`。
 
-一旦设置，声明的环境变量会**自动传递**到 `execute_code` 和 `terminal` 沙箱——skill 的脚本可以直接使用 `$TENOR_API_KEY`。对于非 skill 的环境变量，使用 `terminal.env_passthrough` 配置选项。详情参见[环境变量传递](/user-guide/security#environment-variable-passthrough)。
+一旦设置，声明的环境变量会**自动传递**到 `execute_code` 和 `terminal` 沙箱——skill 的脚本可以直接使用 `$TENOR_API_KEY`。对于非 skill 的环境变量，使用 `terminal.env_passthrough` 配置选项。详情参见[环境变量传递](../security.md#environment-variable-passthrough)。
 
 ### Skill 配置设置
 
@@ -192,7 +192,7 @@ metadata:
 
 设置存储在 config.yaml 的 `skills.config` 下。`hermes config migrate` 会提示配置未设置的项，`hermes config show` 会显示它们。当 skill 加载时，其解析后的配置值会注入到上下文中，agent 会自动知晓已配置的值。
 
-详情参见 [Skill 设置](/user-guide/configuration#skill-settings) 和[创建 Skills——配置设置](/developer-guide/creating-skills#config-settings-configyaml)。
+详情参见 [Skill 设置](../configuration.md#skill-settings) 和[创建 Skills——配置设置](../../developer-guide/creating-skills.md#config-settings-configyaml)。
 
 ## Skill 目录结构
 
@@ -757,4 +757,4 @@ hermes skills reset google-workspace --restore --yes
 /skills list
 ```
 
-官方可选 skills 仍使用 `official/security/1password` 和 `official/migration/openclaw-migration` 等标识符。
+官方可选 skills 仍使用 `official/security/1password` 和 `official/mcp/fastmcp` 等标识符。

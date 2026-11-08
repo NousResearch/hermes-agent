@@ -57,7 +57,10 @@ def test_room_member_session_events_reach_plugins_with_room_coordinates(observer
     _session("room-sid", hosted=True)
     try:
         server._emit("tool.start", "room-sid", {"tool_id": "call-1", "name": "terminal", "args": {"command": "ls"}})
-        server._emit("approval.request", "room-sid", {"request_id": "req-1", "command": "rm -rf build"})
+        # An approval is a server→client REQUEST frame, not an event; it is member activity all the same.
+        from tui_gateway import server_requests
+        server_requests.send_async("approval", "room-sid", {"request_id": "req-1", "command": "rm -rf build"},
+                                   lambda result: None)("test_done")
         server._emit("session.info", "room-sid", {"title": "chrome, not member activity"})
         server._emit("tool.complete", "room-sid", {"tool_id": "call-1", "name": "terminal", "result": "ok"})
     finally:
@@ -71,8 +74,9 @@ def test_room_member_session_events_reach_plugins_with_room_coordinates(observer
     assert {k: started[k] for k in HOSTED_TASK} == HOSTED_TASK
     assert started["payload"]["tool_id"] == "call-1" and started["payload"]["args"] == {"command": "ls"}
     assert observer[1]["payload"]["request_id"] == "req-1"
-    # Per-session replay seq travels with the event so consumers can order/dedupe.
-    assert [event["seq"] for event in observer] == sorted(event["seq"] for event in observer)
+    # Per-session replay seq travels with the events so consumers can order/dedupe (a request frame carries none).
+    seqs = [event["seq"] for event in observer if event["seq"] is not None]
+    assert seqs == sorted(seqs) and len(seqs) == 2
 
 
 def test_ordinary_session_events_never_fire_the_room_hook(observer):

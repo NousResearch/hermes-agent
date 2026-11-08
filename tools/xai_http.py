@@ -49,29 +49,16 @@ def has_xai_credentials() -> bool:
         return False
 
 
-def get_env_value(name: str, default=None):
-    """Read ``name`` from ``~/.hermes/.env`` first, then ``os.environ``.
-
-    Wraps :func:`hermes_cli.config.get_env_value` so tests can patch ``tools.xai_http.get_env_value``.
-    """
-    try:
-        from hermes_cli.config import get_env_value as _hermes_get_env_value
-    except ImportError:
-        return os.environ.get(name, default)
-    value = _hermes_get_env_value(name)
-    return value if value is not None else default
-
-
 def hermes_xai_user_agent() -> str:
     """Return a stable Hermes-specific User-Agent for xAI HTTP calls."""
     try:
-        from hermes_cli import __version__
+        from hermes_cli.version_info import get_version_info
+        return f"Hermes-Agent/{get_version_info().base_version}"
     except Exception:
-        __version__ = "unknown"
-    return f"Hermes-Agent/{__version__}"
+        return "Hermes-Agent/unknown"
 
 
-def hermes_xai_default_headers() -> Dict[str, str]:
+def hermes_xai_default_headers() -> dict[str, str]:
     """Default headers for OpenAI-SDK and raw HTTP clients talking to xAI (replaces the SDK User-Agent)."""
     return {"User-Agent": hermes_xai_user_agent()}
 
@@ -105,7 +92,7 @@ def _coerce_expires_after(value: Any) -> Optional[int]:
     return None if int(value) <= 0 else min(int(value), MAX_XAI_STORAGE_EXPIRES_AFTER_SECONDS)
 
 
-def read_xai_imagine_storage_config(section_name: str) -> Dict[str, Any]:
+def read_xai_imagine_storage_config(section_name: str) -> dict[str, Any]:
     """Read ``<section_name>.xai.storage`` (``image_gen``/``video_gen``) -> {enabled, public_url, expires_after}.
     On by default so xAI returns permanent public URLs, not short-lived CDN ones; null TTL = permanent."""
     try:
@@ -123,14 +110,14 @@ def read_xai_imagine_storage_config(section_name: str) -> Dict[str, Any]:
 
 def build_xai_storage_options(
     section_name: str, *, filename_prefix: str, extension: str,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     """Return an xAI ``storage_options`` payload, or None when disabled."""
     cfg = read_xai_imagine_storage_config(section_name)
     if not cfg["enabled"]:
         return None
     ts = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d-%H%M%S")
     filename = f"{filename_prefix}-{ts}-{uuid.uuid4().hex[:8]}.{extension.lstrip('.') or 'bin'}"
-    payload: Dict[str, Any] = {"filename": filename, "public_url": bool(cfg["public_url"])}
+    payload: dict[str, Any] = {"filename": filename, "public_url": bool(cfg["public_url"])}
     if cfg["expires_after"] is not None:
         payload["expires_after"] = cfg["expires_after"]
     return payload
@@ -178,17 +165,18 @@ def _resolve_explicit_xai_api_key() -> str:
     (incl. failing closed in a multiplexed gateway turn) is never re-implemented per caller.
     """
     from tools.tool_backend_helpers import resolve_provider_secret
-    return resolve_provider_secret("XAI_API_KEY", "xai", env_getter=get_env_value)
+    return resolve_provider_secret("XAI_API_KEY", "xai")
 
 
 def _xai_base_url_override() -> str:
     """``HERMES_XAI_BASE_URL`` then ``XAI_BASE_URL``, stripped; '' when unset."""
+    from hermes_cli.config import get_env_value
     return str(get_env_value("HERMES_XAI_BASE_URL") or get_env_value("XAI_BASE_URL") or "").strip().rstrip("/")
 
 
 def resolve_xai_http_credentials(
     *, force_refresh: bool = False, api_key_hint: Optional[str] = None, prefer_api_key: bool = False,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Resolve bearer credentials for direct xAI HTTP endpoints.
 
     Default order: Hermes-managed xAI OAuth, then ``XAI_API_KEY`` (via ``get_env_value`` so
@@ -235,6 +223,7 @@ def resolve_xai_http_credentials(
     except Exception:
         pass
 
+    from hermes_cli.config import get_env_value
     api_key = _resolve_explicit_xai_api_key()
     base_url = str(get_env_value("XAI_BASE_URL") or DEFAULT_XAI_BASE_URL).strip().rstrip("/")
     return {"provider": "xai", "api_key": api_key, "base_url": base_url}

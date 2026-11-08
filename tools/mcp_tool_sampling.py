@@ -10,7 +10,7 @@ from contextvars import Context
 from typing import TYPE_CHECKING, Callable, List, Optional
 from utils import is_truthy_value
 from tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, mcp_field, _core
-from tools.mcp_tool_schema import _normalize_mcp_input_schema
+from tools.mcp_tool_schema import _normalize_mcp_input_schema, strip_schema_annotations
 from tools.ansi_strip import strip_tool_metadata_text, strip_unicode_tags, strip_unicode_tags_deep
 
 
@@ -45,7 +45,8 @@ def _content_part(block) -> Optional[dict]:
 
 def _tool_call_dict(tu, index: int) -> dict:
     args = tu.input
-    return {"id": getattr(tu, "id", f"call_{index}"), "type": "function", "function": {
+    # Same conversion as the matching tool result's ``tool_call_id``, so the pair still matches.
+    return {"id": strip_unicode_tags(str(getattr(tu, "id", f"call_{index}"))), "type": "function", "function": {
         "name": strip_unicode_tags(str(tu.name)),
         "arguments": json.dumps(strip_unicode_tags_deep(args), ensure_ascii=False) if isinstance(args, dict) else strip_unicode_tags(str(args))}}
 
@@ -211,8 +212,8 @@ class SamplingHandler:
         tools = [{"type": "function", "function": {
             "name": strip_unicode_tags(str(getattr(t, "name", ""))),
             "description": strip_tool_metadata_text(str(getattr(t, "description", "") or "")),
-            "parameters": strip_unicode_tags_deep(
-                _normalize_mcp_input_schema(mcp_field(t, "input_schema", "inputSchema")), strip_tool_metadata_text)}}
+            "parameters": strip_schema_annotations(
+                _normalize_mcp_input_schema(mcp_field(t, "input_schema", "inputSchema")), getattr(t, "name", ""))}}
             for t in server_tools] if server_tools else None
         logger.log(self.audit_level, "MCP server '%s' sampling request: model=%s, max_tokens=%d, messages=%d",
                    self.server_name, resolved_model, max_tokens, len(messages))

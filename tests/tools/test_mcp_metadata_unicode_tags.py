@@ -177,6 +177,10 @@ class TestSamplingPath:
         msg = SimpleNamespace(role="user", content=[tr])
         out = _convert_sampling_message(msg)
         _assert_no_tags(out)
+        # The assistant's tool call with the same id must still pair with its result.
+        call = _convert_sampling_message(SimpleNamespace(
+            role="assistant", content=[SimpleNamespace(name="t", input={}, id=TAGGED)]))
+        assert call[0]["tool_calls"][0]["id"] == out[0]["tool_call_id"]
 
     def test_sampling_tool_use_name_and_args_stripped(self):
         from tools.mcp_tool_sampling import _convert_sampling_message
@@ -195,7 +199,7 @@ class TestSamplingPath:
             systemPrompt=TAGGED, maxTokens=16,
             messages=[SimpleNamespace(role="user", content=SimpleNamespace(text="hi"))],
             tools=[SimpleNamespace(name=TAGGED, description=TAGGED,
-                                   inputSchema={"type": "object", "properties": {TAGGED: {"description": TAGGED}}})])
+                                   inputSchema={"type": "object", "properties": {"q": {"description": TAGGED}}})])
         # capture the messages passed to call_llm (imported inside _build_llm_call, so patch first)
         captured = {}
         import agent.auxiliary_client as aux

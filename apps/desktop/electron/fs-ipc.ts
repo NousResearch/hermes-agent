@@ -8,7 +8,7 @@ import path from 'node:path'
 
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 
-import { PLUGIN_CATALOG_NAME_RE } from '../../shared/src/plugin-catalog-name'
+import { PLUGIN_CATALOG_NAME_RE } from '../../shared/src/desktop-plugin-files'
 
 import { platformDefaultHermesHome } from './data-paths'
 import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'

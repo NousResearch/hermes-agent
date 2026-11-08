@@ -18,13 +18,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { INSTALL_ORIGIN, PACKAGE_MARKER } from '../../shared/src/desktop-plugin-files'
+
+export { INSTALL_ORIGIN, PACKAGE_MARKER }
+
 export const DESKTOP_PLUGINS_DIR = 'desktop-plugins'
-/** Marker inside a materialized desktop half: which agent package it came from. */
-export const PACKAGE_MARKER = '.hermes-package.json'
-/** Inside a STANDALONE desktop plugin installed from the catalog: which entry it is (`catalogName`,
- *  `repo`, `sha`), so the catalog card shows it installed. Unlike the package marker it pairs the
- *  folder with no agent half and leaves it removable. Only an installer writes it. */
-export const INSTALL_ORIGIN = '.hermes-origin.json'
 
 export interface DesktopHalfMarker {
   /** Agent package folder name (the `plugins/<name>` key). */
@@ -203,7 +201,7 @@ async function readMarker(dir: string): Promise<DesktopHalfMarker | null> {
 
 /** Same bytes on both paths. Unreadable either side answers `false` — a
  *  comparison we cannot make is never evidence of a match. */
-export async function sameFile(a: string, b: string): Promise<boolean> {
+async function sameFile(a: string, b: string): Promise<boolean> {
   try {
     const [left, right] = await Promise.all([fs.promises.readFile(a), fs.promises.readFile(b)])
 

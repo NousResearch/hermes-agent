@@ -118,6 +118,22 @@ describe('a standalone desktop plugin installed from the catalog', () => {
     expect(fs.readFileSync(path.join(dir, 'plugin.js'), 'utf8')).toContain('my-own-edit')
   })
 
+  it('records the commit it cloned when the install names no pin', async () => {
+    const repo = desktopOnlyRepo()
+    const appRoot = mkdtemp('hermes-origin-root-')
+
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, {
+      catalogName: 'accent-picker'
+    })
+
+    expect(result.ok).toBe(true)
+    expect(originOf(path.join(appRoot, result.pluginName!))).toEqual({
+      catalogName: 'accent-picker',
+      repo: pathToFileURL(repo).href,
+      sha: git(repo, 'rev-parse', 'HEAD')
+    })
+  })
+
   it('records the commit it checked out when the pin is an annotated tag', async () => {
     const repo = desktopOnlyRepo()
     const appRoot = mkdtemp('hermes-origin-root-')

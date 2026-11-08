@@ -4,6 +4,7 @@ import type { HermesReadDirResult } from '@/global'
 
 import { $pluginRecords, enableCatalogDesktopPlugin, publishPlugin } from './plugins-store'
 import { discoverRuntimePlugins } from './runtime-loader'
+import { routeBlobImportsToDataUrls } from './runtime-loader.test-helpers'
 
 // A standalone desktop plugin installed from the catalog carries `.hermes-origin.json`
 // (electron/desktop-plugins-root.ts INSTALL_ORIGIN). The loader puts that entry on the plugin's
@@ -57,31 +58,7 @@ beforeEach(() => {
     watchPreviewFile: vi.fn(async () => ({ id: 'w' }))
   }
 
-  // The loader imports plugins through a blob: URL; route it to a data: URL node can import.
-  const create = vi
-    .spyOn(URL, 'createObjectURL')
-    .mockImplementation(
-      blob =>
-        `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
-    )
-
-  const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
-  const RealBlob = globalThis.Blob
-  vi.stubGlobal(
-    'Blob',
-    class {
-      parts: string[]
-      constructor(parts: string[]) {
-        this.parts = parts
-      }
-    }
-  )
-
-  restore = () => {
-    create.mockRestore()
-    revoke.mockRestore()
-    vi.stubGlobal('Blob', RealBlob)
-  }
+  restore = routeBlobImportsToDataUrls()
 })
 
 afterEach(() => {
@@ -140,6 +117,23 @@ describe('a standalone plugin installed from the catalog', () => {
       packageOrigin: { repo: ORIGIN.repo }
     })
     expect($pluginRecords.get().accent.packageOrigin?.catalogName).toBeUndefined()
+  })
+
+  it('a reload that finds a linked package half watches its source, as a fresh load does', async () => {
+    const files: Record<string, string> = { 'plugin.js': OFF_BY_DEFAULT }
+    stubDisk([folder('accent-picker', files)])
+    await discoverRuntimePlugins()
+    const watch = vi.mocked(window.hermesDesktop.watchPreviewFile)
+    expect(watch).not.toHaveBeenCalledWith('/dev/accent/desktop/plugin.js')
+
+    files['.hermes-package.json'] = JSON.stringify({
+      linked: true,
+      package: 'accent-pkg',
+      source: '/dev/accent/desktop'
+    })
+    await discoverRuntimePlugins()
+
+    expect(watch).toHaveBeenCalledWith('/dev/accent/desktop/plugin.js')
   })
 
   it('a reload asked for during a scan waits for it and then reads the disk again', async () => {

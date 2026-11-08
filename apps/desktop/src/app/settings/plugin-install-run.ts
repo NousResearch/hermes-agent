@@ -5,6 +5,7 @@ import { isBrowserHostedDesktop } from '@/lib/platform'
 import {
   type AgentPluginInstallResult,
   type AgentPluginLiveNow,
+  type DesktopHalfInstallResult,
   type GatewayRequest,
   installAgentPlugin,
   installDesktopPluginHalf,
@@ -182,14 +183,7 @@ async function cloneDesktopHalf(
   // clones the desktop half here: the host copies it out of that one checkout (`desktopHalfFromPackage`).
   const installFn = window.hermesDesktop?.installDesktopPlugin
 
-  const result: {
-    error?: string
-    exists?: boolean
-    ok: boolean
-    pluginName?: string
-    sourceMoved?: boolean
-    unsupported?: boolean
-  } = installFn
+  const result: DesktopHalfInstallResult = installFn
     ? await installFn({
         identifier: plan.request.repo,
         force: plan.force,

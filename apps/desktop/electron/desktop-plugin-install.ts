@@ -427,7 +427,8 @@ async function headSha(gitBin: string, cloneRoot: string, revision = 'HEAD'): Pr
 
 /** Detach the clone at `sha`, the commit the install dialog showed: a branch that moved after review must
  *  not put down a tree nobody inspected. A source that no longer has it is refused. */
-async function checkoutReviewedCommit(gitBin: string, cloneRoot: string, sha: string): Promise<void> {
+/** Returns the commit checked out (a tag pin's peeled commit). */
+async function checkoutReviewedCommit(gitBin: string, cloneRoot: string, sha: string): Promise<string> {
   const reviewed = sha.trim().toLowerCase()
 
   if (!COMMIT_SHA.test(reviewed)) {
@@ -441,9 +442,13 @@ async function checkoutReviewedCommit(gitBin: string, cloneRoot: string, sha: st
     }
 
     // A catalog pin may name an annotated tag: HEAD is the commit it peels to.
-    if ((await headSha(gitBin, cloneRoot)) !== (await headSha(gitBin, cloneRoot, `${reviewed}^{commit}`))) {
+    const head = await headSha(gitBin, cloneRoot)
+
+    if (head !== (await headSha(gitBin, cloneRoot, `${reviewed}^{commit}`))) {
       throw new Error(`HEAD is not ${reviewed}.`)
     }
+
+    return head
   } catch (err) {
     throw new ReviewedCommitUnavailable(
       `The commit you reviewed (${reviewed.slice(0, 12)}) could not be checked out; the source may have changed ` +
@@ -524,15 +529,13 @@ export async function probePluginRepo(gitBin: string, identifier: string): Promi
   }
 }
 
-/** The catalog entry a standalone plugin records (`INSTALL_ORIGIN`): the commit checked out, plus the
- *  catalog pin it satisfies when that pin names a tag object rather than the commit itself, so a check
- *  against the catalog's `sha` (the agent's `.install-metadata` record does the same) sees it as current. */
+/** `head` is the commit `checkoutReviewedCommit` checked out (read here when nothing was pinned). */
 async function installOrigin(
   gitBin: string,
   cloneRoot: string,
-  { catalogName, repo, pin }: { catalogName: string; repo: string; pin?: string }
+  { catalogName, repo, head, pin }: { catalogName: string; head: null | string; pin?: string; repo: string }
 ): Promise<InstallOrigin> {
-  const sha = await headSha(gitBin, cloneRoot)
+  const sha = head ?? (await headSha(gitBin, cloneRoot))
   const reviewed = pin?.trim().toLowerCase()
 
   return { catalogName, repo, sha, ...(reviewed && reviewed !== sha ? { pin: reviewed } : {}) }
@@ -559,9 +562,7 @@ export async function installDesktopPluginFromGit(
     const cloneRoot = await cloneToTemp(gitBin, gitUrl, subdir)
 
     try {
-      if (sha !== undefined) {
-        await checkoutReviewedCommit(gitBin, cloneRoot, sha)
-      }
+      const head = sha === undefined ? null : await checkoutReviewedCommit(gitBin, cloneRoot, sha)
 
       const pluginRoot = await resolvePluginRoot(cloneRoot, subdir)
       const detected = await detectPluginComponents(pluginRoot)
@@ -583,11 +584,12 @@ export async function installDesktopPluginFromGit(
       const targetDir = path.join(desktopPluginsRoot, pluginName)
       const targetPlugin = path.join(targetDir, 'plugin.js')
 
-      // A standalone plugin installed from a catalog entry records that entry, at the commit checked out
-      // (a tag pin is peeled), so the card shows it installed.
+      // A standalone plugin installed from a catalog entry records that entry, so the card shows it installed:
+      // `sha` is the commit checked out, `pin` the tag object a tag pin names (the agent's catalog record keeps
+      // both), so a check against the catalog's pin sees it as current.
       const origin: InstallOrigin | null =
         catalogName && !packageName
-          ? await installOrigin(gitBin, cloneRoot, { catalogName, repo: gitUrl, pin: sha })
+          ? await installOrigin(gitBin, cloneRoot, { catalogName, repo: gitUrl, head, pin: sha })
           : null
 
       // Under the root's writer lock: the exists check and the publish must not

@@ -29,7 +29,16 @@ export interface PluginRecord {
   /** Agent package this is the desktop half of (unified agent+desktop packages). */
   packageName?: string
   /** Where that package came from (catalog sidecar or git remote), when known. */
-  packageOrigin?: { catalogName?: string; pin?: string; repo?: string; sha?: string }
+  packageOrigin?: PackageOrigin
+}
+
+/** Where a disk plugin came from: a package half's marker origin, or the catalog entry a standalone plugin's
+ *  installer recorded (`pin` is the tag object a tag pin names, beside the commit `sha` checked out). */
+export interface PackageOrigin {
+  catalogName?: string
+  pin?: string
+  repo?: string
+  sha?: string
 }
 
 // Explicit user enable/disable choices, id -> boolean. ABSENCE means "no
@@ -122,6 +131,10 @@ export async function enablePackageDesktopHalf(packageName: string, { keepUserCh
   await enableDesktopPlugins(record => record.packageName === packageName, keepUserChoice)
 }
 
+/** The catalog entry a STANDALONE plugin was installed from; a package's half answers for no entry here. */
+const standaloneCatalogName = (record: PluginRecord) =>
+  record.packageName ? undefined : record.packageOrigin?.catalogName
+
 /** The catalog entries the STANDALONE desktop plugins on disk were installed from, each with the commits
  *  that count as current for it (the one checked out, and the tag object a tag pin names). A desktop-only
  *  entry has no agent row to carry its `catalog_name`, so a surface asking "is this entry installed?" reads
@@ -129,11 +142,12 @@ export async function enablePackageDesktopHalf(packageName: string, { keepUserCh
  *  installed is the selected profile's agent inventory. */
 export function installedDesktopCatalogEntries(records: Record<string, PluginRecord>): Map<string, string[]> {
   return new Map(
-    Object.values(records).flatMap(({ packageName, packageOrigin: origin }) =>
-      !packageName && origin?.catalogName
-        ? [[origin.catalogName, [origin.sha, origin.pin].filter((sha): sha is string => Boolean(sha))] as const]
-        : []
-    )
+    Object.values(records).flatMap(record => {
+      const name = standaloneCatalogName(record)
+      const { pin, sha } = record.packageOrigin ?? {}
+
+      return name ? [[name, [sha, pin].filter((value): value is string => Boolean(value))] as const] : []
+    })
   )
 }
 
@@ -141,7 +155,7 @@ export function installedDesktopCatalogEntries(records: Record<string, PluginRec
  *  ship off by default (`defaultEnabled: false`); a dialog that said "turns on right away" must not
  *  leave it off for the user to find. Ticking that is the user's choice, so an older "off" yields. */
 export async function enableCatalogDesktopPlugin(catalogName: string): Promise<void> {
-  await enableDesktopPlugins(record => !record.packageName && record.packageOrigin?.catalogName === catalogName, false)
+  await enableDesktopPlugins(record => standaloneCatalogName(record) === catalogName, false)
 }
 
 async function enableDesktopPlugins(matches: (record: PluginRecord) => boolean, keepUserChoice: boolean) {

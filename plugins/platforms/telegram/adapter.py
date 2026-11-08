@@ -6197,7 +6197,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
 
     def _attach_cached(self, event: MessageEvent, cached, note: str, log_fmt: str) -> None:
         """Append a cached attachment to the event (message type follows the kind only for the first one)."""
-        from gateway.platforms.base_media_flags import pad_inline_flags
+        from plugins.platforms.telegram.telegram_batching import pad_inline_flags
         event.media_text_inlined = pad_inline_flags(event) + [False]
         event.media_urls.append(cached.path)
         event.media_types.append(cached.media_type)

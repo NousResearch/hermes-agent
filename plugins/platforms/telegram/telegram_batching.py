@@ -1,7 +1,18 @@
 """Telegram inbound album and photo-burst event merging."""
 
+from typing import Optional
+
 from gateway.platforms.event import MessageEvent
-from gateway.platforms.base_media_flags import pad_inline_flags
+
+
+def pad_inline_flags(event: MessageEvent) -> list[Optional[bool]]:
+    """Represent unspecified legacy flags as None before appending media.
+
+    Local twin of core's private ``gateway.platforms.base_media_flags`` helper: plugins may only
+    import the published plugin API.
+    """
+    flags = list(getattr(event, "media_text_inlined", []) or [])
+    return flags + [None] * (len(event.media_urls) - len(flags))
 
 
 def merge_batched_event(pending: dict, key: str, event: MessageEvent, *, merge_caption) -> None:

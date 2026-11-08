@@ -93,6 +93,15 @@ class TestSpacedExtensionAfterDot:
         )
         assert "MEDIA:" not in cleaned
 
+    def test_space_before_dot_delivers(self, tmp_path):
+        target = tmp_path / "raport.docx"
+        target.write_bytes(b"PK\x03\x04")
+        media, cleaned = BasePlatformAdapter.extract_media(
+            f"MEDIA:{tmp_path / 'raport'} .docx"
+        )
+        assert [os.path.realpath(p) for p, _ in media] == [os.path.realpath(str(target))]
+        assert "MEDIA:" not in cleaned
+
     def test_spaced_tag_with_no_file_stays_visible(self, tmp_path):
         missing = tmp_path / "17. Nearsurat (I9-2022)"
         media, cleaned = BasePlatformAdapter.extract_media(f"MEDIA:{missing}. pdf")

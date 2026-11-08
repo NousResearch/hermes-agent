@@ -1,27 +1,27 @@
 name: crashlab
 title: CrashLab
 repo: https://github.com/dolepee/crashlab
-sha: b58224928e4b3b102db2101545afcedeaaba0eaa
+sha: 145e8bb96f36b024a16d48889c93ff86e069fa0e
 description: Test recovery before delivery, after commit and across restart; inspect saved records, verify the repair and keep a reusable regression.
 maintainer: dolepee
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.5.4"
-docs_url: https://github.com/dolepee/crashlab/blob/b58224928e4b3b102db2101545afcedeaaba0eaa/README.md
+version: "0.5.6"
+docs_url: https://github.com/dolepee/crashlab/blob/145e8bb96f36b024a16d48889c93ff86e069fa0e/README.md
 platforms:
   - linux
   - macos
 screenshots:
-  - https://raw.githubusercontent.com/dolepee/crashlab/b58224928e4b3b102db2101545afcedeaaba0eaa/docs/dashboard-desktop.png
-  - https://raw.githubusercontent.com/dolepee/crashlab/b58224928e4b3b102db2101545afcedeaaba0eaa/docs/dashboard-mobile.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/145e8bb96f36b024a16d48889c93ff86e069fa0e/docs/dashboard-desktop.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/145e8bb96f36b024a16d48889c93ff86e069fa0e/docs/dashboard-mobile.png
 known_issues:
   - "Execution needs human approval for the captured plan; trusted local cases and applications remain required."
   - "Older evaluator bundles require an explicit new baseline after evaluator changes; VERIFIED status never transfers."
   - "Noninteractive install can require npm ci; local application runtimes and dependencies are separate."
   - "Restart needs an owned foreground process group and record-level observation; numeric-only HTTP counts are rejected."
   - "Replay requires identical evaluator hashes and a direct Python launch; dependencies remain separate."
-  - "Kist and Flaskr are externally sourced repair examples, not adoption or general autonomous-repair evidence."
+  - "Kist and Flaskr retain model-repair records; Shiori is a supplied-diagnosis guided model patch with operator verifier runs, not autonomous discovery or adoption."
   - "Flaskr repair covers fresh databases; existing databases need migration and legacy tokenless POSTs are unprotected."
   - "Project freshness covers tracked and nonignored untracked files, not ignored files, dependencies or runtime configuration."
   - "Completion reminders are opt-in, project-scoped and bounded by Hermes continuation limits; they are not an execution barrier."
@@ -54,3 +54,4 @@ capabilities:
   provides_middleware:
     - tool_execution
   requires_env: []
+

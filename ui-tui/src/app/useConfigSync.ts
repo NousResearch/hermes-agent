@@ -1,9 +1,9 @@
 import type { MouseTrackingMode } from '@hermes/ink'
+import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '@hermes/shared/gateway-types'
 import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
 import { syncTuiLocale } from '../i18n/loader.js'
 import { t } from '../i18n/runtime.js'
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'

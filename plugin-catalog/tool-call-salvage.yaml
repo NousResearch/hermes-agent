@@ -1,0 +1,26 @@
+name: tool-call-salvage
+repo: https://github.com/Julientalbot/hermes-tool-call-salvage
+sha: eae346510d680c3e6de211ef254e69b29ab95e4a
+version: "0.2.0"
+title: Tool Call Salvage
+description: >-
+  Removes tool-call markup that a model wrote into its final reply as text instead of calling
+  the tool (Qwen <function=...>, <invoke>, DeepSeek DSML and tool tokens, Harmony, Kimi, Mistral
+  and Llama formats). Only complete markup that ends the reply is touched; code blocks and
+  markup followed by more text are left as they are. When text is left before the removed markup,
+  a one-line notice names the tools that were not run. An optional salvage mode, off by default
+  and limited to the models you list, turns the markup into a real call to a tool offered in
+  that request. Disclosure: no network, files, shell, subprocesses, telemetry or stored state;
+  logs name the format and tools, never arguments; in salvage mode text the model wrote can
+  become a real tool call (tools offered in the request, or Hermes's tool_call bridge when
+  deferred_tools is on), run through Hermes's normal approvals.
+maintainer: Julientalbot
+tier: community
+category: models
+requires_hermes: ">=0.21.0"
+docs_url: https://github.com/Julientalbot/hermes-tool-call-salvage/blob/eae346510d680c3e6de211ef254e69b29ab95e4a/README.md
+capabilities:
+  provides_tools: []
+  provides_hooks: [transform_llm_output]
+  provides_middleware: [llm_execution]
+  requires_env: []

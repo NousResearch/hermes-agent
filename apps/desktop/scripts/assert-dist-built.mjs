@@ -1,14 +1,14 @@
 // Build-time guard: refuse to hand a half-built renderer to electron-builder.
 //
-// `npm run pack` / `npm run dist*` are `npm run build && npm run builder`.
+// `pnpm run pack` / `pnpm run dist*` are `pnpm run build && pnpm run builder`.
 // If the `build` step (tsc -b && vite build) fails but packaging proceeds
 // anyway — a stale checkout that fails typecheck, an interrupted vite build,
-// or npm not short-circuiting `&&` in some shells — electron-builder happily
+// or a shell not short-circuiting `&&` — electron-builder happily
 // packages an app with an empty or missing `dist/`. The result launches but
 // blank-pages with `ERR_FILE_NOT_FOUND` for dist/index.html, with no clue why.
 //
 // The desktop compiler (scripts/build/desktop.mjs) runs it on the scratch
-// product before publishing dist/, so every `npm run build` path inherits it
+// product before publishing dist/, so every `pnpm run build` path inherits it
 // once. It is deliberately not also a `postbuild` hook: that re-ran the same
 // check on the bytes just verified, doubling its cost in every update.
 // It fails loud and early instead of shipping a broken bundle.
@@ -174,14 +174,14 @@ function main() {
       console.error("  completion. On Windows that is usually a stalled process creation")
       console.error("  (antivirus/EDR interference, memory pressure) and clears on a retry.")
       console.error("  If it repeats, check the node binary and any AV exclusion for the")
-      console.error(`    build tree, then re-run: cd ${desktopRoot} && npm run build\n`)
+      console.error(`    build tree, then re-run: cd ${desktopRoot} && pnpm run build\n`)
       process.exit(1)
     }
     console.error("  The renderer bundle is missing or incomplete, so packaging")
     console.error("  would produce an app that launches to a blank page.")
     console.error("  Re-run the build and check the tsc/vite output above for the")
     console.error("  real failure, then package again:")
-    console.error(`    cd ${desktopRoot} && npm run build\n`)
+    console.error(`    cd ${desktopRoot} && pnpm run build\n`)
     process.exit(1)
   }
 

@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
 import { isOutOfSyncRpcParams } from '@/lib/gateway-rpc'
+import { servedByHermesCloud } from '@/lib/hermes-cloud-host'
 import { isTimeoutError } from '@/lib/with-timeout'
 import { type ErrorToastCategory, recordFriction } from '@/store/desktop-metrics'
 import { requestBackendRestart, requestRoute } from '@/store/recovery-requests'
@@ -86,6 +87,23 @@ function cleanErrorText(value: string) {
   return value.replace(/^Error:\s*/, '').trim()
 }
 
+// FastAPI routes that raise with a dict detail ({message, kind} for SSH reach) carry the sentence in detail.message.
+function objectDetailMessage(text: string): string | undefined {
+  const start = text.indexOf('{')
+
+  if (start < 0) {
+    return undefined
+  }
+
+  try {
+    const message = (JSON.parse(text.slice(start)) as { detail?: { message?: unknown } } | null)?.detail?.message
+
+    return typeof message === 'string' && message.trim() ? message.trim() : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** True when an error string is a disk-full / ENOSPC / SQLITE_FULL failure. */
 export function isDiskFullErrorMessage(message: string): boolean {
   return (
@@ -108,6 +126,10 @@ export const RECOVERY_ACTIONS = {
   openUpdates: (): NotificationAction => ({
     label: translateNow('notifications.updateHermes'),
     onClick: () => void import('@/store/updates').then(({ openUpdatesWindow }) => openUpdatesWindow())
+  }),
+  reload: (): NotificationAction => ({
+    label: translateNow('commandCenter.reloadWindow'),
+    onClick: () => window.location.reload()
   }),
   restartHermes: (): NotificationAction => ({
     label: translateNow('notifications.actions.restartHermes'),
@@ -204,7 +226,8 @@ const ERROR_SUMMARIES: ErrorSummaryRule[] = [
     category: 'rpc_out_of_sync',
     test: msg => isOutOfSyncRpcParams(msg),
     summarize: () => translateNow('notifications.errors.rpcOutOfSync'),
-    action: () => RECOVERY_ACTIONS.openUpdates()
+    // A Webapp served by Hermes Cloud has no updater: reloading picks up the agent's new app.
+    action: () => (servedByHermesCloud() ? RECOVERY_ACTIONS.reload() : RECOVERY_ACTIONS.openUpdates())
   },
   {
     category: 'restart_required',
@@ -292,8 +315,11 @@ export function readableError(
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
   const unwrapped = raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw
   const cleaned = cleanErrorText(unwrapped)
-  const detail = cleaned.match(/"detail"\s*:\s*"([^"]+)"/)?.[1] ?? cleaned
-  const summary = summarizeErrorMessage(detail, fallback)
+  const rawDetail = cleaned.match(/"detail"\s*:\s*"([^"]+)"/)?.[1] ?? cleaned
+  const classified = summarizeErrorMessage(rawDetail, fallback)
+  const plain = classified.category === 'unclassified' ? objectDetailMessage(rawDetail) : undefined
+  const detail = plain ?? rawDetail
+  const summary = plain ? summarizeErrorMessage(plain, fallback) : classified
 
   return {
     message: summary.message,

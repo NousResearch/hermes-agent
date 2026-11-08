@@ -5159,8 +5159,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
 
     async def send_multiple_images(
         self, chat_id: str, images: list[tuple], metadata: Optional[dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
-        """Send images as Telegram albums (``send_media_group``, 10 per chunk). Animated GIFs can't join a
-        media group (need ``send_animation``) so they go via the base per-image path, as does a failed chunk."""
+        """Send images as Telegram albums (``telegram_album.send_photo_album``). Animated GIFs can't join a
+        media group (need ``send_animation``) so they go via the base per-image path."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         if not images:
@@ -5179,60 +5179,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             delivered = anim_result.success
         if not photos:
             return SendResult(success=delivered, error=None if delivered else "all images failed to send")
-        from urllib.parse import unquote as _unquote
-        CHUNK = 10  # Telegram's album limit
-        chunks = [photos[i:i + CHUNK] for i in range(0, len(photos), CHUNK)]
-        for chunk_idx, chunk in enumerate(chunks):
-            if human_delay > 0 and chunk_idx > 0:
-                await asyncio.sleep(human_delay)
-            media: list[Any] = []
-            opened_files: list[Any] = []
-            temp_paths: list[str] = []
-            try:
-                for image_url, alt_text in chunk:
-                    source: Any = image_url
-                    if image_url.startswith("file://"):
-                        local_path = _unquote(image_url[7:])
-                        if not os.path.exists(local_path):
-                            logger.warning("[%s] Skipping missing image in media group: %s", self.name, local_path)
-                            continue
-                        # Pre-compress large raster images so the media-group upload stays under
-                        # media_write_timeout; the temp JPEG is removed after the send.
-                        compressed = self._compress_image_to_jpeg(local_path)
-                        if compressed:
-                            temp_paths.append(compressed)
-                            local_path = compressed
-                        source = open(local_path, "rb")  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
-                        opened_files.append(source)
-                    media.append(InputMediaPhoto(media=source, caption=self._caption_1024(alt_text)))
-                if not media:
-                    continue
-                logger.info("[%s] Sending media group of %d photo(s) (chunk %d/%d)", self.name, len(media), chunk_idx + 1, len(chunks))
-                _, send_kwargs = self._media_send_kwargs(chat_id, None, metadata)
-
-                def _reset_opened_files() -> None:
-                    for fh in opened_files:
-                        with contextlib.suppress(Exception):
-                            fh.seek(0)
-
-                await self._send_with_dm_topic_reply_anchor_retry(
-                    self._bot.send_media_group, {**send_kwargs, "media": media}, metadata,
-                    "media group", reset_media=_reset_opened_files)
-                delivered = True
-            except Exception as e:
-                logger.warning(
-                    "[%s] send_media_group failed (chunk %d/%d), falling back to per-image: %s", self.name,
-                    chunk_idx + 1, len(chunks), _redact_telegram_error_text(e), exc_info=True)
-                fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
-                delivered = delivered or fallback.success
-            finally:
-                for fh in opened_files:
-                    with contextlib.suppress(Exception):
-                        fh.close()
-                for tmp in temp_paths:
-                    with contextlib.suppress(OSError):
-                        os.remove(tmp)
-        return SendResult(success=delivered, error=None if delivered else "all images failed to send")
+        from plugins.platforms.telegram.telegram_album import send_photo_album
+        return await send_photo_album(self, chat_id, photos, metadata, human_delay, delivered=delivered)
 
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,

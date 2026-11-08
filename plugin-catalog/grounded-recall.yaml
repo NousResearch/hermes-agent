@@ -1,0 +1,30 @@
+name: grounded-recall
+title: Grounded Recall
+repo: https://github.com/joaquinbyagentx/hermes-grounded-recall
+sha: "6c11dcb44840b9a9a0edeb544e439e5037951569"
+version: "1.0.0"
+description: >-
+  Before every model turn, searches your existing markdown notes (plain folders or an
+  Obsidian vault), this profile's recent sessions and, opt-in, secret-manager item titles
+  (never values), then injects a capped evidence block where each hit is labelled
+  CURRENT, UNVERIFIED or HISTORICAL by freshness, plus a rule to search before answering
+  "it doesn't exist / I have no access / I don't know". Every injection is logged per
+  profile. No new memory store, works alongside any memory provider. Disclosure: reads
+  the configured note folders and the active profile's session store; when secret-title
+  search is enabled it runs the secret manager's CLI to list item titles only; writes an
+  audit log under the active Hermes home. No network calls, no telemetry, no background
+  process.
+maintainer: joaquinbyagentx
+tier: community
+category: memory
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/joaquinbyagentx/hermes-grounded-recall#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - With no roots configured it only searches sessions; add a notes folder for useful results.

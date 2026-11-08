@@ -17,9 +17,12 @@ _SECRET_HEADER_LINE_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _SECRET_HEADER_INLINE_RE = re.compile(
-    # ``$``, ``&`` and ``;`` stay in the value (``x-api-key: &opaque…`` in a log is a credential);
-    # only ``&&`` / ``&`` / ``;`` before whitespace or end of text are a command's separators.
-    rf"({_SECRET_HEADER_NAMES}[ \t]*:[ \t]*)((?:[^\s\"';&|<>()`\\]|&(?![&\s]|$)|;(?!\s|$))+)",
+    # ``$`` and ``&``/``;``/``|`` stay in the value (``x-api-key: &opaque…`` / ``a|opaque…`` in a
+    # log is one credential) unless whitespace, end of text or another separator follows
+    # (``&& ls``, ``; next``, ``||true``). A leading ``<``/``(`` is part of a log value
+    # (``<opaque>``); later ``<>()`` are redirections/grouping and end the value.
+    rf"({_SECRET_HEADER_NAMES}[ \t]*:[ \t]*)"
+    rf"((?:[<(&;|]+(?![\s;&|<>()]|$))?(?:[^\s\"';&|<>()`\\]|[;&|](?![\s;&|<>()]|$))+)",
     re.IGNORECASE,
 )
 _SECRET_HEADER_DOUBLE_QUOTED_RE = re.compile(

@@ -1,6 +1,6 @@
 name: cite-or-abstain
 repo: https://github.com/zvporter-ops/cite-or-abstain
-sha: "e7fe2ab2f827df9148af4eaa0692abbf72834e4a"
+sha: "47b45f07bf67868a8d38c72ea07b9b810c8cf2a8"
 title: Cite or Abstain
 description: >-
   Evidence-gated answering with a provenance hierarchy, for any local AI deployment.
@@ -12,7 +12,10 @@ description: >-
   quoted spans must be verbatim, and figures, dates, URLs and identifiers must appear in a
   retrieved passage (line and passage references are masked so citations are not mistaken
   for claims); prose paraphrase is reported but never blocked. No model is asked to grade its
-  own answer. `/trust` runs a battery against the configured deployment and scores it:
+  own answer. The clearance rule covers every path that touches private material: when the
+  model a call would reach is not local, `corpus_ask` answers from public material only, and
+  `corpus_audit` / `/trust` refuse rather than sample internal passages into it. `/trust`
+  runs a battery against the configured deployment and scores it:
   invented quote and invented figure must be caught, verbatim quote and paraphrase must
   pass, and the pipeline must abstain on questions the corpus cannot answer. Ships an agent
   half (2 hooks, 3 tools, 1 command, 1 skill) and a Desktop half (evidence pane, status-bar
@@ -30,7 +33,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/zvporter-ops/cite-or-abstain#readme
-version: "0.2.0"
+version: "0.2.1"
 readme: true
 platforms: []
 capabilities:

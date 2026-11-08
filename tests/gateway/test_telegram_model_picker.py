@@ -283,3 +283,12 @@ async def test_model_ids_differing_only_in_their_org_keep_it_in_the_labels(plain
                                           "model_labels": model_labels})
         assert labels[0].startswith("meta-llama/") and labels[1].startswith("nousresearch/"), labels
         assert labels[2] == "gpt-5"
+
+
+@pytest.mark.asyncio
+async def test_long_look_alike_ids_never_share_a_label(plain_keyboards):
+    """Two clash groups whose names share a long beginning must not fall back to the same ordinal label."""
+    x = "x" * 60
+    ids = [f"{x}{v}{x}-{t}" for t in ("one", "two") for v in (1, 2)]
+    labels = await _model_labels_for({"slug": "custom", "name": "C", "models": ids, "total_models": 4})
+    assert len(set(labels)) == len(ids), labels

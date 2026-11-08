@@ -1,0 +1,32 @@
+name: kaption-whatsapp
+title: Kaption for WhatsApp
+repo: https://github.com/Kaption-AI/mcp-extension
+sha: 3f0534d6e4055d929758f3f4750953ec6f691adf
+subdir: hermes
+version: "1.0.0"
+description: >-
+  Your own WhatsApp in Hermes through Kaption's hosted MCP server (Streamable HTTP, OAuth 2.1 with PKCE and
+  dynamic client registration): search chats, contacts and groups, read voice-note transcripts, summarize a
+  conversation, set reminders, manage labels, lists and notes, list call recordings, schedule messages, and send
+  a message from the user's computer after they confirm it. Bundles the kaption-whatsapp skill. Portable Agent
+  Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector
+  with no local code; every tool call goes to mcp.kaptionai.com, signed in with the user's WhatsApp number and a
+  code sent on WhatsApp, and is relayed to the Kaption extension or desktop app on the user's computer, which
+  must be running. The relay does not store messages; what the tools return (messages, transcripts, contact
+  names) enters the session and reaches the user's model provider. The package marks the server untrusted, so
+  Hermes asks before every write-capable tool and refuses them in unattended runs. The tool list comes from the
+  server at run time and is not covered by the pinned sha. OAuth must be enabled with
+  `hermes mcp add kaption --url https://mcp.kaptionai.com/mcp --auth oauth --connect-timeout 300`;
+  the bundled mcp.json alone yields 401.
+maintainer: Kaption AI
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Kaption-AI/mcp-extension/blob/3f0534d6e4055d929758f3f4750953ec6f691adf/hermes/README.md
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

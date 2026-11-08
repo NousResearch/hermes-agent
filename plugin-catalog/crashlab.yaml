@@ -1,20 +1,20 @@
 name: crashlab
 title: CrashLab
 repo: https://github.com/dolepee/crashlab
-sha: 145e8bb96f36b024a16d48889c93ff86e069fa0e
+sha: e475cc3a10ec874baa8f3e81215e97c361b964d7
 description: Test recovery before delivery, after commit and across restart; inspect saved records, verify the repair and keep a reusable regression.
 maintainer: dolepee
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 version: "0.5.6"
-docs_url: https://github.com/dolepee/crashlab/blob/145e8bb96f36b024a16d48889c93ff86e069fa0e/README.md
+docs_url: https://github.com/dolepee/crashlab/blob/e475cc3a10ec874baa8f3e81215e97c361b964d7/README.md
 platforms:
   - linux
   - macos
 screenshots:
-  - https://raw.githubusercontent.com/dolepee/crashlab/145e8bb96f36b024a16d48889c93ff86e069fa0e/docs/dashboard-desktop.png
-  - https://raw.githubusercontent.com/dolepee/crashlab/145e8bb96f36b024a16d48889c93ff86e069fa0e/docs/dashboard-mobile.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/e475cc3a10ec874baa8f3e81215e97c361b964d7/docs/dashboard-desktop.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/e475cc3a10ec874baa8f3e81215e97c361b964d7/docs/dashboard-mobile.png
 known_issues:
   - "Execution needs human approval for the captured plan; trusted local cases and applications remain required."
   - "Older evaluator bundles require an explicit new baseline after evaluator changes; VERIFIED status never transfers."

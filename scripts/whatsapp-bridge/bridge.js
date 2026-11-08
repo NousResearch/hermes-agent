@@ -121,6 +121,8 @@ try {
     .slice(0, 16);
 } catch {}
 const PAIR_ONLY = args.includes('--pair-only');
+// Exit status the gateway adapter reads as a non-retryable "pair with a passkey first" (PASSKEY_REQUIRED_EXIT in adapter.py).
+const PASSKEY_REQUIRED_EXIT = 78;
 const PAIR_JSON = args.includes('--pair-json');
 const PASSKEY_BROWSER = getArg('passkey-browser', '');
 let passkeySigner;
@@ -415,7 +417,6 @@ const scheduleReconnect = createReconnectScheduler(() => startSocket());
 const getWAVersion = createVersionResolver(fetchLatestBaileysVersion);
 
 async function confirmPasskey(flow, code, signal) {
-  if (PAIR_JSON || !process.stdin.isTTY) throw new Error('Passkey confirmation requires an interactive terminal');
   const terminal = createInterface({ input: process.stdin, output: process.stdout });
   try {
     const answer = await terminal.question(`Does the code ${code} match your phone? [y/N] `, { signal });
@@ -453,24 +454,25 @@ async function startSocket() {
   const passkeyLifetime = new AbortController();
   sock.ev.on('connection.update', (update) => {
     if (update.connection === 'close') passkeyLifetime.abort();
-    if (update.passkeyRequired) {
-      emitPairEvent({ event: 'passkey_required', interactive: Boolean(passkeySigner) });
-      if (!passkeySigner) {
-        console.error('WhatsApp requires passkey verification. Pair with --passkey-browser and a local Chrome/Edge executable.');
-        // The adapter treats 78 as a non-retryable pairing requirement.
-        process.exit(PAIR_ONLY ? 1 : 78);
-      }
+    if (update.passkeyRequired && passkeySigner) {
       if (!PAIR_JSON) console.log('Complete passkey verification in the browser window.');
+    } else if (update.passkeyRequired && !PAIR_ONLY && connectionState === 'connected') {
+      // A gateway session that already opened keeps running (rc13 acked and ignored this request before
+      // passkey support); exiting would park a working gateway as non-retryable.
+      console.warn('WhatsApp sent a passkey request to an already connected session; ignoring it.');
+    } else if (update.passkeyRequired) {
+      // The dashboard's pairing watcher only understands error events; no signer is ever loaded there.
+      emitPairEvent({ event: 'error', error: 'passkey_required' });
+      console.error('WhatsApp requires passkey verification. Pair with --passkey-browser and a local Chrome/Edge executable.');
+      process.exit(PAIR_ONLY ? 1 : PASSKEY_REQUIRED_EXIT);
     }
     if (update.passkeyError) {
-      emitPairEvent({ event: 'error', error: 'passkey_failed' });
       console.error('WhatsApp passkey verification failed or was cancelled.');
       process.exit(1);
     }
     if (update.passkeyVerification && !update.passkeyVerification.skipHandoffUX) {
       confirmPasskey(passkeyFlow, update.passkeyVerification.code, passkeyLifetime.signal).catch(() => {
         if (passkeyLifetime.signal.aborted) return;
-        emitPairEvent({ event: 'error', error: 'passkey_confirmation_failed' });
         process.exit(1);
       });
     }

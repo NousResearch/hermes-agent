@@ -22,9 +22,12 @@ test('bridge distinguishes interactive pairing failure from a non-retryable gate
       export async function fetchLatestBaileysVersion() { return { version: [2, 3000, 1] }; }
       export function makeWASocket({ auth }) {
         const socket = { ev: new EventEmitter(), ws: new EventEmitter(), authState: auth };
-        setImmediate(() => socket.ws.emit('CB:notification', {
-          tag: 'notification', attrs: { from: 's.whatsapp.net', type: 'passkey_prologue_request' },
-        }));
+        setImmediate(() => {
+          if (process.env.STUB_OPEN_FIRST) socket.ev.emit('connection.update', { connection: 'open' });
+          socket.ws.emit('CB:notification', {
+            tag: 'notification', attrs: { from: 's.whatsapp.net', type: 'passkey_prologue_request' },
+          });
+        });
         return socket;
       }
     `);
@@ -37,17 +40,24 @@ test('bridge distinguishes interactive pairing failure from a non-retryable gate
         return next(specifier, context);
       }
     `);
-    const run = args => spawnSync(process.execPath, [
+    const run = (args, extraEnv = {}, timeout = 15000) => spawnSync(process.execPath, [
       '--no-warnings', '--experimental-loader', pathToFileURL(loader).href,
       fileURLToPath(bridge), '--session', path.join(dir, 'session'), '--port', '0', ...args,
-    ], { encoding: 'utf8', timeout: 15000, windowsHide: true,
-      env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: dir, TMP: dir, HERMES_HOME: dir } });
+    ], { encoding: 'utf8', timeout, windowsHide: true,
+      env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: dir, TMP: dir, HERMES_HOME: dir, ...extraEnv } });
     for (const [args, expected] of [[[], 78], [['--pair-only'], 1]]) {
       const result = run(args);
       assert.equal(result.error, undefined);
       assert.equal(result.status, expected, result.stderr);
       assert.match(result.stderr, /requires passkey verification/);
     }
+    // An already connected gateway session ignores the request instead of parking itself (still alive at the timeout).
+    const connected = run([], { STUB_OPEN_FIRST: '1' }, 4000);
+    assert.equal(connected.status, null, connected.stderr);
+    assert.match(connected.stdout + connected.stderr, /already connected session; ignoring it/);
+    const pairJson = run(['--pair-only', '--pair-json']);
+    assert.equal(pairJson.status, 1);
+    assert.match(pairJson.stdout, /"event":"error","error":"passkey_required"/);
     const invalid = run(['--passkey-browser', 'unused-browser']);
     assert.equal(invalid.status, 1);
     assert.match(invalid.stderr, /requires interactive --pair-only/);

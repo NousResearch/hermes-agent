@@ -219,7 +219,8 @@ class TestWeixinChunkDelivery:
         adapter._send_session = adapter._session
         adapter._token = "test-token"
         adapter._base_url = "https://weixin.example.com"
-        adapter._token_store.get = lambda account_id, chat_id: context_token
+        if context_token:
+            asyncio.run(adapter._token_store.set(adapter._account_id, "wxid_test123", context_token))
         return adapter
 
 

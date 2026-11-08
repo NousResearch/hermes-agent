@@ -2630,9 +2630,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             logger.warning("[%s] Failed to persist thread_id to config: %s", self.name, e, exc_info=True)
 
     async def _setup_dm_topics(self) -> None:
-        """Load or create ``extra['dm_topics']`` (``[{"chat_id", "topics": [{"name", "thread_id"?, ...}]}]``). Re-reads
-        config.yaml first: a rebuilt adapter's boot-time snapshot predates the persisted thread_ids (#132522)."""
-        self._reload_dm_topics_from_config()
+        """Load or create ``extra['dm_topics']`` (``[{"chat_id", "topics": [{"name", "thread_id"?, ...}]}]``). Merges the
+        thread_ids saved since boot first: a rebuilt adapter's boot-time snapshot predates them (#132522)."""
+        self._merge_saved_dm_topic_ids()
         for chat_entry in self._dm_topics_config or ():
             chat_id = chat_entry.get("chat_id")
             topics = chat_entry.get("topics", [])

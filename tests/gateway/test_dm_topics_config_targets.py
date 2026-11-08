@@ -94,7 +94,8 @@ async def test_topic_setup_does_not_mutate_shared_config_cache(tmp_path, monkeyp
         "platforms:\n  telegram:\n    extra:\n      dm_topics:\n"
         "      - chat_id: 222\n        topics:\n        - name: WEBSITE\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra={}))
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra={
+        "dm_topics": [{"chat_id": 222, "topics": [{"name": "WEBSITE"}]}]}))
     adapter._bot = AsyncMock()
     adapter._bot.create_forum_topic.return_value = SimpleNamespace(message_thread_id=58890)
     adapter._persist_dm_topic_thread_id = lambda *a, **k: None  # the save fails / is skipped
@@ -116,7 +117,8 @@ async def test_reconnect_after_failed_save_reuses_the_created_topic(tmp_path, mo
         "platforms:\n  telegram:\n    extra:\n      dm_topics:\n"
         "      - chat_id: 222\n        topics:\n        - name: WEBSITE\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra={}))
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra={
+        "dm_topics": [{"chat_id": 222, "topics": [{"name": "WEBSITE"}]}]}))
     ids = iter((58890, 58891))
     adapter._bot = AsyncMock()
     adapter._bot.create_forum_topic.side_effect = lambda **kw: SimpleNamespace(message_thread_id=next(ids))
@@ -138,7 +140,8 @@ async def test_reconnect_after_failed_save_keeps_the_topic_listed(tmp_path, monk
         "platforms:\n  telegram:\n    extra:\n      dm_topics:\n"
         "      - chat_id: 222\n        topics:\n        - name: WEBSITE\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra={}))
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra={
+        "dm_topics": [{"chat_id": 222, "topics": [{"name": "WEBSITE"}]}]}))
     adapter._bot = AsyncMock()
     adapter._bot.create_forum_topic.return_value = SimpleNamespace(message_thread_id=58890)
     adapter._persist_dm_topic_thread_id = lambda *a, **k: None  # the save fails
@@ -165,3 +168,54 @@ def test_configured_topic_name_never_resolves_to_a_discovered_chat(tmp_path):
         for entry in entries:
             assert resolve_channel_name("telegram", entry["name"]) == entry["id"]
         assert resolve_channel_name("telegram", "Reports") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("config_yaml", [
+    'telegram:\n  dm_topics:\n  - chat_id: "222"\n    topics:\n    - name: WEBSITE\n',
+    'gateway:\n  platforms:\n    telegram:\n      extra:\n        dm_topics:\n'
+    '        - chat_id: "222"\n          topics:\n          - name: WEBSITE\n',
+    'platforms:\n  telegram:\n    extra:\n      dm_topics:\n      - chat_id: 222\n        topics:\n        - name: WEBSITE\n',
+], ids=["top_level_telegram", "gateway_platforms", "platforms_telegram_extra"])
+async def test_dm_topics_outside_platforms_telegram_extra_are_set_up(tmp_path, monkeypatch, config_yaml):
+    """Every dm_topics shape the gateway loader accepts (top-level ``telegram:``, ``gateway.platforms``,
+    ``platforms.telegram.extra``) is set up, and a rebuild from the same boot-time config reuses the thread_id the first adapter saved instead of creating it again."""
+    from gateway.config import load_gateway_config
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(config_yaml)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+    boot_config = load_gateway_config().platforms[Platform.TELEGRAM]
+    adapters = []
+    for _ in range(2):  # boot, then a rebuild from the boot-time snapshot
+        adapter = TelegramAdapter(boot_config)
+        adapter._bot = AsyncMock()
+        adapter._bot.create_forum_topic.return_value = SimpleNamespace(message_thread_id=58890)
+        await adapter._setup_dm_topics()
+        adapters.append(adapter)
+
+    assert [a._bot.create_forum_topic.await_count for a in adapters] == [1, 0]
+    assert adapters[1]._dm_topic_chat_ids == {"222"}
+    assert [e["id"] for e in adapters[1].configured_channels()] == ["222:58890"]
+
+
+@pytest.mark.asyncio
+async def test_saved_thread_id_wins_over_the_boot_snapshot(tmp_path, monkeypatch):
+    """A topic re-created since boot (``force_create`` saves the new id): setup on the boot-time config
+    must use the saved id, not the stale one the snapshot carries."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "platforms:\n  telegram:\n    extra:\n      dm_topics:\n"
+        "      - chat_id: 222\n        topics:\n        - name: WEBSITE\n          thread_id: 200\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra={
+        "dm_topics": [{"chat_id": 222, "topics": [{"name": "WEBSITE", "thread_id": 100}]}]}))
+    adapter._bot = AsyncMock()
+
+    await adapter._setup_dm_topics()
+
+    adapter._bot.create_forum_topic.assert_not_awaited()
+    assert adapter._dm_topics == {"222:WEBSITE": 200}

@@ -376,6 +376,13 @@ def droppable_extras(project_root: Path) -> list[str]:
     return sorted(extra for extra in table if extra not in kept)
 
 
+def _pre_pm_site_packages(root: Path) -> list[Path]:
+    """The site-packages of the checkout's own main-era ``venv/`` or ``.venv/`` (POSIX or Windows layout)."""
+    return [tree for venv in (root / "venv", root / ".venv")
+            for tree in (*venv.glob("lib/python*/site-packages"), venv / "Lib" / "site-packages")
+            if tree.is_dir()]
+
+
 def legacy_selection(project_root: Path) -> list[str]:
     """The extras PM's first generation selects when it replaces a main-era venv.
 
@@ -387,9 +394,7 @@ def legacy_selection(project_root: Path) -> list[str]:
     not run from it.
     """
     root = Path(project_root)
-    trees = [tree for venv in (root / "venv", root / ".venv")
-             for tree in (*venv.glob("lib/python*/site-packages"), venv / "Lib" / "site-packages")
-             if tree.is_dir()]
+    trees = _pre_pm_site_packages(root)
     # The old venv is never deleted, so this scan repeats for any data root without facts.
     refused = declined_extras(root)
     carried = sorted(
@@ -404,19 +409,48 @@ def legacy_selection(project_root: Path) -> list[str]:
     return ["all", *carried]
 
 
-def first_generation_selection(project_root: Path) -> tuple[list[str] | None, dict]:
-    """``(extras, {"carried": ...})`` for a ``sync_venv`` that may build PM's first generation.
+def venv_selection_recorded(project_root: Path) -> bool:
+    """Has PM recorded this install's dependency selection (the ``venv`` row of its facts)?
 
-    Every dependency sync that can be the first one of a pre-PM tree (the update's completion
-    bootstrap, the historical takeover, the launch migration) passes these. Until PM records a
-    selection the sync would otherwise reach only the core, and the update would drop every
-    feature the old venv held. ``(None, {})`` once a selection is recorded: that ledger owns them.
+    That row, not the facts file, ends a pre-PM venv's carry: a facts file can exist without it. A
+    damaged install facts file raises instead of reading as "none recorded".
+    """
+    from pm.environments import runtime_facts_path, store_root
+    from pm.lock import Facts
+
+    root = Path(project_root)
+    # The same two rows a sync reads its recorded selection from (a payload's store records one).
+    return (Facts(runtime_facts_path(root), strict=True).get("venv") is not None
+            or Facts(store_root(root) / "facts.json").get("venv") is not None)
+
+
+def first_generation_selection(project_root: Path) -> tuple[list[str] | None, dict]:
+    """``(extras, {"carried": ...})`` for a sync of the install's whole selection.
+
+    The update's completion bootstrap, the historical takeover, the launch migration and the
+    ``venv_sync`` entry pass these. Until PM records a selection that sync would reach only the
+    core: ``legacy_selection`` instead (``[all]`` when there is no old venv, as ``hermes pm
+    install`` selects).
+    ``(None, {})`` once a selection is recorded: that ledger owns the extras.
     The old venv's extras are carried, not asked for: none of them undoes a ``--without``, and
     one beyond ``[all]`` that no longer builds is left out (``pm.carried_extras``).
     """
-    from pm.environments import runtime_facts_path
-
-    if runtime_facts_path(Path(project_root)).is_file():
+    if venv_selection_recorded(project_root):
         return None, {}
     extras = legacy_selection(project_root)
     return extras, ({"carried": extras[1:]} if len(extras) > 1 else {})
+
+
+def pre_pm_baseline(project_root: Path) -> list[str]:
+    """What a request on a pre-PM tree unions into: the old venv's selection, or ``[]``.
+
+    PM unions a request into the recorded selection. A tree with a main-era venv and no recorded
+    selection runs that venv, so its extras are the selection every sync extends (``hermes setup``
+    adding ``telegram``, ``hermes pm update``'s venv step); otherwise its first generation records
+    the request alone and the re-scan that would carry the rest never runs again. ``[]`` once a
+    selection is recorded, and on a tree with no old venv (nothing to keep).
+    """
+    root = Path(project_root)
+    if venv_selection_recorded(root) or not _pre_pm_site_packages(root):
+        return []
+    return legacy_selection(root)

@@ -1,10 +1,14 @@
 """Every sync that can build PM's first generation of a pre-PM tree carries the old venv's extras.
 
-A main-era install (a release before PM) holds its features in the checkout's own ``venv/`` with no
-PM ledger. Whichever path runs its first PM sync (the update's completion bootstrap, the historical
-updater takeover, the launch migration, the stdlib ``venv_sync`` entry), the generation it
-publishes must keep those features: nothing carries them afterwards, so a sync that records only
-the core drops Telegram, Discord and the rest for good while the update reports success.
+A main-era install (a release before PM, v2026.9.24 and older) holds its features in the checkout's
+own ``venv/`` with no PM ledger. Its launch migration normally builds the first generation and
+carries them, but a tree can reach a later sync with no selection recorded: the migration was
+skipped (``HERMES_DISABLE_LAZY_INSTALLS``, a tree with no self-update stamp) or interrupted before
+it published. Whichever sync then runs first (``hermes update``'s completion bootstrap, the
+historical takeover, the launch migration, the stdlib ``venv_sync`` entry, ``hermes pm update``,
+or a setup flow's narrow request), the generation it publishes must keep those features: nothing
+carries them afterwards, so a sync that records less drops Telegram, Discord and the rest for good
+while it reports success.
 """
 from __future__ import annotations
 
@@ -50,7 +54,7 @@ def legacy_tree(monkeypatch, tmp_path):
     root.mkdir()
     (root / "pyproject.toml").write_text(
         '[project]\nname="hermes-agent"\nversion="1"\n[project.optional-dependencies]\n'
-        'all=[]\ntelegram=[]\ndiscord=[]\nfal=[]\n', encoding="utf-8")
+        'all=[]\ntelegram=[]\ndiscord=[]\nfal=[]\nslack=[]\n', encoding="utf-8")
     site = root / "venv" / "lib" / "python3.11" / "site-packages"
     for anchor in ("telegram", "discord", "fal_client"):
         (site / anchor).mkdir(parents=True)
@@ -112,8 +116,17 @@ def _venv_sync_entry(root: Path, tmp_path: Path, monkeypatch) -> None:
     assert venv_sync.sync(root) == {"state": "synced", "ok": True}
 
 
+def _pm_update_step(root: Path, tmp_path: Path, monkeypatch) -> None:
+    """``hermes pm update``/``pm lock --upgrade``'s venv step after it moved a pin or the lock."""
+    import pm.cli
+
+    monkeypatch.setattr(pm.cli, "repo_root", lambda: root)
+    assert pm.cli._sync_venv_step()
+
+
 @pytest.mark.parametrize("first_sync", [_completion_bootstrap, _historical_takeover, _launch_migration,
-                                        _venv_sync_entry], ids=lambda entry: entry.__name__.strip("_"))
+                                        _venv_sync_entry, _pm_update_step],
+                         ids=lambda entry: entry.__name__.strip("_"))
 def test_the_first_pm_generation_keeps_the_features_the_old_venv_held(legacy_tree, tmp_path, monkeypatch,
                                                                        first_sync):
     first_sync(legacy_tree, tmp_path, monkeypatch)
@@ -134,3 +147,57 @@ def test_a_recorded_selection_owns_the_extras_after_the_first_generation(legacy_
     _completion_bootstrap(legacy_tree, tmp_path, monkeypatch)
 
     assert (Facts(facts).get("venv") or {}).get("extras") == ["all", "fal"]
+
+
+def _recorded(root: Path) -> list[str] | None:
+    return (Facts(runtime_facts_path(root)).get("venv") or {}).get("extras")
+
+
+def test_a_facts_file_without_a_recorded_selection_still_carries_the_old_venv(legacy_tree, tmp_path,
+                                                                               monkeypatch):
+    """The ``venv`` row is the recorded selection; a facts file without one has not replaced the old venv."""
+    facts = runtime_facts_path(legacy_tree)
+    facts.parent.mkdir(parents=True, exist_ok=True)
+    facts.write_text(json.dumps({"schema": 1, "packages": {}}), encoding="utf-8")
+
+    _completion_bootstrap(legacy_tree, tmp_path, monkeypatch)
+
+    assert {"all", "telegram", "discord", "fal"} <= set(_recorded(legacy_tree) or ()), _recorded(legacy_tree)
+
+
+def test_a_narrow_request_on_a_pre_pm_tree_extends_what_the_old_venv_held(legacy_tree):
+    """`hermes setup` installing one extra unions it into the tree's selection, as on any PM install.
+
+    The tree still runs its old venv, so that venv's extras are the selection. A first generation
+    holding only the request would end the old venv's re-scan, and every other feature would be gone.
+    """
+    import pm
+
+    pm.sync_venv(["slack"], explicit=True)
+
+    assert {"all", "telegram", "discord", "fal", "slack"} <= set(_recorded(legacy_tree) or ()), _recorded(legacy_tree)
+
+
+def test_a_narrow_request_never_carries_back_what_the_user_dropped(legacy_tree):
+    import pm
+    from pm.extras import record_declined_extras
+
+    record_declined_extras(add=["discord"], project_root=legacy_tree)
+
+    pm.sync_venv(["slack"], explicit=True)
+
+    recorded = set(_recorded(legacy_tree) or ())
+    assert {"all", "telegram", "fal", "slack"} <= recorded and "discord" not in recorded, recorded
+
+
+def test_a_narrow_request_on_a_tree_without_an_old_venv_records_only_the_request(legacy_tree):
+    """Nothing to keep: the request is the whole selection, as before."""
+    import shutil
+
+    import pm
+
+    shutil.rmtree(legacy_tree / "venv")
+
+    pm.sync_venv(["slack"], explicit=True)
+
+    assert _recorded(legacy_tree) == ["slack"]

@@ -316,11 +316,10 @@ def _first_selection(extras: list[str]) -> tuple[list[str], list[str]]:
     the launch migration would; otherwise this sync's facts would end the re-scan without them.
     The carried ones are not a request, so they never opt a declined extra back in.
     """
-    from pm.environments import runtime_facts_path
-    from pm.extras import legacy_selection
+    from pm.extras import legacy_selection, venv_selection_recorded
 
     requested = extras or ["all"]
-    if runtime_facts_path(repo_root()).is_file():
+    if venv_selection_recorded(repo_root()):
         return requested, []
     carried = legacy_selection(repo_root())
     if carried == ["all"]:

@@ -976,6 +976,11 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
                        shipped=shipped, frozen=frozen, evict_incompatible_plugins=evict_incompatible_plugins)
         automatic = [*(automatic or ()), *(carried or ())]  # a carried extra is automatic too
         with _venv_install_lock(patient=explicit or repair):
+            if not repair:
+                from pm.carried_extras import with_pre_pm_baseline
+
+                extras, carried, automatic = with_pre_pm_baseline(package, extras, carried=carried,
+                                                                   automatic=automatic, plugins=plugins)
             extras = _without_new_declines(package, extras, automatic)
             _refuse_declined(package, extras, explicit=explicit)
             recover_publication(paths.repo_root())

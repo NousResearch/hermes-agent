@@ -1,6 +1,6 @@
 """Pre-venv entry point for PM's dependency transaction.
 
-Stdlib-only at import: installers call this before dependencies exist.
+Stdlib-only at import: launch (``hermes_bootstrap``) imports it before dependencies exist.
 All checkout roots use PM's selected generation and facts; sealed payloads
 remain build-owned. ``--check`` is passive and never provisions tools.
 """

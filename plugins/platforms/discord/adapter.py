@@ -7028,9 +7028,9 @@ async def _standalone_send(
         token = (get_secret("DISCORD_BOT_TOKEN", "") or "").strip()
     if not token:
         return send_error("Discord standalone send: DISCORD_BOT_TOKEN is not set")
+    from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
+    _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
     try:
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-        _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         auth_headers = {"Authorization": f"Bot {token}"}
         json_headers = {**auth_headers, "Content-Type": "application/json"}
@@ -7073,7 +7073,7 @@ async def _standalone_send(
                                 if err:
                                     return err
                         except Exception as e:
-                            return send_error(f"Discord forum thread upload failed: {e}")
+                            return send_error(f"Discord forum thread upload failed: {describe_proxy_error(e, _proxy) or e}")
                     else:
                         # No media: JSON POST creates the thread with the text starter.
                         async with session.post(
@@ -7138,7 +7138,7 @@ async def _standalone_send(
                                 continue
                             last_data = data
                 except Exception as e:
-                    warning = send_error(f"Failed to send media {media_path}: {e}")["error"]
+                    warning = send_error(f"Failed to send media {media_path}: {describe_proxy_error(e, _proxy) or e}")["error"]
                     logger.error(warning)
                     warnings.append(warning)
         if last_data is None:
@@ -7149,9 +7149,10 @@ async def _standalone_send(
             result["warnings"] = warnings
         return result
     except Exception as e:
-        # Include the exception type: str(TimeoutError()) is empty.
-        logger.error("Discord standalone send failed", exc_info=True)
-        return send_error(f"Discord send failed: {type(e).__name__}: {e}")
+        # Include the exception type: str(TimeoutError()) is empty. The text may echo the proxy URL.
+        shown = describe_proxy_error(e, _proxy)
+        logger.error("Discord standalone send failed%s", f": {shown}" if shown else "", exc_info=not shown)
+        return send_error(f"Discord send failed: {shown or f'{type(e).__name__}: {e}'}")
 
 
 # ── Plugin entry point ────────────────────────────────────────────────────────

@@ -770,6 +770,7 @@ class AuthorityConnection:
         if self.subscriptions.get(session_id) == subscription_id:
             del self.subscriptions[session_id]
         (self.handed_back.discard if end_reason else self.handed_back.add)(session_id)
+        self.reconnects.discard(session_id)
         result['detached'] = True
         return result
 
@@ -782,7 +783,8 @@ class AuthorityConnection:
         from gateway.session_server_requests import open_requests
         stream = self.authority.sessions[ref.session_id].event_stream
         replay = stream.since(epoch, sequence)
-        self.reconnects.add(ref.session_id)
+        if ref.session_id not in self.subscriptions:  # an attached viewer's read (clarify recovery) is no reconnect
+            self.reconnects.add(ref.session_id)
         if not replay['snapshot_required']:
             self.replay_cursors[ref.session_id] = (
                 replay['replay_epoch'], max((frame['seq'] for frame in replay['events']), default=sequence))

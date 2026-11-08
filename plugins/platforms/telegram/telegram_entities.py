@@ -12,13 +12,17 @@ from typing import Any
 
 
 def _rich_inline(value: Any) -> str:
-    """Plain text of a rich ``text`` value: a string, a list of runs, or a span dict (bold, link…)."""
+    """Plain text of a rich ``text`` value: a string, a list of runs, or a span dict (bold, link…)
+    whose content sits in ``text`` or ``children``, falling back to a link's ``url``."""
     if isinstance(value, str):
         return value
     if isinstance(value, list):
         return "".join(_rich_inline(part) for part in value)
     if isinstance(value, Mapping):
-        return _rich_inline(value.get("text") if value.get("text") is not None else value.get("url") or "")
+        for key in ("text", "children"):
+            if value.get(key) is not None:
+                return _rich_inline(value[key])
+        return str(value.get("url") or "")
     return ""
 
 
@@ -41,8 +45,9 @@ def _rich_lines(blocks: Any, prefix: str = "") -> list[str]:
 
 
 def rich_message_text(message: Any) -> str:
-    """Flattened text of a ``rich_message`` payload ("" when there is none). PTB keeps the Bot API
-    field in ``api_kwargs``, a ``mappingproxy`` (not a ``dict``), when it has no attribute for it."""
+    """Flattened text of a ``rich_message`` payload ("" when there is none), for inbound messages and
+    the replied-to message alike. PTB keeps the Bot API field in ``api_kwargs``, a ``mappingproxy``
+    (not a ``dict``), when it has no attribute for it."""
     rich = getattr(message, "rich_message", None)
     if rich is None and isinstance(kwargs := getattr(message, "api_kwargs", None), Mapping):
         rich = kwargs.get("rich_message")

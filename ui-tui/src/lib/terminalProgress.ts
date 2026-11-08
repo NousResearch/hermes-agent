@@ -1,7 +1,7 @@
 import { isProgressReportingAvailable, wrapForMultiplexer } from '@hermes/ink'
 
-// OSC 9;4 tab/title-bar progress while a turn runs — same bytes and gate as the classic CLI
-// (hermes_cli/terminal_progress.py). Ghostty drops the indicator after ~15 s without an update,
+// OSC 9;4 tab/title-bar progress while a turn runs, gated by hermes-ink's isProgressReportingAvailable
+// (Ghostty 1.2+, iTerm2 3.6.6+, ConEmu). Ghostty drops the indicator after ~15 s without an update,
 // so the pulse is re-sent until the turn settles. Ink writes the clear itself on exit.
 const SEQ = {
   clear: '\x1b]9;4;0;\x07',

@@ -1,6 +1,6 @@
 name: submission-desk
 repo: https://github.com/alfredbirkelund/hermes-submission-desk
-sha: c9ee3b0ecc3112ae9e8181adb58617d4f690c52a
+sha: fde18934d5cf4798c312b8a631a22c050addb984
 subdir: ""
 version: "0.1.0"
 title: Submission Desk
@@ -22,9 +22,9 @@ category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/alfredbirkelund/hermes-submission-desk#readme
 screenshots:
-  - https://raw.githubusercontent.com/alfredbirkelund/hermes-submission-desk/c9ee3b0ecc3112ae9e8181adb58617d4f690c52a/docs/screenshots/readiness-stale-review.png
-  - https://raw.githubusercontent.com/alfredbirkelund/hermes-submission-desk/c9ee3b0ecc3112ae9e8181adb58617d4f690c52a/docs/screenshots/proposals-with-quotes.png
-  - https://raw.githubusercontent.com/alfredbirkelund/hermes-submission-desk/c9ee3b0ecc3112ae9e8181adb58617d4f690c52a/docs/screenshots/folder-confirmation.png
+  - https://raw.githubusercontent.com/alfredbirkelund/hermes-submission-desk/fde18934d5cf4798c312b8a631a22c050addb984/docs/screenshots/readiness-stale-review.png
+  - https://raw.githubusercontent.com/alfredbirkelund/hermes-submission-desk/fde18934d5cf4798c312b8a631a22c050addb984/docs/screenshots/proposals-with-quotes.png
+  - https://raw.githubusercontent.com/alfredbirkelund/hermes-submission-desk/fde18934d5cf4798c312b8a631a22c050addb984/docs/screenshots/folder-confirmation.png
 platforms: []
 known_issues:
   - "Hermes Desktop builds before 2026.9.21: if the Submission Desk page does not open from the sidebar, right-click it and choose Open in split (issue #109063)."

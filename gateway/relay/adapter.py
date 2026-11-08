@@ -1983,30 +1983,16 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         the 64-byte callback budget. Open-ended clarifies and unavailable lanes fall
         back to base."""
         if choices and self.descriptor.supports_op("prompt"):
-            # Long options are unreadable as clipped button labels (#78115): list them in
-            # full in the prompt text and label the buttons positionally instead.
+            # Clipped button labels are unreadable (#78115): long options go in full in the text.
             numbered = numbered_clarify_choices(choices, max_label_cols=48)
             text = f"❓ {question}\n\n{numbered}" if numbered else f"❓ {question}"
             limit = self.max_message_length_for_chat(chat_id)
-            if len(text) > limit:
-                text = text[: max(0, limit - 1)] + "…"
-            options = [
-                {"id": f"c{i}", "label": str(i + 1) if numbered else str(choice)[:75]}
-                for i, choice in enumerate(choices)
-            ]
+            options = [{"id": f"c{i}", "label": str(i + 1) if numbered else str(c)[:75]} for i, c in enumerate(choices)]
             options.append({"id": "other", "label": t("platform.relay.prompt_other")})
             result = await self._mint_and_send_prompt(
-                "clarify",
-                {
-                    "session_key": session_key,
-                    "clarify_id": clarify_id,
-                    "choices": [str(c) for c in choices],
-                },
-                chat_id,
-                prompt_kind="clarify",
-                text=text,
-                options=options,
-                metadata=metadata,
+                "clarify", {"session_key": session_key, "clarify_id": clarify_id, "choices": [str(c) for c in choices]},
+                chat_id, prompt_kind="clarify", text=text if len(text) <= limit else text[: max(0, limit - 1)] + "…",
+                options=options, metadata=metadata,
             )
             if result is not None:
                 return result

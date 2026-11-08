@@ -33,7 +33,9 @@ def apply_group_observe_attribution(adapter, event: MessageEvent) -> MessageEven
 
 
 def shared_sender_suffix(event: MessageEvent) -> str:
-    """Batch-key suffix for a sender-less shared source: two members addressing the bot inside one
-    batch window are two requests with two actors, never one merged turn under the first sender."""
-    actor = getattr(event, "user_id", None)
-    return f":from:{actor}" if actor and not event.source.user_id else ""
+    """Batch-key suffix naming the sender: two members addressing the bot inside one batch window
+    are two requests with two actors, never one merged turn under the first sender. Observed-group
+    commands keep ``source.user_id`` yet share the group session, so the sender-less check alone
+    let their long-command chunks merge across members."""
+    actor = getattr(event, "user_id", None) or event.source.user_id
+    return f":from:{actor}" if actor else ""

@@ -5191,13 +5191,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 elif ext in {".mp3", ".m4a"}:  # Bot API sendAudio only accepts MP3 / M4A
                     player = await asyncio.to_thread(audio_player_fields, audio_path)
                     cover_path = player.pop("thumbnail_path", None)
+                    if cover_path:  # a path, not a handle: PTB reads it per attempt, so retries keep the cover
+                        player["thumbnail"] = cover_path
                     try:
-                        with contextlib.ExitStack() as stack:
-                            if cover_path:
-                                player["thumbnail"] = stack.enter_context(await asyncio.to_thread(open, cover_path, "rb"))
-                            msg = await self._send_voice_bubble(
-                                audio_file, chat_id, reply_to, metadata, caption, _duration_secs,
-                                send_fn=self._bot.send_audio, media_key="audio", **player)
+                        msg = await self._send_voice_bubble(
+                            audio_file, chat_id, reply_to, metadata, caption, _duration_secs,
+                            send_fn=self._bot.send_audio, media_key="audio", **player)
                     finally:
                         if cover_path:
                             with contextlib.suppress(OSError):

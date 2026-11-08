@@ -16,6 +16,14 @@ _needs_ffmpeg = pytest.mark.skipif(
 )
 
 
+def _cover_bytes(thumbnail) -> bytes:
+    """What PTB would upload for ``thumbnail`` (a path or an open handle)."""
+    if hasattr(thumbnail, "read"):
+        return thumbnail.read()
+    with open(thumbnail, "rb") as fh:
+        return fh.read()
+
+
 def _tagged_mp3(tmp_path):
     cover, mp3 = tmp_path / "cover.png", tmp_path / "song.mp3"
     run = lambda *a: subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *a], check=True,
@@ -34,7 +42,7 @@ async def test_mp3_send_formats_caption_and_forwards_player_tags(tmp_path):
     adapter._bot = MagicMock()
     covers = []
     adapter._bot.send_audio = AsyncMock(
-        side_effect=lambda **kw: covers.append(kw["thumbnail"].read(2)) or MagicMock(message_id=2))
+        side_effect=lambda **kw: covers.append(_cover_bytes(kw["thumbnail"])[:2]) or MagicMock(message_id=2))
 
     result = await adapter.send_voice("123", str(_tagged_mp3(tmp_path)), caption="Here is **your song** (v1.2)!")
 
@@ -43,7 +51,7 @@ async def test_mp3_send_formats_caption_and_forwards_player_tags(tmp_path):
     assert kwargs["parse_mode"] == "MarkdownV2"
     assert kwargs["caption"] == "Here is *your song* \\(v1\\.2\\)\\!"
     assert (kwargs["performer"], kwargs["title"]) == ("Hermes Band", "Probe Song")
-    assert covers == [b"\xff\xd8"]  # the embedded cover, as a JPEG open during the upload
+    assert covers == [b"\xff\xd8"]  # the embedded cover, as a JPEG
 
 
 @pytest.mark.asyncio
@@ -61,3 +69,25 @@ async def test_mp3_caption_entity_rejection_retries_plain(tmp_path):
     assert result.success is True
     retry = adapter._bot.send_audio.await_args_list[1].kwargs
     assert (retry["parse_mode"], retry["caption"]) == (None, "*bold* reply")
+
+
+@_needs_ffmpeg
+@pytest.mark.asyncio
+async def test_mp3_caption_retry_still_carries_the_cover(tmp_path):
+    """Every attempt (caption fallback included) uploads the full cover, not a drained handle."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._bot = MagicMock()
+    covers = []
+
+    def _send(**kw):
+        covers.append(_cover_bytes(kw["thumbnail"]))
+        if len(covers) == 1:
+            raise Exception("Bad Request: can't parse entities")
+        return MagicMock(message_id=8)
+
+    adapter._bot.send_audio = AsyncMock(side_effect=_send)
+
+    result = await adapter.send_voice("123", str(_tagged_mp3(tmp_path)), caption="*bold* reply")
+
+    assert result.success is True
+    assert len(covers) == 2 and covers[0][:2] == b"\xff\xd8" and covers[1] == covers[0]

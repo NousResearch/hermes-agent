@@ -1775,7 +1775,7 @@ async def _standalone_send(
                 payload = await resp.json()
         return {"success": True, "message_id": payload.get("name")}
     except Exception as e:
-        logger.debug("Google Chat standalone send raised", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction("https://chat.googleapis.com"))))
+        logger.debug("Google Chat standalone send raised", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction("https://chat.googleapis.com", trust_env=gateway_trust_env()))))
         return send_error(f"Google Chat standalone send failed: {shown or e}")  # the text may echo the proxy URL
 
 

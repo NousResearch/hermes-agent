@@ -1028,7 +1028,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     attempt += 1
                     wait = self._send_chunk_retry_delay_seconds * attempt
                     logger.warning("[%s] send chunk failed to=%s attempt=%d/%d, retrying in %.2fs: %s",
-                                   self.name, _safe_id(chat_id), attempt, self._send_chunk_retries + 1, wait, describe_proxy_error(exc, env_proxy_for_redaction(self._base_url, self._cdn_base_url)) or exc)
+                                   self.name, _safe_id(chat_id), attempt, self._send_chunk_retries + 1, wait, describe_proxy_error(exc, env_proxy_for_redaction(self._base_url, self._cdn_base_url, trust_env=gateway_trust_env())) or exc)
                     if wait > 0:
                         await asyncio.sleep(wait)
             assert last_error is not None
@@ -1063,7 +1063,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     await asyncio.sleep(self._send_chunk_delay_seconds)
             return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
-            logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), shown := describe_proxy_error(exc, env_proxy_for_redaction(self._base_url, self._cdn_base_url)) or str(exc))
+            logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), shown := describe_proxy_error(exc, env_proxy_for_redaction(self._base_url, self._cdn_base_url, trust_env=gateway_trust_env())) or str(exc))
             return SendResult(success=False, error=shown)  # the text may echo the proxy URL
 
     async def _ensure_typing_ticket(self, chat_id: str) -> Optional[str]:
@@ -1113,7 +1113,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         try:
             return SendResult(success=True, message_id=await self._send_file(chat_id, path, caption, **kwargs))
         except Exception as exc:
-            logger.error("[%s] %s failed to=%s: %s", self.name, label, _safe_id(chat_id), shown := describe_proxy_error(exc, env_proxy_for_redaction(self._base_url, self._cdn_base_url)) or str(exc))
+            logger.error("[%s] %s failed to=%s: %s", self.name, label, _safe_id(chat_id), shown := describe_proxy_error(exc, env_proxy_for_redaction(self._base_url, self._cdn_base_url, trust_env=gateway_trust_env())) or str(exc))
             return SendResult(success=False, error=shown)
 
     async def send_document(
@@ -1290,7 +1290,7 @@ async def _standalone_send(pconfig: Any, chat_id: str, message: str, *, thread_i
         return await send_weixin_direct(extra=(extra := getattr(pconfig, "extra", None) or {}), token=getattr(pconfig, "token", None), chat_id=chat_id, message=message, media_files=media_files)
     except Exception as e:
         hosts = (_extra_or_secret(extra, "base_url", ILINK_BASE_URL), _extra_or_secret(extra, "cdn_base_url", WEIXIN_CDN_BASE_URL))
-        logger.debug("Weixin standalone send failed", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction(*hosts))))
+        logger.debug("Weixin standalone send failed", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction(*hosts, trust_env=gateway_trust_env()))))
         return send_error(f"Weixin send failed: {shown or e}")
 
 

@@ -453,10 +453,11 @@ async function startSocket() {
   sock.ev.on('connection.update', (update) => {
     if (update.passkeyRequired && passkeySigner) {
       if (!PAIR_JSON) console.log('Complete passkey verification in the browser window.');
-    } else if (update.passkeyRequired && !PAIR_ONLY && connectionState === 'connected') {
-      // A gateway session whose connection is open keeps running (rc13 acked and ignored this request
-      // before passkey support): exiting with PASSKEY_REQUIRED_EXIT would park a working gateway as
-      // non-retryable. Pair-only still fails so setup never reports a pairing the server questioned.
+    } else if (update.passkeyRequired && !PAIR_ONLY && (connectionState === 'connected' || state.creds.me?.id)) {
+      // A paired gateway session keeps running, whether open or still logging in after a reconnect (rc13
+      // acked and ignored this request before passkey support): exiting with PASSKEY_REQUIRED_EXIT would
+      // park a working gateway as non-retryable. Pair-only still fails so setup never reports a pairing
+      // the server questioned.
       console.warn('WhatsApp sent a passkey request to an already connected session; ignoring it.');
     } else if (update.passkeyRequired) {
       // The dashboard's pairing watcher only understands error events; no signer is ever loaded there.

@@ -255,3 +255,19 @@ async def test_group_model_picker_switch_follows_callback_allowlist(monkeypatch,
     assert ("-100777" in adapter._model_picker_state) is not switches
 
 
+
+
+@pytest.mark.asyncio
+async def test_long_model_ids_differing_mid_name_render_distinct_labels(plain_keyboards):
+    """Head/tail shortening dropped the middle, so ids that differ only there (``3-1`` vs ``3-2``,
+    or a variant word) rendered identical buttons that select different models."""
+    from plugins.platforms.telegram.telegram_picker_labels import MODEL_LABEL_BUDGET
+
+    tail = "-70b-instruct-awq-quantized-production-20261101"
+    ids = [f"custom-llama-3-{v}{tail}" for v in (1, 2)] + [f"custom-llama-3-1-70b-{w}-awq-quantized-production-20261101"
+                                                          for w in ("chat-distilled-reasoning", "chat-distilled-reasoner")]
+    labels = await _model_labels_for({"slug": "custom", "name": "C", "models": ids, "total_models": 4,
+                                      "model_labels": {ids[0]: "Large"}})
+    assert len(set(labels)) == len(ids), labels
+    assert all(len(lbl) <= MODEL_LABEL_BUDGET for lbl in labels), labels
+    assert "3-1" in labels[0] and "3-2" in labels[1] and labels[0].endswith(" · Large")

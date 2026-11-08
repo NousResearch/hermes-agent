@@ -1,3 +1,4 @@
+import { $pluginRecords, installedDesktopCatalogNames } from '@/contrib/plugins-store'
 import { translateNow } from '@/i18n'
 import { lookupPluginCatalogEntry, type PluginCatalogEntry, type PluginCatalogLookupError } from '@/lib/plugin-catalog'
 
@@ -18,8 +19,10 @@ export function openCatalogPluginInstall(
   options: Pick<PluginInstallRequest, 'stayAfterInstall' | 'tier' | 'title'> = {}
 ): void {
   const existing = $agentPlugins.get().find(row => row.catalog_name === entry.name || row.name === entry.name)
+  // A desktop-only entry has no agent row; its plugin on disk names the entry it came from.
+  const desktopOnly = !existing && installedDesktopCatalogNames($pluginRecords.get()).has(entry.name)
 
-  if (existing && !existing.update_available) {
+  if ((existing && !existing.update_available) || desktopOnly) {
     notify({ kind: 'success', message: translateNow('skills.plugins.alreadyInstalled', entry.name) })
 
     return

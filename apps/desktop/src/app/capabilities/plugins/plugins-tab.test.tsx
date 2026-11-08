@@ -976,4 +976,31 @@ describe('PluginsTab catalog UX', () => {
     expect($pluginInstallRequest.get()).toBeNull()
     expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'remove' }))
   })
+
+  it('shows a standalone desktop plugin installed from the catalog on its card, not as Install', async () => {
+    // Accent Picker: desktop-only, so no agent row carries catalog_name. The loader puts the
+    // installer-recorded entry on the record (`packageOrigin.catalogName`), and that alone matches.
+    $catalogCardView.set(true)
+    $pluginRecords.set({
+      accent: {
+        id: 'accent',
+        kind: 'disk',
+        name: 'Accent Picker',
+        packageOrigin: { catalogName: 'accent-picker', repo: weatherEntry.repo, sha: weatherEntry.sha },
+        status: 'disabled'
+      }
+    })
+    seedCatalog([{ ...weatherEntry, name: 'accent-picker', category: 'desktop' }])
+    await act(async () => {
+      renderPlugins({ profile: null })
+    })
+
+    expect(screen.queryByRole('button', { name: 'Add accent-picker' })).toBeNull()
+
+    const card = screen
+      .getAllByRole('article')
+      .find(article => within(article).queryByRole('button', { name: 'accent-picker' }))!
+
+    expect(within(card).getByRole('switch', { name: 'Accent Picker' }).getAttribute('aria-checked')).toBe('false')
+  })
 })

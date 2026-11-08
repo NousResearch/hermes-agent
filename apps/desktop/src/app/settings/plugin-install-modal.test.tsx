@@ -209,6 +209,77 @@ describe('A reviewed catalog pick', () => {
 
     await waitFor(() => expect(installCalls()).toHaveLength(2))
   })
+
+  it('a desktop-only pick hands Electron its catalog entry, and a refusal shows Force reinstall', async () => {
+    // Accent Picker: the card had no installed state, so a second Install stopped at "already exists"
+    // with Force hidden behind a collapsed Advanced (a catalog pick never offered Force at all).
+    const ACCENT = {
+      ...BLENDER,
+      catalogName: 'accent-picker',
+      repo: `${BLENDER.repo.split('#')[0]}#accent-picker`,
+      title: 'Accent Picker'
+    }
+
+    probePluginRepo.mockResolvedValue({
+      ok: true,
+      agent: false,
+      desktop: true,
+      desktopName: 'accent-picker',
+      warnings: []
+    })
+    installDesktopPlugin.mockResolvedValue({
+      ok: false,
+      exists: true,
+      error: "Desktop plugin 'accent-picker' already exists. Enable force reinstall to replace it."
+    })
+    renderFlow()
+    act(() => openPluginInstallRequest(ACCENT))
+    const dialog = await screen.findByRole('dialog', { name: 'Accent Picker' })
+    await waitFor(() => expect(probePluginRepo).toHaveBeenCalled())
+    fireEvent.click(installButton())
+
+    await waitFor(() =>
+      expect(installDesktopPlugin).toHaveBeenCalledWith(
+        expect.objectContaining({ catalogName: 'accent-picker', sha: ACCENT.sha })
+      )
+    )
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('already exists')
+    const force = within(dialog).getByRole('switch')
+    fireEvent.click(force)
+    installDesktopPlugin.mockResolvedValue({ ok: true, pluginName: 'accent-picker' })
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+
+    await waitFor(() => expect(installDesktopPlugin).toHaveBeenLastCalledWith(expect.objectContaining({ force: true })))
+  })
+
+  it('a refusal Force cannot fix offers no Force', async () => {
+    const ACCENT = {
+      ...BLENDER,
+      catalogName: 'accent-picker',
+      repo: `${BLENDER.repo.split('#')[0]}#accent-picker`,
+      title: 'Accent Picker'
+    }
+
+    probePluginRepo.mockResolvedValue({
+      ok: true,
+      agent: false,
+      desktop: true,
+      desktopName: 'accent-picker',
+      warnings: []
+    })
+    installDesktopPlugin.mockResolvedValue({ ok: false, error: 'git clone failed: network unreachable' })
+    renderFlow()
+    act(() => openPluginInstallRequest(ACCENT))
+    const dialog = await screen.findByRole('dialog', { name: 'Accent Picker' })
+    await waitFor(() => expect(probePluginRepo).toHaveBeenCalled())
+    fireEvent.click(installButton())
+
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('network unreachable')
+    // Advanced stays as it was; opened, it still holds no Force switch.
+    expect(within(dialog).queryByRole('switch')).toBeNull()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Advanced' }))
+    expect(within(dialog).queryByRole('switch')).toBeNull()
+  })
 })
 
 describe('A raw git URL', () => {

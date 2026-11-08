@@ -28,8 +28,9 @@ from hermes_constants import get_default_hermes_root
 
 router = APIRouter()
 
-#: The files the loader reads in a plugin folder: its entry and the unified-package marker.
-_READABLE_FILES = frozenset({"plugin.js", ".hermes-package.json"})
+#: The files the loader reads in a plugin folder: its entry, the unified-package marker and a standalone
+#: plugin's install origin.
+_READABLE_FILES = frozenset({"plugin.js", ".hermes-package.json", ".hermes-origin.json"})
 #: Electron's ``PLUGIN_SOURCE_MAX_BYTES``: a plugin loads whole or not at all, never truncated.
 PLUGIN_SOURCE_MAX_BYTES = 16 * 1024 * 1024
 #: Never follow a final link where the OS can refuse one, and never block on a FIFO.

@@ -8,12 +8,13 @@ the singleton lock and the health telemetry; everything that only needs the
 from __future__ import annotations
 
 import contextlib
+import copy
 import os
 import sqlite3
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from gateway.kanban_watchers_common import _board_slugs, _positive_int_setting, logger
 
@@ -32,7 +33,7 @@ _CORRUPT_DB_MARKERS = ("file is not a database", "database disk image is malform
 
 @dataclass
 class _DispatcherSettings:
-    """``kanban.*`` dispatch settings, read once at boot (restart to apply)."""
+    """``kanban.*`` dispatch settings; re-resolved on the next tick after a config edit."""
 
     interval: float
     max_spawn: Any
@@ -129,13 +130,38 @@ class _KanbanDispatcher:
 
     CORRUPT_BOARD_RETRY_AFTER_SECONDS = 300
 
-    def __init__(self, kb: Any, settings: _DispatcherSettings) -> None:
+    def __init__(self, kb: Any, settings: _DispatcherSettings,
+                 kanban_cfg: Optional[dict] = None) -> None:
         self.kb = kb
         self.settings = settings
+        self.kanban_cfg = copy.deepcopy(kanban_cfg)
         self.disabled_corrupt_boards: dict[str, tuple[tuple[str, int | None, int | None], float]] = {}
 
     def _board_slugs(self) -> list:
         return _board_slugs(self.kb)
+
+    def refresh_settings(self, load_config: Callable[[], Any]) -> None:
+        """Re-resolve the settings when ``kanban.*`` changed since they were applied (#117734).
+
+        ``load_config`` is cached on the config file's signature, so an unchanged
+        file costs one dict compare per tick. A failed read keeps the current settings.
+        """
+        try:
+            cfg = load_config()
+        except (OSError, RuntimeError, ValueError):  # RuntimeError: InvalidUserConfigError
+            logger.warning("kanban dispatcher: config re-read failed; keeping current settings",
+                           exc_info=True)
+            return
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(kanban_cfg, dict) or kanban_cfg == self.kanban_cfg:
+            return
+        old = asdict(self.settings)
+        self.settings = _resolve_dispatcher_settings(kanban_cfg, self.kb)
+        self.kanban_cfg = copy.deepcopy(kanban_cfg)
+        changed = [f"{k} {v!r}->{getattr(self.settings, k)!r}"
+                   for k, v in old.items() if getattr(self.settings, k) != v]
+        if changed:
+            logger.info("kanban dispatcher: applied config change: %s", ", ".join(changed))
 
     def board_db_fingerprint(self, slug: str) -> tuple[str, int | None, int | None]:
         from hermes_cli import kanban_db as _kb

@@ -25,11 +25,11 @@ def _cover_bytes(thumbnail) -> bytes:
         return fh.read()
 
 
-def _tagged_mp3(tmp_path):
+def _tagged_mp3(tmp_path, size="64x64"):
     cover, mp3 = tmp_path / "cover.png", tmp_path / "song.mp3"
     run = lambda *a: subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *a], check=True,
                                     stdin=subprocess.DEVNULL)
-    run("-f", "lavfi", "-i", "color=c=red:s=64x64", "-frames:v", "1", str(cover))
+    run("-f", "lavfi", "-i", f"color=c=red:s={size}", "-frames:v", "1", str(cover))
     run("-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-i", str(cover), "-map", "0:a", "-map", "1:v",
         "-c:v", "mjpeg", "-disposition:v", "attached_pic", "-metadata", "artist=Hermes Band",
         "-metadata", "title=Probe Song", "-id3v2_version", "3", str(mp3))
@@ -113,3 +113,26 @@ async def test_mp3_still_sends_when_the_cover_cannot_be_written(tmp_path, monkey
     assert result.success is True
     kwargs = adapter._bot.send_audio.await_args.kwargs
     assert "thumbnail" not in kwargs and kwargs["title"] == "Probe Song"
+
+
+@_needs_ffmpeg
+@pytest.mark.asyncio
+async def test_mp3_tall_cover_thumbnail_fits_telegram_320_box(tmp_path):
+    """Telegram caps a thumbnail at 320px on BOTH sides; portrait art must shrink to fit, not to 320 wide."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._bot = MagicMock()
+    dims = []
+
+    def _send(**kw):
+        probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0",
+                                kw["thumbnail"]], capture_output=True, text=True, check=True)
+        dims.append(tuple(int(n) for n in probe.stdout.strip().split(",")))
+        return MagicMock(message_id=10)
+
+    adapter._bot.send_audio = AsyncMock(side_effect=_send)
+
+    result = await adapter.send_voice("123", str(_tagged_mp3(tmp_path, "64x640")), caption="track")
+
+    assert result.success is True
+    (width, height), = dims
+    assert width <= 320 and height <= 320 and height > width

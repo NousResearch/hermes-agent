@@ -1,0 +1,20 @@
+name: source-first
+title: Source First
+repo: https://github.com/raidbeforebed/source-first
+sha: d1b3d7fc6f747c40737f7a2cfb4fca652fbf4a2f
+description: "Makes live web research the default before a factual answer: classifies each turn, injects a search directive when the question turns on current external facts, records whether a real web tool actually fired, and appends a visible footer to a reply that needed research and got none. Deterministic, Python standard library only, no LLM calls and no network of its own. Disclosure - reads only its own settings under plugins.entries.source-first.settings, keeps a per-session in-memory record of whether a web search ran (nothing persisted), and appends a footer to reply text on a research turn that made no web search; it sends nothing anywhere, writes no files and registers no tools."
+maintainer: raidbeforebed
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/raidbeforebed/source-first#readme
+version: "1.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

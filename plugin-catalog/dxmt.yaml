@@ -14,7 +14,6 @@ readme: true
 platforms: []
 known_issues:
   - "Needs a running DXMT server with an embedding model (vectordb serve, or docker run -p 127.0.0.1:9999:9999 -v dxmt:/data dxmtai/dxmt); without one the tools answer with an error and prefetch injects nothing"
-  - "Install the client into Hermes's interpreter once: uv pip install --python ~/.hermes/hermes-agent/venv/bin/python3 dxmt-python-sdk pyyaml"
 capabilities:
   provides_tools: []
   provides_hooks: []

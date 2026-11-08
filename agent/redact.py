@@ -19,7 +19,7 @@ from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENA
 from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
 from agent.redact_headers import (
     _COOKIE_HEADER_JSON_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE, _SECRET_HEADER_JSON_RE,
-    _SECRET_HEADER_JSON_UNTERMINATED_RE, redact_header_credentials,
+    _SECRET_HEADER_JSON_UNTERMINATED_RE, redact_cookie_assignments, redact_header_credentials,
 )
 
 logger = logging.getLogger(__name__)
@@ -632,15 +632,6 @@ _PYTHON_EXCEPTION_LINE_RE = re.compile(
 # (unterminated quote → shell EOF / SyntaxError).
 _AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)", re.IGNORECASE)
 
-# Cookie credentials are bearer credentials, but ``cookie`` stays out of the shared
-# secret-keyword set (``cookie_policy: strict``, ``cookies enabled`` are prose). The
-# assignment form needs a key that IS ``cookie`` or ends in ``_cookie``; ``mycookiejar=1``,
-# ``cookie_policy=x`` and URL query params (``?cookie=``) never match.
-_COOKIE_ASSIGN_RE = re.compile(
-    r"(?<![\w?&])((?:[A-Za-z0-9]+_)*+cookie\s*=(?!=)\s*)"
-    r"(?:(?P<q>[\"'])(?P<quoted>(?:(?!(?P=q))[^\\\r\n]|\\.)*)(?P=q)|(?P<bare>\S+))",
-    re.IGNORECASE,
-)
 
 # Telegram bot tokens: [bot]<digits>:<token>, token >= 30 chars. The lookbehind
 # anchors the id at the start of its digit run: without it, a long run of digits
@@ -1343,15 +1334,6 @@ def _redact_json_affixed_key_escaped(m: "re.Match[str]", mask) -> str:
     return f'{m.group(1)}: {m.group(2)}"{mask(m.group(4))}{m.group(2)}"'
 
 
-def _redact_cookie_assignment(m: "re.Match[str]", mask) -> str:
-    """Mask a ``cookie=`` value; a quoted value is masked whole and keeps its quotes."""
-    value = m.group("bare") if m.group("q") is None else m.group("quoted")
-    if _ENV_LOOKUP_VALUE_RE.match(value) or value.startswith(("***", "«redacted")):
-        return m.group(0)
-    q = m.group("q") or ""
-    return f"{m.group(1)}{q}{mask(value)}{q}"
-
-
 def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     """ENV / config / JSON / YAML assignment passes (skipped for code files). Passes
     that would match ``token=``/``key=`` URL params skip ``://`` text (web-URL query
@@ -1363,7 +1345,7 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     truncated key and could write it back as a dead credential (#35519)."""
     mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
     if "=" in text:
-        text = _COOKIE_ASSIGN_RE.sub(lambda m: _redact_cookie_assignment(m, mask), text)
+        text = redact_cookie_assignments(text, mask, _ENV_LOOKUP_VALUE_RE)
         _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)
         if "://" not in text:  # lowercase names would match URL params

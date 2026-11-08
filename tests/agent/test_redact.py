@@ -576,6 +576,8 @@ class TestCookieCredentials:
         ):
             assert secret not in redact_sensitive_text(text), text
         # Terminal output scrubs with code_file=True (``curl -i``); the header is still a credential.
+        rc_line = "export SESSION_COOKIE='sid='\\''opaqueSessionValue1234567890'"
+        assert "opaqueSessionValue" not in redact_sensitive_text(rc_line, file_read=True, secret_file=True)
         dump = "HTTP/2 200\nset-cookie: sid=opaqueSessionValue1234567890; Path=/\ncontent-type: text/html"
         assert "opaqueSessionValue" not in redact_terminal_output(dump, "curl -i https://example.com")
 

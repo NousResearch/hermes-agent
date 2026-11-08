@@ -1,0 +1,38 @@
+name: hermes-chan
+repo: https://github.com/AlleyBo55/hermes-chan
+sha: "3f61017740023b3ec42970e4d23447f95654c43b"
+maintainer: AlleyBo55
+tier: community
+category: desktop
+version: "0.2.0"
+title: "Hermes-chan"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/AlleyBo55/hermes-chan#readme
+platforms: [macos, windows, linux]
+description: A chibi desktop companion who walks around your screen, reacts to Hermes, and does its computer-use clicks and typing.
+image: https://raw.githubusercontent.com/AlleyBo55/hermes-chan/c208b969bf45b1ce845cae6289991e6597b2d0f4/sprites/hermeschan-v1/frames/emotion__happy__00.png
+known_issues:
+  - "Linux needs X11 or XWayland; on Wayland she only sees and acts on X11/XWayland apps."
+  - "macOS window move/track uses osascript/System Events (tens of ms per call), so window pranks are gesture-cadence, not per-frame smooth."
+  - "The overlay is built from source on first run; without a Rust toolchain the plugin runs headless (tools/hooks only)."
+capabilities:
+  provides_tools:
+    - hermeschan_say
+    - hermeschan_emote
+    - hermeschan_point_at
+    - hermeschan_grab_window
+    - hermeschan_glitch_window
+    - hermeschan_visual_effect
+    - hermeschan_tidy_desktop
+    - hermeschan_undo_tidy
+  provides_hooks:
+    - on_session_start
+    - on_session_end
+    - pre_llm_call
+    - post_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - pre_approval_request
+    - on_human_input_request
+  provides_middleware: []
+  requires_env: []

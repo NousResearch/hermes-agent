@@ -28,6 +28,7 @@ class _Chat(BasePlatformAdapter):
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         self.sent.append(content)
+        self.sent_metadata = metadata
         return SendResult(success=self._send_ok, message_id="m1")
 
     async def _send_exec_approval_prompt(self, prompt):
@@ -64,3 +65,12 @@ async def test_truncated_preview_is_backed_by_the_full_command_or_deny_only(comm
     assert "TAIL" not in text and "Preview shortened" in text and str(len(command)) in text
     assert _choices(adapter) == choices
     assert adapter.sent == ([f"```\n{command}\n```"] if attempted else [])
+
+
+@pytest.mark.asyncio
+async def test_full_command_send_is_marked_interim_so_it_never_seals_the_live_response():
+    """The full command goes out mid-turn: unmarked, a stream-is-the-message adapter (relay drafts) reads it
+    as the turn-final reply and swallows every later update to the open stream."""
+    adapter = _Chat()
+    await adapter.send_exec_approval("c1", "echo " + "A" * 900, "sk", metadata={"thread_id": "t1"})
+    assert adapter.sent_metadata == {"thread_id": "t1", "_interim_send": True}

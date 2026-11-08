@@ -144,7 +144,7 @@ from agent.i18n import get_language, t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error, unauthorized_action_notice,
-    cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, safe_url_for_log, SUPPORTED_VIDEO_TYPES,
+    cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, safe_url_for_log, redact_proxy_in_text, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
 
@@ -2932,7 +2932,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 fallback_ips = list(SEED_FALLBACK_IPS)
             else:
                 logger.info("[%s] Auto-discovered Telegram fallback IPs: %s", self.name, ", ".join(fallback_ips))
-        proxy_url = resolve_proxy_url(
+        proxy_url = self._ptb_proxy_url = resolve_proxy_url(
             "TELEGRAM_PROXY", target_hosts=["api.telegram.org", *fallback_ips],
             configured=self.config.extra.get("proxy_url"))
 
@@ -3187,7 +3187,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             return True
         except Exception as e:
             self._release_platform_lock()
-            safe_error = _redact_telegram_error_text(e)
+            safe_error = redact_proxy_in_text(_redact_telegram_error_text(e), getattr(self, "_ptb_proxy_url", None))
             # Classify by exception TYPE (never message text): auth failures can never self-heal, so
             # marking them retryable put agents into a silent eternal reconnect loop.
             if self._looks_like_auth_error(e):

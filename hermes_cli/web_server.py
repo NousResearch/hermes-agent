@@ -31,7 +31,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+from hermes_cli._startup_fast import project_root_str
+
+PROJECT_ROOT = Path(project_root_str())
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -791,6 +793,7 @@ from hermes_cli.web_routers import (
     config_env as _config_env_routes,
     models as _models_routes,
     messaging as _messaging_routes,
+    messaging_relay as _messaging_relay_routes,
     oauth as _oauth_routes,
     cron as _cron_routes,
     mcp as _mcp_routes,
@@ -832,6 +835,7 @@ app.include_router(_config_env_routes.config_router)
 app.include_router(_models_routes.router)
 app.include_router(_config_env_routes.router)
 app.include_router(_messaging_routes.router)
+app.include_router(_messaging_relay_routes.router)
 app.include_router(_oauth_routes.router)
 app.include_router(_sessions_routes.manage_router)
 app.include_router(_status_routes.logs_router)

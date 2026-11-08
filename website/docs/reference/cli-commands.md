@@ -100,6 +100,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes tools` | Configure enabled tools per platform. |
 | `hermes computer-use` | Install or check the Computer Use (cua-driver) backend (macOS/Windows/Linux). |
 | `hermes pets` | Browse, install, and select [petdex](../user-guide/features/pets.md) animated pets shown across the CLI, TUI, and desktop app. Subcommands: `list`, `install`, `select`, `show`, `off`, `scale`, `remove`, `doctor`. |
+| `hermes clipboard image` | Write this machine's clipboard image to a file (`--json` for scripts). Device-local: no gateway, no session store. |
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
 | `hermes claw` | OpenClaw migration (`migrate`, `cleanup`), from the [`agent-importers`](../user-guide/import-from-other-agents.md) plugin; `hermes claw migrate` is the same as `hermes import-agent openclaw`. |
@@ -247,7 +248,7 @@ stdout is non-empty.
 
 #### `--usage-file` — JSON usage report for pipelines
 
-`hermes -z "…" --usage-file /path/report.json` writes a machine-readable usage report after the run: `estimated_cost_usd`, `input_tokens` / `output_tokens` / `cache_read_tokens` / `cache_write_tokens` / `reasoning_tokens` / `total_tokens`, `api_calls`, `model`, `provider`, `session_id`, `service_tier`, the `completed` / `failed` / `partial` / `interrupted` flags and `turn_exit_reason` (why `completed` is false, e.g. `max_iterations_reached(3/3)`). Those top-level counters cover the **main agent loop** only. Auxiliary LLM calls made on the same run (title generation, vision, context compression, `web_extract`, background review, …) are reported separately under `auxiliary` — the same totals plus a per-task `by_task` map — and `total_including_auxiliary` (`estimated_cost_usd`, `total_tokens`, `api_calls`) is the grand total to bill on. The report is written **even when the run fails**, so batch pipelines can always account for spend. It has no effect outside `-z`/`--oneshot`, and a broken usage write never masks the run's own outcome.
+`hermes -z "…" --usage-file /path/report.json` writes a machine-readable usage report after the run: `estimated_cost_usd`, `input_tokens` / `output_tokens` / `cache_read_tokens` / `cache_write_tokens` / `reasoning_tokens` / `total_tokens`, `api_calls`, `model`, `provider`, `session_id`, `service_tier`, the `completed` / `failed` / `partial` / `interrupted` flags and `turn_exit_reason` (why `completed` is false, e.g. `max_iterations_reached(3/3)`). Those top-level counters cover the **main agent loop** only. Auxiliary LLM calls made on the same run (title generation, vision, context compression, background review, …) are reported separately under `auxiliary` — the same totals plus a per-task `by_task` map — and `total_including_auxiliary` (`estimated_cost_usd`, `total_tokens`, `api_calls`) is the grand total to bill on. The report is written **even when the run fails**, so batch pipelines can always account for spend. It has no effect outside `-z`/`--oneshot`, and a broken usage write never masks the run's own outcome.
 
 ```bash
 hermes -z "summarize this repo" --usage-file ~/.hermes/cache/scratch/usage.json
@@ -317,6 +318,7 @@ Subcommands:
 |------------|-------------|
 | `run` | Run the gateway in the foreground. Recommended for WSL, Docker, and Termux. |
 | `ensure` | Discover or request a local session runtime without installing a service or replacing an existing owner. Emits JSON; see below. |
+| `attach` | Give a local client the gateway's WebSocket URL and one single-use session ticket for this profile. Emits JSON; see below. |
 | `start` | Start the installed systemd/launchd background service. |
 | `stop` | Stop the service (or foreground process). |
 | `restart` | Restart the service. |
@@ -365,6 +367,21 @@ service. Exit `0` means ready; any other code is a refusal or a deadline, never 
 to start a replacement. Service identity checks, the home-permission policy behind
 `unsafe_control_permissions`, and every exit code:
 [Gateway internals: `hermes gateway ensure`](../developer-guide/gateway-internals.md#hermes-gateway-ensure).
+
+`hermes gateway attach [--json] [--start] [--recover] [--timeout 60]` is the attach step for a
+local client that dials the gateway itself (a third-party chat UI, for example). It prints
+`ensure`'s JSON plus, once the gateway is attachable, `url` (`ws://127.0.0.1:<port>/api/ws`),
+`protocol` (`hermes-gateway-v1`), `protocols` (the WebSocket subprotocols to dial with) and
+`ticket`. The ticket is single-use, bound to the active profile, and expires 30 seconds after it
+is minted; it goes to stdout for the calling process only and is never logged. A plain call only
+discovers the gateway; `--start` starts it when none serves the profile; `--recover` discovers
+first and starts (or replaces an older Hermes's gateway) only when it is not ready. An unmanaged
+gateway that `attach` starts (no service installed) stops itself once it has been idle for a while.
+With no gateway to attach,
+the JSON carries `message` (the `gateway <state>: <reason>` lines, with the remedy when there is
+one), the same text goes to stderr, and the exit code is `ensure`'s for that verdict. The Ink TUI
+attaches through the same code. Details and the dial rules:
+[Gateway internals: `hermes gateway attach`](../developer-guide/gateway-internals.md#hermes-gateway-attach).
 
 ## `hermes lsp`
 
@@ -1752,6 +1769,42 @@ of the update if cua-driver is on PATH, so most users will not need to
 call `--upgrade` manually. Use it when upstream ships a fix you want
 right now without waiting for the next Hermes update.
 
+## `hermes clipboard`
+
+```bash
+hermes clipboard image --out PATH [--json]
+```
+
+Writes the clipboard image to `PATH` (created or overwritten) with the same extractor the CLI and
+TUI use for image paste: macOS `pngpaste`, then `osascript`; Windows PowerShell (`powershell`, then
+`pwsh`); Linux `powershell.exe` under WSL, then `wl-paste` on Wayland, then `xclip`. The result is a
+PNG, except that a copied image *file* (Windows/WSL file drop) is copied as it is. The command
+reads only this machine's clipboard: it needs no running gateway and reads no session store or
+profile file, so a client whose gateway runs on another machine calls it where the user is.
+Under NixOS container mode the command runs inside the managed container, like every `hermes`
+subcommand, so it cannot see the host's clipboard and `--out` is a path inside the container.
+
+| Option | Description |
+|--------|-------------|
+| `--out PATH` | File to write (required). Parent directories are created. The image is extracted into a temporary file in the same directory and then renamed onto `PATH`, so on any failure an existing `PATH` is left as it was. An existing file keeps its permission bits (a 0600 temp file stays private); a symlink at `PATH` is replaced by a regular file. |
+| `--json` | Print one JSON object on stdout. Without it, success prints the path and failure prints one stderr line. |
+
+| Exit code | `reason` | Meaning |
+|-----------|----------|---------|
+| `0` | (none, `ok: true`) | The image was written to `path`. |
+| `1` | `no_image` | The clipboard holds no image (or one that could not be converted to PNG). |
+| `3` | `no_tool` | None of this platform's clipboard tools is installed; `tools` lists them in the order tried. |
+| `4` | `write_failed` | `--out` cannot be written: its directory is not writable or cannot be created, an existing `PATH` is a directory or read-only, or the final rename failed. |
+| `2` | (no JSON) | Usage error from the argument parser. |
+
+`--json` replies (keys are stable; new keys may be added; read `path` only when `ok` is true):
+
+```json
+{"ok": true, "path": "/home/me/paste.png", "mime": "image/png", "bytes": 48213}
+{"ok": false, "reason": "no_image", "message": "the clipboard holds no image"}
+{"ok": false, "reason": "no_tool", "tools": ["wl-paste", "xclip"], "message": "no clipboard tool found; install one of: wl-paste, xclip"}
+```
+
 ## `hermes pets`
 
 ```bash
@@ -1901,7 +1954,7 @@ Launch the web dashboard to manage configuration, API keys, and sessions. For a 
 | `--host` | `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
 | `--insecure` | off | **Deprecated / no-op.** Formerly bypassed auth on a non-loopback bind. Since the June 2026 hardening a public bind *always* requires an auth provider (password or OAuth). Bind `127.0.0.1` and tunnel to keep it local. |
-| `--skip-build` | off | Skip the web UI build step and serve the existing `dist` directly. Useful for non-interactive contexts (Windows Scheduled Tasks, CI) where npm isn't available. Pre-build with `cd web && npm run build`. |
+| `--skip-build` | off | Skip the web UI build step and serve the existing `dist` directly. Useful for non-interactive contexts (Windows Scheduled Tasks, CI) where pnpm isn't available. Pre-build with `cd web && pnpm run build`. |
 | `--isolated` | off | When launched from a named profile (`worker dashboard`), run a dedicated per-profile server instead of routing to the machine dashboard. |
 | `--stop` | — | Stop the running `hermes dashboard` / `hermes serve` backend **of this Hermes home** and exit (`-p <profile>` / `HERMES_HOME` select which; backends of other profiles, other installs on the machine, and the shell you typed the command into are never touched — a backend whose owner cannot be read is left alone). SIGTERM, a 10s grace, then SIGKILL; a hosted Chat TUI that outlives its backend is stopped too (it would otherwise keep the deleted `state.db-wal` open and block the next start). Messaging-gateway bots started from the dashboard are not touched. |
 | `--status` | — | List running `hermes dashboard` processes and exit. |
@@ -2094,7 +2147,7 @@ Additional behavior:
 - **Restart-phase recovery.** If the in-process restart phase aborts while importing the freshly pulled tree, supervised gateway profiles are retried through a clean Python process. Only restarts independently confirmed by systemd (`systemctl --user is-active`) are reported as verified; a relaunch that merely exited 0 is recorded as `relaunch_attempted` and the restart stays owed (a `gateway_restart` follow-up; the update itself still exits 0 because the code is in place). Manual gateways and serve/dashboard runtimes are never killed without a relaunch authority; they are recorded as skipped with a reason and remain in the incomplete-update report with the exact restart command.
 - **Update receipts + fleet version check.** Every run writes a machine-readable receipt to `~/.hermes/logs/update_receipts/` in the root Hermes home, even from a sticky profile (pre-update fleet plan, steps, skips with reasons, restart outcome, follow-ups; `latest.json` points at the newest and reads `running` while an update is in progress). After the restart phase the updater verifies each live gateway's running code against the updated checkout and prints a per-profile version matrix. A gateway still on pre-update code does not fail the update once the new code is in place: the update prints a `⚠` line with the exact restart command, exits 0, records a `gateway_restart` follow-up, and keeps the restart owed — every CLI start warns about it and the next `hermes update` retries it.
 - **Local source changes.** For git installs, dirty tracked files are auto-stashed before branch checkout or pull, together with any untracked file at a path the update adds. Other untracked files and folders stay where they are, untouched, because they cannot block the update. Interactive terminal updates ask "Keep these changes after updating?" before anything is stashed: yes stashes them and puts them back after the pull, no deletes them right away, so no stash entry is left behind. A run with nothing to pull does not ask. Non-interactive updates restore it by default; set `updates.non_interactive_local_changes: discard` only on managed installs where local source edits should be thrown away after a successful pull. If stash restore conflicts or the pull fails, the stash is left in place for manual recovery.
-- **npm lockfile churn.** Before stashing or switching branches, Hermes makes a best-effort cleanup of tracked `package-lock.json` diffs produced by npm install/build steps. Commit or manually stash intentional lockfile edits before running `hermes update`.
+- **npm lockfile churn.** Before stashing or switching branches, Hermes makes a best-effort cleanup of tracked `package-lock.json` diffs that npm installs leave in the npm projects (the WhatsApp bridge and the Photon sidecar). `pnpm-lock.yaml` is never reverted: installs do not rewrite it. Commit or manually stash intentional lockfile edits before running `hermes update`.
 - **Pairing data snapshot.** Even when `--backup` is off, `hermes update` takes a lightweight snapshot of `~/.hermes/pairing/` and the Feishu comment rules before `git pull`. You can roll it back with `hermes backup restore --state pre-update` if a pull rewrites a file you were editing.
 - **Legacy `hermes.service` warning.** If Hermes detects a pre-rename `hermes.service` systemd unit (instead of the current `hermes-gateway.service`), it prints a one-time migration hint so you can avoid flap-loop issues.
 - **Exit codes.** `0` on success, `1` on pull/install/post-install errors, `2` on unexpected working-tree changes that block `git pull`.

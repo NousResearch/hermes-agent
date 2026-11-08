@@ -714,6 +714,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         self._approval_request_ids: dict[int, str] = {}  # message_id → tools.approval request id
         self._slash_confirm_state: dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: dict[str, str] = {}  # clarify_id → session_key
+        # Clarify keyboard layout: "rows" (default; one numeric button per row plus
+        # "Other") or "inline" (all numeric buttons in a single row). "Other" can be
+        # dropped via clarify_other_button: false — free-text answers still resolve the
+        # prompt through the gateway text-intercept, so the button is optional.
+        self._clarify_layout: str = str(extra.get("clarify_layout", "rows")).strip().lower() or "rows"
+        self._clarify_other_button: bool = bool(extra.get("clarify_other_button", True))
         # "important" (default): only final responses, approvals and slash confirmations notify;
         # "all": every message notifies (display.platforms.telegram.notifications).
         self._notifications_mode: str = "important"
@@ -4299,8 +4305,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 # Full option text in the body (mobile truncates button labels); buttons keep numeric labels.
                 text += "\n\n" + "\n".join(f"{i + 1}. {_html.escape(str(c))}" for i, c in enumerate(choices))
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>" short.
-                rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
-                rows.append([InlineKeyboardButton(t("platform.telegram.prompt.other"), callback_data=f"cl:{clarify_id}:other")])
+                numeric = [InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")
+                           for idx in range(len(choices))]
+                if self._clarify_layout == "inline":
+                    rows = [numeric]
+                else:
+                    rows = [[button] for button in numeric]
+                if self._clarify_other_button:
+                    rows.append([InlineKeyboardButton(t("platform.telegram.prompt.other"), callback_data=f"cl:{clarify_id}:other")])
                 keyboard = InlineKeyboardMarkup(rows)
             return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, session_key)
         return await self._send_prompt(

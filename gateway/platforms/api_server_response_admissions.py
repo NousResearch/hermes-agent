@@ -220,8 +220,12 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
     if stored_session_id and stored_session_id != chain_root:
         run_kwargs['walked_from'] = chain_root  # the chain moved past its swept stored session
     if durable_key:
+        # The durable key pins the label the client is answered with, so retries replay it: the
+        # planned model (never an unhonored echo, #118254), resolved once at acceptance.
+        planned = adapter._planned_response_model(body.get('model', adapter._model_name), route, overrides,
+                                                  session_id=session_id, gateway_session_key=gateway_session_key)
         return await _admit(adapter, durable_key, request_id, request_binding(adapter, request, durable_key),
-                            run_kwargs, body.get('model', adapter._model_name)), None
+                            run_kwargs, planned), None
     if 'walked_from' in run_kwargs:
         await _bind_successor(adapter, session_id, run_kwargs)
     return dict(session_id=session_id, user_message=user_message, conversation_history=history,

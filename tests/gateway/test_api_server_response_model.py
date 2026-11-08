@@ -179,3 +179,27 @@ class TestResponseModelReportsServedModel:
         _, _, frames = _terminal_model(endpoint, body)
         last = frames[-1] if endpoint.endswith("chat/completions") else frames[-1]["response"]
         assert last["error"]["code"] == "model_not_found"
+
+
+@pytest.mark.asyncio
+async def test_durable_responses_pin_the_planned_label_not_the_request(api, owner):
+    """An Idempotency-Key retry replays the label pinned at acceptance, and that label is the
+    planned model (here the advertised name, since the bare model is not honored), never the
+    unhonored request value."""
+    from aiohttp import web
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+        execution_result.get()['result'] = {'final_response': 'answer', 'messages': [
+            {'role': 'assistant', 'content': 'answer'}]}
+        return 'answer'
+
+    owner.runner._handle_message = handle
+    app = web.Application()
+    app.router.add_post('/v1/responses', api._handle_responses)
+    body, headers = {'model': 'SomeOtherModel', 'input': 'hi'}, {'Idempotency-Key': 'pinned-label'}
+    async with TestClient(TestServer(app)) as client:
+        first = await (await client.post('/v1/responses', json=body, headers=headers)).json()
+        retry = await (await client.post('/v1/responses', json=body, headers=headers)).json()
+    assert first['model'] != 'SomeOtherModel'
+    assert retry['model'] == first['model']

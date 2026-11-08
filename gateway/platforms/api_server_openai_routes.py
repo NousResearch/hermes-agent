@@ -1492,17 +1492,12 @@ class OpenAICompatRoutesMixin:
         run_kwargs, run_agent = context['run_kwargs'], context['run_agent']
         response_store = self._current_response_store()
         response_id, created_at = await _response_identity(response_store, durable_key)
-        response_model = body.get('model', self._model_name)
-        if durable_key:
-            response_model = await response_store.off_loop(response_store.request_model, durable_key[0], response_model)
-        route = run_kwargs.get("route")
-        agent_overrides = {
-            key: run_kwargs[key] for key in ("requested_model", "requested_provider", "model_options")
-            if key in run_kwargs
-        }
         response_model = self._planned_response_model(
-            response_model, route, agent_overrides,
+            body.get('model', self._model_name), run_kwargs.get("route"), run_kwargs,
             session_id=session_id, gateway_session_key=gateway_session_key)
+        if durable_key:
+            # The label pinned at acceptance (already planned) survives route changes and retries.
+            response_model = await response_store.off_loop(response_store.request_model, durable_key[0], response_model)
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
 

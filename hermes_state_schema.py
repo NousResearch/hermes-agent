@@ -1107,12 +1107,18 @@ class SessionSchemaMixin:
             # keep-existing upsert (an early first-turn model_config patch froze it). Untagged, the parent's
             # resume tip walk followed the child as a continuation and opened the subagent transcript.
             # source='subagent' alone: the reservation path always wrote it, and v16 already covered the rest.
+            # Skip compression continuations of subagent rows: a misrouted child resumed as the chat wrote
+            # its continuation as source='subagent' without the marker, and it must stay a continuation.
+            # json_valid: one malformed model_config would make json_set raise and drop the whole UPDATE.
             with contextlib.suppress(sqlite3.OperationalError):
                 cursor.execute(
                     "UPDATE sessions SET model_config = json_set("
                     "COALESCE(model_config, '{}'), '$._delegate_from', parent_session_id) "
                     "WHERE source = 'subagent' AND parent_session_id IS NOT NULL "
-                    f"AND {_sql_json_extract('model_config', '$._delegate_from')} IS NULL"
+                    "AND json_valid(COALESCE(model_config, '{}')) "
+                    f"AND {_sql_json_extract('model_config', '$._delegate_from')} IS NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM sessions p WHERE p.id = sessions.parent_session_id "
+                    "AND p.source = 'subagent' AND p.end_reason = 'compression')"
                 )
         self._advance_message_uid_backfill(cursor)
         fts_migrations_complete = True

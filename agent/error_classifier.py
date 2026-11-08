@@ -1089,6 +1089,8 @@ def classify_api_error(
         anonymous=is_anonymous_request(provider, api_key),
     )
     verdict = next((v for v in (stage(c) for stage in _STAGES) if v is not None), _V_UNKNOWN)
+    if verdict["reason"] in _REPLAY_ONLY_REASONS and _header_forbids_retry(c.headers):
+        verdict = _V_SERVER_REFUSED_RETRY
     message = _extract_message(error, body)
     if verdict["reason"] in (_R.auth, _R.auth_permanent):
         # An auth refusal from a non-stock route names the host, so a credential posted to the
@@ -1548,6 +1550,27 @@ def _body_of(exc: Any) -> Optional[dict]:
 def _headers_of(exc: Any) -> Any:
     headers = getattr(getattr(exc, "response", None), "headers", None)
     return headers if headers and hasattr(headers, "get") else None
+
+
+# Verdicts whose only recovery is replaying the identical request. A server (or a gateway that
+# already ran its own retries) answering ``x-should-retry: false`` has ruled that out, as the
+# OpenAI/Anthropic SDKs honour at their layer; our own loop sets their ``max_retries=0`` and
+# must honour it too. Hermes' API server sends it for ``admission_queued``
+# (``gateway/platforms/api_server_authority_runs.py::store_error_response``). Rate-limit,
+# rotation and compression verdicts change the next request, so they keep their own recovery.
+_REPLAY_ONLY_REASONS = frozenset({_R.overloaded, _R.server_error, _R.timeout, _R.unknown})
+# ``server_error`` rather than ``overloaded``: the retry loop keeps backing off on
+# ``RETRYABLE_CLIENT_REASONS`` even when ``retryable`` is False. The fallback chain still runs.
+_V_SERVER_REFUSED_RETRY = _v(_R.server_error, **_ABORT_FALLBACK)
+
+
+def _header_forbids_retry(headers: Any) -> bool:
+    return bool(headers) and str(headers.get("x-should-retry") or "").strip().lower() == "false"
+
+
+def server_forbids_retry(error: Exception) -> bool:
+    """True when the response behind ``error`` (or its cause chain) carries ``x-should-retry: false``."""
+    return _header_forbids_retry(_from_cause_chain(error, _headers_of, None))
 
 
 def _status_code_from_body(body: Any) -> Optional[int]:

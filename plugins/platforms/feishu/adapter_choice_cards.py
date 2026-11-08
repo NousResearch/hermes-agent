@@ -15,12 +15,11 @@ import logging
 from typing import Any, Optional
 
 from agent.i18n import t
-from gateway.platforms.base import SendResult, describe_proxy_error, first_proxy_env_value
+from gateway.platforms.base import SendResult, describe_proxy_error, env_proxy_for_redaction
 
 logger = logging.getLogger(__name__)
 
 _BUTTON_LABEL_MAX = 40
-
 
 class FeishuChoiceCardsMixin:
     """Clarify and choice-picker cards for ``FeishuAdapter`` (needs its card/state helpers)."""
@@ -76,7 +75,7 @@ class FeishuChoiceCardsMixin:
                 chat_id, card, metadata, "send_clarify failed", state_map=self._clarify_state,
                 state_id=clarify_id, session_key=session_key, extra_state={"question": str(question)})
         except Exception as exc:
-            logger.warning("[Feishu] send_clarify failed: %s", (shown := describe_proxy_error(exc, first_proxy_env_value())) or exc, exc_info=not shown)
+            logger.warning("[Feishu] send_clarify failed: %s", (shown := describe_proxy_error(exc, env_proxy_for_redaction(f"https://open.{'larksuite.com' if self._domain_name == 'lark' else 'feishu.cn'}"))) or exc, exc_info=not shown)
             return SendResult(success=False, error=shown or str(exc))
 
     @staticmethod
@@ -177,7 +176,7 @@ class FeishuChoiceCardsMixin:
                 extra_state={"header": header, "body": body, "choices": choices,
                              "on_choice_selected": on_choice_selected, "metadata": metadata})
         except Exception as exc:
-            logger.warning("[Feishu] send_choice_picker failed: %s", (shown := describe_proxy_error(exc, first_proxy_env_value())) or exc, exc_info=not shown)
+            logger.warning("[Feishu] send_choice_picker failed: %s", (shown := describe_proxy_error(exc, env_proxy_for_redaction(f"https://open.{'larksuite.com' if self._domain_name == 'lark' else 'feishu.cn'}"))) or exc, exc_info=not shown)
             return SendResult(success=False, error=shown or str(exc))
         if result.success:
             # Snapshot: the SDK callback thread pops from this dict concurrently.

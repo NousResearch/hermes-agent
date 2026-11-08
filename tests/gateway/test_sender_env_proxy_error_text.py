@@ -128,3 +128,48 @@ def test_env_proxy_send_failure_never_carries_the_proxy_secret(monkeypatch, capl
                   if len(password[i:j].replace(" ", "")) >= 3}
         leaked = sorted(p for p in pieces if p in text or p in unquote(text))
         assert not leaked, (leaked, text[-2000:])
+
+
+_SECRET = "http://bob:qzxqzxqzx@127.0.0.1:1"
+_CLEAN = "http://127.0.0.1:2"
+# Each sender's own API hosts: NO_PROXY naming them means the request went direct.
+_TARGET_HOSTS = ("127.0.0.1,localhost,.feishu.cn,.weixin.qq.com,.line.me,ntfy.example.com,.dingtalk.com,.qq.com,"
+                 ".googleapis.com,.botframework.com,.trafficmanager.net,.microsoftonline.com")
+# Variables that disagree: the library may read the secret one whichever Hermes would have picked.
+# A NO_PROXY naming the targets: httpx still parses every proxy variable when the client is built.
+DISAGREEING = {"https_clean_http_secret": {"HTTPS_PROXY": _CLEAN, "HTTP_PROXY": _SECRET},
+               "upper_clean_lower_secret": {"HTTPS_PROXY": _CLEAN, "HTTP_PROXY": _CLEAN,
+                                            "https_proxy": _SECRET, "http_proxy": _SECRET},
+               "secret_no_proxy_targets": {"HTTPS_PROXY": _SECRET, "HTTP_PROXY": _SECRET, "NO_PROXY": _TARGET_HOSTS}}
+BYPASSED = {"no_proxy_star": "*", "no_proxy_targets": _TARGET_HOSTS}
+
+
+def _send_under(monkeypatch, caplog, sender, env):
+    for name in (*ENV_PROXY_VARS, "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    with caplog.at_level(logging.DEBUG):
+        result = asyncio.run(asyncio.wait_for(SENDERS[sender](monkeypatch), 60))
+    logs = "\n".join(r.getMessage() for r in caplog.records if r.name.split(".")[0] in ("plugins", "gateway", "tools"))
+    return str(result.get("error") or ""), logs
+
+
+@pytest.mark.parametrize("layout", DISAGREEING)
+@pytest.mark.parametrize("sender", SENDERS)
+@pytest.mark.parametrize("shape", SHAPES)
+def test_a_secret_in_any_proxy_variable_never_reaches_the_send_result(monkeypatch, caplog, sender, layout, shape):
+    secret = shape.format(pw="qzxqzxqzx")
+    env = {name: secret if value == _SECRET else value for name, value in DISAGREEING[layout].items()}
+    error, logs = _send_under(monkeypatch, caplog, sender, env)
+    assert error
+    for text in (error, logs):
+        assert "qzx" not in text and "qzx" not in unquote(text), text[-2000:]
+
+
+@pytest.mark.parametrize("layout", BYPASSED)
+@pytest.mark.parametrize("sender", sorted(set(SENDERS) - {"signal"}))  # Signal's result names only the batch
+def test_a_send_that_no_proxy_bypasses_keeps_its_real_error(monkeypatch, caplog, sender, layout):
+    error, _ = _send_under(monkeypatch, caplog, sender, {"HTTPS_PROXY": _SECRET, "HTTP_PROXY": _SECRET,
+                                                          "NO_PROXY": BYPASSED[layout]})
+    assert error and not re.search(r"\b[A-Z]\w+ via ", error), error

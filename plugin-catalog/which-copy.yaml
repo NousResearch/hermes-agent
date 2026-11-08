@@ -1,6 +1,6 @@
 name: which-copy
 repo: https://github.com/Hazem-Samak/hermes-which-copy
-sha: f6d0e061335642e239ebd0099333d7747f885a99
+sha: 4769ac6eebc8976cdb74e813697d8fe196f89f24
 description: >-
   Answers the question that silently decides everything else: which copy of a
   command is the Hermes process actually going to run? On a Mac the same tool can

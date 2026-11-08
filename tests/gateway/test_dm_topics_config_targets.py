@@ -127,3 +127,23 @@ async def test_reconnect_after_failed_save_reuses_the_created_topic(tmp_path, mo
 
     assert adapter._bot.create_forum_topic.await_count == 1
     assert adapter._dm_topics == {"222:WEBSITE": 58890}
+
+
+@pytest.mark.asyncio
+async def test_reconnect_after_failed_save_keeps_the_topic_listed(tmp_path, monkeypatch):
+    """The reused unsaved id must stay a channel-directory target, not only a cache entry."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "platforms:\n  telegram:\n    extra:\n      dm_topics:\n"
+        "      - chat_id: 222\n        topics:\n        - name: WEBSITE\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra={}))
+    adapter._bot = AsyncMock()
+    adapter._bot.create_forum_topic.return_value = SimpleNamespace(message_thread_id=58890)
+    adapter._persist_dm_topic_thread_id = lambda *a, **k: None  # the save fails
+
+    await adapter._setup_dm_topics()
+    await adapter._setup_dm_topics()
+
+    assert [e["id"] for e in adapter.configured_channels()] == ["222:58890"]

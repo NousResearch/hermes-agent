@@ -265,3 +265,17 @@ def test_feishu_media_download_failure_log_carries_no_proxy_secret(monkeypatch, 
         logs = "\n".join(formatter.format(r) for r in caplog.records if "feishu" in r.name)
         assert "Failed to download" in logs, logs
         assert "qzx" not in logs and "qzx" not in unquote(logs), logs[-2000:]
+
+
+@pytest.mark.parametrize("scheme", ["ftp", "socks4"])
+@pytest.mark.parametrize("sender", SENDERS)
+def test_an_unsupported_scheme_secret_proxy_is_redacted_even_when_no_proxy_names_the_target(monkeypatch, caplog,
+                                                                                             sender, scheme):
+    # httpx rejects the scheme while building the client, before it reads NO_PROXY, and its
+    # ``Unknown scheme for proxy URL`` error keeps the username (only the password is masked).
+    secret = f"{scheme}://qzxUser:qzxPass@127.0.0.1:1"
+    error, logs = _send_under(monkeypatch, caplog, sender, {"HTTPS_PROXY": secret, "HTTP_PROXY": secret,
+                                                            "NO_PROXY": _TARGET_HOSTS})
+    assert error
+    for text in (error, logs):
+        assert "qzx" not in text and "qzx" not in unquote(text), text[-2000:]

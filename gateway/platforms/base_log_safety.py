@@ -130,6 +130,10 @@ def _no_proxy_bypasses_all(values: list[str], targets: list[str]) -> bool:
     over-redaction is the accepted cost."""
     if any(safe_proxy_url_for_log(v if "://" in v else f"http://{v}") == _UNSAFE_URL_PLACEHOLDER for v in values):
         return False
+    # httpx rejects any other scheme (``ftp``, ``socks4``) when the client is built, echoing the
+    # URL's username, so a secret-bearing value of such a scheme fails before NO_PROXY is read.
+    if any(not _shown_in_full(v) and _proxy_scheme(v) not in ("http", "https") for v in values):
+        return False
     no_proxies = [value for key, value in os.environ.items() if key.lower() == "no_proxy"]
     if not (os.environ.get("no_proxy") or os.environ.get("NO_PROXY")):  # httplib2 reads only these two spellings
         return False
@@ -140,6 +144,11 @@ def _no_proxy_bypasses_all(values: list[str], targets: list[str]) -> bool:
     except ValueError:
         return False
     return bool(no_proxies) and all(_bypasses(no_proxy, name, netloc) for no_proxy in no_proxies for name, netloc in hosts)
+
+
+def _proxy_scheme(value: str) -> str:
+    """Scheme a proxy library reads from *value*: httpx and requests default a bare ``host:port`` to http."""
+    return value.split("://", 1)[0].lower() if "://" in value else "http"
 
 
 def _bypasses(no_proxy: str, host: str | None, netloc: str) -> bool:

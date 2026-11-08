@@ -92,13 +92,20 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # shutdown, DoS). Recoverable operations (git reset --hard, chmod -R 777, curl|sh) stay in
 # DANGEROUS_PATTERNS.
 
-# Re-exported for tools.approval and tests (moved to a sibling module to keep this file under its cap).
 from tools.approval_detection_power import (
-    HARDLINE_NO_APPROVAL_SETTINGS, HARDLINE_OPT_IN_CATEGORIES, HARDLINE_OPT_IN_SETTINGS, _CMD_PATH_PREFIX,
-    _CMD_WORD_END, _CMDPOS, _POWER_STATE_PATTERNS, _REBOOT_DESC, _REBOOT_INIT_DESC, _REBOOT_SYSTEMCTL_DESC,
-    _SHUTDOWN_DESC, _SHUTDOWN_HALT_FLAG, _SHUTDOWN_INIT_DESC, _SHUTDOWN_REBOOT_FLAG, _SHUTDOWN_SYSTEMCTL_DESC,
-    _SYSTEMCTL_PREFIX, _cmd_name, hardline_opt_in_setting,
+    HARDLINE_OPT_IN_CATEGORIES, _CMDPOS, _POWER_STATE_PATTERNS, _POWER_SETTING_KEY_RE, _cmd_name,
 )
+
+# The four approvals.* power keys decide whether reboot/shutdown leave the floor, so the agent must not
+# flip them from its own terminal: `hermes config set|unset` naming a key, or a redirect / tee /
+# in-place edit of ~/.hermes/config.yaml in a command that names one. Not opt-in, not approvable.
+_POWER_SETTING_WRITE_DESC = "agent edit of host power approval settings (approvals.allow_reboot/...)"
+_POWER_SETTING_PATTERNS = [
+    (_CMDPOS + r'(?:' + _cmd_name(r'hermes') + r'|' + _cmd_name(r'python[0-9.]*') + r'\s+-m\s+hermes_cli(?:\.main)?)'
+     r'\s+' + _GLOBAL_FLAGS + r'config\s+(?:set|unset)\b[^\n]*' + _POWER_SETTING_KEY_RE, _POWER_SETTING_WRITE_DESC),
+    (r'(?:^|\n)(?=[^\n]*' + _POWER_SETTING_KEY_RE + r')[^\n]*(?:>|\btee\b|\bsed\s+(?:-[^\s]*i|--in-place)|'
+     r'\b(?:perl|ruby|yq)\b[^\n]*\s-[^\s]*i)[^\n]*' + _HERMES_CONFIG_PATH, _POWER_SETTING_WRITE_DESC),
+]
 
 # Destructive-path matcher for the rm hardline rules: accept the path fully wrapped in a matching
 # quote pair (`rm -rf "/"`, `rm -rf "$HOME"`) OR bare with a terminator (whitespace, end, or
@@ -152,6 +159,7 @@ HARDLINE_PATTERNS = [
     # either (`shutdown -r -h`, `reboot -p`, `poweroff --reboot`) matches BOTH categories, so it stays
     # blocked unless both are enabled — classification ambiguity never widens the opt-in.
     *_POWER_STATE_PATTERNS,
+    *_POWER_SETTING_PATTERNS,
 ]
 
 # Pre-compiled at module load so the hot-path matcher never pays the cold re.compile fan-out

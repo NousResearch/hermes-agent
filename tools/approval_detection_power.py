@@ -80,6 +80,9 @@ HARDLINE_OPT_IN_SETTINGS = {"reboot": "approvals.allow_reboot", "shutdown": "app
 HARDLINE_NO_APPROVAL_SETTINGS = {
     "reboot": "approvals.reboot_without_approval", "shutdown": "approvals.shutdown_without_approval",
 }
+# Any of the four keys above, as a whole word (bare or ``approvals.``-prefixed). Commands that write
+# one are a hardline rule of their own in tools.approval_detection (never opt-in).
+_POWER_SETTING_KEY_RE = r'\b(?:allow_reboot|allow_shutdown|reboot_without_approval|shutdown_without_approval)\b'
 
 
 def hardline_opt_in_setting(description: str) -> str | None:

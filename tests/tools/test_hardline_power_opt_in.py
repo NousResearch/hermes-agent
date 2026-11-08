@@ -13,9 +13,8 @@ from tools import approval
 from tools.approval import (
     check_all_command_guards, check_dangerous_command, clear_session, disable_session_yolo, enable_session_yolo)
 from tools.approval_context import reset_current_session_key, set_current_session_key
-from tools.approval_detection import (
-    HARDLINE_OPT_IN_SETTINGS, detect_dangerous_command, detect_hardline_command, detect_power_state_command,
-    hardline_opt_in_setting)
+from tools.approval_detection import detect_dangerous_command, detect_hardline_command, detect_power_state_command
+from tools.approval_detection_power import HARDLINE_OPT_IN_SETTINGS, hardline_opt_in_setting
 
 REBOOT_CMDS = [
     "reboot", "sudo reboot", "reboot -f", "nohup reboot", "ls; reboot",
@@ -488,7 +487,7 @@ def test_path_lookalikes_are_not_power_commands(cmd):
 
 def test_no_approval_defaults_are_false():
     from hermes_cli.config_defaults import DEFAULT_CONFIG
-    from tools.approval_detection import HARDLINE_NO_APPROVAL_SETTINGS
+    from tools.approval_detection_power import HARDLINE_NO_APPROVAL_SETTINGS
     assert DEFAULT_CONFIG["approvals"]["reboot_without_approval"] is False
     assert DEFAULT_CONFIG["approvals"]["shutdown_without_approval"] is False
     assert HARDLINE_NO_APPROVAL_SETTINGS == {

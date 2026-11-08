@@ -30,9 +30,9 @@ from tools.approval_context import (
 )
 from tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_content_rule_keys, detect_dangerous_command,
-    detect_hardline_command, HARDLINE_NO_APPROVAL_SETTINGS, detect_power_state_categories,
-    detect_power_state_command,
+    detect_hardline_command, detect_power_state_categories, detect_power_state_command,
 )
+from tools.approval_detection_power import HARDLINE_NO_APPROVAL_SETTINGS
 from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _matching_permanent_allowlist_entry, _match_user_deny_rule, _sudo_stdin_block_result,
     _user_deny_block_result,
@@ -1159,6 +1159,8 @@ def _power_command_gate(command: str, approval_callback=None) -> dict | None:
     it touches has ``approvals.<cat>_without_approval`` (plus ``allow_<cat>``) on; otherwise a live human
     is asked every time: smart mode, allowlists, session/"always" approvals, yolo / mode=off and
     unattended approve-modes cannot approve it."""
+    if not approval_context._get_hardline_opt_ins():
+        return None  # no category opted in: any power command was already hard-blocked by the floor
     description = detect_power_state_command(command)
     if description is None:
         return None

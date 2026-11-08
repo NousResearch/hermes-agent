@@ -3124,7 +3124,7 @@ approvals:
   denial_breaker_threshold: 3   # 0 disables the breaker
 ```
 
-### Deny rules
+### Host reboot and shutdown
 
 `approvals.allow_reboot` and `approvals.allow_shutdown` (both default `false`) let an always-on, self-hosted agent reboot or power off its own host. Each one removes its category from the hardline blocklist, and the command then requires a human approval every time: smart mode, `command_allowlist`, session/"always" approvals, `--yolo` and `mode: off` cannot approve it, the prompt offers only once/deny, and cron, `-q` and unattended sessions with nobody to ask deny it. See [Security — Opt-in: letting the agent reboot or power off its host](./security.md#opt-in-letting-the-agent-reboot-or-power-off-its-host).
 
@@ -3137,6 +3137,10 @@ approvals:
   allow_shutdown: false
   shutdown_without_approval: false
 ```
+
+Only the operator can change these four keys. The agent's terminal cannot: `hermes config set` / `unset` naming one, and a redirect, `tee` or in-place edit of `~/.hermes/config.yaml` that names one, are on the hardline blocklist.
+
+### Deny rules
 
 `approvals.deny` is a list of glob patterns that block matching terminal commands unconditionally — even under `--yolo`, `/yolo`, or `mode: off`. It's the user-editable counterpart to the built-in hardline blocklist:
 

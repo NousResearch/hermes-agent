@@ -34,7 +34,7 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
     de-obfuscated forms the detectors actually evaluated).
     """
     from tools import approval
-    from tools import approval_context, approval_detection, approval_floors
+    from tools import approval_context, approval_detection, approval_detection_power, approval_floors
     # Sync config-persisted "always" patterns so the allowlist check below sees what the runtime
     # would see (load is read-only).
     try:
@@ -72,7 +72,7 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
     is_hardline, hardline_desc = approval_detection.detect_hardline_command(
         command, approval_context._get_hardline_opt_ins())
     if is_hardline:
-        setting = approval_detection.hardline_opt_in_setting(hardline_desc)
+        setting = approval_detection_power.hardline_opt_in_setting(hardline_desc)
         return result(
             "hardline-deny", rule=hardline_desc,
             detail="matches the hardline blocklist (never bypassable, "
@@ -101,7 +101,7 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
         categories = approval_detection.detect_power_state_categories(command)
         if categories and categories <= approval_context._get_power_no_approval_categories():
             settings = " + ".join(
-                approval_detection.HARDLINE_NO_APPROVAL_SETTINGS[c] for c in sorted(categories))
+                approval_detection_power.HARDLINE_NO_APPROVAL_SETTINGS[c] for c in sorted(categories))
             return result(
                 "allow", rule=power_desc,
                 detail=f"opted-in host power command: runs without approval ({settings}) in "

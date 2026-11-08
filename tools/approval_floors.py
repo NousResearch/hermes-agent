@@ -14,8 +14,8 @@ import time
 import uuid
 from tools import approval_context as _ctx
 from utils import unlink_files_older_than
-from tools.approval_detection import (
-    _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _deny_command_variants, hardline_opt_in_setting)
+from tools.approval_detection import _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _deny_command_variants
+from tools.approval_detection_power import hardline_opt_in_setting
 
 logger = logging.getLogger("tools.approval")
 
@@ -105,8 +105,8 @@ def _hardline_block_result(description: str, command: str = "") -> dict:
     setting = hardline_opt_in_setting(description)
     if setting:
         message += (
-            f" The operator can allow this category by setting {setting}: true in config.yaml "
-            f"(`hermes config set {setting} true`); the command then requires a live human approval "
+            f" Only the operator can allow this category, with the {setting} setting in config.yaml "
+            "(the agent cannot change it); the command then requires a live human approval "
             "every time instead of being hard-blocked."
         )
     # The parser-limit block is almost always a giant inline payload, not a forbidden operation, and is typically

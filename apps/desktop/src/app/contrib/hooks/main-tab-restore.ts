@@ -152,8 +152,9 @@ export function restoreMainTabFromView(
         return
       }
 
-      // The person opened a chat while the lookup ran: theirs wins.
-      if ($selectedStoredSessionId.get()) {
+      // A lookup from a previous profile view must not steal focus after
+      // the user switches views, even if the new view is still a draft.
+      if ($tileViewScope.get() !== view || $selectedStoredSessionId.get()) {
         logMainTab('restore', { decision: 'superseded', id: remembered, view })
 
         return

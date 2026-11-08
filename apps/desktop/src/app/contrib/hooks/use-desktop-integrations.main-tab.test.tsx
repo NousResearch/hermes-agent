@@ -1,7 +1,7 @@
 import { renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $showAllProfiles } from '@/store/profile'
+import { $showAllProfiles, toggleShowAllProfiles } from '@/store/profile'
 import { $selectedStoredSessionId, _resetLegacyDiscardForTests, _resetSessionOwnerHintsForTests } from '@/store/session'
 import { VIEW_MAIN_KEY } from '@/store/session-tile-storage'
 import type { SessionInfo } from '@/types/hermes'
@@ -162,6 +162,22 @@ describe('first tab cold-start restore', () => {
     await waitFor(() => expect(probeStoredSession).toHaveBeenCalled())
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(navigate).not.toHaveBeenCalledWith('/old-chat', { replace: true })
+  })
+
+  it('does not restore the old view after the user switches filters during a lookup', async () => {
+    rememberMain(ALL, 'old-chat')
+    let answer: (value: unknown) => void = () => undefined
+    probeStoredSession.mockReturnValue(new Promise(resolve => (answer = resolve)))
+
+    render(page)
+    await waitFor(() => expect(probeStoredSession).toHaveBeenCalledWith('old-chat'))
+    toggleShowAllProfiles()
+    expect($showAllProfiles.get()).toBe(false)
+    answer({ session: session({ id: 'old-chat', profile: 'default' }), status: 'found' })
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(navigate).not.toHaveBeenCalledWith('/old-chat', { replace: true })
+    expect(viewMain(ALL)).toBe('old-chat')
   })
 
   it('a delegate child reopens as its parent', async () => {

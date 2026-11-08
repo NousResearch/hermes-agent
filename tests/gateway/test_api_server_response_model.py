@@ -253,3 +253,16 @@ async def test_durable_responses_404_a_rejected_requested_model(api, owner):
         data = await resp.json()
     assert resp.status == 404
     assert data['error']['code'] == 'model_not_found'
+
+
+def test_accepted_selection_ignores_a_later_session_model_override():
+    """A keyed retry reads its admission's selection; a /model set after acceptance did not serve
+    that turn, so it must not turn the saved model_not_found into a generic failure (Greptile)."""
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    selection = {"requested_model": "no-such-model", "route": None}
+    with patch.object(adapter, "_session_model_override_for", return_value={"model": "later"}):
+        live = adapter._honored_selection(None, selection, session_id="s", gateway_session_key=None)
+        saved = adapter._honored_selection(
+            None, selection, session_id="s", gateway_session_key=None, accepted=True)
+    assert live is None
+    assert saved == "no-such-model"

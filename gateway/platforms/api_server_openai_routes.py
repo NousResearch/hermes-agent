@@ -804,12 +804,13 @@ class OpenAICompatRoutesMixin:
 
     def _honored_selection(
         self, route: Optional[dict[str, Any]], selection: dict[str, Any], *,
-        session_id: Optional[str], gateway_session_key: Optional[str],
+        session_id: Optional[str], gateway_session_key: Optional[str], accepted: bool = False,
     ) -> Optional[str]:
         """The model this request selected AND that the turn will run on: the route's model or the
         honored request model, unless a session ``/model`` override wins (``_select_agent_runtime``).
-        ``selection`` is the request's overrides (``run_kwargs`` or an admission's settings)."""
-        if self._session_model_override_for(gateway_session_key or session_id):
+        ``selection`` is the request's overrides (``run_kwargs``) or, with ``accepted``, an admitted
+        turn's settings: those were fixed at acceptance, so a later ``/model`` never rewrites them."""
+        if not accepted and self._session_model_override_for(gateway_session_key or session_id):
             return None
         if isinstance(route, dict) and isinstance(route.get("model"), str) and route["model"]:
             return route["model"]
@@ -818,7 +819,7 @@ class OpenAICompatRoutesMixin:
 
     def _planned_response_model(
         self, requested: Any, route: Optional[dict[str, Any]], selection: dict[str, Any], *,
-        session_id: Optional[str], gateway_session_key: Optional[str],
+        session_id: Optional[str], gateway_session_key: Optional[str], accepted: bool = False,
     ) -> tuple[str, Optional[str]]:
         """``(label, selection)`` before the turn runs. ``label`` is what early SSE frames report
         and the fallback when no runtime was recorded: session ``/model`` > route > honored
@@ -828,7 +829,8 @@ class OpenAICompatRoutesMixin:
         if requested == self._model_name:
             return requested, None
         chosen = self._honored_selection(
-            route, selection, session_id=session_id, gateway_session_key=gateway_session_key)
+            route, selection, session_id=session_id, gateway_session_key=gateway_session_key,
+            accepted=accepted)
         if chosen:
             return chosen, chosen
         session_override = self._session_model_override_for(gateway_session_key or session_id)
@@ -1508,10 +1510,11 @@ class OpenAICompatRoutesMixin:
         response_store = self._current_response_store()
         response_id, created_at = await _response_identity(response_store, durable_key)
         # An admitted (durable) turn's selection lives in its settings; run_kwargs is then empty.
-        accepted = context.get('selection') or run_kwargs
+        admitted = context.get('selection')
+        chosen = admitted if admitted is not None else run_kwargs
         response_model, selection = self._planned_response_model(
-            body.get('model', self._model_name), accepted.get("route"), accepted,
-            session_id=session_id, gateway_session_key=gateway_session_key)
+            body.get('model', self._model_name), chosen.get("route"), chosen,
+            session_id=session_id, gateway_session_key=gateway_session_key, accepted=admitted is not None)
         if durable_key:
             # The label pinned at acceptance (already planned) survives route changes and retries.
             response_model = await response_store.off_loop(response_store.request_model, durable_key[0], response_model)

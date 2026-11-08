@@ -299,22 +299,22 @@ def _render_sessions(ctx):
         except Exception:
             _kv("Active:", "(error reading sessions file)")
 
-    # Slot usage, only when max_concurrent_sessions is set. The cap is shared across CLI,
-    # desktop/TUI and the messaging gateway, so the surface that gets rejected is rarely the one
-    # holding the slots — without this the only way to find out is reading
-    # runtime/active_sessions.json by hand.
+    _render_execution_slots()
+
+
+def _render_execution_slots():
+    """Show actual host work separately from idle conversation ownership."""
+    from hermes_cli.config_backend import ConfigBackendUnavailable
     try:
-        from hermes_cli.active_sessions import (
-            active_session_registry_snapshot, format_age, resolve_max_concurrent_sessions)
-        cap = resolve_max_concurrent_sessions(ctx.config)
-    except Exception:
-        cap = None
+        from hermes_cli.active_sessions import format_age
+        from hermes_cli.execution_budget import execution_budget_snapshot
+        cap, held = execution_budget_snapshot()
+    # health: allow BLE001 -- status reports unknown pluggable-config failures as unavailable without exposing exception content
+    except (Exception, ConfigBackendUnavailable):
+        _kv("Execution slots:", "unavailable (execution coordination could not be verified)")
+        return
     if cap:
-        try:
-            held = active_session_registry_snapshot()
-        except Exception:
-            held = []
-        _kv("Slots:", color(f"{len(held)}/{cap} in use", Colors.YELLOW if len(held) >= cap else Colors.GREEN))
+        _kv("Execution slots:", color(f"{len(held)}/{cap} in use", Colors.YELLOW if len(held) >= cap else Colors.GREEN))
         now = time.time()
         for entry in sorted(held, key=lambda e: e.get("started_at") or 0):
             age = format_age(now - float(entry.get("started_at") or now))

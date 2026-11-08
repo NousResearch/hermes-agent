@@ -82,17 +82,28 @@ def test_different_sessions_still_run_concurrently():
     assert len(active_session_registry_snapshot()) == 2
 
 def test_global_capacity_still_applies_independently():
-    """The capacity policy is untouched, and refuses for its own reason."""
+    """Writers and host execution permits refuse independently for different reasons."""
+    from pathlib import Path
+    from hermes_cli.execution_budget import try_acquire_execution_permit
+
+    home = Path(os.environ["HERMES_HOME"])
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text("max_concurrent_sessions: 2\n", encoding="utf-8")
     config = {"max_concurrent_sessions": 2}
     assert acquire("S1", config)[0] is not None
     assert acquire("S2", config)[0] is not None
-
-    lease, refusal = acquire("S3", config)
-    assert lease is None
-    assert refusal.reason == MAX_CONCURRENT_SESSIONS, (
-        "a capacity refusal must not be reported as an ownership refusal: a client "
-        "retries one and must not retry the other the same way"
-    )
+    assert acquire("S3", config)[0] is not None  # idle ownership is not executing work
+    permits = []
+    try:
+        for key in ("S1", "S2"):
+            permit, refusal = try_acquire_execution_permit(execution_id=key, surface="desktop")
+            assert refusal is None
+            permits.append(permit)
+        permit, refusal = try_acquire_execution_permit(execution_id="S3", surface="gateway")
+        assert permit is None and refusal.reason == MAX_CONCURRENT_SESSIONS
+    finally:
+        for permit in permits:
+            permit.release()
 
 def test_capacity_and_exclusivity_are_not_the_same_switch():
     """Both refusals exist under a configured cap, and say different things."""

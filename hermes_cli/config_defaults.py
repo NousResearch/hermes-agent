@@ -38,7 +38,7 @@ DEFAULT_CONFIG = {
     },
     # Server-process fd soft limit (clamped to the hard limit) + glibc arena cap; 0/false/null = off.
     "runtime": {"nofile_soft_limit": 4096, "malloc_arena_max": 4},
-    # Global active chat session cap across CLI, TUI/dashboard, and messaging. None/0 = unbounded.
+    # Shared host-root executing-conversation limit; idle viewers are excluded. None/0 = unbounded.
     "max_concurrent_sessions": None,
     # Soft LRU cap on in-memory TUI/desktop/dashboard sessions. Above it the gateway evicts the
     # least-recently-active DETACHED sessions (no live client); reopening re-resumes from disk.

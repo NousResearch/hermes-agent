@@ -181,6 +181,32 @@ class TestResponseModelReportsServedModel:
         assert last["error"]["code"] == "model_not_found"
 
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.parametrize(("endpoint", "payload"), _ENDPOINTS)
+    async def test_ignored_bare_model_never_blames_the_client_for_the_default(
+        self, endpoint, payload, stream,
+    ):
+        """direct_model_requests off: the bare value was ignored, so a 404 from the configured
+        default is the generic agent failure, never ``model_not_found`` naming the client's ask
+        or the default, on every door (Greptile P2)."""
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        app = _create_app(adapter)
+
+        async def _run(**kwargs):
+            return ({"final_response": "", "messages": [], "api_calls": 1, "failed": True,
+                     "completed": False, "error": "HTTP 404: no such model",
+                     "failure_reason": "model_not_found",
+                     "runtime": {"model": "default-model", "route_source": "global"}},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=_run):
+                resp = await cli.post(endpoint, json={"model": "SomeOtherModel", "stream": stream, **payload})
+                body = await resp.text()
+        assert "model_not_found" not in body
+
+
 @pytest.mark.asyncio
 async def test_durable_responses_pin_the_planned_label_not_the_request(api, owner):
     """An Idempotency-Key retry replays the label pinned at acceptance, and that label is the
@@ -203,3 +229,27 @@ async def test_durable_responses_pin_the_planned_label_not_the_request(api, owne
         retry = await (await client.post('/v1/responses', json=body, headers=headers)).json()
     assert first['model'] != 'SomeOtherModel'
     assert retry['model'] == first['model']
+
+
+@pytest.mark.asyncio
+async def test_durable_responses_404_a_rejected_requested_model(api, owner):
+    """An Idempotency-Key request still gets the 404 model_not_found: the admitted turn's
+    selection comes from its settings, not the (empty) observer run_kwargs (Greptile P1)."""
+    from aiohttp import web
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+        execution_result.get()['result'] = {
+            'final_response': '', 'messages': [], 'failed': True, 'completed': False,
+            'error': 'HTTP 404: no such model', 'failure_reason': 'model_not_found'}
+        return ''
+
+    owner.runner._handle_message = handle
+    app = web.Application()
+    app.router.add_post('/v1/responses', api._handle_responses)
+    body = {'model': 'no-such-model', 'provider': 'custom', 'input': 'hi'}
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post('/v1/responses', json=body, headers={'Idempotency-Key': 'nf-key'})
+        data = await resp.json()
+    assert resp.status == 404
+    assert data['error']['code'] == 'model_not_found'

@@ -682,6 +682,9 @@ async def _start_gateway_run_runner(runner, _signal_initiated_shutdown: list) ->
         await _discover_gateway_mcp_tools(runner.config)
     except Exception:
         logger.debug("MCP tool discovery failed (non-fatal)", exc_info=True)
+    except BaseException as exc:
+        logger.critical("MCP tool discovery aborted startup: %s", exc, exc_info=True)
+        raise
 
     try:
         success = await runner.start()

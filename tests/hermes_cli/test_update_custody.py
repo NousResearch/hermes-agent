@@ -80,6 +80,15 @@ _RECORDER = textwrap.dedent("""\
 
 
 @pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="needs /proc fd listing")
+def test_every_updater_git_runner_reads_git_in_english(repo, monkeypatch):
+    """The updater classifies git failures by English stderr phrases, so a translated git (the
+    user's ``LANGUAGE=de``) must still answer in English through every runner."""
+    monkeypatch.setenv("LANGUAGE", "de")
+    shown = ["-c", "alias.lang=!printf %s \"$LANGUAGE\"", "lang"]
+    for name, run in _runners(repo):
+        assert run(shown).strip() == "C", name
+
+
 def test_lock_fd_reaches_local_mutators_only(repo, tmp_path, monkeypatch):
     from hermes_cli import update_cmd
 

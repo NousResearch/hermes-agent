@@ -165,6 +165,11 @@ export function noConsoleGitEnv(base: NodeJS.ProcessEnv | undefined, gitBin: str
   return env
 }
 
+// Callers match git's stderr by English phrases (git-worktree-ops: "already exists"), so a
+// translated git must answer in English. LANGUAGE only picks the message catalog; LC_CTYPE,
+// which hooks and path encoding read, stays the user's.
+const ENGLISH_GIT_MESSAGES = { LANGUAGE: 'C' }
+
 export function planNoConsoleGitSpawn({
   gitBin,
   args,
@@ -184,7 +189,7 @@ export function planNoConsoleGitSpawn({
     return {
       command: pythonBin,
       args: [scriptPath, ...args],
-      env: noConsoleGitEnv(env, gitBin),
+      env: { ...noConsoleGitEnv(env, gitBin), ...ENGLISH_GIT_MESSAGES },
       windowsHide: true,
       stdio: [...PIPED_STDIO],
       creationFlags: CREATE_NO_WINDOW
@@ -194,7 +199,7 @@ export function planNoConsoleGitSpawn({
   return {
     command: gitBin || 'git',
     args,
-    env: { ...(env || {}) },
+    env: { ...(env || {}), ...ENGLISH_GIT_MESSAGES },
     windowsHide: Boolean(isWindows),
     stdio: [...PIPED_STDIO],
     creationFlags: 0

@@ -31,7 +31,9 @@ import {
   stripGeneratedImageEchoes
 } from '@/lib/generated-images'
 import { scheduleStreamWork } from '@/lib/stream-work-clock'
+import { anySttLeaseActive } from '@/lib/stt-lease'
 import { isTodoToolName, nextTodosFromToolEvent, parseTodoRevision } from '@/lib/todos'
+import { anyTtsLeaseActive } from '@/lib/tts-lease'
 import { turnDoneNotificationBody } from '@/lib/turn-done-notification-body'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
@@ -41,6 +43,8 @@ import { registerStreamDeltaFlush } from '@/store/stream-delta-flush'
 import { upsertSubagent } from '@/store/subagents'
 import { $todosBySession, setSessionTodos } from '@/store/todos'
 import { broadcastTranscriptChanged } from '@/store/transcript-sync'
+import { $voicePlayback } from '@/store/voice-playback'
+import { $autoSpeakReplies } from '@/store/voice-prefs'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -56,12 +60,7 @@ import { handleServerRequest as dispatchServerRequest } from './gateway-event/se
 import { bindReceiptUserRows } from './receipt-user-rows'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
 import { admitSegmentDelta, admitSegmentSeal, type SegmentCursor, type SegmentStamp } from './segment-identity'
-import {
-  completionErrorText,
-  delegateTaskPayloads,
-  MAX_STREAM_FLUSH_GAP_MS,
-  STREAM_DELTA_FLUSH_MS
-} from './utils'
+import { completionErrorText, delegateTaskPayloads, streamFlushFloor } from './utils'
 
 interface MessageStreamOptions {
   activeGatewayProfile?: string
@@ -412,11 +411,13 @@ export function useMessageStream({
     // The cost has to include the deferred view-sync frame where the commit
     // actually happens; see runFlush below.
     const sinceLast = performance.now() - lastFlushAtRef.current
+    const hidden = typeof document !== 'undefined' && document.visibilityState !== 'visible'
 
-    const adaptiveFloor = Math.min(
-      Math.max(STREAM_DELTA_FLUSH_MS, lastFlushCostRef.current * 3),
-      MAX_STREAM_FLUSH_GAP_MS
-    )
+    // Any voice consumer reads the transcript off-screen; never slow its feed.
+    const voiceBusy =
+      $autoSpeakReplies.get() || $voicePlayback.get().status !== 'idle' || anySttLeaseActive() || anyTtsLeaseActive()
+
+    const adaptiveFloor = streamFlushFloor(lastFlushCostRef.current, hidden, voiceBusy)
 
     if (flushHandleRef.current !== null && sinceLast < adaptiveFloor) {
       return

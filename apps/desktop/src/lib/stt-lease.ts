@@ -43,6 +43,17 @@ function keyFor(lease: string, owner: ResolvedOwner): string {
 /** Latest requested state per (lease, owner): true = acquire, false = release. */
 const intent = new Map<string, boolean>()
 
+/** True while any voice-input lease is held (dictation or a conversation). */
+export function anySttLeaseActive(): boolean {
+  for (const active of intent.values()) {
+    if (active) {
+      return true
+    }
+  }
+
+  return false
+}
+
 /** The last queued operation per (lease, owner), until it settles. */
 const tails = new Map<string, { active: boolean; promise: Promise<void> }>()
 

@@ -1,0 +1,125 @@
+name: zoridos-ci
+
+# Fork-only check for zoridos/hermes-agent. zmerge requires a check named `ci`,
+# so the single job below is named exactly that. It runs on GitHub-hosted
+# runners (upstream's workflows use Blacksmith, which the fork does not have).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zoridos-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          fetch-depth: 0 # diff against the PR base / the pre-push tip
+
+      - name: Set up locked Python and test dependencies
+        # Same provisioning as upstream's tests.yml (pm/lock.json + uv.lock).
+        uses: ./.github/actions/setup-pm
+        with:
+          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web", "keychain"]'
+          test-environment: 'true'
+          prune-python-cache: true
+
+      - name: Install ripgrep (prebuilt binary)
+        run: |
+          set -euo pipefail
+          RG_VERSION=15.1.0
+          RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
+          RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
+          curl -sSfL --retry 3 --retry-delay 5 -o "$RG_TARBALL" \
+            "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
+          echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
+          tar -xzf "$RG_TARBALL"
+          sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
+          rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+          rg --version
+
+      - name: Check SQLite runs WAL
+        # Hermes picks DELETE journal mode on a SQLite with the WAL-reset
+        # bug. If the PM-pinned interpreter links one, every WAL test silently
+        # runs DELETE (or skips), so fail loudly instead. Tests that need DELETE
+        # select it explicitly (journal_mode config, a pinned vulnerable
+        # version), so they run on any interpreter.
+        run: |
+          "$HERMES_PYTHON" -c "import sqlite3, sys, hermes_state_wal as w; v = w.is_sqlite_wal_reset_vulnerable(); print(f'Python {sys.version.split()[0]}, SQLite {sqlite3.sqlite_version}, WAL-reset vulnerable: {v}'); sys.exit(1 if v else 0)"
+
+      - name: Find the diff base
+        # PR: merge base with the target branch. Push to main: the pre-push tip.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = pull_request ]; then
+            base=$(git merge-base "$BASE_SHA" HEAD)
+          elif git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            base=$BEFORE_SHA
+          else
+            base=$(git rev-parse HEAD~1 2>/dev/null || git hash-object -t tree /dev/null)
+          fi
+          echo "DIFF_BASE=$base" >> "$GITHUB_ENV"
+
+      - name: Ruff on changed Python files
+        # Upstream's ruff config (ruff.toml). --force-exclude keeps the config's
+        # `exclude` honoured for files named explicitly on the command line.
+        run: |
+          set -euo pipefail
+          mapfile -d '' files < <(git diff --name-only -z --diff-filter=d "$DIFF_BASE" HEAD -- '*.py' '*.pyi')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No Python files changed since $DIFF_BASE; nothing to lint."
+            exit 0
+          fi
+          printf 'ruff: %s\n' "${files[@]}"
+          # Command form: ruff runs in the isolated ci-tools env without replacing
+          # the test interpreter setup-pm exported for the steps below.
+          python -m scripts.ci.python_packages "$(python -m scripts.code_health --print-pins)" \
+            -- -m ruff check --force-exclude "${files[@]}"
+
+      - name: Run tests
+        # Narrowed from all of tests/hermes_cli/ (~1,885 files), which cannot finish in
+        # the 15-minute budget on a 4-vCPU hosted runner. Runs only the completion,
+        # autosuggest, keybinding and next-prompt tests, plus every test file the change
+        # touches (so a PR's own tests always run); patterns that match nothing
+        # (files that have not landed yet) are skipped.
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(
+            tests/hermes_cli/test_completion*.py
+            tests/hermes_cli/*autosuggest*.py
+            tests/hermes_cli/*keybind*.py
+            tests/hermes_cli/test_next_prompt*.py
+            tests/agent/test_next_prompt*.py
+          )
+          mapfile -d '' changed < <(git diff --name-only -z --diff-filter=d "$DIFF_BASE" HEAD -- ':(glob)tests/**/test_*.py')
+          declare -A seen=()
+          selected=()
+          for f in "${files[@]}" "${changed[@]}"; do
+            [ -n "${seen[$f]:-}" ] || { seen[$f]=1; selected+=("$f"); }
+          done
+          files=("${selected[@]}")
+          [ "${#files[@]}" -gt 0 ] || { echo "no matching test files" >&2; exit 1; }
+          printf 'test file: %s\n' "${files[@]}"
+          scripts/run_tests.sh "${files[@]}"
+        env:
+          HERMES_TEST_WORKERS: 4
+          HERMES_TEST_FILE_TIMEOUT: 600
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""

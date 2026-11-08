@@ -196,6 +196,43 @@ class TestMattermostSend:
 
 
     @pytest.mark.asyncio
+    async def test_existing_thread_metadata_is_preserved_when_reply_mode_is_off(self):
+        """An existing Mattermost thread stays threaded; reply_mode only starts new threads."""
+        self.adapter._reply_mode = "off"
+        self.adapter._api_get = AsyncMock(return_value={"id": "thread_root", "root_id": ""})
+        self.adapter._api_post = AsyncMock(return_value={"id": "thread_reply"})
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Thread-local progress",
+            reply_to="inbound_reply",
+            metadata={"thread_id": "thread_root"},
+        )
+
+        assert result.success is True
+        self.adapter._api_get.assert_awaited_once_with("posts/thread_root")
+        payload = self.adapter._api_post.call_args.args[1]
+        assert payload["root_id"] == "thread_root"
+
+
+    @pytest.mark.asyncio
+    async def test_top_level_reply_to_stays_flat_when_reply_mode_is_off(self):
+        """Off mode still keeps top-level channel conversations flat."""
+        self.adapter._reply_mode = "off"
+        self.adapter._api_get = AsyncMock()
+        self.adapter._api_post = AsyncMock(return_value={"id": "flat_reply"})
+
+        result = await self.adapter.send(
+            "channel_1", "Flat response", reply_to="top_level_post", metadata={"notify": True},
+        )
+
+        assert result.success is True
+        self.adapter._api_get.assert_not_awaited()
+        payload = self.adapter._api_post.call_args.args[1]
+        assert "root_id" not in payload
+
+
+    @pytest.mark.asyncio
     async def test_progress_send_with_invalid_thread_root_never_falls_back_flat(self):
         """Tool/status/progress bubbles must stay quiet when the thread is broken."""
         self.adapter._reply_mode = "thread"

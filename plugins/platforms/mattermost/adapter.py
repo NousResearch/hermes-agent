@@ -198,12 +198,12 @@ class MattermostAdapter(BasePlatformAdapter):
         if file_ids is not None:
             base["file_ids"] = file_ids
         payload = _with_mentions_disabled(base)
-        if self._reply_mode == "thread":
-            # root_id from reply_to, else metadata["thread_id"]/["root_id"], resolved to the true thread root.
-            candidate = reply_to or (
-                isinstance(metadata, dict) and (metadata.get("thread_id") or metadata.get("root_id")))
-            if candidate:
-                payload["root_id"] = await self._resolve_root_id(str(candidate))
+        # Existing thread metadata is authoritative regardless of reply mode.
+        metadata_thread = (
+            isinstance(metadata, dict) and (metadata.get("thread_id") or metadata.get("root_id")))
+        candidate = metadata_thread or (reply_to if self._reply_mode == "thread" else None)
+        if candidate:
+            payload["root_id"] = await self._resolve_root_id(str(candidate))
         return await self._post_preserving_thread(chat_id, payload, metadata)
 
     async def _post_with_file(self, chat_id: str, file_id: str, caption: Optional[str], reply_to: Optional[str],

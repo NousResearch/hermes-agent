@@ -274,6 +274,20 @@ def row_turn_author(policy, row):
     return forward_author(policy)
 
 
+def restore_admitted_event(authority, ref, row):
+    """Restore native transport IDs separately from locally submitted admission IDs."""
+    if 'native_text_v1' in row['payload']:
+        return restore_native(row['payload'], authority.runner)
+    from gateway.session_ingress_media import restore_attachments
+    event = MessageEvent(text=row['payload']['text'], source=authority.sessions[ref.session_id].source,
+                         message_id=row['admission_id'], reply_anchor_override='',
+                         **restore_attachments(row['payload']))
+    if 'local_automation_v1' in row['payload']:
+        from gateway.session_automation import restore_local_automation
+        event = restore_local_automation(authority, ref, row)
+    return event
+
+
 async def execute_admission(authority, ref, row):
     busy_turn_started(row['admission_id'])
     from gateway.session_completion_notes import note_if_unviewed
@@ -295,15 +309,7 @@ async def execute_admission(authority, ref, row):
     route = live.route
     native = row['admission_id'] in authority.native_waiters
     authority.native_waiters.discard(row['admission_id'])
-    if 'native_text_v1' in row['payload']:
-        event = restore_native(row['payload'], authority.runner)
-    else:
-        from gateway.session_ingress_media import restore_attachments
-        event = MessageEvent(text=row['payload']['text'], source=live.source,
-                             message_id=row['admission_id'], **restore_attachments(row['payload']))
-        if 'local_automation_v1' in row['payload']:
-            from gateway.session_automation import restore_local_automation
-            event = restore_local_automation(authority, ref, row)
+    event = restore_admitted_event(authority, ref, row)
     if event.internal and 'gateway_session_id' in event.metadata:
         # Main's ownership proof (802fd5782f3): the session the pre-claim check just validated, so the
         # turn's resolver never re-reads (and on a transient failure drops) an admitted completion.

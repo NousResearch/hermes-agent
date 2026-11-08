@@ -41,3 +41,16 @@ def test_known_hosts_and_their_subdomains(url, expected):
 ])
 def test_lookalike_hosts_stay_unknown(url):
     assert _infer_provider_from_url(url) is None
+
+
+@pytest.mark.parametrize("url, expected", [
+    ("https://api.minimaxi.com/v1", "minimax"),
+    ("https://api.minimax.chat/v1", "minimax"),
+    # Regional Vertex is inferred, but has no host-specific table entry, so it is not priced.
+    ("https://us-central1-aiplatform.googleapis.com/v1", ""),
+    ("https://openrouter.ai.attacker.invalid/api/v1", ""),
+])
+def test_custom_endpoint_pricing_identity(url, expected):
+    from hermes_cli.models_pricing import resolve_pricing_provider
+
+    assert resolve_pricing_provider("custom:x", base_url=url) == expected

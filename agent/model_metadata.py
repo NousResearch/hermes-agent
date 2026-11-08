@@ -441,7 +441,7 @@ def _is_custom_endpoint(base_url: str) -> bool:
     return bool(normalized) and not base_url_host_matches(normalized, "openrouter.ai")
 
 
-# Hostname -> provider: a key matches that host or a subdomain; a "-" key is a bare suffix (regional Vertex).
+# Hostname -> provider: a key matches that host or a subdomain; regional <region>-aiplatform Vertex follows.
 # Profiles claim more hosts via ``hostnames``/``metadata_hostnames`` (``providers.profile_for_host``), per home.
 _URL_TO_PROVIDER: dict[str, str] = {
     "api.openai.com": "openai", "chatgpt.com": "openai", "api.anthropic.com": "anthropic",
@@ -456,7 +456,7 @@ _URL_TO_PROVIDER: dict[str, str] = {
     "integrate.api.nvidia.com": "nvidia", "api.xiaomimimo.com": "xiaomi", "xiaomimimo.com": "xiaomi",
     "api.gmi-serving.com": "gmi", "api.novita.ai": "novita",
     "tokenhub.tencentmaas.com": "tencent-tokenhub", "api.lkeap.cloud.tencent.com": "tencent-tokenplan",
-    "ollama.com": "ollama-cloud", "-aiplatform.googleapis.com": "vertex",
+    "ollama.com": "ollama-cloud",
 }
 
 # Auto-extend with provider-profile hostnames not already mapped.
@@ -478,9 +478,9 @@ def _infer_provider_from_url(base_url: str) -> Optional[str]:
     if (profile := profile_for_host(base_url, metadata=True)) is not None:  # profile claims beat table rows
         return profile.name
     for domain, provider in _URL_TO_PROVIDER.items():
-        if host.endswith(domain) if domain[0] == "-" else (host == domain or host.endswith("." + domain)):
+        if base_url_host_matches(host, domain):
             return provider
-    return None
+    return "vertex" if host.endswith("-aiplatform.googleapis.com") else None
 
 
 def _strip_openrouter_routing_variant(

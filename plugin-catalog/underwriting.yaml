@@ -1,6 +1,6 @@
 name: underwriting
 repo: https://github.com/johnnyminer/hermes-underwriting
-sha: e376ab64e1b72f78bfd00f4779129352e42fa005
+sha: a98c126953989cbcedd00bd3572760b2bcea890a
 description: >-
   Commercial real estate underwriting that shows its work: rebuilds net operating income from the
   rent roll and T-12 instead of trusting the broker's claim, runs buy-box tests against a
@@ -11,14 +11,17 @@ description: >-
   document text: every figure is matched to the line it came from and marked verified, and a
   citation the document cannot support is reported. The arithmetic is pure Python standard library
   with no network calls and no third-party packages; only extraction calls the host model, and only
-  a URL passthrough fetches anything over the network. The deal book is written as JSON under
-  Hermes's plugin state directory. Not investment advice.
+  a URL passthrough fetches anything over the network. Writes are confined to the plugin's own data
+  directory: memos and extraction audit trails take a bare filename under <data_dir>/exports/, and
+  the deal book is JSON under <data_dir>. Document input is treated as untrusted, because it is:
+  local reads go through Hermes' read block list with no $HOME fallback, and URL input is limited to
+  public http(s) with every redirect hop re-checked. Not investment advice.
 maintainer: johnnyminer
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/johnnyminer/hermes-underwriting#readme
-version: "0.1.0"
+version: "0.1.1"
 platforms: []
 capabilities:
   provides_tools:

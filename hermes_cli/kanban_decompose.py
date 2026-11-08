@@ -300,6 +300,28 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
     )
 
 
+def _permanently_ineligible_reason(task_id: str) -> str:
+    """Return a no-bill reason for a triage card the decomposer must not reopen.
+
+    A graph's ``decomposed`` event is durable even if an operator later moves
+    its root back to triage.  Likewise, ``block_loop_detected`` deliberately
+    parks the card in triage for human intervention.  Check both before
+    constructing routing or calling the auxiliary model.
+    """
+    with kbc.connect_closing() as conn:
+        rows = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? "
+            "AND kind IN ('decomposed', 'block_loop_detected')",
+            (task_id,),
+        ).fetchall()
+    kinds = {row["kind"] for row in rows}
+    if "decomposed" in kinds:
+        return "task already decomposed"
+    if "block_loop_detected" in kinds:
+        return "task is parked by the block-loop guard"
+    return ""
+
+
 def decompose_task(
     task_id: str,
     *,
@@ -311,6 +333,9 @@ def decompose_task(
     as ``ok=False``."""
     task, reason = _load_triage_task(task_id)
     if task is None:
+        return DecomposeOutcome(task_id, False, reason)
+    reason = _permanently_ineligible_reason(task_id)
+    if reason:
         return DecomposeOutcome(task_id, False, reason)
 
     routing = _load_routing(root_assignee=task.assignee)

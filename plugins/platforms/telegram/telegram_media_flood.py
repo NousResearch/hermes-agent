@@ -11,9 +11,12 @@ owned by the deferred upload), so the base dispatcher does not post a second one
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 import re
+import shutil
+import tempfile
 from contextvars import ContextVar
 from typing import Any, Awaitable, Callable, Optional
 
@@ -28,7 +31,11 @@ _FLOOD_TEXT_RE = re.compile(r"retry\s+(?:in|after)\s+(\d+(?:\.\d+)?)", re.IGNORE
 # send_document) inherits it and recovery can never loop.
 _FLOOD_STAGE: ContextVar[int] = ContextVar("telegram_media_flood_stage", default=0)
 
-Redo = Callable[[], Awaitable[SendResult]]
+Redo = Callable[[Optional[str]], Awaitable[SendResult]]
+
+# How many times a deferred re-upload may wait out a flood window that a sibling upload re-armed
+# before its request, so a window kept open by other traffic cannot park it forever.
+_MAX_WINDOW_WAITS = 3
 
 
 def flood_wait_seconds(error: Exception) -> Optional[float]:
@@ -45,27 +52,45 @@ def flood_wait_seconds(error: Exception) -> Optional[float]:
     return float(match.group(1)) if match else None
 
 
+def _keep_private_copy(path: str) -> Optional[str]:
+    """Copy ``path`` into a private temp dir for a deferred upload: callers (auto-TTS, the image
+    document fallback) delete their file as soon as the send returns. Blocking: use ``to_thread``."""
+    tmp_dir = None
+    try:
+        tmp_dir = tempfile.mkdtemp(prefix="hermes-tg-flood-")
+        kept = os.path.join(tmp_dir, os.path.basename(path))
+        shutil.copy2(path, kept)
+        return kept
+    except OSError as exc:
+        logger.warning("Could not keep a copy of %s for the deferred upload: %s", os.path.basename(path), exc)
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        return None
+
+
 class TelegramMediaFloodMixin:
     """Native local-file upload shell + flood recovery shared by every media sender."""
 
     async def _send_local_file(
         self, label: str, path: str, chat_id, reply_to, metadata, media_key: str, build_kwargs, on_error,
-        redo: Optional[Redo] = None,
+        redo: Optional[Redo] = None, source: Optional[str] = None,
     ) -> SendResult:
         """Existence check, open, send with routing. ``build_kwargs(f)`` supplies the media kwargs;
-        ``await on_error(exc)`` handles a failure flood recovery did not resolve. ``redo`` repeats
-        the whole public send: a caller whose upload or thumbnail is a temp file it deletes on return
-        must pass one, so a deferred re-upload rebuilds it instead of reading a removed path."""
+        ``await on_error(exc)`` handles a failure flood recovery did not resolve. ``redo(path)`` repeats
+        the whole public send from ``source`` (or a private copy of it): a caller whose upload or
+        thumbnail is a temp file it deletes on return must pass both, so a deferred re-upload rebuilds
+        it instead of reading a removed path."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         if not await asyncio.to_thread(os.path.exists, path):
             return SendResult(success=False, error=self._missing_media_path_error(label, path))
         if redo is None:
-            def redo() -> Awaitable[SendResult]:
-                return self._send_local_file(label, path, chat_id, reply_to, metadata, media_key, build_kwargs, on_error)
+            def redo(p: Optional[str]) -> Awaitable[SendResult]:
+                return self._send_local_file(label, p or path, chat_id, reply_to, metadata, media_key, build_kwargs, on_error)
+            source = path
 
         what = f"{media_key} {os.path.basename(path)}"
-        deferred = self._media_flood_precheck(chat_id, redo, what)
+        deferred = await self._media_flood_precheck(chat_id, redo, what, source)
         if deferred is not None:
             return deferred
         try:
@@ -75,18 +100,20 @@ class TelegramMediaFloodMixin:
                     reset_media=lambda: f.seek(0), **build_kwargs(f))
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:  # health: allow BLE001 -- upload boundary: flood recovery or the caller's on_error (which logs) owns every failure
-            recovered = await self._media_flood_recover(e, chat_id, redo, what)
+            recovered = await self._media_flood_recover(e, chat_id, redo, what, source)
             return recovered if recovered is not None else await on_error(e)
 
-    def _media_flood_precheck(self, chat_id, redo: Redo, what: str) -> Optional[SendResult]:
+    async def _media_flood_precheck(self, chat_id, redo: Redo, what: str, source: Optional[str]) -> Optional[SendResult]:
         """Inside a known flood window, defer the upload without spending a request on it."""
         from plugins.platforms.telegram.adapter import _flood_cap_result
         cooldown = self._send_flood_cooldown_remaining(chat_id)
         if cooldown is None or _FLOOD_STAGE.get() >= 2:
-            return None
-        return self._defer_media_upload(redo, cooldown, _flood_cap_result(cooldown), what)
+            return None  # a deferred re-upload waits out the window in _media_send_slot instead
+        return await self._defer_media_upload(redo, source, cooldown, _flood_cap_result(cooldown), what)
 
-    async def _media_flood_recover(self, error: Exception, chat_id, redo: Redo, what: str) -> Optional[SendResult]:
+    async def _media_flood_recover(
+        self, error: Exception, chat_id, redo: Redo, what: str, source: Optional[str] = None,
+    ) -> Optional[SendResult]:
         """Recover a media send refused by flood control. ``None``: not a flood, or recovery is
         exhausted (the caller then reports the failure; a deferred re-upload first sleeps out the
         new window so that report can land)."""
@@ -100,25 +127,44 @@ class TelegramMediaFloodMixin:
             await asyncio.sleep(wait)
             token = _FLOOD_STAGE.set(1)
             try:
-                return await redo()
+                return await redo(source)
             finally:
                 _FLOOD_STAGE.reset(token)
         refused = self._record_send_flood_cooldown(chat_id, wait)
         if stage >= 2:
             await asyncio.sleep(wait)
             return None
-        return self._defer_media_upload(redo, wait, refused, what)
+        return await self._defer_media_upload(redo, source, wait, refused, what)
 
-    def _defer_media_upload(self, redo: Redo, wait: float, refused: SendResult, what: str) -> SendResult:
-        """Schedule ``redo()`` after the flood window (tracked, so shutdown cancels it); returns
-        ``refused`` flagged so the dispatcher leaves the failure notice to the deferred upload."""
+    @contextlib.asynccontextmanager
+    async def _media_send_slot(self, chat_id):
+        """The chat's send lock for one media request. A deferred re-upload re-checks the flood window
+        INSIDE the lock, right before its request: a sibling re-upload that woke first may have been
+        refused again and extended it. It waits that out with the lock released, without spending its
+        one remaining attempt (at most ``_MAX_WINDOW_WAITS`` times)."""
+        waits = 0
+        while True:
+            async with self._chat_send_lock(chat_id):
+                wait = self._send_flood_cooldown_remaining(chat_id) if _FLOOD_STAGE.get() >= 2 else None
+                if wait is None or waits >= _MAX_WINDOW_WAITS:
+                    yield
+                    return
+            waits += 1
+            await asyncio.sleep(wait)
+
+    async def _defer_media_upload(
+        self, redo: Redo, source: Optional[str], wait: float, refused: SendResult, what: str,
+    ) -> SendResult:
+        """Schedule ``redo()`` after the flood window (tracked, so shutdown cancels it) on a private copy
+        of ``source``; returns ``refused`` flagged so the dispatcher leaves the failure notice to it."""
         logger.warning("[%s] Telegram flood control on %s; re-uploading natively in %.0fs", self.name, what, wait)
+        kept = await asyncio.to_thread(_keep_private_copy, source) if source else None
 
         async def _later() -> None:
-            await asyncio.sleep(wait)
-            _FLOOD_STAGE.set(2)  # this task's own context
             try:
-                result = await redo()
+                await asyncio.sleep(wait)
+                _FLOOD_STAGE.set(2)  # this task's own context
+                result = await redo(kept or source)
             except Exception:
                 logger.exception("[%s] Deferred upload of %s failed", self.name, what)
                 return
@@ -126,6 +172,8 @@ class TelegramMediaFloodMixin:
                 "[%s] Deferred upload of %s: %s", self.name, what, "delivered" if result.success else result.error)
 
         task = asyncio.get_running_loop().create_task(_later())
+        if kept:  # a done callback also runs when shutdown cancels the task before it started
+            task.add_done_callback(lambda _t: shutil.rmtree(os.path.dirname(kept), ignore_errors=True))
         tracked = getattr(self, "_background_tasks", None)
         if isinstance(tracked, set):
             tracked.add(task)

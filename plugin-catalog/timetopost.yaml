@@ -1,0 +1,18 @@
+name: timetopost
+title: TimeToPost
+repo: https://github.com/MelMayssonOwen/hermes-plugins
+sha: f203c3f897784d731ef48bc0974104a4d08cf5f8
+subdir: timetopost
+description: "Draft social posts for one human approval, schedule at each account's best time, read engagement and run AutoSEO blog workflows through TimeToPost's hosted MCP server, with two workflow skills bundled. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/). Disclosure: every tool call goes to https://api.timetopost.co/mcp and needs a TimeToPost account. OAuth must be enabled with `hermes mcp add timetopost --url https://api.timetopost.co/mcp --auth oauth`; the bundled mcp.json alone returns 401, and Hermes stores the OAuth tokens. Write tools can schedule or publish to the user's connected social accounts; the package marks the server untrusted so Hermes asks before write-capable calls. Post content and account data returned by tools reach the model provider. The tool list comes from the server at run time and is not covered by the pinned sha. One skill includes an offline Python helper that adds campaign parameters to links and makes no network calls."
+maintainer: MelMayssonOwen
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/MelMayssonOwen/hermes-plugins/blob/f203c3f897784d731ef48bc0974104a4d08cf5f8/timetopost/README.md
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -105,6 +105,7 @@ _CONTEXT_MESSAGE_CHARS = 2000  # per message; the trigger itself is never trunca
 _CONTEXT_TOTAL_CHARS = 16000  # whole block; the oldest lines go first (a thread's root stays)
 _CONTEXT_MAX_PAGES = 4  # top-level paging bound: at most 4 x _FETCH_LIMIT events read
 _CONTEXT_CLI_TIMEOUT = 5.0
+_CONTEXT_NAME_LOOKUPS = 4  # concurrent ``users get`` while rendering a context block
 _CONTEXT_BUDGET = 8.0  # the receive loop is serial: context must never hold it for long
 _CONTEXT_CLOCK_SKEW = 60  # seconds; author clocks set created_at, so the cut looks back this far
 # Line breaks the indentation below must neutralize, beyond \n (NEL, LS, PS, VT, FF, lone CR).
@@ -573,7 +574,9 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         except (ValueError, OverflowError):
             _cml = _CONTEXT_MESSAGE_LIMIT_DEFAULT
         self.context_message_limit = max(0, min(_cml, _CONTEXT_MESSAGE_LIMIT_MAX))
-        self._context_gaps: OrderedDict[str, None] = OrderedDict()  # triggers dispatched without their context
+        # Triggers whose context was computed: only these may cut a later turn's context. Anything else —
+        # a failed or skipped fetch, a command, a restart, an evicted entry — falls back to repeating.
+        self._context_delivered: OrderedDict[str, None] = OrderedDict()
         self._reply_to_mode: str = _reply_to_mode(config, extra)
         # Inbound transport: "auto" (WebSocket with poll fallback), "websocket" (required), "poll".
         _transport_raw = _scoped_platform_setting("BUZZ_TRANSPORT", extra, "transport")
@@ -1782,11 +1785,12 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         isolated = group_per_user and not (thread_id and not extra.get("thread_sessions_per_user", False))
         return not isolated
 
-    def _mark_context_gap(self, trigger_id: str) -> None:
-        """This trigger reached its session without its context: it must not serve as a cut later."""
-        self._context_gaps[trigger_id] = None
-        while len(self._context_gaps) > _SEEN_CAP:
-            self._context_gaps.popitem(last=False)
+    def _mark_context_delivered(self, trigger_id: str) -> None:
+        """This trigger reaches its session with its context, so it may serve as a cut later."""
+        self._context_delivered[trigger_id] = None
+        self._context_delivered.move_to_end(trigger_id)
+        while len(self._context_delivered) > _SEEN_CAP:
+            self._context_delivered.popitem(last=False)
 
     async def _context_for(self, source, chat_id: str, chat_type: str, trigger_id: str, trigger_ts: int,
                            thread_id: Optional[str]) -> Optional[str]:
@@ -1829,11 +1833,12 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         else:
             # Top-level history is interleaved with thread replies and reactions: page back until the
             # scope has enough messages, within a bounded number of pages.
-            fetched, ids, before = [], set(), None
+            # Bounded at the trigger's second so later traffic cannot use up the pages.
+            fetched, ids, before = [], set(), trigger_ts
+            kinds = ",".join(str(kind) for kind in sorted(_DISPATCH_KINDS))
             for _page in range(_CONTEXT_MAX_PAGES):
-                args = ["messages", "get", "--channel", chat_id, "--limit", str(_FETCH_LIMIT)]
-                if before is not None:
-                    args += ["--before", str(before + 1)]  # inclusive of the boundary second; deduped below
+                args = ["messages", "get", "--channel", chat_id, "--limit", str(_FETCH_LIMIT), "--kinds", kinds,
+                        "--before", str(before + 1)]  # inclusive of the boundary second; deduped below
                 code, out, err = await self._run_cli(args, timeout=_CONTEXT_CLI_TIMEOUT)
                 if code != 0:
                     raise RuntimeError(_cli_error_message(err, code))
@@ -1867,9 +1872,9 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         are its own assistant turns. With no usable cut (no session, ``/new``, a per-user session that
         never saw this scope, history compressed away) the session is treated as fresh: the latest
         ``context_message_limit`` messages, ours included, a thread's root always kept. Every doubt
-        resolves towards repeating context rather than hiding it; what stays possible is a gap recorded
-        only in memory (a failed fetch) being lost to a restart. Best-effort and bounded in time: on
-        failure the trigger goes alone.
+        resolves towards repeating context rather than hiding it: only a turn whose own context was
+        computed in this process can cut, so a restart, a failed or skipped fetch, or an evicted record
+        repeats instead. Best-effort and bounded in time: on failure the trigger goes alone.
         """
         limit = self.context_message_limit
         if limit <= 0 or not trigger_id:
@@ -1878,9 +1883,10 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
             events = await self._scope_events(chat_id, trigger_id, trigger_ts, thread_id, limit + 1)
             seen = (await asyncio.to_thread(self._incorporated, session_id, [str(ev["id"]) for ev in events])
                     if session_id and events else set())
-            # A turn whose own context never arrived is no proof of what came before it.
+            # Only a turn known to have carried its own context proves what came before it; a turn
+            # without that evidence (failed or skipped fetch, a command, a restart) cannot cut.
             anchors = [int(ev.get("created_at") or 0) for ev in events
-                       if str(ev["id"]) in seen and str(ev["id"]) not in self._context_gaps]
+                       if str(ev["id"]) in seen and str(ev["id"]) in self._context_delivered]
             if anchors:
                 # created_at is the author's clock: look back a skew margin, deduped by membership.
                 cut_ts = max(anchors) - _CONTEXT_CLOCK_SKEW
@@ -1894,9 +1900,14 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
                 rest = [ev for ev in events if not root or ev is not root[0]]
                 events = root + rest[-(limit - len(root)):] if limit > len(root) else root
             pubkeys = [pk for pk in dict.fromkeys(str(ev.get("pubkey") or "").lower() for ev in events) if pk]
-            names = dict(zip(pubkeys, await asyncio.gather(
-                *(self._resolve_user_name(pk, timeout=_CONTEXT_CLI_TIMEOUT) for pk in pubkeys))))
-            lines, unverified = [], False
+            lookups = asyncio.Semaphore(_CONTEXT_NAME_LOOKUPS)
+
+            async def resolve(pk: str) -> str:
+                async with lookups:
+                    return await self._resolve_user_name(pk, timeout=_CONTEXT_CLI_TIMEOUT)
+
+            names = dict(zip(pubkeys, await asyncio.gather(*(resolve(pk) for pk in pubkeys))))
+            lines, unverified, keep_first = [], False, False
             for ev in events:
                 pubkey = str(ev.get("pubkey") or "").lower()
                 content = _context_text(ev.get("content")) or ("(attachment)" if self._imeta_attachments(ev) else "")
@@ -1907,13 +1918,13 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
                 if pubkey != self._self_pubkey and self._is_sender_authorized(pubkey, chat_type, chat_id) is False:
                     trust, unverified = "[unverified] ", True
                 lines.append(f"{trust}[{name}] {content}")
-            keep_first = bool(thread_id and events and str(events[0]["id"]) == thread_id)
+                keep_first = keep_first or (len(lines) == 1 and str(ev["id"]) == thread_id)
             while len(lines) > 1 and sum(len(line) + 1 for line in lines) > _CONTEXT_TOTAL_CHARS:
                 del lines[1 if keep_first else 0]
         except Exception:
             logger.debug("Buzz: conversation context for %s unavailable", trigger_id[:12], exc_info=True)
-            self._mark_context_gap(trigger_id)
             return None
+        self._mark_context_delivered(trigger_id)
         if not lines:
             return None
         header = "[Recent thread messages]" if thread_id else "[Recent channel messages]"
@@ -1959,7 +1970,6 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
                 channel_context = await asyncio.wait_for(self._context_for(
                     source, chat_id, chat_type, message_id, created_at, thread_id), _CONTEXT_BUDGET)
             except TimeoutError:
-                self._mark_context_gap(message_id)
                 logger.warning("Buzz: conversation context for %s took over %.0fs; dispatching without it",
                                message_id[:12], _CONTEXT_BUDGET)
         event = MessageEvent(

@@ -3571,15 +3571,19 @@ def _ctx_event(event_id, created_at, *, pubkey=OTHER_PUBKEY, content=None, root=
 class _FakeStore:
     """Session store double: one route per key, transcripts as sets of persisted platform ids."""
 
-    def __init__(self):
+    def __init__(self, on_turn=None):
         self._entries, self.transcripts = {}, {}
+        self.on_turn = on_turn  # marks a persisted turn as having carried its own context
 
     def lookup_by_session_key(self, key):
         return self._entries.get(key)
 
-    def add(self, key, session_id, *incorporated, suspended=False):
+    def add(self, key, session_id, *incorporated, suspended=False, with_context=True):
         self._entries[key] = SimpleNamespace(session_id=session_id, suspended=suspended)
         self.transcripts[session_id] = set(incorporated)
+        if with_context and self.on_turn:
+            for event_id in incorporated:
+                self.on_turn(event_id)
 
     def has_platform_message_id(self, session_id, platform_message_id):
         return platform_message_id in self.transcripts.get(session_id, set())
@@ -3591,7 +3595,7 @@ class TestConversationContext:
     def adapter(self):
         a = _make_adapter()
         a._user_names.update({OTHER_PUBKEY: "Ana", AGENT_PUBKEY: "Bot B", SELF_PUBKEY: "Chip"})
-        a.set_session_store(_FakeStore())
+        a.set_session_store(_FakeStore(on_turn=a._mark_context_delivered))
         return a
 
     @staticmethod
@@ -3779,6 +3783,24 @@ class TestConversationContext:
         assert second[second.index("--before") + 1] == "151"
 
     @pytest.mark.asyncio
+    async def test_top_level_reads_start_at_the_trigger(self, adapter):
+        cli = self._script(adapter, "get", [_ctx_event("a", 100), _ctx_event(TRIGGER, 120)])
+        await self._ctx(adapter, trigger_ts=120)
+        first = cli.calls[0][0]
+        assert first[first.index("--before") + 1] == "121"
+        assert set(first[first.index("--kinds") + 1].split(",")) == {str(k) for k in _buzz_mod._DISPATCH_KINDS}
+
+    @pytest.mark.asyncio
+    async def test_trim_keeps_the_root_only_when_it_rendered(self, adapter, monkeypatch):
+        monkeypatch.setattr(_buzz_mod, "_CONTEXT_TOTAL_CHARS", 700)
+        self._script(adapter, "thread", [_ctx_event(ROOT, 100, content="")] + [
+            _ctx_event(f"r{i}", 101 + i, root=ROOT, content=f"{i}" * 300) for i in range(4)]
+            + [_ctx_event(TRIGGER, 200, root=ROOT)])
+        lines = self._lines(await self._ctx(adapter, thread=ROOT))
+        # An empty root renders nothing, so nothing is pinned: the oldest replies go first.
+        assert [line[:7] for line in lines] == ["[Ana] 2", "[Ana] 3"]
+
+    @pytest.mark.asyncio
     async def test_paging_is_bounded(self, adapter):
         cli = _ScriptedCli()
         cli.script("messages", "get", [_ctx_event(f"x{i}", 150, root=ROOT) for i in range(50)])
@@ -3795,18 +3817,33 @@ class TestConversationContext:
         assert self._lines(await self._ctx(adapter, session_id="s1", trigger_ts=120)) == ["[Ana] skewed"]
 
     @pytest.mark.asyncio
-    async def test_a_turn_whose_context_failed_is_not_a_cut(self, adapter):
-        """Turn N's fetch failed, so N+1 must still carry what came before N."""
-        adapter._session_store.add("k", "s1", "t-old", "t-n")
+    async def test_a_turn_without_its_context_is_not_a_cut(self, adapter):
+        """Turn N's context never arrived (failed/skipped fetch, a command, a restart), so N+1 still
+        carries what came before N."""
+        adapter._session_store.add("k", "s1", "t-old")
+        adapter._session_store.transcripts["s1"].add("t-n")  # persisted, but with no record of its context
         self._script(adapter, "get", [
             _ctx_event("t-old", 10), _ctx_event("gap-1", 100), _ctx_event("t-n", 200), _ctx_event(TRIGGER, 220)])
-        adapter._mark_context_gap("t-n")
         assert self._lines(await self._ctx(adapter, session_id="s1", trigger_ts=220)) == ["[Ana] gap-1"]
 
     @pytest.mark.asyncio
-    async def test_failed_fetch_and_timeout_record_the_gap(self, adapter, monkeypatch):
+    async def test_after_a_restart_nothing_cuts(self, adapter):
+        adapter._session_store.add("k", "s1", "t-n", with_context=False)
+        self._script(adapter, "get", [_ctx_event("before", 10), _ctx_event("t-n", 200), _ctx_event(TRIGGER, 220)])
+        assert self._lines(await self._ctx(adapter, session_id="s1", trigger_ts=220)) == ["[Ana] before", "[Ana] t-n"]
+
+    @pytest.mark.asyncio
+    async def test_only_a_computed_context_counts_as_delivered(self, adapter, monkeypatch):
         self._script(adapter, "get", "", code=2, stderr='{"error":"relay_error","message":"down"}')
-        assert await self._ctx(adapter) is None and TRIGGER in adapter._context_gaps
+        assert await self._ctx(adapter) is None and TRIGGER not in adapter._context_delivered
+        self._script(adapter, "get", [_ctx_event(TRIGGER, 200)])
+        assert await self._ctx(adapter) is None and TRIGGER in adapter._context_delivered  # nothing new is fine
+        adapter.handle_message = AsyncMock()
+        adapter._message_handler = AsyncMock()
+        adapter.send_reaction = AsyncMock(return_value=True)
+        await adapter._dispatch_message(text="/xyz", chat_id=CHANNEL, chat_type="group", user_id=OTHER_PUBKEY,
+                                        user_name="Ana", message_id="cmd", created_at=120)
+        assert "cmd" not in adapter._context_delivered
         monkeypatch.setattr(_buzz_mod, "_CONTEXT_BUDGET", 0.2)
 
         async def stuck(args, *, input_text=None, timeout=None):
@@ -3818,7 +3855,7 @@ class TestConversationContext:
         adapter.send_reaction = AsyncMock(return_value=True)
         await adapter._dispatch_message(text="hi", chat_id=CHANNEL, chat_type="group", user_id=OTHER_PUBKEY,
                                         user_name="Ana", message_id="slow-one", created_at=120)
-        assert "slow-one" in adapter._context_gaps
+        assert "slow-one" not in adapter._context_delivered
 
     @pytest.mark.asyncio
     async def test_author_without_pubkey_does_not_shift_names(self, adapter):
@@ -3873,6 +3910,7 @@ class TestConversationContext:
         self._script(adapter, "get", [
             _ctx_event("zz-unseen", 110), _ctx_event("aa-seen", 110), _ctx_event(TRIGGER, 120)])
         adapter._session_store.transcripts["s1"] = {"aa-seen"}
+        adapter._mark_context_delivered("aa-seen")
         assert self._lines(await self._ctx(adapter, session_id="s1", trigger_ts=120)) == ["[Ana] zz-unseen"]
 
     @pytest.mark.asyncio

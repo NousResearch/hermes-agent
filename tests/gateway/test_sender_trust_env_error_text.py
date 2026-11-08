@@ -77,3 +77,27 @@ def test_trust_env_false_keeps_the_real_api_error(tmp_path, monkeypatch, sender,
         assert " via http://127.0.0.1:1" in error and real_text not in error, error
     else:
         assert real_text in error, error
+
+
+@pytest.mark.parametrize("scheme", ["ftp", "socks4"])
+def test_wecom_connect_under_trust_env_false_never_shows_the_proxy_secret(tmp_path, monkeypatch, caplog, scheme):
+    """Redaction is skipped under ``trust_env: false``, so every transport WeComAdapter.connect
+    builds must also skip the environment: an httpx client reading an unsupported-scheme
+    ``HTTPS_PROXY`` raises with the raw proxy URL in its text."""
+    import logging
+
+    from gateway.config import PlatformConfig
+    from plugins.platforms.wecom.adapter import WeComAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("gateway:\n  trust_env: false\n")
+    for name in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy",
+                 "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", f"{scheme}://qzxqzxqzx@127.0.0.1:1")
+    adapter = WeComAdapter(PlatformConfig(enabled=True, extra={
+        "bot_id": "b", "secret": "s", "websocket_url": "ws://127.0.0.1:1/"}))
+    with caplog.at_level(logging.DEBUG):
+        assert asyncio.run(adapter.connect()) is False
+    assert "qzx" not in (adapter.fatal_error_message or ""), adapter.fatal_error_message
+    assert "qzx" not in caplog.text, caplog.text  # formatted records, tracebacks included

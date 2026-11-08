@@ -170,7 +170,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
             # Tighter keepalive so idle CLOSE_WAIT drains promptly.
             # See #18451.
             from gateway.platforms.helpers import platform_http_client
-            self._http_client = platform_http_client()
+            self._http_client = platform_http_client(trust_env=gateway_trust_env())  # must match the redaction below
             await self._open_connection()
             self._mark_connected()
             self._listen_task, self._heartbeat_task = asyncio.create_task(self._listen_loop()), asyncio.create_task(self._heartbeat_loop())

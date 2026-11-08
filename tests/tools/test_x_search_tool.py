@@ -270,14 +270,7 @@ def _xcred(prefix: str) -> str:
     return prefix + "-key-" + "x1"
 
 def _install_fake_oauth_pool(monkeypatch, oauth_token: str) -> None:
-    """Make the shared resolver's OAuth branch yield ``oauth_token``.
-
-    Patches ``agent.credential_pool.load_pool`` (the seam
-    ``resolve_xai_http_credentials`` imports at call time). Any pool key
-    other than ``xai-oauth`` raises so ``resolve_provider_secret``'s
-    credential-pool fallback can't accidentally surface the OAuth bearer
-    as an "explicit key".
-    """
+    """Make the shared resolver's OAuth branch yield ``oauth_token``."""
     from types import SimpleNamespace
 
     entry = SimpleNamespace(
@@ -302,11 +295,7 @@ def _install_fake_oauth_pool(monkeypatch, oauth_token: str) -> None:
     monkeypatch.setattr("agent.credential_pool.load_pool", _fake_load_pool)
 
 def test_x_search_prefers_explicit_api_key_over_oauth(monkeypatch):
-    """#88040: with a paid XAI_API_KEY configured alongside subscription
-    OAuth, x_search must use the API key — the OAuth path authorizes but
-    answers /v1/responses in a degraded Grok explanatory mode with no
-    citations. Same prefer-API-key root cause as the TTS fix (#87045/#87081);
-    the precedence lives in the shared resolver behind ``prefer_api_key``."""
+    """With both credentials, x_search uses the explicit API key."""
     from tools.registry import invalidate_check_fn_cache
     from tools.x_search_tool import x_search_tool
 
@@ -316,9 +305,7 @@ def test_x_search_prefers_explicit_api_key_over_oauth(monkeypatch):
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
         "hermes_cli.config.get_env_value",
-        lambda name, default=None: {
-            "XAI_API_KEY": paid_key,
-        }.get(name, default),
+        lambda name, default=None: {"XAI_API_KEY": paid_key}.get(name, default),
     )
     _install_fake_oauth_pool(monkeypatch, oauth_token)
     invalidate_check_fn_cache()
@@ -344,15 +331,67 @@ def test_x_search_bearer_helper_falls_back_to_oauth_without_api_key(monkeypatch)
     oauth_token = _xcred("oauth")
 
     monkeypatch.delenv("XAI_API_KEY", raising=False)
-    monkeypatch.setattr(
-        "hermes_cli.config.get_env_value",
-        lambda name, default=None: default,
-    )
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda name, default=None: default)
     _install_fake_oauth_pool(monkeypatch, oauth_token)
 
     api_key, base_url, source = _resolve_xai_bearer()
-    assert (api_key, base_url, source) == (
-        oauth_token,
-        "https://api.x.ai/v1",
-        "xai-oauth",
+    assert (api_key, base_url, source) == (oauth_token, "https://api.x.ai/v1", "xai-oauth")
+
+
+def test_x_search_gateway_uses_only_dedicated_key_and_config(monkeypatch):
+    """Opt-in gateway mode never consults or sends xAI credentials."""
+    from tools.x_search_tool import check_x_search_requirements, x_search_tool
+
+    monkeypatch.setenv("X_SEARCH_GATEWAY_KEY", "gateway-secret")
+    monkeypatch.setenv("XAI_API_KEY", "xai-secret")
+    monkeypatch.setattr(
+        "tools.x_search_tool._load_x_search_config",
+        lambda: {"gateway": {
+            "base_url": "https://gateway.example/v1",
+            "key_env": "X_SEARCH_GATEWAY_KEY",
+            "model": "custom-search-model",
+        }},
     )
+    captured = {}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured.update(url=url, headers=headers, json=json)
+        return _FakeResponse({"output_text": "gateway result"})
+
+    monkeypatch.setattr("requests.post", _fake_post)
+    assert check_x_search_requirements() is True
+    result = json.loads(x_search_tool(query="latest posts"))
+
+    assert result["success"] is True
+    assert result["credential_source"] == "gateway"
+    assert captured["url"] == "https://gateway.example/v1/responses"
+    assert captured["headers"]["Authorization"] == "Bearer gateway-secret"
+    assert "xai-secret" not in str(captured)
+    assert captured["json"]["model"] == "custom-search-model"
+
+
+def test_x_search_gateway_rejects_plain_http_except_loopback(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("X_SEARCH_GATEWAY_KEY", "gateway-secret")
+    monkeypatch.setattr(
+        "tools.x_search_tool._load_x_search_config",
+        lambda: {"gateway": {
+            "base_url": "http://gateway.example/v1",
+            "key_env": "X_SEARCH_GATEWAY_KEY",
+            "model": "custom-search-model",
+        }},
+    )
+    result = json.loads(x_search_tool(query="latest posts"))
+    assert "error" in result
+    assert "HTTPS" in result["error"]
+
+
+def test_x_search_gateway_is_default_off(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-secret")
+    monkeypatch.setattr("requests.post", lambda *a, **k: _FakeResponse({"output_text": "xai"}))
+    result = json.loads(x_search_tool(query="latest posts"))
+    assert result["credential_source"] == "xai"
+    assert result["success"] is True

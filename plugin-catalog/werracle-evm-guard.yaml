@@ -1,31 +1,39 @@
 name: werracle-evm-guard
 repo: https://github.com/pCwOrM/hermes-werracle-guard
-sha: 7bfe4caaf81e817153aabc0f59592d1f8c0f1544
-version: "1.0.0"
+sha: 062875d03d55917163bd2cfbf3cb135d2904f1ef
+version: "1.0.1"
 description: >-
-  Deterministic on-chain EVM security guardrails, pre-execution transaction simulation,
-  and runtime circuit breakers for Hermes Agent. Intercepts bash `cast send` and Web3 RPC
-  calls in 0.18ms before execution, halting unlimited token approvals, known drainers,
-  and phishing exploits to protect autonomous agent wallets.
-  Disclosure — hooks only (pre_tool_call, post_tool_call) and safe simulation tools.
-  Intercepts EVM transaction attempts before execution; blocks commands flagged with >=75 risk score.
-  No background daemons, no stored credentials, no private keys accessed. Optional telemetry queries
-  use Werracle Radar via HTTPS with offline deterministic simulation fallback.
-maintainer: pCwOrM
-tier: community
-category: tools
-requires_hermes: ">=0.21.0"
-docs_url: https://github.com/pCwOrM/hermes-werracle-guard#readme
-readme: true
-platforms: [linux, macos, windows]
+  Autonomous EVM execution guardrail and DeFi liquidation risk radar for Hermes Agent.
+  Intercepts cast send transactions before broadcast to block unlimited token approvals,
+  NFT operator takeovers, and high-value transfers. Performs Radar lookups to
+  api.werracle.com by default on every werracle tool call and intercepted cast send.
+author: Volkan Dagli
+license: MIT
+homepage: https://github.com/pCwOrM/hermes-werracle-guard
+categories:
+  - security
+  - web3
+  - defi
+tags:
+  - ethereum
+  - base
+  - defi
+  - mev
+  - guardrail
+  - morpho
+  - aave
+  - chainlink
+  - security
 capabilities:
   provides_tools:
     - werracle_simulate_tx
-    - werracle_inspect_contract
     - werracle_mempool_radar
-    - werracle_liquidation_guard
+    - werracle_liquidation_health
+    - werracle_inspect_contract
   provides_hooks:
     - pre_tool_call
     - post_tool_call
+  provides_cli: true
   provides_middleware: []
-  requires_env: []
+  requires_env:
+    - WERRACLE_API_KEY

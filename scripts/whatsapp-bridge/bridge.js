@@ -31,6 +31,7 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { createInterface } from 'node:readline/promises';
+import { attachPasskeyFlow } from './passkey_socket.js';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
@@ -411,13 +412,13 @@ function emitPairEvent(event) {
 const scheduleReconnect = createReconnectScheduler(() => startSocket());
 const getWAVersion = createVersionResolver(fetchLatestBaileysVersion);
 
-async function confirmPasskey(socket, code, signal) {
+async function confirmPasskey(flow, code, signal) {
   if (PAIR_JSON || !process.stdin.isTTY) throw new Error('Passkey confirmation requires an interactive terminal');
   const terminal = createInterface({ input: process.stdin, output: process.stdout });
   try {
     const answer = await terminal.question(`Does the code ${code} match your phone? [y/N] `, { signal });
     if (answer.trim().toLowerCase() !== 'y') throw new Error('Owner declined passkey confirmation');
-    await socket.confirmPasskeyVerification();
+    await flow.confirmVerificationCode();
   } finally {
     terminal.close();
   }
@@ -430,7 +431,6 @@ async function startSocket() {
   sock = makeWASocket({
     ...(version ? { version } : {}),
     auth: state,
-    signPasskeyAssertion: passkeySigner,
     logger,
     printQRInTerminal: false,
     browser: ['Hermes Agent', 'Chrome', '120.0'],
@@ -447,7 +447,7 @@ async function startSocket() {
 
   sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
 
-  const currentSocket = sock;
+  const passkeyFlow = attachPasskeyFlow(sock, { logger, signAssertion: passkeySigner });
   const passkeyLifetime = new AbortController();
   sock.ev.on('connection.update', (update) => {
     if (update.connection === 'close') passkeyLifetime.abort();
@@ -465,7 +465,7 @@ async function startSocket() {
       process.exit(1);
     }
     if (update.passkeyVerification && !update.passkeyVerification.skipHandoffUX) {
-      confirmPasskey(currentSocket, update.passkeyVerification.code, passkeyLifetime.signal).catch(() => {
+      confirmPasskey(passkeyFlow, update.passkeyVerification.code, passkeyLifetime.signal).catch(() => {
         if (passkeyLifetime.signal.aborted) return;
         emitPairEvent({ event: 'error', error: 'passkey_confirmation_failed' });
         process.exit(1);

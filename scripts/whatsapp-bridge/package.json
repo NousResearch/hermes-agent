@@ -8,7 +8,7 @@
     "start": "node bridge.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "https://codeload.github.com/helix4u/Baileys/tar.gz/e5125258c920bf06448cf9f25fda32671aac5d3b",
+    "@whiskeysockets/baileys": "7.0.0-rc13",
     "express": "^4.21.0",
     "pino": "^9.0.0",
     "playwright-core": "1.64.0",

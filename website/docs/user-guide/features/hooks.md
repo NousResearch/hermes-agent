@@ -971,7 +971,7 @@ def my_callback(session_id: str, platform: str, reason: str, **kwargs):
 |-----------|------|-------------|
 | `session_id` | `str` | The session that opened |
 | `platform` | `str` | The surface that created it: `cli`, `tui`, `desktop`, `acp`, ... |
-| `reason` | `str` | `create` for a new session, `resume` for a stored one being reopened |
+| `reason` | `str` | `create` while the session has no messages yet (a new chat), `resume` once it has a conversation (a stored chat being reopened) |
 
 **Fires:** In the gateway (`gateway/session_open.py`), when a client connection attaches to a local session it was not already attached to. Once per open: a client re-reading a session it already has open, or reconnecting after a dropped socket, does not fire it again. Two clients opening the same session fire it twice. It runs in the profile that owns the session, so on a gateway serving several profiles each profile's plugins see only their own sessions. The callback runs on its own thread: opening the session never waits for it, but the session's first turn does (bounded by `plugins.hook_callback_timeout`). `--safe-mode` / `--ignore-user-config` sessions fire nothing. Messaging chats (Telegram, Discord, ...) do not fire it: their first message starts the session, so use `on_session_start` there.
 

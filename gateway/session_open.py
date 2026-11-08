@@ -18,22 +18,27 @@ logger = logging.getLogger(__name__)
 _PENDING = {}
 
 
-def fire(authority, ref, route, policy, reason):
-    """Queue the hook for *ref*'s open (*reason*: ``create`` or ``resume``). A bypass launch
-    (``--safe-mode`` / ``--ignore-user-config``) loads no plugin, so it fires nothing."""
+def fire(ref, route, policy, db):
+    """Queue the hook for *ref*'s open. ``reason`` is ``create`` while the session has no messages
+    yet (a new chat) and ``resume`` once it has a conversation. A bypass launch (``--safe-mode`` /
+    ``--ignore-user-config``) loads no plugin, so it fires nothing; nor does a profile with no
+    consumer, which then runs no thread and no read at all."""
     if policy is None or policy.ignore_user_config:
         return
     from gateway.session_policy import SURFACES
-    home, key = Path(authority.profile_id), (authority.profile_id, ref.session_id)
+    home, key = Path(ref.profile_id), (ref.profile_id, ref.session_id)
     platform = SURFACES.get(policy.source, policy.source)
     previous = _live(key)
 
     def deliver_now():
         from gateway.run import _profile_runtime_scope
         from gateway.session_context import scoped_session_key
-        from hermes_cli.lifecycle import invoke_hook
+        from hermes_cli.lifecycle import has_hook, invoke_hook
         try:
             with _profile_runtime_scope(home), scoped_session_key(route):
+                if not has_hook('on_session_open'):
+                    return
+                reason = 'resume' if (db.get_session(ref.session_id) or {}).get('message_count') else 'create'
                 invoke_hook('on_session_open', session_id=ref.session_id, platform=platform, reason=reason)
         except Exception:  # health: allow BLE001 -- fail-open observer: an open never fails on a plugin
             logger.warning('on_session_open delivery failed for %s', ref.session_id, exc_info=True)
@@ -59,9 +64,9 @@ def _live(key):
     return task
 
 
-async def settled(authority, session_id):
-    """Wait out an open delivery still running for *session_id* (the hook dispatcher bounds each
+async def settled(ref):
+    """Wait out an open delivery still running for *ref* (the hook dispatcher bounds each
     callback by ``plugins.hook_callback_timeout``); awaited before a claimed turn executes."""
-    task = _live((authority.profile_id, session_id))
+    task = _live((ref.profile_id, ref.session_id))
     if task is not None:
         await asyncio.wait({task})

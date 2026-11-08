@@ -7,6 +7,7 @@ do (``session.create`` / ``session.resume``).
 import io
 import json
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -43,6 +44,12 @@ def _done(log):
     return [(r['session_id'], r['platform'], r['reason'], r['home']) for r in lines if r['phase'] == 'done']
 
 
+def _message_count(home, sid):
+    with sqlite3.connect(home / 'state.db') as db:
+        row = db.execute('SELECT message_count FROM sessions WHERE id=?', (sid,)).fetchone()
+    return row and row[0]
+
+
 def _wait_done(log, count):
     return wait_until(lambda: _done(log) if len(_done(log)) >= count else [], timeout=20,
                       what=f'{count} on_session_open lines in {log.name}')
@@ -50,8 +57,8 @@ def _wait_done(log, count):
 
 @pytest.mark.platforms("linux")
 def test_each_open_fires_once_in_the_owning_profile(tmp_path, monkeypatch):
-    """A gateway serving two profiles: create and a later reopen each fire once, in the session's own
-    profile (A -> B -> A); a snapshot poll on an attachment already held fires nothing."""
+    """A gateway serving two profiles: create and a later reopen of the stored chat each fire once, in
+    the session's own profile (A -> B -> A); a snapshot poll on an attachment already held fires nothing."""
     monkeypatch.setattr(harness, '_PLUGIN', _PLUGIN)
     with _gateway(tmp_path, beta=True) as (_proc, desc, home, work, _env, root_log, _peer):
         beta_home = (home / 'profiles' / 'beta').resolve()
@@ -61,7 +68,9 @@ def test_each_open_fires_once_in_the_owning_profile(tmp_path, monkeypatch):
             root_sid = root.call('session.create', request_id='root', source='cli', toolsets=[], cwd=str(work))['session_id']
             beta_sid = beta.call('session.create', request_id='beta', source='tui', toolsets=[], cwd=str(work))['session_id']
             root.call('session.resume', session_id=root_sid)  # a poll on the held attachment
+            root.call('prompt.submit', session_id=root_sid, input_id='turn', text='hello')
             _wait_done(beta_log, 1)
+            wait_until(lambda: _message_count(home, root_sid), timeout=30, what='the first turn to be stored')
             root.close()
             again = _Wire(home, desc)  # `hermes --resume`: a new client opens the stored session
             try:

@@ -524,8 +524,7 @@ class AuthorityConnection:
             ref = stage_local_session(self.authority, self.actor, params, skills_prompt=skills_prompt,
                                       client_local=self.native_owner,
                                       desktop_local=getattr(self.transport, 'desktop_local', False))
-            receipt_committed = isinstance(ref, dict)
-            if receipt_committed:
+            if isinstance(ref, dict):
                 # The creation commit runs off the owner loop: a held writer must not freeze
                 # every session behind one new chat (N50).
                 receipt = ref
@@ -542,7 +541,6 @@ class AuthorityConnection:
                 await tracked_write(self.authority, partial(title_new_session, self.authority, ref, title))
             if hidden:
                 await tracked_write(self.authority, partial(self.authority.db.set_session_hidden, ref.session_id, True))
-            return await self.resume(ref, {}, opened='create' if receipt_committed else 'resume')
         return await self.resume(ref, {})
 
     async def ping(self, ref, params):
@@ -627,7 +625,7 @@ class AuthorityConnection:
         return {'sessions': await asyncio.to_thread(live_picker_page, self.authority, sessions, limit, workspace, picker),
                 'scope': 'live'}
 
-    async def resume(self, ref, params, *, opened='resume'):
+    async def resume(self, ref, params):
         from gateway.session_local_inventory import snapshot_info
         replay_from = self.replay_cursors.pop(ref.session_id, None)
         requested = ref.session_id
@@ -707,8 +705,8 @@ class AuthorityConnection:
             await asyncio.to_thread(refresh_profile_hooks, policy)
             if opening:
                 from gateway.session_open import fire
-                fire(self.authority, snapshot.handle.ref, self.authority.sessions[snapshot.handle.ref.session_id].route,
-                     policy, opened)
+                fire(snapshot.handle.ref, self.authority.sessions[snapshot.handle.ref.session_id].route, policy,
+                     self.authority.db)
             info = await snapshot_info(self.authority, snapshot.handle.ref)
         from gateway.session_connections import pending_connection
         from gateway.session_server_requests import open_requests
@@ -880,7 +878,7 @@ class AuthorityConnection:
         # here (create parity) so the first submit is not refused as a stranger.
         child = result.get('branched_session_id') if isinstance(result, dict) else None
         if child and child not in self.subscriptions:
-            await self.resume(SessionRef(ref.profile_id, child), {}, opened='create')
+            await self.resume(SessionRef(ref.profile_id, child), {})
         return result
 
     async def receipt(self, ref, params):

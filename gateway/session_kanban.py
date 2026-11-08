@@ -130,7 +130,7 @@ async def run_task(connection, params):
                     run_id=task.current_run_id)
     from gateway.session_runtime_workers import tracked_write
     await tracked_write(authority, admit_claim)
-    await connection.resume(ref, {}, opened='resume' if saved else 'create')
+    await connection.resume(ref, {})
     # Finite like the `chat -q` worker it replaced: nobody can answer an approval or clarify in a
     # card (approvals.single_query_mode applies). Never unattended: that is `-z`'s auto-approval.
     # A retry of an attempt admitted before cards were finite resubmits its committed payload,

@@ -44,16 +44,22 @@ def _append_progress_repeat_count(message: str, occurrences: int) -> str:
 
 def _note_flood(st, result) -> bool:
     """True when a failed progress edit was refused by flood control; arms ``st.flood_until`` from
-    the result's ``retry_after`` (default 30s) so no progress call fires into the open window."""
-    from gateway.delivery_ledger import is_flood_error
+    the result's ``retry_after``, else the wait stated in its error text (default 30s), so no
+    progress call fires into the open window. The edit is owed: ``st.flood_pending`` is set."""
+    from gateway.delivery_ledger import flood_wait_seconds, is_flood_error
     error = getattr(result, "error", "") or ""
     if not (is_flood_error(error) or "flood" in error.lower() or "retry after" in error.lower()):
         return False
     try:
-        wait = float(getattr(result, "retry_after", None) or 30.0)
+        wait = float(getattr(result, "retry_after", None) or 0.0)
     except (TypeError, ValueError):
-        wait = 30.0
+        wait = 0.0
+    if wait <= 0:
+        # Raw platform wording (the Telegram overflow-split path forwards the exception text with
+        # no retry_after): honour the stated wait, or a 185 s penalty becomes a 30 s window.
+        wait = flood_wait_seconds(error, default=30.0)
     st.flood_until = time.monotonic() + wait
+    st.flood_pending = True
     return True
 
 
@@ -594,6 +600,9 @@ class GatewayTurnProgressMixin:
         # monotonic() until which a flood-refused edit's retry_after runs: no progress call fires
         # into that window, the buffer just keeps absorbing lines (#76494).
         flood_until: float = 0.0
+        # A progress update held back by that window: delivered once it closes, even when no
+        # further tool event arrives (a long-running last tool must not leave the bubble stale).
+        flood_pending: bool = False
 
     def _progress_edit_state(self, adapter) -> TurnRunner._ProgressEditState:
         ctx = self._ctx
@@ -742,6 +751,7 @@ class GatewayTurnProgressMixin:
         failures (not found, permissions) set can_edit=False. Flood control backs off but keeps editing.
         """
         if _in_flood_window(st):
+            st.flood_pending = True
             return False
         if st.can_edit and st.progress_msg_id is not None:
             result = await self._edit_progress_message(st, st.progress_msg_id, "\n".join(st.progress_lines))
@@ -763,6 +773,17 @@ class GatewayTurnProgressMixin:
         result = await self._send_progress_text(st, "\n".join(st.progress_lines) if st.can_edit else msg)
         if result.success and result.message_id:
             st.progress_msg_id = result.message_id
+        return True
+
+    async def _deliver_flood_pending_progress(self, st) -> bool:
+        """Idle tick: push the update a flood window held back once the window has closed."""
+        if not st.flood_pending or _in_flood_window(st) or not st.progress_lines:
+            return False
+        if not self._ctx._run_still_current() or self._agent_interrupted():
+            return False
+        st.flood_pending = False
+        if not await self._roll_progress_overflow_if_needed(st):
+            return await self._progress_send_or_edit(st, st.progress_lines[-1])
         return True
 
     async def send_progress_messages(self):
@@ -813,6 +834,8 @@ class GatewayTurnProgressMixin:
                 last_edit_ts = time.monotonic()
                 await self._progress_restore_typing(st)
             except queue.Empty:
+                if time.monotonic() - last_edit_ts >= EDIT_INTERVAL and await self._deliver_flood_pending_progress(st):
+                    last_edit_ts = time.monotonic()
                 await asyncio.sleep(0.3)
             except asyncio.CancelledError:
                 await self._drain_progress_on_cancel(st)

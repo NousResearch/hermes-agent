@@ -27,14 +27,14 @@ export const terminalProgress = {
     keepalive.unref?.()
   },
 
-  /** End a pulsing turn: `clear` (done / interrupted) or `error` (red, faded by the terminal). */
-  settle(state: 'clear' | 'error') {
+  /** End a pulsing turn: clear (done / interrupted) or, when `failed`, red (faded by the terminal). */
+  settle({ failed }: { failed: boolean }) {
     if (!keepalive) {
       return
     }
 
     clearInterval(keepalive)
     keepalive = null
-    emit(state)
+    emit(failed ? 'error' : 'clear')
   }
 }

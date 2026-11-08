@@ -415,7 +415,7 @@ class TurnController {
     }
 
     this.interrupted = true
-    terminalProgress.settle('clear')
+    terminalProgress.settle({ failed: false })
 
     this.closeReasoningSegment()
 
@@ -682,7 +682,7 @@ class TurnController {
     // streaming tail) — unlike recordMessageComplete, which must keep the tail
     // (#61520), and interruptTurn, which preserves it as `partial`.
     this.idle()
-    terminalProgress.settle('error')
+    terminalProgress.settle({ failed: true })
     this.clearReasoning()
     this.clearStatusTimer()
     this.pendingSegmentTools = []
@@ -797,7 +797,7 @@ class TurnController {
     }
 
     this.idle()
-    terminalProgress.settle(payload.status === 'error' ? 'error' : 'clear')
+    terminalProgress.settle({ failed: payload.status === 'error' })
     this.clearReasoning()
     this.turnTools = []
     this.persistedToolLabels.clear()
@@ -1031,7 +1031,7 @@ class TurnController {
     this.clearReasoning()
     this.clearStatusTimer()
     this.idle()
-    terminalProgress.settle('clear')
+    terminalProgress.settle({ failed: false })
     this.bufRef = ''
     this.interrupted = false
     this.sealedInterrupt = null

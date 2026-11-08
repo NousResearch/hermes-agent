@@ -18,10 +18,14 @@ import asyncio
 import threading
 
 import pytest
+from fastapi import Request
 
 import hermes_cli.web_server_sessions as _web_server_sessions
 import hermes_cli.web_routers.sessions as _rt_sessions
 from hermes_state import SessionDB
+
+# A bare Request (no token principal) is the desktop dashboard's unrestricted caller.
+_DESKTOP_REQUEST = Request(scope={"type": "http", "headers": []})
 
 
 @pytest.fixture
@@ -56,7 +60,7 @@ def db_path_for_profile(real_db, monkeypatch):
 def test_search_finds_session_by_partial_title(db_path_for_profile):
     """A term that appears ONLY in the title is findable (#66242); the snippet
     falls back to the session preview, and rows carry the same shape as id hits."""
-    response = asyncio.run(_rt_sessions.search_sessions(q="Modpack", limit=20))
+    response = asyncio.run(_rt_sessions.search_sessions(_DESKTOP_REQUEST, q="Modpack", limit=20))
     ids = [row["session_id"] for row in response["results"]]
     assert "titled_session" in ids
     row = next(r for r in response["results"] if r["session_id"] == "titled_session")
@@ -67,7 +71,7 @@ def test_search_finds_session_by_partial_title(db_path_for_profile):
 def test_search_title_lane_keeps_content_hits_priority(db_path_for_profile):
     """Content hits keep their BM25 priority; the title lane only fills
     remaining slots and dedupes by lineage root against earlier lanes."""
-    response = asyncio.run(_rt_sessions.search_sessions(q="modpack", limit=20))
+    response = asyncio.run(_rt_sessions.search_sessions(_DESKTOP_REQUEST, q="modpack", limit=20))
     ids = [row["session_id"] for row in response["results"]]
     assert set(ids) == {"content_session", "titled_session"}
     assert ids[0] == "content_session"  # FTS content hit outranks the title backfill
@@ -76,7 +80,7 @@ def test_search_title_lane_keeps_content_hits_priority(db_path_for_profile):
 
 def test_search_title_lane_respects_limit(db_path_for_profile):
     """The merged result stays capped at limit across all lanes."""
-    response = asyncio.run(_rt_sessions.search_sessions(q="modpack", limit=1))
+    response = asyncio.run(_rt_sessions.search_sessions(_DESKTOP_REQUEST, q="modpack", limit=1))
     assert len(response["results"]) == 1
 
 
@@ -93,6 +97,6 @@ def test_search_title_lane_runs_off_event_loop(db_path_for_profile, monkeypatch)
         return real_search_messages(self, *args, **kwargs)
 
     monkeypatch.setattr(SessionDB, "search_messages", spy)
-    asyncio.run(_rt_sessions.search_sessions(q="Modpack", limit=20))
+    asyncio.run(_rt_sessions.search_sessions(_DESKTOP_REQUEST, q="Modpack", limit=20))
     assert db_threads
     assert all(tid != loop_thread for tid in db_threads)

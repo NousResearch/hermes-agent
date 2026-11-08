@@ -171,6 +171,26 @@ def test_whatsapp_mentions_ride_the_first_bridge_payload_only(whatsapp_bridge, t
     assert "does not support native mentions" in capsys.readouterr().err
     assert calls == []
 
+
+def test_email_subject_uses_transport_subject_not_body_header(fake_tool):
+    args = _parse([
+        "--to",
+        "email:andy@example.com",
+        "--subject",
+        "[Hermes][Test] Subject",
+        "body text",
+    ])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+    assert exc.value.code == 0
+    assert fake_tool.calls[0] == {
+        "action": "send",
+        "target": "email:andy@example.com",
+        "message": "body text",
+        "subject": "[Hermes][Test] Subject",
+    }
+
+
 # ---------------------------------------------------------------------------
 # --list
 # ---------------------------------------------------------------------------

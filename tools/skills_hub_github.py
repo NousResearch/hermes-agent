@@ -193,17 +193,6 @@ def _skip_bundle_file(rel_path: str) -> bool:
     return base.startswith(".") or base.endswith(".pyc") or "__pycache__" in rel_path.split("/")
 
 
-def _is_contents_listing(content: Optional[bytes]) -> bool:
-    """True for a GitHub Contents API directory listing (a JSON array of entries with ``type``)."""
-    if not content or not content.lstrip().startswith(b"["):
-        return False
-    try:
-        entries = json.loads(content)
-    except ValueError:
-        return False
-    return isinstance(entries, list) and all(isinstance(e, dict) and "type" in e for e in entries)
-
-
 def _tree_members(entries: list[dict], prefix: str):
     """``(rel_path, item_path, is_regular_blob)`` for every git-tree blob under ``prefix``. Symlinks
     (mode 120000) report ``is_regular_blob=False`` so callers can reject a SKILL.md-linked symlink
@@ -273,6 +262,7 @@ class GitHubSource(SkillSource):
         self._skillsh_groupings: dict[str, Optional[dict[str, str]]] = {}
         self._rate_limited: bool = False
         self._raw_unusable = False  # raw host unreachable here: later files go straight to the API
+        self._listed_dirs: set = set()  # paths the Contents API answered with a directory listing
 
     @property
     def is_rate_limited(self) -> bool:  # whether the GitHub API rate limit was hit during operations
@@ -330,9 +320,9 @@ class GitHubSource(SkillSource):
         else:
             for rel_path in referenced:
                 self._add_support_file(repo, _skill_file_path(skill_dir, rel_path), rel_path, files, rel_path)
-            # Without a tree a linked support DIRECTORY comes back as the Contents API's JSON listing,
-            # not file bytes; installing that would ship a malformed skill missing the directory's files.
-            if any(_is_contents_listing(files.get(rel_path)) for rel_path in referenced):
+            # Without a tree a linked support DIRECTORY can only be fetched as a Contents listing, which
+            # _fetch_file_bytes refuses; installing without it would ship a skill missing those files.
+            if any(_skill_file_path(skill_dir, rel_path) in self._listed_dirs for rel_path in referenced):
                 logger.warning("Skill links a support directory and the repo tree is unavailable: %s", identifier)
                 return None
             revision = ""
@@ -612,7 +602,15 @@ class GitHubSource(SkillSource):
             f"{_API}/{repo}/contents/{quote(path, safe='/')}", params={"ref": ref} if ref else None,
             headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
         )
-        return resp.content if resp is not None and resp.status_code == 200 else None
+        if resp is None or resp.status_code != 200:
+            return None
+        # A directory ignores the raw Accept header and answers with its JSON listing; a file (even
+        # a .json one) comes back as application/vnd.github.v3.raw. Never hand a listing back as bytes.
+        content_type = resp.headers.get("content-type")
+        if isinstance(content_type, str) and content_type.startswith("application/json"):
+            self._listed_dirs.add(path)
+            return None
+        return resp.content
 
     def _get_skillsh_groupings(self, repo: str) -> Optional[dict[str, str]]:
         """Repo-root ``skills.sh.json`` groupings flattened to ``{skill_name: title}``. ``skills.sh.json``

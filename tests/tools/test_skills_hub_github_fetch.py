@@ -78,11 +78,35 @@ def test_fetch_keeps_a_skill_that_links_a_support_directory():
          patch.object(source, "_fetch_file_bytes", return_value=b"# clues"):
         assert source.fetch("owner/repo/skills/demo") is None
 
-    # No tree (rate-limited / API error): the linked directory comes back as a Contents listing,
-    # which must reject the fetch rather than install the JSON as a file.
-    listing = b'[{"name": "global.md", "path": "skills/demo/references/clues/global.md", "type": "file"}]'
-    with patch.object(source, "_fetch_file_content", return_value=md), \
-         patch.object(source, "_get_repo_tree", return_value=None), \
-         patch.object(source, "_fetch_file_bytes",
-                      side_effect=lambda _r, path, **_k: listing if path.endswith("/clues") else b"# clues"):
-        assert source.fetch("owner/repo/skills/demo") is None
+
+def test_tree_less_fetch_rejects_a_linked_directory_but_keeps_json_files(monkeypatch):
+    """Without a repo tree each linked path is fetched through the Contents API. A directory answers
+    with an ``application/json`` listing, which must reject the fetch; a real ``.json`` support file
+    answers raw and is kept, whatever its content looks like."""
+    import tools.skills_hub as hub
+
+    md = "---\nname: demo\ndescription: demo\n---\n\nSee `references/clues/` and `references/data.json`.\n"
+    raw_ct = {"content-type": "application/vnd.github.v3.raw; charset=utf-8"}
+    listing = (200, b'[{"name": "a.md", "type": "file"}]', {"content-type": "application/json; charset=utf-8"})
+    data_json = (200, b'[{"type": "object"}]', raw_ct)
+
+    def serve(routes):
+        def fake_get(self, url, **_kw):
+            status, body, headers = routes[url.rsplit("/contents/", 1)[1]]
+            return httpx.Response(status, content=body, headers=headers)
+        return fake_get
+
+    monkeypatch.setattr(hub, "_skills_hub_http_get", lambda *a, **k: httpx.Response(404))
+    source = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+    monkeypatch.setattr(source, "_get_repo_tree", lambda _repo: None)
+    monkeypatch.setattr(source, "_fetch_file_content", lambda *a, **k: md)
+    monkeypatch.setattr(GitHubSource, "_github_get", serve({
+        "skills/demo/references/clues": listing, "skills/demo/references/data.json": data_json}))
+    assert source.fetch("owner/repo/skills/demo") is None
+
+    md_json_only = md.replace("`references/clues/` and ", "")
+    source = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+    monkeypatch.setattr(source, "_get_repo_tree", lambda _repo: None)
+    monkeypatch.setattr(source, "_fetch_file_content", lambda *a, **k: md_json_only)
+    bundle = source.fetch("owner/repo/skills/demo")
+    assert bundle is not None and bundle.files["references/data.json"] == b'[{"type": "object"}]'

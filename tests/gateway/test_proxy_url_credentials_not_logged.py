@@ -270,3 +270,52 @@ def test_gateway_proxy_mode_logs_upstream_url_without_credentials(monkeypatch, c
     lines = [r.getMessage() for r in caplog.records if "127.0.0.1:8642" in r.getMessage()]
     assert lines, "the proxy-mode turn must still log which upstream it used"
     _assert_token_absent("\n".join(r.getMessage() for r in caplog.records))
+
+
+@pytest.mark.parametrize("proxy_url", [
+    f"http://bob:ab/{TOKEN}@127.0.0.1:1",  # unencoded '/' in the password
+    f"http://bob:{TOKEN}#x@127.0.0.1:1",  # unencoded '#'
+    f"http://bob:{TOKEN}@[::1",  # unclosed IPv6 bracket
+    f"bob:{TOKEN}@127.0.0.1:1",  # no scheme
+    f"bob:{TOKEN}",
+    f"http://bob:{TOKEN}",  # userinfo with no host
+])
+def test_gateway_proxy_mode_malformed_url_error_never_echoes_secret(monkeypatch, caplog, proxy_url):
+    """aiohttp's InvalidUrlClientError/NonHttpUrlClientError text is the whole request URL; the
+    turn logs it and sends it to the chat as the error reply."""
+    pytest.importorskip("aiohttp")
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+
+    monkeypatch.setenv("GATEWAY_PROXY_URL", proxy_url)
+    monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+    runner = object.__new__(GatewayRunner)
+    runner.adapters, runner._running_agents, runner._agent_cache = {}, {}, {}
+    runner.config = MagicMock()
+    source = SessionSource(platform=Platform.MATRIX, chat_id="!r:s", chat_type="group", user_id="@u:s")
+    with patch("gateway.run._load_gateway_config", return_value={}), caplog.at_level(logging.INFO):
+        result = asyncio.run(runner._run_agent_via_proxy(
+            message="hi", context_prompt="", history=[], source=source, session_id="s"))
+    assert any("Proxy connection error" in r.getMessage() for r in caplog.records)
+    assert result["final_response"].startswith("⚠️")
+    _assert_token_absent(result["final_response"])
+    _assert_token_absent("\n".join(r.getMessage() for r in caplog.records))
+
+
+def test_telegram_connect_error_never_echoes_proxy_password(monkeypatch, caplog):
+    """httpx rejects ``http://bob:<pw>#x@host`` with ``Invalid port: '<pw>'``; that text feeds the
+    connect-failure log and the fatal-error status."""
+    import httpx
+    from plugins.platforms.telegram import adapter as tg
+
+    monkeypatch.setenv("TELEGRAM_PROXY", f"http://bob:{TOKEN}#x@127.0.0.1:3128")
+    monkeypatch.setenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "true")
+    adapter = tg.TelegramAdapter(PlatformConfig(enabled=True, token="123456:TOKEN"))
+    with caplog.at_level(logging.INFO), \
+            patch.object(tg, "HTTPXRequest", lambda **kw: httpx.AsyncClient(proxy=kw.get("proxy"))), \
+            patch.object(adapter, "_acquire_platform_lock", return_value=True), \
+            patch.object(adapter, "_write_runtime_status_safe"):
+        assert asyncio.run(adapter.connect()) is False
+    assert any("Failed to connect to Telegram" in r.getMessage() for r in caplog.records)
+    _assert_token_absent(adapter._fatal_error_message or "")
+    _assert_token_absent("\n".join(r.getMessage() for r in caplog.records))

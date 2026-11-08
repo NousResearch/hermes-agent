@@ -1,7 +1,7 @@
 name: cortive
 title: Cortive Memory
 repo: https://github.com/KadenDevAi/hermes-cortive
-sha: b5a0544d81d6e8876a11f9ef9b482faa4811dfa5
+sha: dcfc53e8cd7943dc39ce41ccaa49c0f3ff55a263
 version: "0.1.0"
 description: >-
   Adds Cortive, a private knowledge base for your Mac, to the agent's memory, alongside
@@ -18,10 +18,10 @@ description: >-
 maintainer: KadenDevAi
 tier: community
 category: memory
-docs_url: https://github.com/KadenDevAi/hermes-cortive/blob/b5a0544d81d6e8876a11f9ef9b482faa4811dfa5/README.md
-image: https://raw.githubusercontent.com/KadenDevAi/hermes-cortive/b5a0544d81d6e8876a11f9ef9b482faa4811dfa5/docs/banner.png
+docs_url: https://github.com/KadenDevAi/hermes-cortive/blob/dcfc53e8cd7943dc39ce41ccaa49c0f3ff55a263/README.md
+image: https://raw.githubusercontent.com/KadenDevAi/hermes-cortive/dcfc53e8cd7943dc39ce41ccaa49c0f3ff55a263/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/KadenDevAi/hermes-cortive/b5a0544d81d6e8876a11f9ef9b482faa4811dfa5/docs/recall.png
+  - https://raw.githubusercontent.com/KadenDevAi/hermes-cortive/dcfc53e8cd7943dc39ce41ccaa49c0f3ff55a263/docs/recall.png
 platforms:
   - macos
 capabilities:

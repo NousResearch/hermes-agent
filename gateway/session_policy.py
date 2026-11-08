@@ -762,7 +762,20 @@ def render_launch_skills(params, session_id):
     if not skills:
         return None
     from agent.skill_commands import build_preloaded_skills_prompt, format_missing_skills
-    prompt, loaded, missing = build_preloaded_skills_prompt(skills, task_id=session_id)
+    # Project skills are scoped to the session's requested cwd, not the gateway
+    # process cwd.  Preloading happens before the local session policy (and its
+    # per-session cwd context) is installed, including for --in one-shots.
+    from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+
+    cwd = params.get('cwd')
+    if cwd is not None and (not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir()):
+        _refuse('cwd', 'must be an absolute path to an existing directory')
+    cwd_token = set_session_cwd(cwd) if cwd is not None else None
+    try:
+        prompt, loaded, missing = build_preloaded_skills_prompt(skills, task_id=session_id)
+    finally:
+        if cwd_token is not None:
+            reset_session_cwd(cwd_token)
     if not loaded:
         raise RuntimeStoreError('unknown_skill')
     if missing:

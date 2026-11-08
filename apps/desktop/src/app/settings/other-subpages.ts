@@ -17,6 +17,7 @@ export const OTHER_SUBPAGES: Record<string, SettingsSubpage[]> = {
   ],
   keybinds: [
     { id: 'shortcuts', labelKey: 'keyboardShortcuts' },
+    { id: 'send-behavior', labelKey: 'sendBehavior' },
     { id: 'hud-gesture', labelKey: 'hudGesture' },
     { id: 'screen-capture', labelKey: 'screenCapture' }
   ],

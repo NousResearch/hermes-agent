@@ -4,8 +4,6 @@ field in ``Message.api_kwargs``, so only a real SDK parse shows whether the adap
 
 from __future__ import annotations
 
-import sys
-
 import pytest
 
 from tests.e2e.core.platforms import _contract as C
@@ -14,7 +12,7 @@ from tests.e2e.core.platforms._suite import rig_fixtures
 
 pytestmark = [
     pytest.mark.spawns_gateway_lookalike,
-    pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group gateway harness"),
+    pytest.mark.platforms("posix"),  # POSIX process-group gateway harness
 ]
 
 rig, rig_stream = rig_fixtures(TelegramDriver)

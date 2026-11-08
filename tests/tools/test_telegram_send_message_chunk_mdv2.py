@@ -50,7 +50,7 @@ def _no_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None, raising=False)
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("gateway.platforms.base._detect_macos_system_proxy", lambda: None)
 
 
 def _long_markdown_message(repeats: int = 250) -> str:

@@ -76,11 +76,12 @@ test('real Chromium WebAuthn assertion completes the salvaged encrypted handshak
     let creds = initAuthCreds();
     const sent = new Map();
     let code;
+    let approve;
     const flow = makeShortcakeFlow({
       logger: pino({ level: 'silent' }),
       getCreds: () => creds, updateCreds: patch => { creds = { ...creds, ...patch }; },
       signAssertion: (bytes, signal) => signPasskeyInPage(page, bytes, signal),
-      emitVerificationCode: value => { code = value; },
+      confirmCode: value => { code = value; return new Promise(resolve => { approve = resolve; }); },
       query: async node => {
         const child = node.content[0];
         sent.set(child.tag, child);
@@ -103,12 +104,14 @@ test('real Chromium WebAuthn assertion completes the salvaged encrypted handshak
     const payload = proto.ProloguePayload.decode(leaf('prologue_payload'));
     const companion = proto.CompanionEphemeralIdentity.decode(payload.companionEphemeralIdentity);
     const primary = Curve.generateKeyPair();
-    await flow.handleIncomingNotification({ tag: 'notification', attrs: { from: 's.whatsapp.net', type: 'crsc_continuation' }, content: [{
+    const continuation = flow.handleIncomingNotification({ tag: 'notification', attrs: { from: 's.whatsapp.net', type: 'crsc_continuation' }, content: [{
       tag: 'primary_ephemeral_identity', attrs: {}, content: proto.PrimaryEphemeralIdentity.encode({ publicKey: primary.public, nonce: randomBytes(32) }).finish(),
     }] });
+    await new Promise(resolve => setImmediate(resolve));
     assert.ok(code);
     assert.equal(sent.has('encrypted_pairing_request'), false, 'owner must confirm before pairing data leaves');
-    await flow.confirmVerificationCode();
+    approve();
+    await continuation;
     const envelope = proto.EncryptedPairingRequest.decode(sent.get('encrypted_pairing_request').content);
     const secret = Curve.sharedKey(primary.private, companion.publicKey);
     const encryptionKey = hkdf(secret, 32, { salt: Buffer.from(`Companion Pairing ${companion.deviceType} with ref offline-ref`), info: 'Pairing Information Encryption Key' });

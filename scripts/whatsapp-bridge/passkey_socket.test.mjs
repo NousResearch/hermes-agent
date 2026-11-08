@@ -101,35 +101,39 @@ test('signer failure surfaces through the socket and a fresh attempt can continu
   sock.ev.emit('connection.update', { connection: 'close' });
 });
 
+const refReply = () => ({ tag: 'iq', attrs: {}, content: [{ tag: 'ref', attrs: {}, content: Buffer.from('ref') }] });
+const continuation = () => ({ tag: 'notification', attrs: { from: 's.whatsapp.net', type: 'crsc_continuation' }, content: [{
+  tag: 'primary_ephemeral_identity', attrs: {}, content: proto.PrimaryEphemeralIdentity.encode({
+    publicKey: Curve.generateKeyPair().public, nonce: Buffer.alloc(32, 3),
+  }).finish(),
+}] });
+const settle = () => new Promise(resolve => setImmediate(resolve));
+
 test('pairing payload waits for owner confirmation without trusted handoff', async () => {
   const creds = initAuthCreds();
   const sent = [];
+  let approve;
   const flow = makeShortcakeFlow({
     logger, getCreds: () => creds, updateCreds: patch => Object.assign(creds, patch),
     signAssertion: async () => assertion,
-    query: async node => {
-      sent.push(node.content[0].tag);
-      return { tag: 'iq', attrs: {}, content: [{ tag: 'ref', attrs: {}, content: Buffer.from('ref') }] };
-    },
+    confirmCode: () => new Promise(resolve => { approve = resolve; }),
+    query: async node => { sent.push(node.content[0].tag); return refReply(); },
   });
   await flow.executePrologue({ requestOptions: options });
-  await flow.handleIncomingNotification({ tag: 'notification', attrs: { from: 's.whatsapp.net', type: 'crsc_continuation' }, content: [{
-    tag: 'primary_ephemeral_identity', attrs: {}, content: proto.PrimaryEphemeralIdentity.encode({
-      publicKey: Curve.generateKeyPair().public, nonce: Buffer.alloc(32, 3),
-    }).finish(),
-  }] });
+  const handled = flow.handleIncomingNotification(continuation());
+  await settle();
   assert.equal(sent.includes('encrypted_pairing_request'), false);
-  await flow.confirmVerificationCode();
+  approve();
+  await handled;
   assert.equal(sent.filter(tag => tag === 'encrypted_pairing_request').length, 1);
-  await assert.rejects(flow.confirmVerificationCode(), /no verification code/);
+  assert.equal(flow.hasSession(), false);
 });
 
 // Production entry point: the server's prologue request goes through CB:notification, which stashes the
 // ADV-derived handoff key first. Pin both outcomes so the confirmation prompt's reachability is explicit.
-async function driveServerPrologue(t, { signingMs }) {
+async function driveServerPrologue(t, { signingMs, confirmCode }) {
   const sock = socket();
   const sent = [];
-  const updates = [];
   let clock = 1_000_000;
   t.mock.method(Date, 'now', () => clock);
   let prologueSent;
@@ -137,33 +141,49 @@ async function driveServerPrologue(t, { signingMs }) {
   sock.query = async node => {
     sent.push(node.content[0].tag);
     if (node.content[0].tag === 'passkey_prologue') setImmediate(prologueSent);
-    return { tag: 'iq', attrs: {}, content: [{ tag: 'ref', attrs: {}, content: Buffer.from('ref') }] };
+    return refReply();
   };
-  const flowHandle = attachPasskeyFlow(sock, { logger, signAssertion: async () => { clock += signingMs; return assertion; } });
-  sock.ev.on('connection.update', update => updates.push(update));
+  attachPasskeyFlow(sock, { logger, confirmCode, signAssertion: async () => { clock += signingMs; return assertion; } });
   sock.ws.emit('CB:notification', request());
   await prologue;
-  sock.ws.emit('CB:notification', { tag: 'notification', attrs: { from: 's.whatsapp.net', type: 'crsc_continuation' }, content: [{
-    tag: 'primary_ephemeral_identity', attrs: {}, content: proto.PrimaryEphemeralIdentity.encode({
-      publicKey: Curve.generateKeyPair().public, nonce: Buffer.alloc(32, 3),
-    }).finish(),
-  }] });
-  await new Promise(resolve => setTimeout(resolve, 20));
-  return { sock, sent, verification: updates.find(update => update.passkeyVerification)?.passkeyVerification, flowHandle };
+  sock.ws.emit('CB:notification', continuation());
+  await settle();
+  return { sock, sent };
 }
 
 test('server prologue within the handoff window sends the pairing request without a prompt', async t => {
-  const { sock, sent, verification } = await driveServerPrologue(t, { signingMs: 1000 });
-  assert.equal(verification.skipHandoffUX, true);
+  const confirmCode = t.mock.fn(async () => {});
+  const { sock, sent } = await driveServerPrologue(t, { signingMs: 1000, confirmCode });
+  assert.equal(confirmCode.mock.callCount(), 0);
   assert.deepEqual(sent, ['ref', 'passkey_prologue', 'companion_nonce', 'encrypted_pairing_request']);
   sock.ev.emit('connection.update', { connection: 'close' });
 });
 
 test('server prologue past the handoff window waits for owner confirmation', async t => {
-  const { sock, sent, verification, flowHandle } = await driveServerPrologue(t, { signingMs: 6 * 60 * 1000 });
-  assert.equal(verification.skipHandoffUX, false);
+  let approve;
+  const confirmCode = t.mock.fn(() => new Promise(resolve => { approve = resolve; }));
+  const { sock, sent } = await driveServerPrologue(t, { signingMs: 6 * 60 * 1000, confirmCode });
+  assert.equal(confirmCode.mock.callCount(), 1);
+  assert.match(confirmCode.mock.calls[0].arguments[0], /^[0-9A-Z]{8}$/);
   assert.equal(sent.includes('encrypted_pairing_request'), false);
-  await flowHandle.confirmVerificationCode();
+  approve();
+  await settle();
   assert.equal(sent.at(-1), 'encrypted_pairing_request');
+  sock.ev.emit('connection.update', { connection: 'close' });
+});
+
+test('a newer prologue cancels the pending code question and a late answer sends nothing', async t => {
+  const questions = [];
+  const confirmCode = (code, signal) => new Promise((resolve, reject) => {
+    questions.push({ code, signal, resolve });
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  });
+  const { sock, sent } = await driveServerPrologue(t, { signingMs: 6 * 60 * 1000, confirmCode });
+  assert.equal(questions.length, 1);
+  sock.ws.emit('CB:notification', request());
+  assert.equal(questions[0].signal.aborted, true, 'the superseded question must be cancelled at once');
+  questions[0].resolve();
+  await settle();
+  assert.equal(sent.includes('encrypted_pairing_request'), false);
   sock.ev.emit('connection.update', { connection: 'close' });
 });

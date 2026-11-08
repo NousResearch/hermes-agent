@@ -52,12 +52,11 @@ export const makeShortcakeFlow = (opts) => {
             const ref = await requestRef();
             signal.throwIfAborted();
             const companion = generateCompanionEphemeralIdentity({ ref, deviceType });
-            let pairingHandoffProof = args.pairingHandoffProof;
             const stashedKey = handoffKey;
             handoffKey = null;
-            if (pairingHandoffProof === undefined && stashedKey !== null && Date.now() - stashedKey.ts < HANDOFF_KEY_TTL_MS) {
-                pairingHandoffProof = hmacSign(companion.prologuePayloadBytes, stashedKey.hmac);
-            }
+            const pairingHandoffProof = stashedKey !== null && Date.now() - stashedKey.ts < HANDOFF_KEY_TTL_MS
+                ? hmacSign(companion.prologuePayloadBytes, stashedKey.hmac)
+                : undefined;
             const skipHandoffUx = pairingHandoffProof !== undefined;
             const prologueChildren = [
                 { tag: 'credential_id', attrs: {}, content: assertion.credentialId },
@@ -76,11 +75,9 @@ export const makeShortcakeFlow = (opts) => {
                 deviceType,
                 skipHandoffUx,
                 stage: Stage.WaitingForPrimaryIdentity,
-                encryptionKey: null,
-                verificationCode: null
+                encryptionKey: null
             };
             opts.logger.debug({ skipHandoffUx }, 'shortcake prologue sent');
-            opts.emitPrologueSent?.();
         }
         catch (error) {
             if (activeController === controller) {
@@ -111,17 +108,10 @@ export const makeShortcakeFlow = (opts) => {
         await executePrologue({ requestOptions });
         return true;
     };
-    /** Build + AES-GCM seal the pairing request and send the `encrypted_pairing_request` IQ. */
-    const confirmVerificationCode = async () => {
-        if (!session || session.stage !== Stage.WaitingForConfirmation || !session.encryptionKey) {
-            throw new Error('shortcake: no verification code awaiting confirmation');
-        }
-        const current = session;
+    /** Build + AES-GCM seal the pairing request for `current` and send the `encrypted_pairing_request` IQ. */
+    const sendPairingRequest = async (current) => {
         current.signal.throwIfAborted();
         const creds = opts.getCreds();
-        if (!creds) {
-            throw new Error('shortcake: credentials are not initialized');
-        }
         const plaintext = proto.PairingRequest.encode({
             companionPublicKey: creds.noiseKey.public,
             companionIdentityKey: creds.signedIdentityKey.public,
@@ -129,16 +119,9 @@ export const makeShortcakeFlow = (opts) => {
         }).finish();
         const envelope = encryptPairingRequest(current.encryptionKey, plaintext);
         current.stage = Stage.WaitingForPairing;
-        try {
-            await opts.query(mdIq('set', [{ tag: 'encrypted_pairing_request', attrs: {}, content: envelope }]));
-            current.signal.throwIfAborted();
-            session = null;
-        }
-        catch (error) {
-            if (!current.signal.aborted)
-                current.stage = Stage.WaitingForConfirmation;
-            throw error;
-        }
+        await opts.query(mdIq('set', [{ tag: 'encrypted_pairing_request', attrs: {}, content: envelope }]));
+        current.signal.throwIfAborted();
+        session = null;
         opts.logger.debug('shortcake encrypted pairing request sent');
     };
     const handlePrimaryEphemeralIdentity = async (node) => {
@@ -163,12 +146,14 @@ export const makeShortcakeFlow = (opts) => {
             ref: current.ref
         });
         current.encryptionKey = encryptionKey;
-        current.verificationCode = verificationCode;
         current.stage = Stage.WaitingForConfirmation;
-        opts.logger.debug('shortcake verification code ready');
-        opts.emitVerificationCode?.(verificationCode, current.skipHandoffUx);
-        if (current.skipHandoffUx)
-            await confirmVerificationCode();
+        opts.logger.debug({ skipHandoffUx: current.skipHandoffUx }, 'shortcake verification code ready');
+        // Without a trusted handoff the owner compares the code with the phone. The attempt's own signal
+        // cancels the question when a newer prologue or a socket close replaces this attempt, so a late
+        // answer can never approve a different attempt's code.
+        if (!current.skipHandoffUx)
+            await opts.confirmCode(verificationCode, current.signal);
+        await sendPairingRequest(current);
         return true;
     };
     /** Routes `passkey_prologue_request` / `crsc_continuation`; returns `true` when consumed. */
@@ -186,9 +171,7 @@ export const makeShortcakeFlow = (opts) => {
     return {
         handleIncomingNotification,
         executePrologue,
-        confirmVerificationCode,
         hasSession: () => session !== null,
-        getVerificationCode: () => session?.verificationCode ?? null,
         clearSession: () => {
             activeController?.abort();
             activeController = null;

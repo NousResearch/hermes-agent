@@ -20,9 +20,12 @@ def approval_text_prompt(adapter: Any, chat_id: str, session_key: str, request_i
     """The plain-text approval prompt for ``adapter``. An adapter that splits long messages gets the
     default layout; one whose send cuts text gets ``_cutting_text_prompt``, and when even that cannot
     show the whole command the request is marked Deny-only like a card that could not."""
+    from gateway.platforms.base_exec_approval import send_cannot_prove_whole
     from gateway.run import _format_exec_approval_fallback
     if getattr(adapter, "splits_long_messages", True):
-        return _format_exec_approval_fallback(command, description, prefix, **flags)
+        text = _format_exec_approval_fallback(command, description, prefix, **flags)
+        if not send_cannot_prove_whole(adapter, chat_id, text):  # a capped split drops the instructions too
+            return text
     text, deny_only = _cutting_text_prompt(adapter, chat_id, command, description, prefix, **flags)
     if deny_only:
         from tools.approval import restrict_gateway_approval_card_to_deny

@@ -4,7 +4,7 @@ repo: https://github.com/percyhendrux123-prog/hermes-gatekeeper
 sha: "e6fb3d7547e5398df9ef72418ee4441386386c3a"
 subdir: ""
 version: "0.1.0"
-maintainer: Percy Keith Stewart
+maintainer: percyhendrux123-prog
 tier: community
 category: automation
 requires_hermes: ">=0.22.5"

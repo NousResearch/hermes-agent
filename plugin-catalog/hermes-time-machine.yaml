@@ -1,13 +1,13 @@
 name: hermes-time-machine
 repo: https://github.com/ddaikodaiko/hermes-time-machine
-sha: 13e0848f22eae928efd1d0d5aae4dd64a368ef94
-version: "0.1.0"
+sha: 4a1d501a8b1a0dbafbda8f3ad79471bc04593b17
+version: "0.2.0"
 title: Hermes Time Machine
-description: "Policy-driven workspace checkpoints for Hermes: one checkpoint before the first file-changing call of each turn and before risky commands (rm -rf, git push --force, DROP TABLE, writes outside the workspace), one-command rewind, fork into a sibling directory, and an effect ledger that refuses to hide actions a rewind cannot undo. Disclosure - writes a tar.gz snapshot of the configured workspace and JSONL journal/effect ledgers under HERMES_HOME/plugin-data/hermes-time-machine, keeps the last 10 pre-rewind copies in a trash directory, spawns no processes, makes no network calls, reads no credentials, and never blocks, approves or bypasses a tool call; a rewind moves the current workspace contents to trash and extracts the checkpoint over the workspace, refusing filesystem roots, the home directory, directories containing home, system directories, and workspaces overlapping plugin data."
+description: "The rollback that knows what it can't undo. Incremental, time-bounded checkpoints that the agent itself can preview, restore or fork (atm_* tools, /timemachine); an approval at the point of no return (git push, npm publish, terraform apply and similar) that shows what becomes permanent and the exact compensation command; an effect ledger; and effect memory that reminds the model of pushes it can no longer see after /rollback, /undo, /retry or compaction. Disclosure — no shell commands, subprocesses, network calls, background processes or credentials; reads workspace files plus .git refs/config and package.json to capture pre-state; writes only under HERMES_HOME/plugin-data/hermes-time-machine and, on a rewind, the workspace (replaced files go to a trash directory); never approves, blocks or bypasses a tool call by itself; refuses filesystem roots, home and system directories."
 maintainer: ddaikodaiko
 tier: community
 category: tools
-requires_hermes: ">=0.19.0"
+requires_hermes: ">=0.23.0"
 docs_url: https://github.com/ddaikodaiko/hermes-time-machine#readme
 platforms: [linux, macos, windows]
 capabilities:
@@ -20,5 +20,8 @@ capabilities:
   provides_hooks:
     - pre_tool_call
     - post_tool_call
+    - transform_tool_result
+    - pre_llm_call
+    - post_compaction
   provides_middleware: []
   requires_env: []

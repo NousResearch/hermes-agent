@@ -16,10 +16,13 @@ Soft release is now PENDING while an engine request is in flight: the requester 
 one out plays the deferred shutdown exactly once.
 """
 
+import sqlite3
 import threading
 from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock
+
+import pytest
 
 # Warm the module AIAgent.__init__ imports lazily: agent_init binds ContextCompressor through a
 # module-level ``from agent.context_compressor import`` (agent/agent_init.py:25), so a FIRST import
@@ -442,3 +445,70 @@ def test_real_turn_facade_wraps_the_turn_in_an_engine_request(monkeypatch):
     assert engine.calls == ["on_session_end", "shutdown"], (
         "the facade's finally must play the deferred release exactly once")
     assert getattr(agent, "_engine_inflight", 0) == 0
+
+
+class _IncidentEngine(_OrderingEngine):
+    """An engine whose shutdown closes the database the way LCM-X's does.
+
+    The production fingerprint is sqlite3's exact message; raising the same error type keeps the
+    replay honest about WHICH failure the incident produced ("Cannot operate on a closed
+    database.", gateway.log 2026-11-03 12:37:31,419).
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.db_open = True
+
+    def search_messages(self, query):
+        if not self.db_open:
+            raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+        self.calls.append("search")
+        return []
+
+    def shutdown(self):
+        self.db_open = False
+        super().shutdown()
+
+
+def test_incident_replay_pre_guard_touch_hits_closed_database():
+    """Reproduces the 11-03 incident against the PRE-fix soft-release shape.
+
+    Pre-fix, release_clients() shut the engine down unconditionally — exactly what an eviction
+    landing on the memory-manager thread did to the generation-14 worker that was still inside an
+    LCM message search after /stop invalidated its generation. With no request holder standing,
+    that shape must still produce the incident's exact error, so the guarded replay below proves
+    the fix is load-bearing and not a fixture artifact.
+    """
+    engine = _IncidentEngine()
+    agent = _bare_agent(context_compressor=engine, _context_engine_owned=True)
+    agent.release_clients()  # pre-fix behaviour == post-fix behaviour when nothing is in flight
+    assert engine.calls == ["on_session_end", "shutdown"]
+    with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
+        engine.search_messages("stale generation tool call")  # the :31 consumer, one beat too late
+
+
+def test_incident_replay_pending_release_keeps_stale_generation_tool_alive():
+    """Replays 2026-11-03 12:37:24→31 (gateway.log:19752-19756) against the shipped mechanism.
+
+    Observed sequence: /stop invalidates generation 14 (12:37:24) → the stale result is discarded
+    (12:37:28) while that generation's worker thread is still executing an LCM message search →
+    eviction lands before the tool returns (12:37:31) and the plugin logs "Message search failed:
+    Cannot operate on a closed database." The fix turns that eviction into a PENDING release; this
+    test walks the same three beats and pins the two facts the incident was missing: the late tool
+    observed an OPEN connection, and the owed shutdown still fired exactly once — after
+    on_session_end — when the worker finally left the request.
+    """
+    engine = _IncidentEngine()
+    agent = _bare_agent(context_compressor=engine, _context_engine_owned=True)
+    begin_engine_request(agent)             # the generation-14 worker is inside the turn
+    agent.release_clients()                 # 12:37:31: eviction lands on the memory-manager thread
+    assert engine.db_open is True           # the pending latch, not the shutdown, answered first
+    assert engine.calls == []
+    assert engine.search_messages("lcm.tools message search") == []  # the very call that failed live
+    end_engine_request(agent)               # the worker's finally balances the last holder out
+    # search first: the live incident's tool call was SERVED inside the window; only then the
+    # deferred close plays, on_session_end before shutdown as every other test pins.
+    assert engine.calls == ["search", "on_session_end", "shutdown"]
+    assert engine.calls.count("shutdown") == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
+        engine.search_messages("post-mortem touch")  # after the last user: cleanly closed, once

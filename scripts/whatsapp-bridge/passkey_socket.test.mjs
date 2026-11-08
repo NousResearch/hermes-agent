@@ -28,6 +28,14 @@ const request = (from = 's.whatsapp.net') => ({
   tag: 'notification', attrs: { from, type: 'passkey_prologue_request' },
   content: [{ tag: 'passkey_request_options', attrs: {}, content: options }],
 });
+const refReply = () => ({ tag: 'iq', attrs: {}, content: [{ tag: 'ref', attrs: {}, content: Buffer.from('ref') }] });
+const continuation = () => ({ tag: 'notification', attrs: { from: 's.whatsapp.net', type: 'crsc_continuation' }, content: [{
+  tag: 'primary_ephemeral_identity', attrs: {}, content: proto.PrimaryEphemeralIdentity.encode({
+    publicKey: Curve.generateKeyPair().public, nonce: Buffer.alloc(32, 3),
+  }).finish(),
+}] });
+const settle = () => new Promise(resolve => setImmediate(resolve));
+
 function socket() {
   const ws = new EventEmitter();
   const ev = new EventEmitter();
@@ -58,7 +66,7 @@ test('official socket event contract cancels queued and active signing on close'
   assert.equal(signal.aborted, true);
   assert.equal(sock.ws.listenerCount('CB:notification'), 0);
   finish(assertion);
-  await new Promise(resolve => setImmediate(resolve));
+  await settle();
   assert.equal(calls, 1);
 });
 
@@ -83,7 +91,7 @@ test('signer failure surfaces through the socket and a fresh attempt can continu
   const prologue = new Promise(resolve => { prologueSent = resolve; });
   sock.query = async node => {
     if (node.content[0].tag === 'passkey_prologue') prologueSent();
-    return { tag: 'iq', attrs: {}, content: [{ tag: 'ref', attrs: {}, content: Buffer.from('ref') }] };
+    return refReply();
   };
   attachPasskeyFlow(sock, { logger, signAssertion: async () => {
     calls += 1;
@@ -101,27 +109,21 @@ test('signer failure surfaces through the socket and a fresh attempt can continu
   sock.ev.emit('connection.update', { connection: 'close' });
 });
 
-const refReply = () => ({ tag: 'iq', attrs: {}, content: [{ tag: 'ref', attrs: {}, content: Buffer.from('ref') }] });
-const continuation = () => ({ tag: 'notification', attrs: { from: 's.whatsapp.net', type: 'crsc_continuation' }, content: [{
-  tag: 'primary_ephemeral_identity', attrs: {}, content: proto.PrimaryEphemeralIdentity.encode({
-    publicKey: Curve.generateKeyPair().public, nonce: Buffer.alloc(32, 3),
-  }).finish(),
-}] });
-const settle = () => new Promise(resolve => setImmediate(resolve));
-
 test('pairing payload waits for owner confirmation without trusted handoff', async () => {
   const creds = initAuthCreds();
   const sent = [];
   let approve;
+  let asked;
+  const question = new Promise(resolve => { asked = resolve; });
   const flow = makeShortcakeFlow({
     logger, getCreds: () => creds, updateCreds: patch => Object.assign(creds, patch),
     signAssertion: async () => assertion,
-    confirmCode: () => new Promise(resolve => { approve = resolve; }),
+    confirmCode: () => new Promise(resolve => { approve = resolve; asked(); }),
     query: async node => { sent.push(node.content[0].tag); return refReply(); },
   });
   await flow.executePrologue({ requestOptions: options });
   const handled = flow.handleIncomingNotification(continuation());
-  await settle();
+  await question;
   assert.equal(sent.includes('encrypted_pairing_request'), false);
   approve();
   await handled;
@@ -174,16 +176,56 @@ test('server prologue past the handoff window waits for owner confirmation', asy
 
 test('a newer prologue cancels the pending code question and a late answer sends nothing', async t => {
   const questions = [];
-  const confirmCode = (code, signal) => new Promise((resolve, reject) => {
-    questions.push({ code, signal, resolve });
-    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
-  });
+  // Ignores its signal on purpose, like a prompt that still returns "y" after being superseded.
+  const confirmCode = (code, signal) => new Promise(resolve => { questions.push({ code, signal, resolve }); });
   const { sock, sent } = await driveServerPrologue(t, { signingMs: 6 * 60 * 1000, confirmCode });
+  const errors = [];
+  sock.ev.on('connection.update', update => { if (update.passkeyError) errors.push(update.passkeyError); });
   assert.equal(questions.length, 1);
   sock.ws.emit('CB:notification', request());
   assert.equal(questions[0].signal.aborted, true, 'the superseded question must be cancelled at once');
   questions[0].resolve();
   await settle();
   assert.equal(sent.includes('encrypted_pairing_request'), false);
+  assert.deepEqual(errors, [], 'a superseded attempt is a cancellation, not a pairing failure');
+  sock.ev.emit('connection.update', { connection: 'close' });
+});
+
+test('a code question that fails with a plain error after supersede is a cancellation', async t => {
+  // A closed readline interface rejects with its own error rather than the abort reason.
+  const confirmCode = (_code, signal) => new Promise((_, reject) => {
+    signal.addEventListener('abort', () => reject(new Error('readline was closed')), { once: true });
+  });
+  const { sock, sent } = await driveServerPrologue(t, { signingMs: 6 * 60 * 1000, confirmCode });
+  const errors = [];
+  sock.ev.on('connection.update', update => { if (update.passkeyError) errors.push(update.passkeyError); });
+  sock.ws.emit('CB:notification', request());
+  await settle();
+  assert.deepEqual(errors, []);
+  assert.equal(sent.includes('encrypted_pairing_request'), false);
+  sock.ev.emit('connection.update', { connection: 'close' });
+});
+
+test('superseding an attempt whose browser call fails with a plain error keeps the bridge pairing', async () => {
+  const sock = socket();
+  const errors = [];
+  sock.ev.on('connection.update', update => { if (update.passkeyError) errors.push(update.passkeyError); });
+  const signals = [];
+  let prologues = 0;
+  sock.query = async node => { if (node.content[0].tag === 'passkey_prologue') prologues += 1; return refReply(); };
+  attachPasskeyFlow(sock, { logger, confirmCode: async () => {}, signAssertion: (_bytes, signal) => {
+    signals.push(signal);
+    if (signals.length > 1) return Promise.resolve(assertion);
+    // Playwright rejects an interrupted page.goto with a plain Error once the browser closes.
+    return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('page.goto: net::ERR_ABORTED')), { once: true }));
+  } });
+  sock.ws.emit('CB:notification', request());
+  await settle();
+  sock.ws.emit('CB:notification', request());
+  await settle();
+  await settle();
+  assert.equal(signals.length, 2);
+  assert.deepEqual(errors, []);
+  assert.equal(prologues, 1, 'the replacement attempt sends its prologue');
   sock.ev.emit('connection.update', { connection: 'close' });
 });

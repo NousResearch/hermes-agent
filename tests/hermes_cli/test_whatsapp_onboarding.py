@@ -121,10 +121,6 @@ def test_start_whatsapp_onboarding_existing_creds_returns_linked_account(monkeyp
     _web_server_messaging._whatsapp_onboarding_sessions.clear()
 
 
-
-
-
-
 @pytest.mark.parametrize("lines,returncode,expected", [
     # The bridge names the cause before exiting 1; the exit code must not replace it.
     (['{"event":"error","error":"passkey_required"}\n'], 1, "hermes whatsapp --passkey-browser"),

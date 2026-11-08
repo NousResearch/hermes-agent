@@ -74,19 +74,22 @@ export const makeShortcakeFlow = (opts) => {
                 ref,
                 deviceType,
                 skipHandoffUx,
-                stage: Stage.WaitingForPrimaryIdentity,
-                encryptionKey: null
+                stage: Stage.WaitingForPrimaryIdentity
             };
             opts.logger.debug({ skipHandoffUx }, 'shortcake prologue sent');
         }
         catch (error) {
+            // Read before the cleanup below aborts it: a signal aborted by a newer prologue or a socket
+            // close means the interrupted browser or query call's own error (e.g. ERR_ABORTED) is a
+            // cancellation, not a pairing failure.
+            const superseded = signal.aborted;
             if (activeController === controller) {
                 controller.abort();
                 activeController = null;
                 session = null;
                 handoffKey = null;
             }
-            throw error;
+            throw superseded ? signal.reason : error;
         }
     };
     /** Derive a handoff HMAC key from the ADV secret and rotate it (matching the official clients). */
@@ -108,8 +111,8 @@ export const makeShortcakeFlow = (opts) => {
         await executePrologue({ requestOptions });
         return true;
     };
-    /** Build + AES-GCM seal the pairing request for `current` and send the `encrypted_pairing_request` IQ. */
-    const sendPairingRequest = async (current) => {
+    /** AES-GCM seal the pairing request under `encryptionKey` and send the `encrypted_pairing_request` IQ. */
+    const sendPairingRequest = async (current, encryptionKey) => {
         current.signal.throwIfAborted();
         const creds = opts.getCreds();
         const plaintext = proto.PairingRequest.encode({
@@ -117,7 +120,7 @@ export const makeShortcakeFlow = (opts) => {
             companionIdentityKey: creds.signedIdentityKey.public,
             advSecret: Buffer.from(creds.advSecretKey, 'base64')
         }).finish();
-        const envelope = encryptPairingRequest(current.encryptionKey, plaintext);
+        const envelope = encryptPairingRequest(encryptionKey, plaintext);
         current.stage = Stage.WaitingForPairing;
         await opts.query(mdIq('set', [{ tag: 'encrypted_pairing_request', attrs: {}, content: envelope }]));
         current.signal.throwIfAborted();
@@ -134,8 +137,15 @@ export const makeShortcakeFlow = (opts) => {
             return true;
         }
         const current = session;
-        const primaryBytes = getBinaryNodeChildBuffer(node, 'primary_ephemeral_identity');
-        const primary = decodePrimaryEphemeralIdentity(primaryBytes);
+        try {
+            await continuePairing(current, decodePrimaryEphemeralIdentity(getBinaryNodeChildBuffer(node, 'primary_ephemeral_identity')));
+        }
+        catch (error) {
+            throw current.signal.aborted ? current.signal.reason : error;
+        }
+        return true;
+    };
+    const continuePairing = async (current, primary) => {
         await opts.query(mdIq('set', [{ tag: 'companion_nonce', attrs: {}, content: current.companion.companionNonce }]));
         current.signal.throwIfAborted();
         const verificationCode = deriveVerificationCode(current.companion.companionNonce, primary);
@@ -145,7 +155,6 @@ export const makeShortcakeFlow = (opts) => {
             deviceType: current.deviceType,
             ref: current.ref
         });
-        current.encryptionKey = encryptionKey;
         current.stage = Stage.WaitingForConfirmation;
         opts.logger.debug({ skipHandoffUx: current.skipHandoffUx }, 'shortcake verification code ready');
         // Without a trusted handoff the owner compares the code with the phone. The attempt's own signal
@@ -153,8 +162,7 @@ export const makeShortcakeFlow = (opts) => {
         // answer can never approve a different attempt's code.
         if (!current.skipHandoffUx)
             await opts.confirmCode(verificationCode, current.signal);
-        await sendPairingRequest(current);
-        return true;
+        await sendPairingRequest(current, encryptionKey);
     };
     /** Routes `passkey_prologue_request` / `crsc_continuation`; returns `true` when consumed. */
     const handleIncomingNotification = async (node) => {

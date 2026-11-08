@@ -19,8 +19,10 @@ terminal prompt only runs when no trusted handoff applies (for example when
 signing takes longer than the five-minute handoff window). The flow awaits the
 owner's answer itself and sends the pairing request only for the attempt that
 derived the code: a newer prologue request or a socket close cancels both the
-pending browser prompt and the code question. Failures print the error name and
-message, never assertion or credential bytes. The interactive signer loads the real WhatsApp Web origin and validates the returned
+pending browser prompt and the code question, and whatever the interrupted call
+then throws counts as that cancellation, not a pairing failure. Other failures
+print the error's name and message; assertion and credential buffers are not
+printed. The interactive signer loads the real WhatsApp Web origin and validates the returned
 challenge and origin. No existing browser profile or browser session is imported.
 The temporary browser profile does not inherit Chrome's signed-in password manager.
 Availability of a phone or operating-system passkey depends on the browser's

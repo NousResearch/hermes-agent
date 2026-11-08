@@ -62,13 +62,13 @@ elif mode == "where":
 # The real submitter, with the transport seam replaced: the owner drains forever and the
 # wait is zero, so the run dies exactly like a stalled owner does in production.
 DRIVER = """
-import sys, time
+import sys
 from contextlib import asynccontextmanager
 
 from hermes_cli import gateway_client, kanban_worker_client
 
-# A window for the parent to record this pid as the claim's worker before we exit.
-time.sleep(2.0)
+# Hold until the parent has recorded this pid as the claim's worker (it closes our stdin then).
+sys.stdin.read()
 
 
 @asynccontextmanager
@@ -119,9 +119,15 @@ def test_a_host_stall_books_through_the_infrastructure_seam(tmp_path: Path) -> N
     })
     with open(log_path, "ab") as log:
         proc = subprocess.Popen([PY, str(driver)], cwd=str(board.root), env=env,
-                                stdout=subprocess.DEVNULL, stderr=log)
-        _helper(board, "bind", db, tid, str(proc.pid), run_id, claim_lock)
-        rc = proc.wait(timeout=120)
+                                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=log)
+        try:
+            _helper(board, "bind", db, tid, str(proc.pid), run_id, claim_lock)
+            proc.stdin.close()  # bound: release the submitter
+            rc = proc.wait(timeout=120)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
 
     # 2. The submitter's own verdict: exit 74 and its trailer, with the host's — not the
     # owner's — label on the wire.

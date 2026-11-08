@@ -1516,9 +1516,15 @@ def _deliver_via_live_adapter(
         # gateway loop is contended, so each media send would also block its 30s budget, and the text
         # payload is already assumed delivered (#38922). Record the skipped attachments so the drop is
         # visible rather than silently lost.
-        if adapter_ok and not timed_out and text_to_send and t.resolved_thread_id:
-            # Named topic: media and the mirror follow a thread-not-found refresh made by the text send.
-            media_metadata["thread_id"] = _resolve_named_dm_topic(t)
+        if (adapter_ok and not timed_out and text_to_send and t.resolved_thread_id
+                and (media_files or t.mirror_this_target)):
+            # Named topic: media and the mirror follow a thread-not-found refresh made by the text
+            # send. The text is confirmed, so a failed lookup keeps the pre-send id, never a failure.
+            try:
+                media_metadata["thread_id"] = _resolve_named_dm_topic(t)
+            except Exception as e:
+                logger.warning("Job '%s': named topic re-lookup for %s failed (%s); keeping id %s",
+                               job["id"], t.where, e, t.resolved_thread_id, exc_info=True)
         if adapter_ok and not timed_out and media_files:
             _live_send_media(t, media_metadata, media_files, delivery_errors, unverified_targets)
         elif timed_out and media_files:

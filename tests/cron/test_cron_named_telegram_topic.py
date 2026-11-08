@@ -5,6 +5,8 @@ from concurrent.futures import Future
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from cron.scheduler import _deliver_result, _resolve_delivery_target
 from gateway.config import Platform, PlatformConfig
 
@@ -113,3 +115,27 @@ def test_text_only_mirror_follows_a_recreated_topic(tmp_path):
 
     assert error is None
     assert mirror.call_args.kwargs["thread_id"] == "5151"
+
+
+@pytest.mark.parametrize("attach", [False, True])
+def test_confirmed_text_stays_delivered_when_the_topic_re_lookup_fails(tmp_path, attach):
+    """The text send is confirmed; a later topic lookup failing (loop stalled/closing) must not turn
+    the run into a failure and a standalone resend."""
+    adapter = _Adapter()
+    real_ensure = adapter.ensure_dm_topic
+
+    async def ensure_once(chat_id, name, force_create=False):
+        if adapter.sends:  # the text already landed
+            raise RuntimeError("gateway loop closing")
+        return await real_ensure(chat_id, name, force_create)
+
+    adapter.ensure_dm_topic = ensure_once
+    job = {"id": "j-named", "name": "Brief", "deliver": "telegram:722341991:Debug", "attach_to_session": attach}
+    with patch("tools.send_message_tool._send_to_platform") as standalone:
+        error, mirror = _run_named_delivery(tmp_path, adapter, job, media=False)
+
+    assert error is None
+    standalone.assert_not_called()
+    assert [m.get("thread_id") for _c, m in adapter.sends] == ["4242"]
+    if attach:
+        assert mirror.call_args.kwargs["thread_id"] == "4242"

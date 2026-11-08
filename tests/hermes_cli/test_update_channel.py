@@ -81,6 +81,14 @@ def test_update_channel_help_explains_selection_and_persistence(capsys):
     assert "Save CHANNEL as the default for future source updates" in help_text
     assert "then exits" in help_text
     assert "hermes update --check" in help_text
+    # The wording that read like a channel named "persists" (#139593) is gone.
+    assert "--set-channel persists" not in help_text
+    # The epilog lists the channels and how to enter and leave one.
+    for channel in ("stable", "canary", "main"):
+        assert f"{channel} " in help_text
+    assert "hermes update --set-channel main" in help_text
+    assert "hermes update --set-channel stable" in help_text
+    assert "cannot be used together" in help_text
     with pytest.raises(SystemExit):
         parser.parse_args(["update", "--channel", "main", "--set-channel", "stable"])
 

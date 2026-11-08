@@ -2,7 +2,26 @@
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
+
+_CHANNEL_EPILOG = """\
+update channels (source installs only):
+  stable   the latest published release (default for official checkouts)
+  canary   the latest published prerelease
+  main     every commit on the main branch (default for forks and mirrors)
+
+examples:
+  hermes update --check                 show the current channel and whether an update is available
+  hermes update                         update on the current channel
+  hermes update --set-channel main      save 'main' as the channel (no update yet)
+  hermes update                         ...then update on 'main'
+  hermes update --set-channel stable    return to published releases, then run 'hermes update'
+  hermes update --channel main          update from 'main' once; the saved channel is unchanged
+
+--set-channel and --channel cannot be used together. Desktop, Docker, Nix, and
+package installs have a fixed channel; update them through their own installer.
+"""
 
 
 def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
@@ -10,7 +29,9 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     from hermes_cli.release_channels import validate_name
     update_parser = subparsers.add_parser(
         "update", help="Update Hermes Agent to the latest version",
-        description="Pull the latest changes from git and reinstall dependencies")
+        description="Pull the latest changes from git and reinstall dependencies",
+        epilog=_CHANNEL_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     update_parser.add_argument(
         "--gateway", action="store_true", default=False,
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)",

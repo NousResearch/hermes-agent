@@ -135,7 +135,7 @@ A `/command` registered with `ctx.register_command()` runs in the gateway proces
 
 - **Return its text** instead of calling `print()`. Printed output goes to the gateway's stdout, not to the user's chat.
 - **Read the session's working directory with `agent.runtime_cwd.resolve_agent_cwd()`**, not `os.getcwd()`, which is the gateway's own directory. The gateway pins the session's directory while the handler runs.
-- **Take the calling session as handler keywords**: declare `session_id`, `session_key`, `platform` or `source` (the sender's `SessionSource`) and Hermes passes them; one-argument handlers keep working unchanged. The same values are bound as `HERMES_SESSION_*` around the handler (`gateway.session_context.get_session_env`, never `os.environ`), so a background job the handler starts records the session as its parent.
+- **Take the calling session as handler keywords**: declare `session_id`, `session_key`, `platform` or `source` (the sender's `SessionSource`) and Hermes passes them; one-argument handlers keep working unchanged. The same values are bound as `HERMES_SESSION_*` around the handler (read them with `from gateway.session_context import get_session_env`, never `os.environ`), so a background job the handler starts records the session as its parent.
 
 The classic CLI waits for the reply for as long as the handler runs. Ctrl+C stops the wait, not the handler: the handler finishes in the gateway and its reply is not shown. The command runs over its own connection to the gateway, so the session's prompts, interrupts and other commands are not held up while it runs.
 
@@ -579,7 +579,7 @@ Hybrid repos (agent + desktop halves in one repo) use one link and one
 dialog. The same modal is reachable without a link via **Capabilities →
 Plugins → Install from Git**. Legacy `hermes://plugin-agent/…` and
 `hermes://plugin-desktop/…` URLs route into the same dialog. In dev builds
-(`npm run dev`) the scheme is `hermes-dev://`.
+(`pnpm run dev`) the scheme is `hermes-dev://`.
 
 Websites need no SDK — a normal anchor works:
 
@@ -1150,6 +1150,7 @@ Hooks, tools and injected turns of every chat and every local session (CLI, TUI,
 
 - `os.getcwd()` is the gateway's own directory, shared by every session; Hermes never changes it. Use `ctx.session_cwd()` for the working directory of the session the hook or tool runs for: the workspace a CLI/TUI/Desktop session was started in, or the profile's terminal cwd for a chat (`""` when there is none). Pass it as `cwd=` to subprocesses. It reads the session from the running turn, so it works in code that runs for a session: turn hooks, tool handlers and approval hooks. Ingress hooks such as `pre_gateway_dispatch` run before the message is admitted to any session; there it returns the profile's terminal cwd, or `""` when none is configured.
 - `ctx.session_surface()` names the calling session's client: `"cli"`, `"tui"`, `"desktop"`, `"acp"`, or the messaging platform (`"telegram"`, …); `""` outside a session.
+- `hermes_cli.plugin_session.session_client()` returns the client that created the calling local session, as it named itself on `session.create` (`{"name": "my-client", "version": "1.2.0"}`; `version` only when sent), or `None`: outside a session, for a messaging chat, and for a client that sent no name (the TUI, Desktop, the classic CLI and ACP send none today). Under `plugins.isolation: host` the plugin's process has no session context, so read `info["client"]` in a system prompt section instead. The name is a label the client chose, not an authentication: never grant anything, or skip a check, because of it.
 - `print()` output goes to the gateway's `gateway-stdio.log`, not to your terminal. Use `logging` instead.
 - `input()` gets end-of-file: the gateway has no terminal. Ask through a tool result or a slash command.
 

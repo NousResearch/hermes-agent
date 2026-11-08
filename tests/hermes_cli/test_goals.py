@@ -284,6 +284,33 @@ class TestMigrateGoalToSession:
         parent = load_goal("parent-x")
         assert parent is not None and parent.status == "active"
 
+    @pytest.mark.parametrize("kind", ["loop", "heartbeat"])
+    def test_failed_child_write_keeps_parent_loop_and_heartbeat(self, hermes_home, monkeypatch, kind):
+        """/loop and /heartbeat ride the same compaction migration with the same swallowed write (#149594)."""
+        import sqlite3
+
+        from hermes_cli import goals, heartbeat, loops
+
+        if kind == "loop":
+            loops.save_loop("parent-y", loops.LoopState(prompt="tick", interval_seconds=60.0))
+            migrate, load = loops.migrate_loop_to_session, loops.load_loop
+        else:
+            heartbeat.save_heartbeat("parent-y", heartbeat.HeartbeatState(prompt="beat", interval_seconds=60))
+            migrate, load = heartbeat.migrate_heartbeat_to_session, heartbeat.load_heartbeat
+        db = goals._get_session_db()
+        real_set_meta = db.set_meta
+
+        def _set_meta(key, value):
+            if key == f"{kind}:child-y":
+                raise sqlite3.OperationalError("database is locked")
+            real_set_meta(key, value)
+
+        monkeypatch.setattr(db, "set_meta", _set_meta)
+
+        assert migrate("parent-y", "child-y") is False
+        parent = load("parent-y")
+        assert parent is not None and parent.status == "active"
+
 
 class TestSessionDbCacheAfterProfileDelete:
     """``hermes profile delete`` force-closes every registry handle under the profile home

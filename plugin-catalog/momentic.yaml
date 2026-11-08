@@ -9,8 +9,8 @@ description: >-
   npx momentic-mobile mcp), which users add to their own mcp_servers config; a Momentic
   API key is read by the Momentic CLI, never by the plugin. Disclosure — the skills tell
   the agent to run Momentic CLI commands in the shell (npx, and the documented
-  curl https://cli.momentic.ai/qa | sh installer for Mo); test runs send app screenshots
-  and page content to Momentic's hosted AI.
+  curl https://cli.momentic.ai/qa | sh installer for Mo); test runs call Momentic's hosted
+  service with the user's Momentic account.
 maintainer: momentic-ai
 tier: community
 category: tools

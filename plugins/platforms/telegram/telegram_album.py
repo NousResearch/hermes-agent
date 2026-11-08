@@ -1,7 +1,9 @@
 """Telegram photo albums (``sendMediaGroup``, 10 per chunk) for the gateway adapter and the
 standalone sender.
 
-A chunk that may already be in the chat (a timeout, a 504, a reset after the write, a 5xx answer:
+Telegram's own 5xx JSON answer (Bad Gateway) resends the SAME ``sendMediaGroup`` with the text
+lane's budget, never photo by photo. A chunk that may already be in the chat (a timeout, a 504, a
+reset after the write, an HTML 5xx page, or a 5xx JSON answer once that budget is spent:
 ``telegram_send_errors``) is reported ambiguous and never resent. Any other failure (a Bot API
 refusal, a flood wait, a connect/pool failure whose request never left, a local error) falls back
 photo by photo. A stale forum topic ("thread not found") retries once without the topic.
@@ -25,8 +27,9 @@ ALBUM_LIMIT = 10  # Telegram's media-group cap
 
 def reply_lost(error: Exception) -> bool:
     """True when the chunk may already be in the chat (``telegram_send_errors.may_have_delivered``:
-    a timeout, a 504, a reset after the write, any 5xx answer). Only a refusal, a flood wait, a
-    connect/pool failure (nothing left) or a local error falls back photo by photo."""
+    a timeout, a 504, a reset after the write, a 5xx answer left after its same-request retries).
+    Only a refusal, a flood wait, a connect/pool failure (nothing left) or a local error falls back
+    photo by photo."""
     from plugins.platforms.telegram.telegram_send_errors import may_have_delivered
     return may_have_delivered(error)
 
@@ -100,8 +103,12 @@ def _open_chunk(adapter: Any, stack: contextlib.ExitStack, chunk: list[tuple], i
 
 
 async def _send_chunk(adapter: Any, chat_id: str, media: list, opened: list, metadata: Optional[dict]) -> Optional[dict]:
-    """``sendMediaGroup`` once, plus one retry without a stale forum topic. Returns the metadata the
-    rest of the batch should use; raises the send's error."""
+    """``sendMediaGroup``, the same request again on Telegram's 5xx JSON answer (the text lane's
+    budget), plus one retry without a stale forum topic. Returns the metadata the rest of the batch
+    should use; raises the send's error."""
+    from plugins.platforms.telegram import telegram_send_errors as kinds
+    from plugins.platforms.telegram.adapter import _redact_telegram_error_text as redact
+
     def reset() -> None:
         for fh in opened:
             with contextlib.suppress(Exception):
@@ -109,8 +116,21 @@ async def _send_chunk(adapter: Any, chat_id: str, media: list, opened: list, met
 
     async def send(meta: Optional[dict]) -> None:
         reply_to_id, kwargs = adapter._media_send_kwargs(chat_id, None, meta)
-        await adapter._send_with_dm_topic_reply_anchor_retry(
-            adapter._bot.send_media_group, {**kwargs, "media": media}, meta, reply_to_id, "media group", reset_media=reset)
+        for attempt in range(kinds.SAME_REQUEST_ATTEMPTS):
+            try:
+                await adapter._send_with_dm_topic_reply_anchor_retry(
+                    adapter._bot.send_media_group, {**kwargs, "media": media}, meta, reply_to_id, "media group",
+                    reset_media=reset)
+                return
+            except Exception as err:
+                if (kinds.send_error_kind(err) != kinds.SERVER_ERROR
+                        or attempt >= kinds.SAME_REQUEST_ATTEMPTS - 1):
+                    raise
+                delay = kinds.same_request_backoff(attempt)
+                logger.warning("[%s] Telegram 5xx on media group (attempt %d/%d), resending it in %.1fs: %s",
+                               adapter.name, attempt + 1, kinds.SAME_REQUEST_ATTEMPTS, delay, redact(err))
+                await asyncio.sleep(delay)
+                reset()
 
     try:
         await send(metadata)

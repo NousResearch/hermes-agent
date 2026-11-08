@@ -14,7 +14,7 @@ import re
 from types import SimpleNamespace
 
 from agent.redact import redact_sensitive_text
-from plugins.platforms.telegram.telegram_send_errors import is_entity_parse_error
+from plugins.platforms.telegram.telegram_send_errors import SAME_REQUEST_ATTEMPTS, is_entity_parse_error
 from pm import install_hint
 
 logger = logging.getLogger(__name__)
@@ -73,10 +73,10 @@ def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
             return max(float(exc.retry_after), 0.0)
         except (TypeError, ValueError):
             return 1.0
-    return float(2 ** attempt) if kind in (kinds.UNSENT, kinds.SERVER_ERROR) else None
+    return kinds.same_request_backoff(attempt) if kind in (kinds.UNSENT, kinds.SERVER_ERROR) else None
 
 
-async def _send_telegram_message_with_retry(bot, *, attempts: int = 3, **kwargs):
+async def _send_telegram_message_with_retry(bot, *, attempts: int = SAME_REQUEST_ATTEMPTS, **kwargs):
     """``bot.send_message`` with bounded retries on transient failures."""
     for attempt in range(attempts):
         try:

@@ -536,10 +536,12 @@ def _html_5xx(status, phrase, body="<html><h1>{status}</h1></html>"):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("exc", [NetworkError("Gateway Timeout (504)"), NetworkError("Bad Gateway"),
-                                 _html_5xx(504, "Gateway Timeout")], ids=["504", "502-json", "504-html"])
+@pytest.mark.parametrize("exc", [NetworkError("Gateway Timeout (504)"), _html_5xx(502, "Bad Gateway"),
+                                 _html_5xx(504, "Gateway Timeout")], ids=["504", "502-html", "504-html"])
 async def test_media_group_5xx_is_ambiguous_and_never_resent(tmp_path, exc):
-    """Any 5xx answer to sendMediaGroup may follow a posted album, like a timeout: no per-photo copy."""
+    """A 504 or an HTML 5xx page answering sendMediaGroup may follow a posted album, like a timeout:
+    one request, no per-photo copy. (Telegram's JSON 5xx resends the same album:
+    test_send_multiple_images.)"""
     adapter = _make_adapter()
     paths = [tmp_path / f"p{i}.png" for i in range(2)]
     for path in paths:

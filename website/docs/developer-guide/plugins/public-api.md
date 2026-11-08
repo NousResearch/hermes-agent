@@ -110,3 +110,8 @@ with a name allows that one name only.
 | `gateway.session_context` | `get_session_env` | plugins/index.md § platform plugins: read session identity through the task-local context |
 | `agent.redact` | `redact_sensitive_text` | plugin-llm-access.md § From the plugin's frontend: a plugin RPC method (`force=True` where secrets must never leave) |
 | `hermes_cli.plugin_session` | `session_client` | user-guide/features/plugins.md § Plugin code inside the gateway: which client created the session |
+| `agent.file_safety` | `get_read_block_error` | plugins/index.md § File safety, managed settings and host version |
+| `hermes_cli.managed_scope` | `is_key_managed` | plugins/index.md § File safety, managed settings and host version |
+| `hermes_cli.managed_scope` | `managed_config_keys` | plugins/index.md § File safety, managed settings and host version |
+| `hermes_cli.version_info` | `get_version_info` | plugins/index.md § File safety, managed settings and host version |
+| `hermes_cli.version_info` | `hermes_user_agent` | plugins/index.md § File safety, managed settings and host version |

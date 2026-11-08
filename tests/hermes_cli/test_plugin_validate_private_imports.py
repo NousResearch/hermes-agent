@@ -227,3 +227,42 @@ def test_public_api_docs_page_is_generated_from_the_data_file():
     spec.loader.exec_module(gen)
 
     assert gen.check() == 0, "website/docs/developer-guide/plugins/public-api.md is stale"
+
+
+def test_file_config_and_version_helpers_are_public_and_work(tmp_path, monkeypatch):
+    """Plugins share core's file policy, managed keys and version token (#151197)."""
+    from agent.file_safety import get_read_block_error
+    from hermes_cli.managed_scope import is_key_managed, managed_config_keys
+    from hermes_cli.version_info import get_version_info, hermes_user_agent
+
+    plugin = _plugin(tmp_path / "host_helpers", {"helpers.py": (
+        "from agent.file_safety import get_read_block_error\n"
+        "from hermes_cli.managed_scope import is_key_managed, managed_config_keys\n"
+        "from hermes_cli.version_info import get_version_info, hermes_user_agent\n"
+    )})
+    assert _private_warnings(validate_plugin_dir(plugin)) == []
+
+    assert get_read_block_error(str(tmp_path / ".env"))
+    assert get_read_block_error(str(tmp_path / "sample.wav")) is None
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text("tts:\n  provider: operator\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    assert managed_config_keys() == {"tts.provider"}
+    assert is_key_managed("tts.provider")
+    assert not is_key_managed("tts.voice")
+    assert hermes_user_agent() == f"hermes-cli/{get_version_info().base_version}"
+    assert hermes_user_agent("plugin") == f"plugin/{get_version_info().base_version}"
+
+
+def test_host_helper_modules_do_not_expose_other_names(tmp_path):
+    plugin = _plugin(tmp_path / "private_helpers", {"helpers.py": (
+        "from agent.file_safety import get_nt_namespace_error\n"
+        "from hermes_cli.managed_scope import load_managed_config\n"
+        "from hermes_cli.version_info import get_code_identity\n"
+    )})
+    report = validate_plugin_dir(plugin)
+    assert report.ok, report.failures
+    [warning] = _private_warnings(report)
+    for name in ("get_nt_namespace_error", "load_managed_config", "get_code_identity"):
+        assert name in warning

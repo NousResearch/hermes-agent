@@ -2724,3 +2724,22 @@ def handler(args, **kwargs):
 # Good — model knows exactly when and how
 "description": "Evaluate a mathematical expression. Use for arithmetic, trig, logarithms. Supports: +, -, *, /, **, sqrt, sin, cos, log, pi, e."
 ```
+
+## File safety, managed settings and host version
+
+Plugins that read user-selected files can use `get_read_block_error(path)` from
+`agent.file_safety`. Pass an absolute path resolved against the plugin's intended working directory.
+A returned error string means the read must be refused; `None` means the path passes Hermes' read
+policy. This shares core's denylist; it does not read the file or check filesystem permissions.
+
+Before writing a setting, use `is_key_managed(dotted_key)` from `hermes_cli.managed_scope` to refuse
+changes to an exact dotted leaf key pinned by the operator (for example, `tts.provider`).
+`managed_config_keys()` returns the set of all pinned dotted leaf keys. The merged user config
+alone cannot distinguish operator pins from user settings.
+
+For diagnostics, `get_version_info()` from `hermes_cli.version_info` returns cached version
+provenance from the install stamp, source checkout, or an unknown fallback; its `base_version`
+attribute holds the release version. For HTTP clients, `hermes_user_agent(product="hermes-cli")`
+returns `<product>/<base version>`. Call it when building the request rather than at module import,
+so version resolution stays lazy. These helpers are available to standalone plugins such as
+`fish-audio` that need the same file policy, managed settings and host identity as core.

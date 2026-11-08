@@ -6,7 +6,7 @@ import asyncio
 import logging
 
 from gateway.config import Platform
-from gateway.platforms.base import _mark_notify_metadata
+from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -24,4 +24,6 @@ async def send_restart_ack(runner, adapter, event, ack: str) -> bool:
     except Exception:  # any adapter failure: the reply path is the fallback, never a lost /restart
         logger.warning("Could not send the /restart acknowledgement before shutdown", exc_info=True)
         return False
-    return bool(getattr(result, "success", False))
+    # A read/write timeout may already have landed (``_send_with_retry`` does not resend it either):
+    # count it as delivered so the reply path does not post a second copy.
+    return bool(getattr(result, "success", False)) or BasePlatformAdapter._is_timeout_error(getattr(result, "error", None))

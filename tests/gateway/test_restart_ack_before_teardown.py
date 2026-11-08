@@ -94,3 +94,21 @@ async def test_local_restart_returns_its_ack(monkeypatch, tmp_path):
 
     assert order == ["restart"]
     assert result and "Restarting" in result
+
+
+@pytest.mark.asyncio
+async def test_timed_out_restart_ack_is_not_sent_twice(monkeypatch, tmp_path):
+    """A send that timed out may already have landed; the reply path must not post a second copy."""
+    sent = []
+
+    async def send(chat_id, content, **kwargs):
+        sent.append(content)
+        return SendResult(success=False, error="Timed out")
+
+    runner, order = _idle_restart(monkeypatch, tmp_path, send)
+    event = MessageEvent(text="/restart", message_type=MessageType.TEXT, source=make_restart_source(), message_id="m1")
+
+    result = await runner._handle_message(event)
+
+    assert order == ["restart"] and len(sent) == 1
+    assert not result

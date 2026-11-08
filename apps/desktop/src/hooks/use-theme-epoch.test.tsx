@@ -46,7 +46,7 @@ describe('theme repaint subscriptions', () => {
     disposers.push(stopFirst, stopSecond)
 
     for (const value of ['10px', '20px', '']) {
-      for (const name of ['--workspace-left', '--workspace-right', '--glass-rail-edge']) {
+      for (const name of ['--workspace-left', '--workspace-right', '--glass-rail-left', '--glass-rail-right']) {
         if (value) {
           root.style.setProperty(name, value)
         } else {
@@ -124,15 +124,15 @@ describe('theme repaint subscriptions', () => {
   it('keeps geometry-driven authored CSS observable without changing its consumers', async () => {
     const style = window.document.createElement('style')
     style.id = 'hermes-desktop-custom-css'
-    style.textContent = ':root { --author-width: var(--workspace-left); }'
+    style.textContent = ':root { --author-width: var(--glass-rail-right); }'
     window.document.head.append(style)
     const repaint = vi.fn()
     disposers.push(onThemeRepaint(repaint))
-    root.style.setProperty('--workspace-left', '37px')
+    root.style.setProperty('--glass-rail-right', '37px')
     await flush()
     expect(repaint).toHaveBeenCalledOnce()
     style.remove()
-    root.style.setProperty('--workspace-left', '38px')
+    root.style.setProperty('--glass-rail-right', '38px')
     await flush()
     expect(repaint).toHaveBeenCalledOnce()
   })

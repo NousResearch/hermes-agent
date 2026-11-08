@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Isolated LayoutTreeRoot native titlebar regression</title>
+    <style>
+      body {
+        margin: 0;
+        background: #202020;
+        color: white;
+        font: 13px sans-serif;
+      }
+      #layout,
+      #layout > div {
+        display: flex;
+        height: 600px;
+      }
+      .fixture-split {
+        display: flex;
+        flex: 1;
+      }
+      .panel {
+        position: relative;
+        overflow: hidden;
+        flex-shrink: 0;
+      }
+      [data-tree-group='sidebar'] {
+        width: 250px;
+        background: #303030;
+      }
+      [data-tree-group='main'] {
+        width: 750px;
+      }
+      .band {
+        display: flex;
+        height: 34px;
+      }
+      .leftpad {
+        width: var(--panel-titlebar-left, 100%);
+        flex-shrink: 0;
+      }
+      .rightpad {
+        width: var(--panel-titlebar-right, 0px);
+        flex-shrink: 0;
+      }
+      .drag {
+        min-width: 0;
+        flex: 1;
+        -webkit-app-region: drag;
+      }
+      .cluster {
+        position: fixed;
+        top: 5px;
+        z-index: 70;
+        display: flex;
+        -webkit-app-region: no-drag;
+      }
+      #left {
+        left: 86px;
+      }
+      #right {
+        right: 12px;
+      }
+      button {
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: white;
+        overflow: hidden;
+      }
+      #body {
+        position: absolute;
+        top: 100px;
+        left: 400px;
+        width: 100px;
+      }
+      /* Deliberately below the no-drag control in DOM hit testing, but later in
+         native app-region order. This must swallow Cocoa clicks, not DOM ones. */
+      #native-negative-control {
+        position: fixed;
+        left: 86px;
+        top: 5px;
+        width: 24px;
+        height: 24px;
+        z-index: 1;
+        -webkit-app-region: drag;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="renderer.js"></script>
+  </body>
+</html>

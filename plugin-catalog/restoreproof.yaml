@@ -1,21 +1,22 @@
 name: restoreproof
 repo: https://github.com/Surajkumar5050/restoreproof
-sha: 504d7c302ee47dba235b5e038631b783ed076e2b
+sha: 02615fb696db406e288eafcda2b922ac5731da92
 title: RestoreProof
-description: "Recovery drills for real application stacks: restores a declared PostgreSQL dump and uploads archive into an isolated Docker network, boots the app, and proves whether customers' journeys come back (every database file reference, a real user flow, recovery time and RPO), then cleans up and writes a hashed evidence report. Deterministic engine; the model never decides a verdict. Disclosure: runs the local docker CLI (argument lists, no shell) to create and remove containers, networks and volumes labelled restoreproof.run; reads only the backup folder and contract you point it at; writes evidence under its plugin data directory. No network calls of its own, no telemetry, never pulls images. Drills are gated by Hermes approval bound to the contract's sha256."
+description: "Recovery drills for real application stacks: restores a declared database backup (PostgreSQL, MySQL, MariaDB, MongoDB or SQLite) and uploads archive into an isolated Docker network, boots the app, and proves whether customers' journeys come back (every database file reference, a real user flow, recovery time and RPO), then cleans up and writes a hashed evidence report. Deterministic engine; the model never decides a verdict. Disclosure: runs the local docker CLI (argument lists, no shell) to create and remove containers, networks and volumes labelled restoreproof.run; reads only the backup folder and contract you point it at; writes evidence under its plugin data directory. No network calls of its own, no telemetry. A drill never pulls images; only the /drill demo command, when you type it, builds the demo app image and pulls the database and probe images it needs. Drills are gated by Hermes approval bound to the contract's sha256 and the backup folder."
 maintainer: Surajkumar5050
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/Surajkumar5050/restoreproof#readme
 version: "0.1.0"
-image: https://raw.githubusercontent.com/Surajkumar5050/restoreproof/504d7c302ee47dba235b5e038631b783ed076e2b/assets/banner.jpg
+image: https://raw.githubusercontent.com/Surajkumar5050/restoreproof/02615fb696db406e288eafcda2b922ac5731da92/assets/banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/Surajkumar5050/restoreproof/504d7c302ee47dba235b5e038631b783ed076e2b/assets/story.png
-  - https://raw.githubusercontent.com/Surajkumar5050/restoreproof/504d7c302ee47dba235b5e038631b783ed076e2b/assets/screens/live-drill.png
-  - https://raw.githubusercontent.com/Surajkumar5050/restoreproof/504d7c302ee47dba235b5e038631b783ed076e2b/assets/screens/desktop-card.png
-  - https://raw.githubusercontent.com/Surajkumar5050/restoreproof/504d7c302ee47dba235b5e038631b783ed076e2b/assets/screens/report.jpg
-  - https://raw.githubusercontent.com/Surajkumar5050/restoreproof/504d7c302ee47dba235b5e038631b783ed076e2b/assets/pipeline.png
+  - https://raw.githubusercontent.com/Surajkumar5050/restoreproof/02615fb696db406e288eafcda2b922ac5731da92/assets/story.png
+  - https://raw.githubusercontent.com/Surajkumar5050/restoreproof/02615fb696db406e288eafcda2b922ac5731da92/assets/screens/live-drill.png
+  - https://raw.githubusercontent.com/Surajkumar5050/restoreproof/02615fb696db406e288eafcda2b922ac5731da92/assets/screens/get-started.png
+  - https://raw.githubusercontent.com/Surajkumar5050/restoreproof/02615fb696db406e288eafcda2b922ac5731da92/assets/screens/report.jpg
+  - https://raw.githubusercontent.com/Surajkumar5050/restoreproof/02615fb696db406e288eafcda2b922ac5731da92/assets/screens/desktop-card.png
+  - https://raw.githubusercontent.com/Surajkumar5050/restoreproof/02615fb696db406e288eafcda2b922ac5731da92/assets/pipeline.png
 readme: true
 capabilities:
   provides_tools:

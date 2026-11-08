@@ -1,7 +1,7 @@
 """Command-position anchor and host power-state (reboot/shutdown) hardline rules.
 
-Split out of :mod:`tools.approval_detection` (which re-exports every name here) so the power-state
-opt-in tables live in one topical module. Pure data and regex fragments: no config reads.
+Split out of :mod:`tools.approval_detection` so the power-state opt-in tables live in one topical
+module; callers import them from here directly. Pure data and regex fragments: no config reads.
 """
 
 # Start-of-command position: start of string, newline, subshell opener ($( or backtick), optionally consuming

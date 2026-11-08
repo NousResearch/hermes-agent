@@ -62,8 +62,8 @@ function toastGatewayError(
   })
 }
 
-/** status.update / review.summary / notification.show / notification.clear /
- *  error — the status-and-notice tail of the dispatcher. */
+/** turn.alive / status.update / review.summary / notification.show /
+ *  notification.clear / error — the status-and-notice tail of the dispatcher. */
 export function handleStatusEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
 
@@ -76,6 +76,15 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     sessionStateByRuntimeIdRef,
     updateSessionState
   } = deps
+
+  if (event.type === 'turn.alive') {
+    // Liveness only (tui_gateway/turn_alive.py): the backend still runs this
+    // quiet turn — a tool call between tool.start and tool.complete, a long
+    // prefill. The dispatcher's `finally` counts it as an event, which resets
+    // the live-turn silence clock, so a quiet turn is never checked against
+    // session.active_list at all. It changes no state.
+    return true
+  }
 
   if (event.type === 'status.update') {
     // `compacting`/`compacted` is auto-compaction's pair. Manual /compress

@@ -7,7 +7,7 @@ import threading
 
 import pytest
 
-from tui_gateway import server
+from tui_gateway import server, turn_alive
 from tui_gateway import ws as ws_mod
 
 
@@ -163,6 +163,8 @@ def test_ws_ready_advertises_heartbeat_and_ping_is_inline(monkeypatch):
     ready = sent[0]["params"]
     assert ready["type"] == "gateway.ready"
     assert ready["payload"]["heartbeat"] is True
+    # Clients learn the turn.alive interval here (tui_gateway/turn_alive.py).
+    assert ready["payload"]["turn_alive_s"] == turn_alive.TURN_ALIVE_INTERVAL_S
     assert sent[1] == {
         "jsonrpc": "2.0",
         "result": {"ok": True},

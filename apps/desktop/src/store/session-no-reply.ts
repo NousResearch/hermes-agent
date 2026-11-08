@@ -26,14 +26,15 @@ export function turnHasReply(messages: ChatMessage[]): boolean {
   return false
 }
 
-export function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
+export function withNoReplyNotice(messages: ChatMessage[], runtimeId: string): ChatMessage[] {
   const last = messages.findLast(message => !message.hidden)
+  // The runtime id is the one fact that lets a copied error-details blob be
+  // traced to this turn in agent.log.
+  const errorSurface: ErrorSurface = { ...NO_REPLY_SURFACE, session: runtimeId }
 
   // A turn that ran tools but never wrote text carries the notice on its own bubble.
   if (last?.role === 'assistant') {
-    return messages.map(message =>
-      message === last ? { ...message, error: NO_REPLY_ERROR, errorSurface: NO_REPLY_SURFACE } : message
-    )
+    return messages.map(message => (message === last ? { ...message, error: NO_REPLY_ERROR, errorSurface } : message))
   }
 
   const occurredAt = Date.now() / 1000
@@ -43,7 +44,7 @@ export function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
     {
       completedAt: occurredAt,
       error: NO_REPLY_ERROR,
-      errorSurface: NO_REPLY_SURFACE,
+      errorSurface,
       id: `assistant-no-reply-${Date.now()}`,
       parts: [],
       pending: false,

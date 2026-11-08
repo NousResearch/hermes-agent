@@ -67,13 +67,16 @@ it('resolves a member face through its owning connection before any bare-name en
   expect(faceSrc('venus')).toBe(REAL_PHOTO)
 })
 
-it('the backfill filter stays out of resolution: bare 160x160 residue never suppresses a scoped photo', () => {
+it('the filter judges the resolved image: a scoped 160x160 backfill degrades to the glyph instead of detouring to the bare photo', () => {
   $lastRoster.set([scopedRow('venus', 'remote-1')])
-  $botMeta.set({ 'remote-1::venus': { image: REAL_PHOTO }, venus: { image: STALE_BACKFILL } })
+  // Inverse of the fixture above: the SCOPED entry is the 160x160 residue
+  // and the bare entry is the tempting real photo. Resolution still ends on
+  // the scoped key and the photo filter blanks it there — the filter only
+  // judges the image resolution ENDED on, it must never run mid-resolution
+  // to skip the scoped entry and borrow the bare photo.
+  $botMeta.set({ 'remote-1::venus': { image: STALE_BACKFILL }, venus: { image: REAL_PHOTO } })
 
-  // The photo renders unfiltered — the filter must never run on the path to
-  // the scoped entry (it only judges the image that resolution ENDED on).
-  expect(faceSrc('venus')).toBe(REAL_PHOTO)
+  expect(faceSrc('venus')).toBeNull()
 })
 
 it('keeps the bare-name fallback for legacy single-source installs', () => {
@@ -94,12 +97,15 @@ it('renders a scoped-only snapshot', () => {
   expect(faceSrc('venus')).toBe(REAL_PHOTO)
 })
 
-it('a scoped row without scoped meta never borrows the stale bare entry', () => {
+it('a scoped row without scoped meta degrades to glyph even when the bare entry is a real photo', () => {
   $lastRoster.set([scopedRow('venus', 'remote-1')])
-  $botMeta.set({ venus: { image: STALE_BACKFILL } })
+  // The bare entry is a REAL photo on purpose, not the 160x160 backfill: a
+  // borrowed backfill is blanked by the photo filter anyway, so only a real
+  // image discriminates no-borrow from borrow-then-render. Same doctrine as
+  // the roster — two sources must not wear each other's face; a scoped
+  // member whose meta is missing degrades to the glyph.
+  $botMeta.set({ venus: { image: REAL_PHOTO } })
 
-  // Same doctrine as the roster: two sources must not borrow each other's
-  // face, so a scoped member whose meta is missing degrades to the glyph.
   expect(faceSrc('venus')).toBeNull()
 })
 

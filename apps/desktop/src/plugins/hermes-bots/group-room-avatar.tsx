@@ -14,8 +14,11 @@ import type { BotMeta, RosterRow } from './types'
  *  once the photo filter blanks a 160x160 backfill, stand in for) the real
  *  one. The bare name stays the meta key only where no scoped row claims the
  *  member — legacy single-source installs (data.ts's documented v1 contract),
- *  or a roster snapshot that has not painted yet, where botOwner still maps a
- *  migrated local name to its scoped route key. */
+ *  or a roster snapshot that has not painted yet, read through botOwner.
+ *  botOwner's migrated-local remap (migratedLocalRoutes) is only populated in
+ *  the session that runs the fresh v1→v2 migration (data.ts:740-743); a
+ *  v2-committed restart (data.ts:636-640) never repopulates it, so there the
+ *  key degrades back to the bare name. */
 function roomBotMeta(name: string, meta: BotMetaSnapshot, roster: RosterRow[]): BotMeta | null | undefined {
   const trimmed = String(name || '').trim()
 

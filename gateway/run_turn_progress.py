@@ -67,6 +67,14 @@ def _in_flood_window(st) -> bool:
     return time.monotonic() < st.flood_until
 
 
+def _settle_progress_send(st, result) -> None:
+    """A fresh progress send retires the owed update unless flood control refused it: a 429 is a
+    confirmed non-delivery (the window reopens, the update stays owed), while any other failure
+    may have landed (timeout) or never will (permission), so re-sending would duplicate or spin."""
+    if result.success or not _note_flood(st, result):
+        st.flood_pending = False
+
+
 def _tool_lifecycle_payload(call_id, tool_name, args) -> dict:
     """The ``ToolStartPayload`` contract every client reads (``tool_id``/``name``/``context``),
     plus the ``tool_call_id``/``tool_name`` the gateway's own consumers were built on."""
@@ -682,10 +690,16 @@ class GatewayTurnProgressMixin:
                 # Fall back to the existing non-edit behavior.
                 return False
             groups = groups[1:]
-        for group in groups:
+        for i, group in enumerate(groups):
             result = await self._send_progress_text(st, self._progress_text(group))
+            if not result.success and _note_flood(st, result):
+                # Confirmed non-delivery: stop sending into the window; the unsent continuations stay
+                # owed and go out as a fresh bubble rather than overwriting the last one.
+                st.progress_msg_id, st.progress_lines = None, [line for g in groups[i:] for line in g]
+                return True
             if result.success and result.message_id:
                 st.progress_msg_id = result.message_id
+        st.flood_pending = False
         # The newest continuation is the only mutable bubble: keep just its lines so later
         # edits update it instead of replaying the full transcript into new messages.
         st.progress_lines = groups[-1]
@@ -756,6 +770,7 @@ class GatewayTurnProgressMixin:
         if st.can_edit and st.progress_msg_id is not None:
             result = await self._edit_progress_message(st, st.progress_msg_id, "\n".join(st.progress_lines))
             if result.success:
+                st.flood_pending = False
                 return True
             if getattr(result, "retryable", False):
                 logger.debug("[%s] Transient edit failure — keeping can_edit=True", st.adapter.name)
@@ -767,10 +782,11 @@ class GatewayTurnProgressMixin:
                 logger.info("[%s] Progress edit flood control, backing off", st.adapter.name)
                 return False
             st.can_edit = False
-            await self._send_progress_text(st, msg)
+            _settle_progress_send(st, await self._send_progress_text(st, msg))
             return True
         # First tool: send all accumulated text as a new message; editing unsupported: just this line.
         result = await self._send_progress_text(st, "\n".join(st.progress_lines) if st.can_edit else msg)
+        _settle_progress_send(st, result)
         if result.success and result.message_id:
             st.progress_msg_id = result.message_id
         return True

@@ -497,6 +497,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     _EA_CODE_CLOSE = "\n```\n\n"
     _EA_CMD_BUDGET = 800  # body caps at 1024; leave room for the framing prose
 
+    def _approval_request_ids(self) -> OrderedDict[str, str]:
+        """approval_id → ``tools.approval`` request id; created on first use, like Telegram's
+        ``_approval_counter``, so adapters assembled without ``__init__`` still resolve."""
+        return self.__dict__.setdefault("_exec_approval_request_ids", OrderedDict())
+
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Approve / Deny buttons only (a 3-button cap leaves no room for the session/always
         tiers); a tap resolves via ``tools.approval.resolve_gateway_approval``."""
@@ -505,8 +510,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._truncate_body(prompt.text),
             (f"appr:{approval_id}:approve", self._truncate_button_label(t("platform.whatsapp.approve_button"))),
             (f"appr:{approval_id}:deny", self._truncate_button_label(t("platform.whatsapp.deny_button"))))
-        return await self._send_interactive(
+        result = await self._send_interactive(
             prompt.chat_id, interactive, prompt.metadata, self._exec_approval_state, approval_id, prompt.session_key)
+        if result.success and prompt.request_id:
+            bounded_put(self._approval_request_ids(), approval_id, prompt.request_id, INTERACTIVE_STATE_CACHE_SIZE)
+        return result
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str, metadata: Optional[dict[str, Any]] = None,
@@ -924,10 +932,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
         if not session_key:
             return False
+        request_id = self._approval_request_ids().pop(approval_id, None)
         approval = _optional_module("tools.approval", "[whatsapp_cloud] approval resolver unavailable")
         if approval is None:
             return False
-        count = approval.resolve_gateway_approval(session_key, choice)
+        count = approval.resolve_gateway_approval_card(session_key, choice, request_id)
         # A tap after the wait timed out (count == 0) must not claim approval:
         # the command was already denied fail-closed.
         if count:

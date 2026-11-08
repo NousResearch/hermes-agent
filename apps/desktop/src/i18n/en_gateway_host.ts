@@ -30,6 +30,13 @@ export const enGatewayHost: GatewayHostTranslations = {
     restartFailedBecause: reason => `The gateway couldn't restart: ${reason}`,
     startTimedOut: "The gateway didn't serve the web app within 90 seconds.",
     stopTimedOut: "The gateway didn't stop serving the web app within 90 seconds.",
+    startStages: {
+      preparing: 'Getting the web app ready. Building it can take a few minutes.',
+      building: 'Building the web app. This can take a few minutes.',
+      registering: 'Setting up Nous sign-in for this address.',
+      restarting: 'Restarting the gateway to serve the web app.'
+    },
+    startElapsed: time => `${time} elapsed`,
     start: 'Start',
     stop: 'Stop',
     restartGateway: 'Restart gateway',

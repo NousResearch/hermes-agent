@@ -755,6 +755,13 @@ export const arSettings = {
         restartFailedBecause: reason => `تعذّرت إعادة تشغيل البوابة: ${reason}`,
         startTimedOut: 'لم تقدّم البوابة تطبيق الويب خلال 90 ثانية.',
         stopTimedOut: 'لم تتوقف البوابة عن تقديم تطبيق الويب خلال 90 ثانية.',
+        startStages: {
+          preparing: 'جارٍ تجهيز تطبيق الويب. قد يستغرق إنشاؤه بضع دقائق.',
+          building: 'جارٍ إنشاء تطبيق الويب. قد يستغرق ذلك بضع دقائق.',
+          registering: 'جارٍ إعداد تسجيل الدخول عبر Nous لهذا العنوان.',
+          restarting: 'جارٍ إعادة تشغيل البوابة لتقديم تطبيق الويب.'
+        },
+        startElapsed: time => `الوقت المنقضي: ${time}`,
         start: 'تشغيل',
         stop: 'إيقاف',
         restartGateway: 'إعادة تشغيل البوابة',
@@ -861,10 +868,6 @@ export const arSettings = {
         compression: {
           label: 'الضغط',
           hint: 'ضغط السياق'
-        },
-        skills_hub: {
-          label: 'مركز المهارات',
-          hint: 'بحث المهارات'
         },
         approval: {
           label: 'الموافقة',
@@ -975,6 +978,13 @@ export const arSettings = {
       clearDirFailed: 'تعذر مسح المجلد الافتراضي'
     },
     toolsets: {
+      browserRealProfile: {
+        reimportSignins: 'إعادة استيراد تسجيلات الدخول',
+        signinsImportedTitle: 'تسجيلات الدخول في المتصفح المدمج',
+        signinsImported: count => `تم تسجيل الدخول إلى المتصفح المدمج باستخدام ${count} من ملفات تعريف الارتباط من ملف متصفحك.`,
+        signinsRemote: 'تعمل هذه الواجهة الخلفية على جهاز آخر، لذا لا يُستورد ملف متصفحها إلى المتصفح المدمج.',
+        signinsFailed: 'تعذر استيراد تسجيلات الدخول إلى المتصفح المدمج',
+      },
       loadingConfig: 'جار تحميل الإعدادات',
       savedTitle: 'تم حفظ بيانات الاعتماد',
       savedMessage: key => `تم تحديث ${key}.`,

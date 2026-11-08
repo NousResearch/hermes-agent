@@ -71,7 +71,7 @@ def _prepare_connection_retirement():
 _HEADER_PROBE_LOCK = threading.Lock()
 _HEADER_PROBE_FDS: dict[str, tuple[int, int, int]] = {}  # key -> (fd, dev, ino)
 _RETIRED_HEADER_PROBE_FDS: list[int] = []  # intentionally never closed
-_FTS_TABLE_NAMES = ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
+_FTS_TABLE_NAMES = ("messages_fts", "messages_fts_trigram")
 
 
 def _pread_db_range(db_path: Path, offset: int, length: int) -> Optional[bytes]:
@@ -796,7 +796,7 @@ def collect_state_db_stats(db_path: Path) -> dict[str, Any]:
         # virtual tables themselves — a corrupt index must not fail stats).
         with contextlib.suppress(Exception):
             names = {row[0] for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?)",
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?)",
                 _FTS_TABLE_NAMES).fetchall()}
             stats["fts_tables"] = {t: (t in names) for t in _FTS_TABLE_NAMES}
         # Raw state_meta reads — cheap, and independent of SessionDB.

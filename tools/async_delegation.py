@@ -247,6 +247,10 @@ def record_unit_child(delegation_id: str, entry: dict[str, Any]) -> None:
     result at finalize); ``recover_abandoned_delegations`` replays it. Best-effort: a failed write costs recovery
     fidelity, never the live result."""
     entry = redact_child_result(entry)
+    if isinstance(entry.get("task_index"), int):  # a stall or runner crash keeps it (``_keep_finished_children``)
+        with _records_lock:
+            if (record := _records.get(delegation_id)) is not None and record.get("status") in _ACTIVE_STATES:
+                record.setdefault("_finished_children", {})[entry["task_index"]] = entry
     if remote := worker_ledger():
         return remote.child(delegation_id, entry)
     try:
@@ -789,10 +793,9 @@ def failed_delegations_for_session(
     for delegation_id, state, dispatched_at, completed_at, task_json, result_json in rows:
         task, result = _json_object(task_json), redact_child_result(_json_object(result_json))
         goals = task.get("goals") if isinstance(task.get("goals"), list) and task["goals"] else [task.get("goal") or ""]
-        goal_for = dict(zip(task.get("task_indexes") or range(len(goals)), goals))
         tasks = result["results"] if isinstance(result.get("results"), list) else [] if task.get("is_batch") else [result]
-        if not tasks and str(state).lower() in _FAILED_TASK_STATES:
-            tasks = [{"task_index": 0, "error": result.get("error")}]
+        if not tasks and str(state).lower() in _FAILED_TASK_STATES:  # crash, stall or owner exit: no per-task rows
+            tasks = [{"task_index": i, "error": result.get("error")} for i in task.get("task_indexes") or [0]]
         for entry in tasks:
             status = str(entry.get("status") or state or "").lower()
             if status not in _FAILED_TASK_STATES:
@@ -801,7 +804,9 @@ def failed_delegations_for_session(
             error = entry.get("error") or result.get("error")
             failed.append({
                 "delegation_id": delegation_id, "task_index": index, "status": status,
-                "goal": str(goal_for.get(index, goals[0]) or ""), "error": str(error) if error else None,
+                # ``goals`` is the whole call's list (split units store it too); task_index indexes it.
+                "goal": str((goals[index] if 0 <= index < len(goals) else goals[0]) or ""),
+                "error": str(error) if error else None,
                 "dispatched_at": dispatched_at, "completed_at": completed_at})
     return failed[:limit]
 
@@ -1066,6 +1071,17 @@ def dispatch_async_delegation_batch(
 
 
 # ── Finalization + completion events ────────────────────────────────────────
+def _keep_finished_children(record: dict[str, Any], result: Any, status: str) -> Any:
+    """A batch unit that stalled or whose runner raised has no per-task results: children that already
+    finished (``record_unit_child``) keep theirs, and only the rest take the unit's status."""
+    finished = record.get("_finished_children")  # only batch units record children
+    if not finished or result.get("results"):
+        return result
+    indexes = record.get("task_indexes") or range(len(record.get("goals") or []))
+    return {**result, "results": [finished.get(i) or {"task_index": i, "status": status, "summary": None,
+                                                      "error": result.get("error")} for i in indexes]}
+
+
 def _finalize(delegation_id: str, result: Any, status: str) -> None:
     """Atomically claim terminal delivery, push the completion event, then mark ``status``.
     ``result`` is a dict or a callable receiving the record snapshot (stall path). The record
@@ -1081,13 +1097,15 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
         record["interrupt_fn"] = None  # drop the closure; child is done
         record["progress_fn"] = None  # stop stale-monitor sampling
         snapshot = dict(record)
-    _push_completion_event(snapshot, result(snapshot) if callable(result) else result, status)
+    final = result(snapshot) if callable(result) else result
+    _push_completion_event(snapshot, _keep_finished_children(snapshot, final, status), status)
     with _records_lock:
         if delegation_id in _records:
             _records[delegation_id]["status"] = status
             # Only an active record is ever force-finalized under its dispatcher's Context; a
             # retained completed one would otherwise pin that turn's agent and history.
             _records[delegation_id].pop("_context", None)
+            _records[delegation_id].pop("_finished_children", None)
         _prune_completed_locked()
 
 

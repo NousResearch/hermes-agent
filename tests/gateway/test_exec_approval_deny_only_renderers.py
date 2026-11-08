@@ -103,6 +103,30 @@ async def test_matrix_deny_only_prompt_drops_the_approve_instructions(pending):
     assert "!approve" not in sent["text"] and sent["emojis"] == ("❌",)
 
 
+@pytest.mark.asyncio
+async def test_matrix_crafted_approve_reaction_keeps_the_deny_only_card_live(pending):
+    """A hand-added ✅ on a Deny-only card resolves nothing and must not retire the card: the
+    request is still pending, so the owner's later ❌ has to find it."""
+    from unittest.mock import MagicMock, patch
+
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://m.example.org"}))
+    adapter._user_id, adapter._client = "@bot:x", MagicMock()
+    adapter.set_authorization_check(lambda uid, *_a, **_k: uid == "@alice:x")
+    send = AsyncMock(return_value=SendResult(success=True, message_id="$card"))
+    with patch.object(adapter, "send", new=send), patch.object(adapter, "_send_reaction", new=AsyncMock()):
+        await adapter.send_exec_approval(chat_id="!room:x", command=FENCED, session_key="sk", request_id="r1")
+
+        async def react(key):
+            await adapter._on_reaction(SimpleNamespace(sender="@alice:x", event_id=f"$r{key}", room_id="!room:x",
+                                                       content={"m.relates_to": {"event_id": "$card", "key": key}}))
+        await react("✅")
+        assert not pending.event.is_set() and "$card" in adapter._approval_prompts_by_event
+        await react("❌")
+    assert pending.result == "deny"
+
+
 def test_a_forged_approve_tap_on_a_deny_only_request_resolves_nothing(pending):
     """Backend half: a card choice the card never offered (hand-added ✅ reaction, replayed callback data)
     cannot resolve a Deny-only request; Deny still can."""

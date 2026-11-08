@@ -1,0 +1,17 @@
+name: penny
+repo: https://github.com/HelperLabs/penny-hermes
+sha: 0887dae11062165a78be9fb6c7b85c810a3353b5
+version: "0.1.0"
+description: "Penny core memory and private notes for Hermes. Disclosure — automatic recall sends the first 4,000 characters of each nontrivial local prompt to app.mypenny.ai as a search query, and the agent can save notes there through penny_remember without a Hermes approval prompt; works only in local CLI/TUI conversations (cron, subagents and gateways are refused); login is a manual command that registers its own OAuth client with clerk.mypenny.ai and briefly listens on 127.0.0.1 for the callback; tokens are kept in <HERMES_HOME>/penny/auth.json (owner-only) and are not removed on uninstall; no raw transcript upload, telemetry or other-client credential reuse."
+maintainer: HelperLabs
+tier: community
+category: memory
+title: Penny
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/HelperLabs/penny-hermes#readme
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

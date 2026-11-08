@@ -79,7 +79,7 @@ This is a Next.js 14 web application with a Python FastAPI backend.
 
 ## SOUL.md
 
-`SOUL.md` 控制 agent 的个性、语气和沟通风格。完整详情请参阅[个性](/user-guide/features/personality)页面。
+`SOUL.md` 控制 agent 的个性、语气和沟通风格。完整详情请参阅[个性](./personality.md)页面。
 
 **位置：**
 

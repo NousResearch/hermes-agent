@@ -1,0 +1,29 @@
+name: antigravity-agy
+repo: https://github.com/Realtyxxx/hermes-plugin-antigravity-agy
+sha: f85003d3ce0de3844e2d5c23174d630ff3586e5d
+description: >-
+  Run Hermes on a Google Antigravity subscription through the official agy CLI, with agy as the
+  model only: a generated custom agent removes agy's built-in tools, Hermes tools are exposed
+  through an inventory-only MCP server with native function calling, and every tool call is
+  handed back to Hermes. Fails closed on any non-Hermes tool step or silent agent fallback;
+  pre-warms agy for fast tool loops. Disclosure — routes inference through Google's official agy
+  CLI and counts against the Antigravity/Gemini subscription agy is signed in to; the plugin
+  never reads, copies or links agy's credential files. agy runs in your real HOME with the gateway's environment; by
+  default the plugin moves the agy conversation records created by its own idle pre-warmed processes under
+  ~/.gemini/antigravity-cli/ to the trash (trash-put from PATH; ANTIGRAVITY_AGY_CLEANUP=off disables) and pre-warms up
+  to 4 idle agy processes (~400 MB each).
+maintainer: Realtyxxx
+tier: community
+category: models
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/Realtyxxx/hermes-plugin-antigravity-agy#readme
+version: "0.1.0"
+readme: true
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

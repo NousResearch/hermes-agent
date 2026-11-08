@@ -8,10 +8,12 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 
 /// CP1252 mapping for bytes `0x80..=0x9F` (the range that differs from Latin-1).
 /// Undefined slots keep the C1 control code points, matching Windows-1252
@@ -129,6 +131,153 @@ pub struct ScriptResult {
 /// Cancellation signal — `cancel_tx.send(()).await` aborts the running script.
 pub type CancelRx = mpsc::Receiver<()>;
 
+/// How long a child's pipes get to reach EOF AFTER the child itself has exited.
+///
+/// This is not a timeout on the child. The clock starts once the process is
+/// already gone and everything it wrote is sitting in the pipe buffer, so a
+/// 40-minute `uv pip install` is untouched — the grace only covers the final
+/// drain.
+///
+/// It exists because pipe EOF is not the child's to give. The write end of a
+/// redirected pipe is handed to the child as an inheritable handle, so every
+/// descendant spawned without its own redirection holds a duplicate, and the
+/// read side does not see EOF until the last of them closes it. `hermes update`
+/// deliberately runs its build steps with stdout inherited, so the tree under a
+/// child is arbitrarily deep and not something the caller can enumerate. When
+/// one of those descendants is a resident gateway, the pipe stays open for the
+/// life of the gateway — and every obligation downstream of the read is
+/// stranded with it.
+///
+/// Same bound `Invoke-HermesStep` grew in `scripts/desktop-update/windows.ps1`
+/// (#90455), and the same shape as Go's `exec.Cmd.WaitDelay`.
+pub(crate) const DRAIN_GRACE: Duration = Duration::from_secs(20);
+
+/// What [`pump_child`] observed.
+pub(crate) struct PumpOutcome {
+    pub exit_code: Option<i32>,
+    /// The child was killed because the caller cancelled.
+    pub killed: bool,
+    /// The child exited but its pipes never reached EOF within [`DRAIN_GRACE`],
+    /// so the tail of its output was dropped. Callers must say so out loud: a
+    /// silently truncated log is indistinguishable from one that was empty.
+    pub abandoned: bool,
+}
+
+/// Stream a child's stdout/stderr line by line, then reap it.
+///
+/// The contract that matters: the exit status comes from waiting on the
+/// *process*, never from pipe EOF. See [`DRAIN_GRACE`] for why those are not
+/// the same event; callers pass it, tests pass something they can wait out.
+pub(crate) async fn pump_child<FO, FE>(
+    child: &mut Child,
+    mut on_stdout: FO,
+    mut on_stderr: FE,
+    cancel_rx: &mut Option<CancelRx>,
+    grace: Duration,
+) -> Result<PumpOutcome>
+where
+    FO: FnMut(&str),
+    FE: FnMut(&str),
+{
+    let stdout = child.stdout.take().context("stdout was piped")?;
+    let stderr = child.stderr.take().context("stderr was piped")?;
+    let mut out = BufReader::new(stdout);
+    let mut err = BufReader::new(stderr);
+    let mut out_buf = Vec::new();
+    let mut err_buf = Vec::new();
+    let mut out_done = false;
+    let mut err_done = false;
+    let mut status: Option<ExitStatus> = None;
+    let mut cancelled = false;
+
+    // Phase 1 — the child is alive, so there is no deadline. A slow child is
+    // not a stuck one, and the point of streaming is that a long build keeps
+    // reporting. We leave on whichever lands first: both pipes at EOF (the
+    // clean case), the process exiting (the case that used to hang here), or
+    // cancellation.
+    while !(out_done && err_done) {
+        tokio::select! {
+            line = read_decoded_line(&mut out, &mut out_buf), if !out_done => match line {
+                Ok(Some(l)) => on_stdout(&l),
+                Ok(None) => out_done = true,
+                Err(e) => {
+                    tracing::warn!("stdout read error: {e}");
+                    out_done = true;
+                }
+            },
+            line = read_decoded_line(&mut err, &mut err_buf), if !err_done => match line {
+                Ok(Some(l)) => on_stderr(&l),
+                Ok(None) => err_done = true,
+                Err(e) => {
+                    tracing::warn!("stderr read error: {e}");
+                    err_done = true;
+                }
+            },
+            reaped = child.wait() => {
+                status = Some(reaped.context("waiting for child to exit")?);
+                break;
+            }
+            _ = recv_cancel(cancel_rx) => {
+                cancelled = true;
+                break;
+            }
+        }
+    }
+
+    // Kill outside the loop: `child.wait()` above holds the mutable borrow for
+    // as long as the select is in scope.
+    if cancelled {
+        tracing::warn!("cancellation received — killing child");
+        let _ = child.start_kill();
+    }
+
+    // Phase 2 — bounded. Whatever the child already wrote is still worth
+    // keeping, so we keep reading; we just stop caring once a descendant is the
+    // only thing still holding the pipe open. Cancelling does not rescue us
+    // either: `start_kill` kills the child, not the grandchild with the handle.
+    let mut abandoned = false;
+    if !(out_done && err_done) {
+        let drain = async {
+            while !(out_done && err_done) {
+                tokio::select! {
+                    line = read_decoded_line(&mut out, &mut out_buf), if !out_done => match line {
+                        Ok(Some(l)) => on_stdout(&l),
+                        _ => out_done = true,
+                    },
+                    line = read_decoded_line(&mut err, &mut err_buf), if !err_done => match line {
+                        Ok(Some(l)) => on_stderr(&l),
+                        _ => err_done = true,
+                    },
+                }
+            }
+        };
+        abandoned = timeout(grace, drain).await.is_err();
+    }
+
+    let status = match status {
+        Some(s) => s,
+        // Both pipes reached EOF while the child stayed alive. Reads are done,
+        // but the process is still the authoritative terminal condition — and
+        // it may never exit on its own, so this wait stays cancellable. A bare
+        // `child.wait()` here would strand the caller's cancel channel exactly
+        // when it is the only way out.
+        None => tokio::select! {
+            reaped = child.wait() => reaped.context("waiting for child to exit")?,
+            _ = recv_cancel(cancel_rx) => {
+                tracing::warn!("cancellation received after EOF — killing child");
+                cancelled = true;
+                let _ = child.start_kill();
+                child.wait().await.context("waiting for killed child to exit")?
+            }
+        },
+    };
+    Ok(PumpOutcome {
+        exit_code: status.code(),
+        killed: cancelled,
+        abandoned,
+    })
+}
+
 /// Spawns install.ps1 / install.sh with the given args and streams output.
 ///
 /// `hermes_home_override` propagates to the child as $HERMES_HOME so the
@@ -171,88 +320,49 @@ pub async fn run_script(
         .spawn()
         .with_context(|| format!("spawning {} via {}", script_path.display(), interpreter_label()))?;
 
-    let stdout = child.stdout.take().expect("stdout was piped");
-    let stderr = child.stderr.take().expect("stderr was piped");
-
     // Byte-oriented readers + [`decode_console_bytes`]: do NOT use
     // `BufReader::lines()`, which requires valid UTF-8 and hides localized
-    // PowerShell errors on non-English Windows (#67193).
-    let mut stdout_reader = BufReader::new(stdout);
-    let mut stderr_reader = BufReader::new(stderr);
-    let mut stdout_buf = Vec::new();
-    let mut stderr_buf = Vec::new();
-
+    // PowerShell errors on non-English Windows (#67193). [`pump_child`] owns
+    // that, plus the rule that the exit status comes from the process and not
+    // from pipe EOF.
     let mut combined_stdout = String::new();
     let mut combined_stderr = String::new();
-    let mut killed = false;
 
-    // Loop: poll stdout, stderr, cancel, and child exit concurrently.
-    loop {
-        tokio::select! {
-            line = read_decoded_line(&mut stdout_reader, &mut stdout_buf) => {
-                match line {
-                    Ok(Some(l)) => {
-                        (sink.on_stdout_line)(&l);
-                        combined_stdout.push_str(&l);
-                        combined_stdout.push('\n');
-                    }
-                    Ok(None) => {
-                        // EOF on stdout — wait for stderr + exit.
-                        break;
-                    }
-                    Err(e) => {
-                        tracing::warn!("stdout read error: {e}");
-                        break;
-                    }
-                }
-            }
-            line = read_decoded_line(&mut stderr_reader, &mut stderr_buf) => {
-                match line {
-                    Ok(Some(l)) => {
-                        (sink.on_stderr_line)(&l);
-                        combined_stderr.push_str(&l);
-                        combined_stderr.push('\n');
-                    }
-                    Ok(None) => {
-                        // stderr EOF — keep draining stdout.
-                    }
-                    Err(e) => {
-                        tracing::warn!("stderr read error: {e}");
-                    }
-                }
-            }
-            _ = recv_cancel(cancel_rx) => {
-                tracing::warn!("cancellation received — killing child");
-                killed = true;
-                // best-effort kill; don't propagate errors
-                let _ = child.start_kill();
-                break;
-            }
-        }
-    }
+    let outcome = pump_child(
+        &mut child,
+        |l| {
+            (sink.on_stdout_line)(l);
+            combined_stdout.push_str(l);
+            combined_stdout.push('\n');
+        },
+        |l| {
+            (sink.on_stderr_line)(l);
+            combined_stderr.push_str(l);
+            combined_stderr.push('\n');
+        },
+        cancel_rx,
+        DRAIN_GRACE,
+    )
+    .await
+    .context("streaming install script output")?;
 
-    // Drain remaining lines after the loop exited.
-    while let Ok(Some(l)) = read_decoded_line(&mut stdout_reader, &mut stdout_buf).await {
-        (sink.on_stdout_line)(&l);
-        combined_stdout.push_str(&l);
-        combined_stdout.push('\n');
-    }
-    while let Ok(Some(l)) = read_decoded_line(&mut stderr_reader, &mut stderr_buf).await {
-        (sink.on_stderr_line)(&l);
-        combined_stderr.push_str(&l);
+    if outcome.abandoned {
+        let note = format!(
+            "install script exited but a surviving descendant still holds its \
+             stdout/stderr; gave up on the last {}s of output (#90455)",
+            DRAIN_GRACE.as_secs()
+        );
+        tracing::warn!("{note}");
+        (sink.on_stderr_line)(&note);
+        combined_stderr.push_str(&note);
         combined_stderr.push('\n');
     }
-
-    let status = child
-        .wait()
-        .await
-        .context("waiting for install script to exit")?;
 
     Ok(ScriptResult {
         stdout: combined_stdout,
         stderr: combined_stderr,
-        exit_code: status.code(),
-        killed,
+        exit_code: outcome.exit_code,
+        killed: outcome.killed,
     })
 }
 
@@ -549,5 +659,184 @@ info line
             .await
             .unwrap()
             .is_none());
+    }
+
+    /// Spawn `sh -c <script>` with both pipes redirected, the way run_script and
+    /// run_streamed do.
+    #[cfg(unix)]
+    fn sh(script: &str) -> Child {
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn /bin/sh")
+    }
+
+    #[cfg(unix)]
+    async fn pump_collect(child: &mut Child, grace: Duration) -> (PumpOutcome, Vec<String>) {
+        let mut lines = Vec::new();
+        let outcome = pump_child(
+            child,
+            |l| lines.push(l.to_string()),
+            |_| {},
+            &mut None,
+            grace,
+        )
+        .await
+        .expect("pump");
+        (outcome, lines)
+    }
+
+    /// The #90455 deadlock: a child exits, but a descendant it spawned still
+    /// holds the inherited write end of the pipe, so EOF never comes. The pump
+    /// must return on the *process* exiting and abandon the drain.
+    ///
+    /// The Windows half of this contract lives in `-SelfTestPipeDrain`
+    /// (scripts/desktop-update/windows.ps1) and runs on the Windows CI lane; the
+    /// pump logic under test here is OS-agnostic, only the fixture is not.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pump_child_returns_when_a_grandchild_still_holds_the_pipe() {
+        // `sleep` inherits stdout and outlives the shell by design. Nothing
+        // redirects it -- redirecting is what would close the handle and stop
+        // the bug from reproducing at all.
+        let mut child = sh("sleep 30 & echo hello; exit 7");
+        let started = std::time::Instant::now();
+        let (outcome, lines) = pump_collect(&mut child, Duration::from_millis(300)).await;
+        let elapsed = started.elapsed();
+
+        assert!(outcome.abandoned, "drain should have been abandoned");
+        assert_eq!(
+            outcome.exit_code,
+            Some(7),
+            "exit code must survive an abandoned drain"
+        );
+        assert_eq!(
+            lines,
+            vec!["hello"],
+            "output written before the pipe was stranded must survive"
+        );
+        assert!(!outcome.killed);
+        // Far below the grandchild's 30s: a pass cannot be it exiting on its own.
+        assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
+    }
+
+    /// The other cliff: a child that leaks nothing must not pay the grace. This
+    /// is what fails if the pump ever waits on the deadline unconditionally
+    /// instead of only when a pipe outlives its process.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pump_child_does_not_pay_the_grace_when_pipes_close_cleanly() {
+        let mut child = sh("echo one; echo two >&2; echo three; exit 3");
+        let started = std::time::Instant::now();
+        let (outcome, lines) = pump_collect(&mut child, Duration::from_secs(30)).await;
+        let elapsed = started.elapsed();
+
+        assert!(!outcome.abandoned);
+        assert_eq!(outcome.exit_code, Some(3));
+        assert_eq!(lines, vec!["one", "three"]);
+        assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
+    }
+
+    /// A chatty child must stream at pipe speed, not at one buffer per tick.
+    /// The PowerShell port of this pump regressed exactly here: idling after
+    /// every chunk it *did* read metered the drain and backpressured the running
+    /// child. `hermes update` is this shape -- the Electron build alone is
+    /// megabytes.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pump_child_streams_a_flood_without_metering_it() {
+        let mut child = sh("i=0; while [ $i -lt 20000 ]; do echo line$i; i=$((i+1)); done; exit 0");
+        let started = std::time::Instant::now();
+        let (outcome, lines) = pump_collect(&mut child, Duration::from_secs(30)).await;
+        let elapsed = started.elapsed();
+
+        assert_eq!(outcome.exit_code, Some(0));
+        assert!(!outcome.abandoned);
+        assert_eq!(lines.len(), 20000, "every line must survive");
+        assert_eq!(lines.last().unwrap(), "line19999");
+        // Loose on purpose: this catches per-chunk sleeping (which would put
+        // this in the tens of seconds), not small scheduler variance.
+        assert!(elapsed < Duration::from_secs(20), "took {elapsed:?}");
+    }
+
+    /// Cancelling kills the child, but not a grandchild holding the pipe --
+    /// `start_kill` only reaches the child. The bounded drain is what actually
+    /// lets a cancel return, so cancellation and the grace are one mechanism.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pump_child_cancellation_returns_even_with_the_pipe_stranded() {
+        let mut child = sh("sleep 30 & echo working; sleep 30");
+        let (tx, rx) = mpsc::channel(1);
+        let mut cancel = Some(rx);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _ = tx.send(()).await;
+        });
+
+        let started = std::time::Instant::now();
+        let mut lines = Vec::new();
+        let outcome = pump_child(
+            &mut child,
+            |l| lines.push(l.to_string()),
+            |_| {},
+            &mut cancel,
+            Duration::from_millis(300),
+        )
+        .await
+        .expect("pump");
+
+        assert!(outcome.killed, "cancellation should report killed");
+        assert!(outcome.abandoned, "the grandchild still holds the pipe");
+        assert_eq!(lines, vec!["working"]);
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// The reverse topology of the test above: the pipes die and the *process*
+    /// outlives them. Phase 1 leaves on EOF with no exit status, so the final
+    /// wait is the only thing left holding the turn -- and it has to stay
+    /// cancellable. A bare `child.wait()` there strands the cancel channel
+    /// against a child that may never exit on its own.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pump_child_cancellation_returns_after_both_pipes_reach_eof() {
+        // Closes fd 1 and 2, then lingers: both reads hit EOF immediately while
+        // the process stays alive far past any plausible test duration.
+        let mut child = sh("echo bye; exec 1>&- 2>&-; sleep 30");
+        let (tx, rx) = mpsc::channel(1);
+        let mut cancel = Some(rx);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _ = tx.send(()).await;
+        });
+
+        let started = std::time::Instant::now();
+        let mut lines = Vec::new();
+        let outcome = pump_child(
+            &mut child,
+            |l| lines.push(l.to_string()),
+            |_| {},
+            &mut cancel,
+            Duration::from_millis(300),
+        )
+        .await
+        .expect("pump");
+        let elapsed = started.elapsed();
+
+        assert!(outcome.killed, "cancellation should report killed");
+        assert!(
+            !outcome.abandoned,
+            "both pipes reached EOF, so nothing was abandoned"
+        );
+        assert_eq!(lines, vec!["bye"], "output written before EOF must survive");
+        // Far below the child's 30s: a pass cannot be it exiting on its own.
+        assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
     }
 }

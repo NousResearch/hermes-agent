@@ -161,6 +161,7 @@ hermes tools
 | 对话 | `grok-4.20-0309-non-reasoning` | 非推理变体 |
 | 对话 | `grok-4.20-multi-agent-0309` | 多 agent 变体 |
 | 图像 | `grok-imagine-image` | 默认；约 5–10 秒 |
+| 图像 | `grok-imagine-image-2.0` | 版式/排版感知；最强画质；约 10–20 秒 |
 | 图像 | `grok-imagine-image-quality` | 更高保真度；约 10–20 秒 |
 | 视频 | `grok-imagine-video` | 文本转视频 |
 | 视频 | `grok-imagine-video-1.5-preview` | 图像转视频；日期别名 `grok-imagine-video-1.5-2026-05-30` |

@@ -1,0 +1,25 @@
+name: advisor
+repo: https://github.com/ljubomirj/hermes-advisor-plugin
+sha: "37e55975611d38212cf082029ece504f207df656"
+version: "1.2.0"
+title: Advisor
+description: "A persistent second model reviews every agent turn. After each turn the plugin hands the transcript to the model you nominate as advisor and delivers its findings as advice in the same session: [NIT], [CONCERN] or [BLOCKER] notes, held back until a later review raises the same point again, so the primary agent is not interrupted by a one-off remark. It reviews, it does not act: the advisor never edits files, calls tools or changes session state, and only reads the turn transcript. This is the backend counterpart of MoA — one extra model, not a committee: the primary agent does the work and the advisor checks it. Port of pi-omplike-advisor (Petr Baudis / pasky), itself rooted in oh-my-pi (Can Boluk). Runs inside the plugin host with no dependencies beyond Hermes itself. Disclosure — once the plugin is enabled, every completed turn costs one extra completion through Hermes's ctx.llm to the advisor model (the primary agent's provider unless you allow a provider/model override under plugins.entries.advisor.llm), carrying the user message, the final reply, every tool call and tool result in the session so far (each clipped to 500 characters) and the contents of a WATCHDOG.md in Hermes's working directory if one exists; deliverable advice is queued into the CLI session as a user-role message, which starts or interrupts an agent turn; state is kept under $HERMES_HOME/advisor/ and reviews run on one background thread; no other network, files or credentials."
+maintainer: ljubomirj
+tier: community
+category: automation
+requires_hermes: ">=0.21"
+docs_url: https://github.com/ljubomirj/hermes-advisor-plugin/blob/37e55975611d38212cf082029ece504f207df656/README.md
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: [post_llm_call, on_session_finalize]
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Every reviewed turn costs one extra completion on the advisor model. Reviews run on a single worker in the background after the hook returns (the hook itself never blocks turn finalization), so a long advisor call delays advice, not the agent."
+  - "Advice is injected into the live conversation with ctx.inject_message, which the interactive CLI provides. On gateway surfaces (Telegram, Slack, ...) the review still runs and its notes are held, but there is no in-session place to inject them, so delivery is CLI-shaped."
+  - "Concerns are only delivered once a later review repeats them (hold-and-reconfirm), so a genuine one-off concern can stay silent by design. /advisor test <severity> <note> injects a synthetic note to see the delivery path."
+  - "The cross-provider trust gate is conservative: point the advisor at a provider different from the primary agent's, or accept the default inherit-primary behaviour."
+  - "The interactive provider/model picker (/advisor model with no argument) needs PluginContext.request_model_selection, and the status-bar badge needs ctx.register_status_segment. Where a build lacks those newer seams the plugin still loads and the text commands keep working (/advisor provider <name>, /advisor model <name>)."
+  - "State lives in $HERMES_HOME/advisor/state.json, per profile."

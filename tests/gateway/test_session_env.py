@@ -273,3 +273,97 @@ def test_cron_session_set_clear_and_reset_tristate(monkeypatch):
     reset_session_vars()
     assert get_session_env("HERMES_CRON_SESSION") == "1"
 
+
+@pytest.mark.asyncio
+async def test_plugin_slash_command_sees_session_env(monkeypatch):
+    """A plugin-registered slash command handler must see the same HERMES_SESSION_*
+    contextvars an agent turn would for that event (#108698): the agent-turn path binds
+    them via _set_session_env before running, but plugin command dispatch is a separate,
+    earlier path that previously called the handler with nothing bound."""
+    from gateway.config import GatewayConfig, PlatformConfig
+    from gateway.platforms.event import MessageEvent
+
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")})
+    runner._draining = False
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="c1", user_id="u1", user_name="tester", chat_type="dm",
+    )
+    event = MessageEvent(text="/gsd bind", source=source, message_id="m1")
+
+    seen = {}
+
+    def _handler(raw_args):
+        seen["session_key"] = get_session_env("HERMES_SESSION_KEY")
+        seen["chat_id"] = get_session_env("HERMES_SESSION_CHAT_ID")
+        return f"Bound: {raw_args}"
+
+    from hermes_cli import plugins as _plugins_mod
+    monkeypatch.setattr(_plugins_mod, "get_plugin_command_handler",
+                         lambda name: _handler if name == "gsd-bind" else None)
+
+    handled, result, _command = await runner._hm_dispatch_quick_and_plugin_commands(event, source, "gsd_bind")
+
+    assert handled is True
+    assert result == "Bound: bind"
+    assert seen["session_key"] == runner._session_key_for_source(source)
+    assert seen["session_key"] != ""
+    assert seen["chat_id"] == "c1"
+    # Bound only for the handler call, not leaked past dispatch
+    assert get_session_env("HERMES_SESSION_KEY") == ""
+
+
+
+def test_set_session_env_binds_the_turn_session_id(monkeypatch):
+    """A cached agent sets HERMES_SESSION_ID only on the turn that built it. Every later turn's
+    task context must still carry the session id, or a command yielded to the background
+    records no parent session and its completion is refused by the owner (admission_conflict)."""
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(platform=Platform.LOCAL, chat_id="local-abc", chat_type="dm", user_id="uid:1")
+    context = SessionContext(source=source, connected_platforms=[], home_channels={},
+                             session_key="agent:main:local:dm:local-abc", session_id="20261006_x")
+    monkeypatch.setenv("HERMES_SESSION_ID", "stale-process-env")
+    tokens = runner._set_session_env(context)
+    assert get_session_env("HERMES_SESSION_ID") == "20261006_x"
+    runner._clear_session_env(tokens)
+
+
+@pytest.mark.asyncio
+async def test_plugin_slash_command_receives_calling_session(monkeypatch):
+    """A gateway plugin command handler that opts in receives the calling chat's source and its
+    current session id (the one a later /new reports as old_session_id, #123245); the bound
+    HERMES_SESSION_ID agrees with it."""
+    from datetime import datetime
+    from unittest.mock import MagicMock
+
+    from gateway.config import GatewayConfig, PlatformConfig
+    from gateway.platforms.event import MessageEvent
+    from gateway.session import SessionEntry
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")})
+    runner._draining = False
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="c1", user_id="u1", chat_type="dm")
+    key = runner._session_key_for_source(source)
+    runner.session_store = MagicMock()
+    runner.session_store.lookup_by_session_key.side_effect = lambda k: SessionEntry(
+        session_key=k, session_id="20261018_live", created_at=datetime.now(), updated_at=datetime.now(),
+    ) if k == key else None
+    seen = []
+
+    def _handler(raw_args, *, source, session_id, session_key, platform):
+        seen.append((raw_args, source, session_id, session_key, platform, get_session_env("HERMES_SESSION_ID")))
+        return "ok"
+
+    from hermes_cli import plugins as _plugins_mod
+    monkeypatch.setattr(_plugins_mod, "get_plugin_command_handler", lambda name: _handler)
+
+    event = MessageEvent(text="/who details", source=source, message_id="m1")
+    handled, result, _command = await runner._hm_dispatch_quick_and_plugin_commands(event, source, "who")
+
+    assert (handled, result) == (True, "ok")
+    assert seen == [("details", source, "20261018_live", key, "telegram", "20261018_live")]

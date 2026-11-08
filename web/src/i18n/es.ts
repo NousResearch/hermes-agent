@@ -92,9 +92,18 @@ export const es: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Proveedor de memoria activo",
+    noProvider: "ninguno — solo integrada",
+    builtinLayer: "Capa integrada",
+    builtinNote: "MEMORY.md y USER.md son la memoria propia de Hermes, independiente de cualquier proveedor externo. Ambos se cargan en las sesiones por defecto; los interruptores de configuración (memory.memory_enabled / memory.user_profile_enabled) desactivan cada uno. Un proveedor se suma a ellos; nunca los reemplaza.",
+  },
+
   status: {
     actionFailed: "Acción fallida",
     actionFinished: "Finalizado",
+    actionFinishedOwed: "Actualizado, pero aún pendiente (vuelve a ejecutar `hermes update` para terminar)",
     actions: "Acciones",
     agent: "Agente",
     activeSessions: "Sesiones activas",
@@ -162,9 +171,14 @@ export const es: Translations = {
     deleteSelectedConfirmMessage:
       "Esto elimina permanentemente {count} sesiones seleccionadas y todos sus mensajes. No se puede deshacer.",
     selectedSessionsDeleted: "{count} sesiones eliminadas",
+    selectedSessionsSkippedActive: "{deleted} eliminadas; {count} conservadas porque hay un turno en curso",
     failedToDeleteSelected: "No se pudieron eliminar las sesiones seleccionadas",
     resumeInChat: "Reanudar en el chat",
     newChat: "Nuevo chat",
+    workspace: "espacio de trabajo",
+    workspaceDefault: "Predeterminado",
+    workspaceRescan: "Volver a buscar repositorios",
+    workspaceCustom: "Otra ruta…",
     previousPage: "Página anterior",
     nextPage: "Página siguiente",
     roles: {
@@ -325,6 +339,8 @@ export const es: Translations = {
     disableRuntime: "Deshabilitar",
     enableAfterInstall: "Habilitar tras instalar",
     enableRuntime: "Habilitar",
+    toggleTakesEffectAfterRestart:
+      "Guardado: reinicia el gateway para aplicar el cambio.",
     forceReinstall: "Forzar reinstalación (eliminar carpeta existente primero)",
     headline:
       "Descubre, instala, habilita y actualiza complementos de Hermes (equivalente a `hermes plugins`).",
@@ -355,6 +371,13 @@ export const es: Translations = {
     authRequired: "Autenticación requerida",
     authRequiredHint: "Ejecuta este comando para autenticarte:",
     updateGit: "Git pull",
+    updateAll: "Actualizar todo",
+    updatingAll: "Actualizando complementos…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Actualizados ${updated}, requieren revisión ${needsReview}, fallidos ${failed}`,
+    autoUpdate: "Actualización automática",
+    autoUpdateDesc: (hours: number) =>
+      `Aplica las actualizaciones de complementos automáticamente cuando el gateway comprueba (cada ${hours} h). El código actualizado se carga en sesiones nuevas.`,
     versionBadge: "Versión",
     showInSidebar: "Mostrar en barra lateral",
     hideFromSidebar: "Ocultar de la barra lateral",
@@ -470,6 +493,8 @@ export const es: Translations = {
     copyCliCommand: "Copiar comando CLI (para externo / alternativa)",
     connect: "Conectar",
     sessionExpires: "La sesión caduca en {time}",
+    sessionExpiredNoError:
+      "El inicio de sesión expiró sin llegar al proveedor. Esto suele significar que la página de inicio de sesión se quedó bloqueada en la pestaña abierta (problema del lado del servidor): termina de iniciar sesión allí y luego haz clic en Reintentar. Si sigue fallando, usa una clave API o la CLI en su lugar.",
     initiatingLogin: "Iniciando flujo de inicio de sesión…",
     exchangingCode: "Intercambiando código por tokens…",
     connectedClosing: "¡Conectado! Cerrando…",

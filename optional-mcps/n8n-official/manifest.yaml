@@ -1,0 +1,37 @@
+manifest_version: 1
+
+# A distinct name keeps the retired n8n stdio bridge's saved configuration intact.
+name: n8n-official
+description: Connect to your n8n instance's official MCP server with browser OAuth.
+source: https://docs.n8n.io/connect/connect-to-n8n-mcp-server/
+
+transport:
+  type: http
+  url: "${N8N_MCP_SERVER_URL}"
+
+auth:
+  type: oauth
+  env:
+    - name: N8N_MCP_SERVER_URL
+      prompt: "MCP Server URL (n8n Settings > Instance-level MCP > Connect; ends in /mcp-server/http)"
+      required: true
+      secret: false
+
+post_install: |
+  In n8n Settings > Instance-level MCP, enable MCP access (owner or admin).
+  Open Connect and copy the full Server URL ending in /mcp-server/http.
+  Use that URL, not your editor URL. The Hermes backend must be able to reach it.
+  On older n8n versions, the same endpoint is shown in the MCP settings page.
+
+  Run `hermes mcp login n8n-official`, or use Authorize in the desktop app
+  or dashboard, and approve access in n8n. No n8n API key is required.
+  If your instance restricts OAuth callback URLs, allow the callback used by Hermes.
+
+  n8n controls access through your account permissions and MCP settings.
+  Search can show previews of workflows you can view; enable Available in MCP
+  for workflows you want to inspect fully, execute, or modify. Tool availability
+  depends on your n8n version and permissions. Some tools change or run workflows.
+  Use `hermes mcp configure n8n-official` to review the discovered tools.
+
+  Existing n8n bridge connections are unchanged. This is a separate connection,
+  not an automatic migration. Start a new session or use /reload-mcp after setup.

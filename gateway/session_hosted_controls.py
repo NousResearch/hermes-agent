@@ -1,4 +1,6 @@
 """Exact operator controls for canonical hosted attempts, never legacy replay."""
+from dataclasses import asdict
+
 from gateway import hosted_room_driver as tasks
 from hermes_state_runtime import RuntimeStoreError
 from tui_gateway.hosted_room_driver import HostedRoomBinding, discarded_receipt
@@ -98,7 +100,9 @@ class HostedControls:
         if local:
             # Every daemon is asked before the policy lock (a reverse RPC under it deadlocks real
             # gateways); a deferred turn is never admitted meanwhile, and the requeue is fenced.
-            self._local_retry_probe(room_id, member_id, task_id, execution_generation)
+            settled = self._local_retry_probe(room_id, member_id, task_id, execution_generation)
+            if settled is not None:
+                return settled
         with self._policy_lock:
             task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
             # Unknown is not non-admission. Never advance its hosted generation
@@ -115,28 +119,35 @@ class HostedControls:
     def _local_retry_probe(self, room_id, member_id, task_id, execution_generation):
         """Refuse Retry while any home could still run this generation. A turn from before attempt
         homes were recorded may run at an older home of its profile, which must first answer that
-        it holds nothing; then the home the Stop is asked at must be idle (unless it is gone)."""
+        it holds nothing; then the home the Stop is asked at must be idle (unless it is gone).
+        A reply already stored for this attempt settles the turn instead, and that row is returned:
+        running it again would answer twice. Reading the receipts fails the Retry when it fails."""
         from gateway.session_hosted_member_homes import moved_attempt_gone, unsettled_legacy_homes
         task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
         if task['status'] != 'deferred':
-            return  # refused under the lock
+            return None  # refused under the lock
         held = unsettled_legacy_homes(self, room_id, task)
         if held:
             raise RuntimeStoreError('session_busy', field='home', detail=(
                 f'an older home of this profile may still run this turn: {held[0]}'))
         if moved_attempt_gone(self, room_id, task):
-            return
+            return None
         rpc, profile = self._resolve_member_transport(binding, task), task['payload']['target_profile']
         ref = getattr(rpc, 'ref', None)
         # A fresh transport to another profile's daemon learns its session id by resolving it.
         session_id = ref.session_id if ref is not None else self.runtime._resume_exact(rpc, room_id, profile)
         if session_id is None:
-            return  # that daemon answered: no room session, nothing runs
+            return None  # that daemon answered: no room session, nothing runs
+        receipt = self.runtime._terminal_receipt(rpc, profile, session_id, task)
+        if receipt is not None:
+            return self.runtime._fenced(tasks.settle_recovered_task, binding, task,
+                                        self.runtime._ensure_lease(binding), **asdict(receipt))
         info = rpc.info(profile=profile, source='bot_room', session_id=session_id)
         if info.get('status') == 'unknown':
             raise RuntimeStoreError('unknown_execution')
         if info.get('active'):
             raise RuntimeStoreError('session_busy')
+        return None
 
     def _retry_peer(self, binding, task):
         """A member on another gateway may still hold this generation: replay it under its own key

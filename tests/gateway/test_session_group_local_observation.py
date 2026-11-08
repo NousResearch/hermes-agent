@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -70,7 +71,8 @@ def test_renewed_local_member_turn_defers_when_its_owner_socket_disappears(
         install_hosted_transport(servers[1], target_authority, loop, attest=lambda *a: None)
         for server in servers:
             assert asyncio.run_coroutine_threadsafe(server.start(), loop).result(10)
-        history, reads, retries = rpc.history, [], []
+        results, reads, retries = rpc.results, [], []
+        observer = threading.current_thread()
 
         def tick(_timeout):
             assert now[0] < start + 100, 'observation did not retire'
@@ -84,13 +86,14 @@ def test_renewed_local_member_turn_defers_when_its_owner_socket_disappears(
         monkeypatch.setattr(runtime._wake, 'wait', tick)
 
         def lose_owner_after_renewal(**kwargs):
-            reads.append(now[0])
-            if len(reads) == 2:
-                now[0] += 16
-                asyncio.run_coroutine_threadsafe(servers[1].stop(), loop).result(10)
-            return history(**kwargs)
+            if threading.current_thread() is observer:
+                reads.append(now[0])
+                if len(reads) == 2:
+                    now[0] += 16
+                    asyncio.run_coroutine_threadsafe(servers[1].stop(), loop).result(10)
+            return results(**kwargs)
 
-        monkeypatch.setattr(rpc, 'history', lose_owner_after_renewal)
+        monkeypatch.setattr(rpc, 'results', lose_owner_after_renewal)
         try:
             runtime._process_room(binding)
             assert reads[:2] == [start, start + 16], runtime._last_error

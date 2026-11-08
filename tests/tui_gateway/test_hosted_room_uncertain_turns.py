@@ -31,16 +31,16 @@ def test_member_that_reports_itself_running_is_not_deferred_as_unavailable(obser
     assert state.get_task(o.db, o.identity)['status'] != 'deferred'
 
 
-@pytest.mark.parametrize('canonical', [True, False])
-def test_retry_waits_until_history_shows_whether_the_bot_already_answered(db, monkeypatch, canonical):
+@pytest.mark.parametrize('member_transport', [True, False])
+def test_retry_waits_until_history_shows_whether_the_bot_already_answered(db, monkeypatch, member_transport):
     """Recovery may ask for live status without history, but Retry runs the turn again: it must
     first see in history that the uncertain attempt left no reply."""
     identity, now = _identity(), [100.0]
     _admit(db, identity)
     member = FakeSessionRPC(auto_complete=False)
     runtime = HostedRoomRuntime(
-        db_path=db, rooms=[BINDING], rpc=None if canonical else member,
-        transport_resolver=(lambda *_: member) if canonical else None,
+        db_path=db, rooms=[BINDING], rpc=None if member_transport else member,
+        transport_resolver=(lambda *_: member) if member_transport else None,
         turn_lock=RecordingTurnLocks(), clock=lambda: now[0])
     monkeypatch.setattr(runtime._wake, 'wait', lambda _timeout: runtime._stop.set())
     runtime._process_room(BINDING)

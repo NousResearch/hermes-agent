@@ -34,7 +34,7 @@ def test_unknown_discard_is_exact_and_never_requeues(tmp_path, monkeypatch):
         # Only the remote canonical boundary is substituted; the room task/lease is real.
         calls = []
         rpc = SimpleNamespace(ref=SimpleNamespace(session_id='session'),
-            info=lambda **kw: {'status': 'unknown'},
+            info=lambda **kw: {'status': 'unknown'}, results=lambda **kw: [],
             discard=lambda **kw: calls.append(kw) or {'discarded': True})
         monkeypatch.setattr(service, '_resolve_member_transport', lambda *args: rpc)
         monkeypatch.setattr(service.runtime, 'publish_terminal', None)

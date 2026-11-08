@@ -12,7 +12,9 @@ async def resolve_exec_approval(adapter, state, option_id, chat_id, ack_meta) ->
     from tools.approval import resolve_gateway_approval_card
 
     choice = option_id if option_id in _relay._EXEC_APPROVAL_LABELS else "deny"
-    count = resolve_gateway_approval_card(str(state.get("session_key") or ""), choice, state.get("request_id"))
+    # The answerer's authority is rechecked against the entry this settles, in the same critical section.
+    count = resolve_gateway_approval_card(str(state.get("session_key") or ""), choice, state.get("request_id"),
+                                          **(state.get("actor") or {}))
     label = _relay._EXEC_APPROVAL_LABELS[choice] if count else "⌛ Approval expired — no command was waiting."
     # In-channel ack preserves the audit trail the native edit gives (the
     # connector's prompt message can't be edited cross-platform yet).

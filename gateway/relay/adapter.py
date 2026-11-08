@@ -2027,9 +2027,15 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             return True
         pending = self._pending_prompts.get(str(prompt_id)) or {}
         from gateway.approval_actor import approval_refusal, refusal_text, runner_admin_ids
-        if pending.get("kind") == "exec_approval" and (requester := approval_refusal(
-                str(pending.get("session_key") or ""), getattr(event.source, "user_id", ""),
-                admin_ids=runner_admin_ids(event.source), request_id=pending.get("request_id"))):
+        actor = None
+        if pending.get("kind") == "exec_approval":
+            # Identity first: this answer is consumed before handle_message, and without the transport
+            # identity the admin lookup read the routed runtime profile instead of the bot-owning one.
+            self._canonicalize(event.source)
+            actor = {"actor_id": getattr(event.source, "user_id", ""), "admin_ids": runner_admin_ids(event.source)}
+        if actor and (requester := approval_refusal(
+                str(pending.get("session_key") or ""), actor["actor_id"], admin_ids=actor["admin_ids"],
+                request_id=pending.get("request_id"))):
             # Left pending: only the requester (or an approver) can consume it.
             self._send_lifecycle_ack(str(pending.get("chat_id") or getattr(event.source, "chat_id", "")),
                                      refusal_text(requester), self._prompt_reply_metadata(event))
@@ -2051,7 +2057,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             else:
                 # Acks are fire-and-forget: we are ON the read loop here (see
                 # _send_lifecycle_ack) and awaiting a send would self-deadlock.
-                await handler(self, state, option_id, chat_id, self._prompt_reply_metadata(event))
+                await handler(self, {**state, "actor": actor}, option_id, chat_id, self._prompt_reply_metadata(event))
         except Exception:
             logger.warning("relay prompt_response resolution failed", exc_info=True)
         return True

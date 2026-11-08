@@ -1,6 +1,6 @@
 name: hermes-roam
 repo: https://github.com/vcruz305/hermes-roam
-sha: 95f9bef43afa3d6a0f9f95d6b1fe5306192da7fc
+sha: 8b9fba41fea77f2fe2d6d572cffd43039d2da11f
 description: >-
   Encrypted, host-scoped sync of the Hermes Agent home between your own machines:
   an AES-256-GCM sealed bundle of the shared home (config.yaml minus host-scoped
@@ -33,8 +33,8 @@ title: "Hermes Roam"
 docs_url: https://github.com/vcruz305/hermes-roam#readme
 readme: true
 requires_hermes: ">=0.22.0"
-version: "0.5.5"
-image: https://raw.githubusercontent.com/vcruz305/hermes-roam/95f9bef43afa3d6a0f9f95d6b1fe5306192da7fc/assets/catalog-banner.png
+version: "0.5.6"
+image: https://raw.githubusercontent.com/vcruz305/hermes-roam/8b9fba41fea77f2fe2d6d572cffd43039d2da11f/assets/catalog-banner.png
 known_issues:
   - >-
     The git backend is unsuitable for large homes: git hosts cap file sizes

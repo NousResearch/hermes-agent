@@ -224,6 +224,7 @@ hermes skills uninstall <skill-name>
 | [**domain-intel**](../user-guide/skills/optional/research/research-domain-intel.md) | Passive recon of subdomains, SSL certs, WHOIS, and DNS. |
 | [**drug-discovery**](../user-guide/skills/optional/research/research-drug-discovery.md) | Drug discovery: ChEMBL search, drug-likeness, interactions. |
 | [**gitnexus-explorer**](../user-guide/skills/optional/research/research-gitnexus-explorer.md) | Serve an interactive codebase knowledge graph web UI. |
+| [**learn-from-materials**](../user-guide/skills/optional/research/research-learn-from-materials.md) | Books and PDFs into cited study pages, upstream-kept. |
 | [**llm-wiki**](../user-guide/skills/optional/research/research-llm-wiki.md) | Karpathy's LLM Wiki: build/query interlinked markdown KB. |
 | [**osint-investigation**](../user-guide/skills/optional/research/research-osint-investigation.md) | Follow the money via public records and sanctions data. |
 | [**parallel-cli**](../user-guide/skills/optional/research/research-parallel-cli.md) | Agent-native web search, deep research, and enrichment. |

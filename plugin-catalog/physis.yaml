@@ -1,12 +1,12 @@
 name: physis
 repo: https://github.com/ilPez00/hermes-physis
-sha: 44e97f838919d1497f0433c71a5e85534801ac25
+sha: 95f7b2369c7c3d004992c17b5be1983daeb1907a
 description: Offline evidence-backed code context, adaptive semiotic classification, and verified tool replay for Hermes Agent.
 maintainer: ilPez00
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "1.4.0"
+version: "1.4.1"
 platforms: [linux]
 readme: true
 capabilities:

@@ -152,8 +152,9 @@ async def send_photo_album(
     *, delivered: bool = False, per_photo_fallback: bool = True,
 ) -> SendResult:
     """Send ``(url, alt)`` photos as albums. ``success`` = at least one photo delivered or possibly
-    delivered; ``raw_response`` carries ``failed`` (``[(photo, error)]``), ``refused`` (the photos of
-    a refused chunk, when ``per_photo_fallback`` is off so the caller sends them its own way) and
+    delivered; ``raw_response`` carries ``failed`` (``[(photo, error)]``), ``refused`` (when
+    ``per_photo_fallback`` is off: the first refused chunk's photos and every later one, in order,
+    for the caller to send its own way) and
     ``ambiguous`` (a chunk was sent but never confirmed) whenever any applies."""
     from plugins.platforms.telegram.adapter import _redact_telegram_error_text as redact
     failed: list[tuple[str, str]] = []
@@ -190,7 +191,10 @@ async def send_photo_album(
         if per_photo_fallback:
             delivered = await _send_each(adapter, chat_id, sent, metadata, human_delay, failed) or delivered
         else:
-            refused += sent
+            # The caller's per-file fallback runs after we return, so later albums would land
+            # ahead of this chunk: hand back the rest of the batch too and keep the user's order.
+            refused += sent + [photo for later in chunks[chunk_idx + 1:] for photo in later]
+            break
     if not chunks:  # no media-group support
         if per_photo_fallback:
             delivered = await _send_each(adapter, chat_id, photos, metadata, human_delay, failed) or delivered

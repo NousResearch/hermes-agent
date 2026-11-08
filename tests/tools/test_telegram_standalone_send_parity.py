@@ -7,6 +7,7 @@ every call, so the assertions read what would reach the Bot API."""
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -186,6 +187,30 @@ def test_refused_album_falls_back_per_photo_and_reports_each_failure(standalone)
     assert result["success"] is True
     assert standalone.bot.send_photo.await_count == 2
     assert [w for w in result["warnings"] if "p1.png" in w], result["warnings"]
+
+
+def test_refused_first_album_keeps_the_photos_in_order(standalone) -> None:
+    """12 photos, the first album refused and the second accepted: the user sees p0..p11 in the
+    order given, never the later album ahead of the refused one's per-photo fallback."""
+    delivered = []
+
+    async def send_media_group(**kwargs):
+        names = [os.path.basename(item.media.name) for item in kwargs["media"]]
+        if names[0] == "p0.png":
+            raise BadRequest("Bad Request: group send failed")
+        delivered.extend(names)
+        return [SimpleNamespace(message_id=11)]
+
+    async def send_photo(**kwargs):
+        delivered.append(os.path.basename(kwargs["photo"].name))
+        return SimpleNamespace(message_id=12)
+    standalone.bot.send_media_group = AsyncMock(side_effect=send_media_group)
+    standalone.bot.send_photo = AsyncMock(side_effect=send_photo)
+
+    result = standalone.run("", media_files=_photos(standalone.home, 12))
+
+    assert result["success"] is True
+    assert delivered == [f"p{i}.png" for i in range(12)]
 
 
 def test_album_to_a_stale_topic_retries_once_without_the_thread(standalone) -> None:

@@ -13,10 +13,15 @@ def _authority_for_log(raw: str, parsed) -> str | None:
     """
     if raw.count("@") != parsed.netloc.count("@") or not parsed.hostname:
         return None
+    # ``http://bob:SEKRET`` (userinfo, no host) parses as host ``bob`` with port ``SEKRET``:
+    # anything after the colon that is not a valid port may be a password.
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
     host = parsed.hostname
     host = f"[{host}]" if ":" in host else host
-    port = parsed.netloc.rsplit("@", 1)[-1].rpartition("]")[2].partition(":")[2]
-    return f"{host}:{port}" if port else host
+    return f"{host}:{port}" if port is not None else host
 
 
 def safe_url_for_log(url: str, max_len: int = 80) -> str:

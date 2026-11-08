@@ -3402,7 +3402,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             except _NetErr as send_err:
                 # BadRequest subclasses NetworkError in PTB but is permanent; handle specific cases.
                 if _BadReq and isinstance(send_err, _BadReq):
-                    if topic_gone(chat_id, send_err) and (effective_thread_id or thread_kwargs.get("direct_messages_topic_id")):
+                    if topic_gone(chat_id, send_err) and (effective_thread_id or (private_chat(chat_id) and thread_kwargs.get("direct_messages_topic_id"))):
                         if metadata and metadata.get("telegram_dm_topic_created_for_send"):
                             return SendResult(success=False, error=str(send_err), retryable=False)
                         if private_dm_topic_send or private_chat(chat_id):  # telegram_dm_topic_send.py: native id, then root

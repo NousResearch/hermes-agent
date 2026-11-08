@@ -978,6 +978,52 @@ async def test_native_topic_deleted_wording_still_reaches_chat_root(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_anchorless_wakeup_reaches_chat_root_when_native_topic_is_deleted(tmp_path):
+    """Loop wakeups, watcher notices and cron sends carry no anchor; origin/main delivered them to the root."""
+    db = _topic_db(tmp_path)
+    adapter = _make_adapter()
+    adapter._session_store = SimpleNamespace(_db=db)
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("message_thread_id"):
+            raise FakeBadRequest("Message thread not found")
+        if kwargs.get("direct_messages_topic_id"):
+            raise FakeBadRequest("Bad Request: TOPIC_DELETED")
+        return SimpleNamespace(message_id=6)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+    meta = {"thread_id": "20197", "telegram_dm_topic_reply_fallback": True, "direct_messages_topic_id": "20197"}
+
+    result = await adapter.send(chat_id="123", content="wakeup", metadata=meta)
+
+    assert result.success is True
+    routes = [(c.get("message_thread_id"), c.get("direct_messages_topic_id")) for c in call_log]
+    assert routes == [(20197, None), (None, 20197), (None, None)]
+    assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is None
+
+
+@pytest.mark.asyncio
+async def test_rejected_direct_topic_outside_private_chats_is_not_retried():
+    """A native direct-messages topic in a non-private chat keeps origin/main's one-call failure: no same-id retry,
+    no topic-less resend."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="-100123", content="x", metadata={"direct_messages_topic_id": "55"})
+
+    assert result.success is False
+    assert [c.get("direct_messages_topic_id") for c in call_log] == [55]
+
+
+@pytest.mark.asyncio
 async def test_control_native_topic_parse_error_keeps_binding_and_skips_root(tmp_path):
     """A BadRequest about the message itself (MarkdownV2) on the native route says the topic is alive: no prune."""
     db = _topic_db(tmp_path)

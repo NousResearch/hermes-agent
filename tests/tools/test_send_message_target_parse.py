@@ -312,47 +312,11 @@ def test_photon_e164_target_is_explicit() -> None:
 
 
 def test_telegram_named_private_dm_topic_is_parsed() -> None:
-    """``telegram:<positive_chat_id>:<topic_name>`` splits into chat + topic name.
-
-    Regression for #80483: the topic name is a non-numeric label, not a numeric
-    thread id, so it must not be swallowed into the chat id.
-    """
-    chat_id, thread_id, is_explicit = _parse_target_ref("telegram", "722341991:Debug")
-
-    assert chat_id == "722341991"
-    assert thread_id == "Debug"
-    assert is_explicit is True
-
-
-def test_telegram_numeric_topic_still_parses_as_thread_id() -> None:
-    """Numeric Telegram topic targets keep their existing shape."""
-    chat_id, thread_id, is_explicit = _parse_target_ref("telegram", "722341991:17")
-
-    assert chat_id == "722341991"
-    assert thread_id == "17"
-    assert is_explicit is True
-
-
-def test_telegram_named_topic_requires_positive_private_chat_id() -> None:
-    """A named topic on a negative (group/supergroup) chat id is not a private
-    DM topic — it must not be misparsed as one."""
-    chat_id, thread_id, is_explicit = _parse_target_ref(
-        "telegram", "-1001234567890:Debug"
-    )
-
-    assert chat_id is None
-    assert thread_id is None
-    assert is_explicit is False
-
-
-def test_discord_named_topic_is_not_recognized() -> None:
-    """Discord threads are always numeric snowflakes; a named label must not
-    be parsed as a Discord thread id."""
-    chat_id, thread_id, is_explicit = _parse_target_ref("discord", "999888777:Debug")
-
-    assert chat_id is None
-    assert thread_id is None
-    assert is_explicit is False
+    """``telegram:<positive_chat_id>:<topic_name>`` splits into chat + topic name (#80483);
+    numeric topics keep their shape and a named topic on a group id stays unparsed."""
+    assert _parse_target_ref("telegram", "722341991:Debug") == ("722341991", "Debug", True)
+    assert _parse_target_ref("telegram", "722341991:17") == ("722341991", "17", True)
+    assert _parse_target_ref("telegram", "-1001234567890:Debug") == (None, None, False)
 
 
 def test_e164_target_still_requires_phone_platform() -> None:

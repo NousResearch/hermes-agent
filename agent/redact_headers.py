@@ -134,6 +134,9 @@ _COOKIE_HEADER_INLINE_RE = re.compile(
 )
 
 
+_MASKED_VALUE_RE = re.compile(r"(?:\*{3}|«redacted(?::[^»\s]*|-secret)»|\[REDACTED\])(?:\s|$)")
+
+
 def _redact_inline_secret_header(m: re.Match) -> str:
     """Mask an inline header token without stealing an empty curl header's URL."""
     before = m.string[max(0, m.start() - 32):m.start()]
@@ -154,6 +157,10 @@ def _redact_header_line_value(m: re.Match) -> str:
             re.IGNORECASE,
         ):
             return m.group(0)
+    # An earlier pass already masked the value: what follows the marker is prose, and
+    # re-masking it would make the redactor non-idempotent (``x-api-key: *** see docs``).
+    if _MASKED_VALUE_RE.match(m.group(2)):
+        return m.group(0)
     return m.group(1) + "***"
 
 

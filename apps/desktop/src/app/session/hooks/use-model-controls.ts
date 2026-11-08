@@ -287,12 +287,11 @@ export function useModelControls({
         if (liveSessionId) {
           // The owning view reads this slice, including the primary. Publish the next-message
           // choice before applying its options; session.info may arrive after the switch RPC.
-          sessionTileDelegate()?.updateSession(liveSessionId, state => ({
-            ...state,
-            model: selection.model,
-            provider: selection.provider,
-            reasoningEffortWire: ''
-          }))
+          sessionTileDelegate()?.updateSession(liveSessionId, state =>
+            state.model === selection.model && state.provider === selection.provider
+              ? state
+              : { ...state, model: selection.model, provider: selection.provider, reasoningEffortWire: '' }
+          )
         }
       }
 
@@ -344,6 +343,17 @@ export function useModelControls({
         const repaint = settleModelPick(liveSessionId, pickToken, false)
 
         return repaint && !(touchesPrimary && $activeSessionId.get() !== liveSessionId) ? repaint : null
+      }
+
+      const settleAccepted = (token: number) => {
+        const current = !isPickSuperseded(liveSessionId, token)
+        settleModelPick(liveSessionId, token, true)
+
+        // A heartbeat can report the still-running route while a next-turn pick is pending.
+        if (current && !(touchesPrimary && $activeSessionId.get() !== liveSessionId)) {
+          paintSelection()
+          cacheSelection(selection.provider, selection.model)
+        }
       }
 
       // The PRIMARY profile's main agent lets the gateway decide persistence
@@ -437,7 +447,7 @@ export function useModelControls({
             requestConfirmed: () => requestSwitch(true),
             finish: result => {
               if (retryToken !== null) {
-                settleModelPick(liveSessionId, retryToken, true)
+                settleAccepted(retryToken)
               }
 
               finishSwitch(result)
@@ -454,7 +464,7 @@ export function useModelControls({
           return selection.awaitConfirmation ? confirmation : false
         }
 
-        settleModelPick(liveSessionId, pickToken, true)
+        settleAccepted(pickToken)
         finishSwitch(result)
 
         return true
@@ -465,7 +475,7 @@ export function useModelControls({
         // what the NEXT turn runs anyway. Current gateways never take this
         // path — they answer `deferred`.
         if (isBusySessionModelSwitch(err)) {
-          settleModelPick(liveSessionId, pickToken, true)
+          settleAccepted(pickToken)
 
           return true
         }

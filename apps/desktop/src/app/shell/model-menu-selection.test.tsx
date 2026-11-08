@@ -4,6 +4,7 @@ import { atom, computed } from 'nanostores'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PRIMARY_SESSION_VIEW, type SessionView, SessionViewProvider } from '@/app/chat/session-view'
+import { applySessionInfoStatePatch, sessionInfoStatePatch } from '@/app/session/hooks/use-message-stream/utils'
 import { useModelControls } from '@/app/session/hooks/use-model-controls'
 import { desktopSessionCreateParams } from '@/app/session/hooks/use-session-actions/session-create-request'
 import type { ClientSessionState } from '@/app/types'
@@ -33,6 +34,7 @@ import type * as SessionStates from '@/store/session-states'
 import { deferred } from '../../test/deferred'
 
 import { ModelMenuCloseContext, ModelMenuPanel } from './model-menu-panel'
+import { type ModelMenuHostProps, useModelMenuController } from './use-model-menu-controller'
 
 // Only the network handshake and the wiring cache's store adapter are replaced.
 vi.mock('@/store/profile', async importOriginal => ({
@@ -101,13 +103,15 @@ function renderPicker({
   view = PRIMARY_SESSION_VIEW,
   switchModel,
   switchFast,
-  variantFast = false
+  variantFast = false,
+  captureController
 }: {
   deferred?: boolean
   view?: SessionView
   switchModel?: () => Promise<unknown>
   switchFast?: () => Promise<unknown>
   variantFast?: boolean
+  captureController?: (controller: ReturnType<typeof useModelMenuController>['controller']) => void
 } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   const close = vi.fn()
@@ -146,19 +150,33 @@ function renderPicker({
     throw new Error(`unexpected gateway method: ${method}`)
   })
 
-  function Harness() {
-    const { selectModel } = useModelControls({ queryClient: client, requestGateway: requestGateway as never })
+  function OtherController(props: ModelMenuHostProps) {
+    const { controller } = useModelMenuController(props)
+    captureController?.(controller)
 
-    return <ModelMenuPanel onSelectModel={selectModel} requestGateway={requestGateway as never} />
+    return null
   }
 
-  render(
+  function Harness({ controllerKey }: { controllerKey: number }) {
+    const { selectModel } = useModelControls({ queryClient: client, requestGateway: requestGateway as never })
+
+    return (
+      <>
+        <ModelMenuPanel onSelectModel={selectModel} requestGateway={requestGateway as never} />
+        {captureController && (
+          <OtherController key={controllerKey} onSelectModel={selectModel} requestGateway={requestGateway as never} />
+        )}
+      </>
+    )
+  }
+
+  const picker = (controllerKey: number) => (
     <QueryClientProvider client={client}>
       <SessionViewProvider value={view}>
         <ModelMenuCloseContext.Provider value={close}>
           <DropdownMenu open>
             <DropdownMenuContent>
-              <Harness />
+              <Harness controllerKey={controllerKey} />
             </DropdownMenuContent>
           </DropdownMenu>
         </ModelMenuCloseContext.Provider>
@@ -166,7 +184,9 @@ function renderPicker({
     </QueryClientProvider>
   )
 
-  return { close, client, requestGateway }
+  const mounted = render(picker(0))
+
+  return { close, client, requestGateway, remountController: () => mounted.rerender(picker(1)) }
 }
 
 async function choose(option: 'effort' | 'Thinking' | 'Fast') {
@@ -465,5 +485,128 @@ it('surfaces a refused Fast setting and rolls it back while retaining the accept
     serviceTier: 'normal'
   })
   expect(getModelPreset('google', 'gemini-3.1-pro')).toMatchObject({ fast: false })
+  client.clear()
+})
+
+it.each([false, true])(
+  'keeps a newer option edit from another controller after the old model switch settles (remount: %s)',
+  async remount => {
+    const reply = deferred<unknown>()
+    $activeSessionId.set('runtime-owner')
+    $sessionStates.set({
+      'runtime-owner': {
+        ...createClientSessionState('stored-owner'),
+        model: 'claude-sonnet-4.6',
+        provider: 'anthropic',
+        reasoningEffort: 'low'
+      }
+    })
+    let other!: ReturnType<typeof useModelMenuController>['controller']
+
+    const { client, requestGateway, remountController } = renderPicker({
+      switchModel: () => reply.promise,
+      captureController: controller => {
+        other = controller
+      }
+    })
+
+    await choose('effort')
+
+    if (remount) {
+      remountController()
+    }
+
+    expect(other.current.model).toBe('gemini-3.1-pro')
+    await act(async () => {
+      other.setOptions({ effort: 'low' }, { model: 'gemini-3.1-pro', provider: 'google', isActive: true })
+    })
+    await waitFor(() =>
+      expect(requestGateway.mock.calls).toContainEqual([
+        'config.set',
+        { session_id: 'runtime-owner', key: 'reasoning', value: 'low' }
+      ])
+    )
+    await act(async () => {
+      reply.resolve({ deferred: true })
+    })
+    expect($sessionStates.get()['runtime-owner'].reasoningEffort).toBe('low')
+    expect(getModelPreset('google', 'gemini-3.1-pro').effort).toBe('low')
+    expect(requestGateway.mock.calls.filter(([, params]) => params?.key === 'reasoning')).toHaveLength(1)
+    client.clear()
+  }
+)
+
+it('applies an accepted deferred pick after an old-route session.info heartbeat', async () => {
+  const reply = deferred<unknown>()
+  $activeSessionId.set('runtime-owner')
+  $sessionStates.set({
+    'runtime-owner': {
+      ...createClientSessionState('stored-owner'),
+      model: 'claude-sonnet-4.6',
+      provider: 'anthropic',
+      reasoningEffort: 'low',
+      busy: true
+    }
+  })
+  const { close, client, requestGateway } = renderPicker({ switchModel: () => reply.promise })
+  await choose('effort')
+  await act(async () => {
+    $sessionStates.set({
+      ...$sessionStates.get(),
+      'runtime-owner': applySessionInfoStatePatch(
+        $sessionStates.get()['runtime-owner'],
+        sessionInfoStatePatch({ model: 'claude-sonnet-4.6', provider: 'anthropic', reasoning_effort: 'low' })
+      )
+    })
+    reply.resolve({ deferred: true })
+  })
+  expect(close).toHaveBeenCalledTimes(1)
+  expect($sessionStates.get()['runtime-owner']).toMatchObject({
+    model: 'gemini-3.1-pro',
+    provider: 'google',
+    reasoningEffort: 'high'
+  })
+  expect(requestGateway.mock.calls).toContainEqual([
+    'config.set',
+    { session_id: 'runtime-owner', key: 'reasoning', value: 'high' }
+  ])
+  client.clear()
+})
+
+it('preserves a matching route wire stamp when the accepted model RPC settles', async () => {
+  const reply = deferred<unknown>()
+  $activeSessionId.set('runtime-owner')
+  $sessionStates.set({
+    'runtime-owner': {
+      ...createClientSessionState('stored-owner'),
+      model: 'claude-sonnet-4.6',
+      provider: 'anthropic'
+    }
+  })
+  let other!: ReturnType<typeof useModelMenuController>['controller']
+
+  const { client } = renderPicker({
+    switchModel: () => reply.promise,
+    captureController: controller => {
+      other = controller
+    }
+  })
+
+  let selection!: Promise<boolean | void>
+  await act(async () => {
+    selection = other.select('gemini-3.1-pro', 'google') as Promise<boolean | void>
+  })
+  await act(async () => {
+    $sessionStates.set({
+      ...$sessionStates.get(),
+      'runtime-owner': applySessionInfoStatePatch(
+        $sessionStates.get()['runtime-owner'],
+        sessionInfoStatePatch({ model: 'gemini-3.1-pro', provider: 'google', reasoning_effort_wire: 'max' })
+      )
+    })
+    reply.resolve({ deferred: true })
+    expect(await selection).toBe(true)
+  })
+  expect($sessionStates.get()['runtime-owner'].reasoningEffortWire).toBe('max')
   client.clear()
 })

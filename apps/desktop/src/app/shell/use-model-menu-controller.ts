@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { atom } from 'nanostores'
 import { useCallback, useEffect, useRef } from 'react'
 
-import { useSessionView } from '@/app/chat/session-view'
+import { type SessionView, useSessionView } from '@/app/chat/session-view'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
@@ -26,6 +26,8 @@ import type { ModelMenuController } from './model-catalog-menu'
 
 const UNKNOWN_SERVICE_TIER = atom('')
 const optionEdits = new Map<string, symbol>()
+// Both menus (and their remounts) share the surface's latest selection intent.
+const selectionRevisions = new WeakMap<SessionView, symbol>()
 
 const nextEdit = (key: string) => {
   const revision = Symbol(key)
@@ -101,7 +103,6 @@ export function useModelMenuController({
   const hostScope = `${ownerConnectionId ?? ''}::${profile}`
   const latestHostScope = useRef(hostScope)
   latestHostScope.current = hostScope
-  const selectionRevision = useRef(0)
 
   // Daybreak is read only once this account's catalog lists a model for it (`capabilities.daybreak`).
   const daybreakListed = (modelOptions.data?.providers ?? []).some(row =>
@@ -265,7 +266,8 @@ export function useModelMenuController({
     // next session.create. Always stamp sessionId from this surface so a tile
     // switch never hits the primary (busy) session by accident.
     select: async (model, provider) => {
-      const revision = ++selectionRevision.current
+      const revision = Symbol()
+      selectionRevisions.set(view, revision)
       const storedSessionId = view.$storedId.get()
 
       const accepted = await onSelectModel({
@@ -278,7 +280,7 @@ export function useModelMenuController({
       // An older completion must not apply its options after another pick or a chat switch.
       return (
         accepted !== false &&
-        revision === selectionRevision.current &&
+        revision === selectionRevisions.get(view) &&
         latestHostScope.current === hostScope &&
         view.$runtimeId.get() === activeSessionId &&
         view.$storedId.get() === storedSessionId &&
@@ -288,7 +290,7 @@ export function useModelMenuController({
     },
 
     setOptions: (patch, row) => {
-      selectionRevision.current += 1
+      selectionRevisions.set(view, Symbol())
 
       // Editing always records the model's global preset (keyed by
       // provider::model, not per-surface — a tile edit re-applies to that model

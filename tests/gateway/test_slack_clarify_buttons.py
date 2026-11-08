@@ -161,6 +161,15 @@ class TestSlackSendClarify:
         assert wide_cjk in blocks[0]["text"]["text"]
         assert blocks[1]["elements"][0]["text"]["text"] == "1"
 
+        # Over the 3000-char section cap every option keeps its numbered line (shortened),
+        # so no positional button points at a line that was cut off; escaping counts.
+        huge = ["<&> " * 300 + f"tail {i}" for i in range(4)]
+        await adapter.send_clarify(
+            chat_id="C1", question="Pick", choices=huge, clarify_id="cid5", session_key="sk5")
+        body = mock_client.chat_postMessage.call_args[1]["blocks"][0]["text"]["text"]
+        assert len(body) <= 3000
+        assert all(f"\n{n}. " in body for n in (1, 2, 3, 4)) and body.endswith("…")
+
     @pytest.mark.asyncio
     async def test_short_choices_no_numbered_list(self):
         """When every option fits its button, the body stays the question alone (#78115)."""

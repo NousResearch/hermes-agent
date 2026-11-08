@@ -202,3 +202,13 @@ def test_code_span_command_target_addresses_no_one(text):
     entities = _telegram_entities(text)
     next(e for e in entities if e.type == "bot_command").type = "code"
     assert len(_dispatch(text, adapter=_adapter(), entities=entities)) == 1
+
+
+def test_skip_logs_once_when_the_observe_gate_also_runs(caplog):
+    """With observation on, the dispatch and observe gates both ask the exclusive check; one skip, one line."""
+    adapter = _make_adapter(require_mention=True, exclusive_bot_mentions=True, allowed_chats=["-100"],
+                            group_allowed_chats=["-100"], observe_unmentioned_group_messages=True)
+    text = "@OtherBot add a lead"
+    with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
+        assert _dispatch(text, adapter=adapter, entities=_telegram_entities(text)) == []
+    assert len([r for r in caplog.records if "addressed to other bot" in r.getMessage()]) == 1

@@ -6119,22 +6119,20 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             tracked.add(task)
             task.add_done_callback(tracked.discard)
 
-    def _explicit_bot_mentions_exclude_self(self, message: Message) -> bool:
+    def _explicit_bot_mentions_exclude_self(self, message: Message, *, log_skip: bool = True) -> bool:
         """True when the message is addressed (leading handles) to other bots and names us nowhere; a
         foreign handle later in the text only talks about that bot (#136236)."""
         bot_username = self._current_bot_username() if self._bot else None
         if not bot_username:
             return False
         from plugins.platforms.telegram.telegram_addressing import foreign_command_target, leading_bot_handles
-        addressed = leading_bot_handles(message, lambda h: h == bot_username or bool(self._FOREIGN_BOT_HANDLE_RE.fullmatch(h)))
         target = foreign_command_target(message, bot_username)
-        if target:
-            addressed = {target}
+        addressed = {target} if target else leading_bot_handles(message, lambda h: h == bot_username or bool(self._FOREIGN_BOT_HANDLE_RE.fullmatch(h)))
         if not addressed or (not target and bot_username in self._extract_bot_mention_usernames(message, bot_username)):
             return False
         self._schedule_bot_identity_recheck()  # or our handle is stale after a rename: re-check out of band
-        logger.info("[%s] Skipping message %s in chat %s: addressed to other bot(s) %s", self.name,
-                    getattr(message, "message_id", None), self._chat_id_str(message), ", ".join(f"@{h}" for h in sorted(addressed)))
+        if log_skip:  # the observe gate re-asks; one line per skip
+            logger.info("[%s] Skipping message %s in chat %s: addressed to other bot(s) %s", self.name, getattr(message, "message_id", None), self._chat_id_str(message), ", ".join(f"@{h}" for h in sorted(addressed)))
         return True
 
     def _message_matches_mention_patterns(self, message: Message) -> bool:
@@ -6185,7 +6183,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         if self._topic_gates_pass(getattr(message, "message_thread_id", None), warn_non_numeric=False) is False:
             return False
         chat_id_str = self._chat_id_str(message)
-        if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
+        if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message, log_skip=False):
             return False
         # Observed context is shared at chat/topic scope, so require an explicit chat allowlist.
         allowed = self._telegram_observe_allowed_chats()

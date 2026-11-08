@@ -172,6 +172,12 @@ SECRET_SHAPES = [
     "http://bob:{T}",  # userinfo with no host
     "proxy:8080?auth={T}",  # no scheme, secret in the query
     "proxy:8080#{T}",
+    "bob:{T}",  # no scheme, no '@': nothing parses as an authority
+    "//bob:{T}",
+    "http:bob:{T}",
+    "bob:{T}/",
+    "proxy:8080/{T}",
+    "proxy:8080;{T}",
     "http://proxy:8080/x/{T}",  # secret as the last path segment
     "http://bob:" + "p" * 70 + "{T}@" + "h" * 60 + ".example:8080",  # past the 80-char cut
     "http://bob:" + "p" * 70 + "{T}/x@proxy:8080",  # token straddles the cut
@@ -187,16 +193,23 @@ def _assert_token_absent(text):
 def test_proxy_secret_never_logged_in_any_shape(monkeypatch, caplog, shape):
     import sys
 
+    import telegram
+    import telegram.request
     from gateway.platforms import base as gw_base
     from plugins.platforms.matrix import adapter as matrix_adapter
+    from tools import send_message_senders
 
     proxy = shape.format(T=TOKEN)
     monkeypatch.setenv("MATRIX_PROXY", proxy)
+    monkeypatch.setenv("TELEGRAM_PROXY", proxy)
     monkeypatch.setitem(sys.modules, "aiohttp_socks", None)
+    monkeypatch.setattr(sys.modules["telegram"], "Bot", lambda **kw: MagicMock())
+    monkeypatch.setattr(sys.modules["telegram.request"], "HTTPXRequest", lambda **kw: kw)
     with caplog.at_level(logging.INFO):
         matrix_adapter.MatrixAdapter(PlatformConfig(
             enabled=True, token="syt_test_token",
             extra={"homeserver": "https://matrix.example.org", "user_id": "@bot:example.org"}))
+        send_message_senders._telegram_bot("123456:TOKEN")
         gw_base._aiohttp_socks_connector("socks5://" + proxy.split("://", 1)[-1])
     assert _proxy_lines(caplog), "the adapter must still announce that a proxy is in use"
     _assert_token_absent("\n".join(r.getMessage() for r in caplog.records))

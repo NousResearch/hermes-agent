@@ -524,16 +524,16 @@ DEFAULT_CONFIG = {
     # still only wait their real handshake time.
     "mcp_single_query_discovery_timeout": 15.0,
     "mcp": {  # MCP runtime behavior (distinct from mcp_servers: definitions and auxiliary.mcp).
-        # Auto-reload MCP connections when config.yaml's mcp_servers changes (CLI watcher). Every
-        # reload rebuilds the tool surface and INVALIDATES the provider prompt cache (next message
-        # re-sends the full prefix) — costly on long-context models. When false the watcher still
-        # detects the change and prints /reload-mcp guidance.
+        # Auto-reload MCP connections when config.yaml's mcp_servers changes (CLI watcher). Each reload
+        # rebuilds the tool surface and INVALIDATES the provider prompt cache (next message re-sends the
+        # full prefix). When false the watcher still detects the change and prints /reload-mcp guidance.
         "auto_reload_on_config_change": True,
-        # Max MCP servers connected (and their stdio child trees spawned) at once per discovery
-        # pass — at boot, on /reload-mcp and on the config watcher's reconcile. Unbounded, a config
-        # with N servers spawns N process trees in the same instant (RAM/CPU spike, 429 fan-out on
-        # multi-profile fleets). 0 = unlimited.
+        # Max MCP servers connected (stdio child trees spawned) at once per discovery pass: boot,
+        # /reload-mcp and the config watcher's reconcile. Unbounded, N servers spawn N process trees
+        # at once (RAM/CPU spike, 429 fan-out on multi-profile fleets). 0 = unlimited.
         "discovery_concurrency": 4,
+        "server_instructions": True,  # servers' initialize instructions -> system prompt (scanned, capped)
+        "max_description_chars": 2048,  # per-string cap: MCP tool descriptions + instructions; 0 = off
     },
     # Tool-output truncation. max_bytes: terminal_tool output cap in chars (head+tail kept; 50_000 ≈
     # 12-15K tokens). max_lines: max `limit` one read_file call may request before clamping.

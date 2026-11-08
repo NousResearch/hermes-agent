@@ -1275,12 +1275,12 @@ def _apply_agent_section(agent, _agent_cfg):
         "environment_probe", "bot_mode_protocol",
     ):
         setattr(agent, f"_{_key}", bool(_agent_section.get(_key, True)))
+    agent._mcp_server_instructions = bool(_cfg_dict(_agent_cfg, "mcp").get("server_instructions", True))
     # Warm the probe (~0.5s of subprocesses) off-thread so the first prompt build finds it cached.
     if agent._environment_probe:
         with suppress(Exception):
             from tools.env_probe import warm_environment_probe_async
             warm_environment_probe_async()
-
     # "Bot Chat" gate hint for hosts that defer the DB title write past the first prompt build.
     agent._session_title_hint = None
 

@@ -1242,9 +1242,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             agent._fire_stream_delta(text)
 
     def _note_wire_bytes() -> None:
+        # Transport liveness only (comments, keepalives): the watchdogs stretch by a bounded
+        # factor while it is fresh, never treat it as a parsed event.
         if _request_is_current():  # a retired worker's bytes must not refresh a newer request
-            with watchdog_state.lock:
-                watchdog_state.last_event_ts = time.time()
+            watchdog_state.last_wire_ts = time.time()
 
     def _on_event(event: Any) -> None:  # TTFB/activity touch — once per SSE event.
         now = time.time()

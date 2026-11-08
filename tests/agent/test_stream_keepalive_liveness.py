@@ -73,9 +73,11 @@ def test_keepalive_comments_keep_a_thinking_chat_stream_alive(thinking_proxy, mo
     assert response.choices[0].message.content == "thought it through"
 
 
-def test_keepalive_comments_count_as_codex_watchdog_activity(tmp_path, monkeypatch):
-    """Codex Responses wire (contributed in #78818): keepalive comments, zero SDK events,
-    for several TTFB windows must not trip the TTFB / stream-idle watchdogs."""
+@pytest.mark.parametrize("ttfb, killed", [("1.0", False), ("0.5", True)])
+def test_keepalive_comments_count_as_codex_watchdog_activity(tmp_path, monkeypatch, ttfb, killed):
+    """Codex Responses wire (contributed in #78818): 2.5s of keepalive comments every 0.25s,
+    zero SDK events. They keep the stream alive past a 1s TTFB cutoff (4s stretched); the
+    stretch is bounded, so a 0.5s cutoff (2s stretched) still kills a keepalive-only stream."""
     import openai
     from openai._streaming import Stream
 
@@ -83,8 +85,8 @@ def test_keepalive_comments_count_as_codex_watchdog_activity(tmp_path, monkeypat
     from agent import codex_runtime
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "0.5")
-    monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "0.7")
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", ttfb)
+    monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", ttfb)
     agent = run_agent.AIAgent(model="grok-4.5", provider="xai-oauth", api_key="sk-dummy", base_url="https://api.x.ai/v1",
                               quiet_mode=True, skip_context_files=True, skip_memory=True, platform="cli")
     agent.api_mode = "codex_responses"
@@ -96,8 +98,8 @@ def test_keepalive_comments_count_as_codex_watchdog_activity(tmp_path, monkeypat
 
     class _Keepalives(httpx.SyncByteStream):
         def __iter__(self):
-            for _ in range(6):  # ~2.4s of bytes, no parseable event
-                time.sleep(0.4)  # health: allow HX013 -- the keepalive cadence IS the behaviour under test
+            for _ in range(10):  # 2.5s of bytes, no parseable event
+                time.sleep(0.25)  # health: allow HX013 -- the keepalive cadence IS the behaviour under test
                 yield b": keepalive\n\n"
 
     response = httpx.Response(200, headers={"Content-Type": "text/event-stream"}, stream=_Keepalives(),
@@ -107,7 +109,8 @@ def test_keepalive_comments_count_as_codex_watchdog_activity(tmp_path, monkeypat
     monkeypatch.setattr(agent, "_run_codex_stream", lambda api_kwargs, client=None, on_first_delta=None:
                         codex_runtime.run_codex_stream(agent, api_kwargs, client=stream_client))
 
-    with pytest.raises(RuntimeError, match="terminal response"):  # the stream's own end, not a watchdog kill
+    # Survives: the stream's own end (no terminal response). Bounded: the TTFB watchdog fires.
+    with pytest.raises(TimeoutError if killed else RuntimeError):
         h.interruptible_api_call(agent, {"model": "grok-4.5", "input": "hi"})
 
-    assert "codex_ttfb_kill" not in closes and "codex_stream_idle_kill" not in closes
+    assert ("codex_ttfb_kill" in closes) is killed

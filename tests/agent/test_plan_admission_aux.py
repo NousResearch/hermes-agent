@@ -10,10 +10,12 @@ calls.
 """
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import textwrap
 import threading
+import types
 import time
 from pathlib import Path
 
@@ -248,5 +250,107 @@ def test_wiring_covers_aux_and_moa_seams():
     for ungated in ("_relay_sync_stream_ungated", "_create_with_progress_ungated",
                     "_acreate_with_stream_ungated", "_acreate_with_progress_ungated"):
         module_refs = [line for line in aux_src.splitlines() if ungated in line and "def " not in line]
-        forwarding = [line for line in module_refs if "return await " in line or "return " in line]
-        assert forwarding, ungated + " never forwarded"
+        call_refs = [line for line in module_refs if (ungated + "(") in line]
+        assert call_refs, ungated + " never forwarded"
+
+
+# ------------------------------------------------- aux_relay consumption window
+# Review pass 2 (probe P7) proved the relay wrapper released the slot when it
+# RETURNED the stream, before the caller consumed it. These tests pin the fix:
+# the slot stays held across every chunk and frees only on
+# exhaustion / close / error / complete-object.
+
+class _LazyPlanStream:
+    def __init__(self, probe=None, fail_on=None):
+        self._probe = probe
+        self._fail_on = fail_on
+        self._i = 0
+        self.closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._i >= 3:
+            raise StopIteration
+        self._i += 1
+        if self._probe is not None:
+            self._probe(self._i)
+        if self._fail_on is not None and self._i == self._fail_on:
+            raise RuntimeError("mid-stream failure")
+        return f"chunk{self._i}"
+
+    def close(self):
+        self.closed = True
+
+
+def _lock_probe(adir):
+    """Return a probe that records whether the host slot is FREE at call time."""
+    import fcntl
+
+    def probe(_i):
+        fd = os.open(pa.lock_path(), os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return "free"
+        except OSError:
+            return "held"
+        finally:
+            os.close(fd)
+    return probe
+
+
+def _relay_with_stub_stream(admission_dir, monkeypatch, stream):
+    import agent.auxiliary_client as ac
+
+    monkeypatch.setattr(
+        ac, "_relay_sync_stream_ungated",
+        lambda client, kwargs, provider=None, api_mode=None: stream,
+    )
+    client = types.SimpleNamespace(base_url=PLAN_A)
+    return ac._relay_sync_stream(client, {"model": "glm-5.3"})
+
+
+def test_aux_relay_holds_slot_across_stream_consumption(admission_dir, monkeypatch):
+    import agent.auxiliary_client as ac  # noqa: F401
+    probe = _lock_probe(admission_dir)
+    states = []
+    stream = _LazyPlanStream(probe=lambda i: states.append(probe(i)))
+    out = _relay_with_stub_stream(admission_dir, monkeypatch, stream)
+    chunks = list(out)
+    assert chunks == ["chunk1", "chunk2", "chunk3"]
+    assert states == ["held", "held", "held"], f"slot freed mid-consume: {states}"
+    # After exhaustion the slot is free again for the next process.
+    assert probe(0) == "free"
+
+
+def test_aux_relay_complete_object_releases_before_return(admission_dir, monkeypatch):
+    import agent.auxiliary_client as ac  # noqa: F401
+    complete = types.SimpleNamespace(choices=[])
+    out = _relay_with_stub_stream(admission_dir, monkeypatch, complete)
+    assert out is complete  # raw object back, not a proxy
+    assert _lock_probe(admission_dir)(0) == "free"
+
+
+def test_aux_relay_close_releases_and_delegates(admission_dir, monkeypatch):
+    import agent.auxiliary_client as ac  # noqa: F401
+    stream = _LazyPlanStream()
+    out = _relay_with_stub_stream(admission_dir, monkeypatch, stream)
+    out.response = None if False else None  # no-op; delegation checked below
+    assert not stream.closed
+    out.close()
+    assert stream.closed  # delegated to the inner stream
+    assert _lock_probe(admission_dir)(0) == "free"
+
+
+def test_aux_relay_error_mid_consume_releases(admission_dir, monkeypatch):
+    import agent.auxiliary_client as ac  # noqa: F401
+    probe = _lock_probe(admission_dir)
+    states = []
+    stream = _LazyPlanStream(probe=lambda i: states.append(probe(i)), fail_on=2)
+    out = _relay_with_stub_stream(admission_dir, monkeypatch, stream)
+    with pytest.raises(RuntimeError):
+        list(out)
+    assert states[0] == "held"
+    assert _lock_probe(admission_dir)(0) == "free"  # released despite the error

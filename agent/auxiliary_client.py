@@ -2695,12 +2695,68 @@ def _aux_plan_admission_async(client: Any, kwargs: dict[str, Any], *, purpose: s
     return plan_admission_async(str(getattr(client, "base_url", "") or ""), model=kwargs.get("model"), purpose=purpose)
 
 
+class _PlanGatedStream:
+    """Delegating stream wrapper that keeps the host-wide plan slot held until
+    the stream is exhausted, closed or abandoned. Complete-object returns from
+    stream=True shims never reach this class - the wrapper releases for them
+    before returning."""
+
+    def __init__(self, stream: Any, gate_exit) -> None:
+        self._pgs_stream = stream
+        self._pgs_exit = gate_exit
+        self._pgs_released = False
+
+    def _pgs_release(self) -> None:
+        if not self._pgs_released:
+            self._pgs_released = True
+            self._pgs_exit(None, None, None)
+
+    def __iter__(self) -> "_PlanGatedStream":
+        return self
+
+    def __next__(self) -> Any:
+        try:
+            return next(self._pgs_stream)
+        except BaseException:
+            self._pgs_release()
+            raise
+
+    def close(self) -> None:
+        try:
+            close = getattr(self._pgs_stream, "close", None)
+            if callable(close):
+                close()
+        finally:
+            self._pgs_release()
+
+    def __del__(self):
+        try:
+            self._pgs_release()
+        except Exception:
+            pass
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._pgs_stream, name)
+
+
 def _relay_sync_stream(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None, api_mode: str | None = None
 ) -> Any:
-    """Gated wrapper: holds the host-wide plan slot across open + consume."""
-    with _aux_plan_admission(client, kwargs, purpose="aux_relay"):
-        return _relay_sync_stream_ungated(client, kwargs, provider=provider, api_mode=api_mode)
+    """Gated wrapper: the host-wide plan slot is held from request open until the
+    returned stream is fully consumed (or closed/abandoned) - matching the
+    main-turn _StreamingCall behaviour. Complete-object returns (stream=True
+    shims) release before returning."""
+    gate = _aux_plan_admission(client, kwargs, purpose="aux_relay")
+    gate.__enter__()
+    try:
+        stream = _relay_sync_stream_ungated(client, kwargs, provider=provider, api_mode=api_mode)
+    except BaseException:
+        gate.__exit__(*sys.exc_info())
+        raise
+    if hasattr(stream, "choices"):  # stream=True shim handed back a complete object
+        gate.__exit__(None, None, None)
+        return stream
+    return _PlanGatedStream(stream, gate.__exit__)
 
 
 def _relay_sync_stream_ungated(

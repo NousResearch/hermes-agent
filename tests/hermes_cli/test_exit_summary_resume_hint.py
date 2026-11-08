@@ -114,3 +114,12 @@ class TestTuiExitSummaryResumeHint:
         out = capsys.readouterr().out
         assert "hermes --tui --resume 20260524_000001_abc123" in out
         assert " -p " not in out
+
+    def test_tui_exit_summary_survives_keyboard_interrupt_during_i18n(self, capsys):
+        """A ``KeyboardInterrupt`` landing mid-``t()`` lookup (e.g. Ctrl-C while the
+        locale catalog is still being parsed) must not escape this purely cosmetic
+        epilogue and crash the shell exit path."""
+        with patch("hermes_state.SessionDB", _tui_session_db), patch(
+            "hermes_cli.profiles.get_active_profile_name", return_value="dev"
+        ), patch("hermes_cli.main_tui_launch.t", side_effect=KeyboardInterrupt):
+            _print_tui_exit_summary("20260524_000001_abc123")  # must not raise

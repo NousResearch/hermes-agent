@@ -40,13 +40,18 @@ def _read_tui_active_session_file(path: Optional[str]) -> Optional[str]:
 def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Optional[str] = None) -> None:
     """Print a shell-visible epilogue after TUI exits."""
     from hermes_cli.main import _resolve_last_session
-    target = (
-        _read_tui_active_session_file(active_session_file) or session_id or _resolve_last_session(source="tui")
-    )
-    if not target:
+    try:
+        target = (
+            _read_tui_active_session_file(active_session_file) or session_id or _resolve_last_session(source="tui")
+        )
+        if not target:
+            return
+        from hermes_cli.chat_launch import print_exit_summary
+        print_exit_summary(target, command="hermes --tui")
+    except (Exception, KeyboardInterrupt):
+        # Purely cosmetic exit epilogue — never let it crash the shell exit path
+        # (e.g. a Ctrl-C landing mid-parse while loading the i18n locale catalog).
         return
-    from hermes_cli.chat_launch import print_exit_summary
-    print_exit_summary(target, command="hermes --tui")
 
 
 def _tui_force_build() -> bool:

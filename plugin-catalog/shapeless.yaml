@@ -1,7 +1,7 @@
 name: shapeless
 title: ShapelessAI
 repo: https://github.com/FirstClassTree/shapelessai
-sha: 1bacacaaf7cad924bc386a50abcd4a28bc5cd731
+sha: 1c00ceb695ed56cb7f923a0a0dedd365174e439b
 subdir: plugins/shapeless
 description: >-
   Make and publish social media content from Hermes: plan posts, edit video, generate images and
@@ -12,7 +12,8 @@ description: >-
   hosted-only connector with no local code; every tool call goes to shapelessai.com, signed in as
   the user, with the post text, media and brand notes the session hands it, which also reach the
   user's model provider through the session. Publishing tools post to the user's real social
-  accounts; drafts wait for the user's approval unless asked to publish now. Media tools spend the
+  accounts, and the package marks the server untrusted, so Hermes asks the user
+  before each write tool. Media tools spend the
   account's credits at the cost each tool states; posting spends none. Hermes stores and refreshes
   the OAuth tokens. The tool list comes from ShapelessAI's server at run time, so the pinned commit
   doesn't cover it. OAuth must be enabled with
@@ -23,7 +24,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://shapelessai.com/connect/hermes
-version: "1.0.3"
+version: "1.0.4"
 readme: false
 platforms: []
 known_issues:

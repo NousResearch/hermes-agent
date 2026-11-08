@@ -111,6 +111,16 @@ shared; the application that most recently registered it handles links.
 `hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
 :::
 
+### Retired timed session-reset settings
+
+If a profile still declares `session_reset.mode: idle`, `daily`, or `both` without
+an enabled `hermes-session-reset-policy` plugin, the update completion output
+shows its configured policy and a profile-specific installation command. Core no
+longer applies those settings. Review the community plugin before installing it;
+the notice preserves your configuration and does not install anything. The plugin
+starts a fresh conversation on the first ordinary message past a boundary, not
+from a background timer. See [Sessions](../user-guide/sessions.md#session-continuity).
+
 ### Passive update notices
 
 Pinned or noninteractive installations can disable passive CLI version and banner update checks:

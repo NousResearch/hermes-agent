@@ -19,7 +19,8 @@ from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENA
 from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
 from agent.redact_headers import (
     _COOKIE_HEADER_JSON_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE, _SECRET_HEADER_JSON_RE,
-    _SECRET_HEADER_JSON_UNTERMINATED_RE, redact_cookie_assignments, redact_header_credentials,
+    _SECRET_HEADER_JSON_UNTERMINATED_RE, json_header_value_is_credential, redact_cookie_assignments,
+    redact_header_credentials,
 )
 
 logger = logging.getLogger(__name__)
@@ -1275,7 +1276,7 @@ def _redact_json_string_value(m: re.Match, *, mask=_mask_token) -> str:
         # The regex also accepts malformed escape pairs. Keep redaction
         # fail-safe while emitting a syntactically valid replacement value.
         value = encoded_value
-    if _ENV_LOOKUP_VALUE_RE.match(value):
+    if not json_header_value_is_credential(m.group(1), value):
         return m.group(0)
     masked = json.dumps(mask(value), ensure_ascii=False)[1:-1]
     return m.group(1) + masked + m.group(3)
@@ -1345,7 +1346,7 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     truncated key and could write it back as a dead credential (#35519)."""
     mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
     if "=" in text:
-        text = redact_cookie_assignments(text, mask, _ENV_LOOKUP_VALUE_RE)
+        text = redact_cookie_assignments(text, mask)
         _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)
         if "://" not in text:  # lowercase names would match URL params

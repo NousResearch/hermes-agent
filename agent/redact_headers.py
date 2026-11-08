@@ -211,18 +211,39 @@ _COOKIE_ASSIGN_RE = re.compile(
 )
 
 
-def _redact_cookie_assignment(m: "re.Match[str]", mask, env_lookup_re: "re.Pattern[str]") -> str:
+def cookie_value_is_credential(value: str, *, qualified: bool = False) -> bool:
+    """A bare ``cookie`` key is weak, so the value shape decides as it does for ``token=``:
+    a ``name=value`` pair is a cookie payload; ``getCookie()``, ``None``, ``$(cat jar)`` and
+    ``chocolate`` are code or prose, while an opaque token is masked. A qualified
+    ``SESSION_COOKIE`` is as strong as ``SESSION_TOKEN`` and masks any literal value."""
+    from agent.redact import _should_redact_assignment
+    if value.startswith("«redacted"):
+        return False
+    key = "session_token" if qualified else "cookie"
+    return ("=" in value and not value.startswith("$")) or _should_redact_assignment(key, value, check_keyword=False)
+
+
+def json_header_value_is_credential(key: str, value: str) -> bool:
+    """Gate for a JSON ``"<header>": "<value>"`` field: cookie fields follow the cookie value
+    shape; API-key headers follow main's ``"apikey"`` field (``${API_KEY}`` stays readable)."""
+    from agent.redact import _should_redact_assignment
+    if "cookie" in key.lower():
+        return cookie_value_is_credential(value)
+    return _should_redact_assignment("api_key", value, check_keyword=False)
+
+
+def _redact_cookie_assignment(m: "re.Match[str]", mask) -> str:
     """Mask a ``cookie=`` value; a lone quoted value keeps its quotes, and a shell word joining
     quoted and bare parts (``'sid='\\''opaque'``) is masked as one word."""
     joined = m.group("q") is None or m.group("tail")
     value = m.group(0)[len(m.group(1)):] if joined else m.group("quoted")
-    if env_lookup_re.match(value) or value.startswith(("***", "«redacted")):
+    if not cookie_value_is_credential(value, qualified="_" in m.group(1)):
         return m.group(0)
     q = "" if joined else m.group("q")
     return f"{m.group(1)}{q}{mask(value)}{q}"
 
 
-def redact_cookie_assignments(text: str, mask, env_lookup_re: "re.Pattern[str]") -> str:
+def redact_cookie_assignments(text: str, mask) -> str:
     """``cookie=`` / ``*_COOKIE=`` assignment values (an ``=`` gated assignment pass in
-    agent/redact.py); ``env_lookup_re`` keeps ``os.getenv(...)`` code references intact."""
-    return _COOKIE_ASSIGN_RE.sub(lambda m: _redact_cookie_assignment(m, mask, env_lookup_re), text)
+    agent/redact.py)."""
+    return _COOKIE_ASSIGN_RE.sub(lambda m: _redact_cookie_assignment(m, mask), text)

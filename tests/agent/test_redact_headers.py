@@ -9,7 +9,7 @@ from agent.redact import redact_sensitive_text
 def test_json_headers_remain_parseable_without_exposing_credentials():
     for name in ("x-api-key", "X-Goog-Api-Key", "apikey", "Cookie", "Set-Cookie"):
         for value in ('abcd="opaque-session-secret-1234567890"; Path=/',
-                      'short"value', "opaque\\session\\credential1234567890"):
+                      's=short"value', "opaque\\session\\credential1234567890"):
             payload = {"headers": {name: value}, "model": "example", "messages": []}
             serialized = json.dumps(payload)
             redacted = redact_sensitive_text(serialized, force=True)

@@ -6,8 +6,7 @@ import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useI18n } from "@/i18n/context";
-import { LOCALE_META } from "@/i18n";
-import type { Locale } from "@/i18n";
+import type { Locale, LocaleOption } from "@/i18n";
 import { cn } from "@/lib/utils";
 
 /**
@@ -15,8 +14,9 @@ import { cn } from "@/lib/utils";
  * of all supported locales when clicked.  Persists choice to localStorage via
  * the I18n context.
  *
- * Replaces the older two-state EN↔ZH toggle now that we ship 16 locales
- * (en, zh, zh-hant, ja, de, es, fr, tr, uk, af, ko, it, ga, pt, ru, hu).
+ * Replaces the older two-state EN↔ZH toggle now that we ship 17 locales
+ * (en, zh, zh-hant, ja, de, es, fr, tr, uk, af, ko, it, ga, pt, ru, hu, ar),
+ * plus any language a language-pack plugin serves for the web surface.
  *
  * No country flags by design — languages aren't countries, and flag pairings
  * inevitably create political mismappings (e.g. Mandarin variants ≠ any single
@@ -28,7 +28,7 @@ import { cn } from "@/lib/utils";
  * bottom sheet portaled to `document.body` instead of an anchored dropdown.
  */
 export function LanguageSwitcher({ collapsed = false, dropUp = false }: LanguageSwitcherProps) {
-  const { locale, setLocale, t } = useI18n();
+  const { locale, setLocale, t, locales } = useI18n();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -58,8 +58,9 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [open, useMobileSheet]);
 
-  const current = LOCALE_META[locale];
-  const allLocales = Object.entries(LOCALE_META) as Array<[Locale, typeof current]>;
+  // Bundled locales plus language packs the backend serves for the web surface.
+  const current = locales.find((option) => option.id === locale);
+  const allLocales = locales;
   const sheetTitle = t.language.switchTo;
 
   return (
@@ -80,7 +81,7 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
           <Typography
             className="hidden sm:inline text-display tracking-wide text-xs"
           >
-            {locale === "en" ? "EN" : current.name}
+            {locale === "en" ? "EN" : (current?.name ?? locale)}
           </Typography>
         </span>
       </Button>
@@ -142,7 +143,7 @@ function LanguageSwitcherOptions({
 }: LanguageSwitcherOptionsProps) {
   return (
     <>
-      {allLocales.map(([code, meta]) => {
+      {allLocales.map(({ id: code, name }) => {
         const selected = code === locale;
 
         return (
@@ -162,7 +163,7 @@ function LanguageSwitcherOptions({
             role="option"
             type="button"
           >
-            <span className="truncate">{meta.name}</span>
+            <span className="truncate">{name}</span>
 
             {selected && <Check className="ml-auto h-3 w-3 shrink-0 text-midground" />}
           </button>
@@ -173,7 +174,7 @@ function LanguageSwitcherOptions({
 }
 
 interface LanguageSwitcherOptionsProps {
-  allLocales: Array<[Locale, (typeof LOCALE_META)[Locale]]>;
+  allLocales: LocaleOption[];
   locale: Locale;
   setLocale: (code: Locale) => void;
   setOpen: (open: boolean) => void;

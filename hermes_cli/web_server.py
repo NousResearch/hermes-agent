@@ -809,6 +809,7 @@ from hermes_cli.web_routers import (
     delegation as _delegation_routes,
     webapp_access as _webapp_access_routes,
     ui_preferences as _ui_preferences_routes,
+    i18n as _i18n_routes,
     gateway_connections as _gateway_connections_routes,
     gateway_connections_reach as _gateway_connections_reach_routes,
     webapp_relay_proxy as _webapp_relay_proxy_routes,
@@ -829,6 +830,7 @@ app.include_router(_status_routes.router)
 app.include_router(_actions_routes.router)
 app.include_router(_audio_routes.router)
 app.include_router(_display_routes.router)
+app.include_router(_i18n_routes.router)
 app.include_router(_actions_routes.status_router)
 app.include_router(_sessions_routes.list_router)
 app.include_router(_profiles_routes.sessions_router)

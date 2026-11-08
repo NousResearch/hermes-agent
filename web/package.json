@@ -15,6 +15,7 @@
     "preview": "vite preview",
     "typecheck": "tsc -b . --noEmit",
     "test": "vitest run",
+    "i18n:keys": "node scripts/i18n-keys.mjs",
     "check": "pnpm run typecheck && pnpm run test && pnpm run lint"
   },
   "dependencies": {

@@ -1,0 +1,20 @@
+name: hermes-token-ledger
+title: Hermes Token Ledger
+repo: https://github.com/ilPez00/hermes-token-ledger
+sha: 0240f42d1727d7936e157c723bbf3cdc84ea1eb1
+description: "Track LLM token usage and estimated USD cost per session in a SQLite ledger. Accumulates usage from post_api_request, exposes token_report/token_reset tools and a /tokens slash command, with optional per-session budget warnings. Disclosure - stores token counts and model names locally under the plugin data dir; no data leaves the machine."
+maintainer: ilPez00
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/ilPez00/hermes-token-ledger/blob/0240f42d1727d7936e157c723bbf3cdc84ea1eb1/README.md
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - token_report
+    - token_reset
+  provides_hooks:
+    - post_api_request
+  provides_middleware: []
+  requires_env: []

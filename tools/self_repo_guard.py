@@ -13,7 +13,7 @@ from typing import Callable
 
 from tools.approval_detection import (
     _bash_exec_payload, _deobfuscate_shell_word_for_detection, _iter_shell_command_starts,
-    _is_shell_comment_start, _read_shell_word, _scan_shell)
+    _ParserLimit, _is_shell_comment_start, _read_shell_word, _scan_shell)
 
 # bisect drives repeated checkouts of the running root — the exact skew hazard guarded here.
 _WORKTREE_MUTATIONS = frozenset({
@@ -504,6 +504,13 @@ _INSPECTORS: dict[str, Callable[..., str | None]] = {
 
 def _find_mutation(command: str, cwd: Path, root: Path, depth: int = 0) -> str | None:
     """Name of the first command in ``command`` that would rewrite ``root``, else None."""
+    try:
+        return _find_mutation_unbounded(command, cwd, root, depth)
+    except _ParserLimit:
+        return "a command nested too deeply to inspect"
+
+
+def _find_mutation_unbounded(command: str, cwd: Path, root: Path, depth: int) -> str | None:
     if depth > _MAX_RECURSION:
         return None
     masked_command, heredocs = _mask_heredocs(command)

@@ -1,7 +1,9 @@
 """Dangerous-command detection: normalization, tokenizing, and pattern tables.
 
 Pure command classification for :mod:`tools.approval` — no approval state, config reads, or
-prompting live here.
+prompting live here. Execution-flag parsing (interpreter ``-e``/``-c``, shell ``-c``,
+read-tool program flags, substitution bodies) lives in :mod:`tools.approval_detection_exec`;
+awk and docker lifecycle live in their siblings. Callers keep importing this module.
 """
 
 import bisect
@@ -13,6 +15,31 @@ import re
 import shlex
 import tempfile
 import unicodedata
+
+from tools.approval_detection_docker import (
+    _DOCKER_LIFECYCLE_DESCRIPTIONS,
+    _docker_lifecycle_prose_exempt,
+)
+from tools.approval_detection_spans import (
+    _MAX_SUBSTITUTION_NESTING,
+    _ParserLimit,
+    _analyze_substitutions,
+    _is_command_brace,
+    _is_word_brace,
+    _is_shell_comment_start,
+    _quote_readings,
+    _scan_substitution_end,
+    _substitution_nesting_exceeded,
+)
+from tools.approval_detection_awk import AWK_EXEC_DESCRIPTION
+from tools.approval_detection_exec import (
+    _bash_exec_payload,
+    _execution_flag_findings,
+    _is_redirection_operator_char,
+    _iter_command_substitution_bodies,
+    _iter_top_level_shell_segments,
+    _shell_segment_tokens,
+)
 
 logger = logging.getLogger("tools.approval")
 
@@ -363,9 +390,21 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
 
 
 def detect_hardline_command(command: str) -> tuple:
-    """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description)."""
+    """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description).
+    Every shell-dependent reading of the command's quotes is checked (``_quote_readings``)."""
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION)
+    try:
+        for reading in _quote_readings(command):
+            verdict = _detect_hardline_reading(reading)
+            if verdict[0]:
+                return verdict
+    except _ParserLimit:
+        return (True, _PARSER_LIMIT_DESCRIPTION)
+    return (False, None)
+
+
+def _detect_hardline_reading(command: str) -> tuple:
     # The malformed-quoting verdict needs the author's quote state. Normalization strips escapes
     # (`\"` -> `"`), so a shell-valid pattern like `grep -o "[^\"]*"` lexed as unterminated and was
     # reported as a hardline block (118 of 125 hardline blocks in one week of real use, every one a
@@ -844,7 +883,7 @@ _PARAM_DEFAULT_RE = re.compile(r"\$\{[^}:}\s]+:-(?P<default>[^}]*)\}")
 _SIMPLE_SHELL_LITERAL_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _COMMAND_WRAPPER_WORDS = {"sudo", "env", "exec", "nohup", "setsid", "time", "command", "builtin",
-                          "nice", "timeout", "stdbuf", "ionice", "chrt", "taskset", "chroot"}
+                          "nice", "timeout", "stdbuf", "ionice", "chrt", "taskset", "chroot", "xargs"}
 _SUDO_OPTIONS_WITH_ARG = {"-c", "--close-from", "-g", "--group", "-h", "--host", "-p", "--prompt", "-u", "--user"}
 # Adapted from embwl0x's command-position work in #76063. Option operands are
 # data, not executable positions; option spelling remains case-sensitive.
@@ -857,79 +896,25 @@ _COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
     "timeout": {"-k", "--kill-after", "-s", "--signal"},
     "stdbuf": {"-e", "--error", "-i", "--input", "-o", "--output"},
     "ionice": {"-c", "--class", "-n", "--classdata"},
+    # GNU findutils xargs (+ BSD -J/-R/-S): -i/-e/-l and --replace/--eof/--max-lines take only
+    # ATTACHED optional values.
+    "xargs": {"-a", "--arg-file", "-d", "--delimiter", "-E", "-I", "-J", "-L", "-n", "--max-args", "-P",
+              "--max-procs", "-R", "-s", "-S", "--max-chars", "--process-slot-var"},
 }
+_COMMAND_WRAPPER_ATTACHED_ONLY_OPTIONS = {"xargs": "ile"}
 _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS = {
-    "command": {"-v", "-V"}, "chrt": {"-p", "--pid"},
+    "command": {"-v", "-V"}, "chrt": {"-p", "--pid"}, "xargs": {"--help", "--version"},
     "ionice": {"-p", "--pid", "--pgid", "--uid"}, "taskset": {"-p", "--pid"},
 }
 _COMMAND_WRAPPER_POSITIONAL_ARGS = {"chroot": 1, "chrt": 1, "taskset": 1, "timeout": 1}
 _SHELL_COMMAND_TRANSITIONS = {"if", "then", "else", "elif", "do", "while", "until", "!"}
-_SHELL_REDIRECTION_RE = re.compile(r"(?:[0-9]+)?(?:>>|<<|<>|>&|<&|>\||[<>])")
+_SHELL_REDIRECTION_RE = re.compile(r"(?:&>>|&>|(?:[0-9]+)?(?:>>|<<|<>|>&|<&|>\||[<>]))")
 
-_INTERPRETER_NAME_RES = tuple((family, re.compile(pattern)) for family, pattern in (
-    ("python", r"py(?:\.exe)?|python[23]?(?:\.\d+)*(?:\.exe)?"), ("node", r"node(?:js)?(?:\.exe)?"),
-    ("perl", r"perl[0-9]*(?:\.\d+)*(?:\.exe)?"), ("ruby", r"ruby[0-9.]*(?:\.exe)?"), ("php", r"php(?:\.exe)?"),
-    ("powershell", r"powershell(?:\.exe)?|pwsh(?:\.exe)?"),
-    ("bun", r"bun(?:\.exe)?"), ("deno", r"deno(?:\.exe)?"),
-))
-_INTERPRETER_EXEC_FLAGS = {
-    "python": {"-c"}, "node": {"-e", "--eval", "-p", "--print"}, "perl": {"-e", "--eval"}, "ruby": {"-e"},
-    "php": {"-r"}, "powershell": {"-command", "-c", "-file", "-f"},
-    "bun": {"-e", "--eval"}, "deno": {"eval", "-e", "--eval"},
-}
-_INTERPRETER_WITH_ARG = {
-    "python": {"-W", "-X", "--check-hash-based-pycs"},
-    "node": {"-C", "--conditions", "--cpu-prof-dir", "--diagnostic-dir", "--icu-data-dir", "--import", "--loader",
-             "--openssl-config", "--require", "--title"},
-    "perl": {"-0", "-F", "-I", "-M", "-m", "-x"}, "ruby": {"-C", "-E", "-F", "-I", "-K", "-r"},
-    "php": {"-c", "-d", "-z"},
-    "powershell": {"-configurationname", "-custompipename", "-executionpolicy", "-inputformat", "-outputformat",
-                   "-settingsfile", "-version", "-windowstyle", "-workingdirectory"},
-    # Deno's inline-script entry is the bare `eval` subcommand; the only global option that
-    # may precede it and take a separate value is `-L/--log-level <level>` (`--env-file[=v]`
-    # binds with `=`; the `--unstable-*` and `--ext` flags belong after `eval`).
-    "bun": {"--config", "--cwd", "--env-file", "--preload", "--require"}, "deno": {"-L", "--log-level"},
-}
-_READ_TOOL_EXEC_FLAGS = {
-    "sort": {"--compress-program"}, "rg": {"--pre", "--hostname-bin"}, "ag": {"--pager"},
-    "man": {"--pager", "--html", "-P", "-H"},
-}
-# Required-argument options are ownership boundaries: an option-looking next token is data, not another option. These
-# sets mirror the invocation grammar of the supported binaries (ripgrep 14, GNU sort, man-db, and ag 2.2).
-_READ_TOOL_LONG_OPTIONS_WITH_ARG = {
-    "rg": {
-        "--after-context", "--before-context", "--color", "--colors", "--context", "--context-separator",
-        "--dfa-size-limit", "--encoding", "--engine", "--field-context-separator", "--field-match-separator",
-        "--file", "--generate", "--glob", "--hostname-bin", "--hyperlink-format", "--iglob", "--ignore-file",
-        "--max-columns", "--max-count", "--max-depth", "--max-filesize", "--path-separator", "--pre", "--pre-glob",
-        "--regex-size-limit", "--regexp", "--replace", "--sort", "--sortr", "--threads", "--type", "--type-add",
-        "--type-clear", "--type-not",
-    },
-    "sort": {
-        "--batch-size", "--buffer-size", "--compress-program", "--field-separator", "--files0-from", "--key",
-        "--output", "--parallel", "--random-source", "--sort", "--temporary-directory",
-    },
-    "man": {
-        "--config-file", "--encoding", "--extension", "--locale", "--manpath", "--pager", "--preprocessor",
-        "--prompt", "--recode", "--sections", "--systems",
-    },
-    "ag": {
-        "--ackmate-dir-filter", "--color-line-number", "--color-match", "--color-path", "--depth",
-        "--filename-pattern", "--file-search-regex", "--ignore", "--ignore-dir", "--max-count", "--pager",
-        "--path-to-ignore", "--width", "--workers",
-    },
-}
-_READ_TOOL_SHORT_OPTIONS_WITH_ARG = {
-    "rg": frozenset("efEmjgdtTABCMr"), "sort": frozenset("koStT"), "man": frozenset("CRLmMSserEPp"),
-    "ag": frozenset("gGmpW"),
-}
 _GREP_OPTIONS_WITH_ARG = {
     "--after-context", "--before-context", "--binary-files", "--context", "--directories", "--devices", "--exclude",
     "--exclude-dir", "--exclude-from", "--include", "--label", "--max-count", "--regexp", "--file",
 }
 _GREP_SHORT_OPTIONS_WITH_ARG = {"A", "B", "C", "D", "d", "e", "f", "m"}
-_BASH_OPTIONS_WITH_ARG = {"-O", "+O", "-o", "+o", "--init-file", "--rcfile"}
-_BASH_SHORT_OPTION_LETTERS = frozenset("ilrsDcabefhkmnptuvxBCEHPTOo")
 _MAX_DETECTION_COMMAND_CHARS, _MAX_SEPARATOR_FREE_COMMAND_CHARS, _MAX_DETECTION_SEGMENTS = 128_000, 4_096, 25_000
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
@@ -945,7 +930,10 @@ def _command_parser_limit_exceeded(command: str) -> bool:
     # Long separator-free input has no compound-command utility and makes every regex inspect one giant token.
     if len(command) > _MAX_SEPARATOR_FREE_COMMAND_CHARS and not any(char in command for char in ";&|\n"):
         return True
-    return sum(command.count(char) for char in ";&|\n") >= _MAX_DETECTION_SEGMENTS
+    if sum(command.count(char) for char in ";&|\n") >= _MAX_DETECTION_SEGMENTS:
+        return True
+    # Substitutions nested deeper than any real command: refuse rather than descend into them.
+    return _substitution_nesting_exceeded(command)
 
 
 def _backtick_end_from(segment: str, i: int) -> int | None:
@@ -1103,160 +1091,6 @@ def _grep_safe_detection_variant(command: str) -> tuple[str, bool]:
     return _splice(command, [(start, end, " " * (end - start)) for start, end in spans]), False
 
 
-def _interpreter_family(executable: str) -> str | None:
-    name = os.path.basename(executable).lower()
-    return next((family for family, name_re in _INTERPRETER_NAME_RES if name_re.fullmatch(name)), None)
-
-
-def _shell_segment_tokens(segment: str, start: int) -> list[str] | None:
-    """Tokenize an already-bounded command segment. ``None`` distinguishes malformed quoting from
-    an empty segment so callers can fail closed for a program-bearing option rather than silently
-    skip it."""
-    try:
-        lexer = shlex.shlex(segment[start:], posix=True, punctuation_chars="<>")
-        lexer.whitespace_split, lexer.commenters = True, ""
-        return list(lexer)
-    except ValueError:
-        return None
-
-
-def _iter_top_level_shell_segments(command: str):
-    """Yield top-level command segments in one left-to-right pass."""
-    start = 0
-    for kind, i, j, quote in _scan_shell(command, comments=True):
-        if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n"):
-            if start < i:
-                yield command[start:i]
-            start = j
-    if start < len(command):
-        yield command[start:]
-
-
-def _interpreter_exec_flag(family: str, args: list[str]) -> str | None:
-    """Return an execution-bearing interpreter option, if present."""
-    flags, with_arg = _INTERPRETER_EXEC_FLAGS[family], _INTERPRETER_WITH_ARG[family]
-    powershell = family == "powershell"
-    skip_value = False
-    for token in args:
-        if skip_value:
-            skip_value = False
-            continue
-        if token == "--" or (not powershell and not token.startswith("-")):
-            # Deno evaluates inline scripts via a bare `eval` subcommand rather than a dash
-            # flag: the FIRST positional token, after any global options (`deno -q eval ...`);
-            # a later positional `eval` (`deno run eval.ts`) stays data.
-            if family == "deno" and token.lower() == "eval":
-                return "eval"
-            break
-        option, equals, _ = token.partition("=")
-        comparable = option.lower() if powershell else option
-        if comparable in flags:
-            return comparable
-        # `-Wonce` and `ruby -rjson` attach an option value; they are not short-option bundles containing an execution
-        # flag. PowerShell's normal long options also use one dash, so bundle parsing never applies to that family.
-        has_attached_option_value = any(
-            option.startswith(short) and len(option) > len(short)
-            for short in with_arg if short.startswith("-") and not short.startswith("--")
-        )
-        if not powershell and not option.startswith("--") and len(option) > 2 and not has_attached_option_value:
-            bundled = next((f"-{char}" for char in option[1:] if f"-{char}" in flags), None)
-            if bundled:
-                return bundled
-        skip_value = comparable in with_arg and not equals
-    return None
-
-
-def _bash_exec_payload(args: list[str]) -> tuple[bool, str | None]:
-    """Return whether Bash ``-c`` occurs and the command string it owns.
-    Bash's O/o options consume the following argument even when they precede a later ``-c`` or
-    share its short-option bundle; the two startup-file long options own their next token.
-    Parsing those first prevents both missed payloads and false ``-c`` hits."""
-    index = 0
-    while index < len(args):
-        token = args[index]
-        if token == "--" or not token.startswith(("-", "+")):
-            break
-        if token in _BASH_OPTIONS_WITH_ARG:
-            index += 2
-            continue
-        chars = token[1:]
-        # Bash option letters are case-sensitive; restricting to the documented alphabet
-        # preserves invalid controls such as `-Wc`.
-        if token.startswith("--") or not set(chars) <= _BASH_SHORT_OPTION_LETTERS:
-            index += 1
-            continue
-        consumed_option_arg = int("O" in chars or "o" in chars)
-        if "c" in chars:
-            payload_index = index + 1 + consumed_option_arg
-            return True, (args[payload_index] if payload_index < len(args) else None)
-        index += 1 + consumed_option_arg
-    return False, None
-
-
-def _read_tool_exec_flag(tool: str, args: list[str]) -> tuple[str, str] | None:
-    """Return (option, program) for a read-only tool's program-running flag."""
-    flags = _READ_TOOL_EXEC_FLAGS[tool]
-    index = 0
-    while index < len(args):
-        token = args[index]
-        if token == "--":
-            break
-        option, equals, payload = token.partition("=")
-        payload = payload if equals else None
-        matched = option if option in flags else None
-        if tool == "man" and token.startswith(("-P", "-H")) and len(token) > 2:
-            matched, payload = token[:2], token[2:]
-        if matched:
-            if payload is None and index + 1 < len(args):
-                payload = args[index + 1]
-            # The option owns its program argument regardless of spelling; the real binaries
-            # execute a '-'-prefixed payload rather than reparsing it.
-            if payload:
-                return matched, payload
-            index += 2 if payload is not None and "=" not in token else 1
-        elif option in _READ_TOOL_LONG_OPTIONS_WITH_ARG[tool] and payload is None:
-            index += 2
-        elif token.startswith("-") and not token.startswith("--") and len(token) > 1:
-            # In a short bundle, the first argument-taking option owns the rest of the token, or
-            # the following token when it occurs last.
-            shorts = _READ_TOOL_SHORT_OPTIONS_WITH_ARG[tool]
-            owner = next((k for k, char in enumerate(token[1:], start=1) if char in shorts), None)
-            index += 2 if owner == len(token) - 1 else 1
-        else:
-            index += 1
-    return None
-
-
-def _execution_flag_findings(command: str):
-    """Yield scoped execution mechanisms and any executable payloads."""
-    for segment in _iter_top_level_shell_segments(command):
-        for start, _, word in _iter_shell_command_word_spans(segment):
-            executable = _deobfuscate_shell_word_for_detection(word)
-            tokens = _shell_segment_tokens(segment, start)
-            executable_name = os.path.basename(executable).lower()
-            family = _interpreter_family(executable)
-            if tokens is None:
-                if family is not None or executable_name in _READ_TOOL_EXEC_FLAGS:
-                    yield (_MALFORMED_EXEC_DESCRIPTION, None)
-                continue
-            if not tokens:
-                continue
-            args = tokens[1:]
-            if family and _interpreter_exec_flag(family, args):
-                yield ("script execution via -e/-c flag", None)
-            elif family and any(token.startswith("<<") for token in args):
-                yield ("script execution via heredoc", None)
-            else:
-                if executable_name in _SHELL_NAMES:
-                    found, payload = _bash_exec_payload(args)
-                    if found:
-                        yield ("shell command via -c/-lc flag", payload)
-                if executable_name in _READ_TOOL_EXEC_FLAGS:
-                    finding = _read_tool_exec_flag(executable_name, args)
-                    if finding:
-                        yield (f"arbitrary program execution via {executable_name} {finding[0]}", finding[1])
-
-
 def _skip_shell_whitespace(command: str, pos: int) -> int:
     while pos < len(command) and command[pos].isspace():
         pos += 1
@@ -1274,7 +1108,9 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
     With *comments*, ``"comment"`` spans are skipped without interpreting their quote syntax.
     ``quote`` is the state the step was read in (``None``, ``'`` or ``"``). Substitutions are
     recognized unquoted when ``"u"`` is in *subst*, inside double quotes when ``"q"`` is; *brace*
-    adds unquoted ``${...}``. An unterminated substitution falls through as plain chars unless
+    adds ``${...}`` (unquoted or inside double quotes). Spans are closed by one iterative pass
+    (``_analyze_substitutions``): linear time, fail-closed nesting limit. An unterminated
+    substitution falls through as plain chars unless
     *stop_unterminated*, which yields ``("subst", i, None, quote)`` and ends the scan (the caller
     descends to *end* itself). *naive_backtick* closes a backtick at the next backtick even if
     escaped (the quoted-prose masker's historical behavior)."""
@@ -1293,14 +1129,13 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
         elif ch == quote or (quote is None and ch in "'\""):
             kind = "quote"
         elif quote != "'" and ("q" if quote else "u") in subst and (
-            ch == "`" or text.startswith("$(", i) or (brace and not quote and text.startswith("${", i))
+            ch == "`" or text.startswith("$(", i) or (brace and text.startswith("${", i))
+            or _is_command_brace(text, i)
         ):
-            if ch == "`":
-                close = text.find("`", i + 1) + 1 or None if naive_backtick else _scan_backtick_end(text, i)
-            elif text[i + 1] == "(":
-                close = _scan_dollar_paren_end(text, i)
+            if ch == "`" and naive_backtick:
+                close = text.find("`", i + 1) + 1 or None
             else:
-                close = text.find("}", i + 2) + 1 or None
+                close = _scan_substitution_end(text, i)
             if close is not None:
                 kind, j = "subst", close
             elif stop_unterminated:
@@ -1312,27 +1147,10 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
         i = j
 
 
-def _scan_dollar_paren_end(command: str, start: int) -> int | None:
-    """Return the offset after a balanced ``$(...)`` command substitution."""
-    depth = 1
-    for kind, i, _, quote in _scan_shell(command, start + 2):
-        if kind == "char" and not quote:
-            depth += command.startswith("$(", i) - (command[i] == ")")
-            if depth == 0:
-                return i + 1
-    return None
-
-
-def _scan_backtick_end(command: str, start: int) -> int | None:
-    # Backticks have no quote awareness: only a backslash escapes the next char.
-    match = re.compile(r"(?:\\.|[^`\\])*`", re.DOTALL).match(command, start + 1)
-    return match.end() if match else None
-
-
 def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
     """Read one shell word without executing expansions."""
     start = end = _skip_shell_whitespace(command, pos)
-    for kind, i, j, quote in _scan_shell(command, start, subst="u", brace=True):
+    for kind, i, j, quote in _scan_shell(command, start, subst="uq", brace=True):
         if kind == "char" and quote is None and (command[i].isspace() or command[i] in ";&|<>()"):
             break
         end = j
@@ -1365,7 +1183,7 @@ def _replace_simple_command_substitutions(word: str) -> str:
     i = 0
     while i < len(word):
         opener = 2 if word.startswith("$(", i) else 1 if word[i] == "`" else 0
-        end = (_scan_dollar_paren_end if opener == 2 else _scan_backtick_end)(word, i) if opener else None
+        end = _scan_substitution_end(word, i) if opener else None
         replacement = _literal_command_substitution_output(word[i + opener:end - 1]) if end is not None else None
         if replacement is None:
             replacement, end = word[i], i + 1
@@ -1398,23 +1216,36 @@ def _deobfuscate_shell_word_for_detection(word: str) -> str:
     return word
 
 
-def _is_shell_comment_start(command: str, index: int) -> bool:
-    return command[index] == "#" and (index == 0 or command[index - 1].isspace()
-                                      or command[index - 1] in ";&|()<>")
-
-
 def _iter_shell_command_starts(command: str):
     starts = [0]
 
-    def scan(start: int, end: int) -> None:
-        skip = -1
-        for kind, i, j, quote in _scan_shell(command, start, end, subst="uq", stop_unterminated=True,
-                                            comments=True):
+    def scan(start: int, end: int, depth: int = 0, word: bool = False) -> None:
+        # *word*: the body of a ${...} expansion is one word: no comments, and its separators are
+        # data. Only substitutions nested in it run commands.
+        if depth > _MAX_SUBSTITUTION_NESTING:
+            raise _ParserLimit  # never recurse past the limit; entry points fail closed
+        skip, previous = -1, None
+        for step in _scan_shell(command, start, end, subst="uq", brace=True, stop_unterminated=True,
+                                comments=not word):
+            kind, i, j, quote = step
+            prior, previous = previous, step
             if kind == "subst":
-                # Record a nested $(...)/backtick command start and scan its body.
+                # Record a nested $(...)/backtick command start and scan its body. A ${...}
+                # parameter expansion is not a command, but may still hold a nested substitution.
                 inner = i + (1 if command[i] == "`" else 2)
-                starts.append(inner)
-                scan(inner, end if j is None else j - 1)
+                is_word = _is_word_brace(command, i)
+                if not is_word:
+                    starts.append(inner)
+                scan(inner, end if j is None else j - 1, depth + 1, is_word)
+            elif word:
+                # An unquoted `<(`/`>(` inside a ${x:-word} runs its body as a command: scan the rest
+                # of the word as commands (fail closed; a stray separator there only asks).
+                if kind == "char" and quote is None and command[i] == "(" and i > start \
+                        and command[i - 1] in "<>":
+                    starts.append(i + 1)
+                    scan(i + 1, end, depth + 1, False)
+                    break
+                continue
             elif kind == "char" and quote is None and i != skip:
                 # `{` opens a brace group only as its own word (after whitespace or a separator): `${IFS}`
                 # is a parameter expansion and `-{delete,print}` a brace-expansion word, and a start
@@ -1422,7 +1253,17 @@ def _iter_shell_command_starts(command: str):
                 if command[i] in "(;\n" or (command[i] == "{" and (i == 0 or command[i - 1].isspace()
                                                                    or command[i - 1] in "(;&|)")):
                     starts.append(i + 1)
-                elif command[i] in "&|":
+                elif command[i] == "&" and command.startswith(">", i + 1) and prior \
+                        and not (prior[0] == "char" and prior[3] is None and command[prior[1]] in "&|<>") \
+                        and _is_redirection_operator_char(command, i, prior):
+                    # `a &>f b`: bash redirects both streams, but dash/sh read `a &` then `>f b`, so
+                    # `b` starts a command there. Keep BOTH readings (fail closed): the word after
+                    # the redirect target is also a command start.
+                    op_end = i + 2 + command.startswith(">>", i + 1)
+                    target_end = _read_shell_word(command, op_end)[1]
+                    if target_end < end:
+                        starts.append(target_end)
+                elif command[i] in "&|" and not _is_redirection_operator_char(command, i, prior):
                     repeated = i + 1 < end and command[i + 1] == command[i]
                     skip = i + 1 if repeated else skip
                     starts.append(i + 1 + repeated)
@@ -1463,22 +1304,32 @@ def _mask_quoted_newlines(command: str) -> str:
     return _mask_quoted_newlines_span(command, 0, len(command))
 
 
-def _mask_quoted_newlines_span(command: str, start: int, end: int) -> str:
+def _mask_quoted_newlines_span(command: str, start: int, end: int, depth: int = 0,
+                               word: bool = False) -> str:
     """``_mask_quoted_newlines`` over ``command[start:end]``. A ``$(...)`` / backtick substitution
     inside double quotes is EXECUTABLE, not data: its body is re-scanned with a fresh quote state so a
     newline that separates commands inside it survives as a command boundary. Masking it as quoted
     data turned ``"$(grep x f\nreboot)"`` into ``... f reboot)``, which no later stage can tell from an
     operand; the pre-fix scanner only caught it by refusing the whole command as malformed."""
+    if depth > _MAX_SUBSTITUTION_NESTING:
+        raise _ParserLimit
     out: list[str] = []
-    for kind, i, j, quote in _scan_shell(command, start, end, subst="q"):
+    for kind, i, j, quote in _scan_shell(command, start, end, subst="uq", brace=True, comments=not word):
         if kind == "subst":
             # j is the index just past the closer; keep the opener and closer, recurse into the body.
-            body_start = i + (2 if command.startswith("$(", i) else 1)
+            body_start = i + (2 if command.startswith(("$(", "${"), i) else 1)
+            is_word = _is_word_brace(command, i)
             body_end = j - 1
             out.append(command[i:body_start])
-            out.append(_mask_quoted_newlines_span(command, body_start, body_end))
+            out.append(_mask_quoted_newlines_span(command, body_start, body_end, depth + 1,
+                                                  is_word))
             out.append(command[body_end:j])
-        elif quote and kind == "char" and command[i] == "\n":
+        elif word and not quote and kind == "char" and command[i] == "(" and i > start \
+                and command[i - 1] in "<>":
+            # `<(`/`>(` inside a ${x:-word} runs a command body: its newlines are separators.
+            out.append("(" + _mask_quoted_newlines_span(command, i + 1, end, depth + 1, False))
+            break
+        elif (quote or word) and kind == "char" and command[i] == "\n":
             out.append(" ")
         else:
             out.append(command[i:j])
@@ -1517,7 +1368,24 @@ def _iter_shell_command_word_spans(command: str):
                 if option in queries or (wrapper == "command" and not option.startswith("--")
                                          and set(option[1:]) & {"v", "V"}):
                     break
-                skip_arg = "=" not in deobfuscated and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG.get(wrapper, set())
+                with_arg = _COMMAND_WRAPPER_OPTIONS_WITH_ARG.get(wrapper, set())
+                if option.startswith("--") and option not in with_arg:
+                    # getopt_long accepts any unique prefix of a long option (`xargs --delim , ...`).
+                    matches = {o for o in with_arg if o.startswith(option)}
+                    option = matches.pop() if len(matches) == 1 else option
+                skip_arg = "=" not in deobfuscated and option in with_arg
+                if not skip_arg and len(option) > 2 and option[0] == "-" and option[1] != "-":
+                    # Bundled short options (`xargs -tn 1 sh -c ...`): the first option that takes an
+                    # operand ends the bundle; the operand is the NEXT word only when nothing is
+                    # attached (`=` counts as attached text). Optional-attached flags (xargs -i/-e/-l)
+                    # swallow the rest of the bundle too, but never the next word.
+                    attached_only = _COMMAND_WRAPPER_ATTACHED_ONLY_OPTIONS.get(wrapper, "")
+                    for k, flag in enumerate(deobfuscated[1:], 1):
+                        if flag in attached_only:
+                            break
+                        if "-" + flag in with_arg:
+                            skip_arg = k == len(deobfuscated) - 1
+                            break
                 continue
             if positionals:
                 positionals -= 1
@@ -1531,14 +1399,24 @@ def _iter_shell_command_word_spans(command: str):
             positionals = _COMMAND_WRAPPER_POSITIONAL_ARGS.get(name, 0)
 
 
+def _shell_command_segment_end(command: str, start: int) -> int:
+    """Offset of the separator, comment or closer that ends the command starting at *start*.
+    A redirection's ``&``/``|`` (``2>&1``, ``&>f``, ``>|f``) stays inside the command."""
+    previous = None
+    for step in _scan_shell(command, start, subst="uq", brace=True, comments=True):
+        kind, i, _, quote = step
+        prior, previous = previous, step
+        if kind == "comment":
+            return i
+        if kind == "char" and quote is None and command[i] in ";&|\n)`" \
+                and not _is_redirection_operator_char(command, i, prior):
+            return i
+    return len(command)
+
+
 def _shell_command_segment(command: str, start: int) -> str:
     """Bound a candidate to its command, preserving quoted argument bytes."""
-    end = len(command)
-    for kind, i, _, quote in _scan_shell(command, start, subst="uq", brace=True, comments=True):
-        if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n)`"):
-            end = i
-            break
-    return command[start:end].strip()
+    return command[start:_shell_command_segment_end(command, start)].strip()
 
 
 def _split_env_string(payload: str) -> list[str] | None:
@@ -1627,6 +1505,18 @@ def _deny_command_variants(command: str):
     the original quote state, preserve path-specific rules, and fold only the
     executable basename (never arbitrary argument paths).
     """
+    # The unscanned command and its plain normalization come first, so a command too nested to
+    # parse still meets every glob exactly as before the lexical projections existed.
+    yield command
+    yield _normalize_command_for_detection(command)
+    try:
+        for reading in _quote_readings(command):
+            yield from _deny_command_variants_reading(reading)
+    except _ParserLimit:
+        return
+
+
+def _deny_command_variants_reading(command: str):
     yield from _command_detection_variants(command)
     pending, seen = [command], set()
     while pending:
@@ -1664,6 +1554,12 @@ def _deny_command_variants(command: str):
                 pending.append(payload)
 
 
+def _raw_detection_text(command: str) -> str:
+    """The command as written (only ANSI/NUL/width folding applied, quoted newlines masked)."""
+    from tools.ansi_strip import strip_ansi
+    return unicodedata.normalize('NFKC', strip_ansi(_mask_quoted_newlines(command)).replace('\x00', ''))
+
+
 def _command_detection_variants(command: str):
     # Mask quoted newlines BEFORE normalization: normalization strips escapes (\" -> ") and ""
     # pairs, corrupting quote tracking (`echo "a\""` becomes an unterminated quote) so masking
@@ -1693,16 +1589,28 @@ def _command_detection_variants(command: str):
     # Program-bearing options are parsed in their owning command's context; surfacing only the payload lets the
     # hardline floor inspect what will actually run without promoting similar flags or quoted prose.
     pending = [normalized]
+    raw_text = _raw_detection_text(command)
+    if raw_text != normalized:
+        pending.append(raw_text)  # normalization can turn `echo ""#; bash -c ...` into a comment
     while pending:
         for _, payload in _execution_flag_findings(pending.pop()):
             if fresh(payload):
-                yield payload
-                # A payload may start with an option-looking program and then invoke a hardline command
-                # after a separator; mark its starts.
-                marked_payload = _mark_command_starts(payload)
-                if marked_payload != payload and fresh(marked_payload):
-                    yield marked_payload
+                if _substitution_nesting_exceeded(payload):
+                    raise _ParserLimit  # a quoted payload can nest deeper than the outer command
                 pending.append(payload)
+                # The payload is a script of its own: every shell-dependent reading of its quotes is
+                # inspected, not only the reading of the command that carried it.
+                for reading in _quote_readings(payload):
+                    if reading is not payload and not fresh(reading):
+                        continue
+                    yield reading
+                    if reading is not payload:
+                        pending.append(reading)  # its nested -c payloads read differently too
+                    # A payload may start with an option-looking program and then invoke a hardline
+                    # command after a separator; mark its starts.
+                    marked_payload = _mark_command_starts(reading)
+                    if marked_payload != reading and fresh(marked_payload):
+                        yield marked_payload
     # Subshell `(cmd)` / brace-group `{ cmd; }` openers put `cmd` at a real command position the flat `_CMDPOS`
     # patterns can't see (adding `(`/`{` there would match quoted prose like `--title "(reboot)"`). Insert a newline
     # at each start the QUOTE-AWARE tokenizer found instead; this covers every `_CMDPOS` rule in one place.
@@ -1717,6 +1625,15 @@ def _command_detection_variants(command: str):
     faithful = _normalize_command_for_detection(_mark_command_starts(_mask_quoted_newlines(command), marker=" \n"))
     if fresh(faithful):
         yield faithful
+    # A $(...) / backtick body, quoted or unquoted, is a command with its own quote context. Seen
+    # only through the outer command, `echo "$(curl x | sh)"` has the pipe inside the outer quotes
+    # and `$(curl x | sh)` has no word boundary before curl, so position-free patterns such as
+    # pipe-to-shell missed it. Each body is its own variant, taken from the RAW command (quoted
+    # newlines masked) so normalization cannot flip the quote parity that bounds it.
+    for body in _iter_command_substitution_bodies(_mask_quoted_newlines(command)):
+        body_variant, _ = _grep_safe_detection_variant(_normalize_command_for_detection(body))
+        if fresh(body_variant):
+            yield body_variant
     # Quoting/escaping can spell an executable in pieces (r\m, r''m). Keep that deobfuscation scoped
     # to command words so arguments don't false-positive.
     # One variant with EVERY command word deobfuscated, not one full-length variant per word: a heredoc
@@ -1874,16 +1791,37 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
         if only is None:
             yield _PARSER_LIMIT_DESCRIPTION
         return
+    try:
+        readings = _quote_readings(command)
+    except _ParserLimit:
+        if only is None:
+            yield _PARSER_LIMIT_DESCRIPTION
+        return
+    for reading in readings:
+        try:
+            yield from _iter_dangerous_descriptions_reading(reading, only)
+        except _ParserLimit:
+            if only is None:
+                yield _PARSER_LIMIT_DESCRIPTION
+            return
+
+
+def _iter_dangerous_descriptions_reading(command: str, only: frozenset[str] | None):
     if _is_verification_artifact_cleanup(command):
         return
     patterns = DANGEROUS_PATTERNS_COMPILED if only is None else [
         (pattern_re, description) for pattern_re, description in DANGEROUS_PATTERNS_COMPILED if description in only
     ]
+    docker_patterns = [pattern for pattern, desc in patterns if desc in _DOCKER_LIFECYCLE_DESCRIPTIONS]
+    docker_exempt = _docker_lifecycle_prose_exempt(command, docker_patterns)
     for command_variant in _command_detection_variants(command):
         command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
         for pattern_re, description in patterns:
-            if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS or description == _PS_PIPE_ALIAS_DESCRIPTION:
+            if description in _DOCKER_LIFECYCLE_DESCRIPTIONS:
+                if not docker_exempt and pattern_re.search(command_lower):
+                    yield description
+            elif description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS or description == _PS_PIPE_ALIAS_DESCRIPTION:
                 if masked_lower is None:
                     masked_lower = _lower_preserving_flags(
                         _mask_quoted_prose(command_variant)
@@ -1908,6 +1846,11 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
         yield description
+    # Normalization strips `\\"`, drops `""` pairs (flipping awk's string parity) and can create a
+    # false comment (`echo ""#; bash -c ...`), so the structure is also read as written.
+    raw = _raw_detection_text(command)
+    if raw != normalized:
+        yield from dict.fromkeys(d for d, _ in _execution_flag_findings(raw))
     if _is_shell_token_spliced_gateway_lifecycle(command):
         yield _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION
     if _HIDDEN_VARIATION_SELECTOR_RE.search(command):

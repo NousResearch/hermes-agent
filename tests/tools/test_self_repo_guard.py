@@ -417,3 +417,8 @@ class TestBlockMessageGuidance:
         hit, msg = _detect("git rebase origin/main", repo, repo)
         assert hit is True
         assert f"{get_scratch_dir(prune=False)}/<task>" in msg
+
+
+@pytest.mark.parametrize("prefix", ["cat <(true)#; ", "a=(1)#; ", "echo $(echo \\ #); "])
+def test_mid_word_hash_does_not_hide_a_mutation(repo, prefix):
+    assert _detect(prefix + "git checkout main", repo, repo)

@@ -1,17 +1,17 @@
 name: kin
 title: Avatar
 repo: https://github.com/vdimarco/hermes-kin
-sha: 9a6fe42474dda3567a8530c6b285c61f6897ad5d
+sha: cdfc77c831fcf4c30df3e3ad190c36e7a7e291ca
 description: "Gives Hermes Desktop a face. Pick one of thirteen original characters, six 3D busts and seven 2D cartoons, each with its own voice. It watches your sessions, frowns when a step fails, and grins when a turn finishes. An optional overlay adds a plain-English task drawer, voice input, and one-click screen diagnosis."
 maintainer: vdimarco
 tier: community
 category: desktop
 requires_hermes: ">=0.22.0"
 version: "0.4.0"
-image: https://raw.githubusercontent.com/vdimarco/hermes-kin/9a6fe42474dda3567a8530c6b285c61f6897ad5d/docs/banner.png
+image: https://raw.githubusercontent.com/vdimarco/hermes-kin/cdfc77c831fcf4c30df3e3ad190c36e7a7e291ca/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/vdimarco/hermes-kin/9a6fe42474dda3567a8530c6b285c61f6897ad5d/docs/cast.png
-  - https://raw.githubusercontent.com/vdimarco/hermes-kin/9a6fe42474dda3567a8530c6b285c61f6897ad5d/docs/cast-toons.png
+  - https://raw.githubusercontent.com/vdimarco/hermes-kin/cdfc77c831fcf4c30df3e3ad190c36e7a7e291ca/docs/cast.png
+  - https://raw.githubusercontent.com/vdimarco/hermes-kin/cdfc77c831fcf4c30df3e3ad190c36e7a7e291ca/docs/cast-toons.png
 capabilities:
   provides_tools: []
   provides_hooks: [post_tool_call, api_request_error, on_session_start, on_session_end, pre_llm_call]

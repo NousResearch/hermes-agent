@@ -987,6 +987,7 @@ def run_curator_review(
         state2 = {**load_state(), "last_run_duration_seconds": elapsed, "last_run_summary": final_summary}
         # Per-run report, best-effort; path recorded for `hermes curator status`.
         after_report = _safe_curated_report()
+        report_path = None  # this pass's own report only: state2 still carries the previous pass's path
         try:
             report_path = _write_run_report(
                 started_at=start, elapsed_seconds=elapsed, auto_counts=counts, auto_summary=auto_summary,
@@ -999,7 +1000,7 @@ def run_curator_review(
         save_state(state2)
         _record_run_metric(trigger, dry_run, counts, before_report, after_report, llm_meta, hermes_home)
         _notify(on_summary, f"curator: {final_summary}")
-        _notify_post_curator_run(state2.get("last_report_path") and Path(state2["last_report_path"]))
+        _notify_post_curator_run(report_path)
 
     if synchronous:
         _llm_pass()

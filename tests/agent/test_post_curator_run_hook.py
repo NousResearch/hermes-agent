@@ -81,13 +81,25 @@ def test_hook_fires_once_after_the_pass_with_both_report_files(curator_env):
         (str(run_dir), str(run_dir / "run.json"), str(run_dir / "REPORT.md"), True, True, True)]
 
 
-def test_failed_report_write_fires_nothing(curator_env, monkeypatch):
-    """Observers are promised both files: a pass whose run.json could not be written fires no hook."""
+def test_a_pass_without_its_own_complete_report_fires_nothing(curator_env, monkeypatch):
+    """Observers are promised THIS pass's files: no hook when run.json fails to write, nor when the
+    report dir can't be created while the previous pass's report is still on disk."""
     curator = curator_env["curator"]
     received = []
     _plugins().get_plugin_manager()._hooks.setdefault("post_curator_run", []).append(
         lambda **kw: received.append(kw))
-    real_write_text = Path.write_text
+    _run_pass(curator)  # a complete pass first: its report must never be announced again
+    received.clear()
+    real_write_text, real_mkdir = Path.write_text, Path.mkdir
+
+    def _no_run_dir(self, *a, **k):
+        if self.parent.name == "curator" and self.parent.parent.name == "logs":
+            raise OSError(28, "No space left on device")
+        return real_mkdir(self, *a, **k)
+
+    monkeypatch.setattr(Path, "mkdir", _no_run_dir)
+    _run_pass(curator)  # no report dir this time; the previous pass's report is still on disk
+    monkeypatch.setattr(Path, "mkdir", real_mkdir)
 
     def _disk_full(self, *a, **k):
         if self.name == "run.json":
@@ -95,6 +107,5 @@ def test_failed_report_write_fires_nothing(curator_env, monkeypatch):
         return real_write_text(self, *a, **k)
 
     monkeypatch.setattr(Path, "write_text", _disk_full)
-
     _run_pass(curator)
     assert received == []

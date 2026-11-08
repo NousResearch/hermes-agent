@@ -579,7 +579,15 @@ therefore exits non-zero: `1` for an ordinary failure, `75`
 (`EX_TEMPFAIL`) when the provider was rate-limited, overloaded, returning
 5xx or timing out, or the account hit a billing/quota wall — the dispatcher records that run as `rate_limited` and
 requeues the task without counting a failure, so a quota window is never
-booked as a protocol violation — and `78` (`EX_CONFIG`) when the provider
+booked as a protocol violation — `74` (`EX_IOERR`) when the gateway owner
+never finished the attempt (it stayed silent past the worker's wait, or its
+receipt settled `unknown` with no result on the board): a host stall, not the
+card's failure, so the run is recorded `crashed` with `infrastructure: true`,
+`consecutive_failures` does not move, and the card is respawned after the
+rate-limit cooldown. Six such stalls in a row are free; the seventh counts as
+an ordinary crash (`infrastructure_exhausted: true`), so a card whose owner
+never comes back still blocks after `kanban.failure_limit` counted crashes
+(the 14th exit with the default limit of 2) — and `78` (`EX_CONFIG`) when the provider
 rejected something a retry cannot fix: the profile's credential (401/403,
 revoked or invalid key), the model (404 / model not found) or the TLS chain.
 That **terminal provider error** trips the circuit breaker on the first

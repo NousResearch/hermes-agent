@@ -973,6 +973,32 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
+# Consecutive host-side stalls (exit ``KANBAN_INFRASTRUCTURE_EXIT_CODE``) a card takes free. The
+# same exit can come from a worker that really dies under the submitter, so the free retries are
+# bounded: the next stall counts as an ordinary crash, and that counted run restarts the streak.
+# With the default ``failure_limit`` of 2 a card whose owner never returns blocks at its 14th exit.
+_INFRASTRUCTURE_STALL_LIMIT = 6
+
+
+def _infrastructure_stall_streak(conn: sqlite3.Connection, task_id: str) -> int:
+    """Consecutive closed runs of the task, newest first, booked free as host-side stalls.
+
+    Any other closed run breaks the streak, the counted stall that ended the previous streak
+    included (its run carries no ``infrastructure`` marker).
+    """
+    streak = 0
+    for row in conn.execute(
+        "SELECT outcome, metadata FROM task_runs WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT ?", (task_id, _INFRASTRUCTURE_STALL_LIMIT + 1),
+    ):
+        meta = _kb._json_dict(row["metadata"])
+        if not (row["outcome"] == "crashed" and meta.get("infrastructure")
+                and meta.get("exit_kind") == "infrastructure_failure"):
+            break
+        streak += 1
+    return streak
+
+
 WORKER_OUTPUT_SEP = " Worker's last output: "  # dead-worker error text: our words, then the worker's
 _PROTOCOL_VIOLATION_ERROR = (
     # Worker subprocess returned 0 but its task is still ``running`` in the DB — it exited without calling
@@ -1069,7 +1095,7 @@ class _DeadWorker:
 
 def _classify_dead_worker(
     pid: int, claimer: Optional[str], exit_code=None, *, task_id: Optional[str] = None,
-    board: Optional[str] = None,
+    board: Optional[str] = None, infrastructure_streak: int = 0,
 ) -> _DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping.
 
@@ -1077,7 +1103,8 @@ def _classify_dead_worker(
     in the event payload, appended to the error text) so the board and the retry
     worker see WHY instead of a bare label; a rate-limited requeue does not need it.
     """
-    dead = _classify_dead_worker_exit(pid, claimer, exit_code, task_id=task_id, board=board)
+    dead = _classify_dead_worker_exit(pid, claimer, exit_code, task_id=task_id, board=board,
+                                      infrastructure_streak=infrastructure_streak)
     if task_id and not dead.rate_limited:
         worker_output = _worker_final_output(task_id, board=board)
         if worker_output:
@@ -1093,8 +1120,12 @@ def _classify_dead_worker_exit(
     *,
     task_id: Optional[str] = None,
     board: Optional[str] = None,
+    infrastructure_streak: int = 0,
 ) -> _DeadWorker:
     """Exit status -> reclaim bookkeeping, before the worker's own words are folded in.
+
+    ``infrastructure_streak``: the card's free host-side stalls just before this run
+    (:func:`_infrastructure_stall_streak`); past ``_INFRASTRUCTURE_STALL_LIMIT`` a stall counts.
 
     ``exit_code`` is the authority's exact-run result for a managed worker (a child of the
     profile owner, never of this dispatcher, so it cannot be reaped here). Otherwise the reap
@@ -1132,6 +1163,17 @@ def _classify_dead_worker_exit(
             {"pid": pid, "claimer": claimer, "exit_code": code},
             rate_limited=True,
         )
+    if kind == "infrastructure_failure" and infrastructure_streak >= _INFRASTRUCTURE_STALL_LIMIT:
+        # Past the free streak: an ordinary counted crash. No ``infrastructure`` marker, so this
+        # run takes no cooldown and restarts the streak.
+        return _DeadWorker(
+            kind, code,
+            f"pid {pid} exited {code}: the owner never completed this run (host-side stall), "
+            f"{infrastructure_streak + 1} in a row — counted as a failure",
+            "crashed",
+            {"pid": pid, "claimer": claimer, "exit_kind": kind, "exit_code": code,
+             "infrastructure_exhausted": True, "streak": infrastructure_streak + 1},
+        )
     if kind == "infrastructure_failure":
         # The host stalled: the owner never admitted this run or its receipt stayed ``unknown``
         # with no board result to reconcile (#139612). Nothing about the CARD ran, so this stays
@@ -1145,7 +1187,7 @@ def _classify_dead_worker_exit(
             "requeued without counting a failure",
             "crashed",
             {"pid": pid, "claimer": claimer, "exit_kind": kind, "exit_code": code,
-             "infrastructure": True},
+             "infrastructure": True, "streak": infrastructure_streak + 1},
             infrastructure_failure=True,
         )
     if kind == "terminal_provider":
@@ -1217,7 +1259,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             pid = int(row["worker_pid"])
             # A managed run's authority-recorded exit (its bound interpreter's, under this claim).
             exit_code = managed_run_exit_code(conn, row["id"], pid, row["claim_lock"])
-            dead = _classify_dead_worker(pid, row["claim_lock"], exit_code, task_id=row["id"], board=board)
+            dead = _classify_dead_worker(pid, row["claim_lock"], exit_code, task_id=row["id"], board=board,
+                                         infrastructure_streak=_infrastructure_stall_streak(conn, row["id"]))
             apply_attempt_note(conn, row["id"], pid, dead)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
@@ -1359,7 +1402,9 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     ``_last_rate_limited`` attribute (the return stays crashed-only).
     ``KANBAN_INFRASTRUCTURE_EXIT_CODE`` is a host-side stall (#139612): booked
     as a crash for the history, but counted through the infrastructure seam of
-    #114720, so the card's ``consecutive_failures`` and the breaker are untouched.
+    #114720, so the card's ``consecutive_failures`` and the breaker are untouched
+    for up to ``_INFRASTRUCTURE_STALL_LIMIT`` consecutive stalls; the next one
+    counts as an ordinary crash.
     """
     sweep = _reclaim_dead_workers(conn, board=board)
     # Outside the main txn: account each crash and maybe trip the breaker.

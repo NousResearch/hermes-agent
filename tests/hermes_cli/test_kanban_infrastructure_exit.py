@@ -384,3 +384,47 @@ def test_plain_crash_does_not_get_the_infrastructure_cooldown(board):
     kbd.detect_crashed_workers(conn)
 
     assert kbd.check_respawn_guard(conn, task.id) is None
+
+
+def _stall_once(db_path, task_id):
+    """Claim the card, let its submitter die with exit 74, and book the death once."""
+    with _connect(db_path) as conn:
+        task = kb.claim_task(conn, task_id)
+    assert task is not None, "card was not claimable"
+    pid = _dead_worker_pid()
+    conn = _connect(db_path)
+    _park_as_dead_worker(conn, task, pid)
+    _register_exit(pid, KANBAN_INFRASTRUCTURE_EXIT_CODE)
+    kbd.detect_crashed_workers(conn)
+    row = dict(conn.execute("SELECT status, consecutive_failures FROM tasks WHERE id = ?",
+                            (task_id,)).fetchone())
+    run = dict(conn.execute("SELECT * FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                            (task_id,)).fetchone())
+    conn.close()
+    return row, json.loads(run["metadata"] or "{}")
+
+
+def test_the_free_stall_streak_is_bounded(board):
+    """A worker that really dies under the submitter leaves the same exit, so the free stalls
+    are bounded: six are free, the seventh counts, the streak restarts, and a card whose owner
+    never comes back blocks at its 14th exit under the default ``failure_limit`` of 2."""
+    first = _claimed(board)
+    with _connect(board) as conn, kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET status = 'ready', claim_lock = NULL, claim_expires = NULL "
+                     "WHERE id = ?", (first.id,))
+        kb._end_run(conn, first.id, outcome="reclaimed")
+    seen = []
+    for exit_no in range(1, 15):
+        row, meta = _stall_once(board, first.id)
+        seen.append((exit_no, row["consecutive_failures"], bool(meta.get("infrastructure"))))
+        if exit_no in (7, 14):
+            assert meta.get("infrastructure_exhausted") is True, (exit_no, meta)
+            assert not meta.get("infrastructure"), meta  # a counted run takes no cooldown
+        else:
+            assert meta.get("infrastructure") is True, (exit_no, meta)
+        if row["status"] == "blocked":
+            break
+        assert row["status"] == "ready", (exit_no, row)
+    assert seen[-1][0] == 14, seen
+    assert [n for n, _, free in seen if not free] == [7, 14], seen
+    assert seen[5][1] == 0 and seen[6][1] == 1 and seen[12][1] == 1 and seen[13][1] == 2, seen

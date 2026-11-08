@@ -1,7 +1,7 @@
 name: hermes-time-machine
 repo: https://github.com/ddaikodaiko/hermes-time-machine
-sha: 4a1d501a8b1a0dbafbda8f3ad79471bc04593b17
-version: "0.2.0"
+sha: e2571588fb0ea4fb3dc60737924b8343030fb050
+version: "0.2.1"
 title: Hermes Time Machine
 description: "The rollback that knows what it can't undo. Incremental, time-bounded checkpoints that the agent itself can preview, restore or fork (atm_* tools, /timemachine); an approval at the point of no return (git push, npm publish, terraform apply and similar) that shows what becomes permanent and the exact compensation command; an effect ledger; and effect memory that reminds the model of pushes it can no longer see after /rollback, /undo, /retry or compaction. Disclosure — no shell commands, subprocesses, network calls, background processes or credentials; reads workspace files plus .git refs/config and package.json to capture pre-state; writes only under HERMES_HOME/plugin-data/hermes-time-machine and, on a rewind, the workspace (replaced files go to a trash directory); never approves, blocks or bypasses a tool call by itself; refuses filesystem roots, home and system directories."
 maintainer: ddaikodaiko

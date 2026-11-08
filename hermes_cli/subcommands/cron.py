@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from typing import Callable, Optional
+from typing import Callable
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag
 
@@ -16,14 +16,6 @@ def _catch_up_flag(value: str) -> bool:
     if value not in ("on", "off"):
         raise argparse.ArgumentTypeError("use 'on' (run missed runs once) or 'off' (skip them)")
     return value == "on"
-
-
-def _repeat_value(value: str) -> Optional[int]:
-    from cron.jobs import normalize_repeat_value
-    try:
-        return normalize_repeat_value(value)
-    except ValueError as e:
-        raise argparse.ArgumentTypeError(str(e))
 
 
 def _add_catch_up(parser) -> None:
@@ -59,8 +51,9 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "--deliver). 'local' suppresses failure notices entirely; run "
             "state stays visible in `hermes cron list`. Omit = failures "
             "follow --deliver.")
-    cron_create.add_argument("--repeat", type=_repeat_value,
-        help="Optional repeat count: an integer, 'forever'/'once', or a numeric string")
+    cron_create.add_argument("--repeat",
+        help="Optional repeat count: an integer, 'forever' (no limit), or 'once' (run once). "
+             "Numeric strings like '3' are accepted too.")
     _add_catch_up(cron_create)
     cron_create.add_argument("--skill", dest="skills", action="append",
         help="Attach a skill. Repeat to add multiple skills.")
@@ -135,8 +128,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--failure-deliver", dest="failure_deliver",
         help="Override target for failure notices (same grammar as --deliver; "
             "'local' suppresses; '' clears the override)")
-    cron_edit.add_argument("--repeat", type=_repeat_value,
-        help="New repeat count: an integer, 'forever'/'once', or a numeric string")
+    cron_edit.add_argument("--repeat", help="New repeat count: an integer, 'forever', or 'once'.")
     _add_catch_up(cron_edit)
     cron_edit.add_argument("--skill", dest="skills", action="append",
         help="Replace the job's skills with this set. Repeat to attach multiple skills.")

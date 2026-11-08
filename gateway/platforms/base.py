@@ -19,7 +19,7 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
-from gateway.platforms.base_log_safety import redact_proxy_in_text, safe_url_for_log
+from gateway.platforms.base_log_safety import redact_proxy_in_text, safe_proxy_url_for_log, safe_url_for_log
 
 from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
@@ -369,7 +369,7 @@ def _aiohttp_socks_connector(proxy_url: str):
     except ImportError:
         if proxy_url.lower().startswith("socks"):
             logger.warning("aiohttp_socks not installed — SOCKS proxy %s ignored. "
-                           "Use an HTTP proxy instead.", safe_url_for_log(proxy_url))
+                           "Use an HTTP proxy instead.", safe_proxy_url_for_log(proxy_url))
         return None
 
 

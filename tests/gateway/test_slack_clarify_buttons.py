@@ -162,6 +162,21 @@ class TestSlackSendClarify:
         assert blocks[1]["elements"][0]["text"]["text"] == "1"
 
     @pytest.mark.asyncio
+    async def test_short_choices_no_numbered_list(self):
+        """When every option fits its button, the body stays the question alone (#78115)."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "88.88"})
+
+        await adapter.send_clarify(
+            chat_id="C1", question="Pick one", choices=["short", "also short"],
+            clarify_id="cid_short", session_key="sk_short")
+
+        blocks = mock_client.chat_postMessage.call_args[1]["blocks"]
+        assert blocks[0]["text"]["text"] == "❓ Pick one"
+        assert [e["text"]["text"] for e in blocks[1]["elements"]][:2] == ["short", "also short"]
+
+    @pytest.mark.asyncio
     async def test_mrkdwn_escapes_question(self):
         adapter = _make_adapter()
         mock_client = adapter._team_clients["T1"]

@@ -281,28 +281,30 @@ class SessionLifecycleMixin:
             entry.last_resume_marked_at = None
         return self._update_entry(session_key, _apply)
 
-    def _receipt_owned_open(self, session_id: str) -> bool:
-        """Whether ``session_id`` holds a local creation receipt whose session row is still open.
-        The receipt is that session's resume channel: sweeping its routing entry turns every later
-        resume into ``admission_conflict`` (#149784). Fails closed (keep) on probe errors, mirroring
-        ``_has_active_processes_safe``."""
-        db = self._db
+    def _receipt_owned_open(self, entry) -> bool:
+        """Whether *entry*'s session is the current target of a local creation receipt and its row
+        is still open. The receipt is that conversation's resume channel: sweeping its routing entry
+        turns every later resume into ``admission_conflict`` (#149784). The receipt is keyed by the
+        creation id while the entry names the current segment (a compression or ``/new`` child), and
+        it lives in the store that owns the route (a served profile's own ``state.db``). Fails closed
+        (keep) on probe errors, mirroring ``_has_active_processes_safe``."""
+        db = self._db_for_key(entry.session_key)
         if db is None:
             return False
         try:
-            from hermes_state_local import POLICY_PREFIX
+            from hermes_state_local import POLICY_PREFIX, local_lineage_owner
 
             with db._read_ctx() as conn:
+                owner = local_lineage_owner(conn, entry.session_id)
                 row = conn.execute(
-                    "SELECT 1 FROM state_meta m JOIN sessions s "
-                    "ON s.id = CASE WHEN json_valid(m.value) "
-                    "THEN json_extract(m.value, '$.entry.session_id') END "
-                    "WHERE m.key = ? AND s.ended_at IS NULL",
-                    (POLICY_PREFIX + session_id,)).fetchone()
+                    "SELECT 1 FROM state_meta m JOIN sessions s ON s.id = ? "
+                    "WHERE m.key = ? AND s.ended_at IS NULL AND json_valid(m.value) "
+                    "AND json_extract(m.value, '$.entry.session_id') = s.id",
+                    (entry.session_id, POLICY_PREFIX + owner)).fetchone()
             return row is not None
         except Exception as exc:
             logger.warning("receipt probe raised during prune for %s; keeping session: %s",
-                           session_id, exc)
+                           entry.session_id, exc, exc_info=True)
             return True
 
     def prune_old_entries(self, max_age_days: int) -> int:
@@ -321,7 +323,7 @@ class SessionLifecycleMixin:
                 # The callback is keyed by session_key, NOT session_id.
                 and not self._has_active_processes_safe(entry.session_key, context="prune")
                 and entry.updated_at < cutoff
-                and not self._receipt_owned_open(entry.session_id)
+                and not self._receipt_owned_open(entry)
             ]
             for key in removed_keys:
                 self._entries.pop(key, None)

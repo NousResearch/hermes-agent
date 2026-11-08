@@ -19,6 +19,8 @@ import threading
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
+import pytest
+
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionEntry, SessionStore
 
@@ -224,7 +226,10 @@ class TestPruneKeepsReceiptOwnedSessions:
         store._db = db
         return store, db
 
-    def test_open_receipt_session_is_kept(self, tmp_path):
+    @pytest.mark.parametrize("compressed", [False, True])
+    def test_open_receipt_session_is_kept(self, tmp_path, compressed):
+        """Also once compression moved the conversation to a child segment: the receipt stays keyed
+        by the creation id while the routing entry names the child."""
         import time
 
         from hermes_state_local import POLICY_PREFIX
@@ -233,9 +238,16 @@ class TestPruneKeepsReceiptOwnedSessions:
         sid = "local-open-1"
         db._write_sql("INSERT INTO sessions (id, source, started_at) VALUES (?, 'local', ?)",
                       (sid, time.time()))
-        db.set_meta(POLICY_PREFIX + sid,
-                    json.dumps({"session_id": sid, "entry": {"session_id": sid}}))
-        store._entries["kept"] = _entry("kept", age_days=1000, session_id=sid)
+        target, lineage = sid, [sid]
+        if compressed:
+            target, lineage = sid + "-c1", [sid, sid + "-c1"]
+            db._write_sql("UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+                          (time.time(), sid))
+            db._write_sql("INSERT INTO sessions (id, source, started_at, chat_id, parent_session_id) "
+                          "VALUES (?, 'local', ?, ?, ?)", (target, time.time(), sid, sid))
+        db.set_meta(POLICY_PREFIX + sid, json.dumps(
+            {"session_id": sid, "lineage": lineage, "entry": {"session_id": target}}))
+        store._entries["kept"] = _entry("kept", age_days=1000, session_id=target)
         store._entries["plain"] = _entry("plain", age_days=1000, session_id="sid_plain")
         try:
             removed = store.prune_old_entries(max_age_days=90)

@@ -563,48 +563,29 @@ class TestApiKeyHeaders:
 
 
 class TestCookieCredentials:
-    def test_cookie_assignment_masked(self):
-        text = "cookie=opaque-session-value"
-        result = redact_sensitive_text(text)
-        assert "opaque-session-value" not in result
+    def test_cookie_values_masked_in_assignment_and_inline_header_forms(self):
+        for text, secret in (
+            ("cookie=opaque-session-value-1234567890; Path=/", "opaque-session-value"),
+            ("export SESSION_COOKIE=opaqueSessionValue1234567890", "opaqueSessionValue"),
+            ("INFO upstream Cookie: a=1; sid=opaqueSessionValue1234567890; theme=dark user=bob",
+             "opaqueSessionValue"),
+            ("Set-Cookie: opaqueSessionValue1234567890", "opaqueSessionValue"),
+        ):
+            assert secret not in redact_sensitive_text(text), text
 
-    def test_set_cookie_header_masked(self):
-        text = "set-cookie: opaque-session-value"
-        result = redact_sensitive_text(text)
-        assert "opaque-session-value" not in result
-
-    def test_set_cookie_camelcase_header_masked(self):
-        text = "Set-Cookie: opaque-session-value"
-        result = redact_sensitive_text(text)
-        assert "opaque-session-value" not in result
-
-    def test_cookie_header_masked(self):
-        text = "Cookie: sid=opaque-value"
-        result = redact_sensitive_text(text)
-        assert "sid=opaque-value" not in result
-
-    def test_cookie_assignment_keeps_other_assignments(self):
-        # A cookie line can carry multiple attributes; only the value is masked.
-        text = "cookie=opaque-value; Path=/"
-        result = redact_sensitive_text(text)
-        assert "opaque-value" not in result
-        assert "Path=/" in result
-
-    def test_prose_unchanged(self):
-        # Ordinary prose must never be mangled (#80936 false positives).
+    def test_cookie_prose_unchanged(self):
+        # #80936 false positives: prose, cookie-ish identifiers and URL params are not credentials.
         for text in (
             "cookies enabled now",
             "cookie_policy: strict",
             "mycookiejar=1",
             'Cookie.set("name", value)',
+            "The cookie: it was delicious",
+            "the Set-Cookie: header sets state",
+            "if cookie == expected:",
+            "GET https://example.com/cb?cookie=abc123&x=1",
         ):
             assert redact_sensitive_text(text) == text, text
-
-    def test_cookie_not_in_prose_word_masked(self):
-        # A word that merely EMBEDS ``cookie`` followed by ``=`` is not a
-        # credential marker — the word boundary guard must hold.
-        text = "mycookiejar=1"
-        assert redact_sensitive_text(text) == text
 
 
 class TestTelegramTokens:

@@ -18,19 +18,22 @@ from pathlib import Path
 
 import pytest
 
+from scripts import check_config_yaml_readers, check_config_yaml_writers
 from scripts.code_health import cli
 from scripts.code_health.config import ENFORCEMENT
 
 REPO = Path(__file__).resolve().parents[2]
 _GUARD_SCRIPTS = (
     "scripts/check-windows-footguns.py", "scripts/check_bash_shebangs.py",
-    "scripts/check_no_tmp_literals.py", "scripts/check_detached_spawns.py",
+    "scripts/check_no_tmp_literals.py", "scripts/check_detached_spawns.py", "scripts/install_root_lint.py",
     "scripts/check_config_yaml_writers.py", "scripts/check_config_yaml_readers.py",
     "scripts/ci/check_os_marker_fakes.py", "scripts/check-case-collisions.py",
     "scripts/ci/check_lazy_deps_imports.py", "scripts/ci/check_profile_archive_boundary.py",
     "scripts/ci/check_agents_md_size.py", "scripts/ci/check_blob_size.py",
 )
-_SUPPORT = ("scripts/ci/profile_scope_patterns.json", "agent/subdirectory_hints.py", *_GUARD_SCRIPTS)
+_SUPPORT = ("scripts/ci/profile_scope_patterns.json", "scripts/install_root_lint_baseline.json", "agent/subdirectory_hints.py", *_GUARD_SCRIPTS)
+# The config guards fail when a tree they scan is missing, so the fixture carries an empty stand-in.
+_SCANNED_TREES = sorted({*check_config_yaml_readers.DEFAULT_TREES, *check_config_yaml_writers.DEFAULT_TREES})
 _LEGACY = "def legacy(x):\n" + "".join(f"    if x == {i}:\n        return {i}\n" for i in range(21))
 _GROWN = _LEGACY + "    if x == 99:\n        return 99\n"
 _ENV_COPY = "import os\n\n\ndef child_env():\n    env = os.environ.copy()\n    return env\n"
@@ -92,11 +95,13 @@ def _add_engine(repo: Path, checker: bool = True) -> list[str]:
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO / rel, repo / rel)
     _write(repo, {"tests/README.md": "os-marker-fakes scans tests/\n"})
+    _write(repo, {tree if tree.endswith(".py") else f"{tree}/__init__.py": "" for tree in _SCANNED_TREES
+                  if not (repo / tree).exists()})
     if checker:
         shutil.copy2(REPO / "scripts/check", repo / "scripts/check")
         shutil.copytree(REPO / "scripts/code_health", repo / "scripts/code_health",
                         ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
-    return ["agent", "scripts", "tests"]
+    return sorted({"agent", "scripts", "tests", *_SCANNED_TREES})
 
 
 def _engine_repo(tmp_path: Path) -> Path:

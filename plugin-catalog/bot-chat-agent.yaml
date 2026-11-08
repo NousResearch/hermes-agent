@@ -3,12 +3,7 @@ repo: https://github.com/Tormen28/hermes-bot-chat-agent
 sha: 2bc1ba3a6543255c7cdda2cb03eee040f917649d
 subdir: ""
 title: Bot Chat Agent
-description: >
-  Agentic reply style, a block-only safety guard (secrets, deletes, destructive git,
-  protected-branch pushes, outbound messages, expensive models) and a quiet Desktop
-  status bar for Bot Mode's canonical "Bot Chat" sessions. Other sessions untouched.
-  Disclosure: opens <HERMES_HOME>/state.db read-only (mode=ro) to resolve session
-  titles; never writes state.db and never reads .env, auth.json or credentials.
+description: "Agentic reply style, a block-only safety guard (secrets, deletes, destructive git, protected-branch pushes, outbound messages, expensive models) and a quiet Desktop status bar for Bot Mode's canonical \"Bot Chat\" sessions. Other sessions untouched. Disclosure — in sessions titled \"Bot Chat\" (and their subagent children) it injects a reply-style instruction into each turn and blocks tool calls matching its rules (secrets, deletes, destructive git, protected-branch pushes, outbound messages, expensive models); opens <HERMES_HOME>/state.db read-only to resolve session titles."
 maintainer: Tormen28
 category: desktop
 tier: community

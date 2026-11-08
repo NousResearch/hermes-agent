@@ -510,10 +510,11 @@ def _fail_whatsapp_pairing(pairing_id: str, error: str, *, proc=None, unless=_WH
             record.error = error
 
 
-# Bridge pairing error codes the dashboard can act on; anything else is shown as the bridge sent it.
+# Readable text for bridge pairing error codes the dashboard displays; other codes show as the bridge sent them.
 _WHATSAPP_PAIRING_ERROR_TEXT = {
     "passkey_required": "This WhatsApp account requires passkey verification, which dashboard setup cannot do. "
-                        "Run `hermes whatsapp --passkey-browser EXECUTABLE` in a local terminal with Chrome or Edge.",
+                        "In a local terminal, run hermes whatsapp --passkey-browser followed by the path to your "
+                        "Chrome or Edge executable.",
 }
 
 

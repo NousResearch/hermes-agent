@@ -591,7 +591,7 @@ class GatewaySlashCommandsMixin(
         # Bot API round trip, #65057), so deliver it first. Draining: the drain waits, the reply lands.
         from gateway.restart_ack import send_restart_ack
         ack = t("gateway.draining", count=active_agents) if active_agents else EphemeralReply(t("gateway.restart.restarting"))
-        sent = not active_agents and await send_restart_ack(self._delivery_adapter_for(event.source), event, ack)
+        sent = not active_agents and await send_restart_ack(self, self._delivery_adapter_for(event.source), event, ack)
         # Under a service manager (systemd/launchd) or Docker/Podman, exit 75 so the supervisor /
         # restart policy restarts us — detached setsid+bash fails there (systemd KillMode=mixed kills
         # the cgroup; tini exits with the gateway). The explicit marker covers ``sudo env -i`` wrappers.

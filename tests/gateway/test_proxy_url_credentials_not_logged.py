@@ -172,6 +172,7 @@ SECRET_SHAPES = [
     "http://bob:{T}",  # userinfo with no host
     "proxy:8080?auth={T}",  # no scheme, secret in the query
     "proxy:8080#{T}",
+    "http://proxy:8080/x/{T}",  # secret as the last path segment
     "http://bob:" + "p" * 70 + "{T}@" + "h" * 60 + ".example:8080",  # past the 80-char cut
     "http://bob:" + "p" * 70 + "{T}/x@proxy:8080",  # token straddles the cut
 ]

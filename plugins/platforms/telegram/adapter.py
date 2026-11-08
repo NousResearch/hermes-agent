@@ -6748,60 +6748,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             self._dm_topics[cache_key] = int(thread_id)
             logger.info("[%s] Cached DM topic from message: %s -> thread_id=%s", self.name, cache_key, thread_id)
 
-    @classmethod
-    def _flatten_rich_inline_text(cls, value: Any) -> str:
-        """Best-effort plaintext flattener for Bot API rich-message inline nodes."""
-        if value is None:
-            return ""
-        if isinstance(value, str):
-            return value
-        if isinstance(value, list):
-            return "".join(cls._flatten_rich_inline_text(item) for item in value)
-        if isinstance(value, dict):
-            for key in ("text", "children"):
-                if value.get(key) is not None:
-                    return cls._flatten_rich_inline_text(value[key])
-        return ""
-
-    @classmethod
-    def _flatten_rich_blocks(cls, blocks: Any) -> str:
-        """Best-effort plaintext flattener for Bot API rich-message blocks."""
-        if not isinstance(blocks, list):
-            return ""
-        lines: list[str] = []
-        for block in blocks:
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") == "list":
-                for item in block.get("items", []):
-                    if not isinstance(item, dict):
-                        continue
-                    item_lines = cls._flatten_rich_blocks(item.get("blocks")).splitlines()
-                    if not item_lines:
-                        continue
-                    label = item.get("label")
-                    lines.append(f"{label} {item_lines[0]}".strip() if label else item_lines[0])
-                    lines.extend(item_lines[1:])
-                continue
-            text = cls._flatten_rich_inline_text(block.get("text"))
-            if text:
-                lines.extend(text.splitlines())
-        return "\n".join(line.rstrip() for line in lines if line)
-
-    @classmethod
-    def _extract_rich_reply_text(cls, reply_to_message: Any) -> Optional[str]:
-        """Return plaintext echoed by Telegram's rich_message reply payload."""
-        try:
-            getter = getattr(getattr(reply_to_message, "api_kwargs", None), "get", None)
-            if not callable(getter):
-                return None
-            rich_getter = getattr(getter("rich_message"), "get", None)
-            if not callable(rich_getter):
-                return None
-            return cls._flatten_rich_blocks(rich_getter("blocks")).strip() or None
-        except Exception:
-            return None
-
     def _resolve_topic_binding(self, message: Message, chat_type: str, thread_id_str: Optional[str]) -> tuple:
         """Return ``(chat_topic, topic_skill)`` for a DM topic or bound forum topic (else Nones)."""
         chat = message.chat
@@ -6856,7 +6802,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             return reply_to_id, quote_text
         reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
         if not reply_to_text:
-            reply_to_text = self._extract_rich_reply_text(message.reply_to_message)
+            reply_to_text = rich_message_text(message.reply_to_message) or None
         if not reply_to_text:
             try:
                 from gateway import rich_sent_store

@@ -832,3 +832,23 @@ async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
     )
     assert event.reply_to_message_id == "678"
     assert event.reply_to_text == "Your morning briefing: CI is green."
+
+
+def test_rich_reply_and_inbound_blocks_share_one_flattener():
+    """Replied-to rich blocks and inbound rich blocks read through ONE parser: ``children`` spans,
+    labelled list items and a ``mappingproxy`` api_kwargs all flatten the same way in both."""
+    from types import MappingProxyType
+
+    from gateway.platforms.event import MessageType
+    from plugins.platforms.telegram.telegram_entities import rich_message_text
+
+    blocks = [
+        {"type": "paragraph", "text": ["See ", {"type": "bold", "children": ["the plan"]}]},
+        {"type": "list", "items": [{"label": "1.", "blocks": [{"type": "paragraph", "text": "ship it"}]}]},
+    ]
+    msg = _reply_message_with_rich_blocks("678", blocks=blocks, api_kwargs_factory=MappingProxyType)
+
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_text == "See the plan\n1. ship it"
+    assert rich_message_text(msg.reply_to_message) == event.reply_to_text

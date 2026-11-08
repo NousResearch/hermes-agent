@@ -1227,6 +1227,16 @@ def _inchannel_surface_supported(runtime_adapter, platform_name: str) -> bool:
     return bool(getattr(runtime_adapter, "supports_inchannel_continuable", False))
 
 
+def _named_dm_topic(t: _TargetDelivery) -> Optional[str]:
+    """The topic NAME of a ``telegram:<positive chat id>:<topic name>`` target, else None."""
+    from gateway.config import Platform
+    from gateway.delivery import _looks_like_int, looks_like_telegram_private_chat_id
+    if (t.platform == Platform.TELEGRAM and t.thread_id is not None
+            and looks_like_telegram_private_chat_id(str(t.chat_id)) and not _looks_like_int(str(t.thread_id))):
+        return str(t.thread_id)
+    return None
+
+
 def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]:
     """Compute ``(route_thread_id, route_metadata, media_metadata)`` for a live send, ONCE so text
     and media agree. ``telegram:<positive_chat_id>:<numeric_thread_id>`` is ambiguous (private
@@ -1260,7 +1270,10 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
         # key bypasses that check and lets the adapter route via a plain message_thread_id. See #52060.
         route_thread_id = str(thread_id) if thread_id is not None else None
         route_metadata = {"job_id": job["id"], "notify": t.notify_delivery}
-        if route_thread_id:
+        # A named private-DM topic stays on the target only: the router resolves the name
+        # (ensure_dm_topic) and refreshes it on "thread not found" only when metadata carries no
+        # thread routing key (#80483).
+        if route_thread_id and _named_dm_topic(t) is None:
             route_metadata["thread_id"] = route_thread_id
         media_metadata = {"notify": t.notify_delivery}
         if thread_id:
@@ -1382,6 +1395,24 @@ def _live_send_media(
     unverified_targets: list) -> None:
     """Send extracted media as native attachments with the same routing as the text send."""
     routed_media_metadata = dict(media_metadata or {})
+    if (topic_name := _named_dm_topic(t)) is not None:
+        # Same resolver as the text route (cached there, refreshed on "thread not found"); a name
+        # that cannot be resolved drops the media rather than posting it to General.
+        from agent.async_utils import safe_schedule_threadsafe
+        from gateway.delivery import _ensure_named_dm_topic
+        future = safe_schedule_threadsafe(
+            _ensure_named_dm_topic(t.runtime_adapter, str(t.chat_id), topic_name, refresh=False), t.loop)
+        try:
+            if future is None:
+                raise RuntimeError("gateway loop unavailable")
+            routed_media_metadata["thread_id"] = future.result(timeout=30)
+        except Exception as e:  # any resolver/adapter failure drops the media for this target
+            logger.warning("Job '%s': named DM topic %r unresolved for media", t.job["id"], topic_name,
+                           exc_info=True)
+            delivery_errors.append(
+                f"{len(media_files)} media attachment(s) not delivered to {t.where}: {e}")
+            return
+        routed_media_metadata["telegram_dm_topic_created_for_send"] = True
     if t.is_relay:
         routed_media_metadata["_relay_logical_platform"] = t.platform.value
         logical_home = t.config.get_home_channel(t.platform)

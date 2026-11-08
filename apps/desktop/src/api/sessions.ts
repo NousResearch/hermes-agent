@@ -310,8 +310,26 @@ export function scanSessionPullRequests(
   })
 }
 
+/** Thrown when a sidebar request's recents profile disagrees with the ambient API profile.
+ *  The backend checks each value against the granted ticket and refuses the mismatch, so
+ *  such a request must never be sent. */
+export class StaleSidebarScopeError extends Error {
+  constructor(recents: string, ambient: string) {
+    super(`stale sidebar scope: recents_profile=${recents} ambient=${ambient}`)
+    this.name = 'StaleSidebarScopeError'
+  }
+}
+
 export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<SidebarSessionsResponse> {
   const capabilityKey = getApiRequestConnection() ?? ''
+
+  // Read the same ambient value profileScoped() sends below, in the same synchronous step,
+  // so the value checked is the value sent. 'all' spans every profile and is not checked.
+  const ambient = getApiRequestProfile()
+
+  if (req.recentsProfile !== 'all' && ambient && ambient !== req.recentsProfile) {
+    throw new StaleSidebarScopeError(req.recentsProfile, ambient)
+  }
 
   if (sidebarBatchEndpointMissing.has(capabilityKey)) {
     return listSidebarSessionsLegacy(req)

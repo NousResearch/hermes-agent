@@ -251,9 +251,12 @@ class SSHEnvironment(BaseEnvironment):
         rel_base = f"{self._remote_home}/.hermes".lstrip("/")
         # Live sockets inside .hermes (gateway.sock and friends) cannot be archived: tar prints
         # "socket ignored" and some builds exit 2, which failed every sync-back and left a
-        # multi-GB temp tar behind on each retry. Exclude them up front.
+        # multi-GB temp tar behind on each retry. Exclude them up front. bot-desktop/ is the
+        # sandboxed Bot Screen's state: no host mapping, and a running Chromium's SingletonSocket
+        # there links out of the archive, which the extract's "data" filter refuses for the whole tree.
         ssh_cmd = self._build_ssh_command() + [
-            f"tar cf - --exclude='*.sock' -C / {shlex.quote(rel_base)}"]
+            f"tar cf - --exclude='*.sock' --exclude={shlex.quote(rel_base + '/bot-desktop')} "
+            f"-C / {shlex.quote(rel_base)}"]
         with open(dest, "wb") as f:
             result = subprocess.run(ssh_cmd, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.PIPE, timeout=120, check=False)
         if result.returncode != 0:

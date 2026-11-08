@@ -1,7 +1,8 @@
 """#145215: forwarding a prompt needs an attachment, not the owner's large transcript.
 
-Real SQLite history, authority resume/admission/settlement, loopback WebSocket and
-GatewayClient. Only ticket issuance and turn execution are replaced; no LLM runs.
+Exercises forward_prompt, its relay thread, real SQLite history, authority
+resume/admission/settlement, a loopback WebSocket and GatewayClient. Discovery,
+ticket issuance and turn execution are replaced; no LLM runs.
 """
 import asyncio
 import json
@@ -42,6 +43,8 @@ async def test_long_history_forward_admits_once_and_relays_completion(tmp_path, 
 
     db = SessionDB(db_path=tmp_path / "state.db")
     key, emitted, resumes, history_reads = "long-chat", [], [], []
+    loop = asyncio.get_running_loop()
+    completed, disconnected = asyncio.Event(), asyncio.Event()
     db.create_session(key, "test")
     for _ in range(9):
         db.append_message(key, "user", "x" * (1024 * 1024))
@@ -58,6 +61,11 @@ async def test_long_history_forward_admits_once_and_relays_completion(tmp_path, 
         return original_read(*args)
 
     monkeypatch.setattr(session_local_recovery, "display_rows", read_history)
+
+    def emit(event, sid, payload):
+        emitted.append((event, sid, payload))
+        if event == "message.complete":
+            loop.call_soon_threadsafe(completed.set)
 
     async def handler(ws):
         transport = _Socket()
@@ -79,15 +87,19 @@ async def test_long_history_forward_admits_once_and_relays_completion(tmp_path, 
                 await transport.flush(ws)
         finally:
             await conn.close()
+            disconnected.set()
 
     try:
         async with serve(handler, "127.0.0.1", 0,
                          subprotocols=[gateway_client.GATEWAY_WS_PROTOCOL]) as listener:
             port = listener.sockets[0].getsockname()[1]
             endpoint = SimpleNamespace(api_origin=f"http://127.0.0.1:{port}")
-            relay = owner_forward._Relay("ui", {}, key, tmp_path, endpoint, "my question",
-                                         lambda *args: emitted.append(args))
-            await asyncio.wait_for(relay._run(), timeout=10)
+            monkeypatch.setattr(owner_forward, "discover_owner", lambda _home: endpoint)
+            session = {"session_key": key, "profile_home": str(tmp_path)}
+            receipt = await asyncio.wait_for(asyncio.to_thread(
+                owner_forward.forward_prompt, "ui", session, "my question", emit=emit), timeout=10)
+            await asyncio.wait_for(completed.wait(), timeout=10)
+            await asyncio.wait_for(disconnected.wait(), timeout=10)
 
         assert history_reads == []  # No full-history read hidden behind a small wire reply.
         assert len(resumes) == 1 and len(json.dumps(resumes[0]).encode()) < 64 * 1024
@@ -96,8 +108,9 @@ async def test_long_history_forward_admits_once_and_relays_completion(tmp_path, 
         assert resumes[0]["result"]["message_count"] == 9
         rows = list_session_admissions(db, session_id=key, pending_only=False)
         assert len(rows) == 1 and rows[0]["status"] == "terminal"
-        assert rows[0]["admission_id"] == relay.admitted.result()["admission_id"]
+        assert rows[0]["admission_id"] == receipt["admission_id"]
         assert rows[0]["payload"]["text"] == "my question"
+        assert all(sid == "ui" for _event, sid, _payload in emitted)
         messages = [(event, payload) for event, sid, payload in emitted if event.startswith("message.")]
         assert messages[0][0] == "message.start"
         assert messages[-1] == ("message.complete", {"text": "THE ANSWER", "status": "complete"})

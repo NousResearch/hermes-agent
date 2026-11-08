@@ -3,17 +3,7 @@ repo: https://github.com/tuanpv47/spanwall
 sha: dcd8456c3c861ba6c80ee89c4edd9753ccc5ecfa
 subdir: plugin/spanwall
 title: SpanWall
-description: >-
-  One Kanban wall for every Hermes session, across every profile: Needs you, Running, Idle,
-  Done (24h) and Failed columns, one card per session. Approve requests, answer clarify, sudo
-  and secret prompts, chat, steer and stop agents right from the card. Desktop-only
-  (desktop/plugin.js inside the plugin SDK surface); no agent tools, hooks, middleware or env
-  vars. Disclosure — acts on the sessions of every watched profile, not only the active one:
-  approving or rejecting requests, sending prompts, steering, interrupting and creating
-  sessions there, each only on an explicit click (nothing is approved automatically). Sudo
-  passwords and secrets typed into a card go straight to the owning gateway and are not stored.
-  Polls every watched profile's gateway every 3 s, which may start that profile's backend.
-  No network calls outside the Hermes gateways, no telemetry, no browser storage.
+description: "One Kanban wall for every Hermes session, across every profile: Needs you, Running, Idle, Done (24h) and Failed columns, one card per session. Approve requests, answer clarify, sudo and secret prompts, chat, steer and stop agents right from the card. Desktop-only (desktop/plugin.js inside the plugin SDK surface); no agent tools, hooks, middleware or env vars. Disclosure — acts on the sessions of every watched profile, not only the active one: approving or rejecting requests, sending prompts, steering, interrupting and creating sessions there, each only on an explicit click (nothing is approved automatically). Sudo passwords and secrets typed into a card go straight to the owning gateway and are not stored. Polls every watched profile's gateway every 3 s, which may start that profile's backend. Keeps UI preferences and a 24-hour archive of finished turns (title, model, tools used, the last 600 characters of the reply) in the Desktop's plugin storage. No network calls outside the Hermes gateways, no telemetry."
 maintainer: tuanpv47
 tier: community
 category: desktop

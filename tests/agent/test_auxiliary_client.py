@@ -2952,7 +2952,7 @@ class TestAuxiliaryAuthRefreshRetry:
             )
 
         assert resp.choices[0].message.content == "fresh-sync"
-        mock_refresh.assert_called_once_with("openai-codex")
+        assert mock_refresh.call_count == 1 and mock_refresh.call_args.args == ("openai-codex",)
 
 
 

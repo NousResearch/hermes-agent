@@ -78,6 +78,10 @@ class _Budget:
         # A probe we refused to start because the budget ran out. The answer is then incomplete,
         # which is not the same as a complete answer that happens to say "unknown".
         self.exhausted = False
+        # A probe killed at its own deadline. That walk never saw the probe's answer either, so
+        # the identity is incomplete for the same reason a spent budget leaves it incomplete —
+        # one slow probe must not become the process's cached identity.
+        self.truncated = False
 
     def timeout(self) -> float | None:
         """Per-probe timeout, or None when the budget no longer allows a probe."""
@@ -98,22 +102,29 @@ def _kill_probe(proc: subprocess.Popen) -> None:
         pass
 
 
-def _probe(argv: list[str], cwd: Path, timeout: float) -> str | None:
+def _probe(
+    argv: list[str], cwd: Path, timeout: float, *, budget: _Budget | None = None,
+) -> str | None:
     """Run one read-only probe and return its stripped stdout, or None.
 
-    ``stdout``/``stderr`` go to a temporary FILE, never to pipes. ``subprocess.run(timeout=...)``
+    ``stdout`` goes to a temporary FILE and ``stderr`` to the null device: neither is a pipe, and
+    they never share a handle. ``subprocess.run(timeout=...)``
     is not a hard bound on Windows: it kills the process it spawned, then re-reads the inherited
     pipes with NO timeout. Git for Windows launches the real git from a wrapper (``cmd/git.exe`` ->
     ``mingw64/bin/git.exe``), so a killed wrapper can leave a grandchild holding those handles and
     the second read never sees EOF — the MainThread parked in ``subprocess.communicate`` inside
     ``_run_git`` for 605 s, aborted by the turn-liveness watchdog while every request paid the
     stall. A file has no reader thread to join: after the deadline this kills what it can and
-    reads whatever the probe managed to write.
+    reads whatever the probe managed to write. stderr shares no handle with stdout, so a git
+    warning (ambiguous ref, locked index, shallow clone) cannot become part of the parsed value.
+
+    A probe killed at ``timeout`` marks ``budget.truncated``: the caller's walk is then incomplete
+    and must not be cached as the process's identity.
     """
     with tempfile.TemporaryFile() as sink:
         try:
             proc = subprocess.Popen(
-                argv, stdin=subprocess.DEVNULL, stdout=sink, stderr=sink,
+                argv, stdin=subprocess.DEVNULL, stdout=sink, stderr=subprocess.DEVNULL,
                 cwd=str(cwd), close_fds=True,
             )
         except (OSError, ValueError):
@@ -122,6 +133,8 @@ def _probe(argv: list[str], cwd: Path, timeout: float) -> str | None:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             _kill_probe(proc)
+            if budget is not None:
+                budget.truncated = True
             return None
         if proc.returncode != 0:
             return None
@@ -131,8 +144,9 @@ def _probe(argv: list[str], cwd: Path, timeout: float) -> str | None:
 
 
 def _run_git(repo_dir: Path, *args: str, budget: _Budget | None = None) -> str | None:
-    timeout = (budget or _Budget(None)).timeout()
-    return None if timeout is None else _probe(["git", *args], repo_dir, timeout)
+    budget = budget or _Budget(None)
+    timeout = budget.timeout()
+    return None if timeout is None else _probe(["git", *args], repo_dir, timeout, budget=budget)
 
 
 def _resolve_repo_dir() -> Path | None:
@@ -293,7 +307,9 @@ def _git_version_info(
     if not include_untracked:
         status_command.append("-uno")
     status_timeout = budget.timeout()
-    dirty = status_timeout is not None and bool(_probe(status_command, repo_dir, status_timeout))
+    dirty = status_timeout is not None and bool(
+        _probe(status_command, repo_dir, status_timeout, budget=budget)
+    )
 
     tags = _run_git(repo_dir, "tag", "--merged", "HEAD", "--list", "v[0-9]*", budget=budget)
     releases = [
@@ -324,7 +340,8 @@ def _git_version_info(
 # --- Cache + public API -----------------------------------------------------
 
 _cached_version_info: VersionInfo | None = None
-# A resolution that ran out of budget is answered but NOT cached; the next window retries.
+# A resolution that ran out of budget, or lost a probe to its own deadline, is answered but NOT
+# cached; the next window retries.
 _retry_after_monotonic: float | None = None
 
 _UNKNOWN_VERSION = VersionInfo("unknown", "unknown", None, None, None, "unknown")
@@ -357,9 +374,9 @@ def get_version_info() -> VersionInfo:
 
     Bounded by construction: every probe is killed at its own deadline and the whole walk shares
     ``_RESOLVE_BUDGET_SECONDS``, so the first outbound request of a process cannot park the turn in
-    a subprocess read (the 605 s stall this replaces). A walk that ran out of budget is answered
-    but not cached, so a contended disk costs one bounded window instead of a permanently
-    degraded identity.
+    a subprocess read (the 605 s stall this replaces). A walk that ran out of budget, or that lost
+    a probe to its own deadline, is answered but not cached, so a contended disk costs one bounded
+    window instead of a permanently degraded identity.
     """
     global _cached_version_info, _retry_after_monotonic
     if _cached_version_info is not None:
@@ -382,7 +399,7 @@ def get_version_info() -> VersionInfo:
     if info is None:
         info = _UNKNOWN_VERSION
 
-    if budget.exhausted:
+    if budget.exhausted or budget.truncated:
         _retry_after_monotonic = time.monotonic() + _RESOLVE_RETRY_SECONDS
         return info
     _cached_version_info = info

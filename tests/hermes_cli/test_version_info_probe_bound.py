@@ -66,7 +66,7 @@ def test_a_slow_walk_is_bounded_and_not_cached_as_unknown(tmp_path, monkeypatch)
     """A cold/contended checkout spends one bounded window, not nine probes, and keeps trying."""
     calls: list[float] = []
 
-    def slow_probe(argv, cwd, timeout):
+    def slow_probe(argv, cwd, timeout, *, budget=None):
         calls.append(timeout)
         time.sleep(0.3)
 
@@ -90,7 +90,7 @@ def test_a_slow_walk_is_bounded_and_not_cached_as_unknown(tmp_path, monkeypatch)
 def test_a_complete_walk_is_cached_so_requests_never_pay_it_twice(tmp_path, monkeypatch):
     calls: list[tuple] = []
 
-    def counting_probe(argv, cwd, timeout):
+    def counting_probe(argv, cwd, timeout, *, budget=None):
         calls.append(tuple(argv))
 
     monkeypatch.setattr(vi, "_probe", counting_probe)
@@ -105,3 +105,69 @@ def test_a_complete_walk_is_cached_so_requests_never_pay_it_twice(tmp_path, monk
     assert second is first
     assert len(calls) == after_first, "a cached identity re-walked git"
     assert vi._cached_version_info is first
+
+
+def test_stderr_never_becomes_part_of_the_probe_value(tmp_path):
+    """HEAD read stdout only; a shared sink let a git warning join the parsed identity."""
+    script = (
+        "import sys; "
+        "sys.stdout.write('c0ffee1c0ffee1c0ffee1c0ffee1c0ffee1c0ff\\n'); "
+        "sys.stderr.write('warning: refname HEAD is ambiguous.\\n')"
+    )
+
+    value = vi._probe([sys.executable, "-c", script], tmp_path, 10.0)
+
+    assert value == "c0ffee1c0ffee1c0ffee1c0ffee1c0ffee1c0ff", (
+        f"stderr leaked into the probe value: {value!r}")
+
+
+def test_a_probe_killed_at_its_deadline_marks_the_budget_truncated(tmp_path):
+    """The kill branch must say so: a truncated walk and a complete "unknown" are different answers."""
+    budget = vi._Budget(60.0)  # seconds of shared budget left: only the per-probe deadline fires
+    started = time.monotonic()
+
+    value = vi._probe(
+        [sys.executable, "-c", "import time; time.sleep(30)"], tmp_path, 0.5, budget=budget)
+    elapsed = time.monotonic() - started
+
+    assert value is None
+    assert elapsed < 3.0, f"the killed probe cost {elapsed:.1f}s against a 0.5s deadline"
+    assert budget.truncated is True, "a killed probe left the walk looking complete"
+
+
+def test_a_truncated_walk_is_not_cached_as_the_process_identity(tmp_path, monkeypatch):
+    """One killed probe is enough: answer the partial identity, then keep retrying.
+
+    The incident shape: a contended disk blocks the first ``rev-parse`` past its deadline, every
+    later probe is fast. Caching that answer would make the missing commit permanent for the
+    process, which is exactly what the review called out.
+    """
+    calls: list[tuple] = []
+
+    def probe_after_a_killed_rev_parse(argv, cwd, timeout, *, budget=None):
+        calls.append(tuple(argv))
+        if len(calls) == 1:
+            # What the shipped TimeoutExpired branch does, without spending 3 s here.
+            if budget is not None:
+                budget.truncated = True
+            return None  # ``rev-parse HEAD``: killed at its deadline, so no commit
+        # Every later probe is fast, as it is after the contended moment passes.
+        if "--short=7" in argv:
+            return "c0ffee1"
+        if argv[1:2] == ["branch"]:
+            return "main"
+        return None
+
+    monkeypatch.setattr(vi, "_probe", probe_after_a_killed_rev_parse)
+    monkeypatch.setattr(vi, "_resolve_stamp_file", lambda: None)
+    monkeypatch.setattr(vi, "_resolve_repo_dir", lambda: tmp_path)
+
+    info = vi.get_version_info()
+
+    # The killed probe was the one that would have answered with the commit; the rest answered.
+    assert info.commit is None
+    assert info.branch == "main"
+    assert len(calls) > 1, "the walk stopped at the killed probe; one kill is not the whole answer"
+    # Truncated, so NOT cached: the next window retries instead of answering for the process life.
+    assert vi._cached_version_info is None
+    assert vi._retry_after_monotonic is not None

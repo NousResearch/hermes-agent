@@ -1,7 +1,6 @@
 name: payops
 repo: https://github.com/BigWave45/payops-hermes-
 sha: 7712f084392769356bdb294c4b48bf99bf7faadb
-subdir: ""
 description: Read-only Paystack transaction inspection and reconciliation for Hermes agents.
 maintainer: BigWave45
 tier: community

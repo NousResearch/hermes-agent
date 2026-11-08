@@ -1,8 +1,11 @@
 name: patch-sentinel
 repo: https://github.com/thebangarang/Patch-Sentinel
-sha: "d13d3693382ab8140b51873211831a3d4436590e"
+sha: "7057497318c3c46c709fec7cde17da2a2338c71b"
 subdir: ""
 description: >-
+  Measures the host, not the source tree: code review asks "can an attacker exploit this code?" and
+  this asks "is this machine running what the vendor shipped?" — the two are complements, never
+  substitutes.
   Answers "are we patched?" with evidence, for whatever the host runs — an adapter chosen from the
   host's own /etc/os-release (apt, dnf, pacman, zypper, apk), the running kernel against the newest
   installed and installable, whatever advisory names the fixed version per release (Ubuntu notices,
@@ -15,12 +18,12 @@ description: >-
   explicitly asked to patch. Linux only: any other OS answers "unsupported" with its name.
 maintainer: thebangarang
 tier: community
-category: automation
+category: tools
 requires_hermes: ">=0.19"
 docs_url: "https://github.com/thebangarang/Patch-Sentinel#readme"
 version: "0.1.0"
 title: "Patch Sentinel"
-image: "https://raw.githubusercontent.com/thebangarang/Patch-Sentinel/d13d3693382ab8140b51873211831a3d4436590e/docs/banner.png"
+image: "https://raw.githubusercontent.com/thebangarang/Patch-Sentinel/7057497318c3c46c709fec7cde17da2a2338c71b/docs/banner.png"
 platforms: [linux]
 capabilities:
   provides_tools:

@@ -327,8 +327,8 @@ def _make_redirect_header_stripper(httpx_mod, original_url, *, strict: bool = Fa
 # of the post-parse limits (resource cap, tool-result truncation) run before the parse blows up.
 # Finite HTTP bodies are capped at this many bytes (a larger Content-Length is rejected up front);
 # each SSE *event* is capped, with the counter reset at completed event boundaries so a long-lived
-# stream and its keepalives have no cumulative limit. Violations raise the SDK httpx's ReadError and
-# flow through the ordinary transport teardown/reconnect path (#66092).
+# stream and its keepalives have no cumulative limit. Violations raise SSEError for SSE events or
+# ReadError for HTTP bodies and flow through the ordinary transport teardown/reconnect path (#66092).
 _MCP_HTTP_MAX_BODY_BYTES = 10 * 1024 * 1024
 # An SSE event ends at a blank line: two consecutive line terminators. The spec allows CR,
 # LF, or CRLF terminators and permits mixing them, so the boundary is any of \n\n, \r\r,
@@ -347,7 +347,9 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
             self._inner, self._is_sse, self._url = inner, is_sse, url
 
         def _reject(self, kind: str):
-            return httpx_mod.ReadError(f"MCP {kind} exceeds {limit} bytes (from {self._url})")
+            # The MCP SDK preserves SSEError messages; other stream errors become a generic EOF.
+            error_type = httpx_mod.SSEError if self._is_sse else httpx_mod.ReadError
+            return error_type(f"MCP {kind} exceeds {limit} bytes (from {self._url})")
 
         async def __aiter__(self):
             counted = 0

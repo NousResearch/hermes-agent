@@ -132,6 +132,6 @@ describe('a standalone desktop plugin installed from the catalog', () => {
     })
 
     expect(result).toMatchObject({ ok: true })
-    expect(originOf(path.join(appRoot, result.pluginName!)).sha).toBe(commit)
+    expect(originOf(path.join(appRoot, result.pluginName!))).toMatchObject({ sha: commit, pin: tagObject })
   })
 })

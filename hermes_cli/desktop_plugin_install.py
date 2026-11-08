@@ -132,7 +132,11 @@ def install_desktop_plugin(identifier: str, *, ref: Optional[str], catalog_name:
             marker = {"package": package_name, "repo": git_url, "source": str(target),
                       "sourceMtimeMs": halves.mtime_ms((source_dir / "plugin.js").stat())} if package_name else None
             # A standalone plugin installed from a catalog entry records that entry, so the card shows it.
-            origin = {"catalogName": catalog_name, "repo": git_url, "sha": head} if catalog_name and not package_name else None
+            # ``sha`` = the commit checked out; ``pin`` = the catalog pin it satisfies when that names an
+            # annotated-tag object (the agent's catalog record keeps both the same way).
+            origin = ({"catalogName": catalog_name, "repo": git_url, "sha": head,
+                       **({"pin": catalog_sha.lower()} if catalog_sha and catalog_sha.lower() != head else {})}
+                      if catalog_name and not package_name else None)
             # The exists check and the publish must not interleave with a reconcile pass.
             with halves.ROOT_WRITER:
                 if origin and not force and _adoptable(target, source_dir):

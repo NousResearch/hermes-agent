@@ -22,7 +22,8 @@ export function openCatalogPluginInstall(
   // A desktop-only entry has no agent row; its plugin on disk names the entry and commit it came from. At an
   // older commit than the catalog's it is an update: the dialog installs it (Force replaces the old copy).
   const desktop = installedDesktopCatalogEntries($pluginRecords.get())
-  const desktopCurrent = !existing && desktop.has(entry.name) && (!entry.sha || desktop.get(entry.name) === entry.sha)
+  const installedAt = existing ? undefined : desktop.get(entry.name)
+  const desktopCurrent = Boolean(installedAt && (!entry.sha || installedAt.includes(entry.sha.toLowerCase())))
 
   if ((existing && !existing.update_available) || desktopCurrent) {
     notify({ kind: 'success', message: translateNow('skills.plugins.alreadyInstalled', entry.name) })

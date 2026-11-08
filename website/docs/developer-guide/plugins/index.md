@@ -225,6 +225,39 @@ without extending unrelated tools in the same model response. Existing shorter
 MCP calls retain their normal parallel-admission policy; interruption and
 approval handling are unchanged.
 
+### Export your own skills and MCP servers
+
+`hermes plugins export` packages skills and `mcp_servers` entries from the
+active profile as a v1 directory that other Agent Plugins clients, and other
+Hermes installs, can load:
+
+```bash
+hermes plugins export research-kit --skill paper-notes --mcp github -o ./research-kit
+```
+
+The command writes `plugin.json`, `skills/<name>/` (the whole skill folder) and
+`mcp.json`. It then loads the result with the importer described above and
+refuses to keep a package that importer would skip. Only portable facts leave
+the profile:
+
+- An env value that looks like a credential is written as `"NAME": "${NAME}"`,
+  so the receiving client passes its own variable through. Plain values such
+  as `LOG_LEVEL` are copied.
+- Credential headers, `${VAR}` header templates and `auth: oauth` are dropped.
+  Agent Plugins v1 has no portable auth, so each client signs in on its own.
+- A server whose `command` is an absolute path, or whose URL uses a `${VAR}`
+  template, is refused rather than exported as a broken reference. `cwd` is
+  dropped.
+- `trust: untrusted`, `timeout` and `tool_costs`/`spend_limit`/`cost_unit` are
+  carried in the `com.nousresearch.hermes` extension block. Other clients
+  ignore that block.
+- Nested skill `metadata` (such as `metadata.hermes`) is dropped from the
+  exported copy, because v1 metadata maps strings to strings. Your installed
+  skill is unchanged.
+
+Every adjustment is printed as a `note` line. Publish the directory as a git
+repository and install it anywhere with `hermes plugins install owner/repo`.
+
 The [rendered specification](https://agent-plugins.org/specification) currently
 labels v1.0.0 a Working Draft, while the
 [versioned specification repository](https://github.com/agentplugins/agent-plugins-spec/blob/main/spec/1.0.0.md)

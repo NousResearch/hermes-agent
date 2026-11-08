@@ -1124,6 +1124,11 @@ def _action_pack(args):
     pack_command(args)
 
 
+def _action_export(args):
+    from hermes_cli.agent_plugin_export import cmd_export
+    cmd_export(args)
+
+
 # Tri-state flags: neither --x nor --no-x given == None == interactive prompt.
 _PLUGIN_ACTIONS = {
     "install": lambda args: cmd_install(
@@ -1158,6 +1163,7 @@ _PLUGIN_ACTIONS = {
     "ls": lambda args: cmd_list(args),
     "doctor": lambda args: cmd_plugin_doctor(args.target, ci=getattr(args, "ci", False)),
     "pack": _action_pack,
+    "export": _action_export,
     "show": lambda args: cmd_show(args.name),
     "info": lambda args: _catalog().cmd_info(args.name),
     None: lambda args: cmd_toggle(),

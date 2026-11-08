@@ -65,6 +65,19 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
              "venv before the capability probe, exactly as `plugins install` would — the catalog CI gate")
     add_json_flag(plugins_validate, "Print machine-readable JSON (for CI)")
 
+    plugins_export = plugins_subparsers.add_parser(
+        "export", help="Package local skills and MCP servers as a portable Agent Plugins v1 directory",
+        description="Write plugin.json, skills/ and mcp.json in the Agent Plugins v1 layout so other "
+            "compatible agents (and other Hermes installs) can load them. Credential values never leave "
+            "the profile: secret env vars become ${NAME} pass-throughs and auth headers are dropped.")
+    plugins_export.add_argument("name", help="Package name (lowercase letters, digits, '.' and '-')")
+    plugins_export.add_argument("--skill", action="append", metavar="NAME", help="Skill to include (repeatable)")
+    plugins_export.add_argument("--mcp", action="append", metavar="SERVER",
+                                help="mcp_servers entry to include (repeatable)")
+    plugins_export.add_argument("--output", "-o", help="Output directory (default: ./<name>)")
+    plugins_export.add_argument("--package-version", default="0.1.0", help="Package version (default: 0.1.0)")
+    plugins_export.add_argument("--description", help="One-line package description")
+
     plugins_update = plugins_subparsers.add_parser(
         "update", help="Update an installed plugin, or with no name every plugin that has an update")
     plugins_update.add_argument(

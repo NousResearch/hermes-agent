@@ -206,6 +206,21 @@ def test_album_to_a_stale_topic_retries_once_without_the_thread(standalone) -> N
     standalone.bot.send_photo.assert_not_awaited()
 
 
+def test_photo_that_cannot_be_read_is_reported_and_the_rest_go_as_the_album(standalone) -> None:
+    """A photo that exists but cannot be opened (here a directory named like one) is left out of
+    the album and reported by name; the readable photos still go as one album."""
+    standalone.bot.send_media_group = AsyncMock(return_value=[SimpleNamespace(message_id=11)])
+    photos = _photos(standalone.home, 3)
+    unreadable = standalone.home / "p1.png"
+    unreadable.unlink()
+    unreadable.mkdir()
+
+    result = standalone.run("", media_files=photos)
+
+    assert result["success"] is True
+    assert len(standalone.bot.send_media_group.await_args.kwargs["media"]) == 2
+    assert [w for w in result.get("warnings", ()) if "p1.png" in w], result
+
 @pytest.mark.parametrize("exc", [TimedOut("Timed out"), NetworkError("Gateway Timeout (504)"),
                                  NetworkError("Bad Gateway"), _html_5xx(504, "Gateway Timeout")],
                          ids=["timed-out", "504", "502-json", "504-html"])

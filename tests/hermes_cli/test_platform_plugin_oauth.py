@@ -22,8 +22,10 @@ ROOT = Path(__file__).resolve().parents[2]
 def _plugin(home, name, entry=None, *, field="optional_env", names=(), kind="platform"):
     directory = home / "plugins" / name
     directory.mkdir(parents=True)
-    manifest = {"name": name, "version": "1.0.0", "description": "OAuth test platform", "kind": kind,
+    manifest = {"name": directory.name, "version": "1.0.0", "description": "OAuth test platform",
                 field: list(names)}
+    if kind is not None:
+        manifest["kind"] = kind
     if entry:
         manifest["oauth"] = [entry]
     (directory / "plugin.yaml").write_text(json.dumps(manifest), encoding="utf-8")
@@ -121,4 +123,30 @@ def test_native_platform_auth_add_refuses_foreign_variables(tmp_path, name, othe
     assert process.returncode != 0
     assert name in log.read_text()
     assert "declare the plugin's own" in log.read_text()
+    assert not (home / "auth.json").exists()
+
+
+@pytest.mark.parametrize("declaration", ["requires_env", "optional_env"])
+@pytest.mark.parametrize("field", ["client_id_env", "client_secret_env"])
+def test_native_standalone_auth_add_refuses_kindless_platform_variable(tmp_path, declaration, field):
+    home = tmp_path / "profile"
+    name = "LEGACY_BOT_TOKEN"
+    # Config recognizes platforms/* by location, even when discovery defaults its kind to standalone.
+    _plugin(home, "platforms/legacy", field=declaration, names=(name,), kind=None)
+    _plugin(home, "native", _entry("https://login.example.com", **{field: name}), kind="standalone",
+            names=("NATIVE_CLIENT_ID", "NATIVE_CLIENT_SECRET", name))
+    log = tmp_path / "denied.log"
+    with log.open("w") as output:
+        process, master = _start({**_env(tmp_path, home), name: "legacy-secret"}, output, timeout="1")
+        try:
+            process.wait(timeout=15)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=10)
+            os.close(master)
+    assert process.returncode != 0
+    text = log.read_text()
+    assert f"{name} is declared by another plugin (platforms/legacy); declare the plugin's own" in text, text
+    assert "legacy-secret" not in text
     assert not (home / "auth.json").exists()

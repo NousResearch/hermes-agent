@@ -184,6 +184,7 @@ from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInbound
 from plugins.platforms.telegram.telegram_polling_probe import TelegramPendingProbeMixin
 from plugins.platforms.telegram.telegram_intake import effective_update_message
 from plugins.platforms.telegram.telegram_media_group import flush_media_group_event, queue_media_group_event, tracking_album_items
+from plugins.platforms.telegram.telegram_media_flood import TelegramMediaFloodMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, log_resolved, tap_matches_prompt
@@ -455,7 +456,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, TelegramPendingProbeMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, TelegramPendingProbeMixin, TelegramMediaFloodMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -5103,6 +5104,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         _transcoded_voice_path: Optional[str] = None
+        source_path = audio_path  # a deferred flood re-upload transcodes again (the temp file is removed below)
         try:
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
@@ -5141,6 +5143,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                         chat_id=chat_id, file_path=audio_path, caption=caption, reply_to=reply_to, metadata=metadata)
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            if (recovered := await self._media_flood_recover(e, chat_id, lambda: self.send_voice(
+                    chat_id, source_path, caption, reply_to, metadata, **kwargs), f"voice {os.path.basename(source_path)}")):
+                return recovered
             logger.error(
                 "[%s] Failed to send Telegram voice/audio, falling back to base adapter: %s", self.name,
                 _redact_telegram_error_text(e), exc_info=True)
@@ -5260,29 +5265,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         try:
             return await self._send_local_file(
                 "Image", actual_path, chat_id, reply_to, metadata, "photo",
-                lambda f: {"photo": f, "caption": self._caption_1024(caption)}, _photo_failed)
+                lambda f: {"photo": f, "caption": self._caption_1024(caption)}, _photo_failed,
+                lambda: self.send_image_file(chat_id, image_path, caption, reply_to, metadata, **kwargs))
         finally:
             if compressed:
                 with contextlib.suppress(OSError):
                     os.remove(compressed)
-
-    async def _send_local_file(
-        self, label: str, path: str, chat_id, reply_to, metadata, media_key: str, build_kwargs, on_error,
-    ) -> SendResult:
-        """Shared shell for native local-file sends: existence check, open, send with routing, then
-        ``await on_error(exc)`` on any failure. ``build_kwargs(f)`` supplies the media kwargs."""
-        if not self._bot:
-            return SendResult(success=False, error="Not connected")
-        try:
-            if not os.path.exists(path):
-                return SendResult(success=False, error=self._missing_media_path_error(label, path))
-            with open(path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
-                msg = await self._send_media(
-                    getattr(self._bot, f"send_{media_key}"), chat_id, reply_to, metadata, media_key,
-                    reset_media=lambda: f.seek(0), **build_kwargs(f))
-            return SendResult(success=True, message_id=str(msg.message_id))
-        except Exception as e:
-            return await on_error(e)
 
     async def _warn_then(self, media_key: str, e: Exception, fallback) -> SendResult:
         logger.warning("[%s] Failed to send %s: %s", self.name, media_key, _redact_telegram_error_text(e))
@@ -5328,7 +5316,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                 "Video", video_path, chat_id, reply_to, metadata, "video", build_kwargs,
                 lambda e: self._warn_then(
                     "video", e, super(TelegramAdapter, self).send_video(chat_id, video_path, caption, reply_to, metadata=metadata),
-                ))
+                ), lambda: self.send_video(chat_id, video_path, caption, reply_to, metadata, **kwargs))
         finally:
             if thumb_path:
                 with contextlib.suppress(OSError):
@@ -5350,6 +5338,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                 self._bot.send_photo, chat_id, reply_to, metadata, "URL photo", photo=image_url, caption=photo_caption)
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            if (recovered := await self._media_flood_recover(
+                    e, chat_id, lambda: self.send_image(chat_id, image_url, caption, reply_to, metadata), "URL photo")):
+                return recovered
             logger.warning(
                 "[%s] URL-based send_photo failed, trying file upload: %s", self.name, _redact_telegram_error_text(e), exc_info=True)
             try:
@@ -5378,6 +5369,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                 caption=self._caption_1024(caption))
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            if (recovered := await self._media_flood_recover(
+                    e, chat_id, lambda: self.send_animation(chat_id, animation_url, caption, reply_to, metadata), "animation")):
+                return recovered
             logger.error(
                 "[%s] Failed to send Telegram animation, falling back to photo: %s", self.name,
                 _redact_telegram_error_text(e), exc_info=True)

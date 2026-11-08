@@ -21,7 +21,7 @@ from agent.message_sanitization import _sanitize_surrogates, coalesce_tool_call_
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
-    _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+    _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract, _sql_model_only_truthy)
 from hermes_state_compaction_display import later_tool_copy_ids, not_a_later_tool_copy_sql
 from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_todo import SessionTodoResultMixin
@@ -57,9 +57,11 @@ _TURN_LEASE_ROW_SQL = "SELECT holder, expires_at FROM session_turn_leases WHERE 
 _DELETE_COMPRESSION_LOCK_SQL = "DELETE FROM compression_locks WHERE session_id = ? AND holder = ?"
 _DISPLAY_ACTIVE_CLAUSE = " AND (active = 1 OR compacted = 1)"
 # Model-only rows (see MODEL_ONLY_DISPLAY_METADATA_KEY) never enter a display projection. Unqualified on
-# purpose: inside a correlated subquery it binds to the innermost ``messages`` alias.
+# purpose: inside a correlated subquery it binds to the innermost ``messages`` alias. The marker test is
+# type-aware (``_sql_model_only_truthy``) so the SQL and the Python twin agree on every value shape,
+# on both dialects.
 DISPLAY_VISIBLE_SQL = (
-    f" AND COALESCE(CAST({_sql_json_extract('display_metadata', '$.' + MODEL_ONLY_DISPLAY_METADATA_KEY)} AS TEXT), '0') IN ('0', 'false')")
+    f" AND {_sql_model_only_truthy('display_metadata', MODEL_ONLY_DISPLAY_METADATA_KEY)} = 0")
 _DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND session_id IN ({ids})" + _DISPLAY_ACTIVE_CLAUSE
 # A display row is indexed only when both halves are set; the read path backfills before projecting, so
 # the in-transaction delete fence must refuse (not project) any session this probe still matches.
@@ -1118,7 +1120,13 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
             row["role"], dedupe_content, row["timestamp"], row["tool_call_id"], row["tool_calls"], row["tool_name"])
 
     def _is_model_only_row(self, row) -> bool:
-        """Python twin of :data:`DISPLAY_VISIBLE_SQL`."""
+        """Python twin of :data:`DISPLAY_VISIBLE_SQL`.
+
+        Truthy marker semantics (the SQL twin encodes the same rule via
+        ``json_type`` + the extracted scalar's text, on both dialects): JSON ``true``,
+        any non-empty string, any non-zero number, and a non-empty object/array value
+        hide the row; ``false``, ``0`` / ``0.0``, JSON ``null``, a missing key, and
+        invalid JSON all read as absent."""
         return bool((self._decode_display_metadata(row["display_metadata"]) or {}).get(MODEL_ONLY_DISPLAY_METADATA_KEY))
 
     @staticmethod

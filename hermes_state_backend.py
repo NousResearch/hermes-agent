@@ -8,8 +8,6 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from hermes_yaml import YAMLError
-
 from hermes_constants import get_hermes_home, get_process_hermes_home, profile_name_for_home
 
 
@@ -34,10 +32,13 @@ def resolve_database_settings(db_path: str | Path | None = None) -> DatabaseSett
 
     from hermes_cli.config_effective import load_user_config_effective
 
-    try:
-        config = load_user_config_effective(home / "config.yaml", fail_closed=True)
-    except (OSError, ValueError, TypeError, YAMLError):
-        raise ValueError(f"Cannot read database configuration in {home / 'config.yaml'}") from None
+    # Fail open: a config.yaml torn mid-edit serves the last-good user layer (this
+    # process's last successful parse first, then the newest backups/config copy), so a
+    # torn write can never drop a postgres selection or abort a reader surface on the
+    # default backend; with no last-good layer at all it falls to the SQLite default.
+    # Readable-but-invalid configs (non-mapping database section, unknown backend,
+    # missing DSN, invalid schema) keep raising below.
+    config = load_user_config_effective(home / "config.yaml")
     database = config.get("database", {})
     if not isinstance(database, dict):
         raise ValueError("database must be a mapping in config.yaml")

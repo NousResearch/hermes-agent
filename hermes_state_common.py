@@ -94,6 +94,37 @@ def _sql_json_extract(expression: str, path: str) -> str:
     return f"json_extract({safe_json}, {_sql_literal(path)})"
 
 
+def _sql_model_only_truthy(expression: str, key: str) -> str:
+    """Portable type-aware marker test for ``<key>`` with Python-truthy semantics.
+
+    The row is model-only exactly when the marker value is JSON ``true``, a non-empty JSON
+    string, a non-zero JSON number, or a non-empty JSON object/array; ``false``, ``0`` /
+    ``0.0``, JSON ``null``, a missing key, and invalid JSON all read as absent. This is the
+    SQL twin of ``SessionDB._is_model_only_row``: the type comes from ``json_type``
+    (SQLite builtin; the PostgreSQL shim mirrors the SQLite type vocabulary) and the value
+    from the extracted scalar's text, so both dialects agree on every shape (the numeric
+    ``NOT IN`` set covers both zero spellings; ``real``/``number`` are the same type in
+    each dialect's vocabulary)."""
+    safe_json = (
+        f"(CASE WHEN json_valid({expression}) <> 0 "
+        f"THEN {expression} ELSE 'null' END)"
+    )
+    path = _sql_literal(f"$.{key}")
+    type_of = f"json_type({safe_json}, {path})"
+    value_of = f"COALESCE(CAST(json_extract({safe_json}, {path}) AS TEXT), '')"
+    # CASE WHEN normalizes the OR-chain to 0/1 on both dialects (a missing key or
+    # invalid JSON leaves the chain NULL: the CASE takes the ELSE branch, and a
+    # bare NULL predicate would wrongly filter the row out of a display read).
+    return (
+        f"CASE WHEN ({type_of} = 'true' "
+        f"OR ({type_of} = 'boolean' AND {value_of} = 'true') "
+        f"OR ({type_of} = 'text' AND {value_of} <> '') "
+        f"OR ({type_of} IN ('integer', 'real', 'number') AND {value_of} NOT IN ('0', '0.0', '-0.0')) "
+        f"OR ({type_of} IN ('object', 'array') AND {value_of} NOT IN ('{{}}', '[]'))) "
+        "THEN 1 ELSE 0 END"
+    )
+
+
 def _sql_ltrim_whitespace(expression: str) -> str:
     return f"LTRIM({expression}, {_SQL_WHITESPACE})"
 

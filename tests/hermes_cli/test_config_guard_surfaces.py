@@ -70,9 +70,10 @@ class TestCronRunJobGuard:
         # Agent-backed run_job is now a client. Exercise the scheduler's guard
         # through its owner entry, without launching a daemon or bypassing it.
         # The store is opened before the config is corrupted: store construction
-        # now resolves the profile database and fails closed on a corrupted
-        # config (see test_store_construction_fails_closed_on_corrupt_config),
-        # so the guard under test here is reached with an already-open store.
+        # now resolves the profile database and fails OPEN on a corrupted config
+        # (see test_store_construction_recovers_sqlite_on_corrupt_config), so the
+        # guard under test here is reached with an already-open store; the guard's
+        # own fail-closed config check still refuses the corrupt file.
         db = acquire(tmp_path / "state.db")
         _write_corrupt_config(tmp_path)
         ref = SessionRef("default", "cron-guard")
@@ -99,19 +100,24 @@ class TestCronRunJobGuard:
         assert "config.yaml" in error
         assert final_response == ""
 
-    def test_store_construction_fails_closed_on_corrupt_config(self, tmp_path):
-        """Opening a store resolves the profile database config and fails closed.
+    def test_store_construction_recovers_sqlite_on_corrupt_config(self, tmp_path):
+        """Opening a store resolves the profile database config and fails open.
 
-        The dispatch seam must not silently fall back to a local database when
-        the owning profile's config is unreadable: a corrupted config may have
-        selected a remote backend, and opening the local default instead would
-        lose writes.
+        The dispatch seam must not abort a reader surface (``hermes sessions repair``
+        is the documented recovery path for a damaged store) when the owning
+        profile's config.yaml is torn mid-edit: the last-good user layer is served,
+        and with no last-good layer at all the construction falls to the SQLite
+        default. Readable-but-invalid configs (non-mapping ``database:`` section,
+        unknown backend, missing DSN) keep failing closed in the resolver.
         """
-        from hermes_state_registry import acquire
+        from hermes_state_registry import acquire, release
 
         _write_corrupt_config(tmp_path)
-        with pytest.raises(ValueError, match="Cannot read database configuration"):
-            acquire(tmp_path / "state.db")
+        db = acquire(tmp_path / "state.db")
+        try:
+            assert db is not None
+        finally:
+            release(db)
 
     def test_run_job_no_agent_exempt(self, tmp_path):
         from cron.scheduler import run_job

@@ -109,17 +109,50 @@ def test_profile_dotenv_does_not_expand_process_secrets(profile_home, monkeypatc
     assert "private-default-secret" not in settings.database_url
 
 
-@pytest.mark.parametrize("body", ["database: [", "- postgres", "postgres", "database: []", "database: null"])
-def test_invalid_configuration_never_defaults_to_sqlite(profile_home, body):
+@pytest.mark.parametrize("body", ["database: []", "database: null"])
+def test_readable_invalid_database_section_never_defaults_to_sqlite(profile_home, body):
+    """A config that PARSES but carries an invalid ``database:`` section keeps
+    failing closed: the resolver's own validation rejects it either way."""
     (profile_home / "config.yaml").write_text(body, encoding="utf-8")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="database must be a mapping"):
         resolve_database_settings()
 
 
-def test_unreadable_configuration_does_not_default_to_sqlite(profile_home):
+@pytest.mark.parametrize("body", ["database: [", "- postgres", "postgres"])
+def test_torn_or_non_mapping_configuration_recovers(profile_home, body):
+    """Unparseable roots and non-mapping roots are the torn-write class: the resolver
+    serves the last-good user layer (or falls to the SQLite default) instead of raising."""
+    (profile_home / "config.yaml").write_text(body, encoding="utf-8")
+    assert resolve_database_settings() == DatabaseSettings(backend="sqlite")
+
+
+def test_unreadable_configuration_recovers_last_good(profile_home):
+    """A torn config.yaml serves the last-good user layer: a mid-edit write can never
+    raise, and a postgres selection already served by this process survives the tear
+    (write-loss safety)."""
+    configure_postgres(profile_home)
+    assert resolve_database_settings().backend == "postgres"  # fresh read caches the last-good layer
+    (profile_home / "config.yaml").write_text("database: [", encoding="utf-8")
+    assert resolve_database_settings().backend == "postgres"
+
+
+def test_unreadable_configuration_falls_back_to_sqlite(profile_home):
+    """No last-good layer and no good backup: an unreadable config.yaml falls to the
+    SQLite default instead of raising (the resolver cannot know what the torn edit
+    selected, and the default backend is the behavior-identical one)."""
     (profile_home / "config.yaml").mkdir()
-    with pytest.raises(ValueError, match="Cannot read database configuration"):
-        resolve_database_settings()
+    assert resolve_database_settings() == DatabaseSettings(backend="sqlite")
+
+
+def test_torn_configuration_recovers_from_newest_backup(profile_home):
+    """Fresh process (no in-process parse) with a torn config: the newest good backup
+    carries the selection."""
+    from hermes_cli.config_backups import backup_config
+
+    configure_postgres(profile_home)
+    backup_config(profile_home / "config.yaml", "good")
+    (profile_home / "config.yaml").write_text("database: [", encoding="utf-8")
+    assert resolve_database_settings().backend == "postgres"
 
 
 @pytest.mark.parametrize("backend", ["postgress", "null", "[]"])

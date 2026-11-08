@@ -29,9 +29,9 @@ from gateway.platforms._shared import (
 
 
 def _redact_telegram_error_text(error: object, proxy_url: str | None = None) -> str:
-    """Secret-redacted error text; with a proxy only type + proxy host:port (text may embed its URL)."""
-    if proxy_url and isinstance(error, BaseException):
-        return describe_proxy_error(error, proxy_url)
+    """Secret-redacted error text; only type + proxy host:port when the proxy URL holds a secret the text may echo."""
+    if proxy_url and isinstance(error, BaseException) and (shown := describe_proxy_error(error, proxy_url)):
+        return shown
     text = "" if error is None else str(error)
     if not text:
         # httpx timeout exceptions (ConnectTimeout, ReadTimeout, ...) stringify to "" — keep the
@@ -3092,7 +3092,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                     "[%s] Telegram network error, scheduling reconnect: %s", self.name, _redact_telegram_error_text(error, self._ptb_proxy_url))
                 self._spawn_polling_recovery(loop, self._handle_polling_network_error(error))
             else:
-                logger.error("[%s] Telegram polling error: %s", self.name, _redact_telegram_error_text(error, self._ptb_proxy_url), exc_info=not self._ptb_proxy_url)
+                logger.error("[%s] Telegram polling error: %s", self.name, _redact_telegram_error_text(error, self._ptb_proxy_url), exc_info=describe_proxy_error(error, self._ptb_proxy_url) is None)
 
         self._polling_error_callback_ref = _polling_error_callback  # reused by _handle_polling_conflict
         drop_pending = self._cold_boot_drop_pending(is_reconnect=is_reconnect)

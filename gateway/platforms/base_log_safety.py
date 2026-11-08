@@ -1,6 +1,8 @@
 """Log-safe URL rendering for adapter logs (split from :mod:`gateway.platforms.base`)."""
 from urllib.parse import urlsplit
 
+_UNSAFE_URL_PLACEHOLDER = "<unparseable URL redacted>"
+
 
 def safe_url_for_log(url: str, max_len: int = 80) -> str:
     """Return a URL string safe for logs (no query/fragment/userinfo)."""
@@ -9,8 +11,12 @@ def safe_url_for_log(url: str, max_len: int = 80) -> str:
         return ""
     try:
         parsed = urlsplit(raw)
-    except Exception:
-        return raw[:max_len]
+    except ValueError:
+        parsed = None
+    # Without a parsed authority the userinfo can't be cut out reliably (``http://u:p@[::1``,
+    # ``u:p@proxy:8080``, ``http:/u:p@proxy``): never echo text that may still hold credentials.
+    if parsed is None or not (parsed.scheme and parsed.netloc) and "@" in raw:
+        return _UNSAFE_URL_PLACEHOLDER[:max_len]
     safe = raw
     if parsed.scheme and parsed.netloc:
         # Strip potential embedded credentials (user:pass@host).

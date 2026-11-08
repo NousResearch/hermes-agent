@@ -245,3 +245,32 @@ async def test_every_native_media_entry_waits_out_a_known_flood_window(flooded, 
     assert sorted(kind for kind, _ in calls) == ["animation", "document", "document", "document", "photo", "voice"]
     assert all(at - refused_at >= 0.29 for _, at in calls[1:])
     adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_short_flood_wait_keeps_sibling_uploads_out_of_the_window(flooded, monkeypatch):
+    """A refusal short enough to wait out inline still closes the chat: a sibling upload sent while
+    the first sleeps makes no request until the window is over, and the first is retried once."""
+    adapter, doc = flooded
+    monkeypatch.setattr(tg_adapter, "_FLOOD_INLINE_WAIT_CAP_SECS", 5.0)  # 0.3 s is waited out inline
+    loop = asyncio.get_running_loop()
+    first_request = asyncio.Event()
+    calls = []
+
+    async def send_document(**kwargs):
+        calls.append(loop.time())
+        first_request.set()
+        if len(calls) == 1:
+            raise RetryAfter(0.3)
+        return _ok(len(calls))
+
+    adapter._bot.send_document = send_document
+    first = asyncio.create_task(adapter.send_document("12345", str(doc)))
+    await first_request.wait()
+    sibling = await adapter.send_document("12345", str(doc))
+
+    assert sibling.raw_response["deferred_upload"]  # refused locally, no request into the window
+    assert (await first).success
+    await async_wait_until(lambda: len(calls) == 3, timeout=10, what="retry and sibling re-upload")
+    assert all(at - calls[0] >= 0.29 for at in calls[1:]), calls
+    adapter.send.assert_not_awaited()

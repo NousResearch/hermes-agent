@@ -238,7 +238,14 @@ class HostedRoomPolicyCheckpoint:
         if kind == "turn.settled" and payload.get("message_event_id"):
             committed = _settled_message(conn, room_id, discussion_event_id, payload["message_event_id"])
             if committed is not None:
-                seen_through_seq = max(seen_through_seq, int(committed["seq"]))
+                # A late reply must not hide what others wrote after this turn's input (as
+                # ``_derive_member_watermarks``).
+                if conn.execute("""SELECT 1 FROM hosted_room_events WHERE room_id=? AND seq>? AND seq<?
+                        AND kind IN ('message.user', 'message.member')
+                        AND json_extract(payload_json, '$.thread_id')=?
+                        AND COALESCE(json_extract(payload_json, '$.member_id'), '')!=? LIMIT 1""",
+                        (room_id, seen_through_seq, int(committed["seq"]), thread_id, member_id)).fetchone() is None:
+                    seen_through_seq = max(seen_through_seq, int(committed["seq"]))
                 self._store_transcript_event(conn, event=committed, thread_id=thread_id, settled_seq=seq)
         else:
             # Non-visible receipts still supply historical reconstruction watermarks.

@@ -548,7 +548,11 @@ def _derive_member_watermarks(events: Sequence[_ValidatedEvent]) -> dict[tuple[s
                                    if candidate.event_id == event.payload["discussion_event_id"]), None)
             if discussion_seq is None:
                 raise DiscussionValidationError("turn.settled references no matching user discussion")
-            if watermark >= discussion_seq:
+            # A late reply must not hide what others wrote after this turn's input, which it never saw.
+            if watermark >= discussion_seq and not any(
+                    watermark < other.seq < message.seq and other.kind in {"message.user", "message.member"}
+                    and other.payload.get("thread_id") == key[0] and other.payload.get("member_id") != key[1]
+                    for other in events):
                 watermark = max(watermark, message.seq)
         watermarks[key] = max(watermarks.get(key, 0), watermark)
     return watermarks
@@ -606,7 +610,8 @@ def _build_prompt(
     *, room: DiscussionRoom, member: DiscussionMember, messages: Sequence[_ValidatedEvent], watermark: int,
     seen_through_seq: int, reply_required: bool = False, context: Mapping[str, str] | None = None,
     addressed_by_job: str | None = None, assigned_by: DiscussionMember | None = None, routed: bool = False) -> str:
-    delta = [event for event in messages if watermark < event.seq <= seen_through_seq][- MAX_DISCUSSION_DELTA_LINES:]
+    delta = [event for event in messages if watermark < event.seq <= seen_through_seq
+             and not _is_own_reply(event, member)][- MAX_DISCUSSION_DELTA_LINES:]
     peers = ", ".join(f"@{candidate.handle}" for candidate in room.members if candidate.member_id != member.member_id)
     opening = [
         f'[Discussion: "{room.name}"] You are @{member.handle}, one participant '
@@ -737,10 +742,14 @@ def _effective_watermarks(
     return watermarks
 
 
+def _is_own_reply(event: _ValidatedEvent, member: DiscussionMember) -> bool:
+    return event.kind == "message.member" and event.payload["member_id"] == member.member_id
+
+
 def _event_attachments(event: _ValidatedEvent, member: DiscussionMember) -> list[dict[str, Any]]:
+    if _is_own_reply(event, member):
+        return []
     if event.kind == "message.member":
-        if event.payload["member_id"] == member.member_id:
-            return []
         recipients = event.payload.get("recipient_member_ids")
         if recipients is not None and member.member_id not in recipients:
             return []
@@ -755,7 +764,7 @@ def _bounded_task_delta(messages: Sequence[_ValidatedEvent], *, watermark: int,
     attachments: list[dict[str, Any]] = []
     size = 0
     for event in messages:
-        if event.seq <= watermark:
+        if event.seq <= watermark or _is_own_reply(event, member):
             continue
         entries = _event_attachments(event, member)
         next_size = size + sum(item["size"] for item in entries)

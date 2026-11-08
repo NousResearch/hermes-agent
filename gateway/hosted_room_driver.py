@@ -114,6 +114,7 @@ class DriverValidationError(DriverStateError): """Raised when an identifier, clo
 class RoomUnavailableError(DriverStateError): """Raised when the hosted room does not exist or was disbanded."""
 class LeaseHeldError(DriverStateError): """Raised when another unexpired driver generation owns the room."""
 class StaleLeaseError(DriverStateError): """Raised when a lease generation can no longer mutate room state."""
+class AuthorityChangedError(StaleLeaseError): """Raised when another gateway or epoch now owns the room."""
 class TaskConflictError(DriverStateError): """Raised when an idempotency key is reused for different task state."""
 class StaleTaskError(DriverStateError): """Raised when an obsolete task attempt or cancellation tries to commit."""
 class InvalidTaskTransitionError(DriverStateError): """Raised when a requested task transition is not allowed."""
@@ -400,7 +401,7 @@ def _load_active_room(conn: sqlite3.Connection, room_id: str) -> sqlite3.Row:
 def _require_room_authority(conn: sqlite3.Connection, room_id: str, gateway_id: str, epoch: int) -> sqlite3.Row:
     room = _load_active_room(conn, room_id)
     if room["authority_gateway_id"] != gateway_id or int(room["authority_epoch"]) != epoch:
-        raise StaleLeaseError("hosted room authority changed")
+        raise AuthorityChangedError("hosted room authority changed")
     return room
 
 
@@ -736,6 +737,20 @@ def resolve_indeterminate_task(
     return _generation_transition(
         db_path, identity, lease, "resolve", expected_execution_generation, expected_cancel_generation, now=now,
         replay=replay, set_params=set_params)
+
+
+def settle_recovered_task(
+    db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
+    expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock
+) -> dict[str, Any]:
+    """Accept an exact attempt's late receipt under the current authority, never a replaced attempt."""
+    _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
+    now, replay, set_params = _settlement(settlement_id, status, result, clock)
+    return _transition(
+        db_path, identity, lease=lease, now=now, replay=replay,
+        sql=_task_update(_SETTLE_SET, f"status IN ('running', 'deferred') AND {_GENERATION_FENCE}"),
+        set_params=set_params, fence_params=(expected_execution_generation, expected_cancel_generation),
+        stale="late receipt belongs to a replaced or cancelled attempt")
 
 
 def resolve_indeterminate_cancellation(

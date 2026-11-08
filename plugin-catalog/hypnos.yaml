@@ -1,7 +1,7 @@
 name: hypnos
 repo: https://github.com/0xNoramiya/hypnos
 sha: 0a809b9085fdeaed63fd909b927afcc41de512de
-description: Hermes learns in its sleep. Consolidates your corrections and denials into a small LoRA brain overnight, then routes mastered turns to it with the learned habits pruned from its prompt.
+description: "Hermes learns in its sleep. Consolidates your corrections and denials into a small LoRA brain overnight, then routes mastered turns to it with the learned habits pruned from its prompt. Disclosure — captures your messages, tool calls with their arguments and results, approvals and replies (secret-scrubbed) into its own plugin-data database for 90 days by default and reads MEMORY.md/USER.md read-only; nights run only when you start them (/sleep now, hermes hypnos sleep, Desktop, or a cron job you create) and download the chosen base model from Hugging Face, call your own model through Hermes for dream variants (budget-capped; teacher: scripted avoids it), and run the teacher's and brain's proposed shell commands only inside a networkless, mount-free Docker container you pull yourself; after a promoted night it starts an unauthenticated brain server on 127.0.0.1:8765, and with routing: auto (default) a learned habit family switches, after 5 agreeing shadow turns, to being answered by the small local brain (including terminal tool calls, which still go through Hermes approval) instead of your configured model; a brain_endpoint you set receives the brain's prompts; Desktop replies carry a ~20-token ::hypnos marker kept in the transcript."
 maintainer: 0xNoramiya
 tier: community
 category: models

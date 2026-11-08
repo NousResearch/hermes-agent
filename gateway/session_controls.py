@@ -245,6 +245,8 @@ class AuthorityConnection:
         handlers.update(queued_handlers(self))
         from gateway.session_config import handlers as config_handlers
         handlers.update(config_handlers(self))
+        from gateway.session_peers import handlers as peer_handlers
+        handlers.update(peer_handlers(self))
         from gateway.session_tui_config import handlers as tui_config_handlers
         handlers.update(tui_config_handlers(self))
         from gateway.session_ancillary import handlers as ancillary_handlers

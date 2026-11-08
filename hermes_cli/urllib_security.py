@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import logging
 import ssl
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
@@ -39,12 +40,16 @@ class SafeCredentialRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Preserve request headers only while redirects stay on one origin."""
 
     def __init__(
-        self, original_url: str, *, cross_origin_safe_headers: Iterable[str] = _CROSS_ORIGIN_SAFE_HEADERS
+        self, original_url: str, *, cross_origin_safe_headers: Iterable[str] = _CROSS_ORIGIN_SAFE_HEADERS,
+        allow_redirects: bool = True,
     ) -> None:
         self._original_origin = url_origin(original_url)
+        self._allow_redirects = allow_redirects
         self._cross_origin_safe_headers = frozenset(str(name).lower() for name in cross_origin_safe_headers)
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not self._allow_redirects:
+            raise urllib.error.HTTPError(req.full_url, code, 'Redirect refused', headers, fp)
         # Let urllib enforce status/method semantics first (notably 307/308).
         redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
         if redirected is None:
@@ -91,7 +96,7 @@ def _resolved_https_context() -> ssl.SSLContext | None:
     return None
 
 
-def _secure_opener_from_installed_policy(original_url: str, *, ssl_context=None):
+def _secure_opener_from_installed_policy(original_url: str, *, ssl_context=None, allow_redirects=True):
     """Clone the installed opener's handlers, replacing redirect policy only.
 
     When ``ssl_context`` is provided, the cloned HTTPS handler is replaced with
@@ -115,7 +120,7 @@ def _secure_opener_from_installed_policy(original_url: str, *, ssl_context=None)
     ]
     if replace_https:
         handlers.append(_https_handler_cls(context=ssl_context))
-    handlers.append(SafeCredentialRedirectHandler(original_url))
+    handlers.append(SafeCredentialRedirectHandler(original_url, allow_redirects=allow_redirects))
     handlers.append(_CrossOriginRequestSanitizer(original_url))
     secured = urllib.request.build_opener(*handlers)
     # OpenerDirector injects addheaders after request processors (bypassing the
@@ -131,6 +136,7 @@ def open_credentialed_url(
     timeout: float,
     opener_factory: Callable[..., Any] | None = None,
     ssl_context=None,
+    allow_redirects: bool = True,
 ):
     """Open a request without forwarding credentials across origins.
 
@@ -144,14 +150,18 @@ def open_credentialed_url(
     ``ssl_ca_cert`` / ``ssl_verify`` on the ``/models`` discovery path, which
     otherwise falls back to the process-wide platform trust store
     (``agent.ssl_verify.install_truststore``).
+
+    ``allow_redirects=False`` refuses before contacting a redirect destination, including
+    another path on the same origin. Peer selectors use it to preserve the exact profile.
     """
     if opener_factory is None:
-        opener = _secure_opener_from_installed_policy(request.full_url, ssl_context=ssl_context)
+        opener = _secure_opener_from_installed_policy(
+            request.full_url, ssl_context=ssl_context, allow_redirects=allow_redirects)
         for name, value in getattr(opener, "_hermes_initial_addheaders", ()):
             if not request.has_header(name):
                 request.add_header(name, value)
     else:
-        opener = opener_factory(SafeCredentialRedirectHandler(request.full_url))
+        opener = opener_factory(SafeCredentialRedirectHandler(request.full_url, allow_redirects=allow_redirects))
     return opener.open(request, timeout=timeout)
 
 

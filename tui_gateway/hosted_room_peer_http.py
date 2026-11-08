@@ -308,7 +308,9 @@ class PeerRunsHTTPClient:
                 "Content-Type": "application/json", "User-Agent": "Hermes-RoomLink/1.0",
                 **(headers or {})})
         try:
-            with open_credentialed_url(request, timeout=self.timeout_seconds) as response:
+            # A redirect can change the target profile or turn this configured peer into an
+            # arbitrary network probe, even when Authorization is stripped across origins.
+            with open_credentialed_url(request, timeout=self.timeout_seconds, allow_redirects=False) as response:
                 raw = _read_body(
                     response, max_bytes=MAX_PEER_RESPONSE_BYTES, deadline=deadline, kind="",
                     ambiguous=ambiguous)

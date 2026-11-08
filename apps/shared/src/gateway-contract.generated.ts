@@ -5560,6 +5560,101 @@ export interface StoredTranscriptRow {
   truncated?: boolean | null
   [key: string]: unknown
 }
+export interface PeersRosterResult {
+  bots: PeerBot[]
+}
+export interface PeerBot {
+  kind: 'peer'
+  route_id: string
+  alias: string
+  profile: string
+  reachability: 'reachable' | 'unreachable' | 'unauthenticated' | 'unsupported'
+  installation_id?: string | null
+  room_link?: PeerCatalog | null
+}
+export interface PeerCatalog {
+  installation_id: string
+  protocol_versions: number[]
+  link_modes: string[]
+  persistent_process: boolean
+  text: boolean
+  attachments: boolean
+  execution_policy: RoomExecutionPolicy
+  catalog_digest: string
+}
+export interface PeersDMParams {
+  profile?: string | null
+  route_id: string
+  message: string
+  request_id: string
+}
+export interface PeersDMResult {
+  route_id: string
+  session_id: string
+  status: 'completed' | 'queued' | 'unknown'
+  reply: string
+  idempotency_supported: boolean
+  idempotency_durable?: boolean
+  run_id?: string | null
+}
+export interface GroupsCreateMixedParams {
+  profile?: string | null
+  room_id: string
+  name: string
+  members: (LocalBotMember | PeerBotMember)[]
+}
+export interface LocalBotMember {
+  kind: 'local'
+  profile: string
+  member_id: string
+  handle: string
+  display_name?: string
+}
+export interface PeerBotMember {
+  kind: 'peer'
+  route_id: string
+  member_id: string
+  handle: string
+  display_name?: string
+}
+export interface GroupsCreateMixedResult {
+  room: MixedRoom
+}
+export interface MixedRoom {
+  room_id: string
+  name: string
+  members: MixedRoomMember[]
+  authority_gateway_id: string
+  authority_epoch: number
+  revision: number
+  created_at: number
+  updated_at: number
+  idempotent?: boolean
+  disbanded_at?: number | null
+  latest_seq?: number | null
+  adopted?: boolean | null
+  claim_event?: RoomEvent | null
+  authority_claim?: RoomEvent | null
+  event?: RoomEvent | null
+}
+export interface MixedRoomMember {
+  member_id: string
+  profile: string
+  handle: string
+  display_name?: string | null
+  target: MixedLocalTarget | MixedPeerTarget
+}
+export interface MixedLocalTarget {
+  kind: 'local'
+  profile: string
+}
+export interface MixedPeerTarget {
+  kind: 'peer'
+  peer_id: string
+  installation_id: string
+  profile: string
+  capability_digest: string
+}
 /** Open: the plugin's handler owns every other key. ``session_id`` names the session the call acts in and passes that session's authorization first. */
 export interface PluginRpcParams {
   session_id?: string | null
@@ -7092,6 +7187,8 @@ export interface CanonicalRpcMethods {
   /** Store one attachment for a later groups.send manifest (idempotent per upload_id). */
   'groups.attachment.upload': { params: GroupsAttachmentUploadParams; result: RoomAttachment }
   'groups.create': { params: CanonicalRoomCreateParams; result: GroupsCreateResult }
+  /** Invite peer members, create a local room and register verified RoomLinks; compensate failures. */
+  'groups.create_mixed': { params: GroupsCreateMixedParams; result: GroupsCreateMixedResult }
   /** Discard one indeterminate room task after explicit user confirmation. */
   'groups.discard': { params: GroupsDiscardParams; result: GroupsDiscardResult }
   /** Operator only: mint one room grant for a member of another gateway's room. */
@@ -7104,6 +7201,10 @@ export interface CanonicalRpcMethods {
   'image.attach_bytes': { params: ImageAttachBytesParams; result: CanonicalAttachedImageResult }
   /** Native-owner only: admit the dispatcher's current claim on a kanban task. */
   'kanban.run': { params: KanbanRunParams; result: KanbanRunResult }
+  /** Deliver to an opaque peer route's actual canonical Bot Chat. */
+  'peers.dm': { params: PeersDMParams; result: PeersDMResult }
+  /** Probe this profile's authenticated peer bots without exposing credentials or endpoints. */
+  'peers.roster': { params: ProfileParams; result: PeersRosterResult }
   'profiles.list': { params: CanonicalProfilesParams; result: CanonicalProfilesResult }
   /** Retire a queued admission; a started one is interrupted in the same call. */
   'prompt.cancel': { params: PromptCancelParams; result: AdmissionStatus }
@@ -7172,6 +7273,7 @@ export const CANONICAL_RPC_METHODS = [
   'groups.attachment.download',
   'groups.attachment.upload',
   'groups.create',
+  'groups.create_mixed',
   'groups.discard',
   'groups.peer.invite',
   'groups.peer.register',
@@ -7179,6 +7281,8 @@ export const CANONICAL_RPC_METHODS = [
   'groups.retry',
   'image.attach_bytes',
   'kanban.run',
+  'peers.dm',
+  'peers.roster',
   'profiles.list',
   'prompt.cancel',
   'prompt.receipt',

@@ -19852,6 +19852,67 @@
         "title": "GroupsContinueResult",
         "type": "object"
       },
+      "GroupsCreateMixedParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "members": {
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/LocalBotMember"
+                },
+                {
+                  "$ref": "#/components/schemas/PeerBotMember"
+                }
+              ]
+            },
+            "maxItems": 6,
+            "minItems": 2,
+            "title": "Members",
+            "type": "array"
+          }
+        },
+        "required": [
+          "room_id",
+          "name",
+          "members"
+        ],
+        "title": "GroupsCreateMixedParams",
+        "type": "object"
+      },
+      "GroupsCreateMixedResult": {
+        "additionalProperties": false,
+        "properties": {
+          "room": {
+            "$ref": "#/components/schemas/MixedRoom"
+          }
+        },
+        "required": [
+          "room"
+        ],
+        "title": "GroupsCreateMixedResult",
+        "type": "object"
+      },
       "GroupsCreateParams": {
         "additionalProperties": false,
         "properties": {
@@ -22976,6 +23037,41 @@
         "title": "LlmOneshotResult",
         "type": "object"
       },
+      "LocalBotMember": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "local",
+            "title": "Kind",
+            "type": "string"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          },
+          "display_name": {
+            "default": "",
+            "title": "Display Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "profile",
+          "member_id",
+          "handle"
+        ],
+        "title": "LocalBotMember",
+        "type": "object"
+      },
       "LocaleSurface": {
         "enum": [
           "core",
@@ -24821,6 +24917,235 @@
         "title": "MessageStartPayload",
         "type": "object"
       },
+      "MixedLocalTarget": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "local",
+            "title": "Kind",
+            "type": "string"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "profile"
+        ],
+        "title": "MixedLocalTarget",
+        "type": "object"
+      },
+      "MixedPeerTarget": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "peer",
+            "title": "Kind",
+            "type": "string"
+          },
+          "peer_id": {
+            "title": "Peer Id",
+            "type": "string"
+          },
+          "installation_id": {
+            "title": "Installation Id",
+            "type": "string"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "capability_digest": {
+            "title": "Capability Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "peer_id",
+          "installation_id",
+          "profile",
+          "capability_digest"
+        ],
+        "title": "MixedPeerTarget",
+        "type": "object"
+      },
+      "MixedRoom": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/MixedRoomMember"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "authority_gateway_id": {
+            "title": "Authority Gateway Id",
+            "type": "string"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "number"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "number"
+          },
+          "idempotent": {
+            "default": false,
+            "title": "Idempotent",
+            "type": "boolean"
+          },
+          "disbanded_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Disbanded At"
+          },
+          "latest_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Latest Seq"
+          },
+          "adopted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Adopted"
+          },
+          "claim_event": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RoomEvent"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "authority_claim": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RoomEvent"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "event": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RoomEvent"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "room_id",
+          "name",
+          "members",
+          "authority_gateway_id",
+          "authority_epoch",
+          "revision",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MixedRoom",
+        "type": "object"
+      },
+      "MixedRoomMember": {
+        "additionalProperties": false,
+        "properties": {
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Name"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MixedLocalTarget"
+              },
+              {
+                "$ref": "#/components/schemas/MixedPeerTarget"
+              }
+            ],
+            "title": "Target"
+          }
+        },
+        "required": [
+          "member_id",
+          "profile",
+          "handle",
+          "target"
+        ],
+        "title": "MixedRoomMember",
+        "type": "object"
+      },
       "MoaAggregatingPayload": {
         "additionalProperties": false,
         "properties": {
@@ -26255,6 +26580,159 @@
         "title": "PdfPage",
         "type": "object"
       },
+      "PeerBot": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "peer",
+            "title": "Kind",
+            "type": "string"
+          },
+          "route_id": {
+            "title": "Route Id",
+            "type": "string"
+          },
+          "alias": {
+            "title": "Alias",
+            "type": "string"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "reachability": {
+            "enum": [
+              "reachable",
+              "unreachable",
+              "unauthenticated",
+              "unsupported"
+            ],
+            "title": "Reachability",
+            "type": "string"
+          },
+          "installation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Installation Id"
+          },
+          "room_link": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PeerCatalog"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "kind",
+          "route_id",
+          "alias",
+          "profile",
+          "reachability"
+        ],
+        "title": "PeerBot",
+        "type": "object"
+      },
+      "PeerBotMember": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "peer",
+            "title": "Kind",
+            "type": "string"
+          },
+          "route_id": {
+            "title": "Route Id",
+            "type": "string"
+          },
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          },
+          "display_name": {
+            "default": "",
+            "title": "Display Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "route_id",
+          "member_id",
+          "handle"
+        ],
+        "title": "PeerBotMember",
+        "type": "object"
+      },
+      "PeerCatalog": {
+        "additionalProperties": false,
+        "properties": {
+          "installation_id": {
+            "title": "Installation Id",
+            "type": "string"
+          },
+          "protocol_versions": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Protocol Versions",
+            "type": "array"
+          },
+          "link_modes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Link Modes",
+            "type": "array"
+          },
+          "persistent_process": {
+            "title": "Persistent Process",
+            "type": "boolean"
+          },
+          "text": {
+            "title": "Text",
+            "type": "boolean"
+          },
+          "attachments": {
+            "title": "Attachments",
+            "type": "boolean"
+          },
+          "execution_policy": {
+            "$ref": "#/components/schemas/RoomExecutionPolicy"
+          },
+          "catalog_digest": {
+            "title": "Catalog Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "installation_id",
+          "protocol_versions",
+          "link_modes",
+          "persistent_process",
+          "text",
+          "attachments",
+          "execution_policy",
+          "catalog_digest"
+        ],
+        "title": "PeerCatalog",
+        "type": "object"
+      },
       "PeerRouteStatus": {
         "additionalProperties": false,
         "properties": {
@@ -26277,6 +26755,119 @@
           "status"
         ],
         "title": "PeerRouteStatus",
+        "type": "object"
+      },
+      "PeersDMParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "route_id": {
+            "title": "Route Id",
+            "type": "string"
+          },
+          "message": {
+            "maxLength": 262144,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "request_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "route_id",
+          "message",
+          "request_id"
+        ],
+        "title": "PeersDMParams",
+        "type": "object"
+      },
+      "PeersDMResult": {
+        "additionalProperties": false,
+        "properties": {
+          "route_id": {
+            "title": "Route Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "completed",
+              "queued",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "reply": {
+            "title": "Reply",
+            "type": "string"
+          },
+          "idempotency_supported": {
+            "title": "Idempotency Supported",
+            "type": "boolean"
+          },
+          "idempotency_durable": {
+            "default": false,
+            "title": "Idempotency Durable",
+            "type": "boolean"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Run Id"
+          }
+        },
+        "required": [
+          "route_id",
+          "session_id",
+          "status",
+          "reply",
+          "idempotency_supported"
+        ],
+        "title": "PeersDMResult",
+        "type": "object"
+      },
+      "PeersRosterResult": {
+        "additionalProperties": false,
+        "properties": {
+          "bots": {
+            "items": {
+              "$ref": "#/components/schemas/PeerBot"
+            },
+            "title": "Bots",
+            "type": "array"
+          }
+        },
+        "required": [
+          "bots"
+        ],
+        "title": "PeersRosterResult",
         "type": "object"
       },
       "PendingApproval": {
@@ -49955,6 +50546,24 @@
       }
     },
     {
+      "name": "groups.create_mixed",
+      "summary": "Invite peer members, create a local room and register verified RoomLinks; compensate failures.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCreateMixedParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCreateMixedResult"
+        }
+      }
+    },
+    {
       "name": "groups.discard",
       "summary": "Discard one indeterminate room task after explicit user confirmation.",
       "params": [
@@ -50077,6 +50686,42 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/KanbanRunResult"
+        }
+      }
+    },
+    {
+      "name": "peers.dm",
+      "summary": "Deliver to an opaque peer route's actual canonical Bot Chat.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PeersDMParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PeersDMResult"
+        }
+      }
+    },
+    {
+      "name": "peers.roster",
+      "summary": "Probe this profile's authenticated peer bots without exposing credentials or endpoints.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PeersRosterResult"
         }
       }
     },

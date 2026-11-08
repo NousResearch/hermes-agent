@@ -70,8 +70,9 @@ def _peer_secret(name: str) -> str:
 
 def _request(
     url: str, key: str, *, method: str = "GET", body: dict | None = None,
-    timeout: int = LIST_TIMEOUT_S, headers: dict[str, str] | None = None) -> dict:
-    from hermes_cli.urllib_security import open_credentialed_url
+    timeout: int = LIST_TIMEOUT_S, headers: dict[str, str] | None = None,
+    max_response_bytes: int | None = None, same_origin: bool = False) -> dict:
+    from hermes_cli.urllib_security import open_credentialed_url, url_origin
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request_headers = {
         "Authorization": f"Bearer {key}", "Content-Type": "application/json",
@@ -83,8 +84,17 @@ def _request(
     # different origin must not carry the Authorization: Bearer key with it —
     # a compromised/MITM'd peer could otherwise harvest it. open_credentialed_url
     # strips non-safelisted headers across a cross-origin redirect.
-    with open_credentialed_url(req, timeout=timeout) as resp:
-        payload = resp.read().decode("utf-8", "replace")
+    options = {'allow_redirects': False} if same_origin else {}
+    with open_credentialed_url(req, timeout=timeout, **options) as resp:
+        if same_origin and url_origin(resp.geturl()) != url_origin(url):
+            raise RuntimeError('Peer authentication origin changed')
+        if max_response_bytes is None:
+            payload = resp.read().decode("utf-8", "replace")
+        else:
+            import time
+            from tui_gateway.hosted_room_peer_http import _read_bounded_response
+            payload = _read_bounded_response(
+                resp, max_bytes=max_response_bytes, deadline=time.monotonic() + timeout).decode('utf-8', 'replace')
     try:
         parsed = json.loads(payload)
     except ValueError as exc:
@@ -139,7 +149,7 @@ def _resolve_base(peer: dict, profile: str | None, key: str, peer_name: str = ""
     return base
 
 
-def _find_bot_chat(base: str, key: str) -> str | None:
+def _find_bot_chat(base: str, key: str, *, request=None) -> str | None:
     """The remote canonical Bot Chat's session id, or None.
 
     Bot Mode always HIDES canonical chats, so the plain listing (which
@@ -151,19 +161,24 @@ def _find_bot_chat(base: str, key: str) -> str | None:
     to exactly the previous behavior against them.
     """
     query = urllib.parse.urlencode({"limit": 200, "title": BOT_CHAT_TITLE, "include_hidden": 1})
-    listing = _request(f"{base}/api/sessions?{query}", key)
+    request = request or _request
+    listing = request(f"{base}/api/sessions?{query}", key)
     for session in listing.get("data") or []:
         if isinstance(session, dict) and (session.get("title") or "").strip() == BOT_CHAT_TITLE:
             return str(session.get("id") or "") or None
     return None
 
 
-def _ensure_bot_chat(base: str, key: str) -> str:
-    existing = _find_bot_chat(base, key)
+def _ensure_bot_chat(base: str, key: str, *, request=None) -> str:
+    if request is None:
+        existing = _find_bot_chat(base, key)
+    else:
+        existing = _find_bot_chat(base, key, request=request)
+    request = request or _request
     if existing:
         return existing
     try:
-        created = _request(
+        created = request(
             f"{base}/api/sessions", key, method="POST",
             body={"title": BOT_CHAT_TITLE, "source": "bot_peer_dm"})
     except urllib.error.HTTPError as exc:
@@ -235,11 +250,15 @@ def _message_from_args(args) -> str:
     return message
 
 
-def _peer_run_durability(base: str, key: str) -> bool | None:
+def _peer_run_durability(base: str, key: str, *, request=None) -> bool | None:
     """Return durable support, or None when an older peer cannot advertise it."""
     try:
-        capabilities = _request(f"{base}/v1/capabilities", key)
+        capabilities = (request or _request)(f"{base}/v1/capabilities", key)
     except Exception:
+        if request is not None:
+            # A retry must not silently switch from replayable Runs to synchronous chat
+            # merely because capability discovery is temporarily unavailable.
+            raise
         return None
     features = capabilities.get("features")
     if not isinstance(features, dict):
@@ -390,13 +409,48 @@ def _peer_run(args, message: str, peer_name: str, profile: str | None, base: str
         f"idempotency_key: {idempotency_key}"])
 
 
+def deliver_bot_chat(base: str, key: str, message: str, *, request_id: str | None = None,
+                     strict_transport: bool = False) -> dict:
+    """Shared authenticated DM transport, using Runs replay when advertised."""
+    from functools import partial
+    request = partial(_request, same_origin=True, max_response_bytes=1024 * 1024) if strict_transport else _request
+    session_id = (_ensure_bot_chat(base, key, request=request) if strict_transport
+                  else _ensure_bot_chat(base, key))
+    durability = _peer_run_durability(base, key, request=request) if request_id is not None else None
+    if durability is not None:
+        result = request(
+            f'{base}/v1/runs', key, method='POST',
+            body=_turn_body(message, message_key='input', session_id=session_id),
+            headers={'Idempotency-Key': request_id})
+        run_id = result.get('run_id')
+        if not isinstance(run_id, str) or not run_id:
+            raise RuntimeError('Peer did not return a run ID')
+        return dict(session_id=session_id, run_id=run_id, status='queued', reply='',
+                    idempotency_supported=True, idempotency_durable=durability, _response=result)
+    try:
+        result = request(
+            f"{base}/api/sessions/{urllib.parse.quote(session_id, safe='')}/chat", key,
+            method="POST", body=_turn_body(message, message_key="message"), timeout=DM_TIMEOUT_S)
+    except TimeoutError:
+        return dict(session_id=session_id, status='unknown', reply='',
+                    idempotency_supported=False, _response={})
+    from gateway.response_filters import is_intentional_silence_response, strip_trailing_silence_marker
+    msg = result.get('message')
+    reply = str(msg.get('content') or '') if isinstance(msg, dict) else ''
+    reply = '' if is_intentional_silence_response(reply) else strip_trailing_silence_marker(reply)
+    queued = result.get('object') == 'hermes.session.chat.queued'
+    return dict(session_id=session_id, status='queued' if queued else 'completed', reply=reply,
+                idempotency_supported=False, _response=result)
+
+
 def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str, key: str) -> int:
     session_id = ""
     try:
-        session_id = _ensure_bot_chat(base, key)
-        result = _request(
-            f"{base}/api/sessions/{urllib.parse.quote(session_id, safe='')}/chat", key,
-            method="POST", body=_turn_body(message, message_key="message"), timeout=DM_TIMEOUT_S)
+        delivery = deliver_bot_chat(base, key, message)
+        session_id = delivery['session_id']
+        result = delivery.pop('_response')
+        if delivery['status'] == 'unknown':
+            raise TimeoutError()
     except RuntimeError as exc:
         print(f"Peer '{peer_name}': {exc}", file=sys.stderr)
         return 1

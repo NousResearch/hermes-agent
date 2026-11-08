@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, redact_terminal_output, RedactingFormatter
 
 
 @pytest.fixture(autouse=True)
@@ -575,6 +575,9 @@ class TestCookieCredentials:
             ("INFO upstream x-api-key: $opaqueSessionValue1234567890", "opaqueSessionValue"),
         ):
             assert secret not in redact_sensitive_text(text), text
+        # Terminal output scrubs with code_file=True (``curl -i``); the header is still a credential.
+        dump = "HTTP/2 200\nset-cookie: sid=opaqueSessionValue1234567890; Path=/\ncontent-type: text/html"
+        assert "opaqueSessionValue" not in redact_terminal_output(dump, "curl -i https://example.com")
 
     def test_cookie_prose_unchanged(self):
         # #80936 false positives: prose, cookie-ish identifiers and URL params are not credentials.

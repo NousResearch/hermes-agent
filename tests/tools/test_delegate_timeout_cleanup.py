@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 import threading
 from types import SimpleNamespace
 
@@ -101,3 +103,53 @@ def test_timeout_does_not_close_child_while_worker_is_unwinding(monkeypatch):
     assert not child.close_while_running, (
         "timed-out child.close() raced its still-running conversation thread"
     )
+
+
+def test_timeout_keeps_the_worktree_its_running_worker_still_uses(monkeypatch, tmp_path):
+    """A timed-out worker that has not unwound still runs in its isolated worktree. Inspecting it then measures a
+    tree that is still being written, and the prune (or archive-then-remove) deletes it under the worker, so the
+    parent reads "0 commits, clean, pruned" for work that may still land. The tree must be kept and reported as
+    not inspected until the worker is gone."""
+    from tools.daemon_pool import DaemonThreadPoolExecutor
+    from tools.terminal_tool import clear_session_cwd, record_session_cwd
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for args in (["init", "-q"], ["config", "user.email", "test@test"], ["config", "user.name", "Test"]):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    (repo / "README.md").write_text("seed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=repo, check=True, capture_output=True)
+
+    child = _SlowUnwindingChild()
+    parent = SimpleNamespace(
+        session_id="parent-worktree-timeout",
+        _current_task_id="parent-worktree-timeout",
+        _active_children=[child],
+        _active_children_lock=threading.Lock(),
+    )
+    record_session_cwd(parent._current_task_id, str(repo))
+    monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.5)
+    monkeypatch.setattr(delegate_tool, "_get_worktree_isolation", lambda: True)
+    submit = DaemonThreadPoolExecutor.submit
+
+    def submit_started(executor, *args, **kwargs):
+        future = submit(executor, *args, **kwargs)
+        assert child.started.wait(timeout=10)
+        return future
+
+    monkeypatch.setattr(DaemonThreadPoolExecutor, "submit", submit_started)
+    try:
+        result = delegate_tool._run_single_child(
+            task_index=0, goal="exercise worktree teardown on timeout", child=child, parent_agent=parent,
+        )
+        assert result["status"] == "timeout"
+        worktree = result["worktree"]
+        assert os.path.isdir(worktree["path"]), "the worktree was removed while its timed-out worker still ran"
+        assert worktree["pruned"] is False
+        assert worktree["inspection_failed"] is True
+    finally:
+        child.allow_finish.set()
+        clear_session_cwd(parent._current_task_id)
+    assert child.finished.wait(timeout=10)
+    assert child.closed.wait(timeout=10)

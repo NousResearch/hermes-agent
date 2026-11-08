@@ -471,7 +471,9 @@ def logged_input(context_id: str, input_id: str) -> bool:
 def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
     """Last *limit* messages for a context (empty list if none / unreadable)."""
     try:
-        lines = _conv_path(context_id).read_text(encoding="utf-8-sig").splitlines()
+        # Split on "\n" only: ``ensure_ascii=False`` rows may hold U+2028/U+2029/U+0085, which
+        # ``str.splitlines`` would cut, dropping the message as two malformed halves.
+        lines = _conv_path(context_id).read_text(encoding="utf-8-sig").split("\n")
     except Exception:
         return []
     out: list[dict] = []

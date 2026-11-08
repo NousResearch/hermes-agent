@@ -181,7 +181,7 @@ _MEDIA_KIND_KEYS = {
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_audio_meta import (
-    _coerce_duration_seconds, _probe_voice_duration_seconds, audio_player_fields)
+    _coerce_duration_seconds, _probe_voice_duration_seconds, audio_player_fields, fit_thumbnail_jpeg)
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
@@ -254,36 +254,12 @@ def _probe_video_geometry(path: str) -> dict[str, int]:
 
 
 def _video_thumbnail_jpeg(path: str, duration: Optional[int]) -> Optional[str]:
-    """Write a 320px-wide JPEG frame for Telegram's ``thumbnail`` field; None on failure.
+    """A JPEG frame fitted inside 320x320 for Telegram's ``thumbnail`` field; None on failure.
 
     Telegram keeps a supplied thumbnail for the uploads it did not process itself — without one the
     chat shows a square placeholder tile until the video is opened.
     """
-    out = None
-    try:
-        import shutil
-        import subprocess
-        import tempfile
-        if not shutil.which("ffmpeg"):
-            return None
-        seek = max(1, int((duration or 3) * 0.25))
-        fd, out = tempfile.mkstemp(suffix=".jpg", prefix="hermes-tg-thumb-")
-        os.close(fd)
-        proc = subprocess.run(
-            ["ffmpeg", "-y", "-ss", str(seek), "-i", path, "-frames:v", "1",
-             "-vf", "scale=320:-2", "-q:v", "6", out],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False)
-        if proc.returncode != 0 or not os.path.getsize(out):
-            with contextlib.suppress(OSError):
-                os.remove(out)
-            return None
-        return out
-    except Exception:
-        logger.debug("[Telegram] video thumbnail extraction failed for %s", path, exc_info=True)
-        if out:
-            with contextlib.suppress(OSError):
-                os.remove(out)
-        return None
+    return fit_thumbnail_jpeg(path, seek=max(1, int((duration or 3) * 0.25)), timeout=30)
 
 
 def telegram_deps_present() -> bool:

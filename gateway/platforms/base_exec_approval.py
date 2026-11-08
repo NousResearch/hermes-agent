@@ -161,15 +161,17 @@ def render_exec_approval(adapter: Any, command: str, description: str, smart_den
     return (text + adapter._EA_SMART_DENY_LINE if smart_denied else text), truncated
 
 
-async def full_command_proven(adapter: Any, chat_id: str, session_key: str, request_id: Optional[str],
-                              command: str, metadata: Optional[dict]) -> bool:
-    """Send the whole command ahead of a card whose preview is truncated. The request is Deny-only from
-    before the first chunk goes out until every chunk is proven delivered, so a tap that lands during
-    the send can only deny it; on any failure (or a raise) the mark stays."""
+async def card_shows_whole_command(adapter: Any, chat_id: str, session_key: str, request_id: Optional[str],
+                                   command: str, metadata: Optional[dict], truncated: bool) -> bool:
+    """Lift a request's Deny-only mark once the user can read the whole command: on the card itself, or
+    (for a truncated preview) in a full-command send ahead of it. The request was created Deny-only, so a
+    tap that lands before this, or during the send, can only deny it; on any failure (or a raise) the
+    mark stays."""
     from tools.approval import restrict_gateway_approval_card_to_deny
-    restrict_gateway_approval_card_to_deny(session_key, request_id)
-    if not await send_full_command(adapter, chat_id, command, metadata):
-        return False
+    if truncated:
+        restrict_gateway_approval_card_to_deny(session_key, request_id)  # a re-render starts Deny-only too
+        if not await send_full_command(adapter, chat_id, command, metadata):
+            return False
     restrict_gateway_approval_card_to_deny(session_key, request_id, restricted=False)
     return True
 

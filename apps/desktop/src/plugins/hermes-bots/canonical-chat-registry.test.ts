@@ -105,11 +105,18 @@ describe('the registry row wins, always', () => {
     const { openBotCanonicalChat } = await loadModule()
 
     await expect(openBotCanonicalChat('ops', { intent: 'tab' })).resolves.toEqual({
-      openedId: 'tip', registryId: 'root'
+      openedId: 'tip',
+      registryId: 'root'
     })
-    expect(hostMock.openSession).toHaveBeenCalledWith('tip', expect.objectContaining({
-      intent: 'tab', profile: 'ops', workspaceMode: 'bots', workspaceOwnerKey: 'bot:ops'
-    }))
+    expect(hostMock.openSession).toHaveBeenCalledWith(
+      'tip',
+      expect.objectContaining({
+        intent: 'tab',
+        profile: 'ops',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:ops'
+      })
+    )
     expect(calls.map(call => call.method)).toEqual(['session.list'])
   })
 
@@ -418,5 +425,33 @@ describe('#139779 stale roster canonical_session.id is absent so mint is allowed
 
     await expect(openBotCanonicalChat(stale)).resolves.toEqual({ openedId: 'fresh-1', registryId: 'fresh-1' })
     expect(calls.some(call => call.method === 'session.create')).toBe(true)
+  })
+
+  it('refuses to mint on a full legacy listing even without a roster hint', async () => {
+    const { openBotCanonicalChat, PROFILE_SESSION_LIST_LIMIT } = await loadModule()
+
+    // A legacy full window can exclude the hidden canonical row (#130980).
+    const legacyRows = Array.from({ length: PROFILE_SESSION_LIST_LIMIT }, (_, index) => ({
+      id: `side-${index}`,
+      title: `Side chat ${index}`
+    }))
+
+    const calls = respondWith(method => {
+      if (method === 'session.list') {
+        return { sessions: legacyRows }
+      }
+
+      if (method === 'session.create') {
+        throw new Error('must not create: registry absence was not confirmed')
+      }
+
+      return {}
+    })
+
+    const bot = { name: 'ops' } as RosterRow
+
+    await expect(openBotCanonicalChat(bot)).rejects.toThrow(/Could not confirm.*Bot Chat registry/)
+    expect(calls.some(call => call.method === 'session.create')).toBe(false)
+    expect(hostMock.openSession).not.toHaveBeenCalled()
   })
 })

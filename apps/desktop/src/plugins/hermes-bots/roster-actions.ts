@@ -20,7 +20,7 @@ import {
 } from './bot-state'
 import { isStaleBotChatTile, notifyBotOpenFailure, openBotCanonicalChat, prepareBotSource } from './canonical-chat'
 import type { BotChatOpenIntent } from './canonical-chat'
-import { $botMeta, botActivitySession, botRosterKey, botSelectionKey, newBotChat } from './data'
+import { $botMeta, botActivitySession, botRosterKey, botSelectionKey } from './data'
 import { $groupChats, $groupChatWorkspace } from './group-chat'
 import { openGroupChat } from './group-chat-view'
 import { liveGroupChatNames } from './group-membership'
@@ -231,7 +231,10 @@ export interface OpenRosterBotOptions {
   intent?: BotChatOpenIntent
 }
 
-export async function openRosterBot(bot: RosterRow, { intent = 'in-place' }: OpenRosterBotOptions = {}): Promise<boolean> {
+export async function openRosterBot(
+  bot: RosterRow,
+  { intent = 'in-place' }: OpenRosterBotOptions = {}
+): Promise<boolean> {
   const generation = bumpBotOpenGeneration()
   const key = botRosterKey(bot)
   const meta = botRosterMeta(bot, $botMeta.get())
@@ -360,6 +363,10 @@ export async function openRosterBot(bot: RosterRow, { intent = 'in-place' }: Ope
 
       return true
     }
+
+    // A roster row without a canonical hint still targets Bot Chat. A failed
+    // resolution must not send it through the side-chat/new-draft path.
+    throw new Error(`Could not confirm ${bot.name}'s Bot Chat registry — not opening another chat`)
   } catch (error) {
     if (generation === getBotOpenGeneration()) {
       $openBotChat.set(null)
@@ -371,25 +378,6 @@ export async function openRosterBot(bot: RosterRow, { intent = 'in-place' }: Ope
 
     return false
   }
-
-  // An older Desktop without the profile-scoped draft API has no safe fallback:
-  // do not navigate the current workspace or create a draft on the wrong owner.
-  if (typeof host.newChat !== 'function') {
-    $openBotChat.set(null)
-    restorePreviousGroup()
-    settlePendingBotOpen(generation)
-
-    return false
-  }
-
-  $openBotChat.set({
-    key,
-    openedRegistryId: ''
-  })
-  newBotChat(bot)
-  settlePendingBotOpen(generation)
-
-  return true
 }
 
 /** Bot-open handoff: capture the selected group and retire its registered

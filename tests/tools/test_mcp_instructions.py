@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import tools.mcp_tool as mcp_tool  # noqa: F401  -- puts the facade in sys.modules (import-cost gate)
+from tools import mcp_tool  # puts the facade in sys.modules (import-cost gate)
 from agent.prompt_builder import build_mcp_instructions_prompt
 from agent.system_prompt import _mcp_instructions_part
 from tools import mcp_tool_schema
@@ -62,3 +62,33 @@ def test_max_description_chars_caps_tool_descriptions_and_instructions(monkeypat
     monkeypatch.setattr(mcp_tool_schema, "mcp_max_description_chars", lambda: 0)  # 0 = unlimited
     assert mcp_tool_schema._convert_mcp_schema("srv", tool)["description"] == manual
     assert get_mcp_server_instructions()[0]["instructions"] == manual.strip()
+
+
+def test_instructions_are_frozen_into_the_session_prompt_outside_the_stable_tier(monkeypatch):
+    """Prompt-cache contract: the block is built with the session's prompt, sits after the
+    stable tier (static-prefix reconstruction never depends on live MCP state), and a server
+    whose instructions change later only reaches the next build, never the stable tier."""
+    from unittest.mock import patch
+
+    from agent.system_prompt import build_system_prompt_parts
+
+    monkeypatch.setattr(mcp_tool, "_servers", {"srv": _server("Call lookup before answering.")})
+    monkeypatch.setattr(mcp_tool_schema, "mcp_max_description_chars", lambda: 0)
+    agent = SimpleNamespace(
+        load_soul_identity=False, skip_context_files=True, valid_tool_names=["mcp__srv__lookup"],
+        _task_completion_guidance=False, _tool_use_enforcement=False, _environment_probe=False,
+        _kanban_worker_guidance="", _memory_store=None, _memory_manager=None, model="", provider="",
+        platform="", pass_session_id=False, session_id="", _mcp_server_instructions=True,
+        _emit_status=lambda *_a, **_k: None,
+    )
+    with (patch("agent.prompt_builder.load_soul_md", return_value=""),
+          patch("agent.prompt_builder.build_environment_hints", return_value="")):
+        parts = build_system_prompt_parts(agent)
+        mcp_tool._servers["srv"].initialize_result.instructions = "Reconnected with new text."
+        rebuilt = build_system_prompt_parts(agent)
+
+    assert "Call lookup before answering." in parts["volatile"]
+    assert "MCP" not in parts["stable"]
+    # A server change reaches only the next build (new session / compaction), in the volatile tier.
+    assert rebuilt["stable"] == parts["stable"]
+    assert "Reconnected with new text." in rebuilt["volatile"]

@@ -170,12 +170,25 @@ def _select_owner(session_id: str, rows: tuple[SessionStoreRow, ...]) -> Session
     )
 
 
-def _validate_lineage_parent(path: Path, info) -> None:
-    """Require namespace parents to be controlled by this user or root on POSIX."""
+def _validate_lineage_parent(path: Path, info, *, protected_by=None) -> None:
+    """Require namespace parents to be controlled by this user or root on POSIX.
+
+    Group-write is acceptable only when a verified private parent makes this path
+    unreachable to other users. Other-write is always refused.
+    """
     if os.name == "nt":
         return
-    if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+    if info.st_mode & stat.S_IWOTH:
         raise SessionLineageInventoryError(f"Unsafe permissions on lineage namespace parent: {path}")
+    if info.st_mode & stat.S_IWGRP:
+        protected = (
+            protected_by is not None
+            and stat.S_ISDIR(protected_by.st_mode)
+            and stat.S_IMODE(protected_by.st_mode) & 0o077 == 0
+            and (not hasattr(os, "geteuid") or protected_by.st_uid in (0, os.geteuid()))
+        )
+        if not protected:
+            raise SessionLineageInventoryError(f"Unsafe permissions on lineage namespace parent: {path}")
     if hasattr(os, "geteuid") and info.st_uid not in (0, os.geteuid()):
         raise SessionLineageInventoryError(f"Untrusted owner of lineage namespace parent: {path}")
 
@@ -188,7 +201,16 @@ def _lineage_lock_directory(root: Path, *, create: bool) -> Path:
         raise SessionLineageInventoryError(f"Cannot inspect Hermes home {root}: {exc}") from exc
     if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
         raise SessionLineageInventoryError(f"Unsafe Hermes home for lineage locks: {root}")
-    _validate_lineage_parent(root, root_stat)
+    try:
+        parent_stat = root.parent.lstat()
+    except OSError:
+        parent_stat = None
+    private_parent = (
+        parent_stat is not None and stat.S_ISDIR(parent_stat.st_mode)
+        and stat.S_IMODE(parent_stat.st_mode) & 0o077 == 0
+        and (not hasattr(os, "geteuid") or parent_stat.st_uid in (0, os.geteuid()))
+    )
+    _validate_lineage_parent(root, root_stat, protected_by=parent_stat if private_parent else None)
 
     profiles_root = root / "profiles"
     if create:
@@ -206,7 +228,11 @@ def _lineage_lock_directory(root: Path, *, create: bool) -> Path:
             f"Cannot inspect profile metadata root {profiles_root}: {exc}") from exc
     if stat.S_ISLNK(profiles_stat.st_mode) or not stat.S_ISDIR(profiles_stat.st_mode):
         raise SessionLineageInventoryError(f"Unsafe profiles directory: {profiles_root}")
-    _validate_lineage_parent(profiles_root, profiles_stat)
+    profile_protector = (
+        root_stat if stat.S_IMODE(root_stat.st_mode) & 0o077 == 0
+        else parent_stat if private_parent else None
+    )
+    _validate_lineage_parent(profiles_root, profiles_stat, protected_by=profile_protector)
 
     lock_root = profiles_root / ".session-lineage-locks"
     if create:
@@ -502,21 +528,32 @@ def _store_candidates(root: Path, current_path: Path | None) -> list[tuple[Path,
     return candidates
 
 
-def _rows_for_ids(path: Path, profile: str, session_ids: tuple[str, ...], timeout_s: float = 2.0) -> dict[str, SessionStoreRow]:
+def _rows_for_ids(
+    path: Path, profile: str, session_ids: tuple[str, ...], timeout_s: float = 2.0, *,
+    deadline: float | None = None,
+) -> dict[str, SessionStoreRow]:
     if not session_ids:
         return {}
+    if deadline is None:
+        deadline = time.monotonic() + max(0.0, timeout_s)
     try:
         uri = path.resolve(strict=True).as_uri() + "?mode=ro"
-        conn = sqlite3.connect(uri, uri=True, timeout=timeout_s)
+        conn = sqlite3.connect(uri, uri=True, timeout=0.0)
         conn.row_factory = sqlite3.Row
+
+        def execute(sql, parameters=()):
+            remaining = max(0.0, deadline - time.monotonic())
+            conn.execute(f"PRAGMA busy_timeout = {max(0, int(remaining * 1000))}")
+            return conn.execute(sql, parameters)
+
         try:
-            conn.execute("PRAGMA query_only = ON")
-            table = conn.execute(
+            execute("PRAGMA query_only = ON")
+            table = execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'"
             ).fetchone()
             if table is None:
                 raise SessionLineageInventoryError(f"Session store lacks sessions table: {path}")
-            columns = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)")}
+            columns = {row["name"] for row in execute("PRAGMA table_info(sessions)")}
             if not {"id", "ended_at"}.issubset(columns):
                 raise SessionLineageInventoryError(f"Session store has incomplete sessions schema: {path}")
             def col(name: str, fallback: str = "NULL") -> str:
@@ -530,7 +567,7 @@ def _rows_for_ids(path: Path, profile: str, session_ids: tuple[str, ...], timeou
             for start in range(0, len(session_ids), 500):
                 chunk = session_ids[start:start + 500]
                 placeholders = ",".join("?" for _ in chunk)
-                result = conn.execute(
+                result = execute(
                     f"SELECT {wanted} FROM sessions WHERE id IN ({placeholders})", chunk
                 ).fetchall()
                 for row in result:
@@ -606,13 +643,10 @@ def session_lineage_guard(
         rows_by_id: dict[str, list[SessionStoreRow]] = {session_id: [] for session_id in ids}
         for path, profile in candidates:
             inventory_deadline = getattr(_THREAD_LOCKS, "inventory_deadline", None)
+            read_deadline = deadline
             if inventory_deadline is not None:
-                remaining = inventory_deadline - time.monotonic()
-                if remaining <= 0:
-                    raise SessionLineageInventoryError("Timed out inspecting session-lineage inventory")
-                rows = _rows_for_ids(path, profile, ids, min(2.0, remaining))
-            else:
-                rows = _rows_for_ids(path, profile, ids)
+                read_deadline = min(read_deadline, inventory_deadline)
+            rows = _rows_for_ids(path, profile, ids, deadline=read_deadline)
             for session_id, row in rows.items():
                 rows_by_id[session_id].append(row)
         frozen = {session_id: tuple(rows) for session_id, rows in rows_by_id.items()}

@@ -572,18 +572,171 @@ def test_legacy_accounting_directory_symlink_fails_closed_without_writing(tmp_pa
     ('root', 0o775), ('root', 0o757), ('profiles', 0o775), ('profiles', 0o757),
 ])
 def test_lineage_namespace_refuses_writable_parent_without_chmod(tmp_path, monkeypatch, parent, mode):
-    root = tmp_path / 'hermes'
+    accessible_parent = tmp_path / 'accessible'
+    accessible_parent.mkdir()
+    accessible_parent.chmod(0o755)
+    root = accessible_parent / 'hermes'
+    root.mkdir(mode=0o755)
     profiles = root / 'profiles'
-    profiles.mkdir(parents=True)
+    profiles.mkdir(mode=0o755)
     selected = root if parent == 'root' else profiles
     monkeypatch.setenv('HERMES_HOME', str(root))
     with SessionDB(root / 'state.db') as db:
         selected.chmod(mode)
+        if parent == 'profiles':
+            root.chmod(0o755)
         with pytest.raises(lineage.SessionLineageInventoryError, match='permissions'):
             with lineage.session_lineage_guard(db.db_path, 'unsafe-parent'):
                 pytest.fail('writable namespace parent was accepted')
     assert selected.stat().st_mode & 0o777 == mode
     assert not (profiles / '.session-lineage-locks').exists()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("operation", ["create", "append"])
+def test_private_hermes_home_accepts_group_writable_profiles_for_create_and_append(
+    tmp_path, monkeypatch, operation,
+):
+    home = tmp_path / ".hermes"
+    profiles = home / "profiles"
+    profiles.mkdir(parents=True, mode=0o700)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    with SessionDB(home / "state.db") as db:
+        if operation == "append":
+            db.create_session("existing", "cli")
+
+    home.chmod(0o700)
+    profiles.chmod(0o775)
+    with SessionDB(home / "state.db") as db:
+        if operation == "create":
+            db.create_session("new-session", "cli")
+            assert db.get_session("new-session") is not None
+        else:
+            assert db.append_message("existing", "user", "append allowed") is not None
+
+    assert home.stat().st_mode & 0o777 == 0o700
+    assert profiles.stat().st_mode & 0o777 == 0o775
+    lock_root = profiles / ".session-lineage-locks"
+    assert lock_root.stat().st_mode & 0o077 == 0
+
+
+@pytest.mark.platforms("posix")
+def test_sibling_exclusive_inventory_wait_uses_callers_remaining_budget(tmp_path, monkeypatch):
+    import sqlite3
+    import threading
+    import time
+
+    home = tmp_path / "hermes"
+    sibling_home = home / "profiles" / "science"
+    sibling_home.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        """database:
+  journal_mode: delete
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    default = SessionDB(home / "state.db")
+    sibling = SessionDB(sibling_home / "state.db")
+    assert not default._wal_active and not sibling._wal_active
+    default.create_session("default-session", "cli")
+    default._WRITE_PATIENCE_S = 10.0
+    default._TRANSCRIPT_WRITE_PATIENCE_S = 10.0
+
+    ready, release = threading.Event(), threading.Event()
+    held_at, holder_errors = [], []
+
+    def hold_sibling_exclusive():
+        conn = sqlite3.connect(sibling.db_path, timeout=0, isolation_level=None)
+        try:
+            conn.execute("BEGIN EXCLUSIVE")
+            held_at.append(time.monotonic())
+            ready.set()
+            if not release.wait(6):
+                raise RuntimeError("exclusive lock release timed out")
+            conn.execute("ROLLBACK")
+        except BaseException as exc:
+            holder_errors.append(f"{type(exc).__name__}: {exc}")
+            ready.set()
+        finally:
+            conn.close()
+
+    worker = threading.Thread(target=hold_sibling_exclusive)
+    worker.start()
+    timer = None
+    try:
+        assert ready.wait(5), f"sibling lock was not acquired: {holder_errors}"
+        timer = threading.Timer(3.1, release.set)
+        timer.start()
+        started = time.monotonic()
+        outcome = None
+        try:
+            default.append_message("default-session", "user", "wait within caller budget")
+        except Exception as exc:
+            outcome = f"{type(exc).__name__}: {exc}"
+        elapsed = time.monotonic() - started
+    finally:
+        release.set() if timer is None else None
+        if timer is not None:
+            timer.join(5)
+        worker.join(5)
+        default.close()
+        sibling.close()
+
+    assert not worker.is_alive()
+    assert not holder_errors
+    assert outcome is None, f"append failed after {elapsed:.3f}s: {outcome}"
+    assert 3.0 <= elapsed < 10.0
+
+
+def test_inventory_busy_timeout_shrinks_across_sql_statements(tmp_path, monkeypatch):
+    import sqlite3
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    with SessionDB(home / "state.db") as db:
+        db.create_session("inventory-target", "cli")
+        db_path = db.db_path
+
+    busy_timeouts = []
+    original_connect = sqlite3.connect
+
+    class ObservedConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=(), /):
+            if sql.startswith("PRAGMA busy_timeout = "):
+                busy_timeouts.append(int(sql.rsplit("=", 1)[1].strip()))
+            return super().execute(sql, parameters)
+
+    def observed_connect(*args, **kwargs):
+        kwargs["factory"] = ObservedConnection
+        return original_connect(*args, **kwargs)
+
+    monkeypatch.setattr(lineage.sqlite3, "connect", observed_connect)
+    ticks = iter((0.0, 0.1, 0.3, 0.6, 0.8))
+    monkeypatch.setattr(lineage, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+    rows = lineage._rows_for_ids(db_path, "default", ("inventory-target",), timeout_s=1.0)
+
+    assert set(rows) == {"inventory-target"}
+    assert len(busy_timeouts) == 4
+    assert all(0 < timeout <= 1000 for timeout in busy_timeouts)
+    assert all(left > right for left, right in zip(busy_timeouts, busy_timeouts[1:]))
+    assert busy_timeouts[-1] >= 100
+
+
+@pytest.mark.platforms("posix")
+def test_group_writable_home_is_safe_behind_private_parent(tmp_path, monkeypatch):
+    parent = tmp_path / "private"
+    parent.mkdir(mode=0o700)
+    parent.chmod(0o700)
+    home = parent / "hermes"
+    home.mkdir(mode=0o775)
+    home.chmod(0o775)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    with SessionDB(home / "state.db") as db:
+        db.create_session("private-parent", "cli")
+        assert db.get_session("private-parent") is not None
+    assert home.stat().st_mode & 0o777 == 0o700
 
 
 @pytest.mark.platforms('posix')
@@ -601,8 +754,13 @@ def test_lineage_parent_trust_accepts_root_owner_and_refuses_other_owner():
 @pytest.fixture
 def legacy_barrier_store(tmp_path, monkeypatch):
     root = tmp_path / 'hermes'
-    profile = root / 'profiles' / 'science'
-    profile.mkdir(parents=True)
+    root.mkdir(mode=0o700)
+    root.chmod(0o700)
+    profiles = root / 'profiles'
+    profiles.mkdir(mode=0o700)
+    profiles.chmod(0o700)
+    profile = profiles / 'science'
+    profile.mkdir(mode=0o700)
     monkeypatch.setenv('HERMES_HOME', str(root))
     db = SessionDB(profile / 'state.db')
     db.create_session('legacy-barrier', 'cli')
@@ -613,8 +771,12 @@ def legacy_barrier_store(tmp_path, monkeypatch):
 
 def _legacy_marker(db, root):
     _, prefix = db._token_marker_prefix()
-    directory = root / '.session-lineage-locks' / 'accounting'
-    directory.mkdir(parents=True, exist_ok=True)
+    lock_root = root / '.session-lineage-locks'
+    lock_root.mkdir(mode=0o700, exist_ok=True)
+    lock_root.chmod(0o700)
+    directory = lock_root / 'accounting'
+    directory.mkdir(mode=0o700, exist_ok=True)
+    directory.chmod(0o700)
     marker = directory / (prefix + 'fixture.lock')
     marker.write_bytes(b'legacy pending')
     return marker
@@ -631,8 +793,12 @@ def test_closed_queue_refuses_matching_legacy_marker(legacy_barrier_store, write
         db._token_writer_stop = True
     else:
         db._token_writer_thread = SimpleNamespace(is_alive=lambda: False)
-    directory = root / '.session-lineage-locks' / 'accounting'
-    directory.mkdir(parents=True)
+    legacy_root = root / '.session-lineage-locks'
+    legacy_root.mkdir(mode=0o700, exist_ok=True)
+    legacy_root.chmod(0o700)
+    directory = legacy_root / 'accounting'
+    directory.mkdir(mode=0o700, exist_ok=True)
+    directory.chmod(0o700)
     marker = directory / (prefix + 'fixture.lock')
     marker.write_bytes(b'legacy pending')
     before = marker.stat().st_mtime_ns

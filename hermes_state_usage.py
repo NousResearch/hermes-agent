@@ -9,6 +9,7 @@ import contextlib
 import logging
 import hashlib
 import os
+import sqlite3
 import stat
 import threading
 import uuid
@@ -166,11 +167,15 @@ class _TokenBatchWriteReceipt:
 
     def transaction_rolled_back(
         self, *, commit_attempted, transaction_active, rollback_succeeded, commit_rollback_proven,
+        error=None,
     ):
         self._retryable_error = None
         if (not rollback_succeeded or not transaction_active
                 or (commit_attempted and not commit_rollback_proven)):
             self._unknown = True
+        elif (not self._committed and not self._unknown
+              and isinstance(error, sqlite3.Error)):
+            self._retryable_error = error
 
     def retryable_lock_timeout(self, error):
         if not self._committed and not self._unknown:

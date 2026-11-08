@@ -250,6 +250,91 @@ def test_commit_lock_timeout_retries_only_after_real_rollback(delete_database, m
 
 
 
+def test_sqlite_full_after_verified_rollback_retries_once(database, monkeypatch):
+    db = database
+    session_id = "full-session"
+    db.create_session(session_id, "cli")
+    monkeypatch.setattr(db, "_token_writer_loop", lambda: None)
+    db.queue_token_counts(
+        session_id, input_tokens=5, api_call_count=1,
+        model="route-model", billing_provider="route-provider",
+    )
+    db._token_writer_thread.join(5)
+    assert db._token_writer_thread is not None and not db._token_writer_thread.is_alive()
+
+    full = sqlite3.OperationalError("database or disk is full")
+    full.sqlite_errorcode = sqlite3.SQLITE_FULL
+    original_execute_write = db._execute_write
+    inject = [True]
+
+    def inject_full_after_callback(callback, *args, **kwargs):
+        def callback_then_full(conn):
+            result = callback(conn)
+            if inject[0]:
+                inject[0] = False
+                raise full
+            return result
+        return original_execute_write(callback_then_full, *args, **kwargs)
+
+    monkeypatch.setattr(db, "_execute_write", inject_full_after_callback)
+    first_flush = db.flush_token_counts()
+    uri = db.db_path.resolve().as_uri() + "?mode=ro"
+    reader = sqlite3.connect(uri, uri=True, timeout=0)
+    try:
+        reader.execute("PRAGMA query_only = ON")
+        row_after_first = reader.execute(
+            "SELECT input_tokens FROM sessions WHERE id=?", (session_id,)
+        ).fetchone()[0]
+    finally:
+        reader.close()
+    first_state = {
+        "transaction_open": db._conn.in_transaction,
+        "uncertain": [sid for sid, _ in db._token_writer_uncertain],
+        "queued": [sid for sid, _ in db._token_queue],
+    }
+
+    monkeypatch.setattr(db, "_execute_write", original_execute_write)
+    second_flush = db.flush_token_counts()
+    uri = db.db_path.resolve().as_uri() + "?mode=ro"
+    reader = sqlite3.connect(uri, uri=True, timeout=0)
+    try:
+        reader.execute("PRAGMA query_only = ON")
+        row_after_retry = reader.execute(
+            "SELECT input_tokens FROM sessions WHERE id=?", (session_id,)
+        ).fetchone()[0]
+        usage_rows = [tuple(row) for row in reader.execute(
+            "SELECT session_id, input_tokens, api_call_count FROM session_model_usage"
+        )]
+    finally:
+        reader.close()
+
+    assert {
+        "sqlite_errorcode": full.sqlite_errorcode,
+        "first_flush": first_flush,
+        "row_after_first": row_after_first,
+        "transaction_open_after_first": first_state["transaction_open"],
+        "uncertain_after_first": first_state["uncertain"],
+        "queued_after_first": first_state["queued"],
+        "second_flush": second_flush,
+        "row_after_retry": row_after_retry,
+        "usage_rows": usage_rows,
+        "uncertain_after_retry": [sid for sid, _ in db._token_writer_uncertain],
+        "queued_after_retry": [sid for sid, _ in db._token_queue],
+    } == {
+        "sqlite_errorcode": sqlite3.SQLITE_FULL,
+        "first_flush": False,
+        "row_after_first": 0,
+        "transaction_open_after_first": False,
+        "uncertain_after_first": [],
+        "queued_after_first": [session_id],
+        "second_flush": True,
+        "row_after_retry": 5,
+        "usage_rows": [(session_id, 5, 1)],
+        "uncertain_after_retry": [],
+        "queued_after_retry": [],
+    }
+
+
 def test_postcommit_lineage_refusal_stays_uncertain(database, monkeypatch):
     from hermes_state_lineage import SessionLineageError
 

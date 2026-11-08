@@ -380,7 +380,8 @@ def test_marker_tracks_same_path_replacement_and_same_inode_rename(tmp_path, mon
 def test_ordinary_lineage_lock_files_do_not_count_toward_marker_bound(stores, tmp_path):
     a, _ = stores
     lock_root = tmp_path / ".session-lineage-locks"
-    lock_root.mkdir(exist_ok=True)
+    lock_root.mkdir(mode=0o700, exist_ok=True)
+    lock_root.chmod(0o700)
     for n in range(8193):
         (lock_root / f"ordinary-{n}.lock").touch()
     assert not a.has_pending_token_counts()

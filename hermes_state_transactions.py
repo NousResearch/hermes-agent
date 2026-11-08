@@ -43,6 +43,7 @@ class WriteAttempt:
             logger.warning("Cannot verify transaction rollback; settlement is unknown", exc_info=True)
         if self.receipt is not None:
             self.receipt.transaction_rolled_back(
+                error=error,
                 commit_attempted=self.commit_attempted,
                 transaction_active=self.active_before_rollback,
                 rollback_succeeded=self.rollback_succeeded,

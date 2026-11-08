@@ -708,6 +708,7 @@ const sidebars: SidebarsConfig = {
         'integrations/index',
         'integrations/nous-portal',
         'integrations/providers',
+        'integrations/utcp',
         'integrations/buzz',
         'user-guide/features/mcp',
         'user-guide/features/acp',
@@ -789,6 +790,7 @@ const sidebars: SidebarsConfig = {
           label: 'Extending',
           items: [
             'developer-guide/adding-tools',
+            'developer-guide/utcp-provider',
             'developer-guide/adding-providers',
             'developer-guide/adding-platform-adapters',
             {

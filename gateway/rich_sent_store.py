@@ -21,6 +21,20 @@ from utils import atomic_json_write
 
 _MAX_ENTRIES = 1000
 _MAX_TEXT_CHARS = 2000
+# ``HERMES_RICH_SENT_MAX_ENTRIES`` overrides the cap for long-lived gateways (the default
+# keeps roughly a few days of sent messages at Hermes' current outbound volume).
+_MAX_ENTRIES_ENV = "HERMES_RICH_SENT_MAX_ENTRIES"
+
+
+def _max_entries() -> int:
+    """Cap on indexed entries; env override wins so a long-lived gateway can widen it."""
+    try:
+        raw = (os.environ.get(_MAX_ENTRIES_ENV) or "").strip()
+        if raw:
+            return max(100, int(raw))
+    except (TypeError, ValueError):
+        pass
+    return _MAX_ENTRIES
 # ``atomic_json_write`` makes each WRITE atomic, not the load/merge/save triple.
 # ``record_async`` runs ``_update`` on worker threads, so two concurrent callers
 # (two inbound WhatsApp-Cloud messages, a Telegram send racing an edit) would
@@ -43,7 +57,7 @@ def _load(path: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _update(chat_id, message_id, fields: dict) -> None:
+def _update(chat_id, message_id, fields: dict, *, require_existing: bool = False, monotonic_ts: bool = False) -> None:
     """Merge ``fields`` into the ``(chat_id, message_id)`` entry. No-op on any failure."""
     path = _store_path()
     with _LOCK:
@@ -53,9 +67,18 @@ def _update(chat_id, message_id, fields: dict) -> None:
             key = f"{chat_id}:{message_id}"
             entry = data.get(key)
             entry = entry if isinstance(entry, dict) else {}
-            data[key] = {**entry, **fields, "ts": int(time.time())}
-            if len(data) > _MAX_ENTRIES:  # trim oldest by timestamp
-                for k, _ in sorted(data.items(), key=lambda kv: kv[1].get("ts", 0))[: len(data) - _MAX_ENTRIES]:
+            if require_existing and not entry:
+                return
+            ts = int(time.time())
+            if monotonic_ts:
+                # Strictly newer than the previous stamp, so a refreshed entry sorts after
+                # same-second neighbours instead of tying with them (ties are broken by
+                # insertion order, which would evict the OLDER one first).
+                ts = max(ts, int(entry.get("ts", 0)) + 1)
+            data[key] = {**entry, **fields, "ts": ts}
+            max_entries = _max_entries()
+            if len(data) > max_entries:  # trim oldest by timestamp
+                for k, _ in sorted(data.items(), key=lambda kv: kv[1].get("ts", 0))[: len(data) - max_entries]:
                     data.pop(k, None)
             atomic_json_write(path, data, indent=None)  # see _LOCK
         except Exception:
@@ -74,6 +97,17 @@ def record_media(chat_id, message_id, media: list[tuple[str, str]]) -> None:
     if not media or message_id is None or chat_id is None:
         return
     _update(chat_id, message_id, {"m": [[str(p), str(mt or "")] for p, mt in media if p]})
+
+
+def touch(chat_id, message_id) -> None:
+    """Refresh an entry's timestamp so a message that gets quoted survives FIFO trimming.
+
+    The index is trimmed oldest-first; a message the user keeps quoting is worth more than
+    one that was never replied to. Unknown entries are left alone (no phantom rows).
+    """
+    if message_id is None or chat_id is None:
+        return
+    _update(chat_id, message_id, {}, require_existing=True, monotonic_ts=True)
 
 
 async def record_async(chat_id, message_id, text: Optional[str]) -> None:

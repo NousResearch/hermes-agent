@@ -3,7 +3,9 @@ from dataclasses import asdict
 
 from gateway import hosted_room_driver as tasks
 from hermes_state_runtime import RuntimeStoreError
-from tui_gateway.hosted_room_driver import HostedRoomBinding, _TerminalReceipt, discarded_receipt
+from tui_gateway.hosted_room_driver import (
+    ROOM_SESSION_SOURCE, HostedRoomBinding, _TerminalReceipt, discarded_receipt, room_session_title,
+)
 from tui_gateway.hosted_room_prepare_stall import RETRY_TASK_PREFIX
 from tui_gateway.hosted_room_service import attempt_action, task_member_id
 
@@ -43,10 +45,22 @@ class HostedControls:
         if task['status'] != 'indeterminate':
             raise RuntimeStoreError('stale_generation')
         rpc = self._resolve_member_transport(binding, task)
+        profile = task['payload']['target_profile']
+        ref = getattr(rpc, 'ref', None)
+        if ref is None:
+            # A fresh cross-profile transport learns its session ref by resolving the room.
+            session = rpc.resolve_exact(profile=profile, title=room_session_title(binding.room_id),
+                                        source=ROOM_SESSION_SOURCE)
+            if session is None:
+                # Without the member session, cancellation of this attempt cannot be confirmed.
+                raise RuntimeStoreError('stale_generation')
+            session_id = session['session_id']
+        else:
+            session_id = ref.session_id
         # Canonical receipt commits first. If the driver write fails, exact
         # RPC replay must recover it rather than invent another execution.
-        discarded = rpc.discard(profile=task['payload']['target_profile'], source='bot_room',
-                                session_id=rpc.ref.session_id, expected_task_id=task['identity'].task_id,
+        discarded = rpc.discard(profile=profile, source='bot_room',
+                                session_id=session_id, expected_task_id=task['identity'].task_id,
                                 execution_generation=task['execution_generation'])
         lease = self.runtime._ensure_lease(binding)
         # Resolving the lost attempt may commit its retained answer: settle and publish that.

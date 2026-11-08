@@ -317,7 +317,9 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         return task
 
     def approve(self, *, session_id, request_id, choice):
-        rpc = next((r for r in self.member_rpcs.values() if r.ref.session_id == session_id), None)
+        # A cross-profile transport has no ref until its first create/resume/resolve_exact.
+        rpc = next((r for r in self.member_rpcs.values()
+                    if getattr(r, 'ref', None) is not None and r.ref.session_id == session_id), None)
         if rpc is None:
             raise RuntimeStoreError('permission_denied')
         return rpc.approve(session_id=session_id, request_id=request_id, choice=choice)

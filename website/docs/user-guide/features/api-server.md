@@ -437,6 +437,22 @@ Requests that include an explicit `provider` — and the Hermes-native
 `/v1/runs` and session-chat endpoints — always honor the requested model
 regardless of this flag.
 
+The response's `model` field names the model that actually served the turn,
+never an echo of a value Hermes did not run: a `model_routes` alias reports
+its target model, a bare `model` ignored because `direct_model_requests` is
+off reports the gateway default, and a provider fallback reports the fallback
+model. A request for the advertised agent name (`hermes-agent` or your
+profile name) gets that name back. The first frame of a stream is sent before
+the turn runs, so when the served model is not known yet it carries the
+advertised agent name; the final frame always carries the served model.
+
+When the provider rejects a model the request asked for, Hermes answers with
+OpenAI's `404` `model_not_found` error (`param: "model"`) instead of a `200`
+whose content is the failure. A stream that has already started ends with
+that error on its final frame. The selection is per request: the next request
+without a `model` runs on the gateway default again, and config.yaml is never
+changed.
+
 Example:
 
 ```json

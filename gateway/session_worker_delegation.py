@@ -75,6 +75,15 @@ def _dispatch(db, conn, session_id, payload, *, execution_id, worker_pid, worker
         owner_started_at = get_process_start_time(worker_pid)
     except psutil.Error as exc:
         raise RuntimeStoreError('worker_not_live') from exc
+    except RuntimeStoreError:
+        raise
+    # health: allow BLE001 -- a probe that could not be EVALUATED is not a verified worker
+    except Exception as exc:
+        # psutil's Windows status probe allocates the process table and can raise MemoryError under
+        # host memory pressure. Escaping here answered the delegation write with JSON-RPC -32603
+        # "internal error", which the worker's store makes sticky (t_5ae5058d). Unproven identity is
+        # a clean refusal at this boundary, never an internal error.
+        raise RuntimeStoreError('worker_not_live') from exc
     now = time.time()
     conn.execute('''INSERT INTO async_delegations
         (delegation_id,origin_session,origin_ui_session_id,parent_session_id,state,dispatched_at,

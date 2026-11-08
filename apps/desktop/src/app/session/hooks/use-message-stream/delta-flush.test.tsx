@@ -309,7 +309,7 @@ describe('useMessageStream composed with the real useSessionStateCache', () => {
       appendAssistantDelta!(SID, 'first')
     })
 
-    now = 34
+    now = 41
     act(() => appendAssistantDelta!(SID, ' second'))
     expect(cachedText()).toBe('first second')
     expect(readInFlightTurnJournal(storedId)).toBeNull()

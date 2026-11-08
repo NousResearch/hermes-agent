@@ -94,3 +94,21 @@ def test_existing_callers_do_not_retry_a_429(git, monkeypatch):
         ["git", "clone", GITHUB_URL], GITHUB_URL, env={}, capture_output=True, text=True)
 
     assert result.returncode != 0 and git.fetches == [None]
+
+
+def test_release_tag_fetch_after_a_rate_limited_update_also_retries(git, monkeypatch, tmp_path, capsys):
+    """The stable update fetches the release's own tag right after the release commit; the same IP
+    throttle answers it, so it retries with the credential too instead of losing the tag."""
+    from hermes_cli import update_cmd_check
+
+    monkeypatch.setattr(git_credentials, "_gh_cli_token", lambda: "gho_live")
+    real_run = subprocess.run
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: (
+        subprocess.CompletedProcess(argv, 1, stdout="", stderr="") if "rev-parse" in argv
+        else real_run(argv, **kw)))
+
+    update_cmd_check.fetch_release_tag(["git"], tmp_path, {"release_tag": "v9.9.9"})
+
+    assert git.fetches[0] is None and git.fetches[1] is not None and len(git.fetches) == 2
+    assert git.outside_custody == []
+    assert "Could not fetch" not in capsys.readouterr().out

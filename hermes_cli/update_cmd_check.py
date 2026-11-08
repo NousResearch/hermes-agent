@@ -284,8 +284,7 @@ def fetch_release_tag(git_cmd: list[str], root: Path, request: dict) -> None:
     create-only: a fork or mirror without the tag still updates, and an existing local tag
     never moves (the stable pin contract). Only that one tag: others drag in their histories.
     """
-    from hermes_cli._subprocess_compat import no_prompt_git_kwargs
-    from hermes_cli.update_cmd import NETWORK_GIT_TIMEOUT_SECONDS
+    from hermes_cli.update_cmd_git import _git_fetch
 
     tag = request.get("release_tag")
     if not tag:
@@ -293,8 +292,10 @@ def fetch_release_tag(git_cmd: list[str], root: Path, request: dict) -> None:
     try:
         if _git(git_cmd, root, ["rev-parse", "--verify", "--quiet", f"refs/tags/{tag}"]).returncode == 0:
             return
-        fetched = _git(git_cmd, root, ["fetch", "--no-tags", "origin", f"refs/tags/{tag}:refs/tags/{tag}"],
-                       timeout=NETWORK_GIT_TIMEOUT_SECONDS, **no_prompt_git_kwargs())
+        # Right after the release fetch, so the same IP throttle answers it: a 429 retries with
+        # the user's credential like that fetch did (#105857).
+        fetched = _git_fetch(git_cmd, ["fetch", "--no-tags", "origin", f"refs/tags/{tag}:refs/tags/{tag}"],
+                             "origin", cwd=root)
         detail = (fetched.stderr or "").strip().splitlines()[-1:] if fetched.returncode else None
     except (OSError, subprocess.SubprocessError) as exc:  # custody refusals are OSErrors too
         detail = [str(exc)]

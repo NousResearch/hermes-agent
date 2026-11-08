@@ -31,3 +31,4 @@ capabilities:
   provides_middleware: []
   requires_env:
     - NOTIFY_API_TOKEN
+requires_hermes: ">=0.22.6"

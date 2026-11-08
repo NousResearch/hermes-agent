@@ -135,7 +135,7 @@ from agent.auxiliary_unavailable import (
     AuxiliaryClientUnavailable, clear_nous_credential_failure, missing_provider_credentials_message,
     nous_credential_failure_detail, record_nous_credential_failure)
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key
-from utils import base_url_host_matches, base_url_hostname, base_url_origin, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
+from utils import base_url_host_matches, base_url_hostname, base_url_origin, base_url_path, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -3475,8 +3475,13 @@ def _provider_for_host(base_url: str, table: tuple[tuple[str, str], ...]) -> Opt
     return getattr(profile_for_host(base_url), "name", None)
 
 
+def _relay_path(base_url: str) -> str:
+    """The path an aux client built for ``base_url`` reaches (dual-surface ``/anthropic`` mapped), ``/v1`` dropped."""
+    return base_url_path(_to_openai_base_url(base_url)).removesuffix("/v1")
+
+
 def _recoverable_pool_provider(
-    resolved_provider: str, client: Any, main_runtime: Optional[dict[str, Any]] = None
+    resolved_provider: str, client: Any, main_runtime: Optional[dict[str, Any]] = None, *, same_path: bool = False,
 ) -> Optional[str]:
     """Infer which provider pool can recover the current auxiliary client.
     None when the client targets a different host than the session's configured endpoint for that
@@ -3517,7 +3522,10 @@ def _recoverable_pool_provider(
                     # rejection at any other host (registry default vs configured proxy) says nothing
                     # about that key, so it must not be marked exhausted.
                     rt_base = str(runtime.get("base_url") or getattr(pconfig, "inference_base_url", "") or "").rstrip("/")
-                    if rt_base and base_url_host_matches(base, base_url_hostname(rt_base)):
+                    # Classification also needs the same relay path: one host can serve two products (OpenCode Zen at
+                    # /zen, Go at /zen/go), and a Zen request judged by Go's profile loses its same-key retry.
+                    if rt_base and base_url_host_matches(base, base_url_hostname(rt_base)) and (
+                            not same_path or _relay_path(base) == _relay_path(rt_base)):
                         return rt_provider
     return None
 
@@ -4529,7 +4537,7 @@ def _classification_provider(client: Any, fallback: str, main_runtime: Optional[
     if (route := _normalize_aux_provider(label)) not in {"auto", "custom", "api-key"}:
         return label
     return _recoverable_pool_provider("custom" if route == "custom" else "auto", client,
-                                      main_runtime=_normalize_main_runtime(main_runtime)) or label
+                                      main_runtime=_normalize_main_runtime(main_runtime), same_path=True) or label
 
 
 # Centralized Provider Router: resolve_provider_client() is the single entry point for building a configured

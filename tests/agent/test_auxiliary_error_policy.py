@@ -286,6 +286,30 @@ def test_opencode_go_upstream_throttle_keeps_the_key_on_an_unnamed_route(monkeyp
 
 
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_a_custom_zen_endpoint_is_not_classified_as_the_main_runtimes_go(is_async):
+    """OpenCode Zen and Go share opencode.ai: a custom Zen endpoint with its own key, while the main runtime is Go,
+    is judged as custom, so its upstream 429 gets the same-key retry and the second request answers."""
+    import model_tools  # registers the bundled provider profiles
+
+    sent, statuses = [], iter([429, 200])
+
+    def handle(request):
+        sent.append(request.url.path)
+        if next(statuses) == 429:
+            return httpx.Response(429, json={"error": {"type": "server_error", "message":
+                                                       "Upstream request failed: Rate limit exceeded."}}, request=request)
+        return httpx.Response(200, json={"id": "x", "object": "chat.completion", "created": 0, "model": "fast-1",
+                                         "choices": [{"index": 0, "finish_reason": "stop", "message": {
+                                             "role": "assistant", "content": "ok"}}]}, request=request)
+
+    zen = _wire(handle, key="sk-zen", url="https://opencode.ai/zen/v1", is_async=is_async)
+    runtime = {"provider": "opencode-go", "base_url": "https://opencode.ai/zen/go/v1", "api_key": "sk-go"}
+    with patch("agent.auxiliary_rate_limit_backoff.rate_limit_wait", return_value=0.0):
+        assert _routed_call([zen] * 2, provider="custom", is_async=is_async, main_runtime=runtime) == "ok"
+    assert sent == ["/zen/v1/chat/completions"] * 2
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
 def test_observers_see_the_providers_own_error_when_its_stream_was_judged(monkeypatch, is_async):
     """A stream negotiation is classified where it failed; ``post_auxiliary_call`` still reports the provider's error."""
     from hermes_cli import plugins

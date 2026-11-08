@@ -49,11 +49,12 @@ async def apply_root_dm_topic_transfer(adapter: Any, event: MessageEvent) -> Non
     thread_id, created = decided
     if not created:
         event.source = replace_source(source, thread_id=str(thread_id))
-        return
-    # The root-DM message lives outside the new topic, so it cannot anchor the reply there: an empty
-    # override plus no source.message_id sends the first reply by message_thread_id alone.
-    event.source = replace_source(source, thread_id=str(thread_id), message_id=None)
-    event.reply_anchor_override = ""
+    else:
+        # The root-DM message lives outside the new topic, so it cannot anchor the reply there: an empty
+        # override plus no source.message_id sends the first reply by message_thread_id alone.
+        event.source = replace_source(source, thread_id=str(thread_id), message_id=None)
+        event.reply_anchor_override = ""
+    apply_topic_prompt_inputs(adapter, event)
 
 
 def apply_topic_recovery_with_inputs(adapter: Any, event: MessageEvent, recover: Callable[[MessageEvent], None]) -> None:
@@ -66,9 +67,13 @@ def apply_topic_recovery_with_inputs(adapter: Any, event: MessageEvent, recover:
     """
     before = event.source.thread_id if event.source is not None else None
     recover(event)
+    if event.source is not None and event.source.thread_id != before:
+        apply_topic_prompt_inputs(adapter, event)
+
+
+def apply_topic_prompt_inputs(adapter: Any, event: MessageEvent) -> None:
+    """Give an event moved into a topic (recovery or auto transfer) that topic's name, skill and channel prompt."""
     source = event.source
-    if source is None or source.thread_id == before:
-        return
     chat_id = str(source.chat_id)
     topic = adapter._get_dm_topic_info(chat_id, source.thread_id) or {}
     event.source = replace_source(source, chat_topic=topic.get("name"))

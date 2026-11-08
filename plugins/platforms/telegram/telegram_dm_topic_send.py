@@ -39,8 +39,9 @@ def direct_topic_retry_kwargs(chat_id: Any, thread_id: Any, metadata: Any, tried
     native DM-topic chats reject ``message_thread_id`` for an id they accept there (#137568)."""
     if tried.get("direct_messages_topic_id") is not None or not private_chat(chat_id):
         return None
-    topic = (metadata or {}).get("direct_messages_topic_id") or tried.get("message_thread_id") or thread_id
-    if topic is None or not str(topic).isdigit() or str(topic) == "1":
+    meta = metadata or {}
+    topic = meta.get("direct_messages_topic_id") or meta.get("telegram_direct_messages_topic_id") or tried.get("message_thread_id") or thread_id
+    if topic is None or not str(topic).isdigit() or str(topic) == "1":  # "1": General (TelegramAdapter._GENERAL_TOPIC_THREAD_ID)
         return None
     return {"message_thread_id": None, "direct_messages_topic_id": int(topic)}
 

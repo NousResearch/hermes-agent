@@ -34,7 +34,6 @@ import {
 import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import type { WorkspaceMode } from '@/contrib/types'
 import { dropBrowserProfilePrefs, migrateBrowserProfilePrefs } from '@/lib/browser-profile-prefs'
-import { finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messages'
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
@@ -85,7 +84,7 @@ import {
 } from './session'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
-import { turnHasReply, withNoReplyNotice } from './session-no-reply'
+import { settleEndedTurn, stampNoReply } from './session-no-reply'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
   isSessionOwnerRoute,
@@ -459,42 +458,15 @@ function writeSessionState(runtimeId: string, updater: (state: ClientSessionStat
   }
 }
 
-/** The backend reported the turn over and its end events never arrived. Settle
- *  it like the running=false edge: nothing is interrupted, the kept stream
- *  bubble is remembered so a late message.complete settles onto it. */
 function settleEndedLiveTurn(runtimeId: string) {
-  const occurredAt = Date.now() / 1000
-
-  writeSessionState(runtimeId, state => {
-    if (!isLiveTurnAwaitingEvents(state)) {
-      return state
-    }
-
-    const messages = sealOpenToolParts(finalizeInterruptedMessages(state.messages, state.streamId, occurredAt))
-
-    return {
-      ...state,
-      awaitingResponse: false,
-      busy: false,
-      heartbeatSettledStreamId:
-        state.streamId && messages.some(message => message.id === state.streamId) ? state.streamId : null,
-      messages,
-      pendingBranchGroup: null,
-      streamId: null,
-      turnLive: false,
-      turnStartedAt: null
-    }
-  })
+  writeSessionState(runtimeId, state =>
+    isLiveTurnAwaitingEvents(state) ? settleEndedTurn(state, Date.now() / 1000) : state
+  )
 }
 
-/** Stamp the retry card on an ended turn that has no reply, never an intentional
- *  interruption. A newer turn is either live (skipped) or has its own reply. */
+/** A newer turn the user started meanwhile is live (skipped) or has its own reply. */
 function markTurnWithoutReply(runtimeId: string) {
-  writeSessionState(runtimeId, state =>
-    state.interrupted || isLiveTurnAwaitingEvents(state) || turnHasReply(state.messages)
-      ? state
-      : { ...state, messages: withNoReplyNotice(state.messages) }
-  )
+  writeSessionState(runtimeId, state => (isLiveTurnAwaitingEvents(state) ? state : stampNoReply(state)))
 }
 
 async function recoverEndedLiveTurn(runtimeId: string) {

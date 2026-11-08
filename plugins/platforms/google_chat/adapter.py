@@ -237,12 +237,12 @@ def _redact_sensitive(text: str) -> str:
     return text
 
 
-def _proxy_error(exc: BaseException) -> str | None:  # httplib2/requests read HTTPS_PROXY and may echo its secret
-    return describe_proxy_error(exc, env_proxy_for_redaction(*(f"https://{h}.googleapis.com" for h in ("chat", "oauth2", "pubsub", "www"))))
+def _proxy_error(exc: BaseException, *targets: str) -> str | None:  # httplib2/requests read HTTPS_PROXY and may echo its secret
+    return describe_proxy_error(exc, env_proxy_for_redaction(*(targets or [f"https://{h}.googleapis.com" for h in ("chat", "oauth2", "pubsub", "www")])))
 
 
-def _exc_text(exc: BaseException) -> str:
-    return _proxy_error(exc) or _redact_sensitive(str(exc))
+def _exc_text(exc: BaseException, *targets: str) -> str:  # targets: the URLs the failed call fetched (default: the APIs)
+    return _proxy_error(exc, *targets) or _redact_sensitive(str(exc))
 
 
 def _mime_for_message_type(mime: str) -> MessageType:
@@ -1048,7 +1048,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning(
                     "[GoogleChat] downloadUri fetch failed (SA tokens often lack access here; this is expected for "
-                    "user-uploaded content): %s", _exc_text(exc))
+                    "user-uploaded content): %s", _exc_text(exc, download_uri, "https://oauth2.googleapis.com"))
                 return None, mime
         if data is None:
             return None, mime

@@ -2,6 +2,8 @@ import type { GatewayEvent } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { textPart } from '@/lib/chat-messages'
+
 import { claimSideChatTask, releaseSideChatTask } from '@/store/side-chat'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
@@ -56,6 +58,27 @@ describe('btw.complete event', () => {
     emit('btw.complete', { task_id: 'btw_1', question: 'q', text: '   ' })
 
     expect(lastMessage()).toBeUndefined()
+  })
+
+  it('keeps the running assistant at the scroll-follow tail for an inline fallback answer', () => {
+    const liveId = 'assistant-live'
+    stream.states.set(SID, {
+      ...stream.state(),
+      busy: true,
+      streamId: liveId,
+      messages: [
+        { id: 'user-live', role: 'user', parts: [textPart('Explain the bug', 1)], timestamp: 1 },
+        { id: liveId, role: 'assistant', pending: true, parts: [textPart('Still streaming', 2)], timestamp: 2 }
+      ]
+    })
+
+    const answer = 'Long side answer. '.repeat(80)
+    emit('btw.complete', { task_id: 'btw_long', question: 'quick check', text: answer })
+
+    const messages = stream.state().messages
+    expect(messages.map(message => message.id)).toEqual(['user-live', 'btw-complete-btw_long', liveId])
+    expect(messages[1].parts[0]).toMatchObject({ type: 'text', text: expect.stringContaining(answer.trim()) })
+    expect(stream.text()).toBe('Still streaming')
   })
 
   // The floating side chat exists so an aside can stay OUT of the conversation

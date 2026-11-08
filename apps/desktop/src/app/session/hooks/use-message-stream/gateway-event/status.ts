@@ -93,18 +93,26 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       const header = `[btw${question ? ` "${question}"` : ''}${taskId ? ` (${taskId})` : ''}]`
 
       flushQueuedDeltas(sessionId)
-      updateSessionState(sessionId, state => ({
-        ...state,
-        messages: [
-          ...state.messages,
-          {
-            id: `btw-complete-${taskId || Date.now()}`,
-            role: 'system',
-            parts: [textPart(`${header}\n${text}`, occurredAt)],
-            timestamp: occurredAt
-          }
-        ]
-      }))
+      updateSessionState(sessionId, state => {
+        const notice = {
+          id: `btw-complete-${taskId || Date.now()}`,
+          role: 'system' as const,
+          parts: [textPart(`${header}\n${text}`, occurredAt)],
+          timestamp: occurredAt
+        }
+        // An inline fallback must not make a long aside the scroll-follow tail
+        // while the assistant is streaming. The answer remains in the transcript.
+        const liveIndex =
+          state.busy && state.streamId
+            ? state.messages.findIndex(message => message.id === state.streamId && message.role === 'assistant')
+            : -1
+        const insertAt = liveIndex >= 0 ? liveIndex : state.messages.length
+
+        return {
+          ...state,
+          messages: [...state.messages.slice(0, insertAt), notice, ...state.messages.slice(insertAt)]
+        }
+      })
     }
 
     return true

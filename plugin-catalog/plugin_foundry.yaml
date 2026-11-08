@@ -8,10 +8,12 @@ description: >-
   archetypes only: a SQLite folder watcher and a JSON API poller, each with one
   tool. The folder-watcher parser accepts one explicit supported file type or
   complete dotted suffix and refuses unsupported, composite, conflicting or
-  ambiguous requests. A trailing period is removed only at the end of the
-  request or before a capitalised token or complete supported instruction
-  verb; other prose fails closed, and abbreviations without a sentence start
-  stay inside the instruction. Writes stay under the Foundry data root,
+  ambiguous requests. A trailing period is removed only at request end or
+  before validated supported follow-up instructions. Sentence boundaries are
+  detected before a capitalised token or complete instruction verb, but that
+  detection alone does not permit removal; other prose fails closed, and
+  abbreviations without a sentence start stay inside the instruction. Writes
+  stay under the Foundry data root,
   generated tests run in a minimal environment, and paths outside the root
   need a pre-tool approval.
   Provides pre_tool_call and post_approval_response hooks plus the public

@@ -1332,15 +1332,22 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         return isinstance(result.raw_response, dict) and bool(result.raw_response.get("delivery_uncertain"))
 
     @staticmethod
-    async def _record_rich_sent(chat_id: Any, message_id: Any, content: str) -> None:
-        """Index rich content we sent: Telegram won't echo it back in reply_to_message.
+    async def _record_sent_text(chat_id: Any, message_id: Any, content: str) -> None:
+        """Index the text of a message we sent: Telegram does not echo a message body back in
+        ``reply_to_message``, so a later quote-reply can only be resolved from this index.
+
+        Covers BOTH send paths (rich ``sendRichMessage`` and legacy MarkdownV2 ``sendMessage``)
+        and the legacy finalize edit — anything the user can see and quote.
 
         Awaited so the store's read-modify-write + ``os.replace`` runs off the loop."""
         try:
             from gateway import rich_sent_store
             await rich_sent_store.record_async(str(chat_id), str(message_id), content)
         except Exception:
-            pass
+            # The send itself already succeeded — a failed index write must not fail the send.
+            # But stay loud: a broken index silently degrades every future quote-reply.
+            logger.warning("[Telegram] failed to index sent text for quote-reply recovery",
+                           exc_info=True)
 
     async def _try_send_rich(
         self, chat_id: str, content: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]]) -> Optional[SendResult]:
@@ -1380,7 +1387,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if message_id is None:  # accepted with no id: delivery unknown, never proof of it (#147616)
             from plugins.platforms.telegram.telegram_send_errors import idless_send_result
             return idless_send_result(self.name, chat_id, "sendRichMessage")
-        await self._record_rich_sent(chat_id, message_id, content)
+        await self._record_sent_text(chat_id, message_id, content)
         return SendResult(success=True, message_id=str(message_id))
 
     def _rich_payload_base(self, chat_id: str, content: str) -> dict[str, Any]:
@@ -1419,7 +1426,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 return None
             return self._rich_transient_result(exc, "rich editMessageText")
         # Mirror the fresh-send index: a streamed final finalized via edit is otherwise never recorded.
-        await self._record_rich_sent(chat_id, message_id, content)
+        await self._record_sent_text(chat_id, message_id, content)
         return SendResult(success=True, message_id=message_id)
 
     def _should_attempt_rich_draft(self, content: str) -> bool:
@@ -3433,6 +3440,11 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 return self._with_partial_send(outcome, chunks[len(delivered) - prior:], delivered)
             msg, used_thread_fallback = outcome
             delivered.append(str(msg.message_id))
+            # Index what we sent: Telegram does not echo a message body back in
+            # ``reply_to_message``, so a later quote-reply resolves ONLY through this index.
+            # The legacy MarkdownV2 path carries ~95% of outbound messages — without this
+            # write their quoted text is unrecoverable and the agent answers blind.
+            await self._record_sent_text(chat_id, msg.message_id, _strip_mdv2(chunk))
         await self._retrigger_typing(chat_id, metadata)
         return SendResult(
             success=True, message_id=delivered[0] if delivered else None,
@@ -3580,6 +3592,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             await self._edit_markdown_or_plain(chat_id, message_id, formatted, plain, warn)
             if _saturated_preview:
                 self._last_overflow_preview[_preview_key] = content
+            if finalize:
+                # The finalized text is what the user sees and quotes — keep it resolvable.
+                await self._record_sent_text(chat_id, message_id, plain or "")
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
@@ -6407,6 +6422,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             try:
                 from gateway import rich_sent_store
                 reply_to_text = rich_sent_store.lookup(str(message.chat.id), reply_to_id)
+                if reply_to_text:
+                    # A message that gets quoted is worth keeping: refresh its timestamp so the
+                    # FIFO trim does not evict it while the conversation still refers to it.
+                    rich_sent_store.touch(str(message.chat.id), reply_to_id)
             except Exception:
                 # Extract reply context if this message is a reply. Prefer Telegram's native partial quote
                 # (message.quote, TextQuote) so a user replying to a single selected substring of a prior
@@ -6415,6 +6434,13 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 # didn't quote (#22619). Fall back to the full replied-to message text / caption when no
                 # native quote is present.
                 reply_to_text = None
+        if not reply_to_text:
+            # The quoted body is unrecoverable: Telegram echoed nothing and the sent index has no
+            # entry. Say so — a silently dropped quote makes the agent answer a question whose
+            # subject it cannot see, and nothing in the logs shows why.
+            logger.warning(
+                "[%s] reply_to_id=%s carries no recoverable text: Telegram echoed no body and the sent index has no entry",
+                self.name, reply_to_id)
         return reply_to_id, reply_to_text
 
     def _build_message_event(self, message: Message, msg_type: MessageType, update_id: Optional[int] = None) -> MessageEvent:

@@ -416,8 +416,9 @@ class GatewayTurnPrepareMixin:
             if self._session_db is not None and not await self._session_db.get_session(bound_session_id):
                 logger.warning("Telegram topic binding for %s points at session %s with no sessions row; "
                                "keeping the current session and rebinding", session_key, bound_session_id)
-                try:
-                    await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)
+                try:  # CAS on the stale id: a /new that rebound the topic during the await wins
+                    await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry,
+                                            expected_session_id=stored_session_id)
                 except Exception:
                     logger.debug("Failed to record Telegram topic binding", exc_info=True)
                 return session_entry

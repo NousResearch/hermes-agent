@@ -1,0 +1,95 @@
+"""Audio facts the Telegram media sends carry: duration, and the music-player fields of ``sendAudio``."""
+
+import contextlib
+import json
+import logging
+import os
+import shutil
+import subprocess
+import tempfile
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
+
+
+def _coerce_duration_seconds(value: Any) -> Optional[int]:
+    """Round a raw length to whole positive seconds, or None if unusable."""
+    try:
+        secs = round(float(value))
+    except (TypeError, ValueError):
+        return None
+    return secs if secs > 0 else None
+
+
+def _probe_voice_duration_seconds(path: str) -> Optional[int]:
+    """Best-effort whole-second audio length (wave → mutagen → ffprobe; None if unreadable).
+
+    Telegram renders long clips as 0:00 without an explicit duration. Blocking: use ``to_thread``."""
+    if os.path.splitext(path)[1].lower() == ".wav":
+        try:
+            import wave
+            with wave.open(path, "rb") as wf:
+                rate = wf.getframerate() or 0
+                secs = _coerce_duration_seconds(wf.getnframes() / float(rate)) if rate else None
+            if secs is not None:
+                return secs
+        except Exception:
+            pass
+    try:
+        import mutagen
+        secs = _coerce_duration_seconds(getattr(getattr(mutagen.File(path), "info", None), "length", None))
+        if secs is not None:
+            return secs
+    except Exception:
+        pass
+    try:
+        import shutil
+        import subprocess
+        if shutil.which("ffprobe"):
+            proc = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path],
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, check=False)
+            if proc.returncode == 0:
+                return _coerce_duration_seconds(proc.stdout.strip())
+    except Exception:
+        pass
+    return None
+
+def audio_player_fields(path: str) -> dict[str, str]:
+    """``{"performer", "title", "thumbnail_path"}`` read from ``path``'s own tags; missing keys are omitted.
+
+    ``thumbnail_path`` is a temporary 320px JPEG of the embedded cover art the caller must delete.
+    Best effort and blocking (ffprobe/ffmpeg): run it in ``asyncio.to_thread``."""
+    if not shutil.which("ffprobe"):
+        return {}
+    fields: dict[str, str] = {}
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format_tags=artist,title:stream=codec_type",
+             "-of", "json", path],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=10, check=False)
+        blob = json.loads(proc.stdout or "{}") if proc.returncode == 0 else {}
+    except (OSError, subprocess.SubprocessError, ValueError):
+        logger.debug("[Telegram] audio tag probe failed for %s", path, exc_info=True)
+        return {}
+    tags = {k.lower(): str(v).strip() for k, v in ((blob.get("format") or {}).get("tags") or {}).items()}
+    for tag, field in (("artist", "performer"), ("title", "title")):
+        if tags.get(tag):
+            fields[field] = tags[tag][:256]
+    has_cover = any(s.get("codec_type") == "video" for s in blob.get("streams") or [])
+    if has_cover and shutil.which("ffmpeg"):
+        fd, out = tempfile.mkstemp(suffix=".jpg", prefix="hermes-tg-cover-")
+        os.close(fd)
+        try:
+            ok = subprocess.run(
+                ["ffmpeg", "-y", "-i", path, "-an", "-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "6", out],
+                stdin=subprocess.DEVNULL, capture_output=True, timeout=20, check=False).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        if ok and os.path.getsize(out):
+            fields["thumbnail_path"] = out
+        else:
+            with contextlib.suppress(OSError):
+                os.remove(out)
+    return fields

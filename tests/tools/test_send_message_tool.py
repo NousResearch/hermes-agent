@@ -14,6 +14,7 @@ import pytest
 # or call _send_telegram need it; tests for other platforms don't but
 # keeping the whole file consistent is simpler.
 _HAS_TELEGRAM = pytest.importorskip("telegram", reason="python-telegram-bot not installed") is not None
+from telegram.error import NetworkError
 
 
 @pytest.fixture(autouse=True)
@@ -765,7 +766,7 @@ class TestSendTelegramHtmlDetection:
         bot = self._make_bot()
         bot.send_message = AsyncMock(
             side_effect=[
-                Exception("502 Bad Gateway"),
+                NetworkError("Bad Gateway"),  # what PTB raises for Telegram's JSON 502
                 SimpleNamespace(message_id=2),
             ]
         )

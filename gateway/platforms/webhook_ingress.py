@@ -148,8 +148,9 @@ async def admit_producer(adapter, event):
         try:
             # An identical delivery (provider retry, relay re-send) overlapping this one waits here, then
             # rechecks the ledger: the retry check, the hooks and the commit run once per delivery.
-            async with _delivery_turn((authority.profile_id, principal, event.message_id)):
-                committed = payload, _committed(authority, principal, event.message_id)
+            request_id = _request_id(event)
+            async with _delivery_turn((authority.profile_id, principal, request_id)):
+                committed = payload, _committed(authority, principal, request_id)
                 return await _admit_once(authority, event, webhook, hooks, live, committed)
         except (Exception, asyncio.CancelledError) as exc:
             # Refused after preparing (a command-shaped rewrite, a drain during the hooks, a conflict),
@@ -212,7 +213,7 @@ async def _admit_native(authority, event):
     return await authority.admit_native(event)
 
 
-# Producer deliveries in flight by (profile, principal, provider id) -> [lock, holder + waiters]. This
+# Producer deliveries in flight by (profile, principal, request id) -> [lock, holder + waiters]. This
 # gateway is the only owner of producer ingress, so in-process coordination covers every request.
 _deliveries = {}
 
@@ -252,6 +253,14 @@ async def _prepared(authority, event):
     identity = json.dumps([source.profile, source.platform.value, source.chat_id,
                            source.thread_id, source.user_id], separators=(',', ':'))
     return payload, 'messaging:' + identity
+
+
+def _request_id(event):
+    """The FIFO request id admission gives this delivery (``SessionAuthority.admit_native``): an
+    edit is its own input, so a re-sent edit resolves to the edit's row, not the original's."""
+    if not event.message_id:
+        return event.message_id
+    return event.message_id + (':edit:' + event.edit_revision if event.edit_revision else '')
 
 
 def _committed(authority, principal, request_id):

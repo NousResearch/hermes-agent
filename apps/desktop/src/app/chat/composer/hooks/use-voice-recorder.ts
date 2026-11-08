@@ -26,7 +26,14 @@ interface VoiceRecorderOptions {
  * the release, so a gateway/profile switch mid-recording cannot split them
  * across backends. `warmup` settles when that mic-open warm-up settled.
  */
+export interface DictationDestination {
+  onTranscript: (text: string) => void
+  focusInput: () => void
+  onState?: (status: VoiceStatus) => void
+}
+
 interface Dictation {
+  destination: DictationDestination
   owner: ResolvedOwner
   warmup: Promise<void>
   /** Live STT session (stt.streaming): resolves to null when the host has no live wire. */
@@ -99,11 +106,13 @@ export function useVoiceRecorder({
     if (!result || !onTranscribeAudio) {
       finish(dictation)
       setVoiceStatus('idle')
+      dictation.destination.onState?.('idle')
 
       return
     }
 
     setVoiceStatus('transcribing')
+    dictation.destination.onState?.('transcribing')
 
     try {
       // Readiness first: let the mic-open warm-up settle before handing the
@@ -126,7 +135,7 @@ export function useVoiceRecorder({
       if (!transcript) {
         notify({ kind: 'warning', title: voiceCopy.noSpeechDetected, message: voiceCopy.tryRecordingAgain })
       } else {
-        onTranscript(transcript)
+        dictation.destination.onTranscript(transcript)
       }
     } catch (error) {
       if (live()) {
@@ -136,7 +145,8 @@ export function useVoiceRecorder({
       if (live()) {
         finish(dictation)
         setVoiceStatus('idle')
-        focusInput()
+        dictation.destination.onState?.('idle')
+        dictation.destination.focusInput()
       }
     }
   }
@@ -167,25 +177,35 @@ export function useVoiceRecorder({
     void syncSttLease(VOICE_INPUT_LEASE, false, dictation.owner)
   }
 
-  const start = async () => {
+  const start = async (destination: DictationDestination = { onTranscript, focusInput }) => {
     if (!onTranscribeAudio) {
       notify({ kind: 'warning', title: voiceCopy.unavailable, message: voiceCopy.transcriptionUnavailable })
+      destination.onState?.('idle')
 
       return
     }
 
     if (dictationRef.current) {
+      destination.onState?.('idle')
+
       return
     }
 
     const owner = resolveOwnerNow(ownerRef.current)
     const stream = liveStream(owner)
-    const dictation: Dictation = { live: stream.session, owner, warmup: Promise.resolve() }
+    const dictation: Dictation = { destination, live: stream.session, owner, warmup: Promise.resolve() }
     dictationRef.current = dictation
 
     try {
       await handle.start({
-        onError: error => notifyError(error, voiceCopy.recordingFailed),
+        onError: error => {
+          if (dictationRef.current !== dictation) {return}
+          clearTimers()
+          finish(dictation)
+          setVoiceStatus('idle')
+          destination.onState?.('idle')
+          notifyError(error, voiceCopy.recordingFailed)
+        },
         onPcm: stream.push,
         onPcmRate: stream.open
       })
@@ -203,6 +223,7 @@ export function useVoiceRecorder({
       startedAtRef.current = Date.now()
       setElapsedSeconds(0)
       setVoiceStatus('recording')
+      destination.onState?.('recording')
       recordFeatureUse('voice_dictation')
       intervalRef.current = window.setInterval(() => setElapsedSeconds((Date.now() - startedAtRef.current) / 1000), 250)
       const cap = Math.max(1, Math.min(Math.trunc(maxRecordingSeconds), 600))
@@ -214,6 +235,7 @@ export function useVoiceRecorder({
 
       finish(dictation)
       setVoiceStatus('idle')
+      destination.onState?.('idle')
       notifyError(error, voiceCopy.recordingFailed)
     }
   }
@@ -255,6 +277,22 @@ export function useVoiceRecorder({
     return { open, push, session: () => opening ?? Promise.resolve(null) }
   }
 
+  const cancel = () => {
+    clearTimers()
+    const dictation = dictationRef.current
+    dictationRef.current = null
+    handle.cancel()
+
+    if (dictation) {
+      void dictation.live?.().then(session => session?.cancel())
+      void syncSttLease(VOICE_INPUT_LEASE, false, dictation.owner)
+      dictation.destination.onState?.('idle')
+    }
+
+    setPartial('')
+    setVoiceStatus('idle')
+  }
+
   const dictate = () => {
     if (recording) {
       void stop()
@@ -270,5 +308,5 @@ export function useVoiceRecorder({
     status: voiceStatus
   }
 
-  return { dictate, voiceActivityState, voiceStatus }
+  return { cancel, dictate, start, stop, voiceActivityState, voiceStatus }
 }

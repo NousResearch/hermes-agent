@@ -641,7 +641,16 @@ const DirectiveChip: FC<{
   }
 
   return activate ? (
-    <button {...props} onClick={activate} type="button">
+    <button {...props} onBlur={type === 'annotation' ? () => openResponseAnnotations({ value: id, editable: false, interaction: 'leave' }) : undefined} onClick={event => {
+      if (type === 'annotation') { event.stopPropagation() }
+      activate()
+    }}
+      onFocus={type === 'annotation' ? event => openResponseAnnotations({ value: id, editable: false, anchor: event.currentTarget.getBoundingClientRect(), interaction: 'focus' }) : undefined}
+      onPointerDown={type === 'annotation' ? event => event.stopPropagation() : undefined}
+      onPointerEnter={type === 'annotation' ? event => openResponseAnnotations({ value: id, editable: false, anchor: event.currentTarget.getBoundingClientRect(), interaction: 'hover' }) : undefined}
+      onPointerLeave={type === 'annotation' ? () => openResponseAnnotations({ value: id, editable: false, interaction: 'leave' }) : undefined}
+      type="button"
+    >
       {body}
     </button>
   ) : (

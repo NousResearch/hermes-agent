@@ -17,6 +17,8 @@ export interface ResponseAnnotationOpen {
   value: string
   editable: boolean
   remove?: boolean
+  /** Passive previews never move focus; leave gives the plugin a pointer-gap grace period. */
+  interaction?: 'hover' | 'focus' | 'leave'
   anchor?: { left: number; top: number; bottom: number; width: number }
 }
 
@@ -58,7 +60,7 @@ export function parseResponseAnnotations(value: string): ResponseAnnotations | n
       data.label.length > 80 ||
       !Array.isArray(data.annotations) ||
       !data.annotations.length ||
-      data.annotations.length > 100
+      data.annotations.length > 1000
     ) {
       return null
     }

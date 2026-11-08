@@ -66,4 +66,38 @@ describe('response annotation references', () => {
       })
     ).toThrow()
   })
+  it('round-trips 1,000 annotations as one native chip and rejects oversized batches intact', () => {
+    const data = {
+      type: 'response-annotations' as const,
+      version: 1 as const,
+      label: '1000 annotations',
+      annotations: Array.from({ length: 1000 }, (_, index) => ({
+        id: String(index),
+        text: 'Selected passage ' + index,
+        comment: 'Comment ' + index
+      }))
+    }
+    const token = formatResponseAnnotations(data)
+    const matches = [...token.matchAll(referenceRe())]
+    expect(matches).toHaveLength(1)
+    const raw = matches[0]![2]!
+    expect(parseResponseAnnotations(raw.slice(1, -1))).toEqual(data)
+    const editor = document.createElement('div')
+    editor.innerHTML = refChipHtml('annotation', raw)
+    expect(editor.textContent).toBe('1000 annotations')
+    expect(composerPlainText(editor).trimEnd()).toBe(token)
+    expect(() =>
+      formatResponseAnnotations({
+        ...data,
+        annotations: [...data.annotations, { id: '1001', text: 'More', comment: '' }]
+      })
+    ).toThrow()
+    expect(() =>
+      formatResponseAnnotations({
+        ...data,
+        annotations: data.annotations.map(item => ({ ...item, comment: 'x'.repeat(600) }))
+      })
+    ).toThrow()
+    expect(data.annotations).toHaveLength(1000)
+  })
 })

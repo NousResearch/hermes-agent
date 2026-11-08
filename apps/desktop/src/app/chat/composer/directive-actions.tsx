@@ -106,9 +106,13 @@ export function ComposerDirectiveActions({ editorRef }: { editorRef: RefObject<H
       const editor = editorRef.current
       const chip = editor && actionableChipAt(event.target, editor)
 
-      if (!chip || chip.dataset.refKind === 'annotation') {
+      if (chip?.dataset.refKind === 'annotation') {
+        if (!(event.relatedTarget instanceof Node) || !chip.contains(event.relatedTarget)) {
+          openResponseAnnotations({ value: chip.dataset.refId!, editable: true, anchor: chip.getBoundingClientRect(), interaction: 'hover' })
+        }
         return
       }
+      if (!chip) { return }
 
       cancelHide()
       setAnchor(current => (current?.chip === chip ? current : anchorFor(chip)))
@@ -125,13 +129,27 @@ export function ComposerDirectiveActions({ editorRef }: { editorRef: RefObject<H
         return
       }
 
+      if (chip.dataset.refKind === 'annotation') {
+        openResponseAnnotations({ value: chip.dataset.refId!, editable: true, interaction: 'leave' })
+        return
+      }
       hideSoon()
+    }
+
+    const onAnnotationFocus = (event: FocusEvent) => {
+      const editor = editorRef.current
+      const chip = editor && actionableChipAt(event.target, editor)
+      if (chip?.dataset.refKind === 'annotation' && !(event.relatedTarget instanceof Node && chip.contains(event.relatedTarget))) {
+        openResponseAnnotations({ value: chip.dataset.refId!, editable: true, anchor: chip.getBoundingClientRect(), interaction: event.type === 'focusin' ? 'focus' : 'leave' })
+      }
     }
 
     // The chip can move or vanish under a parked pointer: the editor scrolls,
     // the window resizes, or the user deletes the reference the pill points at.
     const reanchor = () => setAnchor(current => (current ? anchorFor(current.chip) : null))
 
+    document.addEventListener('focusin', onAnnotationFocus)
+    document.addEventListener('focusout', onAnnotationFocus)
     document.addEventListener('pointerover', onPointerOver)
     document.addEventListener('click', onActivateAnnotation, true)
     document.addEventListener('keydown', onActivateAnnotation, true)
@@ -140,6 +158,8 @@ export function ComposerDirectiveActions({ editorRef }: { editorRef: RefObject<H
     window.addEventListener('resize', reanchor)
 
     return () => {
+      document.removeEventListener('focusin', onAnnotationFocus)
+      document.removeEventListener('focusout', onAnnotationFocus)
       document.removeEventListener('pointerover', onPointerOver)
       document.removeEventListener('click', onActivateAnnotation, true)
       document.removeEventListener('keydown', onActivateAnnotation, true)

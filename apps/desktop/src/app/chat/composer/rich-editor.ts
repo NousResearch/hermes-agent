@@ -134,13 +134,18 @@ export function refChipHtml(kind: string, rawValue: string, displayLabel?: strin
   const label = displayLabel || refChipLabel(kind, id)
 
   const annotationAttrs =
-    kind === 'annotation' ? `role="button" tabindex="0" aria-label="${escapeHtml(label)}"` : `title="${escapeHtml(id)}"`
+    kind === 'annotation' ? `role="group" aria-label="${escapeHtml(label)}"` : `title="${escapeHtml(id)}"`
 
-  return `<span contenteditable="false" ${annotationAttrs} data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" ${refAttrsHtml(kind)}>${directiveIconSvg(kind)}${escapeHtml(label)}${kind === 'annotation' ? annotationRemoveHtml() : ''}</span>`
+  const content = kind === 'annotation' ? annotationContentHtml(label) : `${directiveIconSvg(kind)}${escapeHtml(label)}`
+
+  return `<span contenteditable="false" ${annotationAttrs} data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" ${refAttrsHtml(kind)}>${content}</span>`
 }
 
-function annotationRemoveHtml() {
-  return `<span data-annotation-remove role="button" tabindex="0" aria-label="${escapeHtml(translateNow('common.remove'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></span>`
+function annotationContentHtml(label: string) {
+  const open = `<span data-annotation-open role="button" tabindex="0" aria-label="${escapeHtml(label)}">${directiveIconSvg('annotation')}${escapeHtml(label)}</span>`
+  const remove = `<span data-annotation-remove role="button" tabindex="0" aria-label="${escapeHtml(translateNow('common.remove'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></span>`
+
+  return open + remove
 }
 
 export function refChipElement(kind: string, rawValue: string, displayLabel?: string) {
@@ -153,8 +158,7 @@ export function refChipElement(kind: string, rawValue: string, displayLabel?: st
 
   if (kind === 'annotation') {
     chip.removeAttribute('title')
-    chip.setAttribute('role', 'button')
-    chip.tabIndex = 0
+    chip.setAttribute('role', 'group')
     chip.setAttribute('aria-label', displayLabel || refChipLabel(kind, id))
   }
 
@@ -163,10 +167,11 @@ export function refChipElement(kind: string, rawValue: string, displayLabel?: st
   chip.dataset.refKind = kind
   chip.className = 'ref'
   chip.dataset.ref = referenceKind(kind)
-  chip.append(directiveIconElement(kind), document.createTextNode(displayLabel || refChipLabel(kind, id)))
 
   if (kind === 'annotation') {
-    chip.insertAdjacentHTML('beforeend', annotationRemoveHtml())
+    chip.innerHTML = annotationContentHtml(displayLabel || refChipLabel(kind, id))
+  } else {
+    chip.append(directiveIconElement(kind), document.createTextNode(displayLabel || refChipLabel(kind, id)))
   }
 
   return chip

@@ -4292,12 +4292,25 @@ html[data-hermes-desktop-host='browser'] [data-slot='sidebar-container'] {
   text-decoration: none;
 }
 .ref[data-ref='annotation']:focus-visible,
+[data-annotation-open]:focus-visible,
 [data-annotation-remove]:focus-visible {
   outline: 2px solid var(--ui-accent);
   outline-offset: 2px;
 }
 .ref[data-ref='annotation'] > svg {
   margin: 0;
+}
+[data-annotation-open] {
+  display: inline-flex;
+  align-items: center;
+  gap: inherit;
+  border-radius: 0.15rem;
+}
+[data-annotation-open] > svg {
+  display: inline-block;
+  width: 0.875em;
+  height: 0.875em;
+  opacity: 0.8;
 }
 [data-annotation-remove] {
   display: inline-flex;

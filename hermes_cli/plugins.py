@@ -1048,10 +1048,18 @@ def has_hook(hook_name: str) -> bool:
 
 
 def hook_unused_nowait(hook_name: str) -> bool:
-    """True when this home's plugins are loaded and none handles *hook_name*. Never discovers (an
-    unloaded home answers False), so it is safe on an event loop."""
+    """True when this home's plugins are loaded and none handles *hook_name*. Never discovers or
+    waits (an unloaded home, or one whose (re)load is still running on another thread, answers False:
+    unknown, not unused), so it is safe on an event loop."""
     manager = get_plugin_manager()
-    return manager._discovered and not manager.has_hook(hook_name)
+    # ``_discovered`` is set before a sweep finishes and a force reload clears ``_hooks`` first, so a
+    # sweep in flight could read as "no consumer": treat a held discovery lock as unknown.
+    if not manager._discovery_lock.acquire(blocking=False):
+        return False
+    try:
+        return manager._discovered and not manager.has_hook(hook_name)
+    finally:
+        manager._discovery_lock.release()
 
 
 def iter_hook_callbacks(hook_name: str) -> tuple[Callable, ...]:

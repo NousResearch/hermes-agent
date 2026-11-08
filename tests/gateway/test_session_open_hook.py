@@ -284,3 +284,24 @@ async def test_a_profile_with_no_consumer_starts_no_delivery_thread(monkeypatch,
         gate.fire(SimpleNamespace(ignore_user_config=False), 'route')
         await asyncio.wait({gate.delivery.task}, timeout=5)
         assert len(threads) == consumer, (consumer, threads)
+    # A (re)load in flight on another thread (it clears and re-registers callbacks under the discovery
+    # lock, with ``_discovered`` already set) is "unknown", never "unused": the open still gets a thread.
+    manager._hooks.pop('on_session_open')
+    import threading
+    held, done = threading.Event(), threading.Event()
+
+    def sweep():
+        with manager._discovery_lock:
+            held.set()
+            done.wait(5)
+    t = threading.Thread(target=sweep)
+    t.start()
+    held.wait(5)
+    try:
+        gate = session_open.open_local(SimpleNamespace(db=None), SessionRef(str(tmp_path), 's-reload'))
+        gate.fire(SimpleNamespace(ignore_user_config=False), 'route')
+        await asyncio.wait({gate.delivery.task}, timeout=5)
+        assert len(threads) == 2, threads
+    finally:
+        done.set()
+        t.join(5)

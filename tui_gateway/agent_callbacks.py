@@ -20,22 +20,37 @@ from .method_ctx import bind_module
 # profile B's lazy resume bind to A's in-flight run and receive its mirror (#120212).
 _child_mirrors: dict[tuple[str | None, str], dict] = {}
 _child_mirrors_lock = threading.Lock()
-# Child sids with a run in flight (refreshed per relayed event, popped on complete) so a
-# lazy watch resume reports running=true during a silent long tool.
-_active_child_runs: dict[tuple[str | None, str], float] = {}
+# Child sids with a run in flight -> (last relayed event, live sid of the parent turn that relayed it),
+# refreshed per relayed event and popped on complete, so a lazy watch reports running=true during a
+# silent long tool. A plain tuple: classes defined here are rebound onto server.py (bind_module).
+_active_child_runs: dict[tuple[str | None, str], tuple[float, str]] = {}
 # Anything quiet this long lost its completion event — don't pin "running".
 _CHILD_RUN_STALE_S = 3600.0
 _CHILD_DELTA_EVENTS = {"subagent.thinking": "reasoning.delta", "subagent.text": "message.delta",
                        "subagent.start": "message.delta"}
 
 
+def _child_run(child_key: str, profile_home) -> tuple[float, str] | None:
+    """The in-flight run of a child, None once complete or quiet past the stale timeout. ``profile_home``
+    is the caller's resolved home (Path / str / None = launch profile), never omitted."""
+    run = _active_child_runs.get((str(profile_home) if profile_home else None, child_key))
+    return run if run is not None and (time.time() - run[0]) < _CHILD_RUN_STALE_S else None
+
+
 def _child_run_active(child_key: str, profile_home) -> bool:
-    """``profile_home`` is the caller's resolved home (Path / str / None = launch profile), never omitted."""
-    ts = _active_child_runs.get((str(profile_home) if profile_home else None, child_key))
-    return ts is not None and (time.time() - ts) < _CHILD_RUN_STALE_S
+    return _child_run(child_key, profile_home) is not None
 
 
-def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> None:
+def _child_run_reported_live(child_key: str, profile_home) -> bool:
+    """What a watch window reports. Completion is relayed only through the parent, so once that
+    record is gone (closed / reaped mid-delegation) nothing can clear the run: it reads as over
+    instead of pinning "working" until the stale timeout. Admission gates keep ``_child_run_active``:
+    a child thread can outlive its parent's teardown, so they stay closed while it may still run."""
+    run = _child_run(child_key, profile_home)
+    return run is not None and run[1] in _sessions
+
+
+def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home, parent_sid: str) -> None:
     child_key = str(payload.get("child_session_id") or "")
     if not child_key:
         return
@@ -44,7 +59,7 @@ def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> N
     if event_type == "subagent.complete":
         _active_child_runs.pop(key, None)
     else:
-        _active_child_runs[key] = time.time()
+        _active_child_runs[key] = (time.time(), parent_sid)
     # Mirror only into a live watch session of the OWNING profile that is NOT upgraded to a full
     # agent (an upgraded one owns a real native stream). Either way drop state so a reopened
     # window starts fresh.
@@ -54,6 +69,9 @@ def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> N
             _child_mirrors.pop(key, None)
         return
     csid = live[0]
+    # The child's relayed events are this watch's activity; the record is otherwise only touched on
+    # resume, so a child streaming past five minutes would read as stalled.
+    live[1]["last_active"] = time.time()
     text = str(payload.get("text") or "")
     with _child_mirrors_lock:
         st = _child_mirrors.setdefault(key, {"seq": 0, "open_tool": None, "started": False})

@@ -160,7 +160,8 @@ def test_upgraded_child_session_not_mirrored(server, emits):
 def test_stale_child_run_not_reported_active(server, emits):
     """A leaked registry entry (lost completion event) must age out instead of
     pinning running=true on every future lazy resume of that child."""
-    server._active_child_runs[(None, "child-1")] = 0.0  # epoch — ancient
+    server._sessions["parent-sid"] = {"session_key": "parent"}
+    server._active_child_runs[(None, "child-1")] = (0.0, "parent-sid")  # epoch — ancient
 
     assert server._child_run_active("child-1", None) is False
 
@@ -211,7 +212,7 @@ def test_watch_status_stays_working_until_child_completion(server, emits, monkey
 
     watch = {
         "session_key": "child-1", "agent": None, "lazy": True,
-        "running": False, "history": [], "history_lock": threading.Lock(),
+        "running": False, "history": [], "history_lock": threading.Lock(), "last_active": 1.0,
     }
     server._sessions["live-1"] = watch
     monkeypatch.setattr(server, "_session_live_title", lambda *_: "Child")
@@ -223,7 +224,10 @@ def test_watch_status_stays_working_until_child_completion(server, emits, monkey
     _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")
     assert any(e == "message.start" and sid == "live-1" for e, sid, _ in emits)
     rows = server._methods["session.active_list"]("probe", {})["result"]["sessions"]
-    assert next(row for row in rows if row["id"] == "live-1")["status"] == "working"
+    row = next(row for row in rows if row["id"] == "live-1")
+    assert row["status"] == "working"
+    # The child's relay is the watch's activity, so a long child run never reads as stalled.
+    assert row["last_active"] > 1.0
     payload = server._live_session_payload("live-1", watch, omit_messages=True)
     assert payload["running"] is True
     assert payload["info"]["running"] is True
@@ -234,6 +238,19 @@ def test_watch_status_stays_working_until_child_completion(server, emits, monkey
     rows = server._methods["session.active_list"]("probe", {})["result"]["sessions"]
     assert next(row for row in rows if row["id"] == "live-1")["status"] == "idle"
     assert server._live_session_payload("live-1", watch, omit_messages=True)["running"] is False
+
+
+def test_child_run_ends_with_the_parent_that_relayed_it(server, emits):
+    """Completion is relayed only through the parent; once that parent record is gone the run must
+    not keep the watch window "working" until the stale timeout."""
+    _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")
+    watch = {"session_key": "child-1", "agent": None, "lazy": True, "running": False}
+    assert server._session_reply_running(watch) is True
+
+    server._sessions.pop("parent-sid")
+    assert server._session_reply_running(watch) is False
+    # Admission stays closed: the child thread may outlive its parent's teardown.
+    assert server._child_run_active("child-1", None) is True
 
 
 def test_watch_liveness_does_not_cross_profile_or_upgraded_agent(server, emits):

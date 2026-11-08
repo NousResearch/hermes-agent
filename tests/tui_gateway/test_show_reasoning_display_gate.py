@@ -70,7 +70,7 @@ def test_child_mirror_skips_reasoning_delta_when_hidden(monkeypatch):
     )
 
     server._mirror_subagent_to_child(
-        "subagent.thinking", {"child_session_id": "child-key", "text": "delegated thought"}, None
+        "subagent.thinking", {"child_session_id": "child-key", "text": "delegated thought"}, None, "parent-sid"
     )
 
     assert not any(event[0] == "reasoning.delta" for event in events)
@@ -152,9 +152,10 @@ def test_subagent_tool_mirror_follows_tool_progress_not_reasoning(monkeypatch):
         monkeypatch.setattr(server, "_find_live_session_by_key", lambda key, _home, sid=sid, session=session: (sid, session))
 
         server._mirror_subagent_to_child(
-            "subagent.tool", {"child_session_id": f"key-{sid}", "tool_name": "read_file", "tool_preview": "x"}, None
+            "subagent.tool", {"child_session_id": f"key-{sid}", "tool_name": "read_file", "tool_preview": "x"}, None,
+            "parent-sid",
         )
-        server._mirror_subagent_to_child("subagent.complete", {"child_session_id": f"key-{sid}"}, None)
+        server._mirror_subagent_to_child("subagent.complete", {"child_session_id": f"key-{sid}"}, None, "parent-sid")
 
         assert [event[0] for event in events if event[0].startswith("tool.")] == expected, sid
 

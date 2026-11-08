@@ -647,7 +647,7 @@ def _session_reply_running(session: dict) -> bool:
     """
     return bool(session.get("running") or (
         session.get("lazy") and session.get("agent") is None
-        and _child_run_active(str(session.get("session_key") or ""), session.get("profile_home") or None)
+        and _child_run_reported_live(str(session.get("session_key") or ""), session.get("profile_home") or None)
     ))
 
 

@@ -13,7 +13,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from plugins.web._common import BaseWebSearchProvider, search_fail as _fail, search_ok, setup_schema, title_hit as _row
-from tools.xai_http import has_xai_credentials, hermes_xai_user_agent, resolve_xai_http_credentials, xai_answer_messages
+from tools.xai_http import has_xai_credentials, hermes_xai_user_agent, resolve_xai_http_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -193,10 +193,13 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
 
     @staticmethod
     def _collect_output_text(response_data: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]]]:
-        """(text_blocks, annotations) from ``response.output`` message chunks."""
+        """(text_blocks, annotations) from ``response.output`` message chunks. xAI's
+        ``phase: "commentary"`` narration items are skipped unless they are all there is."""
+        output = response_data.get("output")
+        messages = [i for i in (output if isinstance(output, list) else []) if isinstance(i, dict) and i.get("type") == "message"]
         chunks = [
             chunk
-            for item in xai_answer_messages(response_data.get("output"))
+            for item in ([m for m in messages if m.get("phase") != "commentary"] or messages)
             if isinstance(item.get("content"), list)
             for chunk in item["content"]
             if isinstance(chunk, dict) and chunk.get("type") == "output_text"

@@ -107,8 +107,8 @@ def test_guild_channel_message_and_button_honor_config_allow_from(config_only_di
     assert _component_check_auth(click, snapshot, set(), live_auth=adapter._component_live_auth) is expected
 
 
-def test_telegram_group_still_requires_group_allow_from(monkeypatch):
-    """Guard: Telegram's ``allow_from`` is DM-only and must not admit the user in a group."""
+def test_telegram_allow_from_admits_the_user_in_groups_too(monkeypatch):
+    """Telegram's ``allow_from`` is global (DMs + groups, per telegram.md); a stranger stays denied."""
     from gateway.config import GatewayConfig, PlatformConfig
     from gateway.pairing import PairingStore
     from gateway.run import GatewayRunner
@@ -131,7 +131,7 @@ def test_telegram_group_still_requires_group_allow_from(monkeypatch):
                              user_id="777")
 
     assert runner._is_user_authorized(source("dm")) is True
-    assert runner._is_user_authorized(source("group")) is False
+    assert runner._is_user_authorized(source("group")) is True
 
 
 def test_button_click_in_a_thread_resolves_a_thread_scoped_route():

@@ -524,6 +524,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
 
     MAX_MESSAGE_LENGTH = 4096
     supports_code_blocks = True  # MarkdownV2 renders fenced code blocks
+    allow_from_covers_groups = True  # allow_from is global (DMs + groups); group_allow_from adds group-only users
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     RICH_MESSAGE_MAX_CHARS = 32768  # Bot API 10.1 rich cap; above it use legacy chunking
     _SPLIT_THRESHOLD = 4000  # chunk near this length ⇒ a client-side split continuation is almost certain
@@ -961,10 +962,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         if not user_id:
             return True
         authorized: Optional[bool] = None
-        # allow_from (DMs) / group_allow_from (groups) GRANT; a miss defers to the runner's union (#68716).
-        adapter_allow_from = self.config.extra.get(
-            "group_allow_from" if (source.chat_type or "") in ("group", "forum", "channel") else "allow_from")
-        if adapter_allow_from is not None and {user_id, "*"} & _coerce_allow_set(adapter_allow_from):
+        # allow_from (everywhere) / group_allow_from (groups) GRANT; a miss defers to the runner's union (#68716).
+        is_group = (source.chat_type or "") in ("group", "forum", "channel")
+        lists = [self.config.extra.get(key) for key in (("allow_from", "group_allow_from") if is_group else ("allow_from",))]
+        adapter_allow_from = None if all(v is None for v in lists) else set().union(*map(_coerce_allow_set, lists))
+        if adapter_allow_from is not None and {user_id, "*"} & adapter_allow_from:
             return True
         # Instance-level override only (tests): the class method _is_callback_user_authorized is for
         # inline buttons and must not become a user-id-only shortcut for real messages.

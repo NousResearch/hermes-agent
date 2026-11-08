@@ -908,7 +908,8 @@ class HostedRoomRuntime:
             # Exceptions may contain prompt text or credentials. Persist only a fixed
             # reason, not the free-form messages retained in the in-memory status.
             reason_code = getattr(exc, 'reason', None)
-            reason = 'request_too_large' if reason_code == 'request_too_large' else 'attempt_failed'
+            reason = ('request_too_large' if reason_code == 'request_too_large'
+                      else f'attempt_failed ({type(exc).__name__})')
             logger.warning('hosted room task %s: %s', attempt.identity.task_id, reason)
             refusal = reason_code if submit_attempted and not submitted else None
             if getattr(exc, "refused_before_submit", False):

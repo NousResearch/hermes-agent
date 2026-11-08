@@ -129,13 +129,11 @@ def prepare_launch_dependencies(project_root: Path, *, env: dict) -> None:
 
 
 def _fetch_retries_configured(project_root: Path, env: dict) -> bool:
-    """Whether the user chose a download retry count: in the environment, the user npmrc (pnpm 12
-    ignores it there, but npm honoured it), or anywhere pnpm reads it (its global config.yaml,
-    pnpm-workspace.yaml). A pnpm that cannot answer counts as configured: the default stays."""
-    from pm.index_config import read_npmrc, user_npmrc
-
-    names = {"pnpm_config_fetch_retries", "npm_config_fetch_retries"}
-    if any(key.lower() in names for key in env) or "fetch-retries" in read_npmrc(user_npmrc(env), env):
+    """Whether the user chose a download retry count where pnpm 12 reads one:
+    ``pnpm_config_fetch_retries``, pnpm's global config.yaml or pnpm-workspace.yaml. pnpm 12 reads
+    no ``fetch-retries`` from an npmrc nor ``npm_config_fetch_retries``, so neither counts. A pnpm
+    that cannot answer counts as configured: the default stays."""
+    if any(key.lower() == "pnpm_config_fetch_retries" for key in env):
         return True
     pnpm = shutil.which("pnpm", path=env["PATH"])
     if pnpm is None:

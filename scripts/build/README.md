@@ -98,10 +98,11 @@ once resumed, do that one step in the new owner's trees; a freeze that also stop
 watcher lets the resumed pnpm write for up to one poll (250 ms) before it is killed; and a
 process pnpm started that left its tree (daemonized) is not killed. `hermes update`, or
 deleting `node_modules`, repairs a tree left that way. A live owner is waited for at most
-10 minutes; then the run fails. Downloads retry with pnpm's defaults, except for a source launch (`hermes --tui`,
-the dashboard), which retries once unless the user set a count (`pnpm_config_fetch_retries`,
-`fetch-retries` in the user npmrc, or `fetchRetries` in pnpm's config.yaml or
-`pnpm-workspace.yaml`), so an unreachable registry fails it in about 10 s instead of 70 s.
+10 minutes; then the run fails. Downloads retry with pnpm's defaults, except for a source
+launch (`hermes --tui`, the dashboard), which retries once unless the user set a count
+where pnpm 12 reads one (`pnpm_config_fetch_retries`, or `fetchRetries` in pnpm's
+`config.yaml` or `pnpm-workspace.yaml`; pnpm 12 ignores `fetch-retries` in an npmrc and
+`npm_config_fetch_retries`), so an unreachable registry fails it in about 10 s instead of 70 s.
 `--pnpm ARGS...` instead runs the same resolved pnpm with `ARGS`.
 
 The prepared source needs these inputs:

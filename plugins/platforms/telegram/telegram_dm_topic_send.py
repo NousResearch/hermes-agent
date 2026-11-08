@@ -21,6 +21,13 @@ def private_chat(chat_id: Any) -> bool:
         return False
 
 
+def topic_gone(chat_id: Any, error: Exception) -> bool:
+    """Telegram's wordings for a private topic that no longer takes messages (origin/main's media retry matched the
+    same set); elsewhere only "thread not found". A parse, permission or flood error says nothing about the topic."""
+    markers = ("thread not found", "topic_deleted", "topic not found", "direct_messages_topic") if private_chat(chat_id) else ("thread not found",)
+    return any(m in str(error).lower() for m in markers)
+
+
 def dead_topic_may_reroute(chat_id: Any, metadata: Any) -> bool:
     """A dead private topic may be retried by native id, then the chat root, unless the send targets a named topic
     (``telegram_dm_topic_created_for_send``): that fails closed for text and media alike so DeliveryRouter recreates it."""

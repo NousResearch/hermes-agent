@@ -947,3 +947,74 @@ async def test_media_ladder_ends_when_even_the_chat_root_is_rejected():
     routes = [(c.get("message_thread_id"), c.get("direct_messages_topic_id"), c.get("reply_to_message_id")) for c in call_log]
     assert routes[:3] == [(20197, None, 462), (None, 20197, 462), (None, None, None)]
     assert (None, 20197, None) not in routes  # the native id is not rebuilt after the root step
+
+
+@pytest.mark.asyncio
+async def test_native_topic_deleted_wording_still_reaches_chat_root(tmp_path):
+    """The native-id attempt may answer TOPIC_DELETED instead of "thread not found": nothing was delivered, so the
+    control message and the attachment go to the chat root (as on origin/main) and the binding is pruned."""
+    db = _topic_db(tmp_path)
+    adapter = _make_adapter()
+    adapter._session_store = SimpleNamespace(_db=db)
+    call_log = []
+
+    async def _native_topic_deleted(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("message_thread_id"):
+            raise FakeBadRequest("Message thread not found")
+        if kwargs.get("direct_messages_topic_id"):
+            raise FakeBadRequest("Bad Request: TOPIC_DELETED")
+        return SimpleNamespace(message_id=5)
+
+    adapter._bot = SimpleNamespace(send_message=_native_topic_deleted, send_animation=_native_topic_deleted)
+
+    sent = await adapter._send_control_message("123", "control", parse_mode=None, thread_id="20197", metadata=dict(_GATEWAY_META))
+    media = await adapter.send_animation(chat_id="123", animation_url="https://example.com/anim.gif", metadata=dict(_GATEWAY_META))
+
+    assert sent.message_id == 5 and media.success is True
+    routes = [(c.get("message_thread_id"), c.get("direct_messages_topic_id"), c.get("reply_to_message_id")) for c in call_log]
+    assert routes == [(20197, None, 462), (None, 20197, 462), (None, None, None)] * 2
+    assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is None
+
+
+@pytest.mark.asyncio
+async def test_control_native_topic_parse_error_keeps_binding_and_skips_root(tmp_path):
+    """A BadRequest about the message itself (MarkdownV2) on the native route says the topic is alive: no prune."""
+    db = _topic_db(tmp_path)
+    adapter = _make_adapter()
+    adapter._session_store = SimpleNamespace(_db=db)
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("message_thread_id"):
+            raise FakeBadRequest("Message thread not found")
+        raise FakeBadRequest("Can't parse entities: character '!' is reserved")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    with pytest.raises(FakeBadRequest):
+        await adapter._send_control_message("123", "x!", parse_mode="MarkdownV2", thread_id="20197", metadata=dict(_GATEWAY_META))
+
+    assert len(call_log) == 2
+    assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is not None
+
+
+@pytest.mark.asyncio
+async def test_forum_topic_deleted_wording_is_not_a_dead_topic_fallback():
+    """Forum supergroups keep origin/main's rule: only "thread not found" re-routes, so TOPIC_DELETED fails after one call."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("message_thread_id"):
+            raise FakeBadRequest("Bad Request: TOPIC_DELETED")
+        return SimpleNamespace(message_id=8)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="-100123", content="x", metadata={"thread_id": "77"})
+
+    assert result.success is False
+    assert [c.get("message_thread_id") for c in call_log] == [77]

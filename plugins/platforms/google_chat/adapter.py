@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import html
 import importlib
 import json
 import logging
@@ -1147,7 +1148,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         clean = [s for s in (str(c).strip() for c in choices) if s]
         # Card buttons clip long labels with no tooltip (#78115): list the full options in the
         # text widget and label the buttons positionally when any option is that wide.
-        numbered = numbered_clarify_choices(clean, max_label_cols=48)
+        # The text widget renders HTML: escaped so an option reads exactly as written.
+        numbered = numbered_clarify_choices(clean, max_label_cols=48, escape=lambda s: html.escape(s, quote=False))
         body = t("platform.google_chat.clarify.question", question=question)
         if numbered:
             body = f"{body}\n\n{numbered}"

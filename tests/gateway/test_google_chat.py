@@ -820,6 +820,13 @@ class TestSend:
         assert buttons[-1]["text"] == t("platform.google_chat.clarify.other_button")
         assert adapter._clarify_state["clarify123"] == "session-key"
 
+        long_choice = "Wrap the output in <b>bold</b> tags & a <br> after every paragraph"
+        await adapter.send_clarify("spaces/S", "Format?", [long_choice, "Plain"], "clarify124", "sk")
+        widgets = adapter._create_message.await_args.args[1]["cardsV2"][0]["card"]["sections"][0]["widgets"]
+        text = widgets[0]["textParagraph"]["text"]
+        assert "1. Wrap the output in &lt;b&gt;bold&lt;/b&gt; tags &amp; a &lt;br&gt; after" in text
+        assert [b["text"] for b in widgets[1]["buttonList"]["buttons"]][:2] == ["1", "2"]
+
 
 # ===========================================================================
 # send_typing / stop_typing

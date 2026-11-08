@@ -46,6 +46,14 @@ def verify_worker_identity(process, hello):
         chain = [p.pid for p in worker.parents()[:MAX_LAUNCHER_HOPS]]
     except psutil.Error as exc:
         raise RuntimeStoreError('worker_not_live') from exc
+    except RuntimeStoreError:
+        raise
+    # health: allow BLE001 -- a probe that could not be EVALUATED is not a verified worker
+    except Exception as exc:
+        # psutil's Windows status probe allocates the process table and can raise MemoryError under
+        # host memory pressure. An unverifiable chain must refuse the spawn cleanly, not escape as
+        # JSON-RPC -32603 "internal error" and leave the caller to book an opaque crash (t_5ae5058d).
+        raise RuntimeStoreError('worker_not_live') from exc
     if pid != process.pid and process.pid not in chain:
         raise RuntimeStoreError('permission_denied')
     return pid, birth

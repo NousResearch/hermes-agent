@@ -590,22 +590,14 @@ class TestNamedConnectFailures:
         assert adapter.fatal_error_retryable is True
 
 
-def test_passkey_exit_code_matches_bridge():
-    import re
-
-    from plugins.platforms.whatsapp.adapter import PASSKEY_REQUIRED_EXIT
-
-    bridge = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge" / "bridge.js"
-    match = re.search(r"^const PASSKEY_REQUIRED_EXIT = (\d+);$", bridge.read_text(encoding="utf-8"), re.MULTILINE)
-    assert match and int(match.group(1)) == PASSKEY_REQUIRED_EXIT
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("passkey", [True, False])
 @pytest.mark.parametrize("startup", [True, False])
 async def test_passkey_required_stops_retries_at_startup_and_during_polling(passkey, startup):
     from plugins.platforms.whatsapp.adapter import PASSKEY_REQUIRED_EXIT
 
+    # bridge.passkey.test.mjs asserts the bridge really exits 78 on a gateway-mode passkey challenge.
+    assert PASSKEY_REQUIRED_EXIT == 78
     returncode, retryable = (PASSKEY_REQUIRED_EXIT, False) if passkey else (1, True)
     adapter = _make_adapter()
     adapter._bridge_process = MagicMock(returncode=returncode, **{"poll.return_value": returncode})

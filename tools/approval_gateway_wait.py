@@ -24,12 +24,15 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("acknowledged", "cancelled", "data", "event", "expired", "observers", "reason", "result", "settle")
+    __slots__ = ("acknowledged", "cancelled", "card_deny_only", "data", "event", "expired", "observers", "reason",
+                 "result", "settle")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
         self.data = dict(data)
         self.data.setdefault("request_id", uuid.uuid4().hex)
+        # True: a card tap may only deny until a renderer proves its card shows the whole command (#62359).
+        self.card_deny_only = False
         self.acknowledged = False
         # Surface hook run once when the wait ends by ANY path (answer, timeout, interrupt, /approve from
         # another client): the tui_gateway withdraws its open server→client request through it.
@@ -164,7 +167,10 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         "session_key": session_key, "surface": surface,
     }
     keys = list(approval_data.get("pattern_keys") or [])
+    # Born Deny-only: the mark exists before the entry is published, so no tap can approve it in the window
+    # before its renderer has decided whether the card shows the whole command.
     entry = _ApprovalEntry(approval_data)
+    entry.card_deny_only = True
     # Captured before the entry is published: a coalesced follower can find it while the pre-request
     # hooks still run, and must wait this same timeout rather than re-read a since-edited config.
     timeout_s = entry.data["timeout_s"] = _ctx._get_approval_timeout()

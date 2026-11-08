@@ -56,6 +56,7 @@ async def test_a_tap_while_the_full_command_is_still_sending_approves_nothing(mo
     from tools import approval
 
     (pending,) = _queue(monkeypatch, "b")
+    pending.card_deny_only = True  # as every request is created
     adapter = _qq()
     _keyboards(adapter)
     in_flight, release, calls = asyncio.Event(), asyncio.Event(), []
@@ -93,14 +94,17 @@ async def test_two_taps_on_one_qq_card_settle_only_that_cards_request_once(monke
 
 
 @pytest.mark.asyncio
-async def test_a_qq_tap_without_a_request_id_refuses_while_two_requests_are_pending(monkeypatch):
+async def test_a_qq_tap_without_a_request_id_settles_nothing(monkeypatch):
+    """A card from a build that sent no id cannot say which request it was rendered for, so it answers
+    none, even a sole pending one (typed /approve stays the way to answer it)."""
     first, second = _queue(monkeypatch, "a", "b")
     adapter = _qq()
-    await _tap(adapter, f"approve:{SK}:allow-once")  # a card from a build that sent no id
+    await _tap(adapter, f"approve:{SK}:allow-once")
     assert first.result is None and second.result is None
     first_only = _queue(monkeypatch, "a")[0]
     await _tap(adapter, f"approve:{SK}:allow-once")
-    assert first_only.result == "once"
+    await _tap(adapter, f"approve:{SK}:deny")
+    assert first_only.result is None and not first_only.event.is_set()
 
 
 @pytest.mark.asyncio
@@ -124,7 +128,8 @@ def test_a_card_tap_checks_and_settles_in_one_step(monkeypatch):
     from tools.approval_gateway_wait import _ApprovalEntry
 
     monkeypatch.delitem(approval._gateway_queues, SK, raising=False)
-    late = _ApprovalEntry({"request_id": "b", "card_deny_only": True})
+    late = _ApprovalEntry({"request_id": "b"})
+    late.card_deny_only = True
     select = approval._card_target
 
     def select_then_enqueue(session_key, request_id):

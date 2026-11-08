@@ -159,11 +159,10 @@ def test_a_forged_approve_tap_on_a_deny_only_request_resolves_nothing(pending):
     assert pending.result == "deny"
 
 
-
 @pytest.mark.asyncio
 async def test_qq_forged_allow_once_tap_on_a_deny_only_card_resolves_nothing(pending, monkeypatch):
-    """QQ button data names only the session (FIFO), so the refusal must hold without a request id; a tap
-    by someone other than the session owner is still refused before the backend is asked."""
+    """A forged Allow carrying the request id of a Deny-only card resolves nothing; a tap by someone other
+    than the session owner is still refused before the backend is asked."""
     from plugins.platforms.qqbot.adapter import QQAdapter
     from plugins.platforms.qqbot.keyboards import parse_interaction_event
     from tools.approval import restrict_gateway_approval_card_to_deny
@@ -176,46 +175,13 @@ async def test_qq_forged_allow_once_tap_on_a_deny_only_card_resolves_nothing(pen
 
     def tap(user, decision):
         return parse_interaction_event({"id": "i", "chat_type": 2, "user_openid": user,
-                                        "data": {"resolved": {"button_data": f"approve:{sk}:{decision}"}}})
+                                        "data": {"resolved": {"button_data": f"approve:{sk}:{decision}:r1"}}})
 
     await adapter._default_interaction_dispatch(tap("u-42", "allow-once"))  # forged: card offered Deny only
     await adapter._default_interaction_dispatch(tap("intruder", "deny"))  # wrong user
     assert not pending.event.is_set()
     await adapter._default_interaction_dispatch(tap("u-42", "deny"))  # the legitimate tap
     assert pending.event.is_set() and pending.result == "deny"
-
-
-@pytest.mark.asyncio
-async def test_qq_tap_whose_checked_request_expires_mid_resolve_never_approves_the_next_deny_only_one(monkeypatch):
-    """An id-less QQ tap may answer only a sole pending request. When that request A times out after it
-    was checked and a Deny-only request B is queued meanwhile, the tap settles nothing, never B."""
-    from plugins.platforms.qqbot.adapter import QQAdapter
-    from plugins.platforms.qqbot.keyboards import parse_interaction_event
-    from tools import approval
-    from tools.approval_gateway_wait import _ApprovalEntry
-
-    sk = "agent:main:qqbot:dm:u-42"
-    head, deny_only = _ApprovalEntry({"request_id": "a"}), _ApprovalEntry({"request_id": "b", "card_deny_only": True})
-    monkeypatch.setitem(approval._gateway_queues, sk, [head])
-    select = approval._card_target
-
-    def select_then_expire(session_key, request_id):  # A's waiter drops it right after it is selected; B arrives
-        entry = select(session_key, request_id)
-        if entry is head and head in approval._gateway_queues.get(session_key, []):
-            approval._gateway_queues[session_key][:] = [deny_only]
-        return entry
-
-    monkeypatch.setattr(approval, "_card_target", select_then_expire)
-    adapter = QQAdapter(PlatformConfig(enabled=True, extra={"app_id": "a", "client_secret": "b"}))
-    await adapter._default_interaction_dispatch(parse_interaction_event(
-        {"id": "i", "chat_type": 2, "user_openid": "u-42",
-         "data": {"resolved": {"button_data": f"approve:{sk}:allow-once"}}}))
-    assert deny_only.result is None and not deny_only.event.is_set()
-    assert approval._gateway_queues[sk] == [deny_only]
-    monkeypatch.setattr(approval, "_card_target", select)
-    assert approval.resolve_gateway_approval_card(sk, "once", None) == 0  # B is still Deny-only
-    assert approval.resolve_gateway_approval_card(sk, "deny", None) == 1 and deny_only.result == "deny"
-
 
 
 @pytest.mark.asyncio

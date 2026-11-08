@@ -2511,6 +2511,50 @@ describe('overlayConcurrentMessageChanges', () => {
   // pending live row whose reply — and tool occurrences — the committed row
   // already carries. Exempting pending rows from the fold painted that reply
   // twice (#127288 follow-up: steer, no re-attach).
+  // A steer is a user row inside the same tool turn, not a new assistant turn.
+  // The committed tool row can precede that steer while its live copy is pending.
+  it('folds a committed pending reply before a steer only on the same tool occurrence', () => {
+    const prompt = msg('3-user', 'user', 'run tools', { rowId: 3 })
+    const steer = msg('5-user', 'user', 'steer the running turn', { rowId: 5 })
+    const committed = {
+      ...msg('4-assistant', 'assistant', 'Report ready', { rowId: 4 }),
+      parts: [
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal' },
+        { type: 'text', text: 'Report ready' }
+      ]
+    } as ChatMessage
+    const live = {
+      id: 'assistant-stream-1-2',
+      role: 'assistant',
+      pending: true,
+      parts: [
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal' },
+        { type: 'text', text: 'Report ready' }
+      ]
+    } as ChatMessage
+    const page = [prompt, committed, steer]
+    const baseline = [prompt]
+
+    expect(overlayConcurrentMessageChanges(page, baseline, [prompt, live, steer]).map(message => message.id)).toEqual([
+      prompt.id,
+      committed.id,
+      steer.id
+    ])
+
+    // Repeated words do not license dropping a tool occurrence from a different turn.
+    const otherTool = {
+      ...live,
+      parts: [
+        { type: 'tool-call', toolCallId: 'call-other', toolName: 'terminal' },
+        { type: 'text', text: 'Report ready' }
+      ]
+    } as ChatMessage
+
+    expect(
+      overlayConcurrentMessageChanges(page, baseline, [prompt, otherTool, steer]).map(message => message.id)
+    ).toEqual([prompt.id, committed.id, steer.id, live.id])
+  })
+
   it('folds a still-pending live row the committed row already carries in full', () => {
     const committed = {
       ...msg('4-assistant', 'assistant', 'A2 finished', { rowId: 4 }),

@@ -1422,6 +1422,9 @@ export function overlayConcurrentMessageChanges(
     // A still-pending row is the turn's stream target: the committed row may
     // retire it only when it already spells out everything the live row shows.
     const pending = current.pending === true
+    const pendingToolIds = new Set(
+      current.parts.flatMap(part => (part.type === 'tool-call' && part.toolCallId ? [part.toolCallId] : []))
+    )
 
     // Coverage is one-directional for a pending row — the committed text must
     // carry the live text, never the reverse. Folding a row that streamed past
@@ -1440,8 +1443,17 @@ export function overlayConcurrentMessageChanges(
     return (
       Boolean(text) &&
       overlaid.some((message, index) => {
+        // A mid-turn steer may sit after the committed reply. Cross that user
+        // boundary only on a tool occurrence shared with the pending live row.
+        const toolAnchoredAcrossSteer =
+          pending &&
+          index <= lastUser &&
+          message.parts.some(
+            part => part.type === 'tool-call' && !!part.toolCallId && pendingToolIds.has(part.toolCallId)
+          )
+
         if (
-          !(index > lastUser) ||
+          (index <= lastUser && !toolAnchoredAcrossSteer) ||
           message.role !== 'assistant' ||
           baselineById.has(message.id) ||
           isLiveTailRow(message) ||

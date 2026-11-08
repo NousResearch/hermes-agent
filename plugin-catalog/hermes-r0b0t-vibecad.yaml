@@ -1,18 +1,17 @@
 name: hermes-r0b0t-vibecad
 title: vibeCAD
 repo: https://github.com/r0b0tlab/hermes-r0b0t-vibeCAD
-sha: "4b708401a3f056d2d1ea55b53089c677b36836f4"
+sha: "c73fe4fb153a73af57d46e3ff61f96281c829759"
 description: >
-  Profile-driven FDM CAD: executes a trusted build123d model in the configured
-  workspace, refuses parts that miss the selected bed, renders depth-tested
-  preview drawings, and writes a vendor-neutral slicer handoff. Bundled Bambu
-  adapters cover the X2D dual-tool common envelope and the P2S AMS Combo
-  (256 mm cube, one 0.4 mm nozzle, slots 1-4 unless ams_slot_capacity is set,
-  max 20). Desktop labels those drawings inline when the Desktop half is
-  enabled. CAD dependencies require a separately bootstrapped Python 3.12/3.13
-  environment. Disclosure: executes trusted workspace Python in a local
-  subprocess and reads/writes that workspace. No runtime network, credentials,
-  telemetry, print dispatch, live AMS binding, or native Bambu process project.
+  Profile-driven FDM CAD: executes trusted build123d workspace models or
+  prepares a local single-shell STL, checks printer fit, renders depth-tested
+  full and detail views, and writes geometry handoffs. Bambu adapters cover X2D
+  and P2S; native process projects, live AMS binding and print dispatch are not
+  produced. Meshy is an optional separate plugin; its paid service calls are not
+  made by vibeCAD. CAD libraries require a separately bootstrapped Python
+  3.12/3.13 environment. Disclosure: local subprocess execution of trusted
+  workspace Python and workspace reads/writes; no runtime network, credentials
+  or telemetry.
 maintainer: am423
 tier: community
 category: tools
@@ -26,6 +25,7 @@ capabilities:
     - vibecad_generate_preview_renders
     - vibecad_modify_parameter
     - vibecad_stage_for_slicer
+    - vibecad_prepare_mesh
     - vibecad_stage_for_bambu
   provides_hooks: []
   provides_middleware: []

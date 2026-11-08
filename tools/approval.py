@@ -179,19 +179,21 @@ def resolve_gateway_approval(session_key: str, choice: str,
 
 
 def _card_target(session_key: str, request_id: Optional[str]):
-    """The entry a card tap resolves: its own request, else the oldest (FIFO). Caller holds ``_lock``."""
+    """The entry a card tap resolves: its own request. A tap without an id cannot say which card it came
+    from, so it may only answer a session's sole pending request. Caller holds ``_lock``."""
     queue = _gateway_queues.get(session_key) or []
     if not request_id:
-        return queue[0] if queue else None
+        return queue[0] if len(queue) == 1 else None
     return next((e for e in queue if e.data.get("request_id") == request_id), None)
 
 
-def restrict_gateway_approval_card_to_deny(session_key: str, request_id: Optional[str]) -> None:
-    """Mark a pending request whose card could not show the whole command: a card tap may only deny it."""
+def restrict_gateway_approval_card_to_deny(session_key: str, request_id: Optional[str], restricted: bool = True) -> None:
+    """Mark a pending request whose card could not show the whole command: a card tap may only deny it.
+    ``restricted=False`` lifts the mark once the whole command is proven delivered."""
     with _lock:
         entry = _card_target(session_key, request_id) if request_id else None
         if entry is not None:
-            entry.data["card_deny_only"] = True
+            entry.data["card_deny_only"] = restricted
 
 
 def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Optional[str]) -> int:
@@ -199,12 +201,15 @@ def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Opt
 
     With the card's request id only that request can resolve: a card whose request already
     settled (timed out, answered by ``/approve``) resolves nothing instead of the next queued
-    approval in the same session. A card sent without an id keeps the FIFO behaviour. A Deny-only
+    approval in the same session. A card sent without an id answers only a session's sole pending
+    request and resolves nothing while two or more are pending. A Deny-only
     card's request refuses any other choice, so a forged or hand-added approve tap resolves nothing.
-    The settle names the entry that was checked: an id-less (FIFO) tap whose checked head times out
-    before the settle resolves nothing, never the next (possibly Deny-only) request behind it."""
+    The settle names the entry that was checked: an id-less tap whose checked request times out before
+    the settle resolves nothing, never a (possibly Deny-only) request queued after it."""
     with _lock:
         target = _card_target(session_key, request_id)
+        if target is None and not request_id and _gateway_queues.get(session_key):
+            return 0  # an id-less tap with two or more pending cannot say which card it came from
         if target is not None and choice != "deny" and target.data.get("card_deny_only"):
             return 0
         request_id = target.data.get("request_id") if target is not None else request_id

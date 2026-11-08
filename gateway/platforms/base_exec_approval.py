@@ -161,6 +161,19 @@ def render_exec_approval(adapter: Any, command: str, description: str, smart_den
     return (text + adapter._EA_SMART_DENY_LINE if smart_denied else text), truncated
 
 
+async def full_command_proven(adapter: Any, chat_id: str, session_key: str, request_id: Optional[str],
+                              command: str, metadata: Optional[dict]) -> bool:
+    """Send the whole command ahead of a card whose preview is truncated. The request is Deny-only from
+    before the first chunk goes out until every chunk is proven delivered, so a tap that lands during
+    the send can only deny it; on any failure (or a raise) the mark stays."""
+    from tools.approval import restrict_gateway_approval_card_to_deny
+    restrict_gateway_approval_card_to_deny(session_key, request_id)
+    if not await send_full_command(adapter, chat_id, command, metadata):
+        return False
+    restrict_gateway_approval_card_to_deny(session_key, request_id, restricted=False)
+    return True
+
+
 async def send_full_command(adapter: Any, chat_id: str, command: str, metadata: Optional[dict]) -> bool:
     """Send the whole command as a fenced block (the adapter's ``send`` splits it to fit) before a
     card whose preview is truncated. False when it cannot be shown verbatim and whole, or a chunk failed."""

@@ -28,6 +28,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 # ---------------------------------------------------------------------------
 # Now we can safely import
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from tests.waiting import async_wait_until
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +368,7 @@ class TestImageDocuments:
         msg = _make_message(document=doc)
 
         await adapter._handle_media_message(_make_update(msg), MagicMock())
-        await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
+        await async_wait_until(lambda: adapter.handle_message.await_count, timeout=5)
 
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]

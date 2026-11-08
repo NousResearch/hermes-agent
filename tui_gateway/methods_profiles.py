@@ -259,9 +259,7 @@ def _profile_session_fields(row, profile_path):
 def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
     """Attach UI metadata, group chat state, revisions and avatar presence.
     ``ui_meta_revisions`` is always present: it feature-detects gateway-owned CAS for a new profile."""
-    def _read() -> dict:
-        from tui_gateway.group_chat_storage import with_group_chat_state
-        raw_meta = with_group_chat_state(profile_dir, _read_profile_yaml(profile_dir), strict=False)
+    def _fields(raw_meta: dict) -> dict:
         ui_meta, revisions = raw_meta.get("ui_meta"), raw_meta.get("_ui_meta_revisions")
         # Key order is wire-visible: ui_meta_revisions precedes ui_meta.
         fields = {"ui_meta_revisions":
@@ -276,8 +274,15 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
     # for the row's description/display name) — reused while both metadata and group state have
     # not moved. The ui_meta CAS writer below keeps reading both files uncached.
     from tui_gateway.profile_roster_cache import cached_ui_meta_fields
+    from tui_gateway.group_chat_storage import GroupChatReadUnavailable, read_profile_ui_meta
 
-    row.update(cached_ui_meta_fields(profile_dir, _read))
+    def _read():
+        return _fields(read_profile_ui_meta(profile_dir, lambda: _read_profile_yaml(profile_dir)))
+
+    try:
+        row.update(cached_ui_meta_fields(profile_dir, _read))
+    except GroupChatReadUnavailable as exc:
+        row.update(_fields(exc.metadata))
     # Cheap existence flag so rosters skip a get_asset probe per paint.
     row["has_avatar"] = _try(lambda: any((profile_dir / "assets" / f"avatar.{e}").is_file() for e in _ASSET_EXTS), False)
 

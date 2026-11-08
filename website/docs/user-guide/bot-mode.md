@@ -186,6 +186,28 @@ metadata write. Restart backends after upgrading so older processes cannot keep 
 legacy location. This changes the sync snapshot's storage, not the full Desktop room history
 or the gateway-managed room database described above.
 
+When one UI metadata request changes both files, the atomic `state/group-chat.yaml` write
+also records the changed metadata namespaces and their revisions in a temporary
+`pending_ui_meta` journal. That write commits the whole UI update: roster reads project the
+journal even if writing `profile.yaml` is temporarily blocked. A later metadata write or
+migration materializes the committed changes and clears the journal without increasing the
+revisions again. Roster reads do not rewrite either data file. Do not downgrade backends
+while a journal is pending.
+
+Recovery preserves unrelated metadata edits. If a journal-owned namespace has been edited
+outside the transaction to a value other than its recorded before/after value, recovery
+refuses to overwrite it; repair that conflict before making further UI metadata changes.
+An unreadable group-state file does not hide other profiles from the roster and is never
+silently reset by a write. Named-profile exports and full backups still include this runtime
+state: separating it from `profile.yaml` does not make an entire archive safe to publish or
+remove conversation content from existing Git history or backups.
+
+Named-profile exports, `--clone-all`, and full backups capture `profile.yaml` and the group
+state as a coherent pair, including a pending journal. A continuously changing pair fails
+capture rather than producing an unrecoverable mix of transactions. This is not a whole-profile
+filesystem snapshot; other files retain their existing archive semantics. Symlinked UI state
+files or a symlinked `state/` directory are rejected by this capture path rather than followed.
+
 ## Bot-to-bot messaging
 
 Bots message each other with attribution, and you can hand work off from any chat:

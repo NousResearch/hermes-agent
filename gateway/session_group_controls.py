@@ -470,11 +470,19 @@ def _sibling_sessions(authority, reader):
     return fields
 
 
+def _roster_profile_ui_meta(name, home):
+    from tui_gateway.group_chat_storage import GroupChatReadUnavailable, read_profile_ui_meta
+
+    try:
+        return read_profile_ui_meta(home, lambda: _discovered_profile_meta(name, home / 'profile.yaml'))
+    except GroupChatReadUnavailable as exc:
+        return exc.metadata
+
+
 def _profiles(authority, actor, home, params, siblings=()):
     """The Bots roster: this profile's row, then every profile it can name. ``siblings`` is
     ``_roster_siblings``' snapshot; a sibling with a reader carries the same session fields."""
     from hermes_cli.profiles import _profile_info
-    import hermes_yaml as yaml
     include_sessions = params.get('include_sessions', True)
     if type(include_sessions) is not bool:
         raise RuntimeStoreError('invalid_params')
@@ -485,11 +493,7 @@ def _profiles(authority, actor, home, params, siblings=()):
            'model': profile.model, 'provider': profile.provider,
            'description': profile.description or '', 'display_name': profile.display_name or '',
            'skill_count': profile.skill_count or 0}
-    path = home / 'profile.yaml'
-    meta = yaml.safe_load(path.read_text(encoding='utf-8-sig')) if path.is_file() else {}
-    meta = meta if isinstance(meta, dict) else {}
-    from tui_gateway.group_chat_storage import with_group_chat_state
-    meta = with_group_chat_state(home, meta, strict=False)
+    meta = _roster_profile_ui_meta(name, home)
     row['ui_meta_revisions'] = _ui_meta_revisions(meta)
     if isinstance(meta.get('ui_meta'), dict):
         row['ui_meta'] = meta['ui_meta']
@@ -510,9 +514,8 @@ def _profiles(authority, actor, home, params, siblings=()):
                  'skill_count': 0, 'has_avatar': _has_avatar(target), 'ui_meta_revisions': {}}
         if include_sessions and reach is not None:
             entry.update(_sibling_sessions(*reach))
-        meta = _discovered_profile_meta(configured, target / 'profile.yaml')
+        meta = _roster_profile_ui_meta(configured, target)
         if isinstance(meta, dict):
-            meta = with_group_chat_state(target, meta, strict=False)
             # The profile's own metadata, not a placeholder: Desktop seeds the Edit profile dialog
             # from these fields and skips the avatar push when ``has_avatar`` is set.
             entry['description'] = str(meta.get('description') or '').strip()

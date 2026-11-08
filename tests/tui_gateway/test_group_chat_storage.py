@@ -147,7 +147,7 @@ def test_interrupted_cleanup_keeps_new_history_and_can_resume(home, monkeypatch)
 
     with monkeypatch.context() as patch:
         patch.setattr(utils, "atomic_yaml_write", fail_profile)
-        assert configure(snapshot("new"), 3)["ui_meta"] is False
+        assert configure(snapshot("new"), 3)["ui_meta"] is True
 
     assert row()["ui_meta"][KEY] == snapshot("new")
     assert row()["ui_meta_revisions"][KEY] == 4
@@ -208,3 +208,108 @@ def test_corrupt_group_state_does_not_hide_healthy_profiles(home, name, contents
     assert row("helper" if name == "default" else "default")["display_name"] == "Example"
     assert configure(snapshot("replacement"), 0, name)["ui_meta"] is False
     assert (target / STATE).read_text() == contents
+
+
+def test_mixed_update_is_committed_and_recoverable_when_profile_write_fails(home, monkeypatch):
+    import utils
+    from tui_gateway.group_chat_storage import migrate_group_chat_state
+
+    initial = {"display_name": "Example", "ui_meta": {
+        KEY: snapshot("old"), "example-settings": {"color": "blue"}},
+        "_ui_meta_revisions": {KEY: 3, "example-settings": 1}}
+    (home / "profile.yaml").write_text(yaml.safe_dump(initial), encoding="utf-8")
+    request = {"name": "default", "ui_meta": {
+        KEY: snapshot("new"), "example-settings": {"color": "green"}},
+        "ui_meta_expected_revisions": {KEY: 3, "example-settings": 1}}
+    real_write = utils.atomic_yaml_write
+
+    def fail_profile(path, data, **kwargs):
+        if Path(path) == home / "profile.yaml":
+            raise OSError("synthetic metadata failure")
+        return real_write(path, data, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(utils, "atomic_yaml_write", fail_profile)
+        applied = srv._methods["profiles.configure"]("write", request)["result"]["applied"]
+        assert applied["ui_meta"] is True
+        visible = row()
+        assert visible["ui_meta"]["example-settings"] == {"color": "green"}
+        assert visible["ui_meta"][KEY] == snapshot("new")
+        assert visible["ui_meta_revisions"] == {KEY: 4, "example-settings": 2}
+        assert yaml.safe_load((home / "profile.yaml").read_text()) == initial
+
+    # A separate metadata editor must not lose unrelated fields during replay.
+    edited = initial | {"description": "An independent edit"}
+    edited["ui_meta"]["unrelated"] = {"pinned": True}
+    (home / "profile.yaml").write_text(yaml.safe_dump(edited), encoding="utf-8")
+    migrate_group_chat_state(home)
+    stored = yaml.safe_load((home / "profile.yaml").read_text())
+    assert stored["description"] == "An independent edit"
+    assert stored["ui_meta"]["unrelated"] == {"pinned": True}
+    assert stored["ui_meta"]["example-settings"] == {"color": "green"}
+    assert KEY not in stored["ui_meta"]
+    assert stored["_ui_meta_revisions"]["example-settings"] == 2
+    assert row()["ui_meta_revisions"][KEY] == 4
+    assert "pending_ui_meta" not in yaml.safe_load((home / STATE).read_text())
+    stale = srv._methods["profiles.configure"]("retry", request)["result"]["applied"]
+    assert stale["ui_meta"] is False
+    assert stale["ui_meta_conflicts"][KEY]["actual"] == 4
+
+
+def test_roster_does_not_mix_stale_metadata_with_a_completed_group_update(home, monkeypatch):
+    import threading
+
+    (home / "profile.yaml").write_text(yaml.safe_dump({
+        "ui_meta": {KEY: snapshot("old"), "example-settings": {"color": "blue"}},
+        "_ui_meta_revisions": {KEY: 3, "example-settings": 1},
+    }), encoding="utf-8")
+    metadata_read = threading.Event()
+    writer_done = threading.Event()
+    read_metadata = srv._read_profile_yaml
+
+    def gated_read(profile_dir):
+        metadata = read_metadata(profile_dir)
+        if threading.current_thread().name == "roster" and Path(profile_dir) == home:
+            metadata_read.set()
+            writer_done.wait(2)
+        return metadata
+
+    monkeypatch.setattr(srv, "_read_profile_yaml", gated_read)
+    observed = {}
+
+    def read():
+        observed.update(row())
+
+    reader = threading.Thread(target=read, name="roster")
+    reader.start()
+    assert metadata_read.wait(5)
+    try:
+        srv._methods["profiles.configure"]("write", {
+            "name": "default", "ui_meta": {
+                KEY: snapshot("new"), "example-settings": {"color": "green"}},
+            "ui_meta_expected_revisions": {KEY: 3, "example-settings": 1},
+        })
+    finally:
+        writer_done.set()
+        reader.join(timeout=5)
+    assert not reader.is_alive()
+    visible = observed["ui_meta"]
+    assert (visible[KEY], visible["example-settings"]) in [
+        (snapshot("old"), {"color": "blue"}),
+        (snapshot("new"), {"color": "green"}),
+    ]
+
+
+def test_transient_roster_read_failure_is_not_cached_as_missing_history(home, monkeypatch):
+    from tui_gateway import group_chat_storage
+
+    assert configure(snapshot("first"), 0)["ui_meta"] is True
+    profile_roster_cache.invalidate()
+
+    def unavailable(profile_dir):
+        raise OSError("synthetic transient state read failure")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(group_chat_storage, "_read_state", unavailable)
+        assert KEY not in row().get("ui_meta", {})
+    assert row()["ui_meta"][KEY] == snapshot("first")

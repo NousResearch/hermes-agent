@@ -403,6 +403,10 @@ def begin_iteration(
     agent._api_call_count = api_call_count
     agent._touch_activity(f"starting API call #{api_call_count}")
 
+    # No session DB means nothing persists this transcript until clean exit; checkpoint it.
+    from agent.transcript_checkpoint import maybe_write as _checkpoint_transcript
+    _checkpoint_transcript(agent, messages, api_call_count)
+
     # Grace call: budget exhausted but the model gets one more call. Consume the
     # flag so the loop exits after this iteration regardless of outcome.
     if agent._budget_grace_call:

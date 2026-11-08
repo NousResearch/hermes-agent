@@ -19,7 +19,7 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
-from gateway.platforms.base_log_safety import describe_proxy_error, safe_proxy_url_for_log, safe_url_for_log
+from gateway.platforms.base_log_safety import describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
 
 from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t

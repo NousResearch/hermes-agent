@@ -9,7 +9,7 @@ import logging
 import os
 import time
 
-from gateway.platforms.base import describe_proxy_error, first_proxy_env_value  # httpx reads HTTPS_PROXY itself
+from gateway.platforms.base import describe_proxy_error, env_proxy_for_redaction  # httpx reads HTTPS_PROXY itself
 from tools.send_message_senders import (
     _AUDIO_EXTS, _IMAGE_EXTS, _VIDEO_EXTS, _VOICE_EXTS, _error, _success)
 
@@ -145,7 +145,7 @@ async def _qqbot_deliver_one_media(client, headers, chat_id, media_path, is_voic
                 client, headers, chat_type, chat_id, file_info, caption=caption)
             return _success("qqbot", chat_id, message_id=send_data.get("id"), chat_type=chat_type)
         except Exception as exc:
-            errors.append(f"{chat_type}: {describe_proxy_error(exc, first_proxy_env_value()) or exc}")
+            errors.append(f"{chat_type}: {describe_proxy_error(exc, env_proxy_for_redaction('https://bots.qq.com', 'https://api.sgroup.qq.com')) or exc}")
             continue
 
     return _error(
@@ -246,5 +246,5 @@ async def send_qqbot(pconfig, chat_id, message, media_files=None, caption=None, 
             # --- Text-only path: first 2xx wins (pre-media behavior) ---
             return await _qqbot_send_text_message(client, headers, chat_id, message or "")
     except Exception as e:
-        logger.debug("QQBot standalone send failed", exc_info=not (shown := describe_proxy_error(e, first_proxy_env_value())))
+        logger.debug("QQBot standalone send failed", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction('https://bots.qq.com', 'https://api.sgroup.qq.com'))))
         return _error(f"QQBot send failed: {shown or e}")

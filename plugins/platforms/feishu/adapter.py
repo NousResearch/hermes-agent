@@ -87,7 +87,7 @@ FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 from gateway.config import Platform, PlatformConfig
 from agent.i18n import t
 from gateway.platforms.base import (
-    BasePlatformAdapter, ExecApprovalPrompt, SendResult, describe_proxy_error, first_proxy_env_value,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult, describe_proxy_error, env_proxy_for_redaction,
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
@@ -1702,7 +1702,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
 
             return self._finalize_send_result(last_response, "send failed")
         except Exception as exc:
-            logger.error("[Feishu] Send error: %s", (shown := describe_proxy_error(exc, first_proxy_env_value())) or exc, exc_info=not shown)
+            logger.error("[Feishu] Send error: %s", (shown := describe_proxy_error(exc, env_proxy_for_redaction(_onboard_open_base_url(self._domain_name)))) or exc, exc_info=not shown)
             return SendResult(success=False, error=shown or str(exc))
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
@@ -1730,7 +1730,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                 result.message_id = message_id
             return result
         except Exception as exc:
-            logger.error("[Feishu] Failed to edit message %s: %s", message_id, (shown := describe_proxy_error(exc, first_proxy_env_value())) or exc, exc_info=not shown)
+            logger.error("[Feishu] Failed to edit message %s: %s", message_id, (shown := describe_proxy_error(exc, env_proxy_for_redaction(_onboard_open_base_url(self._domain_name)))) or exc, exc_info=not shown)
             return SendResult(success=False, error=shown or str(exc))
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
@@ -1794,7 +1794,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                              "request_id": prompt.request_id or ""},
             )
         except Exception as exc:
-            logger.warning("[Feishu] send_exec_approval failed: %s", shown := describe_proxy_error(exc, first_proxy_env_value()) or str(exc))
+            logger.warning("[Feishu] send_exec_approval failed: %s", shown := describe_proxy_error(exc, env_proxy_for_redaction(_onboard_open_base_url(self._domain_name))) or str(exc))
             return SendResult(success=False, error=shown)
 
     async def _send_interactive_card(
@@ -1842,7 +1842,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                 state_map=self._update_prompt_state, state_id=prompt_id, session_key=session_key,
             )
         except Exception as exc:
-            logger.warning("[Feishu] send_update_prompt failed: %s", shown := describe_proxy_error(exc, first_proxy_env_value()) or str(exc))
+            logger.warning("[Feishu] send_update_prompt failed: %s", shown := describe_proxy_error(exc, env_proxy_for_redaction(_onboard_open_base_url(self._domain_name))) or str(exc))
             return SendResult(success=False, error=shown)
 
     @staticmethod
@@ -1946,7 +1946,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             )
             return self._finalize_send_result(message_response, "image send failed")
         except Exception as exc:
-            logger.error("[Feishu] Failed to send image %s: %s", image_path, (shown := describe_proxy_error(exc, first_proxy_env_value())) or exc, exc_info=not shown)
+            logger.error("[Feishu] Failed to send image %s: %s", image_path, (shown := describe_proxy_error(exc, env_proxy_for_redaction(_onboard_open_base_url(self._domain_name)))) or exc, exc_info=not shown)
             return SendResult(success=False, error=shown or str(exc))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -3557,7 +3557,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                         )
                     self._bot_name = bot_name
         except Exception as exc:
-            logger.debug("[Feishu] /bot/v3/info probe failed during hydration%s", f": {shown}" if (shown := describe_proxy_error(exc, first_proxy_env_value())) else "", exc_info=not shown)
+            logger.debug("[Feishu] /bot/v3/info probe failed during hydration%s", f": {shown}" if (shown := describe_proxy_error(exc, env_proxy_for_redaction(_onboard_open_base_url(self._domain_name)))) else "", exc_info=not shown)
 
         if self._bot_name:
             return
@@ -3579,7 +3579,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             if app_name and not self._bot_name:
                 self._bot_name = app_name
         except Exception as exc:
-            logger.debug("[Feishu] Failed to hydrate bot name from application info%s", f": {shown}" if (shown := describe_proxy_error(exc, first_proxy_env_value())) else "", exc_info=not shown)
+            logger.debug("[Feishu] Failed to hydrate bot name from application info%s", f": {shown}" if (shown := describe_proxy_error(exc, env_proxy_for_redaction(_onboard_open_base_url(self._domain_name)))) else "", exc_info=not shown)
 
     # --- Deduplication — seen message ID cache (persistent) ---
     def _load_seen_message_ids(self) -> None:
@@ -3744,7 +3744,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                     )
             return self._finalize_send_result(message_response, "file send failed")
         except Exception as exc:
-            logger.error("[Feishu] Failed to send file %s: %s", file_path, (shown := describe_proxy_error(exc, first_proxy_env_value())) or exc, exc_info=not shown)
+            logger.error("[Feishu] Failed to send file %s: %s", file_path, (shown := describe_proxy_error(exc, env_proxy_for_redaction(_onboard_open_base_url(self._domain_name)))) or exc, exc_info=not shown)
             return SendResult(success=False, error=shown or str(exc))
 
     async def _send_uploaded_key(
@@ -3998,7 +3998,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                 wait_seconds = 2 ** attempt
                 logger.warning(
                     "[Feishu] Send attempt %d/%d failed for chat %s; retrying in %ds: %s",
-                    attempt + 1, _FEISHU_SEND_ATTEMPTS, chat_id, wait_seconds, describe_proxy_error(exc, first_proxy_env_value()) or exc,
+                    attempt + 1, _FEISHU_SEND_ATTEMPTS, chat_id, wait_seconds, describe_proxy_error(exc, env_proxy_for_redaction(_onboard_open_base_url(self._domain_name))) or exc,
                 )
                 await asyncio.sleep(wait_seconds)
         raise last_error or RuntimeError("Feishu send failed")
@@ -4377,7 +4377,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
             return send_error("No deliverable text or media remained after processing MEDIA tags")
         return {"success": True, "platform": "feishu", "chat_id": chat_id, "message_id": last_result.message_id}
     except Exception as e:
-        return send_error(f"Feishu send failed: {describe_proxy_error(e, first_proxy_env_value()) or e}")  # lark-oapi's requests reads HTTPS_PROXY
+        return send_error(f"Feishu send failed: {describe_proxy_error(e, env_proxy_for_redaction(*_ONBOARD_OPEN_URLS.values())) or e}")  # lark-oapi's requests reads HTTPS_PROXY
 
 
 def interactive_setup() -> None:

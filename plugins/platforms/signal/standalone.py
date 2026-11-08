@@ -8,13 +8,13 @@ import time
 
 from plugins.platforms.signal import signal_rate_limit as rl
 from plugins.platforms.signal.signal_format import markdown_to_signal
-from gateway.platforms.base import describe_proxy_error, first_proxy_env_value  # httpx reads HTTPS_PROXY itself
+from gateway.platforms.base import describe_proxy_error, env_proxy_for_redaction  # httpx reads HTTPS_PROXY itself
 from tools.send_message_senders import _error, _success
 
 logger = logging.getLogger(__name__)
 
 
-async def _signal_send_batch(post, scheduler, rl, idx, n_batches, att_batch, batch_message):
+async def _signal_send_batch(post, scheduler, rl, idx, n_batches, att_batch, batch_message, target):
     """One Signal batch under the scheduler with rate-limit retries: None on success, False when
     retries were exhausted (batch lost), error dict for a non-rate-limit RPC error."""
     n, max_attempts = len(att_batch), rl.SIGNAL_RATE_LIMIT_MAX_ATTEMPTS
@@ -42,10 +42,10 @@ async def _signal_send_batch(post, scheduler, rl, idx, n_batches, att_batch, bat
         except Exception as e:
             if attempt >= max_attempts:
                 logger.error("Signal: send error on batch %d/%d after %d attempts: %s",
-                             idx + 1, n_batches, attempt, describe_proxy_error(e, first_proxy_env_value()) or str(e))
+                             idx + 1, n_batches, attempt, describe_proxy_error(e, env_proxy_for_redaction(target)) or str(e))
                 return False
             logger.warning("Signal: transient error on batch %d/%d (attempt %d/%d): %s; will retry",
-                           idx + 1, n_batches, attempt, max_attempts, describe_proxy_error(e, first_proxy_env_value()) or str(e))
+                           idx + 1, n_batches, attempt, max_attempts, describe_proxy_error(e, env_proxy_for_redaction(target)) or str(e))
 
 
 async def _send_signal(extra, chat_id, message, media_files=None):
@@ -101,9 +101,9 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                     await _rpc_send(f"(More images coming — pausing ~{rl._format_wait(estimated)} "
                                     f"for Signal rate limit, batch {idx + 1}/{n_batches}.)", id_prefix="notice", timeout=30.0)
                 except Exception as _e:
-                    logger.warning("Signal: inline notice failed: %s", describe_proxy_error(_e, first_proxy_env_value()) or _e)
+                    logger.warning("Signal: inline notice failed: %s", describe_proxy_error(_e, env_proxy_for_redaction(http_url)) or _e)
             outcome = await _signal_send_batch(_post, scheduler, rl, idx, n_batches, att_batch,
-                                               plain_text if idx == 0 else "")
+                                               plain_text if idx == 0 else "", http_url)
             if outcome is False:
                 failed_batches.append(idx + 1)
             elif outcome is not None:
@@ -119,7 +119,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         # Result-safe chat identifier for tool transcripts/log consumers.
         return _success("signal", "group:***" if str(chat_id).startswith("group:") else chat_id, warnings)
     except Exception as e:
-        return _error(f"Signal send failed: {describe_proxy_error(e, first_proxy_env_value()) or e}")
+        return _error(f"Signal send failed: {describe_proxy_error(e, env_proxy_for_redaction(extra.get('http_url', 'http://127.0.0.1:8080'))) or e}")
 
 
 async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):

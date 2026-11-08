@@ -58,7 +58,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
-    describe_proxy_error, first_proxy_env_value, resolve_proxy_url)
+    describe_proxy_error, env_proxy_for_redaction)
 from gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_deadline_line
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent, MessageType
@@ -84,6 +84,7 @@ _ALLOWED_TEAMS_SERVICE_HOSTS = frozenset({"smba.trafficmanager.net", "smba.infra
 # hostile value cannot path-traverse out of ``/v3/conversations/<id>/activities``.
 _TEAMS_CONV_ID_RE = re.compile(r"^[A-Za-z0-9:@\-_.]+$")
 _BF_TOKEN_SCOPE = "https://api.botframework.com/.default"
+_TEAMS_SDK_URLS = (_DEFAULT_TEAMS_SERVICE_URL, _BF_TOKEN_SCOPE, "https://login.microsoftonline.com")  # NO_PROXY must bypass all
 
 
 def _bf_token_request(tenant_id: str, client_id: str, client_secret: str) -> tuple[str, dict]:
@@ -187,7 +188,6 @@ def _env_enablement() -> dict | None:
     return seed
 
 
-
 async def _standalone_send(
     pconfig, chat_id: str, message: str, *,
     thread_id: Optional[str] = None, media_files: Optional[list] = None, force_document: bool = False,
@@ -242,7 +242,7 @@ async def _standalone_send(
     except asyncio.CancelledError:
         raise
     except Exception as e:
-        logger.debug("Teams standalone send raised", exc_info=not (shown := describe_proxy_error(e, resolve_proxy_url())))
+        logger.debug("Teams standalone send raised", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction(token_url, activities_url))))
         return send_error(f"Teams standalone send failed: {shown or e}")  # the text may echo the proxy URL
 
 
@@ -713,7 +713,7 @@ class TeamsAdapter(BasePlatformAdapter):
             result = await self._send_card(prompt.chat_id, card)
             return SendResult(success=True, message_id=getattr(result, "id", None) if result else None)
         except Exception as e:
-            logger.error("[teams] send_exec_approval failed: %s", (shown := describe_proxy_error(e, first_proxy_env_value())) or e, exc_info=not shown)
+            logger.error("[teams] send_exec_approval failed: %s", (shown := describe_proxy_error(e, env_proxy_for_redaction(*_TEAMS_SDK_URLS))) or e, exc_info=not shown)
             return SendResult(success=False, error=shown or str(e), retryable=True)
 
     async def send(
@@ -736,7 +736,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 last_message_id = getattr(result, "id", None)
                 self._remember_sent(result)
             except Exception as e:  # the SDK's httpx client reads HTTPS_PROXY: the text may echo it
-                return SendResult(success=False, error=describe_proxy_error(e, first_proxy_env_value()) or str(e), retryable=True)
+                return SendResult(success=False, error=describe_proxy_error(e, env_proxy_for_redaction(*_TEAMS_SDK_URLS)) or str(e), retryable=True)
         return SendResult(success=True, message_id=last_message_id)
 
     async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
@@ -771,7 +771,7 @@ class TeamsAdapter(BasePlatformAdapter):
             result = await self._send_via_conv_ref(chat_id, activity, activity)
             return SendResult(success=True, message_id=getattr(result, "id", None))
         except Exception as e:
-            logger.error("[teams] send_%s failed: %s", media_label, (shown := describe_proxy_error(e, first_proxy_env_value())) or e, exc_info=not shown)
+            logger.error("[teams] send_%s failed: %s", media_label, (shown := describe_proxy_error(e, env_proxy_for_redaction(*_TEAMS_SDK_URLS))) or e, exc_info=not shown)
             return SendResult(success=False, error=shown or str(e), retryable=True)
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,

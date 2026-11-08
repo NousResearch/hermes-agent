@@ -129,7 +129,7 @@ from gateway.config import Platform, PlatformConfig
 Platform("google_chat")
 from gateway.platforms.helpers import MessageDeduplicator, numbered_clarify_choices
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, SendResult, describe_proxy_error, first_proxy_env_value, resolve_proxy_url,
+    gateway_trust_env, BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
     cache_video_from_bytes_async,
 )
@@ -238,7 +238,7 @@ def _redact_sensitive(text: str) -> str:
 
 
 def _exc_text(exc: BaseException) -> str:  # httplib2/requests read HTTPS_PROXY and may echo its secret
-    return describe_proxy_error(exc, first_proxy_env_value()) or _redact_sensitive(str(exc))
+    return describe_proxy_error(exc, env_proxy_for_redaction(*(f"https://{h}.googleapis.com" for h in ("chat", "oauth2", "pubsub", "www")))) or _redact_sensitive(str(exc))
 
 
 def _mime_for_message_type(mime: str) -> MessageType:
@@ -1775,7 +1775,7 @@ async def _standalone_send(
                 payload = await resp.json()
         return {"success": True, "message_id": payload.get("name")}
     except Exception as e:
-        logger.debug("Google Chat standalone send raised", exc_info=not (shown := describe_proxy_error(e, resolve_proxy_url())))
+        logger.debug("Google Chat standalone send raised", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction("https://chat.googleapis.com"))))
         return send_error(f"Google Chat standalone send failed: {shown or e}")  # the text may echo the proxy URL
 
 

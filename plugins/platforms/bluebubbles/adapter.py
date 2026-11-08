@@ -20,7 +20,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret
 from gateway.platforms._shared import config_connected_extra
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult, describe_proxy_error, first_proxy_env_value,
+    BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_document_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
@@ -178,7 +178,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             msg_id = str(data.get("guid") or data.get("messageGuid") or "ok")
             return SendResult(success=True, message_id=msg_id, raw_response=res)
         except Exception as exc:
-            return SendResult(success=False, error=describe_proxy_error(exc, first_proxy_env_value()) or str(exc) or type(exc).__name__)
+            return SendResult(success=False, error=describe_proxy_error(exc, env_proxy_for_redaction(self.server_url)) or str(exc) or type(exc).__name__)
 
     async def _private_api_chat_call(self, chat_id: str, action: str, method: str) -> bool:
         """Fire a private-API chat action (typing/read); True only if the call was made."""
@@ -211,7 +211,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.info("[bluebubbles] connected to %s (private_api=%s, helper=%s)",
                         self.server_url, self._private_api_enabled, self._helper_connected)
         except Exception as exc:
-            logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, describe_proxy_error(exc, first_proxy_env_value()) or exc)
+            logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, describe_proxy_error(exc, env_proxy_for_redaction(self.server_url)) or exc)
             await self._close_client()
             return False
         # client_max_size makes aiohttp enforce the cap on every read path, incl. chunked requests
@@ -415,7 +415,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                                   raw_response=result)
             return SendResult(success=False, error=result.get("message", "Attachment upload failed"))
         except Exception as e:  # httpx reads HTTPS_PROXY itself: the text may echo it
-            return SendResult(success=False, error=describe_proxy_error(e, first_proxy_env_value()) or str(e))
+            return SendResult(success=False, error=describe_proxy_error(e, env_proxy_for_redaction(self.server_url)) or str(e))
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
@@ -647,7 +647,7 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
             return send_error(f"BlueBubbles send failed: {result.error}")
         return {"success": True, "platform": "bluebubbles", "chat_id": chat_id, "message_id": result.message_id}
     except Exception as e:
-        logger.debug("BlueBubbles standalone send failed", exc_info=not (shown := describe_proxy_error(e, first_proxy_env_value())))
+        logger.debug("BlueBubbles standalone send failed", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction((getattr(pconfig, "extra", None) or {}).get("server_url")))))
         return send_error(f"BlueBubbles send failed: {shown or e}")
 
 

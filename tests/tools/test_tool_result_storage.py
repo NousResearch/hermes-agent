@@ -811,9 +811,11 @@ class TestMcpEnvelopeSpillover:
 
 
 def _skill_view_result(sections: int = 30) -> str:
-    body = []
+    # A fenced example heading, a U+2028 inside a rule and a 300-char title: none may skew the outline.
+    body = ["```markdown", "## Example heading", "```"]
     for n in range(sections):
-        body += [f"## Section {n}"] + [f"rule {n}.{k}: never do X without Y." for k in range(12)]
+        body += [f"## Section {n}" + (" x" * 150 if n == 1 else "")]
+        body += [f"rule {n}.{k}: never do X\u2028without Y." for k in range(12)]
     return json.dumps({"success": True, "name": "prod-ops", "description": "Ops runbook",
                        "content": "\n".join(body), "linked_files": {"references/a.md": "x"}})
 
@@ -836,10 +838,12 @@ class TestRuleBearingSpill:
         assert extract_persisted_path(result) == str(get_spillover_dir() / "tc_skill.txt")
         rows = re.findall(r"- ## (.+?) — lines (\d+)–(\d+)", result)
         assert len(rows) == 20 and "10 more sections" in result
-        spill = (get_spillover_dir() / "tc_skill.txt").read_text(encoding="utf-8").splitlines()
-        for title, first, last in rows:
-            assert spill[int(first) - 1] == f"## {title}"
-            assert spill[int(last) - 1].startswith(f"rule {title.split()[-1]}.11:")
+        spill = (get_spillover_dir() / "tc_skill.txt").read_text(encoding="utf-8").split("\n")
+        assert "Example heading" not in result.split("Preview (")[0]
+        assert max(len(title) for title, _f, _l in rows) <= 80
+        for n, (title, first, last) in enumerate(rows):
+            assert spill[int(first) - 1].startswith(f"## {title}")
+            assert spill[int(last) - 1].startswith(f"rule {n}.11:")
 
     def test_turn_budget_spill_keeps_the_skill_rules_notice(self):
         msgs = [{"role": "tool", "name": "skill_view", "tool_name": "skill_view",

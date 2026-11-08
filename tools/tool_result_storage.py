@@ -43,6 +43,7 @@ _MAX_RESULT_FILENAME_STEM = 120
 RULE_BEARING_TOOLS: frozenset[str] = frozenset({"skill_view"})
 _SKILL_HEADING_RE = re.compile(r"^##\s+(\S.*?)\s*$")
 _MAX_OUTLINE_SECTIONS = 20
+_MAX_OUTLINE_TITLE_CHARS = 80
 
 _spillover_prune_lock = threading.Lock()
 _spillover_pruned_homes: set = set()  # profile home keys already swept this process
@@ -396,10 +397,15 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
 
 def _rule_bearing_outline(text: str, *, max_sections: int = _MAX_OUTLINE_SECTIONS) -> str:
     """Every ``##`` section of a rule-bearing payload with its LINE range in the saved file
-    (``read_file`` pages by lines, so a character offset could not fetch the section it names).
-    The skill's name/description need no extra row: the preview's metadata block carries them."""
-    lines = text.splitlines()
-    starts = [(i, m.group(1)) for i, line in enumerate(lines) if (m := _SKILL_HEADING_RE.match(line))]
+    (``read_file`` pages by ``\\n`` lines, so a character offset could not fetch the section it
+    names). Headings inside fenced code are examples, not sections; titles are clipped so the
+    outline stays bounded. Name/description need no row: the preview's metadata block has them."""
+    lines, starts, fenced = text.removesuffix("\n").split("\n"), [], False
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced and (m := _SKILL_HEADING_RE.match(line)):
+            starts.append((i, m.group(1)[:_MAX_OUTLINE_TITLE_CHARS]))
     rows = []
     for pos, (start, title) in enumerate(starts[:max_sections]):
         end = starts[pos + 1][0] if pos + 1 < len(starts) else len(lines)

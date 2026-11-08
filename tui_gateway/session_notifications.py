@@ -459,12 +459,39 @@ def _kb_board_key(_kb, board_meta) -> tuple[str, str]:
         return slug, f"slug:{slug}"
 
 
-def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
+def _kb_stray_delegate_keys(session: dict, session_key: str) -> tuple:
+    """This session's marked delegate subagent ids, looked up once per live session. Before the reserved child
+    kept its ``_delegate_from`` marker, ``kanban_create`` resolved the parent's key to the unmarked child and
+    subscribed the card under the child's id, so its completions went to the subagent (#150198)."""
+    if (cached := session.get("_kanban_stray_keys")) is not None:
+        return cached
+    keys: tuple = ()
+    with contextlib.suppress(Exception), _session_db(session) as db:
+        if db is not None:
+            from hermes_state_delegate_children import delegate_descendant_ids
+            keys = tuple(delegate_descendant_ids(db, session_key))
+    session["_kanban_stray_keys"] = keys
+    return keys
+
+
+def _kb_reclaim_stray_subs(_kbn, slug: str, session_key: str, stray: tuple) -> None:
+    """Re-key ``tui`` subscriptions bound to this session's own subagents back onto it (no-op without any)."""
+    from hermes_cli import kanban_db_connect as _kbc
+    with contextlib.suppress(Exception):
+        if not any(_kbn.count_notify_subs(board=slug, platform="tui", chat_id=k) for k in stray):
+            return
+        with contextlib.closing(_kbc.connect(board=slug)) as conn:
+            _kbn.retarget_notify_subs(conn, platform="tui", from_chat_ids=stray, to_chat_id=session_key)
+
+
+def _kb_poll_board(_kb, slug: str, session_key: str, stray: tuple = ()) -> list:
     """Claim + format this session's unseen events on one board. One poller per live session: the board is not opened
     writable unless it has a subscription owned by this exact session (a failed read-only probe — locked/corrupt DB —
     falls through so delivery is preserved)."""
     from hermes_cli import kanban_db_connect as _kbc
     from hermes_cli import kanban_db_notify as _kbn
+    if stray:
+        _kb_reclaim_stray_subs(_kbn, slug, session_key, stray)
     with contextlib.suppress(Exception):
         if _kbn.count_notify_subs(board=slug, platform="tui", chat_id=session_key) == 0:
             return []
@@ -526,7 +553,10 @@ def _collect_kanban_notifications(session: dict) -> list:
     unique = {}
     for slug, resolved in (_kb_board_key(_kb, board_meta) for board_meta in boards):
         unique.setdefault(resolved, slug)
-    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key)]
+    stray = _kb_stray_delegate_keys(session, session_key)
+    texts = [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key, stray)]
+    session["_kanban_stray_keys"] = ()  # reclaimed (or nothing to reclaim) on every board this pass
+    return texts
 
 
 def _notif_poll_kanban(sid: str, session: dict) -> None:

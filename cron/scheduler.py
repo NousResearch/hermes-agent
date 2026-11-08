@@ -3990,6 +3990,7 @@ class CronSchedulerRegistrationError(RuntimeError):
         """Return the public partial-failure contract without provider details."""
         return {
             "error": str(self),
+            "user_message": self.user_message(),
             "job_id": self.job["id"],
             "job_saved": True,
             "scheduler_registered": False,

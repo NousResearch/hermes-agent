@@ -819,7 +819,8 @@ def cron_create(args):
            if getattr(args, "paused", False) or getattr(args, "paused_reason", None) is not None else {}),
         **_job_api_kwargs(args))
     if not result.get("success"):
-        print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
+        message = result.get("user_message") or result.get("error", "unknown error")
+        print(color(f"Failed to create job: {message}", Colors.RED))
         return 1
     print(color(f"Created job: {result['job_id']}", Colors.GREEN))
     print(f"  Name: {result['name']}\n  Schedule: {result['schedule']}")

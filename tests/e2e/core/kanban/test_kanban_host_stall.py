@@ -27,7 +27,7 @@ import pytest
 from tests.e2e.core.kanban._helpers import Board
 
 pytestmark = [
-    pytest.mark.skipif(sys.platform != "linux", reason="worker liveness reads /proc"),
+    pytest.mark.platforms("linux"),  # worker liveness reads /proc
     pytest.mark.live_system_guard_bypass,  # teardown may signal the spawned submitter
 ]
 

@@ -78,7 +78,8 @@ interface MessageStreamOptions {
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
-    storedSessionId?: string | null
+    storedSessionId?: string | null,
+    liveDelta?: boolean
   ) => ClientSessionState
 }
 
@@ -186,78 +187,94 @@ export function useMessageStream({
       occurredAt = Date.now() / 1000
     ) => {
       const apply = () => {
-        updateSessionState(sessionId, state => {
-          // After a stop, drop any late deltas / tool events for the
-          // cancelled turn so they don't keep growing the (now finalized)
-          // assistant bubble or, worse, seed a brand-new bubble that
-          // appears to belong to the next user message.
-          if (state.interrupted || opts.skip?.(state)) {
-            return state
-          }
+        updateSessionState(
+          sessionId,
+          state => {
+            // After a stop, drop any late deltas / tool events for the
+            // cancelled turn so they don't keep growing the (now finalized)
+            // assistant bubble or, worse, seed a brand-new bubble that
+            // appears to belong to the next user message.
+            if (state.interrupted || opts.skip?.(state)) {
+              return state
+            }
 
-          const reconciledId = opts.eventTarget?.(state) ?? null
-          const streamId = reconciledId ?? state.streamId ?? nextStreamMessageId('assistant-stream')
-          // The event landed on a bubble that is NOT the live stream (sealed
-          // by interim commentary, a mid-turn user message, or turn settle).
-          // It is a patch to history: the bubble keeps its own pending bit
-          // and the turn's stream bookkeeping is neither consulted nor changed.
-          const patchesSealedBubble = reconciledId !== null && reconciledId !== state.streamId
-          const groupId = state.pendingBranchGroup ?? undefined
-          const prev = state.messages
-          let nextMessages: ChatMessage[]
+            const reconciledId = opts.eventTarget?.(state) ?? null
+            const streamId = reconciledId ?? state.streamId ?? nextStreamMessageId('assistant-stream')
+            // The event landed on a bubble that is NOT the live stream (sealed
+            // by interim commentary, a mid-turn user message, or turn settle).
+            // It is a patch to history: the bubble keeps its own pending bit
+            // and the turn's stream bookkeeping is neither consulted nor changed.
+            const patchesSealedBubble = reconciledId !== null && reconciledId !== state.streamId
+            const groupId = state.pendingBranchGroup ?? undefined
+            const prev = state.messages
+            let nextMessages: ChatMessage[]
 
-          // The live stream is almost always the tail row, so probe there first.
-          // This used to scan the transcript twice (`.some` + `.map`) and rebuild
-          // every row object wrapper on each 40 ms delta; now it copies the array
-          // once and patches the one slot.
-          const streamIndex =
-            prev.length > 0 && prev[prev.length - 1].id === streamId
-              ? prev.length - 1
-              : prev.findIndex(m => m.id === streamId)
+            // The live stream is almost always the tail row, so probe there first.
+            // This used to scan the transcript twice (`.some` + `.map`) and rebuild
+            // every row object wrapper on each 40 ms delta; now it copies the array
+            // once and patches the one slot.
+            const streamIndex =
+              prev.length > 0 && prev[prev.length - 1].id === streamId
+                ? prev.length - 1
+                : prev.findIndex(m => m.id === streamId)
 
-          if (streamIndex === -1) {
-            nextMessages = [
-              ...prev,
-              {
-                id: streamId,
-                role: 'assistant',
-                parts: seed(),
-                timestamp: occurredAt,
-                pending: true,
-                branchGroupId: groupId
-              }
-            ]
-          } else {
-            const message = prev[streamIndex]
-            const patched = { ...message, parts: transform(message.parts, message) }
+            if (streamIndex === -1) {
+              nextMessages = [
+                ...prev,
+                {
+                  id: streamId,
+                  role: 'assistant',
+                  parts: seed(),
+                  timestamp: occurredAt,
+                  pending: true,
+                  branchGroupId: groupId
+                }
+              ]
+            } else {
+              const message = prev[streamIndex]
+              const parts = transform(message.parts, message)
+              const patched = { ...message, parts }
 
-            nextMessages = prev.slice()
-            nextMessages[streamIndex] = {
-              ...patched,
               // A bubble a steer sealed stays pending only while its own tools run.
-              pending: patchesSealedBubble
+              const pending = patchesSealedBubble
                 ? Boolean(message.pending) && hasUnresolvedToolCall(patched)
                 : opts.pending
                   ? opts.pending(message)
                   : true
+
+              // A no-op event (e.g. a reasoning replace that lands after answer
+              // text) must not publish a fresh transcript: the live view path
+              // compares rows by reference, so a new wrapper would repaint.
+              const turnUnchanged =
+                patchesSealedBubble ||
+                (state.streamId === streamId && state.sawAssistantPayload && !state.awaitingResponse)
+
+              if (parts === message.parts && pending === Boolean(message.pending) && turnUnchanged) {
+                return state
+              }
+
+              nextMessages = prev.slice()
+              nextMessages[streamIndex] = { ...patched, pending }
             }
-          }
 
-          if (patchesSealedBubble) {
-            // Later deltas must not append into the bubble the late event
-            // just updated, and a late event from an earlier phase must not
-            // clear the wait state of the turn now in flight.
-            return { ...state, messages: nextMessages }
-          }
+            if (patchesSealedBubble) {
+              // Later deltas must not append into the bubble the late event
+              // just updated, and a late event from an earlier phase must not
+              // clear the wait state of the turn now in flight.
+              return { ...state, messages: nextMessages }
+            }
 
-          return {
-            ...state,
-            messages: nextMessages,
-            streamId,
-            sawAssistantPayload: true,
-            awaitingResponse: false
-          }
-        })
+            return {
+              ...state,
+              messages: nextMessages,
+              streamId,
+              sawAssistantPayload: true,
+              awaitingResponse: false
+            }
+          },
+          undefined,
+          true
+        )
       }
 
       apply()

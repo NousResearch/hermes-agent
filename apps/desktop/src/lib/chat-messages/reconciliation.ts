@@ -207,8 +207,20 @@ const timelinePartMatch = (stored: ChatMessagePart, local: ChatMessagePart) => {
   return false
 }
 
-/** Keep richer live timing when durable hydration has only one timestamp per row. */
-function reconcileLocalAssistantTimeline(nextMessages: ChatMessage[], currentMessages: ChatMessage[]): ChatMessage[] {
+// Last merge per (stored row, view row). The live path reconciles every flush;
+// a row whose stored object and view counterpart are unchanged (or whose view
+// row is our own previous merge — the merge is idempotent) must come back as
+// the SAME object, or the runtime repository re-normalizes it every ~40 ms.
+// Both levels are weak: a streamed tail's view row is the previous snapshot,
+// so a strong reference to it would chain every snapshot of the reply.
+const timelineMergeByStored = new WeakMap<ChatMessage, WeakMap<ChatMessage, ChatMessage>>()
+
+/** Keep richer live timing when durable hydration has only one timestamp per
+ *  row, returning the incoming object for every row the merge leaves alone. */
+export function reconcileLocalAssistantTimeline(
+  nextMessages: ChatMessage[],
+  currentMessages: ChatMessage[]
+): ChatMessage[] {
   const localAssistants = currentMessages.filter(message => message.role === 'assistant' && !message.hidden)
   const matches = new Map<number, ChatMessage>()
   let localCursor = localAssistants.length - 1
@@ -235,8 +247,17 @@ function reconcileLocalAssistantTimeline(nextMessages: ChatMessage[], currentMes
   return nextMessages.map((message, messageIndex) => {
     const local = matches.get(messageIndex)
 
+    // A self-match (the view already holds this exact row) still folds: a
+    // hydrated tool bubble carries completedAt on its parts only, and the
+    // message-level stamp is derived here. The memo below makes repeats free.
     if (!local) {
       return message
+    }
+
+    const memo = timelineMergeByStored.get(message)?.get(local)
+
+    if (memo) {
+      return memo
     }
 
     const unusedLocalParts = new Set(local.parts.map((_, index) => index))
@@ -281,11 +302,22 @@ function reconcileLocalAssistantTimeline(nextMessages: ChatMessage[], currentMes
 
     const timestamp = earliestBoundary(message.timestamp, local.timestamp, ...mergedParts.map(part => part.timestamp))
 
-    if (mergedParts === message.parts && completedAt === message.completedAt && timestamp === message.timestamp) {
-      return message
+    const result =
+      mergedParts === message.parts && completedAt === message.completedAt && timestamp === message.timestamp
+        ? message
+        : { ...message, completedAt, parts: mergedParts, timestamp }
+
+    let merges = timelineMergeByStored.get(message)
+
+    if (!merges) {
+      merges = new WeakMap()
+      timelineMergeByStored.set(message, merges)
     }
 
-    return { ...message, completedAt, parts: mergedParts, timestamp }
+    merges.set(local, result)
+    merges.set(result, result)
+
+    return result
   })
 }
 

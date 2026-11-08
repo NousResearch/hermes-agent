@@ -195,6 +195,7 @@ from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, build_ptb_requests, discover_fallback_ips, parse_fallback_ip_env,
     proxy_target_hosts)
 from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
+from plugins.platforms.telegram.telegram_send_errors import is_entity_parse_error
 from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
 from utils import env_float, env_int
 
@@ -3307,18 +3308,17 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         return _NetErr, _BadReq, _TimedOut
 
     async def _send_chunk_markdown_or_plain(self, chunk: str, send_kwargs: dict[str, Any]):
-        """MarkdownV2 first; on a parse/markdown rejection resend as stripped plain text."""
+        """MarkdownV2 first; on a Bot API entity-parse refusal resend as stripped plain text."""
+        def send(text: str, mode: Any):
+            return _await_with_thread_deadline(self._bot.send_message(text=text, parse_mode=mode, **send_kwargs),
+                                               timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
         try:
-            return await _await_with_thread_deadline(
-                self._bot.send_message(text=chunk, parse_mode=ParseMode.MARKDOWN_V2, **send_kwargs),
-                timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
+            return await send(chunk, ParseMode.MARKDOWN_V2)
         except Exception as md_error:
-            if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
-                logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
-                return await _await_with_thread_deadline(
-                    self._bot.send_message(text=_strip_mdv2(chunk), parse_mode=None, **send_kwargs),
-                    timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
-            raise
+            if not is_entity_parse_error(md_error):  # an HTML 5xx page is no refusal: it may be in the chat
+                raise
+            logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
+            return await send(_strip_mdv2(chunk), None)
 
     async def _send_chunk_with_retries(
         self, chat_id: str, chunk: str, index: int, reply_to: Optional[str], metadata: Optional[dict[str, Any]],
@@ -5028,8 +5028,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                     reset_media=lambda: audio_file.seek(0), **{media_key: audio_file}, caption=_cap_text,
                     parse_mode=_cap_parse_mode, duration=duration_secs, **media_kwargs)
             except Exception as _cap_error:
-                err = str(_cap_error).lower()
-                if _cap_parse_mode is not None and ("parse" in err or "entit" in err):
+                if _cap_parse_mode is not None and is_entity_parse_error(_cap_error):
                     logger.warning(
                         "[%s] voice caption MarkdownV2 rejected, retrying plain: %s", self.name, _redact_telegram_error_text(_cap_error))
                     _last_parse_error = _cap_error

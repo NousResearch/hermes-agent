@@ -1,10 +1,10 @@
 """Telegram photo albums (``sendMediaGroup``, 10 per chunk) for the gateway adapter and the
 standalone sender.
 
-A chunk whose reply was lost (read timeout, a reset after the write, the send deadline) may already
-be in the chat, so it is reported ambiguous and never resent. Any other failure (a Bot API refusal,
-a flood wait, a connect/pool failure whose request never left, a local error) falls back photo by
-photo. A stale forum topic ("thread not found") retries once without the topic.
+A chunk that may already be in the chat (a timeout, a 504, a reset after the write, a 5xx answer:
+``telegram_send_errors``) is reported ambiguous and never resent. Any other failure (a Bot API
+refusal, a flood wait, a connect/pool failure whose request never left, a local error) falls back
+photo by photo. A stale forum topic ("thread not found") retries once without the topic.
 """
 
 from __future__ import annotations
@@ -23,25 +23,12 @@ logger = logging.getLogger(__name__)
 ALBUM_LIMIT = 10  # Telegram's media-group cap
 
 
-def reply_lost(adapter: Any, error: Exception) -> bool:
-    """True when the request may have reached Telegram but no answer came back: a timeout (PTB's
-    ``TimedOut``, the send deadline) or a transport failure after the connection was up. A Bot API
-    refusal, a flood wait, a connect/pool failure (nothing left) or a local error is not."""
-    if (adapter._is_bad_request_error(error) or adapter._looks_like_auth_error(error)
-            or getattr(error, "retry_after", None) is not None
-            or adapter._looks_like_connect_timeout(error) or adapter._looks_like_pool_timeout(error)
-            or adapter._exception_graph_matches(error, "connecterror")):
-        return False
-    if adapter._is_timed_out(error) or isinstance(error, (TimeoutError, OSError)):
-        return True
-    # A NetworkError with no transport cause is Telegram's own 5xx reply: nothing was posted.
-    return adapter._looks_like_network_error(error) and any(
-        cause is not error for cause in _iter_graph(error))
-
-
-def _iter_graph(error: Exception):
-    from plugins.platforms.telegram.adapter import _iter_exception_graph
-    return _iter_exception_graph(error)
+def reply_lost(error: Exception) -> bool:
+    """True when the chunk may already be in the chat (``telegram_send_errors.may_have_delivered``:
+    a timeout, a 504, a reset after the write, any 5xx answer). Only a refusal, a flood wait, a
+    connect/pool failure (nothing left) or a local error falls back photo by photo."""
+    from plugins.platforms.telegram.telegram_send_errors import may_have_delivered
+    return may_have_delivered(error)
 
 
 def _stale_topic(adapter: Any, error: Exception, metadata: Optional[dict]) -> bool:
@@ -172,7 +159,7 @@ async def send_photo_album(
                 delivered = True
                 continue
             except Exception as err:
-                if reply_lost(adapter, err):
+                if reply_lost(err):
                     logger.warning(
                         "[%s] send_media_group reply lost (chunk %d/%d); not resending, it may have been posted: %s",
                         adapter.name, chunk_idx + 1, len(chunks), redact(err), exc_info=True)

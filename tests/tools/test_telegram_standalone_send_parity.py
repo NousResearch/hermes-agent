@@ -22,6 +22,22 @@ class TimedOut(Exception):
     """python-telegram-bot's ``TimedOut``: the request left, the reply never came."""
 
 
+class NetworkError(Exception):
+    """python-telegram-bot's ``NetworkError``: what a 5xx answer raises (matched by class name)."""
+
+
+def _html_5xx(status: int, phrase: str) -> NetworkError:
+    """PTB's shape for a 5xx whose body is a fronting proxy's HTML page, not Telegram's JSON."""
+    try:
+        try:
+            raise ValueError("Invalid server response")
+        except ValueError as parse_error:
+            raise NetworkError(f"{phrase} ({status}). Parsing the server response "
+                               f"b'<html><h1>{status}</h1></html>' failed") from parse_error
+    except NetworkError as exc:
+        return exc
+
+
 def _install_telegram_mock(monkeypatch: pytest.MonkeyPatch, bot) -> None:
     parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
     constants_mod = SimpleNamespace(ParseMode=parse_mode)
@@ -188,3 +204,39 @@ def test_album_to_a_stale_topic_retries_once_without_the_thread(standalone) -> N
     assert result["success"] is True and "warnings" not in result
     assert [c.get("message_thread_id") for c in calls] == [77, None]
     standalone.bot.send_photo.assert_not_awaited()
+
+
+@pytest.mark.parametrize("exc", [TimedOut("Timed out"), NetworkError("Gateway Timeout (504)"),
+                                 NetworkError("Bad Gateway"), _html_5xx(504, "Gateway Timeout")],
+                         ids=["timed-out", "504", "502-json", "504-html"])
+def test_album_that_may_be_in_the_chat_is_never_resent(standalone, exc) -> None:
+    """A timeout or any 5xx answer to sendMediaGroup may follow a posted album: no per-photo copy,
+    success with the "not resent" warning (one classifier with the text lane)."""
+    standalone.bot.send_media_group = AsyncMock(side_effect=exc)
+    standalone.bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=12))
+
+    result = standalone.run("", media_files=_photos(standalone.home, 2))
+
+    assert result["success"] is True
+    assert "not resent" in " ".join(result["warnings"])
+    assert standalone.bot.send_media_group.await_count == 1
+    standalone.bot.send_photo.assert_not_awaited()
+
+
+@pytest.mark.parametrize("status,phrase", [(502, "Bad Gateway"), (504, "Gateway Timeout")])
+def test_html_5xx_page_is_not_a_parse_error(standalone, monkeypatch, status, phrase) -> None:
+    """PTB's text for an HTML 5xx body says "Parsing ... failed"; it may follow a posted message, so
+    no plain-text copy and no retry. A real Bot API entity-parse refusal still falls back once."""
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    standalone.bot.send_message = AsyncMock(side_effect=_html_5xx(status, phrase))
+
+    result = standalone.run("hello *world*")
+
+    assert "error" in result
+    assert [c.kwargs["parse_mode"] for c in standalone.bot.send_message.await_args_list] == ["MarkdownV2"]
+
+    standalone.bot.send_message = AsyncMock(side_effect=[
+        BadRequest("Bad Request: can't parse entities: character '!' is reserved"), SimpleNamespace(message_id=7)])
+    assert standalone.run("hello *world*")["success"] is True
+    assert [c.kwargs["parse_mode"] for c in standalone.bot.send_message.await_args_list] == ["MarkdownV2", None]
+

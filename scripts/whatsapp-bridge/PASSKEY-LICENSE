@@ -1,9 +1,11 @@
 Passkey handshake adaptation from vinikjkkj, WhiskeySockets/Baileys PR #2689.
 Original commits e5abc69fbabbc82709e6fd84e1bcb83d02a9ae14 and c3d846d68b1a40331687b66bcc8971679ef9af00.
+Modified for Hermes: the code-matching step waits for owner confirmation when no
+trusted pairing handoff applies (upstream always auto-confirms).
 
 MIT License
 
-Copyright (c) 2026 Rajeh Taher/WhiskeySockets
+Copyright (c) 2025 Rajeh Taher/WhiskeySockets
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

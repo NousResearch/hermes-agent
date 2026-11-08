@@ -12,7 +12,11 @@ query method, authentication state and connection lifecycle. Baileys owns the
 notification acknowledgement; the interactive signer runs separately. Closing the
 socket cancels pending authentication and removes the added listeners.
 
-The adapter preserves owner confirmation unless a trusted handoff applies. The
+A server-sent prologue request derives a pairing handoff proof from the ADV
+secret the phone already received during the QR scan (as upstream does), so the
+primary normally skips code matching and no confirmation prompt appears. The
+terminal prompt only runs when no trusted handoff applies (for example when
+signing takes longer than the five-minute handoff window). The
 interactive signer loads the real WhatsApp Web origin and validates the returned
 challenge and origin. No existing browser profile or browser session is imported.
 The temporary browser profile does not inherit Chrome's signed-in password manager.
@@ -21,8 +25,11 @@ WebAuthn prompt and has not been verified with a real WhatsApp account.
 
 The official Baileys package requires Node 20 or newer. The signer supports that
 same floor without depending on `AbortSignal.any`, which arrived in Node 20.3.
-A passkey challenge in gateway mode exits the bridge with code 78; the adapter
-reports `whatsapp_passkey_required` as non-retryable until interactive pairing.
+A passkey challenge in gateway mode before the connection opens exits the bridge
+with code 78 (`PASSKEY_REQUIRED_EXIT`); the adapter reports
+`whatsapp_passkey_required` as non-retryable until interactive pairing. A
+challenge reaching a session that is already connected is logged and ignored, as
+before passkey support, so a working gateway is not parked.
 
 ## Verification
 

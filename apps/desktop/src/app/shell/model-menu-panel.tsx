@@ -1,6 +1,6 @@
 import type { ModelOptionsResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
@@ -9,6 +9,7 @@ import { DropdownMenuItem, dropdownMenuRow } from '@/components/ui/dropdown-menu
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
+import { notifyError } from '@/store/notifications'
 import { $currentModelSource } from '@/store/session'
 
 import { LocalSetupMenuRow } from './local-setup-menu-row'
@@ -39,6 +40,45 @@ export function ModelMenuPanel({ onFollowDefaultModel, ...props }: ModelMenuPane
   // Same condition as the pill's pin dot: a draft whose next session.create
   // ships the manual pick instead of the Settings default (#107410).
   const pinnedDraft = view.kind === 'primary' && !activeSessionId && modelSource === 'manual'
+
+  // Per-chat fallback pin. The model menu already states what this chat runs
+  // on; the pin only changes which model a 429/billing/transport failure may
+  // switch TO. Backend: config.set key="fallback".
+  const fallbackOptions = useQuery({
+    queryFn: () =>
+      requestModelOptions({ gateway, profile, request: requestGateway, sessionId: activeSessionId }),
+    queryKey: modelOptionsQueryKey(profile, activeSessionId, ownerConnectionId)
+  })
+  const fallbackDisabled = Boolean(fallbackOptions.data?.fallback_disabled)
+  const fallbackAvailable = Boolean(fallbackOptions.data?.fallback_available)
+
+  const toggleFallback = async () => {
+    if (!activeSessionId) {
+      return
+    }
+
+    const queryKey = modelOptionsQueryKey(profile, activeSessionId, ownerConnectionId)
+    const previous = fallbackOptions.data
+    const nextDisabled = !fallbackDisabled
+
+    if (previous) {
+      queryClient.setQueryData<ModelOptionsResult>(queryKey, { ...previous, fallback_disabled: nextDisabled })
+    }
+
+    try {
+      await requestGateway('config.set', {
+        key: 'fallback',
+        session_id: activeSessionId,
+        value: nextDisabled ? 'off' : 'on'
+      })
+    } catch (err) {
+      if (previous) {
+        queryClient.setQueryData<ModelOptionsResult>(queryKey, previous)
+      }
+
+      notifyError(err, copy.fallbackFailed ?? copy.refreshModels)
+    }
+  }
 
   // Explicit "Refresh Models": re-fetch the catalog with refresh:true so the
   // backend busts its 1h provider-model disk cache and re-pulls each provider's
@@ -99,6 +139,27 @@ export function ModelMenuPanel({ onFollowDefaultModel, ...props }: ModelMenuPane
             <Codicon name="sync" size="0.75rem" spinning={refreshing} />
             {copy.refreshModels}
           </DropdownMenuItem>
+          {activeSessionId ? (
+            <DropdownMenuItem
+              className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+              disabled={!fallbackAvailable}
+              onSelect={event => {
+                event.preventDefault()
+
+                if (fallbackAvailable) {
+                  void toggleFallback()
+                }
+              }}
+              title={fallbackAvailable ? undefined : copy.fallbackNone}
+            >
+              <Codicon name={fallbackAvailable && !fallbackDisabled ? 'check' : 'circle-slash'} size="0.75rem" />
+              {fallbackAvailable
+                ? fallbackDisabled
+                  ? (copy.fallbackOff ?? 'Fallback: off for this chat')
+                  : (copy.fallbackOn ?? 'Fallback: on for this chat')
+                : (copy.fallbackNone ?? 'No fallback chain configured')}
+            </DropdownMenuItem>
+          ) : null}
         </>
       }
       gateway={gateway}

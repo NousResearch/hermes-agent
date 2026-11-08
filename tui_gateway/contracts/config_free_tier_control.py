@@ -82,10 +82,12 @@ class ConfigSetResult(Result):
     """``{key, value}`` plus the setter's extras: model switches add ``warning`` /
     ``confirm_required`` / ``confirm_message`` / ``scope`` / ``deferred``; ``focus`` adds
     ``tool_progress``; ``cwd`` adds ``cwd`` / ``branch``; ``personality`` adds ``history_reset`` /
-    ``info``; ``yolo`` reports its ``scope``. ``value`` is a bool only for the display toggles."""
+    ``info``; ``yolo`` reports its ``scope``; ``fallback`` reports whether a chain exists at
+    all (``fallback_available``). ``value`` is a bool only for the display toggles."""
 
     key: str
     value: str | bool | None = None
+    fallback_available: bool | None = None
     warning: str | None = None
     confirm_required: bool | None = None
     confirm_message: str | None = None
@@ -573,6 +575,10 @@ class ModelOptionsResult(Result):
     providers: list[ModelOptionProvider]
     model: str = ""
     provider: str = ""
+    # Per-session fallback pin (config.set key="fallback"): the model menu paints
+    # its row from these instead of a second round-trip.
+    fallback_disabled: bool = False
+    fallback_available: bool = False
 
 
 method("model.options", params=ModelOptionsParams, result=ModelOptionsResult,

@@ -6,6 +6,12 @@ export interface ModelMenuTranslations {
   editModels: string
   followDefault: string
   refreshModels: string
+  /** Per-chat fallback pin row (config.set key="fallback"). Optional so
+   *  locales that have not translated it still typecheck. */
+  fallbackOn?: string
+  fallbackOff?: string
+  fallbackNone?: string
+  fallbackFailed?: string
   favorites: string
   addFavorite: string
   removeFavorite: string

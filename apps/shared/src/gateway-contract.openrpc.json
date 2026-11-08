@@ -13396,7 +13396,7 @@
       },
       "ConfigSetResult": {
         "additionalProperties": false,
-        "description": "``{key, value}`` plus the setter's extras: model switches add ``warning`` /\n``confirm_required`` / ``confirm_message`` / ``scope`` / ``deferred``; ``focus`` adds\n``tool_progress``; ``cwd`` adds ``cwd`` / ``branch``; ``personality`` adds ``history_reset`` /\n``info``; ``yolo`` reports its ``scope``. ``value`` is a bool only for the display toggles.",
+        "description": "``{key, value}`` plus the setter's extras: model switches add ``warning`` /\n``confirm_required`` / ``confirm_message`` / ``scope`` / ``deferred``; ``focus`` adds\n``tool_progress``; ``cwd`` adds ``cwd`` / ``branch``; ``personality`` adds ``history_reset`` /\n``info``; ``yolo`` reports its ``scope``; ``fallback`` reports whether a chain exists at\nall (``fallback_available``). ``value`` is a bool only for the display toggles.",
         "properties": {
           "key": {
             "title": "Key",
@@ -13416,6 +13416,18 @@
             ],
             "default": null,
             "title": "Value"
+          },
+          "fallback_available": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Fallback Available"
           },
           "warning": {
             "anyOf": [
@@ -25416,6 +25428,16 @@
             "default": "",
             "title": "Provider",
             "type": "string"
+          },
+          "fallback_disabled": {
+            "default": false,
+            "title": "Fallback Disabled",
+            "type": "boolean"
+          },
+          "fallback_available": {
+            "default": false,
+            "title": "Fallback Available",
+            "type": "boolean"
           }
         },
         "required": [

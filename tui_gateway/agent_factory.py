@@ -214,6 +214,23 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     return config
 
 
+def _stored_fallback_disabled(session_db, session_key: str) -> bool:
+    """True when this session pinned fallback off in its stored ``model_config``.
+
+    The pin is per chat (``model_config.fallback_disabled``), not config.yaml, so
+    one session keeps its primary model while every other session still walks
+    the global ``fallback_providers`` chain.
+    """
+    if not session_key or session_db is None:
+        return False
+    try:
+        row = session_db.get_session(session_key) or {}
+    except Exception:
+        return False
+    raw = row.get("model_config") if isinstance(row, dict) else None
+    return bool(_parse_model_config(raw).get("fallback_disabled"))
+
+
 def _persist_live_session_runtime(session: dict | None) -> None:
     """Persist active session runtime so future resumes restore the same footer."""
     live = _live_session_agent_db(session)
@@ -227,6 +244,13 @@ def _persist_live_session_runtime(session: dict | None) -> None:
             model_config["composer_override_profile"] = composer_profile
         elif "composer_override_profile" in session:
             model_config.pop("composer_override_profile", None)
+        # Session-scoped fallback pin. True writes it, an explicit False clears
+        # it, and None (another writer set the row) leaves the stored value.
+        if (fallback_pin := session.get("fallback_disabled")) is not None:
+            if fallback_pin:
+                model_config["fallback_disabled"] = True
+            else:
+                model_config.pop("fallback_disabled", None)
         if (tier_override := session.get("create_service_tier_override")) is not None:
             # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
             model_config["service_tier"] = tier_override or "normal"
@@ -651,6 +675,10 @@ def _make_agent(
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     fallback_notice = runtime.pop("_fallback_notice", None)
     _pr = _load_provider_routing()
+    # Per-session opt-out: a chat can keep its primary model when the global
+    # fallback chain would otherwise take over (config.set key="fallback").
+    fallback_disabled = _stored_fallback_disabled(
+        session_db if session_db is not None else _get_db(), session_id or key)
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
     with _sessions_lock:
@@ -679,7 +707,7 @@ def _make_agent(
         session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=_resolve_checkpoints_enabled(cfg),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
-        skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
+        skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=None if fallback_disabled else _load_fallback_model(),
         # The resolved provider's request body (a custom entry's extra_body), as the CLI/cron/gateway pass it.
         request_overrides=runtime.get("request_overrides"),
         prefill_messages=_load_prefill_messages() or None, **_agent_cbs(sid))

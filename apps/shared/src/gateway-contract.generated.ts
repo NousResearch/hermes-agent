@@ -525,10 +525,11 @@ export interface ConfigSetParams {
   scope?: string | null
   confirm_expensive_model?: boolean
 }
-/** ``{key, value}`` plus the setter's extras: model switches add ``warning`` / ``confirm_required`` / ``confirm_message`` / ``scope`` / ``deferred``; ``focus`` adds ``tool_progress``; ``cwd`` adds ``cwd`` / ``branch``; ``personality`` adds ``history_reset`` / ``info``; ``yolo`` reports its ``scope``. ``value`` is a bool only for the display toggles. */
+/** ``{key, value}`` plus the setter's extras: model switches add ``warning`` / ``confirm_required`` / ``confirm_message`` / ``scope`` / ``deferred``; ``focus`` adds ``tool_progress``; ``cwd`` adds ``cwd`` / ``branch``; ``personality`` adds ``history_reset`` / ``info``; ``yolo`` reports its ``scope``; ``fallback`` reports whether a chain exists at all (``fallback_available``). ``value`` is a bool only for the display toggles. */
 export interface ConfigSetResult {
   key: string
   value?: string | boolean | null
+  fallback_available?: boolean | null
   warning?: string | null
   confirm_required?: boolean | null
   confirm_message?: string | null
@@ -823,6 +824,8 @@ export interface ModelOptionsResult {
   providers: ModelOptionProvider[]
   model?: string
   provider?: string
+  fallback_disabled?: boolean
+  fallback_available?: boolean
 }
 /** One ``hermes_cli/inventory.py::build_models_payload`` provider row (the union of every field the builder sets; ``pricing_pending`` / ``free_tier_pending`` mark the cached-only path). */
 export interface ModelOptionProvider {

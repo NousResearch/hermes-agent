@@ -236,6 +236,44 @@ _FAST_WORDS = {"fast": "fast", "on": "fast", "normal": "normal", "off": "normal"
                "auto": "auto", "cold": "cold", "ultrafast": "ultrafast", "ultra": "ultrafast"}
 
 
+def _set_fallback(rid, params, key, value, session):
+    """Pin THIS chat to its primary model, or release it.
+
+    Scoped to one session on purpose: the global ``fallback_providers`` chain
+    still covers every other chat, CLI run, and gateway platform.
+    """
+    raw = _word(value)
+    if session is None:
+        return _err(rid, 4002, "fallback can only be set for an existing session")
+    agent = session.get("agent")
+    chain = _load_fallback_model() or []
+    if session.get("fallback_disabled") is None:
+        session["fallback_disabled"] = _stored_fallback_disabled(
+            getattr(agent, "_session_db", None) or _get_db(),
+            str(session.get("session_key") or params.get("session_id") or ""))
+    current = bool(session.get("fallback_disabled"))
+    if raw == "status":
+        return _ok(rid, {"key": key, "value": "off" if current else "on", "fallback_available": bool(chain)})
+    if raw in {"", "toggle"}:
+        target = not current
+    elif raw in {"off", "disabled", "disable", "false", "no", "0"}:
+        target = True
+    elif raw in {"on", "enabled", "enable", "true", "yes", "1"}:
+        target = False
+    else:
+        return _err(rid, 4002, f"unknown fallback value: {value}")
+    session["fallback_disabled"] = target
+    if agent is not None:
+        # Patch the LIVE agent so the pin applies to the next API call, not the
+        # next build. An already-activated fallback keeps its provider until the
+        # normal per-turn primary restore; this only stops NEW switches.
+        agent._fallback_chain = [] if target else list(chain)
+        agent._fallback_model = None if target else (chain[0] if chain else None)
+        agent._fallback_index = 0
+    _persist_live_session_runtime(session)
+    return _ok(rid, {"key": key, "value": "off" if target else "on", "fallback_available": bool(chain)})
+
+
 def _set_fast(rid, params, key, value, session):
     raw = _word(value)
     agent = session.get("agent") if session else None
@@ -573,7 +611,7 @@ def _set_daybreak(rid, params, key, value, session):
 _CONFIG_SETTERS = {
     "model": _set_model, "fast": _set_fast, "busy": _set_busy, "verbose": _set_verbose, "focus": _set_focus,
     "approval_mode": _set_approval_mode, "approvals.mode": _set_word, "yolo": _set_yolo,
-    "reasoning": _set_reasoning, "details_mode": _set_word, "thinking_mode": _set_word,
+    "reasoning": _set_reasoning, "fallback": _set_fallback, "details_mode": _set_word, "thinking_mode": _set_word,
     "density": _set_toggle, "battery": _set_toggle, "timestamps": _set_toggle, "theme": _set_word,
     "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word, "voice.voice_chat_mode": _set_word,
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
@@ -583,7 +621,7 @@ _CONFIG_SETTERS = {
 # agent.* for every surface, the process env every later child inherits). A non-empty session_id this
 # backend no longer holds (reaped / re-minted) is a stale session, not "no session": it answers 4001 so
 # the client resumes, never the global write. An explicit scope="global" is still honoured.
-_SESSION_SCOPED_KEYS = frozenset({"model", "fast", "yolo", "reasoning"})
+_SESSION_SCOPED_KEYS = frozenset({"model", "fast", "yolo", "reasoning", "fallback"})
 
 
 @method("config.set")

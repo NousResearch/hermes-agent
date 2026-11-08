@@ -326,9 +326,21 @@ def _(rid, params: dict) -> dict:
     from hermes_cli.inventory import build_model_options_payload
     # A spawned agent owns the live provider/model/base_url; empty attributes must
     # NOT clobber disk config (with_overrides is truthy-only).
-    return _ok(rid, build_model_options_payload(
+    payload = build_model_options_payload(
         _model_picker_context(_session_agent(params)), explicit_only=bool(params.get("explicit_only")),
-        include_unconfigured=bool(params.get("include_unconfigured")), refresh=bool(params.get("refresh"))))
+        include_unconfigured=bool(params.get("include_unconfigured")), refresh=bool(params.get("refresh")))
+    # Per-session fallback pin, so the model menu can paint its row without a
+    # second round-trip (config.set key="fallback" writes it).
+    session = _sessions.get(params.get("session_id", ""))
+    if session is not None:
+        agent = session.get("agent")
+        if session.get("fallback_disabled") is None:
+            session["fallback_disabled"] = _stored_fallback_disabled(
+                getattr(agent, "_session_db", None) or _get_db(),
+                str(session.get("session_key") or params.get("session_id") or ""))
+        payload["fallback_disabled"] = bool(session.get("fallback_disabled"))
+        payload["fallback_available"] = bool(_load_fallback_model())
+    return _ok(rid, payload)
 
 
 @method("model.save_key")

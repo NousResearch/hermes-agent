@@ -58,8 +58,8 @@ def test_rejected_damaged_title_falls_back_to_the_users_words(tmp_path):
 
 @pytest.mark.parametrize("title", [
     "Çiçek ğ ı İ ö ş ü", "İş planı", "Arkadaş selamlaşma", "Привет мир", "Ελληνικά θέματα", "日本語のタイトル",
-    "Mail à Paul — notes",
+    "Mail à Paul — notes", "Ăştia sunt pașii",
 ])
 def test_correct_non_latin_titles_are_untouched(title):
     with patch("agent.title_generator.call_llm", return_value=_reply(title)):
-        assert generate_title(TURKISH + " Привет мир Ελληνικά 日本語 à Paul") == title
+        assert generate_title(TURKISH + " Привет мир Ελληνικά 日本語 à Paul Ăştia pașii") == title

@@ -171,7 +171,9 @@ async def test_real_base_request_ptb_replacement_decode_records_progress():
     assert result == []
     assert progress.is_set()
     assert adapter._polling_network_error_count == 0
-    assert adapter._polling_conflict_count == 0
+    # One success opens the conflict quiet window; the episode ends only once it elapses.
+    assert adapter._polling_conflict_count == 3
+    assert adapter._polling_conflict_quiet_since is not None
     assert adapter._send_path_degraded is False
 
 
@@ -225,14 +227,20 @@ async def test_real_base_request_valid_success_envelope_records_progress():
         result = await request.post(
             "https://api.telegram.org/bot-token/getUpdates"
         )
+        assert result == []
+        assert progress.is_set()
+        assert adapter._polling_network_error_count == 0
+        assert adapter._polling_conflict_count == 3
+        assert adapter._send_path_degraded is False
+
+        # Successful polling for a full quiet window ends the conflict episode.
+        adapter._polling_conflict_quiet_since -= tg_adapter._POLLING_CONFLICT_QUIET_PERIOD
+        assert await request.post("https://api.telegram.org/bot-token/getUpdates") == []
     finally:
         tg_adapter._POLLING_GENERATION_CONTEXT.reset(context_token)
 
-    assert result == []
-    assert progress.is_set()
-    assert adapter._polling_network_error_count == 0
     assert adapter._polling_conflict_count == 0
-    assert adapter._send_path_degraded is False
+    assert adapter._polling_conflict_quiet_since is None
 
 
 
@@ -294,7 +302,8 @@ async def test_real_ptb_stop_cleanup_cannot_heal_recovery_generation():
 
         assert replacement_generation == generation + 1
         assert adapter._polling_network_error_count == 0
-        assert adapter._polling_conflict_count == 0
+        assert adapter._polling_conflict_count == 3
+        assert adapter._polling_conflict_quiet_since is not None
         assert adapter._send_path_degraded is False
     finally:
         polling_request.block.set()

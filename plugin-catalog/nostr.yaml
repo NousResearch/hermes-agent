@@ -1,0 +1,24 @@
+name: nostr
+title: Hermes Nostr Gateway
+repo: https://github.com/dadofsambonzuki/hermes-nostr-gateway
+sha: 9b52622679dccf34e7fe646da8ac9fe70beaf112
+subdir: integrations/hermes-plugin
+description: >-
+  Nostr platform adapter for Hermes, backed by the local Hermes Nostr Gateway daemon:
+  NIP-17 and NIP-04 DMs, kind-1 mentions and feeds, Concord channels and Marmot groups
+  arrive as one message stream, with reach and authority decided by the gateway's policy.
+maintainer: dadofsambonzuki
+tier: community
+category: platform
+version: "0.1.0"
+docs_url: https://gitworkshop.dev/npub1cn670f663n3ks02jnnlsvd5y88zjnefy8343ykaxs7y3nzzketrsrjwt8a/relay.ngit.dev/hermes-nostr-gateway
+platforms: [linux, macos]
+known_issues:
+  - "This is the adapter only. It needs the gateway daemon on the same host: install hermes-nostr-gateway, run `hng serve`, and point NOSTR_GATEWAY_SOCKET (or the plugin's socket_path setting) at its Unix socket."
+  - "Unix socket plus SO_PEERCRED peer check: Linux and macOS only, not Windows."
+  - "npub-form destinations (NOSTR_HOME_CHANNEL, NOSTR_CONTROL_CHANNEL) are decoded with the `nak` CLI; without nak on PATH they must be given as hex."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

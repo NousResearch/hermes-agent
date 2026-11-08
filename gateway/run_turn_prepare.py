@@ -410,24 +410,12 @@ class GatewayTurnPrepareMixin:
             if canonical_session_id and canonical_session_id != bound_session_id:
                 bound_session_id = canonical_session_id
         if bound_session_id and bound_session_id != session_entry.session_id:
-            # The CAS below guards races around the switch; this guards its argument. A binding
-            # whose target row is gone (an external deleter ran with foreign_keys OFF, so the
-            # binding's ON DELETE CASCADE never fired) would move the route onto a dead id —
-            # the next peer refresh then re-creates that row and the topic silently re-adopts
-            # its old transcript. Treat it like no binding: stay on the current session and
-            # rebind, leaving a breadcrumb instead of resurrecting the old conversation (#139283).
-            target_exists = True
-            try:
-                if self._session_db is not None:
-                    target_exists = bool(await self._session_db.get_session(bound_session_id))
-            except Exception:
-                logger.debug("session-row lookup failed for %s", bound_session_id, exc_info=True)
-            if not target_exists:
-                logger.warning(
-                    "Telegram topic binding for %s points at session %s with no sessions row; "
-                    "dropping stale binding and keeping the current session",
-                    session_key, bound_session_id,
-                )
+            # A binding whose sessions row is gone (deleted with foreign_keys OFF, so ON DELETE CASCADE
+            # never fired) is stale, not a resume target: switching onto it lets the next peer refresh
+            # re-create the row and the topic silently re-adopts an old transcript (#139283).
+            if self._session_db is not None and not await self._session_db.get_session(bound_session_id):
+                logger.warning("Telegram topic binding for %s points at session %s with no sessions row; "
+                               "keeping the current session and rebinding", session_key, bound_session_id)
                 try:
                     await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)
                 except Exception:

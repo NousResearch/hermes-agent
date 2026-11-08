@@ -1,5 +1,6 @@
 """Resource, patience and cross-caller contracts of the ownership fence (#149132)."""
 from contextlib import contextmanager
+from itertools import pairwise
 import multiprocessing
 import os
 from pathlib import Path
@@ -720,7 +721,7 @@ def test_inventory_busy_timeout_shrinks_across_sql_statements(tmp_path, monkeypa
     assert set(rows) == {"inventory-target"}
     assert len(busy_timeouts) == 4
     assert all(0 < timeout <= 1000 for timeout in busy_timeouts)
-    assert all(left > right for left, right in zip(busy_timeouts, busy_timeouts[1:]))
+    assert all(left > right for left, right in pairwise(busy_timeouts))
     assert busy_timeouts[-1] >= 100
 
 

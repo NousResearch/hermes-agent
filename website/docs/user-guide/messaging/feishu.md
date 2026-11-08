@@ -282,6 +282,25 @@ Peer bots do not need to be added to `FEISHU_ALLOWED_USERS` — that allowlist a
 
 Grant the `application:bot.basic_info:read` scope to display peer bot names; without it, peer bots still route correctly but appear as their `open_id`.
 
+## Message Format
+
+Outbound replies go to Feishu as `post` messages when they carry markdown (tables and code blocks render natively) and as `text` for plain prose. A few Feishu clients draw a `post` markdown bubble as an empty message; for those, pin the outbound type:
+
+```yaml
+# config.yaml
+platforms:
+  feishu:
+    message_format: text   # auto (default) | post | text
+```
+
+| Value | Behavior |
+|-------|----------|
+| `auto` | Sniff each message: markdown → `post`, plain prose → `text` (default). |
+| `post` | Always `post`, including the prose-only chunks of a split reply. |
+| `text` | Always plain `text` with markdown stripped — the workaround when a client shows `post` bubbles as empty. |
+
+`FEISHU_MESSAGE_FORMAT` works as an env fallback; the env value wins when both are set.
+
 ## Interactive Card Actions
 
 When users click buttons or interact with interactive cards sent by the bot, the adapter routes these as synthetic `/card` command events:

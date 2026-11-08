@@ -1112,11 +1112,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
 
     async def _send_with_dm_topic_reply_anchor_retry(
         self, send_fn: Any, send_kwargs: dict[str, Any], metadata: Optional[dict[str, Any]],
-        reply_to_message_id: Optional[int], media_label: str, reset_media: Optional[Any] = None) -> Any:
+        media_label: str, reset_media: Optional[Any] = None) -> Any:
         """Send private-topic media, retrying a deleted anchor or a dead topic one step at a time. Serialized per chat with
         ``send()`` so a file upload cannot land between two chunks of the text it accompanies."""
         async with self._media_send_slot(send_kwargs.get("chat_id")):
-            while True:  # anchor drop / native topic id / chat root: each step removes one constraint, so it ends
+            while True:  # anchor drop / native id (only from a thread route) / chat root: each step drops a constraint
                 try:
                     return await _await_with_thread_deadline(
                         send_fn(**send_kwargs), timeout=_MEDIA_SEND_DEADLINE, label="telegram-media-send", dump_on_blocked_loop=False)
@@ -4019,12 +4019,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         return SendResult(success=False, error="draft_rejected")
 
     async def _send_message_with_thread_fallback(self, **kwargs):
-        """Send a control-style message (approval prompts, pickers), retrying once without
-        message_thread_id on 'Message thread not found' (stale thread_id); ``send`` has its own.
-
-        Used for control-style sends (approval prompts, model picker, update prompts) that can carry a stale
-        thread_id from a DM reply chain. The streaming send loop has its own equivalent (PR #3390) at the
-        body of ``send``; this helper applies the same retry pattern to the non-streaming control paths.
+        """Send a control-style message (approval prompts, pickers, update prompts) that can carry a stale
+        thread_id from a DM reply chain: on a missing topic, a private chat tries the native id, then the root
+        without the anchor; a forum retries without message_thread_id. ``_send_chunk_with_retries`` has its own.
         """
         if not self._bot:
             raise RuntimeError("Not connected")
@@ -5055,9 +5052,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         self, send_fn: Any, chat_id: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]], media_label: str,
         reset_media: Optional[Any] = None, **media_kwargs: Any) -> Any:
         """Send one native media payload with thread routing + DM-topic anchor retry."""
-        reply_to_id, kwargs = self._media_send_kwargs(chat_id, reply_to, metadata)
+        _, kwargs = self._media_send_kwargs(chat_id, reply_to, metadata)
         return await self._send_with_dm_topic_reply_anchor_retry(
-            send_fn, {**kwargs, **media_kwargs}, metadata, reply_to_id, media_label, reset_media=reset_media)
+            send_fn, {**kwargs, **media_kwargs}, metadata, media_label, reset_media=reset_media)
 
     @staticmethod
     def _caption_1024(caption: Optional[str]) -> Optional[str]:
@@ -5210,7 +5207,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                 if not media:
                     continue
                 logger.info("[%s] Sending media group of %d photo(s) (chunk %d/%d)", self.name, len(media), chunk_idx + 1, len(chunks))
-                reply_to_id, send_kwargs = self._media_send_kwargs(chat_id, None, metadata)
+                _, send_kwargs = self._media_send_kwargs(chat_id, None, metadata)
 
                 def _reset_opened_files() -> None:
                     for fh in opened_files:
@@ -5218,7 +5215,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                             fh.seek(0)
 
                 await self._send_with_dm_topic_reply_anchor_retry(
-                    self._bot.send_media_group, {**send_kwargs, "media": media}, metadata, reply_to_id,
+                    self._bot.send_media_group, {**send_kwargs, "media": media}, metadata,
                     "media group", reset_media=_reset_opened_files)
                 delivered = True
             except Exception as e:

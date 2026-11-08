@@ -279,9 +279,7 @@ def partial_sites(
 ) -> list[Site]:
     if not search or not any(search):
         return []
-    if len(search) > 1 and (
-        (removed[0] and not canon(search[0])) or (removed[-1] and not canon(search[-1]))
-    ):
+    if (removed[0] and not canon(search[0])) or (removed[-1] and not canon(search[-1])):
         # A removed blank (empty or whitespace-only) edge line is a whole
         # physical blank line (whole tier). As a substring edge it would match a
         # neighbour's terminator or indentation across the line break.

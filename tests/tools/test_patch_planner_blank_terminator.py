@@ -65,6 +65,8 @@ def test_false_blank_in_one_file_refuses_every_file():
     ("bar\n    baz\n", "-bar\n-    \n+NEW\n"),
     ("foo   \nbar\n", "-   \n-bar\n+NEW\n"),
     ("foo\r\n  bar\r\n", "-foo\n-  \n"),
+    ("   baz\n", "-   \n"),
+    ("foo   \nbar\n", "-   \n"),
 ])
 def test_whitespace_only_line_never_matches_a_terminator_or_indent(source, body):
     result, store = _run(source, [("f", body)])

@@ -29,6 +29,8 @@ def test_tool_schema_strips_hidden_free_text_but_keeps_the_call_contract():
             tagged_key: {"type": "string", "description": f"legacy{HIDDEN}"},
         },
         "required": ["query"],
+        "dependentRequired": {"query": [tagged_key]},
+        "discriminator": {"propertyName": tagged_key},
         # An argument literally named "enum" in a name->schema map is a name, not the keyword.
         "dependentSchemas": {"enum": {"description": f"dep{HIDDEN}"}},
     })
@@ -40,6 +42,9 @@ def test_tool_schema_strips_hidden_free_text_but_keeps_the_call_contract():
     assert not any(_invisible(text) for text in free_text)
     assert props["query"]["description"] == "Search text" and FAMILY in schema["description"]
     assert tagged_key in props and props["mode"]["enum"] == [tagged_choice, "slow"]
+    # Strings that name a property stay byte-identical to that property's key.
+    assert schema["parameters"]["dependentRequired"]["query"] == [tagged_key]
+    assert schema["parameters"]["discriminator"]["propertyName"] == tagged_key
     json.dumps(schema)
 
 

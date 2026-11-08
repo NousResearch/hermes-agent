@@ -1,13 +1,14 @@
 name: rariflat
 title: Rariflat
-description: "Shows live character reactions for tool calls, tracks local tool reliability, recommends previously observed tools for a task, and provides an opt-in failure-streak / repeated-call guard. Statistics stay local under $HERMES_HOME/plugin-data/rariflat/; no network calls, credential access, or subprocess execution."
+description: "Live character reactions for Hermes tool calls; local reliability learning and explainable tool/skill recommendations weighted by task fit, reliability, measured usage-frequency rarity, and repeated-call restraint. The router recommends tools/skills only; it does not dispatch tasks to agents or invoke selected tools. An opt-in failure-streak and repeated-call guard is disabled by default. Tool arguments are inspected in memory for non-secret task tokens and repeat fingerprints; credential-like fields and recognized inline secrets are filtered before learning. No raw arguments or credentials are intentionally persisted. No network requests, telemetry, or subprocesses are initiated by the plugin."
 repo: https://github.com/wadezigh96/rariflat-hermes
-sha: cf782d17563ed27e6c6a42f5a19db744e375b608
+sha: 6bbcfa1d373cdbdd35f4ac2d8d87590712bcc875
 version: "2.0.0"
 maintainer: wadezigh96
 tier: community
 category: desktop
 requires_hermes: ">=0.21"
+docs_url: https://github.com/wadezigh96/rariflat-hermes#readme
 capabilities:
   provides_tools:
     - rariflat_route

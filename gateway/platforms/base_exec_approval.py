@@ -99,7 +99,10 @@ def render_exec_approval(adapter: Any, command: str, description: str, smart_den
     that only Deny is offered because it could not be (#62359)."""
     if adapter._EA_REASON_BUDGET:
         description = adapter._ea_fit(str(description or ""), adapter._EA_REASON_BUDGET)
-    budget = adapter._exec_approval_cmd_budget(description, smart_denied)
+    # A ``` inside the command would close a markdown fence early; a longer fence holds it, and its
+    # extra backticks come out of the preview budget.
+    fence = code_fence(command)
+    budget = adapter._exec_approval_cmd_budget(description, smart_denied) - 2 * (len(fence) - 3)
     preview = adapter._ea_fit(command, budget)
     truncated = preview != command
     notice = ""
@@ -108,8 +111,9 @@ def render_exec_approval(adapter: Any, command: str, description: str, smart_den
         notice = "\n\n" + adapter._ea_escape(t(f"gateway.exec_approval.{key}", total=len(command)))
         # The notice shares the cap the budget was sized for; a tiny fixed budget keeps half its preview.
         preview = adapter._ea_fit(command, max(budget - adapter.message_len_fn(notice), budget // 2))
+    code_open, code_close = (part.replace("```", fence, 1) for part in (adapter._EA_CODE_OPEN, adapter._EA_CODE_CLOSE))
     text = (f"{adapter._EA_HEADER}"
-            f"{adapter._EA_CODE_OPEN}{adapter._ea_escape(preview)}{adapter._EA_CODE_CLOSE}"
+            f"{code_open}{adapter._ea_escape(preview)}{code_close}"
             f"{adapter._EA_REASON_LABEL}{adapter._ea_escape(description)}{notice}"
             f"{adapter._ea_deadline_line()}")
     return (text + adapter._EA_SMART_DENY_LINE if smart_denied else text), truncated

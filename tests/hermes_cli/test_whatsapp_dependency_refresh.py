@@ -38,9 +38,10 @@ def test_setup_refreshes_stale_dependencies_but_keeps_matching_install(
     def install(command, **kwargs):
         calls.append(command)
         assert kwargs["cwd"] == str(tmp_path)
-        assert kwargs["timeout"] == 300
+        assert kwargs["timeout"] == 450
         return SimpleNamespace(returncode=0)
 
+    monkeypatch.setenv("WHATSAPP_NPM_INSTALL_TIMEOUT", "450")
     monkeypatch.setattr(hermes_constants, "find_node_executable", lambda name: "isolated-npm")
     monkeypatch.setattr(hermes_constants, "with_hermes_node_path", dict)
     monkeypatch.setattr(setup.subprocess, "run", install)

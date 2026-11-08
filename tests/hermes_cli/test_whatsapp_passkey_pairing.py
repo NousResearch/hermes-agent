@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 
-@pytest.mark.parametrize("returncode", [0, 1, None, "timeout"])
+@pytest.mark.parametrize("returncode", [0, 1, None])
 def test_pairing_exit_controls_enablement_and_forwards_browser(tmp_path, monkeypatch, capsys, returncode):
     from gateway.platforms import whatsapp_common
     from hermes_cli import config, main, main_platform_setup as setup
@@ -39,15 +39,11 @@ def test_pairing_exit_controls_enablement_and_forwards_browser(tmp_path, monkeyp
         assert command[:3] == ["isolated-node", str(bridge / "bridge.js"), "--pair-only"]
         session = Path(command[command.index("--session") + 1])
         assert session == tmp_path / "whatsapp" / "session"
-        # Baileys can save credentials before authentication finishes.
-        (session / "creds.json").write_text(
-            '{"me":{"id":"15551234567:1@s.whatsapp.net"}}' if returncode == 0 else "{}",
-            encoding="utf-8",
-        )
+        assert "timeout" not in kwargs  # QR scan + 600 s WebAuthn prompt + confirmation have no fixed bound
+        # A paired identity is on disk in every case, so only the exit status decides enablement.
+        (session / "creds.json").write_text('{"me":{"id":"15551234567:1@s.whatsapp.net"}}', encoding="utf-8")
         if returncode is None:
             raise KeyboardInterrupt
-        if returncode == "timeout":
-            raise subprocess.TimeoutExpired(command, 900)
         return SimpleNamespace(returncode=returncode)
 
     monkeypatch.setattr(subprocess, "run", pair)

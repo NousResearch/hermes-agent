@@ -76,7 +76,11 @@ def safe_proxy_url_for_log(url: str, max_len: int = 80) -> str:
     routing meaning, so none of it is logged (``/<token>.json`` passes the media file-name rule).
     A ``file:`` URL has no authority to show, and the media-path rule that keeps it whole would
     print its path (``file:///<token>``), so it renders as the placeholder."""
-    if str(url or "").lstrip().lower().startswith("file:"):
+    try:  # the scheme urlsplit sees: it drops tabs, newlines and leading control characters
+        is_file = urlsplit(str(url or "")).scheme.lower() == "file"
+    except ValueError:
+        is_file = False  # safe_url_for_log renders it as the placeholder
+    if is_file:
         return _UNSAFE_URL_PLACEHOLDER[:max_len]
     safe = safe_url_for_log(url, max_len=len(str(url or "")) + 64)
     if safe == _UNSAFE_URL_PLACEHOLDER:

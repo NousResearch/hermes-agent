@@ -1,29 +1,19 @@
 name: werracle-evm-guard
 repo: https://github.com/pCwOrM/hermes-werracle-guard
-sha: 062875d03d55917163bd2cfbf3cb135d2904f1ef
+sha: 48feb9a2fc8e445367a03ef28cfa749bfeaa42d1
 version: "1.0.1"
 description: >-
   Autonomous EVM execution guardrail and DeFi liquidation risk radar for Hermes Agent.
   Intercepts cast send transactions before broadcast to block unlimited token approvals,
   NFT operator takeovers, and high-value transfers. Performs Radar lookups to
   api.werracle.com by default on every werracle tool call and intercepted cast send.
-author: Volkan Dagli
-license: MIT
-homepage: https://github.com/pCwOrM/hermes-werracle-guard
-categories:
-  - security
-  - web3
-  - defi
-tags:
-  - ethereum
-  - base
-  - defi
-  - mev
-  - guardrail
-  - morpho
-  - aave
-  - chainlink
-  - security
+maintainer: pCwOrM
+tier: community
+category: tools
+requires_hermes: ">=0.21.0"
+docs_url: https://github.com/pCwOrM/hermes-werracle-guard#readme
+readme: true
+platforms: [linux, macos, windows]
 capabilities:
   provides_tools:
     - werracle_simulate_tx
@@ -33,7 +23,6 @@ capabilities:
   provides_hooks:
     - pre_tool_call
     - post_tool_call
-  provides_cli: true
   provides_middleware: []
   requires_env:
     - WERRACLE_API_KEY

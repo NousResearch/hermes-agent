@@ -916,8 +916,8 @@ class ClientLifecycleMixin:
                 # Without a key, an unknown id would fall back to the pool cursor: another account.
                 return False
             entry = pool.try_refresh_matching(api_key_hint=key_hint, credential_id=credential_id, force=False)
-        except Exception as exc:
-            logger.debug("Anthropic pool credential refresh failed: %s", exc)
+        except Exception:  # a broken pool must not fail the request; keep the bound key
+            logger.debug("Anthropic pool credential refresh failed", exc_info=True)
             return False
         if entry is None or not getattr(entry, "runtime_api_key", None):
             return False

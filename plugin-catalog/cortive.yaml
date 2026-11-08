@@ -1,11 +1,11 @@
 name: cortive
 title: Cortive Memory
 repo: https://github.com/KadenDevAi/hermes-cortive
-sha: a3b279dc3ecbf4463d0e93a6baadf79ab774c043
+sha: b5a0544d81d6e8876a11f9ef9b482faa4811dfa5
 version: "0.1.0"
 description: >-
-  Makes Cortive, a private knowledge base for your Mac, the agent's long-term memory:
-  automatic recall of the pages, PDFs, screenshots, documents and notes you saved, plus
+  Adds Cortive, a private knowledge base for your Mac, to the agent's memory, alongside
+  Hermes's built-in memory: automatic recall of the pages, PDFs, screenshots, documents and notes you saved, plus
   cortive_search, cortive_get and cortive_collections tools. Finds by meaning while the
   Cortive app is running, by words otherwise. Read-only and local. Disclosure — reads the
   local Cortive library file (~/Library/Application Support/cortive-ai/cortive.db, SQLite
@@ -18,10 +18,10 @@ description: >-
 maintainer: KadenDevAi
 tier: community
 category: memory
-docs_url: https://github.com/KadenDevAi/hermes-cortive/blob/a3b279dc3ecbf4463d0e93a6baadf79ab774c043/README.md
-image: https://raw.githubusercontent.com/KadenDevAi/hermes-cortive/a3b279dc3ecbf4463d0e93a6baadf79ab774c043/docs/banner.png
+docs_url: https://github.com/KadenDevAi/hermes-cortive/blob/b5a0544d81d6e8876a11f9ef9b482faa4811dfa5/README.md
+image: https://raw.githubusercontent.com/KadenDevAi/hermes-cortive/b5a0544d81d6e8876a11f9ef9b482faa4811dfa5/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/KadenDevAi/hermes-cortive/a3b279dc3ecbf4463d0e93a6baadf79ab774c043/docs/recall.png
+  - https://raw.githubusercontent.com/KadenDevAi/hermes-cortive/b5a0544d81d6e8876a11f9ef9b482faa4811dfa5/docs/recall.png
 platforms:
   - macos
 capabilities:

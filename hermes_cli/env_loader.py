@@ -48,6 +48,11 @@ _CWD_ENV_BLOCKED_PREFIXES = (
     "UV_",
 )
 
+# Endpoint overrides can redirect credentials inherited from the user's environment.
+_CWD_ENV_BLOCKED_SUFFIXES = (
+    "_BASE_URL", "_API_BASE", "_API_URL", "_API_HOST", "_ENDPOINT", "_ENDPOINT_URL",
+)
+
 _CWD_ENV_BLOCKED_NAMES = frozenset(
     {
         "BASH_ENV",
@@ -819,7 +824,7 @@ def _trusted_cwd_env_path(
                 if candidate.is_symlink():
                     return None
                 return candidate if candidate.is_file() else None
-        except OSError:
+        except (OSError, ValueError):
             continue
     return None
 
@@ -827,7 +832,10 @@ def _cwd_env_key_allowed(name: str) -> bool:
     upper_name = name.upper()
     if upper_name in _CWD_ENV_BLOCKED_NAMES:
         return False
-    return not upper_name.startswith(_CWD_ENV_BLOCKED_PREFIXES)
+    return not (
+        upper_name.startswith(_CWD_ENV_BLOCKED_PREFIXES)
+        or upper_name.endswith(_CWD_ENV_BLOCKED_SUFFIXES)
+    )
 
 def _read_trusted_cwd_dotenv(path: Path) -> dict[str, str | None]:
     """Read a regular non-symlink dotenv file without interpolation."""

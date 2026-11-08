@@ -97,7 +97,16 @@ Administrator-managed values retain highest authority. Among ordinary dotenv
 sources, names declared in the profile `.env` win, followed by allowed trusted
 project values, inherited shell values, and the source-tree developer fallback.
 The developer fallback retains its legacy shell-override behavior when no profile
-or trusted CWD dotenv source exists.
+or trusted CWD dotenv source exists. Overriding inherited shell values with
+allowed project values is intentional (`override=True`): this lets an explicitly
+trusted project replace stale shell credentials, but never names declared in
+the profile `.env` or administrator-managed values. Trust only directories whose
+`.env` contents you have reviewed; this is not a sandbox for untrusted repositories.
+
+Project files cannot set provider endpoint overrides (`*_BASE_URL`, `*_API_BASE`,
+`*_API_URL`, `*_API_HOST`, `*_ENDPOINT`, `*_ENDPOINT_URL`, case-insensitively).
+These could redirect credentials inherited from the user. Put endpoint settings
+in user-controlled configuration or the profile environment instead.
 
 Project files cannot set Hermes controls (`HERMES_*`), approval/redaction,
 terminal/messaging controls, process-loader variables (`PATH`, `PYTHON*`, `LD_*`,

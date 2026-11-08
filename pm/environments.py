@@ -446,18 +446,64 @@ class NoCommittedEnvironment(RuntimeError):
     """PM's store Python with no committed generation: no retry fixes it, only `hermes pm repair`."""
 
 
-def _require_own_dependencies(project_root: Path) -> None:
-    """With nothing committed, an interpreter keeps the packages it booted with.
+def _venv_interpreter() -> bool:
+    """Does this process carry its own package tree (a developer .venv, a test env, Nix)?"""
+    import sys
 
-    PM's store Python boots with none, so for it there is nothing to keep: refuse instead of
-    running on whatever PYTHONPATH it inherited (historically the pre-PM in-tree venv).
+    return sys.prefix != sys.base_prefix
+
+
+def _foreign_abi(environment: Path) -> str | None:
+    """The Python version *environment* was built for, when this interpreter cannot load it.
+
+    Extension modules are compiled per CPython minor version: a tree holding
+    ``_pydantic_core.cp314-win_amd64.pyd`` cannot be imported by 3.11, and the failure lands far
+    from here -- ``ImportError: cannot import name 'ArgsKwargs' from 'pydantic_core._pydantic_core'``
+    at the first ``from pydantic import Field``, which reads like a product failure. The tree's own
+    ``pyvenv.cfg`` records the interpreter it was built for (``venv_python_version``); an
+    unreadable record keeps the existing behaviour and selects anyway.
     """
     import sys
 
-    if sys.prefix != sys.base_prefix:
+    version = venv_python_version(environment)
+    if version is None or version == sys.version_info[:2]:
+        return None
+    return f"{version[0]}.{version[1]}"
+
+
+def _require_own_dependencies(project_root: Path) -> None:
+    """With nothing committed, an interpreter keeps the packages it booted with.
+
+    The invariant activation shares with this function: a process never loads a tree built for
+    another Python (``_foreign_abi``). With nothing committed there is no tree to compare, and a
+    venv's own packages are ABI-matched by construction, so it keeps them. PM's store Python
+    boots with none, so for it there is nothing to keep: refuse instead of running on whatever
+    PYTHONPATH it inherited (historically the pre-PM in-tree venv).
+    """
+    import sys
+
+    if _venv_interpreter():
         return  # a venv interpreter (developer .venv, test env) carries its own packages
     if Path(sys.base_prefix).resolve().is_relative_to(store_root(project_root).resolve()):
         raise NoCommittedEnvironment("no dependency environment is committed for this install")
+
+
+def _keep_own_dependencies(project_root: Path, environment: Path, foreign: str) -> None:
+    """A generation built by another Python cannot supply this process's dependencies.
+
+    A venv interpreter keeps the packages it booted with, and so does an external interpreter
+    (Nix, a system Python): both carry their own ABI-matched tree. PM's store Python has none,
+    so a foreign generation is a broken install for it -- refuse with the repair remedy rather
+    than dying on a later import from a half-selected tree.
+    """
+    import sys
+
+    if _venv_interpreter():
+        return
+    if Path(sys.base_prefix).resolve().is_relative_to(store_root(project_root).resolve()):
+        raise RuntimeError(
+            f"dependency environment {environment} was built for Python {foreign}; "
+            f"this interpreter is {sys.version_info.major}.{sys.version_info.minor}: run `hermes pm repair`")
 
 
 def activate_dependencies(project_root: Path) -> None:
@@ -465,6 +511,7 @@ def activate_dependencies(project_root: Path) -> None:
 
     A process with no extension selection keeps its original launch contract.
     Already-running processes are never switched after a dependency install.
+    A generation built for another Python is never overlaid (``_keep_own_dependencies``).
     """
     import sys
 
@@ -480,11 +527,15 @@ def activate_dependencies(project_root: Path) -> None:
             environment = committed_venv(project_root)
             if environment is None:
                 return _require_own_dependencies(project_root)
+            if (foreign := _foreign_abi(environment)) is not None:
+                return _keep_own_dependencies(project_root, environment, foreign)
             release = lease_generation(environment)
             # Without the lock, an installer may commit a new generation between the
             # read and the lease, leaving the leased one unselected and collectable.
             while not held and (current := committed_venv(project_root)) not in (None, environment):
                 release()
+                if (foreign := _foreign_abi(current)) is not None:
+                    return _keep_own_dependencies(project_root, current, foreign)
                 environment, release = current, lease_generation(current)
             selected = site_packages(environment)
             if not selected.is_dir() and not runtime_facts_path(project_root).is_file():
@@ -495,6 +546,8 @@ def activate_dependencies(project_root: Path) -> None:
         environment = payload_venv(project_root)
         if environment is None:
             return _require_own_dependencies(project_root)
+        if _foreign_abi(environment) is not None:
+            return  # the payload's tree belongs to another Python: keep this interpreter's own
         selected = site_packages(environment)
         if not selected.is_dir():
             return  # External/Nix interpreter owns its original sys.path.

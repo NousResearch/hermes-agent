@@ -410,8 +410,8 @@ _POLLING_PROGRESS_TIMEOUT = 60.0  # generation unhealthy until getUpdates return
 # #92991) and no other probe can see it. ~3x the worst-case poll window leaves ample margin against false
 # positives while still recovering within a few heartbeat intervals.
 _POLLING_STALL_TIMEOUT = 150.0
-# Sustained getUpdates progress this long after the last 409 ends a conflict episode; it exceeds the longest
-# gap between two conflicts of one storm (retry delay <= 60s plus the next poll), so the ladder can climb.
+# Sustained getUpdates progress this long, counted from the first progress after the last 409's restart, ends a
+# conflict episode; it exceeds the gap between two conflicts of one storm (the next poll), so the ladder can climb.
 _POLLING_CONFLICT_QUIET_PERIOD = 120.0
 # Ingress dispatch stall (#102260, #130407): the transport probes prove getUpdates round-trips complete, not
 # that PTB's dispatcher ever handed the fetched updates to a handler. A backlog with no dispatch progress for
@@ -590,7 +590,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         self._bot_identity_refresh_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None  # command menu + DM topics, off the connect path
         self._polling_conflict_count = self._polling_network_error_count = self._polling_generation = 0
-        self._polling_last_conflict_monotonic: Optional[float] = None
+        self._polling_conflict_quiet_since: Optional[float] = None
         self._polling_progress_event = asyncio.Event()
         self._polling_progress_accepting = self._polling_teardown_started = False
         self._polling_error_callback_ref = None
@@ -1650,10 +1650,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         self._polling_last_progress_monotonic = time.monotonic()
         self._polling_network_error_count = 0
         # A conflict episode ends only after a quiet period: getUpdates also succeeds between the 409s of a
-        # live storm, so resetting on any progress pinned the ladder at (1/5) forever (#82303).
-        last_conflict = self._polling_last_conflict_monotonic
-        if last_conflict is None or self._polling_last_progress_monotonic - last_conflict >= _POLLING_CONFLICT_QUIET_PERIOD:
-            self._polling_conflict_count = 0
+        # live storm, so resetting on any progress pinned the ladder at (1/5) forever (#82303). The window opens
+        # at the first progress after the restart, so recovery downtime (stop, backoff, drain) never counts.
+        if self._polling_conflict_count:
+            quiet_since = self._polling_conflict_quiet_since
+            if quiet_since is None:
+                self._polling_conflict_quiet_since = self._polling_last_progress_monotonic
+            elif self._polling_last_progress_monotonic - quiet_since >= _POLLING_CONFLICT_QUIET_PERIOD:
+                self._polling_conflict_count = 0
+                self._polling_conflict_quiet_since = None
         # First proof getUpdates is flowing for this generation: flip a
         # published "retrying" (degraded connect, reconnect stamp, or the
         # mid-session recovery below) back to "connected" (#101391).
@@ -2291,7 +2296,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
             return
         self._polling_conflict_count += 1
-        self._polling_last_conflict_monotonic = time.monotonic()
+        self._polling_conflict_quiet_since = None
         MAX_CONFLICT_RETRIES = 5
         # 15s, 25s, 35s, 45s, 55s — clears Telegram's ~30s session window without hammering the API.
         RETRY_DELAY = 10 + (self._polling_conflict_count * 10)  # seconds

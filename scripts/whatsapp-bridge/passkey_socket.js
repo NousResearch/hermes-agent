@@ -12,7 +12,9 @@ export async function loadPasskeySigner(executablePath, { pairOnly, pairJson, is
 
 // Baileys still owns acknowledgement of these notifications. The handshake
 // runs separately so an interactive browser prompt cannot delay that ACK.
-export function attachPasskeyFlow(socket, { logger, signAssertion }) {
+// confirmCode(code, signal) resolves once the owner confirms the code matches the phone and rejects
+// otherwise; the signal aborts when this attempt is superseded or the socket closes.
+export function attachPasskeyFlow(socket, { logger, signAssertion, confirmCode }) {
   let closed = false;
   let pending = Promise.resolve();
   const flow = signAssertion ? makeShortcakeFlow({
@@ -22,9 +24,7 @@ export function attachPasskeyFlow(socket, { logger, signAssertion }) {
     getCreds: () => socket.authState.creds,
     updateCreds: patch => socket.ev.emit('creds.update', patch),
     deviceType: proto.DeviceProps.PlatformType.CHROME,
-    emitVerificationCode: (code, skipHandoffUX) => socket.ev.emit('connection.update', {
-      passkeyVerification: { code, skipHandoffUX },
-    }),
+    confirmCode,
   }) : null;
 
   function notification(node) {
@@ -32,6 +32,9 @@ export function attachPasskeyFlow(socket, { logger, signAssertion }) {
     if (!['passkey_prologue_request', 'crsc_continuation'].includes(node.attrs.type)) return;
     if (node.attrs.type === 'passkey_prologue_request') {
       socket.ev.emit('connection.update', { passkeyRequired: { hasSigner: Boolean(flow) } });
+      // A new request supersedes the current attempt: abort its browser prompt or code question now
+      // instead of queuing behind it.
+      flow?.clearSession();
     }
     if (!flow) return;
     pending = pending.then(() => {
@@ -53,10 +56,4 @@ export function attachPasskeyFlow(socket, { logger, signAssertion }) {
 
   socket.ws.on('CB:notification', notification);
   socket.ev.on('connection.update', connection);
-  return {
-    confirmVerificationCode() {
-      if (!flow || closed) throw new Error('No active passkey pairing');
-      return flow.confirmVerificationCode();
-    },
-  };
 }

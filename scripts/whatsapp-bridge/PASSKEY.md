@@ -16,8 +16,11 @@ A server-sent prologue request derives a pairing handoff proof from the ADV
 secret the phone already received during the QR scan (as upstream does), so the
 primary normally skips code matching and no confirmation prompt appears. The
 terminal prompt only runs when no trusted handoff applies (for example when
-signing takes longer than the five-minute handoff window). The
-interactive signer loads the real WhatsApp Web origin and validates the returned
+signing takes longer than the five-minute handoff window). The flow awaits the
+owner's answer itself and sends the pairing request only for the attempt that
+derived the code: a newer prologue request or a socket close cancels both the
+pending browser prompt and the code question. Failures print the error name and
+message, never assertion or credential bytes. The interactive signer loads the real WhatsApp Web origin and validates the returned
 challenge and origin. No existing browser profile or browser session is imported.
 The temporary browser profile does not inherit Chrome's signed-in password manager.
 Availability of a phone or operating-system passkey depends on the browser's
@@ -29,7 +32,13 @@ A passkey challenge in gateway mode before the connection opens exits the bridge
 with code 78 (`PASSKEY_REQUIRED_EXIT`); the adapter reports
 `whatsapp_passkey_required` as non-retryable until interactive pairing. A
 challenge reaching a session that is already connected is logged and ignored, as
-before passkey support, so a working gateway is not parked.
+before passkey support, so a working gateway is not parked. Dashboard pairing
+(`--pair-json`) reports `{event: error, error: passkey_required}`, which the
+dashboard shows as an instruction to pair from a local terminal.
+
+Known limit: Baileys keeps rotating QR codes while the browser prompt is open,
+and when it runs out of codes it ends the connection, which cancels the prompt
+before the signer's own 600-second bound. Real-account timing is unverified.
 
 ## Verification
 

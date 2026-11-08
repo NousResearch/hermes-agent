@@ -416,12 +416,11 @@ function emitPairEvent(event) {
 const scheduleReconnect = createReconnectScheduler(() => startSocket());
 const getWAVersion = createVersionResolver(fetchLatestBaileysVersion);
 
-async function confirmPasskey(flow, code, signal) {
+async function confirmPasskeyCode(code, signal) {
   const terminal = createInterface({ input: process.stdin, output: process.stdout });
   try {
     const answer = await terminal.question(`Does the code ${code} match your phone? [y/N] `, { signal });
     if (answer.trim().toLowerCase() !== 'y') throw new Error('Owner declined passkey confirmation');
-    await flow.confirmVerificationCode();
   } finally {
     terminal.close();
   }
@@ -450,15 +449,14 @@ async function startSocket() {
 
   sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
 
-  const passkeyFlow = attachPasskeyFlow(sock, { logger, signAssertion: passkeySigner });
-  const passkeyLifetime = new AbortController();
+  attachPasskeyFlow(sock, { logger, signAssertion: passkeySigner, confirmCode: confirmPasskeyCode });
   sock.ev.on('connection.update', (update) => {
-    if (update.connection === 'close') passkeyLifetime.abort();
     if (update.passkeyRequired && passkeySigner) {
       if (!PAIR_JSON) console.log('Complete passkey verification in the browser window.');
     } else if (update.passkeyRequired && !PAIR_ONLY && connectionState === 'connected') {
-      // A gateway session that already opened keeps running (rc13 acked and ignored this request before
-      // passkey support); exiting would park a working gateway as non-retryable.
+      // A gateway session whose connection is open keeps running (rc13 acked and ignored this request
+      // before passkey support): exiting with PASSKEY_REQUIRED_EXIT would park a working gateway as
+      // non-retryable. Pair-only still fails so setup never reports a pairing the server questioned.
       console.warn('WhatsApp sent a passkey request to an already connected session; ignoring it.');
     } else if (update.passkeyRequired) {
       // The dashboard's pairing watcher only understands error events; no signer is ever loaded there.
@@ -467,14 +465,11 @@ async function startSocket() {
       process.exit(PAIR_ONLY ? 1 : PASSKEY_REQUIRED_EXIT);
     }
     if (update.passkeyError) {
-      console.error('WhatsApp passkey verification failed or was cancelled.');
+      // Name and message only: the cause (missing browser, cancelled prompt, declined code, failed query)
+      // is what the user needs; assertion and credential bytes never reach the error text.
+      const { name, message } = update.passkeyError;
+      console.error(`WhatsApp passkey verification failed: ${name || 'Error'}: ${message || 'unknown error'}`);
       process.exit(1);
-    }
-    if (update.passkeyVerification && !update.passkeyVerification.skipHandoffUX) {
-      confirmPasskey(passkeyFlow, update.passkeyVerification.code, passkeyLifetime.signal).catch(() => {
-        if (passkeyLifetime.signal.aborted) return;
-        process.exit(1);
-      });
     }
     const { connection, lastDisconnect, qr } = update;
 

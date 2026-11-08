@@ -1,7 +1,9 @@
 Passkey handshake adaptation from vinikjkkj, WhiskeySockets/Baileys PR #2689.
 Original commits e5abc69fbabbc82709e6fd84e1bcb83d02a9ae14 and c3d846d68b1a40331687b66bcc8971679ef9af00.
 Modified for Hermes: the code-matching step waits for owner confirmation when no
-trusted pairing handoff applies (upstream always auto-confirms).
+trusted pairing handoff applies (upstream always auto-confirms); a newer prologue
+or socket close cancels the pending attempt; only server-origin notifications are
+handled; unused extension points were removed.
 
 MIT License
 

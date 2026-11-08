@@ -67,6 +67,25 @@ async def test_whatsapp_cloud_deny_only_card_has_no_approve_button(pending):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reason_len", [150, 510, 3000])
+async def test_whatsapp_cloud_long_reason_never_pushes_the_deadline_or_deny_notice_off_the_card(pending, reason_len):
+    """The 1,024-char body cap is shared with the reason: the preview (then the reason) gives way, never the
+    deadline line or the Deny-only notice, which a tail cut of the over-long body used to drop."""
+    from tests.gateway.test_whatsapp_cloud import _make_adapter, _mock_httpx_response
+
+    adapter = _make_adapter()
+    adapter._http_client = SimpleNamespace(post=AsyncMock(
+        return_value=_mock_httpx_response(200, {"messages": [{"id": "wamid.a1"}]})))
+    reason = ("recursive delete " * 200)[:reason_len]
+    await adapter.send_exec_approval(chat_id="15551234567", command=FENCED, session_key="sk", request_id="r1",
+                                     description=reason)
+    body = adapter._http_client.post.call_args.kwargs["json"]["interactive"]["body"]["text"]
+    assert len(body) <= 1024
+    assert "it will NOT run" in body and "only Deny is offered" in body
+    assert (reason in body) == (reason_len < 600)
+
+
+@pytest.mark.asyncio
 async def test_qq_card_shows_the_measured_preview_and_only_offered_buttons(pending):
     from plugins.platforms.qqbot.adapter import QQAdapter
 

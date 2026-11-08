@@ -64,34 +64,29 @@ def _success(platform: str, chat_id, warnings=None, **fields) -> dict:
 _NO_DELIVERABLE = "No deliverable text or media remained after processing MEDIA tags"
 
 
-def _telegram_transient_send(exc: Exception) -> bool:
-    """Whether a failed send may succeed on a retry: the platform adapter's classifier owns that answer
-    (PTB keys it on error classes — ``BadRequest`` subclasses ``NetworkError`` yet is permanent), so bare
-    status digits inside a message never select a retry. A raw socket error is excluded: unlike a PTB
-    ``NetworkError`` reporting a 5xx or a refused connect, it may have failed mid-write, and a resend
-    would duplicate the message."""
-    try:
-        from plugins.platforms.telegram.adapter import TelegramAdapter
-    except ImportError:  # adapter unavailable: retry nothing rather than guess from the text
-        return False
-    return (TelegramAdapter._looks_like_network_error(exc)
-            and not TelegramAdapter._is_timed_out(exc) and not isinstance(exc, OSError))
-
-
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
-    """Retry delay in seconds, or None when final: honours ``retry_after``; timeouts are never
-    retried (the send may have gone through); a transient transport/5xx failure backs off
-    exponentially."""
+    """Retry delay in seconds, or None when final. The adapter's classifiers own the answer (PTB keys
+    errors on class — ``BadRequest`` subclasses ``NetworkError`` yet is permanent), so status digits in
+    a message never select a retry. ``retry_after`` wins; a connect or pool timeout backs off (the
+    request never left); any other timeout is final (it may have reached Telegram); a transient
+    transport/5xx failure backs off. A raw socket error is final: it may have failed mid-write."""
     retry_after = getattr(exc, "retry_after", None)
     if retry_after is not None:
         try:
             return max(float(retry_after), 0.0)
         except (TypeError, ValueError):
             return 1.0
-    text = str(exc).lower()
-    if "timed out" in text or "timeout" in text:
+    try:
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+    except ImportError:  # adapter unavailable: retry nothing rather than guess from the text
         return None
-    return float(2 ** attempt) if _telegram_transient_send(exc) else None
+    backoff = float(2 ** attempt)
+    if TelegramAdapter._looks_like_connect_timeout(exc) or TelegramAdapter._looks_like_pool_timeout(exc):
+        return backoff
+    if TelegramAdapter._is_timed_out(exc) or "timeout" in str(exc).lower():
+        return None
+    transient = TelegramAdapter._looks_like_network_error(exc) and not isinstance(exc, OSError)
+    return backoff if transient else None
 
 
 async def _send_telegram_message_with_retry(bot, *, attempts: int = 3, **kwargs):
@@ -117,22 +112,62 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-def _telegram_bot(token):
-    """Bot honouring TELEGRAM_PROXY (standalone sends time out where api.telegram.org is
-    blocked); falls back to a direct connection."""
+def _telegram_request_kwargs():
+    """PTB ``HTTPXRequest`` timeouts: the gateway adapter's ``_build_ptb_requests`` values and
+    ``HERMES_TELEGRAM_HTTP_*`` overrides, so this lane never runs on PTB's 5s/1s/20s defaults."""
+    from utils import env_float
+    return {"connect_timeout": env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
+            "read_timeout": env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
+            "write_timeout": env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+            "pool_timeout": env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
+            "media_write_timeout": 60.0}
+
+
+def _telegram_fallback_transport(extra):
+    """The adapter's ``TelegramFallbackTransport`` (known IPv4 literals, Host/SNI kept) over the
+    configured ``extra.fallback_ips`` or the seed IPs; no DoH discovery on a one-shot send.
+    ``None`` when ``HERMES_TELEGRAM_DISABLE_FALLBACK_IPS`` opts out, as for the gateway."""
+    if os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return None
+    from agent.ssl_verify import platform_ssl_context
+    from plugins.platforms.telegram.telegram_network import (
+        SEED_FALLBACK_IPS, TelegramFallbackTransport, parse_fallback_ip_env)
+    # TELEGRAM_FALLBACK_IPS reaches ``extra["fallback_ips"]`` through the gateway env bridge.
+    configured = extra.get("fallback_ips") or ""
+    if not isinstance(configured, str):
+        configured = ",".join(str(ip) for ip in configured)
+    ips = parse_fallback_ip_env(configured) or list(SEED_FALLBACK_IPS)
+    return TelegramFallbackTransport(ips, verify=platform_ssl_context())
+
+
+def _telegram_bot(token, extra=None):
+    """Bot built like the gateway adapter's: ``extra.base_url``/``base_file_url`` (self-hosted or
+    compatible Bot API), the adapter's timeouts, then TELEGRAM_PROXY / ``extra.proxy_url``, else the
+    fallback-IP transport on api.telegram.org. Falls back to PTB defaults (same URLs) on failure."""
     from telegram import Bot
-    from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, safe_proxy_url_for_log
+    from gateway.platforms.base import describe_proxy_error
+    extra = extra or {}
     proxy = None
+    base_url = extra.get("base_url")
+    urls = {"base_url": base_url, "base_file_url": extra.get("base_file_url") or base_url} if base_url else {}
     try:
-        proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
-        if not proxy:
-            return Bot(token=token)
         from telegram.request import HTTPXRequest
-        logger.info("send_message: standalone Telegram send routed through proxy %s", safe_proxy_url_for_log(proxy))
-        return Bot(token=token, request=HTTPXRequest(proxy=proxy), get_updates_request=HTTPXRequest(proxy=proxy))
-    except Exception as proxy_err:
-        logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", describe_proxy_error(proxy_err, proxy) or proxy_err)
-    return Bot(token=token)
+        from gateway.platforms.base import resolve_proxy_url, safe_proxy_url_for_log
+        kwargs = _telegram_request_kwargs()
+        proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"],
+                                  configured=extra.get("proxy_url"))
+        if proxy:
+            logger.info("send_message: standalone Telegram send routed through proxy %s", safe_proxy_url_for_log(proxy))
+            return Bot(token=token, request=HTTPXRequest(proxy=proxy, **kwargs),
+                       get_updates_request=HTTPXRequest(proxy=proxy, **kwargs), **urls)
+        transport = None if base_url else _telegram_fallback_transport(extra)
+        httpx_kwargs = {"transport": transport} if transport is not None else None
+        return Bot(token=token, request=HTTPXRequest(httpx_kwargs=httpx_kwargs, **kwargs), **urls)
+    except Exception as request_err:
+        withheld = describe_proxy_error(request_err, proxy)
+        logger.warning("send_message: failed to build the Telegram request (%s), using PTB defaults",
+                       withheld or _sanitize_error_text(request_err), exc_info=withheld is None)
+    return Bot(token=token, **urls)
 
 
 def _telegram_thread_kwargs(thread_id):
@@ -269,8 +304,10 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
-    """One-shot Telegram Bot API send; parse failures fall back to plain text."""
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False,
+                         force_document=False, extra=None):
+    """One-shot Telegram Bot API send over the platform's ``extra`` (base_url, proxy, fallback IPs);
+    parse failures fall back to plain text."""
     if str(thread_id or "").strip() and not str(thread_id).strip().lstrip("-").isdigit():
         # ``<chat>:<topic name>`` parses for every caller, but only the live gateway's cron router
         # resolves a name (ensure_dm_topic): the Bot API has no topic lookup by name (#80483).
@@ -279,7 +316,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                       "through a cron job while the gateway is running.")
     try:
         formatted, send_parse_mode, _has_html = _telegram_format(message)
-        bot = _telegram_bot(token)
+        bot = _telegram_bot(token, extra)
         from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
         from gateway.platforms.base import BasePlatformAdapter, utf16_len
         # Telegram accepts a numeric chat_id OR an @username string; never force-int.

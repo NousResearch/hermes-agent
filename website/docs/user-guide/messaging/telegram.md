@@ -621,6 +621,7 @@ When `base_url` is set, Hermes:
 - Builds the python-telegram-bot client against the local server
 - Auto-lifts its internal document/audio size cap from 20 MB → 2 GB
 - Reports the active limit in the "too large" error message (`Maximum: 2048 MB.`) so it's obvious which mode you're in
+- Sends through the same server outside the gateway too: `hermes send`, the `send_message` tool and cron deliveries that fall back to the standalone sender
 
 Restart the gateway and look for a confirmation log line:
 
@@ -1340,6 +1341,8 @@ In some restricted networks, `api.telegram.org` may resolve to an IP that is unr
 3. Known IPv4 Telegram API IPs are tried **before** the dual-stack `api.telegram.org` hostname. A blackholed IPv6 path can sit in `connect()` without erroring, which used to pin the event loop so the 30s init deadline never fired.
 4. If DoH is also blocked or times out, a hardcoded IPv4 seed list (`149.154.166.110`, `149.154.167.220`) is used as that IPv4-first list. The hostname remains last resort.
 5. Once a path succeeds, it becomes "sticky" — subsequent requests use it directly. The hostname is kept as a last resort for IPv6-only networks.
+
+Sends made outside the gateway process (`hermes send`, the `send_message` tool, standalone cron delivery) use the same transport with your configured IPs or the seed list. They skip DoH discovery so a one-shot send stays fast. They also use the gateway's `HERMES_TELEGRAM_HTTP_*` timeouts and its 60s media-upload write timeout. A connect or pool timeout is retried there, because the request never left. Any other timeout is not retried: Telegram may already have delivered the message.
 
 ### Configuration
 

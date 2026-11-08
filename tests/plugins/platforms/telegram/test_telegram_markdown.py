@@ -85,3 +85,8 @@ def test_double_backticks_inside_code_stay_code_content(adapter, markdown, expec
     assert out == expected
     assert mdv2_error(out) is None
 
+
+@pytest.mark.parametrize("markdown", ["> **a\nb**", "> **a\n> b**", "> [`\n`]()"])
+def test_emphasis_and_links_never_cross_a_quote_line_edge(adapter, markdown):
+    """Telegram ends a blockquote at a newline, so an entity left open across it is rejected."""
+    assert mdv2_error(adapter.format_message(markdown)) is None

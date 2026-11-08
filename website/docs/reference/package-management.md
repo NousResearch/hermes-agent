@@ -451,6 +451,21 @@ which install it with the pinned pnpm under `--frozen-lockfile` (with
 the manifests and the release-age policy, not which pnpm wrote it. A user agent
 overridden through `pnpm_config_user_agent` is refused as well.
 
+In the repository root and the JS workspace folders, npm refuses every command that
+installs or resolves dependencies (`npm install` with or without `--ignore-scripts`,
+`--package-lock-only` or `--force`, `npm ci`, `update`, `dedupe`, `uninstall`,
+`link`): each of these folders has an `.npmrc` with `engine-strict=true`, and its
+`package.json` declares an `engines.npm` that no npm satisfies. `npm rebuild` and
+`npm pkg set` are not refused. An explicit `--engine-strict=false` overrides the
+refusal.
+
+`npx`, `npm exec` and `npm run` keep working, so MCP servers and tools still start.
+But `engine-strict` applies anywhere in the checkout: in these folders, and through
+the root `.npmrc` in every folder without a `package.json` of its own (`agent/`,
+`tools/`, the Docker image's `/opt/hermes`). There `npx` refuses to install a package
+when it or any non-optional dependency it pulls in declares `engines` the current Node
+or npm does not satisfy, where it would only warn outside the checkout.
+
 The website is a separate npm project: `npm ci --prefix website`, then
 `npm run build:fast --prefix website`. PM activation supplies tools, not these
 `node_modules` directories or built assets. Native desktop builds have additional
@@ -622,6 +637,12 @@ not substitutes for an installed application's update mechanism.
 | `pm update --termux [--check]` | Repin the termux pool archives the rolling pool has retired (the runtime-lib pin table and the bionic lock rows). `--check` reports without writing and exits 1 when a pin is retired. |
 | `pm install --target TARGET NAME...` | Stage explicit cross-target packages without recording them as the host's installed runtime. The win32 `git` target pins a self-extracting PortableGit archive: staging it runs the vendor extractor and therefore requires a Windows host. |
 | `pm bundle --out DIR [--ref REF]` | Stage a source snapshot, native tools, facts, and Python dependencies. It does not produce a signed desktop installer. |
+
+The Nix flake pins the pnpm store that `pnpm-lock.yaml` resolves to with one
+fixed-output hash, `nix/pnpm-deps-hash`. `pm update --pnpm` does not refresh it:
+after any change to `pnpm-lock.yaml`, run `nix run .#update-pnpm-lockfile`
+([Nix setup](../getting-started/nix-setup.md#updating-the-pnpm-lockfile)) or
+copy the hash the `nix` workflow's `pnpm-deps-hash` job reports.
 
 The complete desktop builder also builds the JavaScript surfaces, generates
 launchers, and invokes native packaging. Maintainers can read

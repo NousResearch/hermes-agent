@@ -172,11 +172,13 @@ def _headless_linux() -> bool:
     return sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
-def build_update_products(project_root: Path, *, desktop: bool) -> None:
+def build_update_products(project_root: Path, *, desktop: bool, after_dependencies=None) -> None:
     """Prepare the selected union once, attempting every independent product.
 
     A failed product never skips the next one (a broken web build must not leave the TUI or the
     desktop app stale); the failures are raised together at the end as ``ProductBuildError``.
+    ``after_dependencies`` (it must not raise) runs once the Python and Node dependencies are
+    prepared, whether or not they succeeded, and before the first product build.
     """
     # Both current updates and historical takeover reach this in a fresh target
     # interpreter, never in the updater's pre-sync import graph.
@@ -197,6 +199,8 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
 
     attempt("feature dependencies", lambda: _install_configured_features_missing_deps(project_root))
     frontends = source_frontends(project_root)
+    if not frontends and after_dependencies is not None:
+        after_dependencies()
     if frontends:
         desktop_built = False
         env: dict = {}
@@ -221,6 +225,8 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
             prepared = desktop_skipped = attempt("Node dependencies", lambda: node_dependencies(frontends))
             if desktop_skipped:
                 failures.append(("desktop dependencies", failed[1]))
+        if after_dependencies is not None:
+            after_dependencies()
         desktop_reason = failures[-1][0] if failures else ""
         if desktop and (desktop_skipped or _headless_linux()):
             print("  ⓘ If this host never runs the desktop app, `hermes uninstall --gui` removes it "

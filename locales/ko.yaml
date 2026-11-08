@@ -974,9 +974,6 @@ platform:
     approved: "✅ 승인됨."
     denied: "❌ 거부됨."
     approval_expired: "⌛ 승인이 만료되어 명령이 실행되지 않았어요 (이미 시간 초과되었거나 다른 곳에서 처리됨)."
-  yuanbao:
-    slow_response_notice: "이 작업은 조금 복잡해서 아직 진행 중이에요. 잠시만 기다려 주세요..."
-    owner_command_denied: "⚠️ {command}은(는) 비공개 채팅 모드에서 생성자만 사용할 수 있어요"
   shared:
     truncated_suffix: "\n...(잘림)"
     unknown: "알 수 없음"

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Classify a PR's changed files into CI work lanes.
 
-Reads newline-separated changed paths on stdin and writes ``key=value``
+Reads changed paths on stdin, one file per line (a renamed file as
+``path<TAB>old path``), and writes ``key=value``
 booleans (one per lane) to ``$GITHUB_OUTPUT`` and stdout. The
 ``detect-changes`` composite action consumes them so steps gate on
 ``if: steps.changes.outputs.<lane> == 'true'``.
@@ -94,8 +95,9 @@ import subprocess
 import sys
 
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
-# Shipped page outside those packages, exercised by the desktop Electron suite.
-_FRONTEND_FILES = {"scripts/desktop-update/ui.html"}
+# Shipped page outside those packages, exercised by the desktop Electron suite. The desktop cache
+# key owner is checked by tests-js/desktop-build-cache-inputs.test.mjs against the Node graph.
+_FRONTEND_FILES = {"scripts/desktop-update/ui.html", "scripts/ci/desktop_build_cache.py"}
 # The WhatsApp bridge's ``node --test`` suites run in the JS & TS job, so a
 # change to the bridge or to the Python adapter that speaks its protocol
 # selects ``frontend``.
@@ -271,6 +273,7 @@ _DESKTOP_E2E_SHARED = (
 _UPDATE_PIPELINE = (
     "hermes_cli/main.py",  # cmd_update: lock, pre-update backup, receipt boundary
     "hermes_cli/main_dashboard.py",  # hangup protection + update.log mirror
+    "hermes_cli/main_web_build.py",  # completion's bytecode sweep and dropped-folder prune
     # Prefix: main_desktop.py (staged Desktop swap / rebuild in the tail) and the
     # main_desktop_* siblings it imports (macOS signing identity).
     "hermes_cli/main_desktop",
@@ -749,7 +752,8 @@ def pull_request_changed_files() -> list[str]:
     pr = _pull_request_number()
     if not repo or not pr:
         return []
-    return _gh_lines("api", "--paginate", f"repos/{repo}/pulls/{pr}/files", "--jq", ".[].filename") or []
+    return _gh_lines("api", "--paginate", f"repos/{repo}/pulls/{pr}/files", "--jq",
+                     ".[] | [.filename, .previous_filename // empty] | @tsv") or []
 
 
 def pull_request_labels() -> list[str]:
@@ -771,9 +775,26 @@ def pull_request_labels() -> list[str]:
     return [label["name"] for label in labels if isinstance(label, dict) and label.get("name")]
 
 
+# The compare API lists at most this many files and drops the rest without saying so.
+COMPARE_FILE_CAP = 300
+
+
+def changed_paths(lines: list[str]) -> list[str]:
+    """Paths from lines of ``path`` or ``path<TAB>old path``; ``[]`` (every lane runs) at the cap.
+
+    A rename counts under both names: a lane keyed on the old location still has to see a file move
+    away from it."""
+    lines = [line for line in lines if line.strip()]
+    if len(lines) >= COMPARE_FILE_CAP:
+        print(f"{len(lines)} changed files reached the compare API's {COMPARE_FILE_CAP}-file cap; "
+              "the list may be cut short, so every lane runs", file=sys.stderr)
+        return []
+    return [path for line in lines for path in line.split("\t") if path.strip()]
+
+
 def main() -> int:
-    files = sys.stdin.read().splitlines()
-    if not any(f.strip() for f in files):
+    lines = sys.stdin.read().splitlines()
+    if not any(f.strip() for f in lines):
         recovered = pull_request_changed_files()
         if recovered:
             print(
@@ -781,7 +802,8 @@ def main() -> int:
                 "path(s) from the pull request files endpoint",
                 file=sys.stderr,
             )
-            files = recovered
+            lines = recovered
+    files = changed_paths(lines)
     lanes = classify(files, run_e2e=RUN_E2E_LABEL in pull_request_labels())
     out = "\n".join(f"{key}={str(value).lower()}" for key, value in lanes.items())
     if dest := os.environ.get("GITHUB_OUTPUT"):

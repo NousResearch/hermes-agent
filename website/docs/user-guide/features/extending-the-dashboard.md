@@ -12,7 +12,7 @@ The Hermes web dashboard (`hermes dashboard`) is built to be reskinned and exten
 2. **UI plugins** — a directory with `manifest.json` + a JavaScript bundle that registers a tab, replaces a built-in page, augments one via page-scoped slots, or injects components into named shell slots.
 3. **Backend plugins** — a Python file inside that plugin directory that exposes a FastAPI `router`; routes are mounted under `/api/plugins/<name>/` and called from the plugin's UI.
 
-All three are **drop-in at runtime**: no repo clone, no `npm run build`, no patching the dashboard source. This page is the canonical reference for all three.
+All three are **drop-in at runtime**: no repo clone, no `pnpm run build`, no patching the dashboard source. This page is the canonical reference for all three.
 
 If you just want to use the dashboard, see [Web Dashboard](./web-dashboard). If you want to reskin the terminal CLI (not the web dashboard), see [Skins & Themes](./skins) — the CLI skin system is unrelated to dashboard themes.
 

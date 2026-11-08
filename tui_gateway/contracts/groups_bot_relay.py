@@ -155,11 +155,20 @@ class GroupsCapabilitiesParams(ProfileParams):
 
 class GroupsCapabilitiesResult(Result):
     protocol_version: int
+    #: On the canonical gateway (hermes gateway run, also via forwarding hermes serve),
+    #: owning a group chat with peer members requires a running driver on the home.
     driver: bool
+    #: The canonical home must be persistent to drive the group chat with Desktop closed.
+    #: Standalone hermes serve derives this from its lending catalog; clients should not
+    #: treat it as a home for gateway-owned group chats.
     persistent_process: bool
     authority_gateway_id: str
+    #: On the canonical gateway, lending requires room_link.enabled with its catalog and
+    #: endpoint; the home need not enable its own. Standalone hermes serve skips its
+    #: API-server and endpoint checks.
     room_link: RoomLinkStatus
     features: list[str]
+    #: On the canonical gateway, owning requires groups.peer.register; lending requires groups.peer.invite.
     methods: list[str]
     max_log_limit: int
     #: Local profiles THIS caller may seat in a new group (``gateway/session_hosted_members``): served
@@ -247,6 +256,10 @@ class RoomDriverStatus(Result):
     member_activity: list[RoomMemberActivity] = Field(default_factory=list)
     last_error: str | None = None
     max_rounds: int | None = None
+    #: How many times one discussion paused at its cap may Continue (absent from older gateways).
+    max_continues: int | None = None
+    #: Room routing modes this gateway accepts (absent from older gateways: everyone and lead).
+    routing_modes: list[str] | None = None
     peer_routes: list[PeerRouteStatus]
 
 
@@ -256,8 +269,9 @@ class RoomContext(Result):
 
     purpose: str
     notes: str
-    #: ``everyone`` (every member answers an unaddressed message) or ``lead`` (the lead assigns it).
-    routing: Literal["everyone", "lead"] = "everyone"
+    #: ``everyone`` (every member answers an unaddressed message), ``lead`` (the lead assigns it) or ``auto``
+    #: (one ``auxiliary.group_router`` call picks who answers; recorded as ``room.routed``).
+    routing: Literal["everyone", "lead", "auto"] = "everyone"
     lead_member_id: str = ""
 
 
@@ -308,7 +322,7 @@ class GroupsContextParams(RoomParams):
     purpose: str
     notes: str
     #: Omitted routing fields keep the room's current routing.
-    routing: Literal["everyone", "lead"] | None = None
+    routing: Literal["everyone", "lead", "auto"] | None = None
     lead_member_id: str | None = None
 
 
@@ -374,6 +388,19 @@ class GroupsStopResult(Result):
 
 method("groups.stop", params=GroupsStopParams, result=GroupsStopResult,
        doc="Durably cancel queued or running work for one hosted room.")
+
+
+class GroupsContinueParams(RoomParams):
+    discussion_event_id: str
+
+
+class GroupsContinueResult(Result):
+    continued: bool = True
+    event: RoomEvent
+
+
+method("groups.continue", params=GroupsContinueParams, result=GroupsContinueResult,
+       doc="Grant a discussion paused at its cap (room.activity bounded) one more budget; writes room.continued.")
 
 
 class GroupsApproveParams(RoomParams):
@@ -508,6 +535,7 @@ class GroupsPeerInviteParams(ProfileParams):
     member_id: str | None = None
     grant_id: str | None = None
     ttl_seconds: float | None = None
+    status_ttl_seconds: float | None = None
 
 
 class GroupsPeerInviteResult(Result):

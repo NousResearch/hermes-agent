@@ -20,6 +20,7 @@ import { frNotifications } from './fr_notifications'
 import { frOnboarding } from './fr_onboarding'
 import { frPluginPreviewAccess } from './fr_plugin_preview_access'
 import { frPluginUpdate } from './fr_plugin_update'
+import { frPluginUpdateAll } from './fr_plugin_update_all'
 import { frPreviewWeb } from './fr_preview_web'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
@@ -2391,16 +2392,21 @@ export const frOverrides = {
       browserRealProfile: {
         label: 'Utiliser mon profil de navigateur réel',
         description:
-          "Copie les identifiants de connexion et les cookies de votre navigateur par défaut dans un instantané géré que l'agent utilise pour naviguer. Votre profil actif n'est jamais ouvert directement. S'applique aux nouvelles sessions.",
+          'Copie les identifiants de connexion et les cookies de votre navigateur par défaut dans un instantané géré que l\'agent utilise pour naviguer, et connecte aussi le navigateur intégré avec eux. Votre profil actif n\'est jamais ouvert directement. S\'applique aux nouvelles sessions.',
         enabledTitle: 'Navigation avec le profil réel activée',
         enabledMessage: 'Les nouvelles sessions utiliseront un instantané de votre profil de navigateur par défaut.',
         disabledTitle: 'Navigation avec le profil réel désactivée',
         disabledMessage:
-          "L'instantané du profil sera supprimé ; les nouvelles sessions utiliseront un navigateur vierge.",
+          'L\'instantané du profil sera supprimé et le navigateur intégré en sera déconnecté ; les nouvelles sessions utiliseront un navigateur vierge.',
         failedSave: "Impossible d'enregistrer le paramètre du profil réel",
+        reimportSignins: 'Réimporter les connexions',
+        signinsImportedTitle: 'Connexions du navigateur intégré',
+        signinsImported: count => `Navigateur intégré connecté avec ${count} cookie${count === 1 ? '' : 's'} de votre profil de navigateur.`,
+        signinsRemote: 'Ce backend s\'exécute sur une autre machine, son profil de navigateur n\'est donc pas importé dans le navigateur intégré.',
+        signinsFailed: 'Impossible d\'importer les connexions dans le navigateur intégré',
         prompt: {
           title: 'Restez connecté à vos sites',
-          body: "Autorisez Hermes à naviguer avec un instantané de votre profil de navigateur par défaut afin que les sites s'ouvrent avec vos sessions déjà connectées.",
+          body: 'Autorisez Hermes à naviguer avec un instantané de votre profil de navigateur par défaut afin que les sites s\'ouvrent avec vos sessions déjà connectées, pour l\'agent et dans le navigateur intégré.',
           bulletSnapshot: 'Les cookies et identifiants de connexion sont copiés dans un instantané géré.',
           bulletLiveProfile: "Votre profil de navigateur actif n'est jamais ouvert directement.",
           bulletLocal: 'Rien ne quitte cet ordinateur.',
@@ -2527,6 +2533,7 @@ export const frOverrides = {
         `Épinglé au commit ${sha}. Les mises à jour sont refusées tant qu’il n’est pas réinstallé avec un nouvel épinglage.`,
       pinnedBadge: (sha: string) => `épinglé @ ${sha}`,
       ...frPluginUpdate,
+      ...frPluginUpdateAll,
       ...frPluginPreviewAccess,
       uninstall: 'Désinstaller',
       uninstallTip: (name: string, profile: string) => `Désinstaller ${name} de ${profile}`,
@@ -4651,6 +4658,15 @@ export const frOverrides = {
           system_prompt: 'Invite système',
           tool_definitions: "Définitions d'outils"
         },
+        compact: {
+          action: 'Compacter la conversation',
+          busyHint: "Terminez ou arrêtez d'abord la réponse en cours",
+          confirm: 'Compacter',
+          hint: 'Résumez le contexte ancien pour libérer de la place. Continuez dans cette même conversation.',
+          question: 'Compacter cette conversation en un résumé ?',
+          questionNamed: title => `Compacter « ${title} » en un résumé ?`,
+          working: 'Compaction…'
+        },
         empty: 'Aucune donnée de contexte pour le moment',
         loading: 'Chargement du détail…',
         percentFull: percent => `${percent}% plein`,
@@ -5108,6 +5124,7 @@ export const frOverrides = {
       readAloud: 'Lire à voix haute',
       copyFullResponse: 'Copier la réponse complète',
       readAloudFullResponseHint: 'Maj+clic : lire la réponse complète',
+      contentRefusedNotice: 'Ce message a été refusé par le filtre de sécurité du modèle — essayez une autre requête.',
       editMessage: 'Modifier le message',
       expandMessage: 'Développer le message',
       scrollToBottom: 'Défiler vers le bas',
@@ -5187,6 +5204,10 @@ export const frOverrides = {
       authorized: server => `${server} autorisé`,
       failed: server => `Échec de la configuration de ${server}`,
       toolCount: count => (count === 1 ? '1 outil' : `${count} outils`),
+      launchCommand: target => `Exécute : ${target}`,
+      launchRemote: target => `Se connecte à : ${target}`,
+      launchEnv: keys => `Environnement : ${keys}`,
+      launchCwd: dir => `Dossier de travail : ${dir}`,
       envRequired: "Renseignez d'abord les identifiants requis",
       sendFailed: "Impossible d'envoyer la réponse de configuration MCP",
       reloadFailed:

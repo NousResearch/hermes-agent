@@ -1997,7 +1997,7 @@ def _update_fallback_context_compressor(agent) -> None:
     # update_model()), but a session that never probed keeps its lazy compaction-time probe rather than
     # resolving an auxiliary client while the primary route is failing (#114707).
     if getattr(agent, "_compression_feasibility_checked", False) is True:
-        from agent.conversation_compression import revalidate_compression_feasibility
+        from agent.conversation_compression_feasibility import revalidate_compression_feasibility
         revalidate_compression_feasibility(agent)
 
 

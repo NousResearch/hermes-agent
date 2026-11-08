@@ -125,7 +125,9 @@ def aux_probe_mode():
 from agent.credential_pool import load_pool
 from agent.credential_pool_model_cooldowns import pool_failure_reason
 from agent.custom_entry_pool import entry_scoped_pool, pool_for_aux_provider
-from agent.auxiliary_pool_selection import PoolSelection, _aux_pool_selection, _pool_cache_hint, _take_pool_selection
+from agent.auxiliary_pool_selection import (
+    STRATEGY_SENT_PROVIDERS, PoolSelection, _aux_pool_selection, _cached_credential_holds, _pool_cache_hint,
+    _sent_selection, _stamp_client)
 from agent.message_metadata import data_use_requirement
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
@@ -1029,13 +1031,16 @@ def _load_pool_with_credentials(provider: str, note: str = "") -> Optional[Any]:
 def _select_pool_entry(provider: str, model: Optional[str] = None) -> tuple[bool, Optional[Any]]:
     """Return (pool_exists_for_provider, selected_entry)."""
     pool = _load_pool_with_credentials(provider)
-    if pool is None:
-        return False, None
+    return (False, None) if pool is None else (True, _pool_select(pool, provider, model))
+
+
+def _pool_select(pool: Any, provider: str, model: Optional[str] = None) -> Optional[Any]:
+    """``pool``'s strategy pick for ``model`` (normalized for ``provider``), None when none (never raises)."""
     try:
-        return True, pool.select(model=_normalize_resolved_model(model, provider)) if model else pool.select()
+        return pool.select(model=_normalize_resolved_model(model, provider)) if model else pool.select()
     except Exception as exc:
-        logger.debug("Auxiliary client: could not select pool entry for %s: %s", provider, exc)
-        return True, None
+        logger.debug("Auxiliary client: could not select pool entry for %s: %s", provider, exc, exc_info=True)
+        return None
 
 
 def _peek_pool_entry(provider: str, pool: Any = None, model: Optional[str] = None) -> Optional[Any]:
@@ -1999,21 +2004,12 @@ def _nous_api_key(provider: dict) -> str:
 
 def _resolve_nous_pool_runtime_api(*, force_refresh: bool = False, model: Optional[str] = None,
                                    selection: Optional[PoolSelection] = None) -> Optional[tuple[str, str]]:
-    """Resolve Nous auxiliary credentials from ``selection`` (the cache key's), else a model-aware select."""
-    try:
-        from hermes_cli.auth import _agent_key_is_usable
-        pool = selection.pool if selection else load_pool("nous")
-    except Exception as exc:
-        logger.debug("Auxiliary Nous pool credential resolution failed: %s", exc)
-        return None
-    if not pool or not pool.has_credentials():
-        return None
-    try:
-        entry = (_take_pool_selection(selection, "nous", model) if selection
-                 else pool.select(model=_normalize_resolved_model(model, "nous")) if model else pool.select())
-    except Exception as exc:
-        logger.debug("Auxiliary Nous pool selection failed: %s", exc)
-        return None
+    """Nous auxiliary credentials from ``selection``'s entry (the one a client sent, on its 401 refresh),
+    else the pool strategy's pick for ``model`` on ``selection``'s pool (loaded once) or a fresh load."""
+    from hermes_cli.auth import _agent_key_is_usable
+    pinned = selection.entry if selection else None
+    pool = selection.pool if selection else _load_pool_with_credentials("nous")
+    entry = pinned or (_pool_select(pool, "nous", model) if pool is not None else None)
     if entry is None:
         return None
 
@@ -2023,7 +2019,7 @@ def _resolve_nous_pool_runtime_api(*, force_refresh: bool = False, model: Option
 
     if force_refresh or not _agent_key_is_usable(_entry_state(entry), _nous_min_key_ttl_seconds()):
         try:
-            refreshed = pool.try_refresh_matching(credential_id=entry.id) if selection else pool.try_refresh_current()
+            refreshed = pool.try_refresh_matching(credential_id=entry.id) if pinned else pool.try_refresh_current()
         except Exception as exc:
             logger.debug("Auxiliary Nous pool refresh failed: %s", exc)
             refreshed = None
@@ -2078,24 +2074,16 @@ def _resolve_xai_oauth_for_aux(model: Optional[str] = None, selection: Optional[
     """
     try:
         from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL, _xai_validate_inference_base_url
-        pool = selection.pool if selection else load_pool("xai-oauth")
-        if pool and pool.has_credentials():
-            entry = (_take_pool_selection(selection, "xai-oauth", model) if selection
-                     else pool.select(model=_normalize_resolved_model(model, "xai-oauth") if model else None))
-            if entry is not None:
-                api_key = str(
-                    getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "") or ""
-                ).strip()
-                _url = lambda v: str(v or "").strip().rstrip("/")
-                base_url = _xai_validate_inference_base_url(
-                    _url(_scoped_key_env("HERMES_XAI_BASE_URL"))
-                    or _url(_scoped_key_env("XAI_BASE_URL"))
-                    or _url(getattr(entry, "runtime_base_url", None))
-                    or _url(getattr(entry, "base_url", None)),
-                    fallback=DEFAULT_XAI_OAUTH_BASE_URL,
-                )
-                if api_key and base_url:
-                    return api_key, base_url
+        entry = _pool_select(selection.pool, "xai-oauth", model) if selection else _select_pool_entry("xai-oauth", model)[1]
+        if entry is not None:
+            api_key = _pool_runtime_api_key(entry)
+            _url = lambda v: str(v or "").strip().rstrip("/")
+            base_url = _xai_validate_inference_base_url(
+                _url(_scoped_key_env("HERMES_XAI_BASE_URL")) or _url(_scoped_key_env("XAI_BASE_URL"))
+                or _pool_runtime_base_url(entry), fallback=DEFAULT_XAI_OAUTH_BASE_URL,
+            )
+            if api_key and base_url:
+                return api_key, base_url
     except Exception as exc:
         logger.debug("Auxiliary xAI OAuth pool credential resolution failed: %s", exc)
     try:
@@ -2113,7 +2101,7 @@ def _resolve_codex_credential_and_base(model: Optional[str] = None, selection: O
     key goes where that pool entry routes (row URL / ``model.base_url``) and the auth.json OAuth
     token goes to the ChatGPT default. ``(None, <base>)`` without a usable token."""
     override = _codex_base_url_override()
-    pool_present, entry = ((True, _take_pool_selection(selection, "openai-codex", model)) if selection
+    pool_present, entry = ((True, _pool_select(selection.pool, "openai-codex", model)) if selection
                            else _select_pool_entry("openai-codex", model))  # a model-scoped cooldown spares siblings
     if pool_present:
         token = _pool_runtime_api_key(entry)
@@ -4677,7 +4665,7 @@ class _ResolveRequest(NamedTuple):
     main_runtime: Optional[dict[str, Any]]
     is_vision: bool
     task: Optional[str]
-    pool_selection: Optional[PoolSelection] = None  # the cache key's (pool, peeked entry); builders send it
+    pool_selection: Optional[PoolSelection] = None  # the cached build's pool; Nous/Codex/xAI select() on it
 
 
 _ResolveResult = tuple[Optional[Any], Optional[str]]
@@ -5632,7 +5620,7 @@ def _refresh_nous_auxiliary_client(
     *, cache_provider: str, model: Optional[str], async_mode: bool, base_url: Optional[str] = None,
     api_key: Optional[str] = None, api_mode: Optional[str] = None,
     main_runtime: Optional[dict[str, Any]] = None, is_vision: bool = False,
-    lookup_model: Optional[str] = None, lookup_task: Optional[str] = None,
+    lookup_model: Optional[str] = None, lookup_task: Optional[str] = None, stale_client: Any = None,
 ) -> tuple[Optional[Any], Optional[str]]:
     """Refresh Nous runtime creds, rebuild the client, and replace the cache entry.
 
@@ -5648,9 +5636,10 @@ def _refresh_nous_auxiliary_client(
     client refreshed on a 401 lands under the ``task=""`` key while the stale entry survives under the
     task-scoped key (#58894).
     """
-    selection = _aux_pool_selection("nous", lookup_model)  # refresh the entry the rebuilt key digests
+    pool = _aux_pool_selection("nous", peek=False).pool  # refresh the entry whose key the stale client sent
+    selection = _sent_selection(stale_client, pool) or (PoolSelection(pool, None) if pool is not None else None)
     runtime = _resolve_nous_runtime_api(force_refresh=True, stale_access_token=api_key, model=lookup_model,
-                                        selection=selection if selection.pool is not None else None)
+                                        selection=selection)
     if runtime is None:
         return None, model
     fresh_key, fresh_base_url = runtime
@@ -5661,10 +5650,12 @@ def _refresh_nous_auxiliary_client(
     else:
         client, final_model = sync_client, model
     client._hermes_aux_effective_provider = "nous"  # an auto route's retry still classifies as Nous
+    if pool is not None:
+        _stamp_client(client, pool, final_model)
     cache_key = _client_cache_key(
         cache_provider, async_mode=async_mode, base_url=base_url, api_key=api_key,
         api_mode=api_mode, main_runtime=main_runtime, is_vision=is_vision, task=lookup_task,
-        model=lookup_model,
+        model=lookup_model, pool_selection=PoolSelection(pool, None) if pool is not None else None,
     )
     _store_cached_client(cache_key, client, final_model, bound_loop=current_loop)
     return client, final_model
@@ -5821,16 +5812,22 @@ def _get_cached_client(
         base_url, api_key = local
     current_loop = _current_event_loop() if async_mode else None
     runtime = _normalize_main_runtime(main_runtime)
-    # ONE pool selection: the key digests its entry and the builder sends it (env-var credentials
-    # would bypass pool rotation). `auto` keys on the main provider's pool; `custom` on its endpoint,
-    # so its pool is peeked only to build a keyless client.
+    # ONE pool load per call. The explicit-key routes key on and send its peeked entry (env-var
+    # credentials would bypass rotation). Nous/Codex/xAI select() on it once per build, so the pool
+    # strategy picks what is sent; a hit checks the cached client's entry without selecting. `auto`
+    # keys on the main provider's pool; bare `custom` on its endpoint (peeked only to build keyless).
     normalized = _normalize_aux_provider(provider)
-    selection = None if normalized in {"auto", "custom"} else _aux_pool_selection(provider, model)
-    cache_key = _client_cache_key(
-        provider, async_mode=async_mode, base_url=base_url, api_key=api_key, api_mode=api_mode,
-        main_runtime=main_runtime, is_vision=is_vision, task=task, model=model, pool_selection=selection,
-    )
+    strategy_sent = normalized in STRATEGY_SENT_PROVIDERS
+    selection = None if normalized in {"auto", "custom"} else _aux_pool_selection(provider, model, peek=not strategy_sent)
+    key_for = functools.partial(_client_cache_key, provider, async_mode=async_mode, base_url=base_url, api_key=api_key,
+                                api_mode=api_mode, main_runtime=main_runtime, is_vision=is_vision, task=task, model=model)
+    cache_key = key_for(pool_selection=selection)
     with _client_cache_lock:
+        cached = _client_cache.get(cache_key) if strategy_sent and selection.pool is not None else None
+    stale = cached is not None and not _cached_credential_holds(cached[0], selection.pool)
+    with _client_cache_lock:
+        if stale and _client_cache.get(cache_key) is cached:
+            del _client_cache[cache_key]  # its entry left rotation: popped, not closed (a caller may be mid-request)
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]
             loop_ok = not async_mode or (
@@ -5860,6 +5857,9 @@ def _get_cached_client(
         # next probe dies in _compat_model() on stub attribute access, so check_fns flip to
         # False and vision tools vanish for the process lifetime (#87654).
         return client, model or default_model
+    if client is not None and strategy_sent and picked is not None:
+        _stamp_client(client, picked.pool, default_model)  # the entry this build sends, after any refresh
+        cache_key = key_for(pool_selection=picked)
     if client is not None:
         with _client_cache_lock:
             if cache_key not in _client_cache:
@@ -7526,7 +7526,7 @@ def _refreshed_nous_step(route: _LadderRoute, kwargs: dict[str, Any], message: s
     """Rebuild the Nous client after a credential event; None when nothing refreshed."""
     refreshed_client, refreshed_model = _refresh_nous_auxiliary_client(
         cache_provider=route.resolved_provider or "nous", model=route.final_model,
-        lookup_model=route.resolved_model, lookup_task=route.task, async_mode=route.async_mode,
+        lookup_model=route.resolved_model, lookup_task=route.task, async_mode=route.async_mode, stale_client=route.client,
         base_url=route.resolved_base_url, api_key=route.resolved_api_key,
         api_mode=route.resolved_api_mode, main_runtime=route.main_runtime,
         is_vision=(route.task == "vision"),

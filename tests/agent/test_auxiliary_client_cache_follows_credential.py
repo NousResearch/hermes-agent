@@ -6,6 +6,7 @@ hides the entry from ``peek()``.
 """
 
 import asyncio
+import base64
 import json
 import socket
 import subprocess
@@ -140,7 +141,8 @@ def _two_key_pool_calls(change, *, provider="openrouter", canonical=None, async_
     A fresh pool has no current entry, so k0 is the first entry available for the requested model.
     k0 carries a cooldown for another id: the vendor-prefixed spelling where the provider's wire id
     drops the prefix (an alias normalized with its raw name would skip k0), else an unrelated model.
-    ``least_used`` (k0 used more) makes ``select()`` prefer k1. ``change(rows, sent_index)`` edits the
+    ``least_used`` (k0 used more) makes ``select()`` pick k1, which the pool-sending builders (Nous,
+    Codex, xAI) send; the explicit-key routes send the peeked k0. ``change(rows, sent_index)`` edits the
     rows between the calls the way another process's refresh or a 429 on the requested model would.
     """
     canonical = canonical or provider
@@ -199,22 +201,148 @@ _ROUTES = [
 ]
 
 
+def _first_sent(route):
+    """The entry the first build sends: the pool strategy's pick (``least_used`` prefers the idle k1)."""
+    return ("tok-k1", "tok-k0") if route.get("strategy") == "least_used" else ("tok-k0", "tok-k1")
+
+
 @pytest.mark.parametrize("route", _ROUTES)
 def test_cached_pool_client_rebuilds_when_its_model_aware_key_is_refreshed(isolated_home, no_side_lookups, route):
     reused, sent = _two_key_pool_calls(_refresh_sent, **route)
+    first, _other = _first_sent(route)
     assert not reused
-    assert sent == ["tok-k0", "tok-k0-new"]
+    assert sent == [first, first + "-new"]
 
 
 @pytest.mark.parametrize("route", _ROUTES)
 def test_cached_pool_client_rebuilds_when_its_key_cools_down_for_the_model(isolated_home, no_side_lookups, route):
     reused, sent = _two_key_pool_calls(_cool_sent, **route)
     assert not reused
-    assert sent == ["tok-k0", "tok-k1"]
+    assert sent == list(_first_sent(route))
 
 
 @pytest.mark.parametrize("route", _ROUTES)
 def test_cached_pool_client_is_reused_while_its_key_is_unchanged(isolated_home, no_side_lookups, route):
     reused, sent = _two_key_pool_calls(lambda rows, _i: rows, **route)
+    first, _other = _first_sent(route)
     assert reused
-    assert sent == ["tok-k0", "tok-k0"]
+    assert sent == [first, first]
+
+
+def _expired_jwt() -> str:
+    claims = base64.urlsafe_b64encode(json.dumps({"exp": 1}).encode()).decode().rstrip("=")
+    return f"e30.{claims}.sig"
+
+
+def _key(canonical, i, **fields):
+    return PooledCredential(canonical, f"k{i}", f"k{i}", "api_key", i, "manual", f"tok-k{i}", **fields)
+
+
+def _pool_route_calls(provider, rows, *, strategy="fill_first", calls=1, cold=False, model=OR_MODEL, current=None,
+                      between=None):
+    """``calls`` sequential ``_get_cached_client`` calls plus one request each, on ONE long-lived
+    pool over ``rows`` (``current``: its current entry). ``cold`` clears the cache before each call;
+    ``between(pool, sent_id)`` edits the pool after the first. Returns (tokens sent, builds,
+    ``select()`` calls, request count per entry)."""
+    pool = None
+    sent, builds, selects = [], [], []
+    real_select, real_resolve = CredentialPool.select, aux.resolve_provider_client
+
+    def handler(request):
+        sent.append(request.headers["authorization"].removeprefix("Bearer "))
+        return _completion(request)
+
+    def counted_select(self, **kw):
+        selects.append(1)
+        return real_select(self, **kw)
+
+    transport = httpx.MockTransport(handler)
+    with patch("agent.credential_pool.get_pool_strategy", return_value=strategy), \
+         patch.object(CredentialPool, "_persist", lambda self, **_k: None), \
+         patch.object(CredentialPool, "select", counted_select), \
+         patch.object(aux, "resolve_provider_client", side_effect=lambda *a, **k: builds.append(1) or real_resolve(*a, **k)), \
+         patch.object(aux, "_read_codex_singleton_token", return_value=None), \
+         patch.object(auth, "resolve_xai_oauth_runtime_credentials", side_effect=auth.AuthError("no singleton")), \
+         patch.object(aux, "load_pool", side_effect=lambda _p: pool), \
+         patch.object(aux, "_openai_http_client_kwargs", side_effect=lambda *_a, async_mode=False, **_k: {
+             "http_client": httpx.Client(transport=transport)}):
+        pool = CredentialPool(rows[0].provider, rows)
+        pool._current_id = current
+        for i in range(calls):
+            if between and i == 1:
+                between(pool, sent[0].removeprefix("tok-"))
+            if cold:
+                aux._client_cache.clear()
+            client, wire_model = aux._get_cached_client(provider, model)
+            assert client is not None, "no client although a pooled key is available"
+            client.chat.completions.create(model=wire_model, messages=[{"role": "user", "content": "hi"}])
+        counts = {e.id: e.request_count for e in pool.entries()}
+    return sent, len(builds), len(selects), counts
+
+
+_SENDING_ROUTES = [pytest.param("nous", id="nous"), pytest.param("openai-codex", id="codex"),
+                   pytest.param("xai-oauth", id="xai-oauth")]
+
+
+@pytest.mark.parametrize("provider", [p for p in _SENDING_ROUTES if p.id != "nous"])
+def test_failed_refresh_of_the_first_entry_sends_the_healthy_sibling(isolated_home, no_side_lookups, provider):
+    """k0's proactive OAuth refresh fails inside select(), which then picks k1: k1 is sent."""
+    rows = [_key(provider, 0, refresh_token="rt-k0"), _key(provider, 1)]
+    rows[0] = replace(rows[0], auth_type="oauth", access_token=_expired_jwt())
+    with patch.object(CredentialPool, "_refresh_entry", return_value=None):
+        sent, _builds, _selects, _counts = _pool_route_calls(provider, rows)
+    assert sent == ["tok-k1"]
+
+
+@pytest.mark.parametrize("provider", [p for p in _SENDING_ROUTES if p.id != "nous"])
+def test_default_model_cooldown_on_the_current_entry_sends_the_sibling(isolated_home, no_side_lookups, provider):
+    """A caller without a model gets the default; the current k0 cools down for it, so k1 is sent."""
+    wire = aux._normalize_resolved_model(OR_MODEL, provider)
+    rows = [_key(provider, 0, model_cooldowns={wire: time.time() + 600}), _key(provider, 1)]
+    with patch.object(aux, "_get_aux_model_for_provider", return_value=""), \
+         patch.object(aux, "_read_main_model_for_aux", return_value=OR_MODEL):
+        sent, _builds, _selects, _counts = _pool_route_calls(provider, rows, model=None, current="k0")
+    assert sent == ["tok-k1"]
+
+
+@pytest.mark.parametrize("strategy, calls, cold, counts, expected, counted", [
+    pytest.param("least_used", 1, True, (50, 0), ["tok-k1"], (50, 1), id="least-used"),
+    pytest.param("random", 1, True, (0, 0), ["tok-k1"], (0, 1), id="random"),
+    pytest.param("round_robin", 2, True, (0, 0), ["tok-k0", "tok-k1"], (1, 1), id="round-robin-two-builds"),
+    pytest.param("least_used", 5, False, (50, 0), ["tok-k1"] * 5, (50, 1), id="steady-pool"),
+])
+@pytest.mark.parametrize("provider", _SENDING_ROUTES)
+def test_pool_strategy_picks_the_entry_sent_and_counts_only_it(
+        isolated_home, no_side_lookups, provider, strategy, calls, cold, counts, expected, counted):
+    """select() runs once per build, its pick is sent, and only it is counted (``random`` is pinned
+    to the last available entry). A warm cache neither builds nor selects again."""
+    rows = [_key(provider, i, request_count=n) for i, n in enumerate(counts)]
+    with patch("agent.credential_pool.random.choice", side_effect=lambda available: available[-1]):
+        sent, builds, selects, after = _pool_route_calls(provider, rows, strategy=strategy, calls=calls, cold=cold)
+    assert sent == expected
+    assert builds == selects == (calls if cold else 1)
+    assert after == {f"k{i}": n for i, n in enumerate(counted)}
+
+
+def _refresh_entry_in(pool, entry_id):
+    pool._entries = [replace(e, access_token=e.access_token + "-new") if e.id == entry_id else e for e in pool._entries]
+
+
+def _cool_entry_in(pool, entry_id):
+    wire = aux._normalize_resolved_model(OR_MODEL, pool.provider)
+    pool._entries = [replace(e, model_cooldowns={wire: time.time() + 600}) if e.id == entry_id else e
+                     for e in pool._entries]
+
+
+@pytest.mark.parametrize("between, expected", [
+    pytest.param(_refresh_entry_in, ["tok-k0", "tok-k0-new"], id="refresh"),
+    pytest.param(_cool_entry_in, ["tok-k0", "tok-k1"], id="cooldown"),
+])
+@pytest.mark.parametrize("provider", _SENDING_ROUTES)
+def test_cached_client_rebuilds_when_the_entry_it_sends_changes_on_a_hit(
+        isolated_home, no_side_lookups, provider, between, expected):
+    """A refresh or cooldown of the cached client's own entry, on a steady pool, rebuilds it."""
+    rows = [_key(provider, 0), _key(provider, 1)]
+    sent, builds, selects, _counts = _pool_route_calls(provider, rows, calls=2, between=between)
+    assert sent == expected
+    assert builds == selects == 2

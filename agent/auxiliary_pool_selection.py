@@ -1,4 +1,4 @@
-"""Which pooled credential an auxiliary client is keyed on.
+"""Which pooled credential an auxiliary client is keyed on, and whether a cached one still holds.
 
 Split from ``agent.auxiliary_client`` (facade size cap).
 """
@@ -13,39 +13,63 @@ from agent.custom_entry_pool import pool_for_aux_provider
 
 logger = logging.getLogger(__name__)
 
+# Builders that send a pool entry themselves, so the pool strategy picks it: ONE ``select()`` per
+# cache miss, recorded on the built client (``_stamp_client``) and checked on a hit without
+# selecting (``_cached_credential_holds``). Their cache key digests every entry's key, after the build.
+STRATEGY_SENT_PROVIDERS = frozenset({"nous", "openai-codex", "xai-oauth"})
+
 
 class PoolSelection(NamedTuple):
     pool: Any   # None without a credentialed pool
-    entry: Any  # None when every entry is filtered out for the model
+    entry: Any  # None when every entry is filtered out for the model, or not peeked
 
 
-def _aux_pool_selection(provider: str, model: Optional[str] = None) -> PoolSelection:
-    """``(pool, entry)`` behind an auxiliary client: ONE non-mutating peek that the cache key digests
-    and the client build sends, so the two never name different credentials. Loaded under the
-    canonical provider (``codex`` is ``openai-codex``), entry-scoped for a pinned ``custom:<name>``,
-    peeked against ``model``'s cooldowns.
+def _aux_pool_selection(provider: str, model: Optional[str] = None, *, peek: bool = True) -> PoolSelection:
+    """``(pool, entry)`` behind an auxiliary client, loaded under the canonical provider (``codex``
+    is ``openai-codex``) and entry-scoped for a pinned ``custom:<name>``. ``entry`` is the
+    non-mutating peek against ``model``'s cooldowns (skipped without ``peek``).
     """
     from agent.auxiliary_client import _load_pool_with_credentials, _normalize_aux_provider, _peek_pool_entry
     normalized = _normalize_aux_provider(provider)
     pool = pool_for_aux_provider(provider, normalized, lambda key: _load_pool_with_credentials(key, " (peek)"))
-    return PoolSelection(pool, _peek_pool_entry(normalized, pool, model) if pool is not None else None)
+    return PoolSelection(pool, _peek_pool_entry(normalized, pool, model) if pool is not None and peek else None)
 
 
-def _take_pool_selection(selection: PoolSelection, provider: str, model: Optional[str]) -> Any:
-    """The selection's peeked entry (the one the cache key digests), refreshed for sending. ``select()``
-    still runs for the strategy's bookkeeping, as on the explicit-key routes; when it picks another
-    entry the peeked one is reclaimed instead. With no peeked entry, ``select()``'s pick (usually None)."""
-    from agent.auxiliary_client import _normalize_resolved_model
-    pool, entry = selection
-    wire_model = _normalize_resolved_model(model, provider) if model else None
+def _sent_selection(client: Any, pool: Any) -> Optional[PoolSelection]:
+    """``(pool, entry)`` for the pool entry whose key ``client`` sends (any status), else None (a
+    singleton credential, or a token the pool no longer holds)."""
+    key = getattr(client, "api_key", None)
+    entry_id = pool.entry_id_for_api_key(key) if pool is not None and isinstance(key, str) and key else None
+    entry = next((e for e in pool.entries() if e.id == entry_id), None) if entry_id else None
+    return PoolSelection(pool, entry) if entry is not None else None
+
+
+def _stamp_client(client: Any, pool: Any, wire_model: Optional[str]) -> None:
+    """Record on ``client`` the pool entry it sends (``""``: none, e.g. a singleton fallback) and
+    the wire model it sends, for the check on a cache hit."""
     try:
-        chosen = pool.select(model=wire_model)
-        if entry is None or (chosen is not None and chosen.id == entry.id):
-            return chosen
-        return pool.reclaim(entry.id, model=wire_model)
+        client._hermes_aux_pool_entry = (getattr((_sent_selection(client, pool) or (None, None))[1], "id", ""), wire_model)
+    except Exception as exc:  # an unstamped client never holds, so the next call rebuilds it
+        logger.debug("Auxiliary client: could not record its pool entry: %s", exc, exc_info=True)
+
+
+def _cached_credential_holds(client: Any, pool: Any) -> bool:
+    """Whether the pool entry a cached client sends is still available for the model it sends
+    (present, not exhausted, dead or cooling down), checked without selecting; a client sending no
+    pool entry holds while none is available. Its token is in the cache key (``_pool_cache_hint``).
+    """
+    stamp = getattr(client, "_hermes_aux_pool_entry", None)
+    if not isinstance(stamp, tuple) or len(stamp) != 2:
+        return False
+    entry_id, wire_model = stamp
+    try:
+        if not entry_id:
+            return not pool.has_available(model=wire_model)
+        with pool._lock:  # has_available()'s filter (the one peek() applies), matched by id
+            return any(e.id == entry_id for e in pool._available_entries(model=wire_model)[0])
     except Exception as exc:
-        logger.debug("Auxiliary client: could not take the pool selection for %s: %s", provider, exc, exc_info=True)
-        return None
+        logger.debug("Auxiliary client: could not check its cached pool entry: %s", exc, exc_info=True)
+        return False
 
 
 def _pool_credential_digest(pool: Any, entry: Any = None) -> str:
@@ -83,19 +107,21 @@ def _pool_cache_hint(
     """Return a cache discriminator that follows the pooled credential, not just its entry id.
 
     ``<provider>:<entry id>:<digest of that entry's key>`` when the selection names an entry,
-    ``<provider>::<digest of every entry's key>`` when every entry is filtered out (cooldown)
-    but keyed entries exist. ``selection`` is the build's ``_aux_pool_selection`` (taken here when
-    absent; ``auto`` keys on the main provider's pool). A token rotated or refreshed by another
-    process yields a new client instead of a 401 on the cached one (stale entries age out, #113022).
+    ``<provider>::<digest of every entry's key>`` when it names none but keyed entries exist: every
+    entry is filtered out (cooldown), or a ``STRATEGY_SENT_PROVIDERS`` route, which is not peeked.
+    ``selection`` is the build's ``_aux_pool_selection`` (taken here when absent; ``auto`` keys on
+    the main provider's peek). A token rotated or refreshed by another process yields a new client
+    instead of a 401 on the cached one (stale entries age out, #113022).
     """
     from agent.auxiliary_client import _normalize_aux_provider, _normalize_main_runtime, _read_main_provider
     normalized = _normalize_aux_provider(provider)
+    peek = normalized not in STRATEGY_SENT_PROVIDERS
     if normalized == "auto":
         provider = _normalize_main_runtime(main_runtime).get("provider") or _read_main_provider()
-        normalized, selection = _normalize_aux_provider(provider), None
+        normalized, selection, peek = _normalize_aux_provider(provider), None, True
     if normalized in {"", "auto", "custom"}:
         return ""
-    pool, entry = selection or _aux_pool_selection(provider, model)
+    pool, entry = selection or _aux_pool_selection(provider, model, peek=peek)
     if pool is None:
         return ""
     digest = _pool_credential_digest(pool, entry)

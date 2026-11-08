@@ -17,7 +17,9 @@ import threading
 import time
 from contextlib import contextmanager, suppress
 from agent.i18n import t
-from agent.think_scrubber import THINK_TAG_NAMES
+from agent.think_scrubber import (
+    THINK_CHANNEL_OPEN_RE, THINK_CHANNEL_ORPHAN_CLOSE_RE, THINK_CHANNEL_PAIR_RES, THINK_TAG_NAMES,
+)
 from hermes_cli.banner import format_banner_version_label
 from rich.console import Console
 from rich.text import Text as _RichText
@@ -51,6 +53,11 @@ def _strip_reasoning_tags(text: str) -> str:
         cleaned = re.sub(rf"<{tag}>.*?</{tag}>\s*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
         cleaned = re.sub(rf"<{tag}>.*$", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
         cleaned = re.sub(rf"</{tag}>\s*", "", cleaned, flags=re.IGNORECASE)
+    for _pattern in THINK_CHANNEL_PAIR_RES:
+        cleaned = _pattern.sub("", cleaned)
+    if _m := THINK_CHANNEL_OPEN_RE.search(cleaned):
+        cleaned = cleaned[: _m.start()]
+    cleaned = THINK_CHANNEL_ORPHAN_CLOSE_RE.sub("", cleaned)
     for tc_tag in _TOOL_CALL_TAGS:
         cleaned = re.sub(
             rf"<(?:[\w.-]+:)?{tc_tag}\b[^>]*>.*?</(?:[\w.-]+:)?{tc_tag}>\s*",

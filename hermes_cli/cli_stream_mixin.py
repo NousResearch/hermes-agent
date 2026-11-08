@@ -18,12 +18,16 @@ from pathlib import Path
 from rich.markup import escape as _escape
 
 from agent.i18n import t
-from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS
+from agent.think_scrubber import (
+    THINK_CHANNEL_CLOSE_TAGS, THINK_CHANNEL_OPEN_TAGS, THINK_CLOSE_TAGS, THINK_OPEN_TAGS,
+)
 
 # Model-generated reasoning tags: suppressed during streaming (they'd display as raw XML;
 # the agent strips them from final_response too) unless show_reasoning routes them to the box.
-_OPEN_TAGS = THINK_OPEN_TAGS
-_CLOSE_TAGS = THINK_CLOSE_TAGS
+# Channel-format thinking tokens (MiniMax `<|channel>thought…<channel|>`, Gemma 4) join the
+# same sets so the CLI live filter hides them exactly like the gateway scrubber does.
+_OPEN_TAGS = THINK_OPEN_TAGS + THINK_CHANNEL_OPEN_TAGS
+_CLOSE_TAGS = THINK_CLOSE_TAGS + THINK_CHANNEL_CLOSE_TAGS
 _MAX_CLOSE_TAG_LEN = max(len(t) for t in _CLOSE_TAGS)
 
 # Ordered (prefix, catalog key) rows for _slow_command_status — first match wins; the key is

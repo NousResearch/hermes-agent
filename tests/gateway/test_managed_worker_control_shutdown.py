@@ -105,9 +105,8 @@ scope = {'profile_id': '/tmp/managed-worker-test', 'session_id': 'session', 'exe
          'generation': 0, 'pid': os.getpid(), 'birth': 'birth', 'secret': 'secret', 'epoch': 1}
 frame = {'home': '/tmp/managed-worker-test', 'scope': scope, 'policy': {}, 'route': 'route',
          'api_key': None, 'user_id': 'user', 'chat_id': 'chat', 'text': 'text'}
-reader = mw._ControlPipeReader(sys.stdin.fileno())
 try:
-    mw.execute(frame, types.SimpleNamespace(send=lambda *args, **kwargs: None), reader)
+    mw.execute(frame, types.SimpleNamespace(send=lambda *args, **kwargs: None))
 except Exception as exc:
     print(f'original={type(exc).__name__}:{exc}', flush=True)
 '''
@@ -129,7 +128,7 @@ def _finish(proc, message=None):
     return output, error
 
 
-@pytest.mark.platforms('linux')
+@pytest.mark.platforms('linux', 'macos')
 def test_reader_shutdown_on_exception_with_open_stdin_preserves_original_error():
     proc = _spawn('error')
     try:
@@ -146,7 +145,7 @@ def test_reader_shutdown_on_exception_with_open_stdin_preserves_original_error()
             proc.wait(timeout=5)
 
 
-@pytest.mark.platforms('linux')
+@pytest.mark.platforms('linux', 'macos')
 def test_execute_construction_failure_stops_real_reader_with_stdin_open():
     proc = subprocess.Popen([sys.executable, '-c', EXECUTE_CHILD], cwd=ROOT,
                             env={**os.environ, 'PYTHONPATH': str(ROOT)}, stdin=subprocess.PIPE,
@@ -165,7 +164,7 @@ def test_execute_construction_failure_stops_real_reader_with_stdin_open():
             proc.wait(timeout=5)
 
 
-@pytest.mark.platforms('linux')
+@pytest.mark.platforms('linux', 'macos')
 @pytest.mark.parametrize('mode', ['finish', 'stop', 'eof'])
 def test_control_reader_handles_clean_finish_stop_and_owner_eof(mode):
     proc = _spawn(mode)
@@ -185,12 +184,13 @@ def test_control_reader_handles_clean_finish_stop_and_owner_eof(mode):
         else:
             output, error = _finish(proc, {'type': 'finish'})
         assert proc.returncode == 0, error
-        assert 'reader_alive' in output and 'false' in output
+        state = json.loads(output)
+        assert state['reader_alive'] is False
         if mode == 'stop':
-            assert '"stopped": true' in output
+            assert state['stopped'] is True
         if mode == 'eof':
-            assert '"stopped": true' in output
-        assert '"finished": true' in output
+            assert state['stopped'] is True
+        assert state['finished'] is True
         assert 'Fatal Python error' not in error
     finally:
         if proc.poll() is None:

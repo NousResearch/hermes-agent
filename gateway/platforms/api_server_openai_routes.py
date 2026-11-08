@@ -780,6 +780,32 @@ def _parse_conversation_history(raw_history: Any) -> tuple:
 class OpenAICompatRoutesMixin:
     """/v1/chat/completions and /v1/responses handlers + SSE writers."""
 
+    @staticmethod
+    def _effective_response_model(result: Any, fallback: Any) -> str:
+        """Return the model that actually served a completed API turn.
+
+        The request model can be a ``model_routes`` alias or lose to a session override.
+        ``_finish_turn_result`` records the resolved runtime for routed turns, which is the
+        only truthful model value to expose after the run completes.
+        """
+        runtime = result.get("runtime") if isinstance(result, dict) else None
+        model = runtime.get("model") if isinstance(runtime, dict) else None
+        return model if isinstance(model, str) and model else str(fallback)
+
+    def _stream_response_model(
+        self, fallback: Any, route: Optional[Dict[str, Any]], overrides: Dict[str, Any], *,
+        session_id: Optional[str], gateway_session_key: Optional[str],
+    ) -> str:
+        """Resolve the model advertised in early SSE frames before turn metadata exists."""
+        session_override = self._session_model_override_for(gateway_session_key or session_id)
+        if session_override:
+            from hermes_cli.model_switch import resolve_effective_model
+            return resolve_effective_model(session_override, None, str(fallback))
+        if isinstance(route, dict) and isinstance(route.get("model"), str) and route["model"]:
+            return route["model"]
+        requested = overrides.get("requested_model")
+        return requested if isinstance(requested, str) and requested else str(fallback)
+
     def _select_request_route(
         self, body: dict[str, Any], *, session_id, gateway_session_key, model_alias) -> tuple:
         """Resolve the model_routes alias + per-request overrides ->
@@ -956,12 +982,21 @@ class OpenAICompatRoutesMixin:
             # id from a header-less client is NOT: delegate_task keeps its forced-sync fallback
             # there — the wake would hard-fail or land in history that client never reloads.
             session_history_delivery=("1" if provided_session_id else ""))
+        if route or agent_overrides:
+            run_kwargs["requested_runtime"] = {
+                "provider": agent_overrides.get("requested_provider", ""),
+                "model": agent_overrides.get("requested_model", ""),
+            }
+            run_kwargs["route_source"] = "model_routes" if route else "raw_request"
         run_kwargs.update(self._authority_chat_kwargs(request, provided_session_id))
         # This is presentation only. The ordinary API-key/session authorization
         # above still applies; it grants no internal ingress or control authority.
         if provided_session_id and body.get("hermes_notification_category") == "diagnostic":
             run_kwargs["notification_category"] = "diagnostic"
         if stream:
+            stream_model = self._stream_response_model(
+                model_name, route, agent_overrides,
+                session_id=session_id, gateway_session_key=gateway_session_key)
             _stream_q = ThreadSafeAsyncQueue()
             # tool_call_ids with an emitted "running": a "completed" without one (internal/
             # filtered tools) is dropped rather than orphaned on the wire.
@@ -1001,7 +1036,7 @@ class OpenAICompatRoutesMixin:
             # client should send next — it re-sends the same id and the tip resolution above
             # finds whatever session is live by then.
             return await self._write_sse_chat_completion(
-                request, completion_id, model_name, created, _stream_q,
+                request, completion_id, stream_model, created, _stream_q,
                 agent_task, agent_ref, session_id=(provided_session_id or session_id),
                 gateway_session_key=gateway_session_key)
 
@@ -1043,7 +1078,7 @@ class OpenAICompatRoutesMixin:
         # Soft partial (some text, run incomplete): 200 + finish_reason="length"/Hermes extras.
         response_data = {
             "id": completion_id, "object": "chat.completion", "created": created,
-            "model": model_name,
+            "model": self._effective_response_model(result, model_name),
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "" if presentation_muted else final_response},
                          "finish_reason": finish_reason}],
             "usage": _chat_usage_payload(usage)}
@@ -1206,7 +1241,9 @@ class OpenAICompatRoutesMixin:
             budget_exhausted = _budget_exhausted(result)
             finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg, agent_error,
                                            budget_exhausted=budget_exhausted)
+            effective_model = self._effective_response_model(result, model)
             finish_chunk = _chunk({}, finish_reason, usage=_chat_usage_payload(usage))
+            finish_chunk["model"] = effective_model
             presentation_muted = (
                 (isinstance(result, dict) and result.get("_notification_presentation_suppressed") is True)
                 or getattr(agent_error, "_notification_presentation_suppressed", False) is True
@@ -1278,6 +1315,7 @@ class OpenAICompatRoutesMixin:
                 await st.dispatch(item)
             await st.flush_batch()
             await st.collect_result(agent_task)
+            st.model = self._effective_response_model(st.result, st.model)
             await st.close_message_item()
             if st.agent_error and not (durable_key and st.result):
                 await st.emit_failed()
@@ -1414,7 +1452,15 @@ class OpenAICompatRoutesMixin:
         response_model = body.get('model', self._model_name)
         if durable_key:
             response_model = await response_store.off_loop(response_store.request_model, durable_key[0], response_model)
+        route = run_kwargs.get("route")
+        agent_overrides = {
+            key: run_kwargs[key] for key in ("requested_model", "requested_provider", "model_options")
+            if key in run_kwargs
+        }
         if stream:
+            stream_model = self._stream_response_model(
+                response_model, route, agent_overrides,
+                session_id=session_id, gateway_session_key=gateway_session_key)
             _stream_q = ThreadSafeAsyncQueue()
 
             def _on_tool_progress(event_type, name, preview, args, **kwargs):
@@ -1441,7 +1487,7 @@ class OpenAICompatRoutesMixin:
                 interim_assistant_callback=_on_commentary, **run_kwargs)
             return await self._write_sse_responses(
                 request=request, response_id=response_id,
-                model=response_model, created_at=created_at,
+                model=stream_model, created_at=created_at,
                 stream_q=_stream_q, agent_task=agent_task, agent_ref=agent_ref,
                 conversation_history=conversation_history, user_message=user_message,
                 instructions=instructions, conversation=conversation, store=store,
@@ -1479,7 +1525,7 @@ class OpenAICompatRoutesMixin:
             conversation_history, user_message, result)
         response_data = {
             "id": response_id, "object": "response", "status": _response_status(result),
-            "created_at": created_at, "model": response_model,
+            "created_at": created_at, "model": self._effective_response_model(result, response_model),
             "output": self._extract_output_items(result, start_index=output_start_index,
                 **({'response_id': response_id} if durable_key else {})),
             "usage": _responses_usage_payload(usage)}

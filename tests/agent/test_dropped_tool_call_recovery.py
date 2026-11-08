@@ -84,6 +84,12 @@ _QWEN_MARKUP = (
 _QWEN_BARE_MARKUP = "<function=terminal>\n<parameter=command>\nhostname\n</parameter>"
 
 
+_GEMMA4_MARKUP = (
+    '<|tool_call>call:search_files{pattern:<|"|>/var/log<|"|>,'
+    'target:<|"|>files<|"|>}<tool_call|>'
+)
+
+
 class TestStrandedToolCallName:
     """The detector only names AVAILABLE tools and ignores fenced (quoted) markup."""
 
@@ -225,6 +231,35 @@ class TestDroppedToolCallRecovery:
         retry_msgs = loop_agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
         assert not any("<function=" in str(m.get("content") or "") for m in retry_msgs)
         assert "terminal" in retry_msgs[-1]["content"]
+
+    def test_gemma4_missed_parser_reprompts_without_executing_text(self, loop_agent):
+        """Issue #6626: Gemma 4's vLLM parser can leave a valid call in content."""
+        from agent.turn_dropped_tool_call import stranded_tool_call_name
+        from tests.agent.test_run_agent import _mock_response
+
+        assert stranded_tool_call_name(_GEMMA4_MARKUP, {"search_files"}) == "search_files"
+        assert stranded_tool_call_name(_GEMMA4_MARKUP, {"terminal"}) is None
+        assert stranded_tool_call_name(
+            "```text\n" + _GEMMA4_MARKUP + "\n```", {"search_files"}
+        ) is None
+
+        loop_agent.valid_tool_names = {"search_files"}
+        loop_agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=_GEMMA4_MARKUP, finish_reason="stop"),
+            _mock_response(content="Search completed.", finish_reason="stop"),
+        ]
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("Find log files.")
+
+        assert loop_agent.client.chat.completions.create.call_count == 2
+        assert result["final_response"] == "Search completed."
+        retry_msgs = loop_agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        assert not any("<|tool_call>" in str(m.get("content") or "") for m in retry_msgs)
+        assert "search_files" in retry_msgs[-1]["content"]
 
     def test_persistent_qwen_markup_is_bounded(self, loop_agent):
         """Markup on every turn shares the dropped-tool-call budget: at most 3 re-prompts."""

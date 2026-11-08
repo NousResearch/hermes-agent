@@ -34,6 +34,12 @@ _QWEN_FUNCTION_CALL_RE = re.compile(
     r"<function=([\w.:-]+)>\s*(?:<parameter=|</function>)", re.IGNORECASE,
 )
 _JSON_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL | re.IGNORECASE)
+# Gemma 4 leaked content uses pipe-delimited tags and brace arguments (#6626).
+_GEMMA4_CALL_RE = re.compile(
+    r"<\|tool_call>\s*call:([A-Za-z_]\w*)\{.*?\}\s*<tool_call\|>",
+    re.DOTALL,
+)
+
 _FENCED_CODE_RE = re.compile(r"```.*?(?:```|$)", re.DOTALL)
 
 
@@ -48,6 +54,9 @@ def stranded_tool_call_name(text: Any, valid_tool_names: Any) -> Optional[str]:
         return None
     unfenced = _FENCED_CODE_RE.sub("", text)
     for match in _QWEN_FUNCTION_CALL_RE.finditer(unfenced):
+        if match.group(1) in valid_tool_names:
+            return match.group(1)
+    for match in _GEMMA4_CALL_RE.finditer(unfenced):
         if match.group(1) in valid_tool_names:
             return match.group(1)
     for match in _JSON_TOOL_CALL_RE.finditer(unfenced):

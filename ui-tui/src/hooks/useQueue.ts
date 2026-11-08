@@ -230,7 +230,9 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
     (index: number) => {
       const local = queueRef.current.length
 
-      return index >= local ? (getUiState().info?.pending_submissions ?? []).filter(isServerQueued)[index - local] : undefined
+      return index >= local
+        ? (getUiState().info?.pending_submissions ?? []).filter(isServerQueued)[index - local]
+        : undefined
     },
     [queueRef]
   )
@@ -248,11 +250,16 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
       const session_id = getUiState().sid
       const unknown = row.status === 'unknown'
 
-      return (gw?.request(unknown ? 'prompt.resolve_unknown' : 'prompt.cancel', {
-        session_id, admission_id: row.admission_id,
-        ...(unknown ? { execution_generation: row.execution_generation } : {})
-      }) ?? Promise.resolve()).catch((error: Error) => {
-        if (getUiState().sid === session_id) { patchUiState({ status: t('canonical.queue.discardFailed', error.message) }) }
+      return (
+        gw?.request(unknown ? 'prompt.resolve_unknown' : 'prompt.cancel', {
+          session_id,
+          admission_id: row.admission_id,
+          ...(unknown ? { execution_generation: row.execution_generation } : {})
+        }) ?? Promise.resolve()
+      ).catch((error: Error) => {
+        if (getUiState().sid === session_id) {
+          patchUiState({ status: t('canonical.queue.discardFailed', error.message) })
+        }
 
         throw error
       })
@@ -341,7 +348,9 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
         item.failed = !accepted
 
         if (accepted) {
-          try { removePendingInput(item) } catch (error) {
+          try {
+            removePendingInput(item)
+          } catch (error) {
             patchUiState({ status: t('canonical.queue.journalCleanupFailed', (error as Error).message) })
           }
 
@@ -407,7 +416,9 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
 
   const dequeue = useCallback(
     (retry = false) => {
-      if (getUiState().gatewayConnected === false) { return undefined }
+      if (getUiState().gatewayConnected === false) {
+        return undefined
+      }
       const queue = getQueue()
       const item = queue.items[0]
 
@@ -458,7 +469,8 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
             syncQueue()
 
             return undefined
-          })
+          }
+        )
       }
 
       if (queue.items[i]?.inFlight) {

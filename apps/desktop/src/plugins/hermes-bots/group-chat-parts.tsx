@@ -177,7 +177,14 @@ interface GroupMentionInputProps {
  *  the strings parseGroupChatMentions resolves. Keyboard: Up/Down navigate,
  *  Enter/Tab insert (Enter falls through to submit when the popover is
  *  closed), Escape dismisses. */
-export function GroupMentionInput({ handleFor, members, onChange, onSubmitDraft, value, ...inputProps }: GroupMentionInputProps) {
+export function GroupMentionInput({
+  handleFor,
+  members,
+  onChange,
+  onSubmitDraft,
+  value,
+  ...inputProps
+}: GroupMentionInputProps) {
   const b = useBots()
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
@@ -386,8 +393,10 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
   const { t } = useI18n()
 
   const approvalLabels: Record<string, string> = {
-    once: b.canonical.allowOnce, deny: b.canonical.deny,
-    session: t.assistant.approval.allowSession, always: t.assistant.approval.alwaysAllow
+    once: b.canonical.allowOnce,
+    deny: b.canonical.deny,
+    session: t.assistant.approval.allowSession,
+    always: t.assistant.approval.alwaysAllow
   }
 
   const { group } = entry

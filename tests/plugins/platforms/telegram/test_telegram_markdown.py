@@ -43,6 +43,8 @@ def test_bold_without_quote_keeps_its_markers(adapter):
         ("costs $5, area $x^2$, $$E=mc^2$$", "costs \\$5, area $x^2$, $$E=mc^2$$"),
         ("run `echo $1 $2` then \\$3", "run `echo $1 $2` then \\$3"),
         ("```\nprice=$5 $6\n```", "```\nprice=$5 $6\n```"),
+        ("$2+2$ costs $5 vs $6", "$2+2$ costs \\$5 vs \\$6"),
+        ("$3.5\\times10^3$ vs $4", "$3.5\\times10^3$ vs \\$4"),
     ],
 )
 def test_rich_payload_escapes_currency_but_keeps_math_and_code(adapter, markdown, expected):

@@ -267,13 +267,15 @@ def _escape_bare_bracket(m, seg: str) -> str:
     return '\\' + ch
 
 
-# Regions the rich-message dollar escape leaves verbatim (code, $$ display math, $x$ inline math,
-# already-escaped \$), and the currency $ it escapes: a lone $ before an amount, or after a
-# currency prefix (R$ 1.000, US$ 1,200). Telegram's rich Markdown pairs any two bare $ as inline
-# LaTeX, so "$395k vs $483k" otherwise renders as one garbled math span.
+# Regions the rich-message dollar escape leaves verbatim (fenced code, inline code, $$ display
+# math, $x$ inline math, digit-led formulas such as $2+2$ that carry an operator, already-escaped
+# \$), and the currency $ it escapes: a lone $ before an amount, or after a currency prefix
+# (R$ 1.000, US$ 1,200). Telegram's rich Markdown pairs any two bare $ as inline LaTeX, so
+# "$395k vs $483k" otherwise renders as one garbled math span.
 _RICH_DOLLAR_RE = re.compile(
     r'(?P<keep>```[\s\S]*?```|`[^`\n]*`|\\\$|\$\$[\s\S]*?\$\$'
-    r'|(?<![\w$])\$(?![\d\s$])(?:\\.|[^\\\n$])+?(?<!\s)\$(?![\d$]))'
+    r'|(?<![\w$])\$(?![\d\s$])(?:\\.|[^\\\n$])+?(?<!\s)\$(?![\d$])'
+    r'|(?<![\w$\\])\$\d[\w.,]*(?:[-+*/^=<>]|\\[a-zA-Z]+)(?:[\w.,(){}^_+*/=<>-]|\\[a-zA-Z]+)*(?<![-+*/^=<>])\$(?![\w$]))'
     r'|(?P<currency>(?<![\\$])\$(?!\$)(?=\d)|(?<=[A-Z])\$(?=\s?\d))'
 )
 

@@ -1,0 +1,45 @@
+name: hermes-manas-aegis
+title: Manas Aegis
+repo: https://github.com/elianjuan-g/hermes-manas-aegis
+sha: 915bedeabab670e2ae962e0c088b648306a1b65c
+version: "2.3.0"
+description: >-
+  [ALPHA] Experimental Hermes guardrail (prototype, not standalone security):
+  pattern-based pre-tool checks that can block or rewrite some risky tool
+  arguments, with a canary honeypot, local telemetry and a loopback HUD,
+  plus STIX 2.1 export. Opt-in, test environments only.
+  Disclosure — no network call to third parties, no LLM call, no subprocess,
+  no credentials read, no telemetry out. Intercepts pre_tool_call and
+  pre_llm_call to scan arguments with 10 defined rules mapped to CWE / CAPEC /
+  MITRE ATT&CK / OWASP Top 10 / CVSS / CWSS / EPSS / SSVC (8 experimental,
+  2 planned); on a match it blocks the call or rewrites the arguments
+  (honeypot redirect to a sandboxed decoy, or a safe-flag rewrite for git).
+  Serves a loopback-only HUD (http://127.0.0.1:18777) shown as an iframe in
+  the Desktop Manas Aegis tab; writes redacted interception telemetry
+  (manas_telemetry.json) and a local STIX 2.1 feed (stix21_taxii_feed.json)
+  under the plugin data folder. The 6-vector barrage button runs the same
+  10 rules against synthetic attacks (labelled SIMULASI, counted separately)
+  and reloads the HUD. The two query tools (manas_tactical_core,
+  manas_stix_intelligence) need Hermes 0.23+ (register_tool parameters kwarg);
+  the core guard hooks work on 0.21.0+.
+maintainer: elianjuan-g
+tier: community
+category: tools
+requires_hermes: ">=0.21.0"
+docs_url: https://github.com/elianjuan-g/hermes-manas-aegis
+known_issues:
+  - "Alpha release: prototype guardrail, not standalone security; opt-in, test environments only."
+  - "The two query tools (manas_tactical_core, manas_stix_intelligence) need Hermes 0.23+; on 0.21.x the doctor reports a register_tool parameters mismatch (core guard hooks unaffected)."
+  - "The HUD's CVE count is the plugin's internal rule/indicator count, not a live NVD feed."
+capabilities:
+  provides_tools:
+    - manas_tactical_core
+    - manas_stix_intelligence
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+    - pre_tool_call
+    - transform_tool_result
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

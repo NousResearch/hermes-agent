@@ -1,14 +1,32 @@
 name: plugin_foundry
+title: Plugin Foundry
 repo: https://github.com/dolepee/hermes-plugin-foundry
-sha: 0963fbb35b26a9e5c55f998b5448c5a738041acf
-description: 'Turn a narrow plugin request into a native Hermes plugin: manifest, entry point, tool, SQLite state, tests, static scan and catalog draft. Two archetypes (folder watcher and JSON API poller). Writes only under the Foundry data root, runs generated tests in a minimal environment, and needs human approval outside that root; installing is a separate human step and nothing is auto-merged.'
+sha: 7f27e9c6bf4db99e625d574157962b3d6403f758
+description: >-
+  Turn a narrow plugin request into a native Hermes plugin: manifest, entry
+  point, tool, SQLite state, tests, static scan and catalog draft. Two
+  archetypes only: a SQLite folder watcher and a JSON API poller, each with one
+  tool. The folder-watcher parser accepts one explicit supported file type or
+  complete dotted suffix and refuses unsupported, composite, conflicting or
+  ambiguous requests. A trailing period is treated as punctuation only at the
+  end of the request or before a documented follow-up instruction; other prose
+  fails closed. Writes stay under the Foundry data root, generated tests run in
+  a minimal environment, and paths outside the root need a pre-tool approval.
+  Provides pre_tool_call and post_approval_response hooks plus the public
+  tool_execution middleware for trusted call IDs. Foundry itself makes no
+  network requests. Installing or cataloguing generated code is a separate
+  human step; nothing is auto-merged.
 maintainer: dolepee
 tier: community
 category: automation
 requires_hermes: ">=0.21.5"
-version: "0.1.1"
-docs_url: https://github.com/dolepee/hermes-plugin-foundry
+version: "0.1.4"
+docs_url: https://github.com/dolepee/hermes-plugin-foundry/blob/7f27e9c6bf4db99e625d574157962b3d6403f758/README.md
 platforms: []
+known_issues:
+  - "Supports only the two documented archetypes: a SQLite folder watcher and a JSON API poller."
+  - "The watcher parser intentionally rejects ambiguous or unsupported file-type prose rather than guessing. Use one explicit type, for example CSV files; arbitrary sentence wording is not supported."
+  - "Generated code is not installed, published or catalogued automatically. A human must review and install it."
 capabilities:
   provides_tools:
     - foundry_plan
@@ -18,5 +36,7 @@ capabilities:
     - foundry_catalog
   provides_hooks:
     - pre_tool_call
-  provides_middleware: []
+    - post_approval_response
+  provides_middleware:
+    - tool_execution
   requires_env: []

@@ -178,6 +178,8 @@ class TestQQWebSocketProxy:
             "all_proxy",
         ):
             monkeypatch.delenv(key, raising=False)
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
         monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
 
         adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
@@ -201,6 +203,68 @@ class TestQQWebSocketProxy:
             await adapter._open_ws("wss://api.sgroup.qq.com/websocket")
 
         assert seen_session_kwargs.get("trust_env") is True
+        assert seen_ws_kwargs.get("proxy") == "http://127.0.0.1:7897"
+
+    @staticmethod
+    async def _capture_open_ws(adapter, url: str = "wss://api.sgroup.qq.com/websocket") -> dict:
+        seen_ws_kwargs: dict = {}
+
+        class FakeSession:
+            def __init__(self, **kwargs):
+                self.closed = False
+
+            async def close(self):
+                self.closed = True
+
+            async def ws_connect(self, *args, **kwargs):
+                seen_ws_kwargs.update(kwargs)
+                return mock.AsyncMock(closed=False)
+
+        with mock.patch("plugins.platforms.qqbot.adapter.aiohttp.ClientSession", side_effect=FakeSession):
+            await adapter._open_ws(url)
+        return seen_ws_kwargs
+
+    @pytest.mark.asyncio
+    async def test_open_ws_bypasses_proxy_for_no_proxy_host(self, monkeypatch):
+        """Regression for #142866: an explicit ``proxy=`` must not override NO_PROXY."""
+        from plugins.platforms.qqbot.adapter import QQAdapter
+
+        for key in (
+            "WSS_PROXY",
+            "wss_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+        monkeypatch.setenv("NO_PROXY", "localhost,.qq.com")
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        seen_ws_kwargs = await self._capture_open_ws(adapter)
+
+        assert seen_ws_kwargs.get("proxy") is None
+
+    @pytest.mark.asyncio
+    async def test_open_ws_keeps_proxy_for_host_outside_no_proxy(self, monkeypatch):
+        from plugins.platforms.qqbot.adapter import QQAdapter
+
+        for key in (
+            "WSS_PROXY",
+            "wss_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+        monkeypatch.setenv("NO_PROXY", "localhost,example.com")
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        seen_ws_kwargs = await self._capture_open_ws(adapter)
+
         assert seen_ws_kwargs.get("proxy") == "http://127.0.0.1:7897"
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,23 @@ def _catch_up_flag(value: str) -> bool:
     return value == "on"
 
 
+def _repeat_value(value: str) -> int:
+    """``--repeat`` accepts the spellings the cron API accepts: a count, ``'forever'`` or ``'once'``.
+
+    ``cron.jobs.normalize_repeat_value`` is the shared chokepoint every create/update path already
+    uses; validating here just moves the rejection to the usage line. The no-limit spellings come
+    back as ``0`` — the API's own "no limit" number — instead of ``None``, which the update path
+    reads as "leave this field unchanged", so ``cron edit <id> --repeat forever`` would be a no-op.
+    """
+    from cron.jobs import normalize_repeat_value
+
+    try:
+        normalized = normalize_repeat_value(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return 0 if normalized is None else normalized
+
+
 def _add_catch_up(parser) -> None:
     parser.add_argument(
         "--catch-up", dest="catch_up", type=_catch_up_flag, metavar="{on,off}",
@@ -51,7 +68,9 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "--deliver). 'local' suppresses failure notices entirely; run "
             "state stays visible in `hermes cron list`. Omit = failures "
             "follow --deliver.")
-    cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
+    cron_create.add_argument("--repeat", type=_repeat_value, metavar="<n|forever|once>",
+        help="How many times to run: a count, 'forever' (no limit), or 'once' (same as 1). "
+            "Omit for the schedule's default — one-shots run once, recurring jobs forever.")
     _add_catch_up(cron_create)
     cron_create.add_argument("--skill", dest="skills", action="append",
         help="Attach a skill. Repeat to add multiple skills.")
@@ -126,7 +145,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--failure-deliver", dest="failure_deliver",
         help="Override target for failure notices (same grammar as --deliver; "
             "'local' suppresses; '' clears the override)")
-    cron_edit.add_argument("--repeat", type=int, help="New repeat count")
+    cron_edit.add_argument("--repeat", type=_repeat_value, metavar="<n|forever|once>",
+        help="New repeat count: a count, 'forever' (drop the limit), or 'once' (same as 1).")
     _add_catch_up(cron_edit)
     cron_edit.add_argument("--skill", dest="skills", action="append",
         help="Replace the job's skills with this set. Repeat to attach multiple skills.")

@@ -72,10 +72,22 @@ def cron_list_lines(*, include_disabled: bool = False) -> list[str]:
 
 
 # /cron flag tables: flag -> opts key. Order-sensitive in _parse_cron_flags: bool flags never
-# consume a value; --repeat is int-validated separately.
+# consume a value; --repeat is validated separately against the cron API's own vocabulary.
 _CRON_BOOL_FLAGS = {"--clear-skills": "clear_skills", "--all": "all"}
 _CRON_LIST_FLAGS = {"--skill": "skills", "--add-skill": "add_skills", "--remove-skill": "remove_skills"}
 _CRON_VALUE_FLAGS = {"--name": "name", "--deliver": "deliver", "--prompt": "prompt", "--schedule": "schedule"}
+
+
+def _repeat_count(text: str):
+    """A repeat count spelled like ``hermes cron --repeat``: a number, ``'forever'``, or ``'once'``.
+
+    ``None`` (the no-limit spelling) is the right value for this lane: ``/cron`` only creates jobs,
+    where ``create_job`` reads ``None`` as "forever". A bad spelling raises ``ValueError``, which
+    the flag parser answers with its generic "unusable flag line" result.
+    """
+    from cron.jobs import normalize_repeat_value
+
+    return normalize_repeat_value(text)
 
 
 def _normalize_skills(values) -> list:
@@ -106,7 +118,7 @@ def _parse_cron_flags(tokens):
             i += 2
         elif token == "--repeat" and has_value:
             try:
-                opts["repeat"] = int(tokens[i + 1])
+                opts["repeat"] = _repeat_count(tokens[i + 1])
             except ValueError:
                 return None
             i += 2

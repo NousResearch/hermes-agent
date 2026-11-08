@@ -637,7 +637,8 @@ _AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s
 # assignment form needs a key that IS ``cookie`` or ends in ``_cookie``; ``mycookiejar=1``,
 # ``cookie_policy=x`` and URL query params (``?cookie=``) never match.
 _COOKIE_ASSIGN_RE = re.compile(
-    r"(?<![\w?&])((?:[A-Za-z0-9]+_)*+cookie\s*=(?!=)\s*)(\S+)",
+    r"(?<![\w?&])((?:[A-Za-z0-9]+_)*+cookie\s*=(?!=)\s*)"
+    r"(?:(?P<q>[\"'])(?P<quoted>(?:(?!(?P=q))[^\\\r\n]|\\.)*)(?P=q)|(?P<bare>\S+))",
     re.IGNORECASE,
 )
 
@@ -1342,6 +1343,15 @@ def _redact_json_affixed_key_escaped(m: "re.Match[str]", mask) -> str:
     return f'{m.group(1)}: {m.group(2)}"{mask(m.group(4))}{m.group(2)}"'
 
 
+def _redact_cookie_assignment(m: "re.Match[str]", mask) -> str:
+    """Mask a ``cookie=`` value; a quoted value is masked whole and keeps its quotes."""
+    value = m.group("bare") if m.group("q") is None else m.group("quoted")
+    if _ENV_LOOKUP_VALUE_RE.match(value) or value.startswith(("***", "«redacted")):
+        return m.group(0)
+    q = m.group("q") or ""
+    return f"{m.group(1)}{q}{mask(value)}{q}"
+
+
 def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     """ENV / config / JSON / YAML assignment passes (skipped for code files). Passes
     that would match ``token=``/``key=`` URL params skip ``://`` text (web-URL query
@@ -1353,9 +1363,7 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     truncated key and could write it back as a dead credential (#35519)."""
     mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
     if "=" in text:
-        text = _COOKIE_ASSIGN_RE.sub(
-            lambda m: m.group(0) if _ENV_LOOKUP_VALUE_RE.match(m.group(2)) or m.group(2).startswith(("***", "«redacted"))
-            else m.group(1) + mask(m.group(2)), text)
+        text = _COOKIE_ASSIGN_RE.sub(lambda m: _redact_cookie_assignment(m, mask), text)
         _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)
         if "://" not in text:  # lowercase names would match URL params

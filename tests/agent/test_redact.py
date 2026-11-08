@@ -570,6 +570,9 @@ class TestCookieCredentials:
             ("INFO upstream Cookie: a=1; sid=opaqueSessionValue1234567890; theme=dark user=bob",
              "opaqueSessionValue"),
             ("Set-Cookie: opaqueSessionValue1234567890", "opaqueSessionValue"),
+            ('export SESSION_COOKIE="a=1; sid=opaqueSessionValue1234567890"', "opaqueSessionValue"),
+            ('INFO upstream Cookie: sid="opaqueSessionValue1234567890"', "opaqueSessionValue"),
+            ("INFO upstream x-api-key: $opaqueSessionValue1234567890", "opaqueSessionValue"),
         ):
             assert secret not in redact_sensitive_text(text), text
 

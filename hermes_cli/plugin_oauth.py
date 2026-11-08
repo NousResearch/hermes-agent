@@ -207,18 +207,26 @@ def _foreign_client_env_problems(clients: list[OAuthClient], plugin_dir: Path, m
     Keep existing non-platform clients' shared declarations working; a platform's
     newly permitted client variables must belong only to that plugin.
     """
+    from hermes_cli.config import _platform_manifest_paths
     from hermes_cli.plugins_discovery import collect_directory_manifests
     from pm.plugin_declarations import native_manifest_file, read_native_manifest
 
     names = {name for c in clients for name in (c.client_id_env, c.client_secret_env) if name}
     if not names:
         return []
+    # Config treats platforms/* as platforms by location, even when discovery
+    # defaults a kind-less manifest to standalone. Protect those declarations too.
+    platform_dirs = {path.parent.resolve() for _, path, require_kind, _ in _platform_manifest_paths()
+                     if path is not None and not require_kind}
+    requester = plugin_dir.resolve()
+    requester_is_platform = manifest.get("kind") == "platform" or requester in platform_dirs
     problems = []
     for other in collect_directory_manifests():
         directory = Path(other.path)
-        if directory.resolve() == plugin_dir.resolve():
+        resolved = directory.resolve()
+        if resolved == requester:
             continue
-        if other.kind != "platform" and manifest.get("kind") != "platform":
+        if not (requester_is_platform or other.kind == "platform" or resolved in platform_dirs):
             continue
         path = native_manifest_file(directory)
         if path is not None:

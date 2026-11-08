@@ -631,7 +631,7 @@ class TestApprovalButtonData:
     def test_parse_allow_once(self):
         from plugins.platforms.qqbot.keyboards import parse_approval_button_data
         result = parse_approval_button_data("approve:agent:main:qqbot:c2c:UID:allow-once")
-        assert result == ("agent:main:qqbot:c2c:UID", "allow-once")
+        assert result == ("agent:main:qqbot:c2c:UID", "", "allow-once")
 
 
     def test_parse_empty_returns_none(self):
@@ -854,7 +854,7 @@ class TestDefaultInteractionDispatch:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
+        def fake_resolve(session_key, choice, resolve_all=False, **_kw):
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 

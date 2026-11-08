@@ -42,6 +42,23 @@ def test_bundled_language_and_alias_are_accepted(home, capsys):
     assert i18n.get_language() == "zh-hant"
 
 
+def test_desktop_language_save_updates_live_review_notifications(home, monkeypatch):
+    import asyncio
+    from hermes_cli.web_routers.config_env import ConfigUpdate, update_config
+
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    key = "display.review.summary_callback"
+    english = i18n.t(key, summary="demo")
+    chinese = i18n.t(key, lang="zh", summary="demo")
+    assert english != chinese
+
+    for language, expected in (("zh", chinese), ("en", english)):
+        body = ConfigUpdate(config={"display": {"language": language}})
+        assert asyncio.run(update_config(body, preserve_language=True)) == {"ok": True}
+        assert _saved_language(home) == language
+        assert i18n.t(key, summary="demo") == expected
+
+
 def test_unknown_language_is_refused_with_the_available_list(home, capsys):
     with pytest.raises(SystemExit):
         set_config_value("display.language", "klingon")

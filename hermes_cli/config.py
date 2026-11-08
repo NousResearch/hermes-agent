@@ -46,6 +46,7 @@ from hermes_constants import (
 from hermes_constants import get_hermes_home, get_process_hermes_home
 from utils import atomic_replace, fast_safe_load, file_cache_version, file_signature, mkstemp_beside
 from hermes_cli.config_issues import ConfigIssue, _issue
+from hermes_cli.config_language import display_language_error, refresh_saved_language
 from hermes_cli.config_backend import (
     ConfigWriteError, config_cache_version, config_destination, config_exists, config_version,
     get_config_backend, probe_config_readable, read_config_doc, supports_file_tooling,
@@ -2407,6 +2408,7 @@ def save_config(
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+        refresh_saved_language(_raw_for_paths, normalized)
     from hermes_cli.observability.shared_metrics_disabled import record_config_saved
     record_config_saved(_raw_for_paths, current_normalized)
 
@@ -3364,11 +3366,8 @@ def set_config_value(key: str, value: str, force: bool = False):
         from hermes_cli.config_key_notices import unknown_subkey_refusal
         _exit_invalid(unknown_subkey_refusal(key, suggestion))
 
-    if key == "display.language":
-        from hermes_cli.config_language import display_language_error
-        language_error = display_language_error(value)
-        if language_error:
-            _exit_invalid(language_error)
+    if key == "display.language" and (language_error := display_language_error(value)):
+        _exit_invalid(language_error)
 
     # Read the RAW user config (not merged) so defaults are never dumped back; fail-closed.
     config_path = get_config_path()

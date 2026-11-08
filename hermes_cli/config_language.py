@@ -8,9 +8,19 @@ otherwise ``hermes config set display.language pl`` would refuse the very pack t
 
 from __future__ import annotations
 
+import sys
 from typing import Optional
 
 DISPLAY_LANGUAGE_KEY = "display.language"
+
+
+def refresh_saved_language(previous: dict, saved: dict) -> None:
+    """Refresh live translations after a config save changes the profile's language."""
+    from hermes_cli.config import cfg_get
+
+    reset = getattr(sys.modules.get("agent.i18n"), "reset_language_cache", None)
+    if reset is not None and cfg_get(previous, "display", "language") != cfg_get(saved, "display", "language"):
+        reset()
 
 
 def resolve_display_language(value: str) -> Optional[str]:
@@ -38,4 +48,4 @@ def display_language_error(value: str) -> Optional[str]:
             "(hermes plugins install <pack>) or drop <HERMES_HOME>/locales/<id>.yaml to add one.")
 
 
-__all__ = ["DISPLAY_LANGUAGE_KEY", "display_language_error", "resolve_display_language"]
+__all__ = ["DISPLAY_LANGUAGE_KEY", "display_language_error", "refresh_saved_language", "resolve_display_language"]

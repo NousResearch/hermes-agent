@@ -1,7 +1,7 @@
 name: smart-dictation
 title: Smart Dictation
 repo: https://github.com/metamindedu/hermes-smart-dictation
-sha: 9838ce40f1ef324aa42485507f51ab04478300a0
+sha: 1a36b8d84baa820a3f0b32a11b8163488090a4ec
 version: "0.4.0"
 description: Local dictation with tool-free proofreading, selected reference context, and owner-safe draft insertion.
 maintainer: metamindedu
@@ -9,7 +9,7 @@ tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
 screenshots:
-  - https://raw.githubusercontent.com/metamindedu/hermes-smart-dictation/9838ce40f1ef324aa42485507f51ab04478300a0/docs/images/smart-dictation.png
+  - https://raw.githubusercontent.com/metamindedu/hermes-smart-dictation/1a36b8d84baa820a3f0b32a11b8163488090a4ec/docs/images/smart-dictation.png
 readme: true
 platforms: [linux, macos, windows]
 onboarding: false

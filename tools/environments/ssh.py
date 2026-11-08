@@ -1,5 +1,6 @@
 """SSH remote execution environment with ControlMaster connection persistence."""
 
+import base64
 import contextlib
 import hashlib
 import logging
@@ -27,6 +28,39 @@ _SSH_MULTIPLEX = os.name != "nt"
 
 # Module-level binding: tests patch ``ssh._load_hermes_env_vars`` to fake the .env file.
 _load_hermes_env_vars = load_hermes_env_vars
+
+# GNU coreutils spells it ``-d``, BSD/macOS ``-D``; try both so one wrapper serves every host.
+_B64_DECODE = "(base64 -d 2>/dev/null || base64 -D 2>/dev/null)"
+
+# Names the wrapper uses; kept here so the script string stays readable.
+_REMOTE_SCRIPT_TMPL = (
+    "__hs=$(mktemp /tmp/.hermes-cmd-XXXXXX) || exit 1; "
+    "printf %s {b64} | " + _B64_DECODE + " > \"$__hs\" || {{ rm -f \"$__hs\"; exit 1; }}; "
+    "{shell} \"$__hs\"; __hrc=$?; rm -f \"$__hs\"; exit $__hrc"
+)
+
+
+def _remote_script(payload: str, login: bool = False, keep_stdin: bool = True) -> str:
+    """Quote-free carrier for a remote bash payload.
+
+    ``ssh`` joins the argv into ONE string and hands it to the remote *login* shell. When that
+    shell is ``fish`` (default on CachyOS/Arch), the ``'\\''`` escaping ``shlex.quote`` emits for
+    single quotes is parsed by fish instead, the payload leaks out of the argv and the command
+    dies with ``fish: Unsupported use of '='. In fish, please use 'set __hermes_ec $?'``. Every
+    file-tool command quotes its paths, so ``read_file``/``search_files``/``patch`` failed 100%
+    over SSH against such a host.
+
+    Carrying the script base64-encoded (no single quotes, no ``$``, no backslashes at the shell
+    layer) and running it from a temp file keeps the transport independent of the remote shell's
+    quoting rules, survives ``login`` (``bash -l``), and leaves the command's stdin free for
+    ``stdin_data``.
+    """
+    b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+    shell = "bash -l" if login else "bash"
+    if not keep_stdin:
+        # Nothing to read from stdin (probes, mkdir, echo $HOME): skip the temp file.
+        return f"printf %s {b64} | {_B64_DECODE} | {shell}"
+    return _REMOTE_SCRIPT_TMPL.format(b64=b64, shell=shell)
 
 
 def _ensure_ssh_available() -> None:
@@ -127,8 +161,14 @@ class SSHEnvironment(BaseEnvironment):
         return cmd
 
     def _run_ssh(self, remote_cmd: str, timeout: float) -> subprocess.CompletedProcess:
-        """Run one remote shell command over the multiplexed connection, capturing output."""
-        return run_capture(self._build_ssh_command() + [remote_cmd], timeout=timeout)
+        """Run one remote shell command over the multiplexed connection, capturing output.
+
+        Routed through ``_remote_script``: sshd hands the command string to the remote *login*
+        shell, so a quoted path (every ``mkdir``/``tar`` helper here) is rewritten by fish into
+        something bash never sees — that is what broke the ``~/.hermes`` sync on CachyOS hosts.
+        """
+        return run_capture(self._build_ssh_command() + bash_argv(shlex.quote(_remote_script(remote_cmd, keep_stdin=False)), False),
+                           timeout=timeout)
 
     def _run_ssh_checked(self, remote_cmd: str, timeout: float, reason: str, subject: str) -> None:
         result = self._run_ssh(remote_cmd, timeout=timeout)
@@ -209,7 +249,8 @@ class SSHEnvironment(BaseEnvironment):
 
             # --no-overwrite-dir keeps tar from stamping the staging dir's mode onto
             # existing dirs (e.g. /home/<user>); a umask-002 0775 home breaks sshd StrictModes.
-            ssh_cmd = self._build_ssh_command() + [f"tar xf - --no-overwrite-dir -C {shlex.quote(base)}"]
+            ssh_cmd = self._build_ssh_command() + bash_argv(
+                shlex.quote(_remote_script(f"tar xf - --no-overwrite-dir -C {shlex.quote(base)}")), False)
             tar_proc = subprocess.Popen(["tar", "-chf", "-", "-C", staging, "."], stdin=subprocess.DEVNULL,
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             try:
@@ -252,8 +293,8 @@ class SSHEnvironment(BaseEnvironment):
         # Live sockets inside .hermes (gateway.sock and friends) cannot be archived: tar prints
         # "socket ignored" and some builds exit 2, which failed every sync-back and left a
         # multi-GB temp tar behind on each retry. Exclude them up front.
-        ssh_cmd = self._build_ssh_command() + [
-            f"tar cf - --exclude='*.sock' -C / {shlex.quote(rel_base)}"]
+        ssh_cmd = self._build_ssh_command() + bash_argv(
+            shlex.quote(_remote_script(f"tar cf - --exclude='*.sock' -C / {shlex.quote(rel_base)}")), False)
         with open(dest, "wb") as f:
             result = subprocess.run(ssh_cmd, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.PIPE, timeout=120, check=False)
         if result.returncode != 0:
@@ -284,7 +325,10 @@ class SSHEnvironment(BaseEnvironment):
         remote sshd must ``AcceptEnv`` them (#14091). Profile-scoped names missing from the active
         scope are unset remotely so a shared host cannot serve another profile's value."""
         values, unset_names = resolve_passthrough_env(hermes_env_loader=_load_hermes_env_vars)
-        cmd = self._build_ssh_command(send_env=values) + bash_argv(shlex.quote(prepend_unset(cmd_string, unset_names)), login)
+        # Never hand a quoted payload to the remote *login* shell (see _remote_script): with fish
+        # on the far side, any single-quoted argument corrupts the command.
+        script = _remote_script(prepend_unset(cmd_string, unset_names), login)
+        cmd = self._build_ssh_command(send_env=values) + bash_argv(shlex.quote(script), False)
         client_env = client_env_with(values)
         return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
 

@@ -356,7 +356,9 @@ def begin_update_receipt(*, previous: dict | None = None, correlation_id: str | 
     Nested updates are safe: the previous receipt (if any) is preserved
     behind the ContextVar token and comes back when this one finalizes —
     a nested begin/finalize never drops the outer update's receipt or
-    correlation. Never raises."""
+    correlation, and a nested begin keeps the outer receipt's ``latest.json``
+    pointer undisturbed. Never raises."""
+    outer = _current.get()  # captured BEFORE the set: a nested begin must not clobber the outer pointer
     try:
         receipt = UpdateReceipt()
         if previous:
@@ -369,12 +371,12 @@ def begin_update_receipt(*, previous: dict | None = None, correlation_id: str | 
             from hermes_cli.process_identity import _process_create_time
 
             receipt.data.setdefault("pid_create_time", _process_create_time(receipt.data["pid"]))
-        if not previous:
+        if outer is None and not previous:
             reconcile_interrupted_runs()
         # The running record is about to replace latest.json: snapshot the previous record's
         # manual serve rows (raw, no side effects) for finalize's carry-forward. A handed-off
         # receipt from an older interpreter predates the field, so it needs the same snapshot.
-        if not previous or "carried_manual_serves" not in previous:
+        if outer is None and (not previous or "carried_manual_serves" not in previous):
             with suppress(Exception):
                 prior = read_latest_receipt() or {}
                 rows = list((prior.get("plan") or {}).get("runtimes") or [])
@@ -387,7 +389,8 @@ def begin_update_receipt(*, previous: dict | None = None, correlation_id: str | 
         logger.debug("Could not start update receipt: %s", exc)
         return
     receipt.current_token = _current.set(receipt)
-    _persist_running(receipt.data)
+    if outer is None:
+        _persist_running(receipt.data)
 
 
 def persist_running_receipt() -> None:

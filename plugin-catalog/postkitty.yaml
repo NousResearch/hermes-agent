@@ -12,6 +12,7 @@ tier: community
 category: tools
 version: "0.1.0"
 requires_hermes: ">=0.22.7"
+docs_url: https://postkitty.mertkayacs.com
 image: https://raw.githubusercontent.com/mertkayacs/postkitty/4452de55d700e84d42e4ac758217f6b5e1617d51/docs/banner.png
 screenshots:
   - https://raw.githubusercontent.com/mertkayacs/postkitty/4452de55d700e84d42e4ac758217f6b5e1617d51/docs/board.png

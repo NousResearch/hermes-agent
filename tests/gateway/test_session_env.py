@@ -92,8 +92,10 @@ def test_shared_source_uses_current_event_author_for_live_actor_context():
     tokens = runner._set_session_env(context)
     try:
         assert shared_source.user_id is None
-        assert get_session_env("HERMES_SESSION_USER_ID") == "current-author"
-        assert get_session_env("HERMES_SESSION_USER_NAME") == "Current Author"
+        assert get_session_env("HERMES_SESSION_ACTOR_ID") == "current-author"
+        assert get_session_env("HERMES_SESSION_ACTOR_NAME") == "Current Author"
+        # The route stays the shared, sender-less one (kanban/cron/send_message rebuild it).
+        assert get_session_env("HERMES_SESSION_USER_ID") == ""
     finally:
         runner._clear_session_env(tokens)
 

@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-import sys
 
 import pytest
 
@@ -22,7 +21,7 @@ from tests.fakes.platforms.telegram_standin import BOT_USERNAME
 
 pytestmark = [
     pytest.mark.spawns_gateway_lookalike,
-    pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group gateway harness"),
+    pytest.mark.platforms("posix"),
 ]
 
 
@@ -52,7 +51,7 @@ def test_observed_group_command_resets_shared_session_and_tools_see_the_sender(t
     try:
         gw.start()
         director.script("t1", Text("ONE"))
-        director.script("t2", ToolCall("terminal", {"command": "echo ACTOR=$HERMES_SESSION_USER_ID"}), Text("TWO"))
+        director.script("t2", ToolCall("terminal", {"command": "echo ACTOR=$HERMES_SESSION_ACTOR_ID ROUTE=$HERMES_SESSION_USER_ID."}), Text("TWO"))
         drv.group("hello [in:t1]", mention=True)
         _await_turn(director, "t1")
         shared = f"agent:main:telegram:group:{gid}"
@@ -73,8 +72,10 @@ def test_observed_group_command_resets_shared_session_and_tools_see_the_sender(t
         assert _session_keys(gw.db_path) == {shared}
         assert not any("[in:t1]" in json.dumps(m, ensure_ascii=False) for m in requests[0].get("messages") or [])
         # The addressed turn's tool sees the real sender even though the shared source is sender-less.
-        tool_out = json.dumps(requests[-1].get("messages") or []).replace("ACTOR=$", "")
+        tool_out = json.dumps(requests[-1].get("messages") or []).replace("ACTOR=$", "").replace("ROUTE=$", "")
         assert (re.search(r"ACTOR=(\w*)", tool_out) or [None, None])[1] == drv.user_id
+        # ...while the route tools rebuild deliveries from stays the shared, sender-less one.
+        assert "ROUTE=." in tool_out
     finally:
         gw.stop()
         llm.stop()

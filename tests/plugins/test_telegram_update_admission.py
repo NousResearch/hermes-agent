@@ -77,8 +77,9 @@ def test_observe_attribution_keeps_live_actor_outside_shared_source():
     runner = object.__new__(GatewayRunner)
     tokens = runner._set_session_env(context)
     try:
-        assert get_session_env("HERMES_SESSION_USER_ID") == "current-author"
-        assert get_session_env("HERMES_SESSION_USER_NAME") == "Current Author"
+        assert get_session_env("HERMES_SESSION_ACTOR_ID") == "current-author"
+        assert get_session_env("HERMES_SESSION_ACTOR_NAME") == "Current Author"
+        assert get_session_env("HERMES_SESSION_USER_ID") == ""
     finally:
         runner._clear_session_env(tokens)
 

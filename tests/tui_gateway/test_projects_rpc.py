@@ -594,6 +594,37 @@ def _cached_repo_labels(home: Path) -> list[str]:
         return sorted(str(entry.get("label") or "") for entry in pdb.list_discovered_repos(conn))
 
 
+@pytest.mark.parametrize(
+    ("params", "preview_count"),
+    [({}, 3), ({"preview_limit": None}, 3), ({"preview_limit": 0}, 0), ({"preview_limit": 1}, 1)],
+    ids=["default", "null", "zero", "positive"],
+)
+def test_project_tree_honors_preview_limit_without_losing_membership(tmp_path, params, preview_count):
+    home = _profile_dir(tmp_path, "launch")
+    folder = tmp_path / "workspace"
+    folder.mkdir()
+    project_id = _create_project(home, "Workspace", folder)["id"]
+    session_ids = {f"chat-{index}" for index in range(4)}
+    for session_id in sorted(session_ids):
+        _create_session(home, session_id, folder)
+
+    with _serving_launch_profile(home):
+        tree = _call("projects.tree", params)
+        project = next(p for p in tree["projects"] if p["id"] == project_id)
+        assert len(project["previewSessions"]) == preview_count
+        assert project["sessionCount"] == len(session_ids)
+        assert set(project["sessionIds"]) == session_ids
+        assert set(tree["scoped_session_ids"]) == session_ids
+        assert all(not group["sessions"] for repo in project["repos"] for group in repo["groups"])
+
+        # Omitting overview previews must not hide the project history on drill-in.
+        drill = _call("projects.project_sessions", {"project_id": project_id})["project"]
+        assert {
+            s["id"] for repo in drill["repos"] for group in repo["groups"]
+            for s in group["sessions"]
+        } == session_ids
+
+
 def test_projects_reads_are_scoped_to_the_requested_profile(monkeypatch, tmp_path):
     """A ``profile`` param reads that profile's projects.db AND its state.db."""
     launch_home = _profile_dir(tmp_path, "launch")

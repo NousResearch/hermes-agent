@@ -1,18 +1,20 @@
 name: agent-music-jam
 title: Agent Music Jam
 repo: https://github.com/vdimarco/agent-music-jam
-sha: 84ddddcee6573e4cccbbd1d8060330f7c2ebfc9e
+sha: 009c918b89e7ba98550de0755b47d1e5e7bc96a0
 description: Conduct a live synthesized band, play along on keys or MIDI, and export your performance.
 maintainer: vdimarco
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.1.0"
+version: "0.1.1"
 docs_url: https://github.com/vdimarco/agent-music-jam#readme
 screenshots:
-  - https://raw.githubusercontent.com/vdimarco/agent-music-jam/84ddddcee6573e4cccbbd1d8060330f7c2ebfc9e/docs/screenshots/studio.png
+  - https://raw.githubusercontent.com/vdimarco/agent-music-jam/009c918b89e7ba98550de0755b47d1e5e7bc96a0/docs/screenshots/studio.png
+  - https://raw.githubusercontent.com/vdimarco/agent-music-jam/009c918b89e7ba98550de0755b47d1e5e7bc96a0/docs/screenshots/performance.png
 readme: true
 known_issues:
+  - Saved takes are local to this browser and service port; download important recordings for a permanent backup.
   - This first ensemble uses D minor and a fixed four-chord progression.
   - Browser suspension can exhaust the finite audio buffer; WAV takes are capped at 15 minutes.
   - Physical MIDI hardware and active-turn native child-session execution have not been verified.

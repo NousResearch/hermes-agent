@@ -1,0 +1,40 @@
+name: physis
+repo: https://github.com/ilPez00/hermes-physis
+sha: 07f1fce97edc35ba7342e5d7f06c069ac00e1652
+description: "Offline evidence-backed execution memory, with both engines bundled: index a repo into a coherence graph, return context under a fixed token budget, then record a verified tool recipe that replays with zero provider calls. Recipes are bound to their inputs, so a replay whose files changed is refused instead of repeated. Sessions that pass their own verification command become workflow candidates; nothing learned replays until you approve it by id. No API key, no network, no Python dependencies."
+maintainer: ilPez00
+title: Physis
+tier: community
+category: memory
+requires_hermes: ">=0.23.0"
+version: "1.6.0"
+platforms: [linux]
+readme: true
+image: https://raw.githubusercontent.com/ilPez00/hermes-physis/07f1fce97edc35ba7342e5d7f06c069ac00e1652/assets/banner.png
+capabilities:
+  provides_tools:
+    - physis_engine_status
+    - physis_observe
+    - physis_snapshot
+    - physis_context
+    - physis_query
+    - physis_why
+    - physis_diff
+    - physis_classify
+    - physis_chain
+    - physis_grid
+    - physis_ingest
+    - physis_observed
+    - physis_command
+    - replant_run
+    - replant_record
+    - replant_stats
+    - replant_demo
+    - replant_show
+    - physis_candidates
+  provides_hooks:
+    - post_tool_call
+    - pre_verify
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

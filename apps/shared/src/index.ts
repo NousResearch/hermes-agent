@@ -61,6 +61,7 @@ export {
   DATA_URL_READ_MAX_MAX_MB,
   DATA_URL_READ_MIN_MAX_MB
 } from './data-url-read-max'
+export { INSTALL_ORIGIN, PACKAGE_MARKER, PLUGIN_CATALOG_NAME_RE } from './desktop-plugin-files'
 export { type ExternalUrlTarget, externalUrlTarget } from './external-url'
 export { fileUrlToNativePath } from './file-url'
 export { compactNumber } from './format'
@@ -119,7 +120,6 @@ export {
   usageLevel,
   usageTag
 } from './plan-usage'
-export { INSTALL_ORIGIN, PACKAGE_MARKER, PLUGIN_CATALOG_NAME_RE } from './desktop-plugin-files'
 export {
   DEFAULT_REASONING_EFFORT,
   isReasoningEffort,

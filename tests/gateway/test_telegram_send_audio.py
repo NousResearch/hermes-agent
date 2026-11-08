@@ -3,6 +3,7 @@ performer/title/cover tags, so Telegram's music player shows a named track inste
 
 import shutil
 import subprocess
+import tempfile
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -91,3 +92,24 @@ async def test_mp3_caption_retry_still_carries_the_cover(tmp_path):
 
     assert result.success is True
     assert len(covers) == 2 and covers[0][:2] == b"\xff\xd8" and covers[1] == covers[0]
+
+
+@_needs_ffmpeg
+@pytest.mark.asyncio
+async def test_mp3_still_sends_when_the_cover_cannot_be_written(tmp_path, monkeypatch):
+    """A full or unwritable temp dir costs the cover art, never the track itself."""
+    mp3 = _tagged_mp3(tmp_path)
+
+    def _no_space(*_a, **_kw):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(tempfile, "mkstemp", _no_space)
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._bot = MagicMock()
+    adapter._bot.send_audio = AsyncMock(return_value=MagicMock(message_id=9))
+
+    result = await adapter.send_voice("123", str(mp3), caption="track")
+
+    assert result.success is True
+    kwargs = adapter._bot.send_audio.await_args.kwargs
+    assert "thumbnail" not in kwargs and kwargs["title"] == "Probe Song"

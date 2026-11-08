@@ -79,17 +79,27 @@ def audio_player_fields(path: str) -> dict[str, str]:
             fields[field] = tags[tag][:256]
     has_cover = any(s.get("codec_type") == "video" for s in blob.get("streams") or [])
     if has_cover and shutil.which("ffmpeg"):
+        cover = _extract_cover_jpeg(path)
+        if cover:
+            fields["thumbnail_path"] = cover
+    return fields
+
+
+def _extract_cover_jpeg(path: str) -> Optional[str]:
+    """A temporary 320px JPEG of ``path``'s embedded cover, or None. Every file operation stays
+    inside the best-effort boundary: a full or unwritable temp dir costs the cover, never the track."""
+    out = None
+    try:
         fd, out = tempfile.mkstemp(suffix=".jpg", prefix="hermes-tg-cover-")
         os.close(fd)
-        try:
-            ok = subprocess.run(
-                ["ffmpeg", "-y", "-i", path, "-an", "-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "6", out],
-                stdin=subprocess.DEVNULL, capture_output=True, timeout=20, check=False).returncode == 0
-        except (OSError, subprocess.SubprocessError):
-            ok = False
+        ok = subprocess.run(
+            ["ffmpeg", "-y", "-i", path, "-an", "-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "6", out],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=20, check=False).returncode == 0
         if ok and os.path.getsize(out):
-            fields["thumbnail_path"] = out
-        else:
-            with contextlib.suppress(OSError):
-                os.remove(out)
-    return fields
+            return out
+    except (OSError, subprocess.SubprocessError):
+        logger.debug("[Telegram] cover extraction failed for %s", path, exc_info=True)
+    if out:
+        with contextlib.suppress(OSError):
+            os.remove(out)
+    return None

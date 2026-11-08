@@ -911,3 +911,39 @@ async def test_control_message_native_topic_unconfirmed_failure_keeps_binding_an
 
     assert len(call_log) == 2
     assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is not None
+
+
+# The metadata gateway/platforms/base.py::_thread_metadata_for_source builds for a private topic reply.
+_GATEWAY_META = {**_GONE_META, "direct_messages_topic_id": "20197"}
+
+
+def _topic_db(tmp_path):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="123", user_id="123")
+    db.create_session(session_id="s1", source="telegram", user_id="123")
+    db.bind_telegram_topic(chat_id="123", thread_id="20197", user_id="123", session_key="k", session_id="s1")
+    return db
+
+
+@pytest.mark.asyncio
+async def test_media_ladder_ends_when_even_the_chat_root_is_rejected():
+    """Each media step drops a constraint; the native id is not rebuilt from metadata after the root step."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def _always_gone(**kwargs):
+        call_log.append(dict(kwargs))
+        assert len(call_log) < 10, "media retry ladder does not terminate"
+        raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_animation=_always_gone, send_photo=_always_gone)
+
+    result = await adapter.send_animation(
+        chat_id="123", animation_url="https://example.com/anim.gif", metadata=dict(_GATEWAY_META))
+
+    assert result.success is False
+    routes = [(c.get("message_thread_id"), c.get("direct_messages_topic_id"), c.get("reply_to_message_id")) for c in call_log]
+    assert routes[:3] == [(20197, None, 462), (None, 20197, 462), (None, None, None)]
+    assert (None, 20197, None) not in routes  # the native id is not rebuilt after the root step

@@ -1,0 +1,22 @@
+name: freeze
+title: Freeze
+repo: https://github.com/mauricemohr88-debug/hermes-freeze
+sha: 779762df8a35a42d6ef911848addfb8064cfe363
+version: "0.1.0"
+description: "Let Hermes do a task once, then replay it without the model: /freeze turns the last turn's tool calls into a checked workflow (bindings, loops over lists, and model-worked values compiled into Python that must reproduce the recording exactly), and hermes freeze run repeats it with 0 model calls, stops on drift, never overwrites a file you edited, and hermes freeze schedule makes it a no-agent cron job. Disclosure — hooks record each turn's task, tool arguments, tool results (truncated at 256 KB), final answer and token counts in <HERMES_HOME>/plugin-data/freeze/data.db, pruned after 14 days; /freeze makes model calls through your active model (one per compiled step, at most 3 attempts) and sends the task, shortened tool results and the recorded value; replays run the frozen shell commands and file writes through Hermes' own tools and Hermes' approvals (unattended runs follow approvals.cron_mode, default deny), and run compiled code in a separate python -I process with a static check and a 10 s timeout; /freeze run starts hermes freeze run as a child process, --fallback agent starts hermes chat; schedule writes <HERMES_HOME>/scripts/freeze-<name>.sh and creates a cron job with hermes cron create --no-agent; no network calls of its own, no telemetry, no credentials."
+maintainer: mauricemohr88-debug
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/mauricemohr88-debug/hermes-freeze/tree/779762df8a35a42d6ef911848addfb8064cfe363#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+    - post_api_request
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

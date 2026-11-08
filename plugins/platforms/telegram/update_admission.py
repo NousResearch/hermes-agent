@@ -166,7 +166,13 @@ class PerChatUpdateProcessor(SimpleUpdateProcessor):
         try:
             if prev is not None:
                 # shield: cancelling this waiter must not cancel the predecessor's tail future.
-                await asyncio.shield(prev)
+                try:
+                    await asyncio.shield(prev)
+                except BaseException:
+                    # Cancelled before handler entry: the coroutine still belongs to this waiter (#146716).
+                    if asyncio.iscoroutine(coroutine):
+                        coroutine.close()
+                    raise
             await coroutine
         finally:
             def release(_prev=None):
@@ -193,11 +199,12 @@ def build_update_processor(extra, name: str) -> PerChatUpdateProcessor:
 
 
 class TelegramApplication(Application):
-    __slots__ = ("_current_claim", "adapter")
+    __slots__ = ("_claim_completions", "_current_claim", "adapter")
 
     def __init__(self, *, adapter, **kwargs):
         super().__init__(**kwargs)
         self.adapter = adapter
+        self._claim_completions: set[asyncio.Future] = set()
         if adapter._update_admission is None:
             adapter._update_admission = ContextVar[_Claim | None]("telegram_update_claim", default=None)
         self._current_claim: ContextVar[_Claim | None] = adapter._update_admission
@@ -263,15 +270,26 @@ class TelegramApplication(Application):
         if claim is not None and claim.owners:
             # Pin scheduled work before callback entry, including cancellation before entry.
             claim.owners += 1
+            completion = asyncio.get_running_loop().create_future()
+            self._claim_completions.add(completion)
 
             def finished(done):
                 # PTB's task wrapper may never start, leaving its callback unawaited.
                 if done.cancelled() and asyncio.iscoroutine(coroutine):
                     coroutine.close()
                 self._release_claim(claim, done)
+                self._claim_completions.discard(completion)
+                completion.set_result(None)
 
             task.add_done_callback(finished)
         return task
+
+    async def stop(self):
+        await super().stop()
+        # Gathering already-done PTB tasks need not have run their done callbacks yet: wait for the
+        # claim releases themselves (shielded, so a cancelled stop waiter cannot strand them) (#146716).
+        while self._claim_completions:
+            await asyncio.gather(*(asyncio.shield(c) for c in tuple(self._claim_completions)))
 
     def _release_claim(self, claim, task=None):
         if task is not None and task.cancelled():

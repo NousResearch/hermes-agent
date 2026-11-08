@@ -318,10 +318,24 @@ def _probe_ollama(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> O
     return query_ollama_supports_vision(model, base_url, api_key=api_key)
 
 
+def _probe_endpoint_models(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> Optional[bool]:
+    """Endpoint ``/models`` verdict for OpenAI-compatible custom providers: the server
+    receiving the image is authoritative on whether it can see it (``capabilities.vision``
+    / ``input_modalities`` on the model object)."""
+    base_url = _resolve_inference_base_url(cfg, provider)
+    if not base_url:
+        return None
+    api_key = _resolve_inference_api_key(cfg, provider)
+    from agent.model_metadata import _resolve_endpoint_supports_vision
+
+    return _resolve_endpoint_supports_vision(model, base_url, api_key=api_key)
+
+
 # Capability probes after the config override, in priority order; each returns
 # True/False or None (unknown → next probe). Exceptions are logged and treated as None.
 _VISION_PROBES: tuple[tuple[str, Callable[..., Optional[bool]]], ...] = (
     ("managed-runtime caps lookup", _probe_managed_runtime),
+    ("endpoint /models vision probe", _probe_endpoint_models),
     ("caps lookup", _probe_models_dev),
     ("ollama vision probe", _probe_ollama),
 )

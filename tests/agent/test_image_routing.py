@@ -11,8 +11,10 @@ from agent.image_routing import (
     _coerce_capability_bool,
     _coerce_mode,
     _lookup_supports_vision,
+    _probe_endpoint_models,
     _should_probe_ollama_vision,
     _supports_vision_override,
+    _VISION_PROBES,
     build_native_content_parts,
     decide_image_input_mode,
     extract_image_refs,
@@ -670,3 +672,22 @@ class TestCodexContextVariantVisionLookup:
         # Ineligible alias: looked up verbatim, no capability gained.
         assert image_routing._probe_models_dev("openai-codex", "gpt-5.5-900k", {}) is None
         assert seen[-1] == "gpt-5.5-900k"
+
+
+class TestProbeEndpointModels:
+    """The endpoint ``/models`` probe feeds a custom provider's declared vision
+    capability into the router without a config declaration."""
+
+    def test_no_base_url_returns_none(self):
+        with patch("agent.image_routing._resolve_inference_base_url", return_value=""):
+            assert _probe_endpoint_models("openrouter", "some-model", {}) is None
+
+    def test_resolves_via_endpoint_metadata(self):
+        with patch("agent.image_routing._resolve_inference_base_url", return_value="https://custom.example/v1"), \
+             patch("agent.image_routing._resolve_inference_api_key", return_value="k"), \
+             patch("agent.model_metadata._resolve_endpoint_supports_vision", return_value=True) as resolver:
+            assert _probe_endpoint_models("custom", "m", {}) is True
+            resolver.assert_called_once_with("m", "https://custom.example/v1", api_key="k")
+
+    def test_vision_probes_include_endpoint_models(self):
+        assert "endpoint /models vision probe" in [label for label, _ in _VISION_PROBES]

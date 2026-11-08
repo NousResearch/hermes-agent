@@ -58,7 +58,7 @@ class NoNetwork(BaseRequest):
 def test_observe_attribution_keeps_live_actor_outside_shared_source():
     """Regression for #140059: a mentioned turn keeps its trusted Telegram author."""
     adapter = TelegramAdapter(PlatformConfig(enabled=True, extra={
-        "observe_unmentioned_group_messages": True, "allowed_chats": ["42"],
+        "observe_unmentioned_group_messages": True, "allowed_chats": ["42"], "group_allowed_chats": ["42"],
     }))
     source = SessionSource(
         platform=Platform.TELEGRAM, chat_id="42", chat_type="group",

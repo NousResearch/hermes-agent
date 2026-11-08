@@ -22,7 +22,8 @@ const REASON_LABELS = new Map<string, keyof GroupReasonMessages>([
   ['prepare_failed', 'reasonPrepareFailed'],
   ['slot_wait_timeout', 'reasonSlotWait'],
   ['target_busy', 'reasonTargetBusy'],
-  ['member gateway restarted', 'reasonGatewayRestarted']
+  ['member gateway restarted', 'reasonGatewayRestarted'],
+  ['lead_answers_itself', 'reasonLeadAnswers']
 ])
 
 /** Codes never reach the screen. Unknown codes add no detail; free text survives. */

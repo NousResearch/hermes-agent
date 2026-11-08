@@ -38,3 +38,45 @@ def test_nonstarting_bash_is_rejected(monkeypatch):
 
     monkeypatch.setattr(shell.subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a, 1))
     assert shell._bash_starts("broken-bash.exe") is False
+
+
+# ---------------------------------------------------------------------------
+# extra_roots — registry InstallPath coverage for custom-drive Git installs
+# ---------------------------------------------------------------------------
+
+def test_registry_root_covers_custom_drive_installs():
+    # A Git for Windows install on a custom drive (registry InstallPath hit,
+    # e.g. D:\git) must yield both layout bash.exe paths with no ProgramFiles.
+    candidates = windows_bash_candidates(None, {}, extra_roots=[r"D:\git"])
+    assert r"D:\git\bin\bash.exe" in candidates
+    assert r"D:\git\usr\bin\bash.exe" in candidates
+
+def test_registry_roots_rank_after_fixed_locations_before_path():
+    on_path = r"C:\msys64\usr\bin\bash.exe"
+    candidates = windows_bash_candidates(
+        on_path,
+        {"ProgramFiles": PF, "LOCALAPPDATA": r"C:\Users\u\AppData\Local"},
+        extra_roots=[r"D:\git"],
+    )
+    assert candidates.index(r"C:\Users\u\AppData\Local\Programs\Git\bin\bash.exe") \
+        < candidates.index(r"D:\git\bin\bash.exe")
+    assert candidates.index(r"D:\git\bin\bash.exe") < candidates.index(on_path)
+
+def test_registry_roots_are_deduplicated():
+    candidates = windows_bash_candidates(None, {}, extra_roots=[r"D:\git", r"D:\git"])
+    assert candidates.count(r"D:\git\bin\bash.exe") == 1
+    assert candidates.count(r"D:\git\usr\bin\bash.exe") == 1
+
+def test_registry_root_trailing_separator_is_normalized():
+    candidates = windows_bash_candidates(None, {}, extra_roots=[r"D:\git\\"])
+    assert r"D:\git\bin\bash.exe" in candidates
+    assert not any("bin\\bin" in c or "\\\\" in c for c in candidates)
+
+def test_override_still_beats_registry_roots():
+    # HERMES_GIT_BASH_PATH stays the explicit first choice even when the
+    # registry offers another install.
+    candidates = windows_bash_candidates(
+        None, {"HERMES_GIT_BASH_PATH": r"E:\custom\Git\bin\bash.exe"},
+        extra_roots=[r"D:\git"],
+    )
+    assert candidates[0] == r"E:\custom\Git\bin\bash.exe"

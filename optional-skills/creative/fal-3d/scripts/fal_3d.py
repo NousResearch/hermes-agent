@@ -20,7 +20,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import posixpath
 import sys
+import urllib.parse
 import urllib.request
 from typing import Any, Dict, Optional
 
@@ -185,6 +187,7 @@ def build_payload(model: str, args: argparse.Namespace, image_url: Optional[str]
     ignored = [flag for flag, present in (
         ("faces", requested_faces is not None and not any(k in payload for k in FACE_KEYS)),
         ("seed", args.seed is not None and not any(k in payload for k in SEED_KEYS)),
+        ("prompt", bool(args.prompt) and bool(image_url) and "prompt" not in payload),
         ("negative-prompt", bool(args.negative_prompt) and "negative_prompt" not in payload),
         ("quad", args.quad and "quad" not in payload and payload.get("topology") != "quad"),
         ("pbr", args.pbr and not args.no_texture and "enable_pbr" not in payload and "pbr" not in payload),
@@ -209,7 +212,8 @@ def pick_mesh(result: dict[str, Any]) -> tuple[str, str]:
     for key in ("model_glb", "model_mesh"):
         url = _file_url(result.get(key))
         if url:
-            return url, "glb" if key == "model_glb" or url.lower().endswith(".glb") else url.rsplit(".", 1)[-1][:4]
+            ext = posixpath.splitext(urllib.parse.urlparse(url).path)[1].lstrip(".").lower()
+            return url, "glb" if key == "model_glb" or not ext else ext
     urls = result.get("model_urls") or {}
     if isinstance(urls, dict):
         for fmt in ("glb", "fbx", "obj", "usdz"):
@@ -239,7 +243,7 @@ def resolve_image(image: Optional[str], dry_run: bool) -> Optional[str]:
     return fal_client.upload_file(pathlib.Path(path))
 
 
-def generate(model: str, endpoint: str, payload: dict[str, Any], output: str) -> dict[str, Any]:
+def generate(model: str, endpoint: str, payload: dict[str, Any], output: Optional[str]) -> dict[str, Any]:
     try:
         import fal_client
     except ImportError:
@@ -249,7 +253,9 @@ def generate(model: str, endpoint: str, payload: dict[str, Any], output: str) ->
     except Exception as exc:  # fal_client raises its own HTTP error types; surface the message, not a traceback
         raise SystemExit(f"fal request failed ({endpoint}): {exc}") from exc
     url, ext = pick_mesh(result)
-    if not os.path.splitext(output)[1]:
+    if output is None:  # model ids contain dots (hunyuan-3.1-rapid), so build the default name here
+        output = os.path.join(os.getcwd(), f"fal-3d-{model}.{ext}")
+    elif not os.path.splitext(output)[1]:
         output = f"{output}.{ext}"
     with urllib.request.urlopen(url, timeout=300) as resp, open(output, "wb") as fh:
         fh.write(resp.read())
@@ -267,7 +273,7 @@ def main(argv: Optional[list] = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--list", action="store_true", help="list models and exit")
     p.add_argument("--model", default=DEFAULT_MODEL, choices=sorted(MODELS), help=f"model id (default {DEFAULT_MODEL})")
-    p.add_argument("--prompt", help="what the object is (text-to-3D); ignored when --image is given except as a note")
+    p.add_argument("--prompt", help="what the object is (text-to-3D); ignored, with a note, when --image is given")
     p.add_argument("--image", help="reference image: local path (uploaded to fal) or URL (image-to-3D)")
     p.add_argument("--no-texture", action="store_true", help="geometry only, no textures (cheaper on tripo/meshy)")
     p.add_argument("--pbr", action="store_true", help="request PBR material maps (metallic/roughness/normal)")
@@ -277,7 +283,7 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--seed", type=int, help="seed (models that declare one)")
     p.add_argument("--negative-prompt", help="features to avoid (tripo-p2 text-to-3D only)")
     p.add_argument("--dry-run", action="store_true", help="print the endpoint + payload and exit without calling fal")
-    p.add_argument("-o", "--output", help="output file path (default ./fal-3d-<model>.glb in the current directory)")
+    p.add_argument("-o", "--output", help="output file path (default ./fal-3d-<model>.<format> in the current directory)")
     a = p.parse_args(argv)
 
     if a.list:
@@ -299,8 +305,7 @@ def main(argv: Optional[list] = None) -> int:
     if a.dry_run:
         print(json.dumps({"endpoint": endpoint, "payload": payload}, indent=2))
         return 0
-    output = a.output or os.path.join(os.getcwd(), f"fal-3d-{a.model}.glb")
-    print(json.dumps(generate(a.model, endpoint, payload, output), indent=2))
+    print(json.dumps(generate(a.model, endpoint, payload, a.output), indent=2))
     return 0
 
 

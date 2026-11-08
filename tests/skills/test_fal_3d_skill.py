@@ -88,5 +88,21 @@ def test_pick_mesh_prefers_glb_across_declared_output_shapes():
     assert fal_3d.pick_mesh({"model_glb": glb, "model_urls": {"fbx": obj}}) == (glb["url"], "glb")
     assert fal_3d.pick_mesh({"model_mesh": glb, "rendered_image": None}) == (glb["url"], "glb")
     assert fal_3d.pick_mesh({"model_urls": {"obj": obj}, "model_obj": obj, "texture": None}) == (obj["url"], "obj")
+    # The extension comes from the URL path, never a signed query string.
+    signed = {"url": "https://v3b.fal.media/files/x/model.obj?sig=a.b.c"}
+    assert fal_3d.pick_mesh({"model_mesh": signed}) == (signed["url"], "obj")
     with pytest.raises(SystemExit):
         fal_3d.pick_mesh({"thumbnail": glb})
+
+
+def test_default_output_takes_the_returned_format(tmp_path, monkeypatch):
+    """No -o: the file is named after the format the endpoint returned, even for dotted model ids."""
+    import io
+    import types
+
+    result = {"model_urls": {"obj": {"url": "https://x/m.obj"}}, "model_obj": {"url": "https://x/m.obj"}}
+    monkeypatch.setitem(sys.modules, "fal_client", types.SimpleNamespace(subscribe=lambda *a, **k: result))
+    monkeypatch.setattr(fal_3d.urllib.request, "urlopen", lambda *a, **k: io.BytesIO(b"mesh"))
+    monkeypatch.chdir(tmp_path)
+    out = fal_3d.generate("hunyuan-3.1-rapid", "e", {}, None)
+    assert (out["format"], Path(out["output"]).name) == ("obj", "fal-3d-hunyuan-3.1-rapid.obj")

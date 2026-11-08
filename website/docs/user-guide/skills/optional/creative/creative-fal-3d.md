@@ -98,7 +98,7 @@ bills. Every endpoint is queue-based: the script blocks until the mesh is ready.
    `--dry-run` prints only `{endpoint, payload}`. Hunyuan rapid may return OBJ
    instead of GLB, so give `-o` no extension there and read `format` from the JSON.
    Image-to-3D from a local file (uploaded to fal's CDN first) or a URL; `--prompt`
-   is ignored when `--image` is given:
+   is ignored (with a stderr note) when `--image` is given:
    ```bash
    "$PY" "$SKILL_DIR/scripts/fal_3d.py" --model tripo-p2 --image ./mug.png \
      --quad --faces 20000 --pbr -o mug.glb

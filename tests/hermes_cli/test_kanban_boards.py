@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +30,7 @@ if str(_WORKTREE) not in sys.path:
     sys.path.insert(0, str(_WORKTREE))
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_boards as kbb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 
@@ -430,3 +432,75 @@ class TestBoardResurrection:
         assert meta["name"] == "My Board"
         assert "keepname" in [b["slug"] for b in kb.list_boards(include_archived=True)]
         assert "keepname" not in [b["slug"] for b in kb.list_boards(include_archived=False)]
+
+
+# ---------------------------------------------------------------------------
+# Locked board directory on Windows (#143908)
+# ---------------------------------------------------------------------------
+
+class TestRemoveBoardLockedDir:
+    """Archive/delete must survive — or clearly report — a board dir held open.
+
+    On Windows the gateway keeps ``kanban.db`` (+ ``-wal``/``-shm``) open, so
+    ``Path.rename`` and ``shutil.rmtree`` raise ``PermissionError`` (WinError
+    5/32). That escaped as an opaque 500 from the dashboard and archived
+    nothing; now the op is retried briefly and the final failure is a
+    ``ValueError`` carrying an actionable message (mapped to 400 by the plugin).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_wall_clock_retry(self, monkeypatch):
+        # Drive the retry loop without real waits: the delay is a module
+        # constant, so zero it here instead of sleeping in the test.
+        monkeypatch.setattr(kbb, "_DIR_OP_RETRY_DELAY_S", 0.0, raising=False)
+
+    def test_archive_retries_a_transient_lock_then_moves(self, fresh_home, monkeypatch):
+        kb.create_board("flaky")
+        real_rename = Path.rename
+        calls = {"n": 0}
+
+        def flaky_rename(self, target):
+            calls["n"] += 1
+            if calls["n"] < 3:  # lock released after two blocked attempts
+                raise PermissionError(13, "The process cannot access the file", str(self))
+            return real_rename(self, target)
+
+        monkeypatch.setattr(Path, "rename", flaky_rename)
+        res = kb.remove_board("flaky", archive=True)
+
+        assert calls["n"] == 3
+        archived = Path(res["new_path"])
+        assert res["action"] == "archived" and (archived / "kanban.db").exists()
+
+    def test_persistent_lock_raises_value_error_not_permission_error(
+        self, fresh_home, monkeypatch,
+    ):
+        kb.create_board("locked")
+
+        def always_locked(self, target):
+            raise PermissionError(13, "The process cannot access the file", str(self))
+
+        monkeypatch.setattr(Path, "rename", always_locked)
+        with pytest.raises(ValueError) as excinfo:
+            kb.remove_board("locked", archive=True)
+
+        msg = str(excinfo.value)
+        assert "could not archive board 'locked'" in msg
+        assert "hermes gateway restart" in msg
+        # The PermissionError must be chained, not leaked as the raised type.
+        assert isinstance(excinfo.value.__cause__, PermissionError)
+        # Nothing was moved: the board is still a live, unarchived board.
+        assert kb.board_dir("locked").is_dir()
+        assert kb.read_board_metadata("locked")["archived"] is False
+        assert "locked" in [b["slug"] for b in kb.list_boards(include_archived=False)]
+
+    def test_hard_delete_lock_raises_value_error_too(self, fresh_home, monkeypatch):
+        kb.create_board("lockedrm")
+
+        def locked_rmtree(path, *args, **kwargs):
+            raise PermissionError(13, "The process cannot access the file", str(path))
+
+        monkeypatch.setattr(shutil, "rmtree", locked_rmtree)
+        with pytest.raises(ValueError, match="could not delete board 'lockedrm'"):
+            kb.remove_board("lockedrm", archive=False)
+        assert kb.board_dir("lockedrm").is_dir()

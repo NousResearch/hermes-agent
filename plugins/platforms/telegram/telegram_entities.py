@@ -71,10 +71,12 @@ def rich_message_text(message: Any, skip_code: bool = False) -> str:
 
 
 def rich_message_filter(filters: Any) -> Any:
-    """A PTB message filter matching a text-less message that carries ``rich_message`` content."""
+    """A PTB message filter matching a text-less, attachment-less message that carries ``rich_message``
+    content (a caption-less photo with rich content stays with the media handler)."""
     class _RichMessage(filters.MessageFilter):
         def filter(self, message: Any) -> bool:
-            return not getattr(message, "text", None) and bool(rich_message_text(message))
+            return (not getattr(message, "text", None) and not getattr(message, "effective_attachment", None)
+                    and bool(rich_message_text(message)))
     return _RichMessage(name="rich_message")
 
 

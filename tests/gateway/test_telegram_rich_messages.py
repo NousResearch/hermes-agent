@@ -873,3 +873,21 @@ def test_reply_to_deeply_nested_rich_message_still_reaches_the_agent():
 
     assert event.reply_to_message_id == "678"
     assert event.reply_to_text == "top line"
+
+
+def test_rich_message_filter_leaves_media_messages_to_the_media_handler():
+    """``rich_message_filter`` (registered ahead of the media handler) claims a rich-only message but not a
+    caption-less photo that also carries ``rich_message``: that photo must still be downloaded as media."""
+    from plugins.platforms.telegram.telegram_entities import rich_message_filter
+
+    class _MessageFilter:  # PTB's MessageFilter: subclass overrides filter(message)
+        def __init__(self, name=None):
+            self.name = name
+
+    rich_filter = rich_message_filter(SimpleNamespace(MessageFilter=_MessageFilter))
+    rich = {"rich_message": {"blocks": [{"type": "paragraph", "text": "look at this"}]}}
+    photo = [SimpleNamespace(file_id="f", width=1, height=1)]
+
+    assert rich_filter.filter(SimpleNamespace(text=None, effective_attachment=None, api_kwargs=rich)) is True
+    assert rich_filter.filter(SimpleNamespace(text=None, photo=photo, effective_attachment=photo,
+                                              api_kwargs=rich)) is False

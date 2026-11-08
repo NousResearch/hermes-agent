@@ -187,6 +187,26 @@ def test_stream_content_tool_call_and_done():
     assert c3[-1].usage.prompt_tokens == 3
 
 
+def test_length_finish_reason_wins_over_tool_calls():
+    """A context-limited Ollama result is incomplete, even after a tool call."""
+    tc = {"function": {"name": "look_up", "arguments": {"query": "x"}}}
+    tool_idx = {"n": 0}
+    streamed = translate_stream_line({"message": {"tool_calls": [tc]}}, "m", tool_idx)
+    assert streamed[0].choices[0].delta.tool_calls[0].function.name == "look_up"
+
+    terminal = translate_stream_line(
+        {"done": True, "done_reason": "length", "prompt_eval_count": 4096},
+        "m", tool_idx,
+    )
+    assert terminal[-1].choices[0].finish_reason == "length"
+
+    # The non-streaming response uses the same finish-reason mapping.
+    complete = translate_ollama_response(
+        {"message": {"tool_calls": [tc]}, "done_reason": "length"}, model="m"
+    )
+    assert complete.choices[0].finish_reason == "length"
+
+
 def test_stream_done_without_tool_calls_is_stop():
     # Pure content stream (fresh counter, no tool calls) → finish_reason "stop".
     chunks = translate_stream_line(

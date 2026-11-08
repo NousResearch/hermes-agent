@@ -404,11 +404,13 @@ def _usage_from(payload: dict[str, Any]) -> SimpleNamespace:
 
 
 def _map_finish_reason(done_reason: Any, has_tool_calls: bool) -> str:
-    if has_tool_calls:
-        return "tool_calls"
     dr = str(done_reason or "stop")
+    # Context exhaustion must reach truncation recovery even when an earlier
+    # stream frame carried a tool call.
     if dr == "length":
         return "length"
+    if has_tool_calls:
+        return "tool_calls"
     return "stop"
 
 

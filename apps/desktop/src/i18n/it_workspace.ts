@@ -1270,6 +1270,16 @@ export const itWorkspace = {
       commentTitle: (n: number) => `Commento ${n}`,
       saveComment: 'Salva',
       cancelComment: 'Annulla commento',
+      vaultFill: 'Compila con un accesso salvato',
+      vaultTitle: site => `Accessi salvati per ${site}`,
+      vaultLoading: 'Caricamento degli accessi salvati…',
+      vaultEmpty: 'Nessun accesso salvato per questo sito',
+      vaultUnlock: name => `Sblocca ${name}`,
+      vaultOpenSettings: 'Apri le impostazioni delle credenziali salvate',
+      vaultFilled: label => `Compilato ${label}. Controlla il modulo, poi accedi.`,
+      vaultFillFailed: 'Impossibile compilare l’accesso',
+      vaultLoadFailed: 'Impossibile caricare gli accessi salvati',
+      vaultPageNotReady: 'La pagina si sta ancora caricando. Riprova quando ha finito.',
     embeddedPreviewHint: 'Alcuni siti bloccano l\'anteprima incorporata. Apri la pagina originale in una scheda del browser.',
 
 

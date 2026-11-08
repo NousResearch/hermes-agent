@@ -16,6 +16,7 @@ import pytest
 
 from pm import Lockfile, get_package, paths
 from pm.install import _prepare_artifacts
+from pm.store import ALL_TARGETS
 
 
 def _tarball(path: Path, members: dict[str, bytes]) -> Path:
@@ -38,7 +39,21 @@ class _LocalArchives:
         return self.archives[:len(artifacts)]
 
 
-@pytest.mark.parametrize("target", ["linux-x64", "win32-x64"])
+def test_every_target_with_a_pinned_node_can_install_the_js_workspaces():
+    """The dashboard, TUI and desktop source builds all install through pnpm on PM's node, so a
+    target with a node pin but no pnpm pin cannot build them (Termux: "unavailable on
+    linux-arm64-bionic" from `hermes dashboard`)."""
+    package = get_package("pnpm")
+    lock = Lockfile(paths.lockfile_path())
+    version = lock.version("pnpm")
+    for target in ALL_TARGETS:
+        if not lock.artifacts("node", target):
+            continue
+        assert package.missing_reason(target) is None, target
+        assert [a["url"] for a in lock.artifacts("pnpm", target)] == package.fetch_urls(version, target), target
+
+
+@pytest.mark.parametrize("target", ["linux-x64", "win32-x64", "linux-arm64-bionic"])
 def test_pnpm_entry_holds_the_executable_and_the_launchers_dist(tmp_path, target):
     package = get_package("pnpm")
     lock = Lockfile(paths.lockfile_path())
@@ -47,8 +62,9 @@ def test_pnpm_entry_holds_the_executable_and_the_launchers_dist(tmp_path, target
     # Extraction follows the lock's artifact order: the executable first, then the launcher.
     assert [artifact["url"] for artifact in artifacts] == package.fetch_urls(version, target)
     executable = package.binary_rel["win32" if target.startswith("win32") else "posix"]
+    exe_name = artifacts[0]["url"].rsplit("/-/", 1)[0].removeprefix("https://registry.npmjs.org/")
     exe = _tarball(tmp_path / "exe.tgz", {
-        executable: b"native pnpm", "package.json": json.dumps({"name": f"@pnpm/exe.{target}", "version": version}).encode(),
+        executable: b"native pnpm", "package.json": json.dumps({"name": exe_name, "version": version}).encode(),
         "LICENSE": b"license"})
     launcher = _tarball(tmp_path / "launcher.tgz", {
         "package.json": json.dumps({"name": "pnpm", "version": version}).encode(), "bin/pnpm.cjs": b"launcher",
@@ -62,7 +78,7 @@ def test_pnpm_entry_holds_the_executable_and_the_launchers_dist(tmp_path, target
     assert package.binary(staged, target).read_bytes() == b"native pnpm"
     assert (staged / "dist/node-gyp-bin/node-gyp").is_file()
     assert (staged / "dist/node_modules/node-gyp/package.json").is_file()
-    assert json.loads((staged / "package.json").read_text(encoding="utf-8"))["name"] == f"@pnpm/exe.{target}"
+    assert json.loads((staged / "package.json").read_text(encoding="utf-8"))["name"] == exe_name
     # Only the launcher's dist/ is kept: its JS entry point never shadows the executable.
     assert not (staged / "bin").exists()
     assert not (staged / "package").exists()

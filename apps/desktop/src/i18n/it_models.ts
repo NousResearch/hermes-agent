@@ -791,6 +791,13 @@ export const itSettingsModels = {
         disabledTitle: 'Navigazione con profilo reale disattivata',
         disabledMessage: 'Lo snapshot del profilo verrà eliminato; le nuove sessioni usano un browser pulito.',
         failedSave: 'Impossibile salvare l’impostazione del profilo reale',
+        reimportSignins: 'Reimporta gli accessi',
+        signinsImportedTitle: 'Accessi del browser integrato',
+        signinsImported: count =>
+          `Il browser integrato ha effettuato l’accesso con ${count} cookie dal tuo profilo del browser.`,
+        signinsRemote:
+          'Questo backend è in esecuzione su un’altra macchina, quindi il suo profilo del browser non viene importato nel browser integrato.',
+        signinsFailed: 'Impossibile importare gli accessi nel browser integrato',
         prompt: {
           title: 'Mantieni l’accesso ai tuoi siti',
           body: 'Lascia che Hermes navighi con uno snapshot del tuo profilo predefinito del browser, così i siti si aprono con l’accesso già effettuato.',

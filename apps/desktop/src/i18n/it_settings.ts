@@ -1316,6 +1316,14 @@ export const itSettings = {
     },
     webappHostDesc: 'La Webapp usa sempre il host Hermes che la serve. Per cambiare gateway, accedi a Hermes Cloud o gestisci le connessioni salvate dall\'app desktop di Hermes.',
     webappHostTitle: 'Host Hermes',
+    webappOauthPaste: {
+      title: 'Completa l’accesso',
+      description:
+        'Se la scheda di accesso si è chiusa su un indirizzo che non si caricava (questo browser non è sul computer del gateway), incolla qui quell’indirizzo.',
+      placeholder: 'http://127.0.0.1:…/webapp/gateway-connections/oauth/callback?…',
+      finish: 'Completa',
+      failed: 'Impossibile completare l’accesso'
+    },
 
 
 

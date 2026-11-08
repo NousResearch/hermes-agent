@@ -81,7 +81,10 @@ def _process_ancestors(pid: int) -> set[int]:
 
     try:
         return {parent.pid for parent in psutil.Process(pid).parents()}
-    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, ValueError):
+    except (psutil.Error, ValueError, OSError):
+        # OSError: psutil reads /proc/stat for boot_time(), so on a host whose procfs is
+        # mounted hidepid=invisible,subset=pid (systemd ProtectProc/ProcSubset, a userns
+        # sandbox) parents() raises FileNotFoundError, which is NOT a psutil.Error.
         return set()
 
 

@@ -100,3 +100,29 @@ async def test_who_answers_a_shared_chat_approval(clicker, extra, approvers, all
         # Left pending: the requester can still answer it.
         await runner._handle_approve_command(_event("/approve", "alice", "Alice"))
         assert entry.event.is_set() and entry.result == "once"
+
+
+@pytest.mark.asyncio
+async def test_queued_approvals_of_two_requesters_do_not_block_each_other():
+    """Plain /approve and /deny answer the oldest entry, so only that entry decides who may send them."""
+    write_approvers([])
+    runner = _runner()
+    bob_event = _event("/approve", "bob", "Bob")
+    session_key = runner._session_key_for_source(bob_event.source)
+    bobs = pending_from("bob", "Bob", session_key)
+    alices = pending_from("alice", "Alice", session_key)
+
+    # Alice's entry is behind Bob's: plain /approve targets Bob's, so Alice is refused and nothing moves.
+    assert await runner._handle_approve_command(_event("/approve", "alice", "Alice")) == "Only Bob can answer this approval."
+    assert not bobs.event.is_set() and not alices.event.is_set()
+    # /approve all covers Alice's entry too, so Bob is refused and neither resolves.
+    assert await runner._handle_approve_command(_event("/approve all", "bob", "Bob")) == "Only Alice can answer this approval."
+    assert not bobs.event.is_set() and not alices.event.is_set()
+
+    await runner._handle_approve_command(bob_event)
+    assert bobs.result == "once" and not alices.event.is_set()
+    # Bob's entry is gone, Alice's is now the oldest: Bob can no longer answer it, Alice can.
+    assert await runner._handle_deny_command(_event("/deny", "bob", "Bob")) == "Only Alice can answer this approval."
+    assert not alices.event.is_set()
+    await runner._handle_deny_command(_event("/deny", "alice", "Alice"))
+    assert alices.result == "deny"

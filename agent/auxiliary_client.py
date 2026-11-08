@@ -3957,15 +3957,15 @@ def _fallback_candidate_ladder(fb_client: Any, fb_kwargs: dict[str, Any], destin
     provider and return None so the caller moves on. Any other failure another candidate could
     avoid also quarantines and returns None so the ordered chain advances (#106367); other errors raise."""
     resp, failure, repairs = yield _LadderStep("attempt", (fb_client, fb_kwargs, destination))
-    fb_provider, base_url = destination.provider, destination.base_url
+    fb_provider = destination.provider
     if failure is not None and aux_errors.auth_refresh(failure.verdict):
         fb_provider, retry = _plan_fallback_auth_retry(
             destination, rebuild, async_mode=async_mode, failed_api_key=getattr(fb_client, "api_key", ""))
         if retry is not None:  # re-apply the first attempt's strips; a failure after any strip is after a spent rung
             resp, failure, more = yield _LadderStep("attempt", (retry[0], reapply_repairs(retry[1], repairs), retry[2]))
-            base_url, repairs = retry[2].base_url, (*repairs, *more)
+            destination, repairs = retry[2], (*repairs, *more)  # a failure from here is the refreshed destination's
         if failure is not None and (retry is None or aux_errors.auth_refresh(failure.verdict)):
-            _quarantine_fallback_candidate(task, fb_label, fb_provider, failure.error, base_url=base_url, tag=tag)
+            _quarantine_fallback_candidate(task, fb_label, fb_provider, failure.error, base_url=destination.base_url, tag=tag)
             return None
     if failure is None:
         return resp
@@ -3973,8 +3973,8 @@ def _fallback_candidate_ladder(fb_client: Any, fb_kwargs: dict[str, Any], destin
     if reason is None:
         raise failure.error
     _quarantine_fallback_candidate(
-        task, fb_label, fb_provider, failure.error, base_url=base_url, tag=tag, reason=reason,
-        model=destination.model)
+        task, fb_label, fb_provider, failure.error, base_url=destination.base_url, tag=tag, reason=reason,
+        model=failure.verdict.model or destination.model)
     return None
 
 

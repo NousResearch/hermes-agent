@@ -1,6 +1,6 @@
 name: chat-shield
 repo: https://github.com/james-see/chat-shield
-sha: 4bd8aa9d195148f4626b139f4e4b0f6b608ddd0b
+sha: 64d41a0af5b2b25ee59d4980917671a46666a74c
 description: "Automatically redacts personally identifiable information — names, addresses, emails, phone numbers, SSNs, financial accounts, government IDs, API keys, credit cards — before it reaches external LLM providers. Combines the on-device Rampart NER model (14.7 MB, runs locally) with configurable regex detectors for specialized identifiers. The LLM sees safe placeholders; the user sees original values restored. Two middleware hooks: llm_request redacts outgoing messages, llm_execution restores placeholders in the response (streaming and non-streaming). Includes /chat-shield slash command for stats and testing, config schema for the Desktop Settings form, and a bundled skill. Falls back to regex-only if the Rampart model is unavailable."
 maintainer: james-see
 tier: community

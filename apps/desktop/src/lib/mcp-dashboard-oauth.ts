@@ -1,7 +1,9 @@
 import { capabilityScoped, type ProfileScope } from '@/api/client'
 import { type McpOAuthFlow, mcpOAuthRpc } from '@/api/mcp'
 
+import { browserBootstrap } from './browser-transport'
 import { isMissingRpcMethod } from './gateway-rpc'
+import { isBrowserHostedDesktop } from './platform'
 
 interface CompleteOptions {
   serverName: string
@@ -32,8 +34,29 @@ export class McpOAuthCancelled extends Error {
 const defaultSleep = (milliseconds: number) => new Promise<void>(resolve => window.setTimeout(resolve, milliseconds))
 const UPDATE_BACKEND = 'Update the Hermes backend to support Desktop MCP OAuth callbacks.'
 
-/** Remote gateways require the Desktop callback bridge. An explicitly local
- *  gateway can host its own loopback listener when that capability is absent. */
+function isGatewayLoopbackCallback(redirect: URL): boolean {
+  return redirect.protocol === 'http:' && redirect.hostname === '127.0.0.1' &&
+    Boolean(redirect.port) && Number(redirect.port) !== 0 && redirect.pathname === '/callback' &&
+    !redirect.username && !redirect.password && !redirect.search && !redirect.hash
+}
+
+/** This Webapp's own callback: its origin and base path, then the server's name. */
+function isWebappPublicCallback(redirect: URL, serverName: string): boolean {
+  const prefix = new URL(`${browserBootstrap()?.basePath || ''}/api/mcp/oauth/callback/`, window.location.origin).pathname
+
+  if (redirect.origin !== window.location.origin || !redirect.pathname.startsWith(prefix) ||
+    redirect.username || redirect.password || redirect.search || redirect.hash) {
+    return false
+  }
+
+  try {
+    return decodeURIComponent(redirect.pathname.slice(prefix.length)) === serverName
+  } catch {
+    return false
+  }
+}
+
+/** Native clients relay through their bridge; remote Webapp tabs use their public callback. */
 export async function completeMcpDesktopOAuth({
   serverName,
   profile,
@@ -46,6 +69,9 @@ export async function completeMcpDesktopOAuth({
   const scope = capabilityScoped(profile)
   const rpc = mcpOAuthRpc(scope)
   const bridge = window.hermesDesktop.mcpOauth
+
+  const publicCallback = !bridge && isBrowserHostedDesktop() &&
+    !['127.0.0.1', 'localhost', '::1', '[::1]'].includes(window.location.hostname)
 
   // A legacy null connection can resolve to a remote registry primary.
   if (!bridge && scope.connectionId !== 'local') {
@@ -83,7 +109,10 @@ export async function completeMcpDesktopOAuth({
       checkCancelled()
     }
 
-    const started = await request('start', listener ? { client_redirect_uri: listener.redirectUri } : {})
+    // The gateway uses its public callback only when this page is served from its public URL.
+    const pageBase = `${window.location.origin}${browserBootstrap()?.basePath || ''}`
+    const callbackParams = publicCallback ? { public_callback: pageBase } : {}
+    const started = await request('start', listener ? { client_redirect_uri: listener.redirectUri } : callbackParams)
     sessionId = started.session_id
     authUrl = started.auth_url
     // Start may have created a flow while the user cancelled. Keep its id so
@@ -103,21 +132,12 @@ export async function completeMcpDesktopOAuth({
     }
 
     if (!listener) {
-      // Match the existing backend-hosted listener, not an arbitrary local URL.
+      // Match the existing backend-hosted listener, not an arbitrary local URL. A gateway
+      // without webapp.public_url keeps it for a public-callback request too.
       const redirect = new URL(redirectUri || '')
 
-      if (
-        redirect.protocol !== 'http:' ||
-        redirect.hostname !== '127.0.0.1' ||
-        !redirect.port ||
-        Number(redirect.port) === 0 ||
-        redirect.pathname !== '/callback' ||
-        redirect.username ||
-        redirect.password ||
-        redirect.search ||
-        redirect.hash
-      ) {
-        throw new Error('OAuth server did not provide a local loopback callback URL')
+      if (!isGatewayLoopbackCallback(redirect) && !(publicCallback && isWebappPublicCallback(redirect, serverName))) {
+        throw new Error(`OAuth server did not provide a local loopback${publicCallback ? ' or Webapp' : ''} callback URL`)
       }
     }
 

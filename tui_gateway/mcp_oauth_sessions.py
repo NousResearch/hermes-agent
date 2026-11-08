@@ -11,6 +11,7 @@ import threading
 import time
 from contextlib import suppress
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
 
 from tools.connectors.mcp_oauth import (
     _validate_client_redirect_uri,
@@ -59,9 +60,42 @@ def finish_flow(session_id: str) -> None:
         _shutdown_listener(rec)
 
 
+def _ascii_host(host: str) -> str:
+    """The host as a browser reports it: the UTS #46 mapping, then Punycode per label. The validity
+    checks a browser also runs only stop a URL from loading; they never change this result."""
+    import idna  # an httpx dependency
+
+    host = host.lower()
+    with suppress(UnicodeError):  # an unmappable host compares as written
+        mapped = idna.uts46_remap(host, std3_rules=False, transitional=False)
+        host = ".".join(label if label.isascii() else "xn--" + label.encode("punycode").decode("ascii")
+                        for label in mapped.split("."))
+    return host
+
+
+def _base_key(url: str) -> tuple:
+    parts = urlsplit(url)
+    port = parts.port if parts.port is not None else {"http": 80, "https": 443}.get(parts.scheme.lower())
+    return parts.scheme.lower(), _ascii_host(parts.hostname or ""), port, parts.path.rstrip("/")
+
+
+def public_callback_base(client_redirect_uri: Optional[str], page_base: str) -> Optional[str]:
+    """The serving Webapp's ``webapp.public_url`` when the requesting page is served from it; the
+    page's own address is only compared, never used. None when the Webapp is not serving, has no
+    public URL, or the page is on another name (the gateway machine's LAN address, a hostname):
+    the loopback listener then applies, as without the flag."""
+    from tools.connectors.mcp import _chat_public_base
+
+    if client_redirect_uri is not None:
+        raise ValueError("public_callback and client_redirect_uri cannot be used together")
+    public_base = _chat_public_base()
+    return public_base if public_base and _base_key(public_base) == _base_key(page_base) else None
+
+
 def start_flow(
     hermes_home: str, server_name: str, cfg: dict, *, reconnect_live: bool = False,
-    url_timeout: float = 30.0, client_redirect_uri: Optional[str] = None) -> dict[str, Any]:
+    url_timeout: float = 30.0, client_redirect_uri: Optional[str] = None,
+    public_base: Optional[str] = None) -> dict[str, Any]:
     """Begin an MCP OAuth flow and return ``{session_id, auth_url, flow}``; blocks up to
     ``url_timeout`` for the authorization URL. With ``client_redirect_uri`` (invalid values
     raise ``ValueError``) no gateway-side listener is bound."""
@@ -83,7 +117,7 @@ def start_flow(
     flow = DashboardOAuthFlow(
         flow_id=session_id, server_name=server_name, profile=None, hermes_home=hermes_home,
         redirect_uri="", reconnect_live=reconnect_live)
-    httpd = choose_callback_receiver(flow, cfg, client_redirect_uri)
+    httpd = choose_callback_receiver(flow, cfg, client_redirect_uri, public_base=public_base)
     rec = register_flow(flow, httpd=httpd)
     threading.Thread(
         target=run_worker, args=(hermes_home, server_name, dict(cfg), reconnect_live),
@@ -172,3 +206,23 @@ def deliver_callback_flow(
     except ValueError as exc:
         return {"ok": False, "error_message": str(exc)}
     return {"ok": True, "session_id": session_id}
+
+
+def deliver_callback_by_state(
+    server_name: str, *, code: Optional[str], state: Optional[str],
+    error: Optional[str] = None, iss: Optional[str] = None,
+) -> dict[str, Any]:
+    """Deliver a public Webapp redirect without an RPC session id. The OAuth state identifies
+    the owning flow across profiles; the flow still checks state and rejects duplicate callbacks."""
+    with _sessions_lock:
+        candidates = [rec["flow"] for rec in _sessions.values() if rec["server_name"] == server_name]
+    flow = next((flow for flow in candidates
+                 if flow.status == "authorization_required" and flow.expected_state is not None
+                 and state is not None and secrets.compare_digest(flow.expected_state, state)), None)
+    if flow is None:
+        return {"ok": False}
+    try:
+        flow.deliver_callback(code=code, state=state, error=error, iss=iss)
+    except ValueError as exc:
+        return {"ok": False, "error_message": str(exc)}
+    return {"ok": True}

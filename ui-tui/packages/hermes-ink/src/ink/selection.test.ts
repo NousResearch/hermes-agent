@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
 import Output from './output.js'
-import { cellAt, CellWidth, CharPool, createScreen, HyperlinkPool, setCellAt, type Screen, StylePool } from './screen.js'
+import {
+  cellAt,
+  CellWidth,
+  CharPool,
+  createScreen,
+  HyperlinkPool,
+  type Screen,
+  setCellAt,
+  StylePool
+} from './screen.js'
 import {
   applySelectionOverlay,
   createSelectionState,
@@ -94,12 +103,7 @@ function renderWrapTrim(src: string, wrapWidth: number) {
   const entry = wrapTextWithTrim(src, wrapWidth, 'wrap-trim')
   const output = new Output({ height, screen, stylePool, width })
 
-  output.write(
-    0,
-    0,
-    entry.text,
-    [0, ...entry.trimmed.map(t => (t ? 2 : 1))]
-  )
+  output.write(0, 0, entry.text, [0, ...entry.trimmed.map(t => (t ? 2 : 1))])
 
   return output.get()
 }

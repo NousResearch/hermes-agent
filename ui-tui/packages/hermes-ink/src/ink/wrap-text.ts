@@ -164,9 +164,7 @@ export default function wrapText(text: string, maxWidth: number, wrapType: Style
 }
 
 /** Memoized wrap that also reports per-boundary trim flags (see WrapEntry).
- *  Shares one cache lookup with wrapText: a miss wraps once, not twice.
- *  // ponytail: flags ride the existing wrap cache; split the caches if
- *  profiling shows flag-only callers polluting string-hit rates. */
+ *  Shares one cache lookup with wrapText: a miss wraps once, not twice. */
 export function wrapTextWithTrim(text: string, maxWidth: number, wrapType: Styles['textWrap']): WrapEntry {
   if (!text || maxWidth <= 0) {
     return computeEntry(text, maxWidth, wrapType)

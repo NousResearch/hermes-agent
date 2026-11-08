@@ -538,9 +538,9 @@ export default class Output {
             // x+stringWidth(line) which treats tabs as width 0.
             // Sign carries the wrap-trim flag: a 2-mark stores the negated
             // content end so the copier can re-insert the dropped space.
-            // ponytail: -0 collapses to 0, so an empty prev fragment falls
-            // back to -1 (continuation preserved; the clamp is unused on
-            // empty rows since they have no selectable cells).
+            // -0 collapses to 0, so an empty previous fragment falls back to
+            // -1 (continuation preserved; the clamp is unused on empty rows
+            // since they have no selectable cells).
             if (softWrap) {
               const flag = softWrap[swFrom + offsetY]!
               swBits[lineY] = !flag ? 0 : flag === 2 ? -prevContentEnd || -1 : prevContentEnd

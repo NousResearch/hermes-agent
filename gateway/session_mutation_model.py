@@ -70,9 +70,19 @@ async def prepare_model(authority, live, payload, prepared):
         custom_providers=get_compatible_custom_providers(resolution))
     if not result.success:
         raise RuntimeStoreError('model_resolution_failed')
+    from gateway.session_deferred_pick import pending_model_pick
+    pending = await asyncio.to_thread(
+        pending_model_pick, authority, prepared['snapshot']['receipt']['session_id'])
+    if (payload.get('confirm') and 'service_tier' not in payload and pending is not None
+            and payload['confirm'] == pending.get('awaiting_confirm') and 'service_tier' in pending['payload']
+            and {k: v for k, v in pending['payload'].items() if k not in {'confirm', 'service_tier'}}
+                == {k: v for k, v in payload.items() if k != 'confirm'}):
+        # Older viewers echo only the model fields. Keep the wire payload immutable for exact
+        # receipt retries; consent still binds the current pending tier and application identity.
+        payload = {**payload, 'service_tier': pending['payload']['service_tier']}
     # The configured default is the user's own choice: a reset is never held behind a cost ask.
     refusal = None if reset else await _selection_guard_refusal(
-        authority, live, payload, prepared['snapshot'], current, result)
+        authority, live, payload, prepared['snapshot'], current, result, pending=pending)
     if refusal is not None:
         return refusal
     frozen = old.config()
@@ -156,7 +166,8 @@ async def prepare_model(authority, live, payload, prepared):
                              config_secrets=secrets)
     if payload.get('service_tier') in {'fast', 'ultrafast'}:
         await asyncio.to_thread(_validate_model_tier, authority, policy, payload['service_tier'])
-    return dict(prepared, policy=asdict(policy))
+    return dict(prepared, policy=asdict(policy),
+                **({'service_tier': payload['service_tier']} if 'service_tier' in payload else {}))
 
 
 def _validate_model_tier(authority, policy, tier):
@@ -361,7 +372,7 @@ def _persisted_selection_context(authority, snapshot, current):
     return SelectionContext(context_tokens=tokens, current_model=current.model or None) if tokens else None
 
 
-async def _selection_guard_refusal(authority, live, payload, snapshot, current, result):
+async def _selection_guard_refusal(authority, live, payload, snapshot, current, result, *, pending=None):
     """The shared selection-guard registry (cost, data-policy, large-context switch) runs before the
     commit. A flagged target is refused with ``status: confirmation_required`` and a ``confirm``
     token bound to the resolved target, the selection it replaces and the session revision; nothing
@@ -392,11 +403,8 @@ async def _selection_guard_refusal(authority, live, payload, snapshot, current, 
                'current': [current.model, current.provider, normalize_route_base_url(current.base_url)],
                'session': [snapshot['target'], snapshot['target_revision']],
                'guards': sorted(w.kind for w in warnings), 'service_tier': payload.get('service_tier')}
-    if receipt := snapshot.get('receipt'):  # Messaging picks have no local deferred-policy slot.
-        from gateway.session_deferred_pick import pending_model_pick
-        pending = await asyncio.to_thread(pending_model_pick, authority, receipt['session_id'])
-        if pending is not None:
-            binding['application_id'] = pending['application_id']
+    if pending is not None:  # Messaging picks have no local deferred-policy slot.
+        binding['application_id'] = pending['application_id']
     token = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
     if payload.get('confirm') == token:
         return None

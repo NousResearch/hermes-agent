@@ -176,7 +176,7 @@ async def test_duplicate_fast_and_original_model_retry_preserve_the_latest_durab
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('confirm_pick', [False, True], ids=['unanswered', 'confirmed'])
+@pytest.mark.parametrize('confirm_pick', ['unanswered', 'full', 'legacy'])
 async def test_guarded_model_keeps_speed_pending_until_the_same_selection_is_confirmed(
         tmp_path, monkeypatch, confirm_pick):
     async with _busy_owner(tmp_path, monkeypatch, guarded=True) as h:
@@ -188,16 +188,35 @@ async def test_guarded_model_keeps_speed_pending_until_the_same_selection_is_con
         ask = asks()[-1]
         assert _running_model(h.authority, h.ref) == 'frozen'
         assert not h.tiers
-        if confirm_pick:
-            reply = await h.pick('confirmed', {**ask['payload'], 'confirm': ask['confirm']})
+        if confirm_pick != 'unanswered':
+            payload = {**ask['payload'], 'confirm': ask['confirm']}
+            if confirm_pick == 'legacy':
+                payload.pop('service_tier')
+            row = h.db.get_session(h.ref.session_id)
+            request = {'id': 'confirmed', 'method': 'session.mutate', 'params': {
+                'session_id': h.ref.session_id, 'request_id': 'confirmed',
+                'expected_revision': row['runtime_revision'], 'expected_generation': row['runtime_generation'],
+                'operation': 'model', 'payload': payload}}
+            reply = await h.owner.dispatch(request)
             assert reply.get('result', {}).get('model') == 'gpt-5.4', reply
+            assert reply['result']['service_tier'] == 'fast'
+            if confirm_pick == 'legacy':
+                assert 'service_tier' not in payload
         await _run_turn(h.authority, h.owner, h.db, h.ref, 'NEXT')
-        expected = ('gpt-5.4', 'priority') if confirm_pick else ('frozen', None)
+        expected = ('gpt-5.4', 'priority') if confirm_pick != 'unanswered' else ('frozen', None)
         assert (h.seen[-1][1], h.seen[-1][3]) == expected
+        if confirm_pick == 'legacy':
+            assert _pending(h) is None
+            assert (await h.fast('normal'))['result']['value'] == 'normal'
+            assert await h.owner.dispatch(request) == reply
+            assert h.tiers[h.live.route] is None
+            await _run_turn(h.authority, h.owner, h.db, h.ref, 'AFTER-REPLAY')
+            assert h.seen[-1] == ('AFTER-REPLAY', 'gpt-5.4', None, None)
 
 
 @pytest.mark.asyncio
-async def test_changing_queued_speed_invalidates_the_previous_confirmation(tmp_path, monkeypatch):
+@pytest.mark.parametrize('legacy', [False, True], ids=['full', 'legacy'])
+async def test_changing_queued_speed_invalidates_the_previous_confirmation(tmp_path, monkeypatch, legacy):
     async with _busy_owner(tmp_path, monkeypatch, guarded=True) as h:
         assert (await h.pick('model', {'model': 'gpt-5.4', 'provider': 'openai-api'}))['result']['status'] == 'deferred'
         assert (await h.fast('fast'))['result']['deferred'] is True
@@ -209,7 +228,10 @@ async def test_changing_queued_speed_invalidates_the_previous_confirmation(tmp_p
         await async_wait_until(lambda: len(asks()) >= 2, timeout=10, what='the changed speed asks again')
         current = asks()[-1]
         assert current['confirm'] != old['confirm']
-        stale = await h.pick('stale-confirm', {**old['payload'], 'confirm': old['confirm']})
+        payload = {**old['payload'], 'confirm': old['confirm']}
+        if legacy:
+            payload.pop('service_tier')
+        stale = await h.pick('stale-confirm', payload)
         assert stale.get('result', {}).get('status') == 'confirmation_required', stale
         assert _running_model(h.authority, h.ref) == 'frozen'
         assert not h.tiers
@@ -217,6 +239,37 @@ async def test_changing_queued_speed_invalidates_the_previous_confirmation(tmp_p
         assert confirmed.get('result', {}).get('model') == 'gpt-5.4', confirmed
         await _run_turn(h.authority, h.owner, h.db, h.ref, 'NEXT')
         assert h.seen[-1] == ('NEXT', 'gpt-5.4', None, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('choice', ['same-model', 'wrong-model', 'wrong-provider'])
+async def test_new_or_mismatched_model_choices_do_not_inherit_pending_speed(tmp_path, monkeypatch, choice):
+    async with _busy_owner(tmp_path, monkeypatch, guarded=True) as h:
+        payload = {'model': 'gpt-5.4', 'provider': 'openai-api'}
+        assert (await h.pick('model', payload))['result']['status'] == 'deferred'
+        assert (await h.fast('fast'))['result']['deferred'] is True
+        h.release.set()
+        asks = lambda: [p for t, p in h.events if t == 'session.updated' and p.get('status') == 'confirmation_required']
+        await async_wait_until(asks, timeout=10, what='the queued destination asks for consent')
+        ask, pending = asks()[-1], _pending(h)
+        selected = dict(payload)
+        if choice != 'same-model':
+            selected['model' if choice == 'wrong-model' else 'provider'] = (
+                'gpt-6.1-sol' if choice == 'wrong-model' else 'other-provider')
+            selected['confirm'] = ask['confirm']
+        reply = await h.pick('new-choice', selected)
+        assert reply.get('result', {}).get('status') == 'confirmation_required', reply
+        assert reply['result']['confirm'] != ask['confirm']
+        assert _pending(h) == pending
+        assert _running_model(h.authority, h.ref) == 'frozen'
+        assert not h.tiers
+        # Fresh consent to this new choice commits only what the new request selected.
+        selected['confirm'] = reply['result']['confirm']
+        confirmed = await h.pick('new-confirmed', selected)
+        assert confirmed.get('result', {}).get('model') == selected['model'], confirmed
+        assert 'service_tier' not in confirmed['result']
+        await _run_turn(h.authority, h.owner, h.db, h.ref, 'NEXT')
+        assert h.seen[-1] == ('NEXT', selected['model'], None, None)
 
 
 @pytest.mark.asyncio

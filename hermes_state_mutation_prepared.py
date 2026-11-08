@@ -64,7 +64,7 @@ def model_in_transaction(db, conn, session_id, payload, prepared):
         conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json({'reasoning': level}), key))
     return {session_id, target}, {'model': model, 'provider': config['provider'], 'execution_generation': generation,
                                   **({'effort': payload['reasoning']} if 'reasoning' in payload else {}),
-                                  **({'service_tier': payload['service_tier']} if 'service_tier' in payload else {})}
+                                  **({'service_tier': prepared['service_tier']} if 'service_tier' in prepared else {})}
 
 
 def reasoning_in_transaction(db, conn, session_id, payload, prepared):

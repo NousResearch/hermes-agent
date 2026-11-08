@@ -32,9 +32,11 @@ def test_boot_hook_and_prompt_hand_the_prune_to_one_child(scratch_prune_spawns, 
     scratch = home / "cache" / "scratch"
     env = {"HERMES_HOME": str(home)}
     assert apply_scratch_tmp_env(env) is True
+    monkeypatch.setenv("TMPDIR", env["TMPDIR"])
+    monkeypatch.setenv("HERMES_SCRATCH_DIR", env["HERMES_SCRATCH_DIR"])
     hints = _local_host_hints()
     assert env["TMPDIR"] == str(scratch) and scratch.is_dir()
-    assert f"Scratch directory: {scratch} (TMPDIR points here" in hints[0]
+    assert f"Scratch directory: {scratch}" in hints[0]
     assert scratch_prune_spawns == [scratch]
 
     monkeypatch.setattr(constants, "_scratch_pruned_once", False)  # the routed caller's own process

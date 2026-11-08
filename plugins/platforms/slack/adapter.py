@@ -3548,26 +3548,72 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             self._processed_message_ts = dict(newest[-self._PROCESSED_MESSAGE_TS_MAX :])
 
     @staticmethod
-    def _event_team_id(event: dict, body: Optional[dict] = None) -> str:
-        """Resolve a workspace ID from the event plus Bolt's outer payload.
-        Bolt passes only the inner ``event``; Slack puts ``team_id`` on the outer payload.
-        The outer payload wins: in a Slack Connect channel the inner ``event.team`` is the
-        *sender's* org (the other workspace), not the workspace this bot is installed in,
-        so trusting it first keys the dedup id and the session scope to a team the app has
-        no installation in and lets the message+mention pair through as two turns (#143792)."""
-        for payload in (body or {}, event):
+    def _event_team_id(event: dict, body: Optional[dict] = None,
+                       install_set: Optional[Any] = None) -> str:
+        """Resolve the workspace this process is authenticated in for an event.
+
+        None of Slack's team fields is guaranteed to name an installing workspace: in a
+        Slack Connect channel the inner ``event.team`` can be the *sender's* org, and the
+        envelope ``team_id`` is documented to vary (Events API / Enterprise Grid: the Grid
+        example carries an envelope workspace that differs from ``authorizations[0].team_id``).
+        Trusting any single field first keyed the dedup id and the session scope to a team
+        the app has no installation in, letting the message+mention pair through as two
+        turns (#143792).
+
+        Candidate order follows Bolt's shared-channel rule — ``authorizations[0].team_id``,
+        then the envelope ``team_id``, then the inner ``event.team``. When ``install_set``
+        (the authenticated ``_team_clients`` ids) is supplied, only a candidate inside it
+        may win; when none matches and exactly one workspace is authenticated, that
+        workspace wins — both halves of a Connect pair then collapse onto it even if every
+        Slack field names the partner org. Otherwise empty: a foreign team must never
+        scope a session or a dedupe id.
+        """
+        candidates: list[str] = []
+        if isinstance(body, dict):
+            for authorization in body.get("authorizations") or []:
+                if isinstance(authorization, dict) and authorization.get("team_id"):
+                    candidates.append(str(authorization["team_id"]))
+                    break  # authorizations carries at most one entry on the wire
+            envelope_team = body.get("team_id")
+            if isinstance(envelope_team, str) and envelope_team:
+                candidates.append(envelope_team)
+            elif isinstance(envelope_team, dict) and envelope_team.get("id"):
+                candidates.append(str(envelope_team["id"]))
+        for payload in (event, body or {}):
             if not isinstance(payload, dict):
                 continue
             team = payload.get("team_id") or payload.get("team")
             if isinstance(team, str) and team:
-                return team
-            if isinstance(team, dict) and team.get("id"):
-                return str(team["id"])
-        authorizations = (body or {}).get("authorizations") if isinstance(body, dict) else None
-        for authorization in authorizations or []:
-            if isinstance(authorization, dict) and authorization.get("team_id"):
-                return str(authorization["team_id"])
-        return ""
+                candidates.append(team)
+            elif isinstance(team, dict) and team.get("id"):
+                candidates.append(str(team["id"]))
+        if install_set is not None:
+            installs = {str(t) for t in install_set}
+            if installs:
+                for candidate in candidates:
+                    if candidate in installs:
+                        return candidate
+                if len(installs) == 1:
+                    # No Slack field names an authenticated workspace, but exactly one
+                    # is authenticated (single-install deployments): that install wins —
+                    # a Connect pair still collapses even when every field names the
+                    # partner org. A foreign team must never scope a session (#143792).
+                    return next(iter(installs))
+                return ""
+            # No workspace authenticated yet (pre-auth events, test fixtures): the
+            # install set is no local truth at all — keep the field order.
+        return candidates[0] if candidates else ""
+
+    def _team_in_install_set(self, team_id: str) -> str:
+        """Pass a team id through only when it names an authenticated workspace.
+
+        The event resolver deliberately returns ``""`` instead of adopting a foreign
+        team (#143792); callers that fall back to cached ids must not undo that.
+        """
+        if not team_id:
+            return ""
+        installs = getattr(self, "_team_clients", None) or {}
+        return team_id if str(team_id) in installs else ""
 
     @staticmethod
     def _context_channel_id(context: Any) -> str:
@@ -3598,7 +3644,9 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         thread_ts = (
             assistant_thread.get("thread_ts") or _first_truthy(event, ("thread_ts", "message_ts")))
         user_id = assistant_thread.get("user_id") or event.get("user") or context.get("user_id")
-        team_id = self._event_team_id(event, body) or str(assistant_thread.get("team_id") or "")
+        team_id = (
+            self._event_team_id(event, body, install_set=getattr(self, "_team_clients", None))
+            or self._team_in_install_set(str(assistant_thread.get("team_id") or "")))
         return {
             "channel_id": _str_or_empty(channel_id), "thread_ts": _str_or_empty(thread_ts),
             "user_id": _str_or_empty(user_id), "team_id": _str_or_empty(team_id),
@@ -3755,7 +3803,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         lifecycle event."""
         context = event.get("context") or event.get("app_context") or {}
         user_id = event.get("user") or event.get("user_id") or ""
-        team_id = self._event_team_id(event, body)
+        team_id = self._event_team_id(event, body, install_set=getattr(self, "_team_clients", None))
         return {
             "context_channel_id": self._context_channel_id(context),
             "user_id": _str_or_empty(user_id), "team_id": _str_or_empty(team_id)}
@@ -3961,7 +4009,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         file_id = event.get("file_id") or (event.get("file") or {}).get("id") or ""
         if not channel_id or not file_id:
             return
-        team_id = self._event_team_id(event, body)
+        team_id = self._event_team_id(event, body, install_set=getattr(self, "_team_clients", None))
         try:
             client = self._team_clients.get(team_id) if team_id else None
             info_resp = await (client or self._get_client(channel_id)).files_info(file=file_id)
@@ -3979,6 +4027,43 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         file_obj = info_resp.get("file") or {}
         if not str(file_obj.get("mimetype", "")).startswith("video/"):
             return
+        # An external-org file share must not re-enter as a synthetic host-team DM: the
+        # fallback event below stamps the install team, which would slip past the
+        # _prefilter_inbound external-DM gate (#143792). The documented file_shared
+        # payload carries no sender team, so resolve the sharer from the event fields,
+        # the file object, or users.info — before the stamp.
+        if str(channel_id).startswith("D") or event.get("channel_type") == "im":
+            sender_team = ""
+            for field in ("user_team", "team"):
+                value = event.get(field)
+                if isinstance(value, str) and value.startswith("T"):
+                    sender_team = value
+                    break
+            if not sender_team:
+                file_team = file_obj.get("user_team")
+                if isinstance(file_team, str) and file_team.startswith("T"):
+                    sender_team = file_team
+            sharer_id = event.get("user_id") or file_obj.get("user", "")
+            if not sender_team and sharer_id:
+                try:
+                    client = self._team_clients.get(team_id) if team_id else None
+                    user_resp = await (client or self._get_client(channel_id)).users_info(user=sharer_id)
+                    user_team = ((user_resp or {}).get("user") or {}).get("team_id")
+                    if isinstance(user_team, str) and user_team.startswith("T"):
+                        sender_team = user_team
+                except Exception as exc:
+                    # Best-effort sharer resolution: fail-open (documented) but keep
+                    # the traceback so a silent API failure stays diagnosable.
+                    logger.debug(
+                        "[Slack] users.info for file_shared %s failed: %s", file_id, exc,
+                        exc_info=exc)
+            if sender_team and team_id and sender_team != team_id:
+                logger.info(
+                    "[Slack] Ignoring file share DM from external-org user %s (team %s) in %s",
+                    sharer_id, sender_team, channel_id)
+                return
+            # Sharer team unresolved (API-less or omitted fields): the prefilter's
+            # documented empty-author fail-open applies here too (#143792 follow-ups).
         share = self._first_file_share(file_obj, channel_id)
         ts = share.get("ts") or event.get("event_ts") or ""
         thread_ts = share.get("thread_ts") or ""
@@ -4444,7 +4529,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         # workspace: Slack event ts values are only unique within one workspace, so two teams' events with
         # the same ts must not suppress each other.
         event_ts = event.get("_slack_changed_event_ts") or event.get("ts", "")
-        dedup_team_id = self._event_team_id(event, payload)
+        dedup_team_id = self._event_team_id(event, payload, install_set=getattr(self, "_team_clients", None))
         if event_ts and self._dedup.is_duplicate(self._workspace_event_id(dedup_team_id, event_ts)):
             return None
         channel_id = event.get("channel", "")
@@ -4455,7 +4540,15 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         # never installed it. Their DM event carries the sender's org as the inner ``team``,
         # while the envelope resolves to our install, so mismatch means foreign-org sender
         # and the DM must be refused regardless of allowlists (#143792).
-        author_team = event.get("user_team") or event.get("team") or ""
+        # Author workspace: only a ``T…`` workspace id may be compared — ``user_team`` can
+        # be an enterprise ``E…`` id (Bolt) and neither field is guaranteed present. With
+        # no ``T…`` author id the gate does not fire (documented gap, #143792 follow-ups).
+        author_team = ""
+        for field in ("user_team", "team"):
+            value = event.get(field)
+            if isinstance(value, str) and value.startswith("T"):
+                author_team = value
+                break
         is_dm_event = event.get("channel_type") == "im" or str(channel_id).startswith("D")
         if is_dm_event and author_team and dedup_team_id and author_team != dedup_team_id:
             logger.info(
@@ -4560,10 +4653,12 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         user_id = event.get("user") or assistant_meta.get("user_id", "")
         if not channel_id:
             channel_id = assistant_meta.get("channel_id", "")
-        # File-upload events may omit team_id; recover it for multi-workspace token lookup.
+        # File-upload events may omit team_id; recover it for multi-workspace token lookup —
+        # but only from ids this adapter is actually installed in (#143792).
         team_id = (
-            outer_team_id or assistant_meta.get("team_id", "") or self._channel_team.get(channel_id, "")
-        )
+            outer_team_id
+            or self._team_in_install_set(assistant_meta.get("team_id", ""))
+            or self._team_in_install_set(self._channel_team.get(channel_id, "")))
         agent_context = self._agent_view_context_for_event(
             event, str(team_id or ""), str(user_id or ""))
         if team_id and channel_id:
@@ -5186,7 +5281,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         """
         await ack()
 
-        team_id = self._event_team_id({}, body)
+        team_id = self._event_team_id({}, body, install_set=getattr(self, "_team_clients", None))
         action_id = action.get("action_id", "")
         message = body.get("message", {})
         msg_ts = message.get("ts", "")
@@ -5479,7 +5574,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         Returns ``(team_id, action_id, value, message, msg_ts, channel_id, user_name, user_id)`` or
         None (logged) when the user is not authorized."""
         await ack()
-        team_id = self._event_team_id({}, body)
+        team_id = self._event_team_id({}, body, install_set=getattr(self, "_team_clients", None))
         action_id, value, message, msg_ts, channel_id, user_name, user_id = (
             self._interaction_fields(body, action))
         auth_kwargs: dict[str, Any] = {"channel_id": channel_id, "user_name": user_name}

@@ -130,6 +130,39 @@ async def test_group_callback_lists_a_member_written_with_uppercase(plain_keyboa
     assert "mp:kimi-coding-cn" in callbacks
 
 
+_BEDROCK_IDS = [
+    "global.anthropic.claude-opus-4-5-20251101-v1:0", "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0", "global.anthropic.claude-opus-4-1-20250805-v1:0",
+]
+
+
+@pytest.mark.asyncio
+async def test_tapping_a_provider_shows_distinguishable_model_buttons(plain_keyboards):
+    """Ids sharing a long namespace (Bedrock ``global.anthropic.``) were right-truncated into identical
+    buttons; each must stay readable and distinct while the tap still selects the full id."""
+    adapter = _make_adapter()
+    provider = {"slug": "bedrock", "name": "AWS Bedrock", "models": _BEDROCK_IDS, "total_models": 50}
+    adapter._model_picker_state["12345"] = {
+        "providers": [provider], "current_model": "m", "current_provider": "bedrock",
+        "session_key": "s", "on_model_selected": AsyncMock(), "msg_id": 42,
+    }
+    query = AsyncMock()
+    query.message = MagicMock()
+    query.message.chat_id = 12345
+    query.from_user = MagicMock()
+
+    await adapter._handle_model_picker_callback(query, "mp:bedrock", "12345")
+
+    edit = query.edit_message_text.call_args[1]
+    model_rows = [row for row in edit["reply_markup"].inline_keyboard if row[0].callback_data.startswith("mm:")]
+    labels = [row[0].text for row in model_rows]
+    assert all(len(row) == 1 for row in model_rows)
+    assert labels == [m.removeprefix("global.anthropic.") for m in _BEDROCK_IDS]
+    assert [adapter._model_picker_state["12345"]["model_list"][int(r[0].callback_data[3:])] for r in model_rows] == _BEDROCK_IDS
+    # The "N more available" note renders italic, not as literal underscores.
+    assert "46 more available" in edit["text"] and "\\_46" not in edit["text"]
+
+
 def _gateway_wired_adapter():
     """Real adapter with the real gateway auth callback, as ``GatewayRunner`` wires it."""
     from gateway.config import GatewayConfig, Platform

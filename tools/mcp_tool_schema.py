@@ -185,7 +185,8 @@ def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
 
 # Strings the server matches calls against: rewriting them would break a working tool, so they stay
 # byte-exact (a hidden char there is logged instead).
-_SCHEMA_CONTRACT_KEYS = frozenset({"enum", "const", "required", "$ref", "pattern"})
+# Values the server matches calls against; dependentRequired / discriminator.propertyName name properties.
+_SCHEMA_CONTRACT_KEYS = frozenset({"enum", "const", "required", "$ref", "pattern", "dependentRequired", "propertyName"})
 
 
 def strip_schema_annotations(node, tool_name: str = "", _contract: bool = False, _names: bool = False):

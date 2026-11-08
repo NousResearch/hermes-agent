@@ -15,6 +15,7 @@ import tempfile
 import unicodedata
 
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
+from tools.approval_applescript import OSASCRIPT_OPAQUE_DESCRIPTION, OSASCRIPT_RISKY_DESCRIPTION, classify_osascript
 
 logger = logging.getLogger("tools.approval")
 
@@ -500,13 +501,6 @@ DANGEROUS_PATTERNS = [
     (r'\busers[\\/][^\\/\s]+[\\/]\.ssh\b', "access to SSH keys (Windows path)"),
     (r'\bappdata[\\/](?:local|roaming)[\\/]hermes[^\n]*\.env\b', "access to Hermes secrets (Windows path)"),
     # ── end of Windows tier
-    # macOS GUI automation: `osascript` can drive an application the agent never opened, and the
-    # document it names (`active presentation`, `front document`) belongs to the operator. Closing
-    # or quitting with "do not save" discards that unsaved work and takes the app's AutoRecovery
-    # with it, so there is no recovery path (#141346). One alternation for the spellings AppleScript
-    # and JXA accept for "close without saving"; `saving yes` and plain `save` stay unflagged.
-    (_CMDPOS + r'osascript\b[^\n]*(?:saving\s+no\b|without\s+saving\b|saving\s*:\s*false\b)',
-     "AppleScript closes or quits a document without saving"),
     (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
     (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
@@ -743,11 +737,9 @@ _CONTENT_RULE_DESCRIPTIONS = frozenset({
 
 # Descriptions whose blast radius is the OPERATOR's own work rather than anything the session
 # owns, so an auxiliary-LLM APPROVE is not consent for them: smart mode asks the human instead of
-# consulting the guardian. Keep this list to actions that destroy state the agent did not create
-# and cannot recreate — every entry is a guaranteed prompt, not a smarter classifier.
-SMART_MANUAL_ONLY_DESCRIPTIONS = frozenset({
-    "AppleScript closes or quits a document without saving",
-})
+# consulting the guardian, and the answer covers that one command (no session/always grant).
+# Keep this list to actions that destroy state the agent did not create and cannot recreate.
+SMART_MANUAL_ONLY_DESCRIPTIONS = frozenset({OSASCRIPT_RISKY_DESCRIPTION, OSASCRIPT_OPAQUE_DESCRIPTION})
 
 # Preserve approvals stored under the removed interpreter regex rules.
 _REMOVED_PATTERN_KEY_ALIASES = {
@@ -1906,6 +1898,10 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
         return
     if _is_verification_artifact_cleanup(command):
         return
+    if only is None:
+        # First, on the raw command: the osascript keys are manual-only, so they must lead the findings
+        # (`do shell script "rm ..."` would otherwise surface as a guardian-reviewable rm rule).
+        yield from sorted(classify_osascript(unicodedata.normalize("NFKC", command.replace("\x00", ""))))
     patterns = DANGEROUS_PATTERNS_COMPILED if only is None else [
         (pattern_re, description) for pattern_re, description in DANGEROUS_PATTERNS_COMPILED if description in only
     ]

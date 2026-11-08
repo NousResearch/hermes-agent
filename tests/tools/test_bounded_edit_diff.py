@@ -4,6 +4,7 @@ import time
 
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations
+from tools.file_operations_common import bounded_unified_diff
 
 
 def test_large_replace_all_lands_without_a_slow_diff(tmp_path):
@@ -20,6 +21,10 @@ def test_large_replace_all_lands_without_a_slow_diff(tmp_path):
     assert target.read_text(encoding="utf-8-sig").count("NEW") == 10_000
     assert result.diff.startswith(f"# diff omitted for {target}:")
     assert elapsed < 5
+    # Repeated lines reordered: every line occurs twice, so a count-only estimate sees no change.
+    lines = "".join(f"row {i}\n" for i in range(10_000)) * 2
+    assert bounded_unified_diff(lines, "".join(sorted(lines.splitlines(keepends=True))), "a/f", "b/f") \
+        .startswith("# diff omitted for f:")
 
 
 def test_ordinary_edit_keeps_its_unified_diff(tmp_path):

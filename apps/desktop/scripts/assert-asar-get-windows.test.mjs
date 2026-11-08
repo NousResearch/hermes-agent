@@ -1,15 +1,17 @@
 // Target 8: packaged-bundle file-tree test.
 //
-// Builds minimal synthetic app.asar buffers (16-byte pickle prelude + JSON
-// header, the layout verified against production bundles) and asserts the
-// file-tree check passes a bundle carrying the demanded tree and fails a
-// bundle without it — the guard that would have held the November 6
-// failure to a named, pre-packaging error instead of a shipped gap.
+// Builds synthetic app.asar buffers (16-byte pickle prelude + JSON header,
+// the layout verified against production bundles) and asserts the file-tree
+// check passes a darwin bundle carrying the demanded tree and fails one
+// without it. Prospective only: the November 6 failure threw pre-packaging
+// and produced no bundle, so no asar check could have caught that incident.
+// This locks the reader and the failure messages for future silent-omission
+// regressions — it is not wired to any packaging or CI hook.
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, test } from 'vitest'
-import { assertGetWindowsTree, getWindowsFilesInAsar, listAsarFiles } from './assert-asar-get-windows.mjs'
+import { assertDarwinGetWindowsTree, getWindowsFilesInAsar, listAsarFiles } from './assert-asar-get-windows.mjs'
 
 const roots = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -52,13 +54,13 @@ function asarFile(withTree) {
 }
 
 test('bundled tree with helper passes', () => {
-  const staged = assertGetWindowsTree(asarFile(true))
+  const staged = assertDarwinGetWindowsTree(asarFile(true))
   expect(staged).toHaveLength(6)
   expect(staged.some(file => file.endsWith('/main'))).toBe(true)
 })
 
 test('bundle without the tree fails with a shippable message', () => {
-  expect(() => assertGetWindowsTree(asarFile(false))).toThrow(/no get-windows tree/)
+  expect(() => assertDarwinGetWindowsTree(asarFile(false))).toThrow(/no get-windows tree/)
 })
 
 test('partial tree names the missing entries', () => {
@@ -69,7 +71,7 @@ test('partial tree names the missing entries', () => {
   const header = { files: { dist: { files: { node_modules: { files: { 'get-windows': { files: partial } } } } } } }
   const path = join(dir, 'app.asar')
   writeFileSync(path, asarBuffer(header))
-  expect(() => assertGetWindowsTree(path)).toThrow(/missing main/)
+  expect(() => assertDarwinGetWindowsTree(path)).toThrow(/missing main/)
 })
 
 test('reader lists nested files in order', () => {

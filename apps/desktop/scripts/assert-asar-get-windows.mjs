@@ -45,7 +45,10 @@ export function getWindowsFilesInAsar(asarPath) {
   return listAsarFiles(asarPath).filter(file => file.split('/').includes('get-windows'))
 }
 
-export function assertGetWindowsTree(asarPath) {
+// Darwin-bundle check (not cross-platform): the stager demands the macOS
+// helper binary `main` on darwin only — win32 ships a .node binding instead
+// and Linux stages neither native payload (its loader shells out to xprop).
+export function assertDarwinGetWindowsTree(asarPath) {
   const staged = getWindowsFilesInAsar(asarPath)
   if (staged.length === 0) {
     throw new Error(

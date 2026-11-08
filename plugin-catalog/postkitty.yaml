@@ -1,0 +1,30 @@
+name: postkitty
+repo: https://github.com/mertkayacs/postkitty
+sha: 4452de55d700e84d42e4ac758217f6b5e1617d51
+title: postkitty
+description: 'One post in, every platform out. Turns a draft, photos and landscape video into checked, ready-to-post
+  files for Instagram, TikTok, YouTube Shorts, X, LinkedIn, Threads, Bluesky and Facebook: face-aware crops,
+  vertical reframing with a split screen for two speakers, copy counted with each platform''s own rule, and checks
+  that cite each platform''s published limits, with repairs before a file is marked ready. Runs locally with ffmpeg
+  and OpenCV; no API keys.'
+maintainer: mertkayacs
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.22.7"
+image: https://raw.githubusercontent.com/mertkayacs/postkitty/4452de55d700e84d42e4ac758217f6b5e1617d51/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/mertkayacs/postkitty/4452de55d700e84d42e4ac758217f6b5e1617d51/docs/board.png
+  - https://raw.githubusercontent.com/mertkayacs/postkitty/4452de55d700e84d42e4ac758217f6b5e1617d51/docs/before-after.jpg
+known_issues:
+  - Needs ffmpeg and ffprobe on PATH for video.
+capabilities:
+  provides_tools:
+    - postkitty_scan
+    - postkitty_copy
+    - postkitty_make
+    - postkitty_redo
+    - postkitty_check
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

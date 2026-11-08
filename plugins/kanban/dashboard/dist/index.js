@@ -3429,7 +3429,7 @@
               }),
             ),
           ),
-          projects.length ? h("div", { className: "flex flex-col gap-1" },
+          h("div", { className: "flex flex-col gap-1" },
             fieldLabel(tx(t, "taskProject", "Project"),
               tx(t, "taskProjectHint", "(the work this belongs to)")),
             h(Select, Object.assign({
@@ -3446,7 +3446,7 @@
                   p.name || p.slug || p.id);
               }),
             ),
-          ) : null,
+          ),
           h("div", { className: "flex flex-col gap-1" },
             fieldLabel(tx(t, "skillsLabel", "Skills"),
               tx(t, "skillsLabelHint", "(optional, comma-separated)")),

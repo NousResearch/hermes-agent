@@ -206,7 +206,16 @@ export function useMessageStream({
           const prev = state.messages
           let nextMessages: ChatMessage[]
 
-          if (!prev.some(m => m.id === streamId)) {
+          // The live stream is almost always the tail row, so probe there first.
+          // This used to scan the transcript twice (`.some` + `.map`) and rebuild
+          // every row object wrapper on each 40 ms delta; now it copies the array
+          // once and patches the one slot.
+          const streamIndex =
+            prev.length > 0 && prev[prev.length - 1].id === streamId
+              ? prev.length - 1
+              : prev.findIndex(m => m.id === streamId)
+
+          if (streamIndex === -1) {
             nextMessages = [
               ...prev,
               {
@@ -219,23 +228,19 @@ export function useMessageStream({
               }
             ]
           } else {
-            nextMessages = prev.map(m => {
-              if (m.id !== streamId) {
-                return m
-              }
+            const message = prev[streamIndex]
+            const patched = { ...message, parts: transform(message.parts, message) }
 
-              const patched = { ...m, parts: transform(m.parts, m) }
-
+            nextMessages = prev.slice()
+            nextMessages[streamIndex] = {
+              ...patched,
               // A bubble a steer sealed stays pending only while its own tools run.
-              return {
-                ...patched,
-                pending: patchesSealedBubble
-                  ? Boolean(m.pending) && hasUnresolvedToolCall(patched)
-                  : opts.pending
-                    ? opts.pending(m)
-                    : true
-              }
-            })
+              pending: patchesSealedBubble
+                ? Boolean(message.pending) && hasUnresolvedToolCall(patched)
+                : opts.pending
+                  ? opts.pending(message)
+                  : true
+            }
           }
 
           if (patchesSealedBubble) {
@@ -1097,7 +1102,7 @@ export function useMessageStream({
           (m, index) => index > lastUserIndex && m.role === 'assistant' && m.error && !m.hidden
         )
 
-        const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
+        const lastVisible = nextMessages.findLast(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
 
         const sameTurnId = collapsed?.keptId ?? (streamIndex >= 0 ? streamId : null)

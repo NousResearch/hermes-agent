@@ -1,7 +1,6 @@
 # WhatsApp passkey pairing
 
 The bridge uses the official `@whiskeysockets/baileys` 7.0.0-rc13 npm release.
-There is no personal fork, external commit archive, build step, or sibling checkout.
 
 `passkey_flow.js` and `passkey_crypto.js` adapt the MIT-licensed handshake from
 vinikjkkj's [Baileys PR #2689](https://github.com/WhiskeySockets/Baileys/pull/2689).
@@ -16,6 +15,14 @@ socket cancels pending authentication and removes the added listeners.
 The adapter preserves owner confirmation unless a trusted handoff applies. The
 interactive signer loads the real WhatsApp Web origin and validates the returned
 challenge and origin. No existing browser profile or browser session is imported.
+The temporary browser profile does not inherit Chrome's signed-in password manager.
+Availability of a phone or operating-system passkey depends on the browser's
+WebAuthn prompt and has not been verified with a real WhatsApp account.
+
+The official Baileys package requires Node 20 or newer. The signer supports that
+same floor without depending on `AbortSignal.any`, which arrived in Node 20.3.
+A passkey challenge in gateway mode exits the bridge with code 78; the adapter
+reports `whatsapp_passkey_required` as non-retryable until interactive pairing.
 
 ## Verification
 

@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, randomBytes, verify } from 'node:crypto';
 import { test } from 'node:test';
+import { getEventListeners } from 'node:events';
 import { chromium } from 'playwright-core';
 import pino from 'pino';
 import { proto, initAuthCreds, Curve, hkdf, aesDecryptGCM } from '@whiskeysockets/baileys';
 import { makeShortcakeFlow } from './passkey_flow.js';
-import { signPasskeyInPage } from './passkey_browser.js';
+import { createBrowserPasskeySigner, signPasskeyInPage } from './passkey_browser.js';
 
 const options = () => Buffer.from(JSON.stringify({
   rpId: 'whatsapp.com', challenge: randomBytes(32).toString('base64url'),
@@ -25,6 +26,27 @@ test('cancelled socket rejects an outstanding browser prompt', async () => {
   const pending = signPasskeyInPage(page, options(), controller.signal);
   controller.abort();
   await assert.rejects(pending, { name: 'AbortError' });
+});
+
+test('cancellation while the browser launches closes it and releases the socket listener', async t => {
+  const controller = new AbortController();
+  let finishLaunch;
+  const launch = new Promise(resolve => { finishLaunch = resolve; });
+  t.mock.method(chromium, 'launch', () => launch);
+  let closes = 0;
+  const pending = createBrowserPasskeySigner('browser')(options(), controller.signal);
+  controller.abort();
+  finishLaunch({ close: async () => { closes += 1; }, newPage: () => assert.fail('cancelled launch must not navigate') });
+  await assert.rejects(pending, { name: 'AbortError' });
+  assert.equal(closes, 1);
+  assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+});
+
+test('browser launch failure releases the socket listener', async t => {
+  const controller = new AbortController();
+  t.mock.method(chromium, 'launch', async () => { throw new Error('browser unavailable'); });
+  await assert.rejects(createBrowserPasskeySigner('missing')(options(), controller.signal), /browser unavailable/);
+  assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
 });
 
 test('real Chromium WebAuthn assertion completes the salvaged encrypted handshake offline', {

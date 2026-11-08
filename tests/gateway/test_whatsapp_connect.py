@@ -588,3 +588,22 @@ class TestNamedConnectFailures:
 
         assert adapter.fatal_error_code == "whatsapp_bridge_timeout"
         assert adapter.fatal_error_retryable is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("returncode,retryable", [(78, False), (1, True)])
+@pytest.mark.parametrize("startup", [True, False])
+async def test_passkey_required_stops_retries_at_startup_and_during_polling(returncode, retryable, startup):
+    adapter = _make_adapter()
+    adapter._bridge_process = MagicMock(returncode=returncode, **{"poll.return_value": returncode})
+    adapter._notify_fatal_error = AsyncMock()
+    if startup:
+        with patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock):
+            assert await adapter._wait_for_bridge() is False
+    else:
+        assert await adapter._check_managed_bridge_exit()
+        adapter._notify_fatal_error.assert_awaited_once()
+    assert adapter.fatal_error_retryable is retryable
+    assert adapter.fatal_error_code == ("whatsapp_bridge_exited" if retryable else "whatsapp_passkey_required")
+    if not retryable:
+        assert "hermes whatsapp --passkey-browser" in adapter.fatal_error_message

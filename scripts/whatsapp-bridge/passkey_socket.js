@@ -1,6 +1,15 @@
 import { proto } from '@whiskeysockets/baileys';
 import { makeShortcakeFlow } from './passkey_flow.js';
 
+export async function loadPasskeySigner(executablePath, { pairOnly, pairJson, isTTY },
+  load = () => import('./passkey_browser.js')) {
+  if (!executablePath) return undefined;
+  if (!pairOnly || pairJson || !isTTY) {
+    throw new Error('--passkey-browser requires interactive --pair-only setup.');
+  }
+  return (await load()).createBrowserPasskeySigner(executablePath);
+}
+
 // Baileys still owns acknowledgement of these notifications. The handshake
 // runs separately so an interactive browser prompt cannot delay that ACK.
 export function attachPasskeyFlow(socket, { logger, signAssertion }) {

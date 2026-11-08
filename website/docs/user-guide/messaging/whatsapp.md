@@ -137,6 +137,11 @@ If setup displays a confirmation code, compare it with your phone and confirm
 only if the codes match. The browser closes when the request completes or is
 cancelled. Hermes enables WhatsApp only after pairing succeeds.
 
+The temporary window does not inherit your regular Chrome or Edge profile or
+its signed-in password manager. Your passkey must be available through the
+authentication options that window offers. Availability of phone and OS passkeys,
+and real-account WhatsApp acceptance, still need end-to-end validation.
+
 This path needs an interactive terminal and graphical browser on the machine
 running setup. It is not available through dashboard onboarding or a headless
 SSH session. The browser is needed during passkey pairing, not for normal

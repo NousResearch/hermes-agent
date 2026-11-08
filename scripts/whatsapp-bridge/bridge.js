@@ -31,7 +31,7 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { createInterface } from 'node:readline/promises';
-import { attachPasskeyFlow } from './passkey_socket.js';
+import { attachPasskeyFlow, loadPasskeySigner } from './passkey_socket.js';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
@@ -123,11 +123,13 @@ try {
 const PAIR_ONLY = args.includes('--pair-only');
 const PAIR_JSON = args.includes('--pair-json');
 const PASSKEY_BROWSER = getArg('passkey-browser', '');
-const passkeySigner = PASSKEY_BROWSER
-  ? (await import('./passkey_browser.js')).createBrowserPasskeySigner(PASSKEY_BROWSER)
-  : undefined;
-if (PASSKEY_BROWSER && (!PAIR_ONLY || PAIR_JSON || !process.stdin.isTTY)) {
-  console.error('--passkey-browser requires interactive --pair-only setup.');
+let passkeySigner;
+try {
+  passkeySigner = await loadPasskeySigner(PASSKEY_BROWSER, {
+    pairOnly: PAIR_ONLY, pairJson: PAIR_JSON, isTTY: process.stdin.isTTY,
+  });
+} catch (error) {
+  console.error(error.message);
   process.exit(1);
 }
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
@@ -455,7 +457,8 @@ async function startSocket() {
       emitPairEvent({ event: 'passkey_required', interactive: Boolean(passkeySigner) });
       if (!passkeySigner) {
         console.error('WhatsApp requires passkey verification. Pair with --passkey-browser and a local Chrome/Edge executable.');
-        process.exit(1);
+        // The adapter treats 78 as a non-retryable pairing requirement.
+        process.exit(PAIR_ONLY ? 1 : 78);
       }
       if (!PAIR_JSON) console.log('Complete passkey verification in the browser window.');
     }

@@ -792,14 +792,18 @@ class GatewayTurnProgressMixin:
         return True
 
     async def _deliver_flood_pending_progress(self, st) -> bool:
-        """Idle tick: push the update a flood window held back once the window has closed."""
+        """Idle tick: push the update a flood window held back once the window has closed.
+
+        Returns True when it attempted delivery, so the caller spaces retries by the edit interval.
+        The update stays owed until a send/edit lands (the delivery paths retire it), so a transient
+        failure is retried on a later tick instead of being dropped.
+        """
         if not st.flood_pending or _in_flood_window(st) or not st.progress_lines:
             return False
         if not self._ctx._run_still_current() or self._agent_interrupted():
             return False
-        st.flood_pending = False
         if not await self._roll_progress_overflow_if_needed(st):
-            return await self._progress_send_or_edit(st, st.progress_lines[-1])
+            await self._progress_send_or_edit(st, st.progress_lines[-1])
         return True
 
     async def send_progress_messages(self):

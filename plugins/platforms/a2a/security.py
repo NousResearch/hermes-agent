@@ -94,7 +94,7 @@ class A2ASecurityContext:
         if self.requested_host in {"127.0.0.1", "localhost", "::1"}:
             return self.requested_host
         if not (self.bearer_token or self.peer_tokens):  # no usable credential: never widen the bind
-            logger.warning("A2A: A2A_HOST=%s ignored — no A2A_BEARER_TOKEN or A2A_PEER_TOKENS set; "
+            logger.warning("A2A: A2A_HOST=%s ignored — no usable A2A_BEARER_TOKEN or A2A_PEER_TOKENS; "
                            "binding to 127.0.0.1. Configure a token to expose A2A remotely.", self.requested_host)
             return "127.0.0.1"
         return self.requested_host

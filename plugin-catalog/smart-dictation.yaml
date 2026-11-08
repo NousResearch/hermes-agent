@@ -1,0 +1,25 @@
+name: smart-dictation
+title: Smart Dictation
+repo: https://github.com/metamindedu/hermes-smart-dictation
+sha: 9838ce40f1ef324aa42485507f51ab04478300a0
+version: "0.4.0"
+description: Local dictation with tool-free proofreading, selected reference context, and owner-safe draft insertion.
+maintainer: metamindedu
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+screenshots:
+  - https://raw.githubusercontent.com/metamindedu/hermes-smart-dictation/9838ce40f1ef324aa42485507f51ab04478300a0/docs/images/smart-dictation.png
+readme: true
+platforms: [linux, macos, windows]
+onboarding: false
+known_issues:
+  - Requires configured local faster-whisper and cached model weights. No automatic model download or cloud-STT fallback.
+  - Correction model and reasoning effort are managed in native Hermes settings; check the intended profile and save targets.
+  - Local decoder excludes Windows ARM64 and Intel macOS. Remote connections and future-profile auto-activation are unsupported.
+  - Transcript and selected context go to the configured correction provider; native recovery, costs and logging policies may apply.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

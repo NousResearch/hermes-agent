@@ -176,7 +176,7 @@ async def build_channel_directory(adapters: dict[Any, Any]) -> dict[str, Any]:
 def _merge_configured_channels(adapters: dict[Any, Any], platforms: dict[str, list[dict[str, Any]]]) -> None:
     """Add the targets an adapter's own config declares (``configured_channels()``, e.g. Telegram
     ``extra.dm_topics``) after discovery: session history alone drops them once their sessions are
-    pruned (#52629). Discovered entries win on an id collision."""
+    pruned (#52629). Discovered entries win on an id collision; label clashes are id-qualified."""
     for platform, adapter in adapters.items():
         configured = getattr(adapter, "configured_channels", None)
         if not callable(configured):
@@ -188,7 +188,25 @@ def _merge_configured_channels(adapters: dict[Any, Any], platforms: dict[str, li
             continue
         known = platforms.setdefault(platform.value, [])
         seen = {entry.get("id") for entry in known}
-        known.extend(entry for entry in entries if entry["id"] not in seen)
+        added = [entry for entry in entries if entry["id"] not in seen]
+        known.extend(added)
+        _qualify_label_clashes(platform.value, known, {id(entry) for entry in added})
+
+
+def _qualify_label_clashes(platform_name: str, entries: list[dict[str, Any]], added: set[int]) -> None:
+    """Prefix the id onto every entry whose label resolves (``resolve_channel_name`` step 1) like a
+    different target's, when one of them is a just-merged configured entry: the bare name then
+    resolves to nothing rather than to whichever chat was listed first. Discovered-only clashes keep
+    their labels."""
+    by_key: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        labels = {_normalize_channel_query(entry["name"]), _normalize_channel_query(_channel_target_name(platform_name, entry))}
+        for key in labels:
+            by_key.setdefault(key, []).append(entry)
+    clashing = {id(e): e for group in by_key.values()
+                if len({e["id"] for e in group}) > 1 and any(id(e) in added for e in group) for e in group}
+    for entry in clashing.values():
+        entry["name"] = f"{entry['id']} / {entry['name']}"
 
 
 def _build_discord(adapter) -> list[dict[str, str]]:

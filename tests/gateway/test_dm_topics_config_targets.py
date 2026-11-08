@@ -147,3 +147,21 @@ async def test_reconnect_after_failed_save_keeps_the_topic_listed(tmp_path, monk
     await adapter._setup_dm_topics()
 
     assert [e["id"] for e in adapter.configured_channels()] == ["222:58890"]
+
+
+def test_configured_topic_name_never_resolves_to_a_discovered_chat(tmp_path):
+    """A discovered DM named ``Reports`` (chat 111) and a configured ``Reports`` topic (222:9): every
+    listed label resolves to its own entry, and the bare shared name resolves to neither."""
+    from gateway.channel_directory import build_channel_directory, resolve_channel_name
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra={
+        "dm_topics": [{"chat_id": 222, "topics": [{"name": "Reports", "thread_id": 9}]}]}))
+    discovered = [{"id": "111", "name": "Reports", "type": "dm", "thread_id": None}]
+    with patch("gateway.channel_directory.DIRECTORY_PATH", tmp_path / "channel_directory.json"), \
+         patch("gateway.channel_directory._build_from_sessions", return_value=discovered):
+        directory = asyncio.run(build_channel_directory({Platform.TELEGRAM: adapter}))
+        entries = directory["platforms"]["telegram"]
+        assert {e["id"] for e in entries} == {"111", "222:9"}
+        for entry in entries:
+            assert resolve_channel_name("telegram", entry["name"]) == entry["id"]
+        assert resolve_channel_name("telegram", "Reports") is None

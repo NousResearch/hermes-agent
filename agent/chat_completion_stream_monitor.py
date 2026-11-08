@@ -7,6 +7,7 @@ for a wedged inline call) and the shared "no visible text was delivered" check
 
 import contextlib
 import logging
+import math
 import time
 from types import SimpleNamespace
 from urllib.parse import urlsplit
@@ -16,6 +17,7 @@ from agent.model_metadata import is_local_endpoint
 from agent.proxy_bypass import is_loopback_host
 from agent.sleep_clock import SleepWatch
 from agent.stream_max_lifetime import StreamLifetime, StreamLifetimeExceeded, resolve_stream_max_lifetime
+from agent.stream_wire_activity import KEEPALIVE_PATIENCE_FACTOR, chat_chunk_has_progress, watch_raw_bytes
 logger = logging.getLogger(__name__)
 
 # Kills of one dispatched attempt whose worker never unwinds before the monitor gives up on it.
@@ -34,6 +36,50 @@ class StreamingWaitMonitor:
     _lifetime = StreamLifetime(0.0)  # opt-in agent.stream_max_lifetime; real clock set when the monitor starts
     _lifetime_kill = None  # (attempt id, elapsed s) of the latest cap kill
     _released_attempt = 0  # the attempt the worker's except path last caught (it let go of it)
+    _last_wire_ts = 0.0  # last raw bytes on the wire, SSE comment keepalives included (#151280)
+
+    def _watch_wire(self, raw_stream) -> None:
+        """Count this attempt's raw bytes (SSE keepalive comments too) as transport liveness;
+        a superseded attempt's late bytes never stretch a newer attempt's patience."""
+        with self.stream_attempt_lock:
+            attempt = int(self.stream_attempt_state["current"])
+
+        def _note_wire_bytes() -> None:
+            if self._stream_attempt_is_active(attempt):
+                self._stamp(keepalive=True)
+        watch_raw_bytes(raw_stream, _note_wire_bytes)
+
+    @staticmethod
+    def _chat_keepalive(chunk) -> bool:
+        """Empty ``choices`` / role-only chat chunk: transport liveness, not output."""
+        return not chat_chunk_has_progress(chunk)
+
+    def _stamp(self, keepalive: bool = False) -> float:
+        """Output resets the stale clock; a keepalive (or raw bytes) only proves the transport
+        is alive, which stretches the stale limit by a bounded factor (``_stale_limit``)."""
+        now = time.time()
+        if keepalive:
+            self._last_wire_ts = now
+        else:
+            self.last_chunk_time["t"] = now
+        return now
+
+    def _stale_limit(self) -> float:
+        """Silence allowed since the last real chunk. Bytes still arriving (keepalive comments
+        from a proxy in front of a thinking model) stretch it by a bounded factor: a stream
+        that only ever pings is still cut, just later; a dead transport keeps the base limit."""
+        stale = self._stream_stale_timeout
+        if stale is None or not math.isfinite(stale) or time.time() - self._last_wire_ts >= stale:
+            return stale
+        return stale * KEEPALIVE_PATIENCE_FACTOR
+
+    def _log_stale_kill(self, elapsed: float, est_ctx: int) -> None:
+        limit = self._stale_limit()
+        reason = ("no chunks received" if limit == self._stream_stale_timeout
+                  else f"keepalives received, no output (last bytes {time.time() - self._last_wire_ts:.0f}s ago)")
+        logging.getLogger("agent.chat_completion_helpers").warning(
+            "Stream stale for %.0fs (threshold %.0fs) — %s. model=%s context=~%s tokens. Killing connection.",
+            elapsed, limit, reason, self.api_kwargs.get("model", "unknown"), f"{est_ctx:,}")
 
     def _claims_liveness(self) -> bool:
         since = self._liveness_withheld_at
@@ -191,7 +237,7 @@ class StreamingWaitMonitor:
         if waiting_secs >= 60.0:
             # No chunks for 60s+: say WHAT the wait is and WHEN recovery kicks in —
             # once per silence, not every heartbeat (#92550).
-            stale = self._stream_stale_timeout
+            stale = self._stale_limit()
             watchdog = ("stream stale", stale - waiting_secs) if stale is not None and stale != float("inf") else None
             diag = getattr(getattr(self, "clients", None), "diag", None)
             phase = "post_chunk" if isinstance(diag, dict) and diag.get("first_chunk_at") else "first_chunk"
@@ -291,7 +337,7 @@ class StreamingWaitMonitor:
                 self._mon.last_heartbeat = _hb_now
                 self._heartbeat(int(_hb_now - self.last_chunk_time["t"]))
             _stale_elapsed = time.time() - self.last_chunk_time["t"]
-            if _stale_elapsed > self._stream_stale_timeout:
+            if _stale_elapsed > self._stale_limit():
                 self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.
                 self._mon.wait_notice.reset()
                 self._kill_stale_stream(_stale_elapsed)

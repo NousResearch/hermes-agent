@@ -2834,14 +2834,14 @@ class _StreamingCall(StreamingWaitMonitor):
         self.clients.diag = diag
         return diag
 
-    def _count_chunk(self, diag, chunk) -> None:
-        """Stamp liveness for a real chunk; diagnostics are best-effort."""
-        self.last_chunk_time["t"] = time.time()
+    def _count_chunk(self, diag, chunk, keepalive: bool = False) -> None:
+        """Stamp liveness (a keepalive: transport only, #151280); diagnostics are best-effort."""
+        now = self._stamp(keepalive)
         self.agent._touch_activity("receiving stream response")
         with contextlib.suppress(Exception):
             diag["chunks"] = int(diag.get("chunks", 0)) + 1
             if diag.get("first_chunk_at") is None:
-                diag["first_chunk_at"] = self.last_chunk_time["t"]
+                diag["first_chunk_at"] = now
             # Delta-length estimate: ~3x cheaper than repr() per chunk.
             diag["bytes"] = int(diag.get("bytes", 0)) + _estimate_chunk_bytes(chunk)
 
@@ -2849,7 +2849,7 @@ class _StreamingCall(StreamingWaitMonitor):
         """Count a real chunk; a llama-server prompt-progress chunk (True) is liveness, no first token."""
         progress = prompt_progress(chunk) if llamacpp else None
         if progress is None:
-            self._count_chunk(diag, chunk)
+            self._count_chunk(diag, chunk, self._chat_keepalive(chunk))
             return False
         self.last_chunk_time["t"] = now = time.time()
         self.prompt_progress["progress"], self.prompt_progress["t"] = progress, now
@@ -2945,6 +2945,7 @@ class _StreamingCall(StreamingWaitMonitor):
         self.agent._stream_diag_capture_response(self.clients.diag, response)
         self.agent._check_openrouter_cache_status(response)
         self._writer_token = claim_stream_writer(self.agent)
+        self._watch_wire(raw_stream)
         self._reabort_if_cancelled(response)
 
     def _reabort_if_cancelled(self, response: Any) -> None:
@@ -2986,7 +2987,7 @@ class _StreamingCall(StreamingWaitMonitor):
             return False
         # Stamp BEFORE Relay processes the chunk so the watchdog can't cancel
         # a live stream mid-interceptor.
-        self.last_chunk_time["t"] = time.time()
+        self._stamp(self._chat_keepalive(chunk))
         return True
 
     def _writer_still_current(self, label: str) -> bool:
@@ -3394,6 +3395,7 @@ class _StreamingCall(StreamingWaitMonitor):
             # Snapshot response diagnostics now so they survive a stream dying before the first event.
             self._quiet(lambda: self.agent._stream_diag_capture_response(_diag, response))
             self._writer_token = claim_stream_writer(self.agent)
+            self._watch_wire(raw_stream)
             self._reabort_if_cancelled(response)
 
         stream = self._set_managed_stream(relay_llm.stream(self.api_kwargs, _open_anthropic_stream,
@@ -3404,7 +3406,7 @@ class _StreamingCall(StreamingWaitMonitor):
         try:
             for event in stream:
                 saw_stream_event = True
-                self._count_chunk(_diag, event)
+                self._count_chunk(_diag, event, getattr(event, "type", None) == "ping")
                 if self.agent._interrupt_requested:
                     break
                 event_type = getattr(event, "type", None)
@@ -3794,10 +3796,7 @@ class _StreamingCall(StreamingWaitMonitor):
         still be unwinding SSL BIOs (FD-recycle corruption); the OpenAI primary
         is replaced lazily."""
         _est_ctx = estimate_request_context_tokens(self.api_kwargs)
-        logger.warning(
-            "Stream stale for %.0fs (threshold %.0fs) — no chunks received. model=%s context=~%s tokens. Killing connection.",
-            elapsed, self._stream_stale_timeout, self.api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
-        )
+        self._log_stale_kill(elapsed, _est_ctx)
         self.agent._buffer_diagnostic_status(
             f"⚠️ No response from provider for {int(elapsed)}s (model: {self.api_kwargs.get('model', 'unknown')}, "
             f"context: ~{_est_ctx:,} tokens). Reconnecting...")

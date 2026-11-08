@@ -1,54 +1,12 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
 import { act, render, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
+import { createdAt, stubThreadEnvironment, stubThreadViewportSize } from './test-utils'
 import { Thread } from './thread'
 
-class NoopResizeObserver {
-  observe() {}
-
-  unobserve() {}
-
-  disconnect() {}
-}
-
-vi.stubGlobal('ResizeObserver', NoopResizeObserver)
-vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
-  window.setTimeout(() => callback(performance.now()), 0)
-)
-vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
-
-Element.prototype.scrollTo = function scrollTo() {}
-
-Element.prototype.animate = function animate() {
-  return {
-    cancel: () => {},
-    finished: Promise.resolve()
-  } as unknown as Animation
-}
-
-// jsdom returns 0 for offset*; the virtualizer reads those to size its
-// viewport. Fall through to client* or a sane default so virtualized
-// items render (same stub as streaming.test.tsx).
-function stubOffsetDimension(
-  prop: 'offsetHeight' | 'offsetWidth',
-  clientProp: 'clientHeight' | 'clientWidth',
-  fallback: number
-) {
-  const previous = Object.getOwnPropertyDescriptor(HTMLElement.prototype, prop)
-
-  Object.defineProperty(HTMLElement.prototype, prop, {
-    configurable: true,
-    get() {
-      return previous?.get?.call(this) || (this as HTMLElement)[clientProp] || fallback
-    }
-  })
-}
-
-stubOffsetDimension('offsetWidth', 'clientWidth', 800)
-stubOffsetDimension('offsetHeight', 'clientHeight', 600)
-
-const createdAt = new Date('2026-05-01T00:00:00.000Z')
+stubThreadEnvironment()
+stubThreadViewportSize()
 
 const MESSAGES: ThreadMessage[] = [
   {

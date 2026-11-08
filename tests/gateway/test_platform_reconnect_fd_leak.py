@@ -21,6 +21,7 @@ this file would have caught the regression and now pins the fix.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -254,8 +255,42 @@ class TestAPIServerDisconnectClosesResponseStore:
         adapter._runner = None
         adapter._app = None
         adapter._response_store = store
+        adapter._session_dbs = {}
+        adapter._session_db_cache_lock = threading.Lock()
+        adapter._session_db_cache_closed = False
         adapter.platform = Platform.API_SERVER
         return adapter
+
+    @pytest.mark.asyncio
+    async def test_disconnect_closes_cached_session_dbs(self):
+        """Disconnect must release per-profile SessionDB cache handles."""
+        store = MagicMock()
+        adapter = self._build_adapter_with_store(store)
+        first_db = MagicMock()
+        second_db = MagicMock()
+        adapter._session_dbs = {"default": first_db, "work": second_db}
+
+        await adapter.disconnect()
+
+        first_db.close.assert_called_once_with()
+        second_db.close.assert_called_once_with()
+        assert adapter._session_dbs == {}
+
+    @pytest.mark.asyncio
+    async def test_disconnect_closes_cached_session_dbs_when_runner_cleanup_fails(
+        self,
+    ):
+        """Runner teardown errors must not strand cached DB handles."""
+        adapter = self._build_adapter_with_store(MagicMock())
+        cached_db = MagicMock()
+        adapter._session_dbs = {"default": cached_db}
+        adapter._runner = MagicMock()
+        adapter._runner.cleanup = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await adapter.disconnect()
+
+        cached_db.close.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_disconnect_closes_response_store(self, tmp_path):

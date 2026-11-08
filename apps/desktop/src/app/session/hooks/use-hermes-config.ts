@@ -3,7 +3,13 @@ import { type MutableRefObject, useCallback, useRef, useState } from 'react'
 import { setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/terminal-font'
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
+import { composerServiceTier } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
+import { $busyInputConfig, busyInputOwnerKey, normalizeBusyInputMode } from '@/store/busy-input-mode'
+import { setDisplayTimestampsFromConfig } from '@/store/display-timestamps'
+import { $activeGatewayProfile } from '@/store/profile'
+import { localShowReasoning, setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
+import { $connection } from '@/store/session'
 import {
   getComposerSelectionGeneration,
   getCurrentModelSource,
@@ -15,14 +21,19 @@ import {
   setDefaultReasoningEffort,
   setIntroPersonality
 } from '@/store/session'
+import { setShowToolActivityFromConfig } from '@/store/tool-activity'
+import { refreshVoiceLiveStatus } from '@/store/voice-live'
 import {
   applyAutoSpeakFromConfig,
+  applyBargeInEnabledFromConfig,
+  applyBargeInThresholdFromConfig,
   applyThinkingSoundFromConfig,
+  applyVoiceSilenceMsFromConfig,
   applyVoiceStopPhraseFromConfig
 } from '@/store/voice-prefs'
+import { setChatFontFamilyFromConfig } from '@/themes/chat-font'
 
 const DEFAULT_VOICE_SECONDS = 120
-const FAST_TIERS = new Set(['fast', 'priority', 'on'])
 
 function recordingLimit(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : DEFAULT_VOICE_SECONDS
@@ -55,24 +66,32 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
   const profileRefreshEpochRef = useRef(0)
 
   const refreshHermesConfig = useCallback(
-    async (force = false) => {
+    async (force = false, shouldPublish: () => boolean = () => true) => {
       if (force) {
         profileRefreshEpochRef.current += 1
       }
 
       const profileRefreshEpoch = profileRefreshEpochRef.current
       const selectionGeneration = getComposerSelectionGeneration()
+      const connection = $connection.get()
+      const profile = $activeGatewayProfile.get()
 
       try {
         const [config, defaults] = await Promise.all([getHermesConfig(), getHermesConfigDefaults().catch(() => ({}))])
 
-        if (profileRefreshEpochRef.current !== profileRefreshEpoch) {
+        const canPublish = () => profileRefreshEpochRef.current === profileRefreshEpoch && shouldPublish()
+
+        if (!canPublish()) {
           return
         }
 
         const personality = normalizePersonalityValue(
           typeof config.display?.personality === 'string' ? config.display.personality : ''
         )
+
+        if (!canPublish()) {
+          return
+        }
 
         setIntroPersonality(personality)
         // Active sessions keep their per-session value; standalone falls back to config.
@@ -87,12 +106,16 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         ])
 
         const reasoning = normalizeConfigEffort(config.agent?.reasoning_effort)
-        const tier = (config.agent?.service_tier ?? '').trim()
+        const tier = composerServiceTier(config.agent?.service_tier)
 
         // Publish the profile default regardless of whether the composer is
         // reseeded below: picker rows and preset application resolve "the
         // default" from here, so a manual model pick must not leave them
         // rendering/applying Hermes' built-in medium over the user's config.
+        if (!canPublish()) {
+          return
+        }
+
         setDefaultReasoningEffort(reasoning)
 
         const shouldSeedComposer =
@@ -101,18 +124,56 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
           (force || getCurrentModelSource() !== 'manual')
 
         if (shouldSeedComposer) {
+          if (!canPublish()) {
+            return
+          }
+
           setCurrentReasoningEffort(reasoning)
-          setCurrentFastMode(FAST_TIERS.has(tier.toLowerCase()))
+          setCurrentFastMode(tier === 'priority' || tier === 'ultrafast')
+          setCurrentServiceTier(tier)
         }
 
-        setCurrentServiceTier(prev => (activeSessionIdRef.current ? prev : tier))
+        if (!canPublish()) {
+          return
+        }
+
+        if (!canPublish()) {
+          return
+        }
 
         setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
         setSttEnabled(config.stt?.enabled !== false)
+
+        if (!canPublish()) {
+          return
+        }
+
+        if ($connection.get() === connection && $activeGatewayProfile.get() === profile) {
+          $busyInputConfig.set({
+            owner: busyInputOwnerKey(connection?.connectionId, profile),
+            connection,
+            mode: normalizeBusyInputMode(config.display?.busy_input_mode)
+          })
+        }
+
+        setDisplayTimestampsFromConfig(config.display?.timestamps)
+        setShowReasoningFromConfig(localShowReasoning(config.display))
+        setShowToolActivityFromConfig(config.display?.tool_progress)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)
+        setChatFontFamilyFromConfig(config.desktop?.font_family)
+
+        if (!canPublish()) {
+          return
+        }
+
         applyAutoSpeakFromConfig(config)
-        applyVoiceStopPhraseFromConfig(config)
+        applyVoiceStopPhraseFromConfig(config, defaults)
+        applyBargeInEnabledFromConfig(config)
+        applyBargeInThresholdFromConfig(config)
         applyThinkingSoundFromConfig(config)
+        applyVoiceSilenceMsFromConfig(config, defaults)
+        // Resolved server-side (mode + whether a key resolves); non-critical.
+        void refreshVoiceLiveStatus().catch(() => undefined)
       } catch {
         // Config is nice-to-have; chat still works without it.
       }

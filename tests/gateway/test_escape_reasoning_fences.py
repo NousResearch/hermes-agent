@@ -6,7 +6,7 @@ B1: Escape triple-backtick markers inside reasoning text before wrapping
 """
 
 import pytest
-from gateway.stream_consumer import escape_code_fences_for_display
+from gateway.stream_consumer_fences import escape_code_fences_for_display
 
 
 class TestEscapeCodeFencesForDisplay:

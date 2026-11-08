@@ -9,7 +9,7 @@ description: "如何为 Hermes Agent 构建网页搜索/提取/爬取后端插�
 网页搜索提供商插件注册一个后端，用于处理 `web_search`、`web_extract` 以及（可选的）深度爬取工具调用。内置提供商——Firecrawl、SearXNG、Tavily、Exa、Parallel、Brave Search（免费层）和 DDGS——均以插件形式存放于 `plugins/web/<name>/` 目录下。你可以在该目录旁新建一个目录来添加新提供商，或覆盖已有的内置提供商。
 
 :::tip
-网页搜索是 Hermes 支持的多种**后端插件**之一。其他插件（各有其 ABC）包括：[图像生成提供商插件](/developer-guide/image-gen-provider-plugin)、[视频生成提供商插件](/developer-guide/video-gen-provider-plugin)、[记忆提供商插件](/developer-guide/memory-provider-plugin)、[上下文引擎插件](/developer-guide/context-engine-plugin)和[模型提供商插件](/developer-guide/model-provider-plugin)。通用工具/hook/CLI 插件请参阅[构建 Hermes 插件](/developer-guide/plugins)。
+网页搜索是 Hermes 支持的多种**后端插件**之一。其他插件（各有其 ABC）包括：[图像生成提供商插件](./image-gen-provider-plugin.md)、[视频生成提供商插件](./video-gen-provider-plugin.md)、[记忆提供商插件](./memory-provider-plugin.md)、[上下文引擎插件](./context-engine-plugin.md)和[模型提供商插件](./model-provider-plugin.md)。通用工具/hook/CLI 插件请参阅[构建 Hermes 插件](./plugins/index.md)。
 :::
 
 ## 发现机制
@@ -141,7 +141,7 @@ requires_env:
 |---|---|
 | `kind: backend` | 将插件路由至后端加载路径 |
 | `provides_web_providers` | 该插件注册的提供商 `name` 列表——在 `register()` 运行之前，加载器即可通过此字段在 `hermes tools` 中公示插件 |
-| `requires_env` | 在 `hermes plugins install` 期间进行交互式凭据提示（富格式说明参见[构建 Hermes 插件](/developer-guide/plugins#gate-on-environment-variables)） |
+| `requires_env` | 在 `hermes plugins install` 期间进行交互式凭据提示（富格式说明参见[构建 Hermes 插件](./plugins/index.md#根据环境变量决定是否启用)） |
 
 ## ABC 参考
 
@@ -233,7 +233,11 @@ web:
 
 ## 懒加载可选依赖
 
-如果你的提供商封装了第三方 SDK（如 DDGS 封装了 `ddgs` 包），请勿在模块顶层 `import`。在 `is_available()` 或 `search()` 内部使用 `tools.lazy_deps.ensure(...)` ——Hermes 将在首次使用时安装该包，并受 `security.allow_lazy_installs` 控制。安全模型详见[构建 Hermes 插件 → 懒加载](/developer-guide/plugins#lazy-install-optional-python-dependencies)。
+对于 Hermes 已声明的 SDK extra，在 `search()` 或 `extract()` 的实际操作中调用
+`pm.ensure_import("extra-name")`。`is_available()` 必须保持只读，可使用 `pm.available`，
+不能通过它安装依赖。`pm.InstallError` 可以表示依赖不可用或新环境需要重启。
+第三方目录插件在自己的 `pyproject.toml` 或 `plugin.yaml` 中声明依赖，由 PM 统一准备。
+详见[插件依赖指南](./plugins/index.md#lazy-install-optional-python-dependencies)。
 
 ## 参考实现
 
@@ -251,10 +255,10 @@ web:
 my-backend-web = "my_backend_web_package"
 ```
 
-`my_backend_web_package` 必须暴露顶层 `register` 函数。完整配置说明参见通用插件指南中的[通过 pip 分发](/developer-guide/plugins#distribute-via-pip)。
+`my_backend_web_package` 必须暴露顶层 `register` 函数。完整配置说明参见通用插件指南中的[通过 pip 分发](./plugins/index.md#通过-pip-分发)。
 
 ## 相关页面
 
-- [网页搜索](/user-guide/features/web-search) — 面向用户的功能文档及各后端配置说明
-- [插件概览](/user-guide/features/plugins) — 所有插件类型一览
-- [构建 Hermes 插件](/developer-guide/plugins) — 通用工具/hook/斜杠命令指南
+- [网页搜索](../user-guide/features/web-search.md) — 面向用户的功能文档及各后端配置说明
+- [插件概览](../user-guide/features/plugins.md) — 所有插件类型一览
+- [构建 Hermes 插件](./plugins/index.md) — 通用工具/hook/斜杠命令指南

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { SubagentProgress } from '@/store/subagents'
+import { $subagentsBySession, reconcileSubagentSnapshot, type SubagentProgress } from '@/store/subagents'
 
 import { delegateGoals, delegateRowsFromCall, mergeDelegateRows } from './delegate-model'
 
@@ -53,8 +53,40 @@ describe('delegateRowsFromCall', () => {
     expect(rows[0]).toMatchObject({ activity: ['found it'], durationSeconds: 12, model: 'anthropic/claude-opus-5' })
   })
 
+  // #73728 / #85492: the delegate tool settles rows with 'ok', 'error' or
+  // 'timeout' — anything that is not a success must render as failed instead
+  // of hiding behind a green 'completed' check.
+  it('renders timeout/error settled results as failed, ok as completed', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }, { goal: 'B' }, { goal: 'C' }, { goal: 'D' }] },
+      {
+        results: [
+          { status: 'ok', summary: 'done' },
+          { status: 'timeout', error: 'Timed out after 600s' },
+          { status: 'error', error: 'boom' },
+          { status: 'failure' }
+        ]
+      }
+    )
+
+    expect(rows.map(r => r.status)).toEqual(['completed', 'failed', 'failed', 'failed'])
+  })
+
   it('still lists a background dispatch whose goals only survive in the result', () => {
     expect(delegateRowsFromCall({}, { status: 'dispatched', goals: ['A', 'B'] }).map(r => r.goal)).toEqual(['A', 'B'])
+  })
+
+  it('carries the delegation id a settled result or dispatch handle names onto every row', () => {
+    const settled = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }] },
+      { delegation_id: 'deleg_abc', results: [{ status: 'ok', summary: 'done' }] }
+    )
+
+    const dispatched = delegateRowsFromCall({}, { status: 'dispatched', delegation_id: 'deleg_abc', goals: ['A'] })
+
+    expect(settled.map(r => r.delegationId)).toEqual(['deleg_abc'])
+    expect(dispatched.map(r => r.delegationId)).toEqual(['deleg_abc'])
+    expect(delegateRowsFromCall({ tasks: [{ goal: 'A' }] }, undefined)[0]!.delegationId).toBeUndefined()
   })
 })
 
@@ -129,5 +161,145 @@ describe('mergeDelegateRows', () => {
     )
 
     expect(merged.map(r => r.model)).toEqual(['m0', 'm1'])
+  })
+
+  // #136532: two delegations sharing a goal string used to re-adopt each
+  // other's workers — a settled card re-painted with a newer call's live child.
+  it('joins by the delegation id first, so a repeated goal never crosses calls', () => {
+    const settledCard = delegateRowsFromCall(
+      { tasks: [{ goal: 'Harden the scanner' }] },
+      { delegation_id: 'deleg_old', results: [{ status: 'ok', summary: 'done' }] }
+    )
+
+    const liveCard = delegateRowsFromCall(
+      { tasks: [{ goal: 'Harden the scanner' }] },
+      { delegation_id: 'deleg_new', status: 'dispatched' },
+      'call-2'
+    )
+
+    const live = [
+      subagent({
+        id: 'sa-old',
+        delegationId: 'deleg_old',
+        goal: 'Harden the scanner',
+        status: 'completed',
+        model: 'old-model'
+      }),
+      subagent({
+        id: 'sa-new',
+        delegationId: 'deleg_new',
+        goal: 'Harden the scanner',
+        status: 'running',
+        model: 'new-model'
+      })
+    ]
+
+    const mergedSettled = mergeDelegateRows(settledCard, live, 'call-1')
+    const mergedLive = mergeDelegateRows(liveCard, live, 'call-2')
+
+    expect(mergedSettled[0]).toMatchObject({ model: 'old-model', status: 'completed' })
+    expect(mergedLive[0]).toMatchObject({ model: 'new-model', status: 'running' })
+  })
+
+  it('counts a unit split of one delegation (id -1, -2 …) as the same call', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }, { goal: 'B' }] },
+      { delegation_id: 'deleg_x', results: [{ status: 'ok' }, { status: 'ok' }] }
+    )
+
+    const merged = mergeDelegateRows(
+      rows,
+      [
+        subagent({ id: 'u1', delegationId: 'deleg_x-1', taskIndex: 0, model: 'm0' }),
+        subagent({ id: 'u2', delegationId: 'deleg_x-2', taskIndex: 1, model: 'm1' })
+      ],
+      'call-1'
+    )
+
+    expect(merged.map(r => r.model)).toEqual(['m0', 'm1'])
+  })
+
+  it('never claims a live child whose delegation id belongs to another call', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }, { goal: 'B' }] },
+      { delegation_id: 'deleg_mine', results: [{ status: 'ok' }, { status: 'ok' }] }
+    )
+
+    // Both children carry a foreign delegation id and unmatchable goals, so
+    // neither join may adopt them; the rows keep their settled result state.
+    const merged = mergeDelegateRows(
+      rows,
+      [
+        subagent({ id: 'f1', delegationId: 'deleg_other', goal: 'X', taskIndex: 0, model: 'foreign' }),
+        subagent({ id: 'f2', delegationId: 'deleg_other', goal: 'Y', taskIndex: 1, model: 'foreign' })
+      ],
+      'call-1'
+    )
+
+    expect(merged.map(r => r.model)).toEqual([undefined, undefined])
+    expect(merged.map(r => r.status)).toEqual(['completed', 'completed'])
+  })
+
+  // A batch without a live-transcript id leaves its children unstamped while
+  // its dispatch handle still names a generated id: goal and order still join.
+  it('refuses a same-goal child of another call but joins an unstamped one', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }, { goal: 'B' }] },
+      { delegation_id: 'deleg_mine', goals: ['A', 'B'], status: 'dispatched' }
+    )
+
+    const merged = mergeDelegateRows(rows, [
+      subagent({ id: 'f1', delegationId: 'deleg_other', goal: 'A', taskIndex: 0, model: 'foreign' }),
+      subagent({ id: 'u1', goal: 'A', taskIndex: 0, model: 'mine' })
+    ])
+
+    expect(merged.map(r => r.model)).toEqual(['mine', undefined])
+  })
+
+  // subagent.list rows carry no task_index, so after a reload or on a second
+  // client every hydrated child reads as task 0.
+  it('places children from a cold roster by goal, not by an index it never sent', () => {
+    reconcileSubagentSnapshot('sess-cold', [
+      { delegation_id: 'deleg_x', goal: 'B', model: 'mB', status: 'running', subagent_id: 'sa-b' },
+      { delegation_id: 'deleg_x', goal: 'A', model: 'mA', status: 'running', subagent_id: 'sa-a' }
+    ])
+
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }, { goal: 'B' }] },
+      { delegation_id: 'deleg_x', status: 'dispatched' }
+    )
+
+    const merged = mergeDelegateRows(rows, $subagentsBySession.get()['sess-cold'] ?? [])
+
+    expect(merged.map(r => [r.goal, r.model])).toEqual([
+      ['A', 'mA'],
+      ['B', 'mB']
+    ])
+  })
+
+  // One call may repeat a goal; only the task index tells those children apart.
+  it('keeps repeated goals of one call on their own task index', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'Run the suite' }, { goal: 'Run the suite' }] },
+      { delegation_id: 'deleg_x', status: 'dispatched' }
+    )
+
+    const merged = mergeDelegateRows(rows, [
+      subagent({ id: 'other', delegationId: 'deleg_y', goal: 'Something else', model: 'other' }),
+      subagent({ id: 's1', delegationId: 'deleg_x', goal: 'Run the suite', taskIndex: 1, model: 'm1' }),
+      subagent({ id: 's0', delegationId: 'deleg_x', goal: 'Run the suite', taskIndex: 0, model: 'm0' })
+    ])
+
+    expect(merged.map(r => r.model)).toEqual(['m0', 'm1'])
+  })
+
+  // A foreground call still running has no result, so no delegation id yet,
+  // while its children already carry one.
+  it('still joins a stamped child to a call whose result has not arrived', () => {
+    const rows = delegateRowsFromCall({ tasks: [{ goal: 'A' }] }, undefined)
+
+    const merged = mergeDelegateRows(rows, [subagent({ id: 's0', delegationId: 'deleg_x', goal: 'A', model: 'm0' })])
+
+    expect(merged[0]).toMatchObject({ model: 'm0', status: 'running' })
   })
 })

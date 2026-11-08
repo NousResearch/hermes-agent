@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agent.secret_sources.base import (  # noqa: E402
+from agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION,
     ErrorKind,
     FetchResult,
@@ -28,9 +28,9 @@ from agent.secret_sources.base import (  # noqa: E402
     run_secret_cli,
     scrub_ansi,
 )
-from agent.secret_sources import registry as reg  # noqa: E402
-from agent.secret_sources.bitwarden import BitwardenSource  # noqa: E402
-from tests.secret_sources.conformance import SecretSourceConformance  # noqa: E402
+from agent.secret_sources import registry as reg
+from agent.secret_sources.bitwarden import BitwardenSource
+from tests.secret_sources.conformance import SecretSourceConformance
 
 
 @pytest.fixture(autouse=True)
@@ -95,6 +95,48 @@ class TestRegistration:
     def test_rejects_non_secretsource_instance(self):
         assert reg.register_source(object()) is False
 
+    def test_same_name_is_isolated_by_profile(self, tmp_path):
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        home_a = str((tmp_path / "secrets-a").resolve())
+        home_b = str((tmp_path / "secrets-b").resolve())
+        source_a = _make_source(name="profile_secret", secrets={"A": "a"})
+        source_b = _make_source(name="profile_secret", secrets={"B": "b"})
+        assert reg.register_source(source_a, scope=home_a)
+        assert reg.register_source(source_b, scope=home_b)
+
+        token = set_hermes_home_override(home_a)
+        try:
+            assert reg.get_source("profile_secret") is source_a
+            explicit_b_env = {}
+            report = reg.apply_all(
+                {"profile_secret": {"enabled": True}},
+                Path(home_b),
+                environ=explicit_b_env,
+            )
+            assert report.sources[0].result.secrets == {"B": "b"}
+            assert explicit_b_env == {"B": "b"}
+        finally:
+            reset_hermes_home_override(token)
+        token = set_hermes_home_override(home_b)
+        try:
+            assert reg.get_source("profile_secret") is source_b
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_a_later_source_cannot_take_a_registered_name_or_scheme(self, tmp_path):
+        home = str((tmp_path / "secrets-a").resolve())
+        bundled = _make_source(name="bitwarden", scheme="bw")
+        assert reg.register_source(bundled, builtin=True)
+        assert reg.register_source(_make_source(name="bitwarden")) is False
+        assert reg.register_source(_make_source(name="bitwarden"), scope=home) is False
+        assert reg.register_source(_make_source(name="other", scheme="bw"), scope=home) is False
+        assert reg.get_source("bitwarden", scope=home) is bundled
+        assert reg.list_sources(scope=home) == [bundled]
+
 
 
 
@@ -149,7 +191,7 @@ class TestApplyAll:
             tmp_path, environ=env,
         )
         assert env["K"] == "v"
-        broken = [s for s in report.sources if s.name == "broken"][0]
+        broken = next(s for s in report.sources if s.name == "broken")
         assert broken.result.error_kind is ErrorKind.NETWORK
 
 

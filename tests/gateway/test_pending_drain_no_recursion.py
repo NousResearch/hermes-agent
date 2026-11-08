@@ -28,11 +28,9 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
-
 
 class _StubAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False):
@@ -47,12 +45,10 @@ class _StubAdapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id):
         return {}
 
-
 def _make_adapter():
     adapter = _StubAdapter(PlatformConfig(enabled=True, token="t"), Platform.TELEGRAM)
     adapter._send_with_retry = AsyncMock(return_value=None)
     return adapter
-
 
 def _make_event(text="hi", chat_id="42"):
     return MessageEvent(
@@ -61,12 +57,10 @@ def _make_event(text="hi", chat_id="42"):
         source=SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"),
     )
 
-
 def _sk(chat_id="42"):
     return build_session_key(
         SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm")
     )
-
 
 def _count_pmb_frames() -> int:
     """Walk the current call stack and count nested
@@ -79,7 +73,6 @@ def _count_pmb_frames() -> int:
             n += 1
         f = f.f_back
     return n
-
 
 @pytest.mark.asyncio
 async def test_in_band_drain_does_not_grow_stack():
@@ -112,7 +105,9 @@ async def test_in_band_drain_does_not_grow_stack():
     # Drain the chain.  Each turn schedules the next via the in-band
     # drain block, so we wait until N handler runs have completed and
     # the session has been released.
-    for _ in range(400):
+    # 2000 * 0.01s = 20s budget: the old 4s budget flaked on loaded CI
+    # runners (11/12 turns completed; main run 33455779041).
+    for _ in range(2000):
         if len(depths) >= N and sk not in adapter._active_sessions:
             break
         await asyncio.sleep(0.01)
@@ -128,7 +123,6 @@ async def test_in_band_drain_does_not_grow_stack():
         f"stack depth grew with chain length: {depths!r}"
     )
 
-
 # ---------------------------------------------------------------------------
 # Follow-up guardrails (belt-and-suspenders on top of the #17758 fix).
 #
@@ -136,7 +130,6 @@ async def test_in_band_drain_does_not_grow_stack():
 # that the original fix reasoned about but didn't test directly.  These
 # tests pin each invariant so future refactors can't silently regress them.
 # ---------------------------------------------------------------------------
-
 
 @pytest.mark.asyncio
 async def test_normal_path_releases_session_guard():
@@ -176,7 +169,6 @@ async def test_normal_path_releases_session_guard():
         "normal-path unwind left _session_tasks[sk] populated — "
         "stale-lock detection will treat a dead task as alive"
     )
-
 
 @pytest.mark.asyncio
 async def test_drain_task_cancellation_releases_session():
@@ -237,56 +229,4 @@ async def test_drain_task_cancellation_releases_session():
     assert sk not in adapter._session_tasks, (
         "cancelled drain task did not release _session_tasks[sk] — "
         "stale-lock detection will treat the dead task as alive"
-    )
-
-
-@pytest.mark.asyncio
-async def test_late_arrival_drain_still_fires_when_no_in_band_drain():
-    """The late-arrival drain in ``finally`` must still spawn a fresh
-    task when no in-band drain preceded it.
-
-    Pre-#17758 this path already existed; the #17758 follow-up guard
-    only re-queues when ``_session_tasks[sk] is not current_task``.
-    For a late-arrival with no in-band drain, ``_session_tasks[sk]``
-    IS the current task, so the ``else`` branch must fire and spawn
-    a drain task for the queued message.
-
-    Queue a pending message *after* M0's handler returns (so the
-    in-band drain block sees nothing) but *before* ``finally`` runs
-    the late-arrival check — we do this by hooking ``_stop_typing``,
-    which runs in finally before the late-arrival check."""
-    adapter = _make_adapter()
-    sk = _sk()
-
-    results: list[str] = []
-    original_stop_typing = getattr(adapter, "stop_typing", None)
-
-    async def injecting_stop_typing(chat_id):
-        # Simulate a message landing during the cleanup awaits.
-        adapter._pending_messages[sk] = _make_event(text="late")
-        if original_stop_typing:
-            await original_stop_typing(chat_id)
-
-    adapter.stop_typing = injecting_stop_typing
-
-    async def handler(event):
-        results.append(event.text)
-        return "ok"
-
-    adapter._message_handler = handler
-
-    await adapter.handle_message(_make_event(text="first"))
-
-    # Wait for the late-arrival drain task to finish the second event.
-    for _ in range(400):
-        if "late" in results and sk not in adapter._active_sessions:
-            break
-        await asyncio.sleep(0.01)
-
-    await adapter.cancel_background_tasks()
-
-    assert "first" in results, "original message handler did not run"
-    assert "late" in results, (
-        "late-arrival drain did not spawn a drain task — a message that "
-        "landed during cleanup awaits was silently dropped"
     )

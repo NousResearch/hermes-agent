@@ -6,6 +6,7 @@ test_docker_environment.py conventions.
 """
 import os
 import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -135,7 +136,10 @@ def test_creationflags_windows_hide(monkeypatch):
     env = _make_wsl_env_without_init()
     mock = _make_popen_mock(monkeypatch)
     env._run_bash("echo")
-    assert "creationflags" in mock.call_args[1]
+    if sys.platform == "win32":
+        assert "creationflags" in mock.call_args[1]
+    else:
+        assert "creationflags" not in mock.call_args[1]
 
 
 # ---------------------------------------------------------------------------
@@ -238,3 +242,34 @@ def test_distro_priority_os_getenv_fallback():
     import os
     env = _make_wsl_env_without_init()
     assert env._distro == ""  # no env var set
+
+
+def test_wsl_builder_passes_distro_and_cwd(monkeypatch):
+    captured = {}
+
+    class _FakeWsl:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(wsl_env, "WslEnvironment", _FakeWsl)
+    from tools.terminal_tool_backends import _build_wsl_env
+
+    _build_wsl_env(cwd="", timeout=12, wsl_config={"distro": "Debian"})
+    assert captured["cwd"] == ""
+    assert captured["timeout"] == 12
+    assert captured["distro"] == "Debian"
+
+
+@pytest.mark.platforms("linux")
+def test_wsl_requirements_reject_off_windows():
+    from tools.terminal_tool_backends import _check_requirements
+
+    assert _check_requirements("wsl", {}) is False
+
+
+@pytest.mark.platforms("windows")
+def test_wsl_requirements_accept_when_wsl_exe_exists(monkeypatch):
+    monkeypatch.setattr(wsl_env, "_find_wsl", lambda: r"C:\Windows\System32\wsl.exe")
+    from tools.terminal_tool_backends import _check_requirements
+
+    assert _check_requirements("wsl", {}) is True

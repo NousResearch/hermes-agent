@@ -8,6 +8,11 @@ which classifies as ``FailoverReason.billing``. The generic billing
 guidance ("add credits with that provider") is wrong for a subscription —
 the user waits for the cycle reset or switches to an API key. This branch
 gives Anthropic-specific, actionable guidance (folds in PR #40073's UX).
+
+#82154 adds the ``unverified`` axis: the same 400 body is also returned when
+Anthropic's server-side content filter rejects part of the request, so an
+unverified billing verdict must hedge and name the other cause, while a
+confirmed verdict keeps the assertive wording.
 """
 from __future__ import annotations
 
@@ -44,3 +49,48 @@ def test_non_anthropic_billing_guidance_unaffected():
     assert "claude.ai/settings/usage" not in msg
     # Generic path still surfaces the OpenRouter credits link.
     assert "openrouter.ai/settings/credits" in msg
+
+
+# ── #82154: an UNVERIFIED billing 400 is not proof of a billing problem ──────
+# Anthropic returns the same "out of extra usage" body when its server-side
+# content filter rejects part of the request on a subscription OAuth token.
+# Asserting exhaustion outright cost one reporter three debugging sessions and
+# sent them at the billing page. When the classifier marks the verdict
+# unverified, the guidance must hedge and name the other cause.
+
+
+def _anthropic_msg(*, unverified: bool) -> str:
+    return _billing_or_entitlement_message(
+        capability="model access",
+        provider="anthropic",
+        base_url="https://api.anthropic.com",
+        model="claude-opus-5",
+        unverified=unverified,
+    )
+
+
+def test_unverified_guidance_names_the_content_filter_alternative():
+    msg = _anthropic_msg(unverified=True).lower()
+    assert "content filter" in msg
+
+
+def test_confirmed_guidance_stays_assertive_without_the_caveat():
+    """A CONFIRMED billing verdict (e.g. a real 402) must not be diluted by
+    content-filter lore that only applies to the ambiguous 400 body."""
+    lowered = _anthropic_msg(unverified=False).lower()
+    assert "content filter" not in lowered
+    assert "hermes auth reset" not in lowered
+
+
+def test_content_filter_caveat_is_anthropic_only():
+    """A generic provider must not inherit Anthropic-specific classifier lore,
+    even when the verdict is marked unverified."""
+    msg = _billing_or_entitlement_message(
+        capability="model access",
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        model="anthropic/claude-opus-4.7",
+        unverified=True,
+    ).lower()
+    assert "content filter" not in msg
+    assert "hermes auth reset" not in msg

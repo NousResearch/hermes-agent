@@ -1,25 +1,13 @@
 """Tests for whitespace-visualized mismatch diagnosis in patch no-match hints."""
 
-import json
 
-import pytest
 
 from tools.fuzzy_match import (
-    _visualize_whitespace,
     find_closest_lines,
     fuzzy_find_and_replace,
 )
 
 
-class TestVisualizeWhitespace:
-    def test_spaces_and_tabs_visualized(self):
-        assert _visualize_whitespace("\t    x = 1") == "→····x = 1"
-
-    def test_interior_whitespace_untouched(self):
-        assert _visualize_whitespace("  a  b") == "··a  b"
-
-    def test_no_leading_ws(self):
-        assert _visualize_whitespace("plain") == "plain"
 
 
 class TestWhitespaceDiagnosis:

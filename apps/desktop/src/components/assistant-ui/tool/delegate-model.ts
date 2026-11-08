@@ -1,7 +1,7 @@
-import { normalize } from '@/lib/text'
+import { firstStringField, normalize } from '@/lib/text'
 import type { SubagentProgress, SubagentStatus } from '@/store/subagents'
 
-import { firstStringField, numberValue, parseMaybeObject } from './fallback-model'
+import { numberValue, parseMaybeObject } from './fallback-model'
 
 /**
  * A delegation runs somewhere the transcript can't see: the tool call carries
@@ -15,6 +15,9 @@ export interface DelegateRow {
   durationSeconds?: number
   goal: string
   id: string
+  /** The call's delegation id, when its result carried one — the exact join key
+   *  against the subagent store, which stamps the same id on every native child. */
+  delegationId?: string
   model?: string
   /** The child's own session id, when it reported one — opens its window. */
   sessionId?: string
@@ -52,6 +55,14 @@ function resultRows(result: unknown): Record<string, unknown>[] {
   return results.map(parseMaybeObject)
 }
 
+// The delegate tool settles result rows with statuses like 'ok', 'error',
+// 'timeout', 'failed'/'failure' (tools/delegate_tool.py). Anything that is
+// not a success must render as failed — mapping unknown statuses to
+// 'completed' hid timed-out children behind a green check (#73728, #85492).
+function settledRowStatus(status: string): DelegateRowStatus {
+  return status === '' || status === 'ok' || status === 'completed' ? 'completed' : 'failed'
+}
+
 function dispatchedGoals(result: unknown): string[] {
   const record = parseMaybeObject(result)
 
@@ -76,6 +87,10 @@ export function delegateRowsFromCall(args: unknown, result: unknown, toolCallId 
   const dispatched = dispatchedGoals(result)
   const titles = goals.length > 0 ? goals : dispatched.length > 0 ? dispatched : finished.map(() => 'Delegated task')
   const idle: DelegateRowStatus = result === undefined ? 'running' : 'dispatched'
+  // Both the settled combined result and the background dispatch handle name
+  // the delegation; native children carry the same id, so it is the one join
+  // key that survives a repeated goal string (#136532).
+  const delegationId = field(parseMaybeObject(result), 'delegation_id') || undefined
 
   return titles.map((goal, index) => {
     const entry = finished[index]
@@ -83,11 +98,12 @@ export function delegateRowsFromCall(args: unknown, result: unknown, toolCallId 
 
     return {
       activity: summary ? [summary] : [],
+      delegationId,
       durationSeconds: entry ? (numberValue(entry.duration_seconds) ?? undefined) : undefined,
       goal,
       id: `${toolCallId}:${index}`,
       model: entry ? field(entry, 'model') || undefined : undefined,
-      status: entry ? (field(entry, 'status') === 'failed' ? 'failed' : 'completed') : idle
+      status: entry ? settledRowStatus(field(entry, 'status')) : idle
     }
   })
 }
@@ -107,17 +123,29 @@ function fromSubagent(live: SubagentProgress, fallbackId: string, fallbackGoal: 
 /**
  * Layer the session's live subagents over the rows a call describes.
  *
- * Three joins, narrowest first. The delegate fallback (used when the gateway
+ * Four joins, narrowest first. The delegate fallback (used when the gateway
  * relays no native `subagent.*` events) keys its rows off the tool call id, so
- * those match exactly. Native events carry no tool linkage, but they do carry
- * the goal string verbatim from the same arguments this call was built from.
- * Failing both, task order is how the delegate tool numbers its children — but
- * only trust it when the two sides agree on how many there are, or a second
- * delegation in the same turn will claim the first one's workers.
+ * those match exactly. Native children stamp the call's delegation id, so a
+ * result that carries it joins exactly — even when two delegations share a
+ * goal string, which is how an older card used to re-adopt a newer call's
+ * workers (#136532). Without it (old transcripts, no live transcripts, a
+ * foreground call whose result hasn't arrived), the goal string verbatim
+ * from the same arguments this call was built from is the
+ * next best key. Failing both, task order is how the delegate tool numbers its
+ * children — but only trust it when the two sides agree on how many there are,
+ * or a second delegation in the same turn will claim the first one's workers.
+ * A live child stamped with a different delegation id is another call's
+ * worker, so no join may hand it to this row; a child with no id at all (its
+ * batch had no live-transcript id) can still be matched by goal or order.
  *
  * Live state wins wherever it exists: a settled result tells you a child
  * finished, but only the store knows what it is doing right now.
  */
+// A child of this call carries the call's bare delegation id; splitting one
+// call into async units keeps that id as the unit ids' prefix (…-1, …-2).
+const sameDelegation = (childDelegationId: string | undefined, callDelegationId: string): boolean =>
+  childDelegationId === callDelegationId || (childDelegationId?.startsWith(`${callDelegationId}-`) ?? false)
+
 export function mergeDelegateRows(
   rows: readonly DelegateRow[],
   live: readonly SubagentProgress[],
@@ -137,11 +165,35 @@ export function mergeDelegateRows(
 
   const prefix = toolCallId ? `delegate-tool:${toolCallId}:` : ''
   const byId = rows.map((_row, index) => (prefix ? claim(c => c.id === `${prefix}${index}`) : undefined))
-  const byGoal = rows.map((row, index) => byId[index] ?? claim(c => normalize(c.goal) === normalize(row.goal)))
+
+  // A subagent.list row carries no task_index (the store reads it as 0), so the
+  // index only tells same-goal siblings apart; the goal join places the rest.
+  const byDelegation = rows.map((row, index) =>
+    row.delegationId && byId[index] === undefined
+      ? claim(
+          c =>
+            sameDelegation(c.delegationId, row.delegationId!) &&
+            c.taskIndex === index &&
+            normalize(c.goal) === normalize(row.goal)
+        )
+      : undefined
+  )
+
+  // A child stamped with another call's delegation id is never this row's. A
+  // child with no id (its batch had no live-transcript id) stays fuzzy-joinable.
+  const ours = (row: DelegateRow, c: SubagentProgress): boolean =>
+    !row.delegationId || !c.delegationId || sameDelegation(c.delegationId, row.delegationId)
+
+  const byGoal = rows.map(
+    (row, index) =>
+      byId[index] ?? byDelegation[index] ?? claim(c => ours(row, c) && normalize(c.goal) === normalize(row.goal))
+  )
+
   const sameShape = rows.length === live.length
 
   return rows.map((row, index) => {
-    const matched = byGoal[index] ?? (sameShape ? claim(c => c.taskIndex === index) : undefined)
+    const matched =
+      byGoal[index] ?? (sameShape ? claim(c => ours(row, c) && c.taskIndex === index) : undefined)
 
     return matched ? fromSubagent(matched, row.id, row.goal) : row
   })

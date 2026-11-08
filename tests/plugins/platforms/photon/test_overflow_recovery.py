@@ -90,7 +90,7 @@ async def test_send_with_retry_uses_structured_retryable_flag(
     async def _fake_sleep(delay: float) -> None:
         sleeps.append(delay)
 
-    async def _fake_sidecar_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def _fake_sidecar_call(path: str, body: dict[str, Any]) -> dict[str, Any]:
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -113,7 +113,8 @@ async def test_send_with_retry_uses_structured_retryable_flag(
     assert result.success is True
     assert result.message_id == "m-2"
     assert calls == 2
-    assert sleeps == [0.25]
+    # base backoff: base_delay * 2**0 plus up to 1s of jitter
+    assert len(sleeps) == 1 and 0.25 <= sleeps[0] <= 1.25
 
 
 # -- Gap 2: typing-indicator cooldown ---------------------------------------
@@ -123,9 +124,9 @@ async def test_typing_cooldown_suppresses_rapid_repeats(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter = _make_adapter(monkeypatch)
-    calls: list[Dict[str, Any]] = []
+    calls: list[dict[str, Any]] = []
 
-    async def _fake_call(path: str, payload: Dict[str, Any]) -> Any:
+    async def _fake_call(path: str, payload: dict[str, Any]) -> Any:
         calls.append(payload)
         return {"ok": True}
 
@@ -146,7 +147,7 @@ async def test_stop_typing_resets_cooldown(
     adapter = _make_adapter(monkeypatch)
     starts = 0
 
-    async def _fake_call(path: str, payload: Dict[str, Any]) -> Any:
+    async def _fake_call(path: str, payload: dict[str, Any]) -> Any:
         nonlocal starts
         if payload.get("state") == "start":
             starts += 1
@@ -238,6 +239,34 @@ async def test_clean_shutdown_does_not_raise_fatal(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("runner_stopping", [True, False], ids=["gateway-stopping", "gateway-running"])
+async def test_sidecar_sigterm_is_fatal_only_while_gateway_keeps_running(
+    monkeypatch: pytest.MonkeyPatch, runner_stopping: bool
+) -> None:
+    """#127047: a supervisor stop SIGTERMs the sidecar before disconnect() clears
+    ``_inbound_running``. The runner's signal flag marks that window as intentional; the
+    same -15 while the gateway keeps running must still queue the reconnect."""
+    from types import SimpleNamespace
+
+    adapter = _make_adapter(monkeypatch)
+    adapter._inbound_running = True  # disconnect() has NOT run yet
+    adapter.gateway_runner = SimpleNamespace(_stop_requested_by_signal=runner_stopping)  # type: ignore[assignment]
+
+    notified: list[bool] = []
+
+    async def _fake_notify() -> None:
+        notified.append(True)
+
+    monkeypatch.setattr(adapter, "_notify_fatal_error", _fake_notify)
+
+    await adapter._supervise_sidecar(_DeadProc(exit_code=-15))  # type: ignore[arg-type]
+    await _drain_pending_tasks()
+
+    assert adapter.has_fatal_error is (not runner_stopping)
+    assert notified == ([] if runner_stopping else [True])
+
+
+@pytest.mark.asyncio
 async def test_degraded_stream_health_raises_retryable_fatal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -245,7 +274,7 @@ async def test_degraded_stream_health_raises_retryable_fatal(
     adapter._inbound_running = True
     adapter._sidecar_health_interval = 0.0
 
-    async def _fake_call(path: str, payload: Dict[str, Any]) -> Any:
+    async def _fake_call(path: str, payload: dict[str, Any]) -> Any:
         assert path == "/healthz"
         return {
             "ok": True,
@@ -462,7 +491,7 @@ async def test_standalone_send_classifies_target_not_allowed(
         )
 
         @staticmethod
-        def json() -> Dict[str, Any]:
+        def json() -> dict[str, Any]:
             return {
                 "ok": False,
                 "error": "internal sidecar error",
@@ -474,10 +503,10 @@ async def test_standalone_send_classifies_target_not_allowed(
         def __init__(self, *a: Any, **k: Any) -> None:
             pass
 
-        async def __aenter__(self) -> "_FakeClient":
+        async def __aenter__(self) -> _FakeClient:
             return self
 
-        async def __aexit__(self, *a: Any) -> bool:
+        async def __aexit__(self, *a: object) -> bool:
             return False
 
         async def post(self, *a: Any, **k: Any) -> _Resp:

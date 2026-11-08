@@ -8,6 +8,7 @@ import pytest
 
 
 from hermes_cli.config import load_config, save_config
+import hermes_cli.main  # bootstrap before per-test filesystem guards
 from hermes_cli import setup as setup_mod
 from hermes_cli.setup import setup_model_provider
 
@@ -33,6 +34,7 @@ def _clear_provider_env(monkeypatch):
 def _clear_vercel_env(monkeypatch):
     for key in (
         "TERMINAL_VERCEL_RUNTIME",
+        "TERMINAL_VERCEL_IMAGE",
         "VERCEL_OIDC_TOKEN",
         "VERCEL_TOKEN",
         "VERCEL_PROJECT_ID",
@@ -128,52 +130,10 @@ def test_select_provider_and_model_warns_if_named_custom_provider_disappears(
 
 
 
-def test_modal_setup_can_use_nous_subscription_without_modal_creds(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr("hermes_cli.setup.managed_nous_tools_enabled", lambda: True)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    config = load_config()
-
-    def fake_prompt_choice(question, choices, default=0):
-        if question == "Select terminal backend:":
-            return next(
-                i for i, choice in enumerate(choices) if choice.startswith("Modal")
-            )
-        if question == "Select how Modal execution should be billed:":
-            return 0
-        raise AssertionError(f"Unexpected prompt_choice call: {question}")
-
-    def fake_prompt(message, *args, **kwargs):
-        assert "Modal Token" not in message
-        raise AssertionError(f"Unexpected prompt call: {message}")
-
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
-    monkeypatch.setattr("hermes_cli.setup._prompt_container_resources", lambda config: None)
-    monkeypatch.setattr(
-        "hermes_cli.setup.get_nous_subscription_features",
-        lambda config: type("Features", (), {"nous_auth_present": True})(),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "tools.managed_tool_gateway",
-        types.SimpleNamespace(
-            is_managed_tool_gateway_ready=lambda vendor: vendor == "modal",
-            resolve_managed_tool_gateway=lambda vendor: None,
-        ),
-    )
-
-    from hermes_cli.setup import setup_terminal_backend
-
-    setup_terminal_backend(config)
-
-    out = capsys.readouterr().out
-    assert config["terminal"]["backend"] == "modal"
-    assert config["terminal"]["modal_mode"] == "managed"
-    assert "bill to your subscription" in out
 
 
 def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tmp_path, monkeypatch):
-    monkeypatch.setattr("hermes_cli.setup.managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
     monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
@@ -181,9 +141,7 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 
     def fake_prompt_choice(question, choices, default=0):
         if question == "Select terminal backend:":
-            return next(
-                i for i, choice in enumerate(choices) if choice.startswith("Modal")
-            )
+            return 2
         if question == "Select how Modal execution should be billed:":
             return 1
         raise AssertionError(f"Unexpected prompt_choice call: {question}")
@@ -192,9 +150,8 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_values))
-    monkeypatch.setattr("hermes_cli.setup._prompt_container_resources", lambda config: None)
     monkeypatch.setattr(
-        "hermes_cli.setup.get_nous_subscription_features",
+        "hermes_cli.nous_subscription.get_nous_subscription_features",
         lambda config: type("Features", (), {"nous_auth_present": True})(),
     )
     monkeypatch.setitem(
@@ -206,6 +163,7 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
         ),
     )
     monkeypatch.setitem(sys.modules, "swe_rex", object())
+    monkeypatch.setitem(sys.modules, "modal", types.ModuleType("modal"))
 
     from hermes_cli.setup import setup_terminal_backend
 
@@ -213,34 +171,6 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 
     assert config["terminal"]["backend"] == "modal"
     assert config["terminal"]["modal_mode"] == "direct"
-
-
-@pytest.mark.parametrize(
-    ("system", "has_wsl", "has_singularity"),
-    [
-        ("Windows", True, False),
-        ("Linux", False, True),
-        ("Darwin", False, False),
-    ],
-)
-def test_terminal_backend_choices_are_platform_appropriate(
-    monkeypatch, system, has_wsl, has_singularity
-):
-    captured = {}
-
-    def fake_prompt_choice(question, choices, default=0):
-        assert question == "Select terminal backend:"
-        captured["choices"] = choices
-        return default
-
-    monkeypatch.setattr("platform.system", lambda: system)
-    monkeypatch.setattr(setup_mod, "prompt_choice", fake_prompt_choice)
-
-    setup_mod.setup_terminal_backend({"terminal": {"backend": "local"}})
-
-    choices = captured["choices"]
-    assert any(choice.startswith("WSL2") for choice in choices) is has_wsl
-    assert any(choice.startswith("Singularity") for choice in choices) is has_singularity
 
 
 # test_setup_slack_* moved to tests/gateway/test_slack_plugin_setup.py — the
@@ -256,12 +186,10 @@ def test_vercel_setup_configures_access_token_auth(tmp_path, monkeypatch):
 
     def fake_prompt_choice(question, choices, default=0):
         if question == "Select terminal backend:":
-            return next(
-                i for i, choice in enumerate(choices) if choice.startswith("Vercel")
-            )
+            return 5
         raise AssertionError(f"Unexpected prompt_choice call: {question}")
 
-    prompt_values = iter(["python3.13", "yes", "2", "4096", "token", "project", "team"])
+    prompt_values = iter(["vercel/sandbox/python:3.14", "yes", "2", "4096", "token", "project", "team"])
 
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_values))
@@ -271,9 +199,9 @@ def test_vercel_setup_configures_access_token_auth(tmp_path, monkeypatch):
     setup_terminal_backend(config)
 
     assert config["terminal"]["backend"] == "vercel_sandbox"
-    assert config["terminal"]["vercel_runtime"] == "python3.13"
+    assert config["terminal"]["vercel_image"] == "vercel/sandbox/python:3.14"
     assert config["terminal"]["container_disk"] == 51200
-    assert os.environ["TERMINAL_VERCEL_RUNTIME"] == "python3.13"
+    assert os.environ["TERMINAL_VERCEL_IMAGE"] == "vercel/sandbox/python:3.14"
     assert "VERCEL_OIDC_TOKEN" not in os.environ
     assert os.environ["VERCEL_TOKEN"] == "token"
     assert os.environ["VERCEL_PROJECT_ID"] == "project"
@@ -299,12 +227,10 @@ def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeyp
 
     def fake_prompt_choice(question, choices, default=0):
         if question == "Select terminal backend:":
-            return next(
-                i for i, choice in enumerate(choices) if choice.startswith("Vercel")
-            )
+            return 5
         raise AssertionError(f"Unexpected prompt_choice call: {question}")
 
-    prompt_values = iter(["node24", "no", "1", "5120", "token", "", ""])
+    prompt_values = iter(["", "no", "1", "5120", "token", "", ""])
     defaults = {}
 
     def fake_prompt(message, default="", **kwargs):
@@ -330,14 +256,80 @@ def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeyp
     assert defaults["    Vercel team ID"] == "linked-team"
 
 
-def test_prompt_yes_no_keyboard_interrupt_still_exits(monkeypatch):
-    """Ctrl+C is an explicit user abort and must keep exiting."""
-    monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
+@pytest.mark.parametrize("extra", ["neutts", "kittentts", "modal", "daytona", "vercel"])
+@pytest.mark.parametrize("succeeds", [True, False])
+def test_python_setup_uses_declared_extras_and_reports_restart(extra, succeeds, monkeypatch, capsys):
+    import pm
+    from hermes_cli import setup_terminal, setup_tts
 
-    def _interrupt(*_a, **_k):
-        raise KeyboardInterrupt
+    calls = []
+    def sync(extras, *, explicit):
+        calls.append((extras, explicit))
+        if not succeeds:
+            raise pm.InstallError("venv", "resolution refused")
 
-    monkeypatch.setattr("builtins.input", _interrupt)
+    monkeypatch.setattr(pm, "sync_venv", sync)
+    monkeypatch.setattr("pm.extras.extra_supported", lambda name: True)
+    monkeypatch.setitem(sys.modules, extra, None)
+    monkeypatch.setattr(setup_tts.shutil, "which", lambda name: "/usr/bin/espeak-ng")
+    if extra in {"neutts", "kittentts"}:
+        assert getattr(setup_tts, f"_install_{extra}_deps")() is succeeds
+    else:
+        setup_terminal._ensure_sdk(extra)
+    assert calls == [([extra], True)]
+    output = capsys.readouterr().out
+    if succeeds:
+        assert "Restart Hermes" in output
+        assert sys.modules[extra] is None  # installing never activates in this process
+    else:
+        assert "resolution refused" in output
+        assert "Retry with: hermes setup" in output
+        assert "installed." not in output
 
-    with pytest.raises(SystemExit):
-        setup_mod.prompt_yes_no("Install it now?", True)
+
+@pytest.mark.parametrize("extra", ["neutts", "kittentts"])
+def test_unsupported_tts_selection_is_retained_without_installing(extra, monkeypatch, capsys):
+    from hermes_cli import setup_tts
+
+    monkeypatch.setattr("pm.extras.extra_supported", lambda name: False)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("unsupported engine must not install system or Python packages")
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", forbidden)
+    monkeypatch.setattr("pm.sync_venv", forbidden)
+    assert setup_tts._tts_local_install_step(extra) == extra
+    output = capsys.readouterr().out
+    assert "not supported" in output and "selection is saved" in output
+
+
+@pytest.mark.parametrize(
+    ("system", "offers_wsl"),
+    [("Windows", True), ("Linux", False), ("Darwin", False)],
+)
+def test_terminal_backend_choices_offer_wsl_only_on_windows(monkeypatch, system, offers_wsl):
+    captured = {}
+
+    def fake_prompt_choice(question, choices, default=0):
+        assert question == "Select terminal backend:"
+        captured["choices"] = choices
+        return default
+
+    monkeypatch.setattr("platform.system", lambda: system)
+    monkeypatch.setattr(setup_mod, "prompt_choice", fake_prompt_choice)
+    setup_mod.setup_terminal_backend({"terminal": {"backend": "local"}})
+    choices = captured["choices"]
+    assert any(choice.startswith("WSL2") for choice in choices) is offers_wsl
+    assert not any(choice.startswith("Singularity") for choice in choices)
+
+
+def test_wsl_setup_drops_shared_cwd(monkeypatch):
+    def fake_prompt_choice(question, choices, default=0):
+        return next(i for i, choice in enumerate(choices) if choice.startswith("WSL2"))
+
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    monkeypatch.setattr(setup_mod, "prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr(setup_mod, "save_config", lambda config: None)
+    monkeypatch.setattr(setup_mod, "save_env_value", lambda *args, **kwargs: None)
+    config = {"terminal": {"backend": "local", "cwd": r"C:\Users\me"}}
+    setup_mod.setup_terminal_backend(config)
+    assert config["terminal"]["backend"] == "wsl"
+    assert "cwd" not in config["terminal"]

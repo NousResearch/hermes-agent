@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, memo, type ReactNode, useMemo, useState } from 'react'
+import { type ComponentProps, createContext, memo, type ReactNode, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import {
@@ -17,12 +17,30 @@ import { ContribRender } from '@/contrib/react/boundary'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
-import { $statusbarHiddenIds, setStatusbarItemVisible, toggleStatusbarVisible } from '@/store/statusbar-prefs'
+import {
+  $statusbarHiddenIds,
+  isStatusbarLayoutDefault,
+  resetStatusbarLayout,
+  setStatusbarItemVisible,
+  toggleStatusbarVisible
+} from '@/store/statusbar-prefs'
 
 // Shared chrome styling for interactive statusbar items (button / link / menu
 // trigger). The 'text' variant intentionally omits hover/transition/disabled.
 const STATUSBAR_ACTION_CLASS =
   'inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground disabled:cursor-default disabled:opacity-45'
+
+/** Dismisses the open statusbar dropdown from inside element `menuContent`
+ *  (render-fn content gets `close()` as an argument instead). */
+export const StatusbarMenuCloseContext = createContext<() => void>(() => {})
+
+function renderMenuContent(content: NonNullable<StatusbarItem['menuContent']>, close: () => void): ReactNode {
+  if (typeof content === 'function') {
+    return content(close)
+  }
+
+  return <StatusbarMenuCloseContext.Provider value={close}>{content}</StatusbarMenuCloseContext.Provider>
+}
 
 export interface StatusbarMenuItem {
   id: string
@@ -176,6 +194,18 @@ function StatusbarVisibilityMenu({
             </ContextMenuCheckboxItem>
           ))}
           <ContextMenuSeparator />
+          {/* Disabled rather than hidden when nothing is customized: the row is
+              also how you find out there IS a shipped layout to get back to.
+              Groups with the hide row below — both act on the bar, not an item. */}
+          <ContextMenuItem
+            disabled={isStatusbarLayoutDefault(hiddenIds)}
+            onSelect={event => {
+              event.preventDefault()
+              resetStatusbarLayout()
+            }}
+          >
+            <span className="truncate">{copy.resetStatusbar}</span>
+          </ContextMenuItem>
         </>
       )}
       <ContextMenuItem onSelect={toggleStatusbarVisible}>
@@ -256,9 +286,7 @@ const StatusbarItemView = memo(function StatusbarItemView({
           sideOffset={8}
         >
           {item.menuContent
-            ? typeof item.menuContent === 'function'
-              ? item.menuContent(() => setMenuOpen(false))
-              : item.menuContent
+            ? renderMenuContent(item.menuContent, () => setMenuOpen(false))
             : (item.menuItems ?? [])
                 .filter(menuItem => !menuItem.hidden)
                 .map(menuItem => (

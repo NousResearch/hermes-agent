@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from hermes_state import AsyncSessionDB
 from gateway.session import (
     SessionContext,
@@ -257,7 +257,6 @@ def _make_runner(current_source: SessionSource, entries: list[SessionEntry]):
     runner.session_store.switch_session.return_value = current
     runner.session_store.load_transcript.return_value = [{"role": "user", "content": "hello"}]
     runner._running_agents = {}
-    runner._session_run_generation = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._release_running_agent_state = MagicMock()

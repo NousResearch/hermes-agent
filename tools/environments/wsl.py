@@ -16,12 +16,21 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 
-from tools.environments.base import BaseEnvironment, _pipe_stdin
+from tools.environments.base import BaseEnvironment
+from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 
 logger = logging.getLogger(__name__)
+
+
+def _hidden_window_kwargs() -> dict:
+    """``creationflags`` is Windows-only; passing it elsewhere raises TypeError."""
+    if sys.platform != "win32":
+        return {}
+    return {"creationflags": windows_hide_flags()}
 
 
 def _find_wsl() -> str:
@@ -51,7 +60,7 @@ def _probe_wsl_home(wsl_exe: str, distro: str = "") -> str:
         args.extend(["-e", "bash", "-c", "echo $HOME"])
         result = subprocess.run(
             args, capture_output=True, text=True, timeout=5,
-            creationflags=windows_hide_flags(),
+            **_hidden_window_kwargs(),
         )
         home = result.stdout.strip()
         if home and home.startswith("/"):
@@ -73,7 +82,7 @@ def _ensure_wsl_available() -> None:
         result = subprocess.run(
             [wsl_exe, "--version"],
             capture_output=True, text=True, timeout=10,
-            creationflags=windows_hide_flags(),
+            **_hidden_window_kwargs(),
         )
         if result.returncode != 0:
             raise RuntimeError(
@@ -126,6 +135,7 @@ class WslEnvironment(BaseEnvironment):
     def get_temp_dir() -> str:
         """Return the backend temp directory.  WSL's /tmp is always writable
         and cleaned on distro restart, so temp file leaks are bounded."""
+        # no-tmp: ok — path is inside the WSL distro, not the Windows host filesystem
         return "/tmp"
 
     def _run_bash(
@@ -153,7 +163,7 @@ class WslEnvironment(BaseEnvironment):
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             text=True,
-            creationflags=windows_hide_flags(),
+            **_hidden_window_kwargs(),
         )
 
         if stdin_data is not None:
@@ -176,7 +186,7 @@ class WslEnvironment(BaseEnvironment):
             subprocess.run(
                 args,
                 timeout=5, capture_output=True,
-                creationflags=windows_hide_flags(),
+                **_hidden_window_kwargs(),
             )
         except Exception:
             logger.debug("Cleanup rm failed (distro may have stopped)", exc_info=True)

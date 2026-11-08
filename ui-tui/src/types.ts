@@ -1,6 +1,11 @@
+import type { SharedControl } from '@hermes/shared/gateway-canonical'
+import type { ProjectInfo, SubagentStatus, ToolLabel } from '@hermes/shared/gateway-events'
+import type { SessionInfo, SlashCategory } from '@hermes/shared/gateway-types'
+
 export interface ActiveTool {
   context?: string
   id: string
+  labels?: ToolLabel[]
   name: string
   verboseArgs?: string
   startedAt?: number
@@ -9,6 +14,8 @@ export interface ActiveTool {
 export interface TodoItem {
   content: string
   id: string
+  /** Optional id of another item — renders this as a nested subtask. */
+  parent?: string
   status: 'cancelled' | 'completed' | 'in_progress' | 'pending'
 }
 
@@ -18,11 +25,12 @@ export interface ActivityItem {
   tone: 'error' | 'info' | 'warn'
 }
 
-export type SubagentStatus = 'completed' | 'error' | 'failed' | 'interrupted' | 'queued' | 'running' | 'timeout'
-
 export interface SubagentProgress {
   apiCalls?: number
   costUsd?: number
+  /** Batch (delegation) id — tags `[n/N]` rows so concurrent/nested fan-outs
+   *  are distinguishable. Absent on older gateways. */
+  delegationId?: string
   depth: number
   durationSeconds?: number
   filesRead?: string[]
@@ -90,11 +98,14 @@ export interface DelegationStatus {
 }
 
 export interface ApprovalReq {
-  // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
+  sharedControl?: SharedControl
+  // false when the backend won't honor a permanent allow → hide "Always allow".
   allowPermanent?: boolean
   choices?: string[]
   command: string
   description: string
+  /** Server→client request id; the answer is the response frame for it. */
+  requestId: string
   smartDenied?: boolean
 }
 
@@ -107,24 +118,60 @@ export interface ConfirmReq {
   title: string
 }
 
-export interface ClarifyReq {
+export interface ClarifyQuestion {
   choices: string[] | null
+  multiSelect?: boolean
+  qid: string
   question: string
+}
+
+export interface ClarifyReq {
+  sharedControl?: SharedControl
   requestId: string
+  questions: ClarifyQuestion[]
+  /** Answers already locked server-side (qid → answer): seeded from the
+   *  reconnect replay, updated as the user locks each question. */
+  answers?: Record<string, string>
+}
+
+/** A collapsed paste in a sent user message: the chip shown and the text the model got. */
+export interface PasteSection {
+  label: string
+  text: string
 }
 
 export interface Msg {
   info?: SessionInfo
-  kind?: 'diff' | 'event' | 'intro' | 'panel' | 'slash' | 'trail'
+  kind?: 'diff' | 'event' | 'image' | 'intro' | 'panel' | 'slash' | 'trail'
+  // Local image paths shown inline under the row: a user turn's attachments,
+  // or (kind 'image') the picture a tool call produced or looked at.
+  images?: string[]
+  // Tells two pictures at one image path apart (a re-screenshot, a re-attached
+  // file overwritten in place): the tool call id that produced a kind 'image'
+  // row, or a per-turn id for a user turn's attachments.
+  imageRevision?: string
   panelData?: PanelData
+  /** Payloads behind this user row's paste chips, expandable in the transcript. */
+  pastes?: PasteSection[]
   role: Role
+  /** The durable message row of a resumed user prompt (backtrack browsing finds its prompt by it). */
+  rowId?: number
   text: string
+  // Unix seconds the message was authored (persisted transcript timestamp on
+  // rehydrate, wall clock at append time for live rows). Rendered as a dim
+  // [HH:MM] label when `display.timestamps` is on (#41531).
+  createdAt?: number
   thinking?: string
   // MoA reference-model output stored in `thinking` (see turnController's
   // recordMoaReference): unlike ordinary model reasoning, this is the
   // user-facing mixture-of-agents process the user opted into, so it stays
   // visible even when `display.sections.thinking` is hidden.
   isMoaReference?: boolean
+  // True only while this trail segment's reasoning is being streamed live by
+  // the current turn (see turnController's syncReasoningSegment). Sealed
+  // reasoning segments from earlier in the turn carry no flag, so the TUI can
+  // tell "the reasoning happening right now" apart from finished blocks.
+  isLiveReasoning?: boolean
   thinkingTokens?: number
   toolTokens?: number
   tools?: string[]
@@ -148,55 +195,13 @@ export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
 export interface McpServerStatus {
   connected: boolean
   disabled?: boolean
-  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed'
+  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed' | 'lazy'
   name: string
   tools: number
   transport: string
 }
 
-export interface ProjectInfo {
-  id: string
-  name: string
-  primary_path?: null | string
-  slug: string
-}
-
-export interface SessionInfo {
-  cwd?: string
-  fast?: boolean
-  install_warning?: string
-  lazy?: boolean
-  mcp_servers?: McpServerStatus[]
-  model: string
-  profile_name?: string
-  project?: null | ProjectInfo
-  reasoning_effort?: string
-  release_date?: string
-  service_tier?: string
-  skills: Record<string, string[]>
-  system_prompt?: string
-  tools: Record<string, string[]>
-  update_behind?: number | null
-  update_command?: string
-  usage?: Usage
-  version?: string
-}
-
-export interface Usage {
-  active_subagents?: number
-  calls: number
-  compressions?: number
-  context_max?: number
-  context_percent?: number
-  context_used?: number
-  cost_status?: string
-  cost_usd?: number
-  dev_credits_spent_micros?: number
-  input: number
-  output: number
-  reasoning?: number
-  total: number
-}
+export type { ProjectInfo }
 
 export interface SudoReq {
   requestId: string
@@ -206,6 +211,31 @@ export interface SecretReq {
   envVar: string
   prompt: string
   requestId: string
+}
+
+/** External password-manager unlock (1Password / Bitwarden) — masked master-password prompt. */
+export interface VaultUnlockReq {
+  backend: string
+  displayName: string
+  requestId: string
+}
+
+/**
+ * `vault.save_login` server→client request — save a new website login from a
+ * browser sign-in page. Two-step capture (identifier shown, password masked);
+ * the answer goes only to the encrypted vault, never to the model.
+ */
+export interface VaultSaveLoginReq {
+  origin: string
+  requestId: string
+  site: string
+}
+
+/** `vault.code` server→client request — a one-time sign-in code the user reads from their device. */
+export interface VaultCodeReq {
+  hint: string
+  requestId: string
+  site: string
 }
 
 export interface PanelData {
@@ -228,7 +258,3 @@ export interface SlashCatalog {
   sub: Record<string, string[]>
 }
 
-export interface SlashCategory {
-  name: string
-  pairs: [string, string][]
-}

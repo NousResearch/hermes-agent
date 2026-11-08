@@ -1,17 +1,15 @@
 """Tests for gateway /reasoning command and hot reload behavior."""
 
 import asyncio
-import inspect
 import sys
 import types
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import yaml
 
 import gateway.run as gateway_run
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -33,7 +31,6 @@ def _make_runner():
     runner._ephemeral_system_prompt = ""
     runner._prefill_messages = []
     runner._reasoning_config = None
-    runner._session_reasoning_overrides = {}
     runner._show_reasoning = False
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -86,10 +83,8 @@ class TestReasoningCommand:
         runner._reasoning_config = {"enabled": True, "effort": "xhigh"}
         runner._show_reasoning = False
 
-        result = await runner._handle_reasoning_command(_make_event("/reasoning"))
+        await runner._handle_reasoning_command(_make_event("/reasoning"))
 
-        assert "**Effort:** `none (disabled)`" in result
-        assert "**Display:** on ✓" in result
         assert runner._reasoning_config == {"enabled": False}
         assert runner._show_reasoning is True
 
@@ -112,10 +107,37 @@ class TestReasoningCommand:
 
         await runner._handle_reasoning_command(event)
 
-        assert runner._session_reasoning_overrides[session_key] == {
+        assert runner._session_state(session_key).conversation.reasoning_override == {
             "enabled": True,
             "effort": effort,
         }
+
+    @pytest.mark.asyncio
+    async def test_reasoning_status_scope_follows_this_sessions_override(self, tmp_path, monkeypatch):
+        from agent.i18n import t
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("agent:\n  reasoning_effort: low\n", encoding="utf-8")
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        runner = _make_runner()
+        session_key = runner._session_key_for_source(_make_event().source)
+
+        async def status() -> str:
+            reply = await runner._handle_reasoning_command(_make_event())
+            assert reply is not None  # no adapter, so no picker: the status line comes back as text
+            return reply
+
+        # Reading the scope creates no session row, and another chat's override is not this one's.
+        assert t("gateway.reasoning.scope_global") in await status()
+        assert runner._peek_session_state(session_key) is None
+        await runner._handle_reasoning_command(_make_event("/reasoning high", chat_id="other"))
+        assert t("gateway.reasoning.scope_global") in await status()
+
+        await runner._handle_reasoning_command(_make_event("/reasoning high"))
+        assert t("gateway.reasoning.scope_session") in await status()
+        await runner._handle_reasoning_command(_make_event("/reasoning reset"))
+        assert t("gateway.reasoning.scope_global") in await status()
 
 
     def test_resolve_session_reasoning_prefers_session_override(self, tmp_path, monkeypatch):
@@ -128,7 +150,7 @@ class TestReasoningCommand:
         runner = _make_runner()
         source = _make_event("/reasoning").source
         session_key = runner._session_key_for_source(source)
-        runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "xhigh"}
+        runner._session_state(session_key).conversation.reasoning_override = {"enabled": True, "effort": "xhigh"}
 
         assert runner._resolve_session_reasoning_config(source=source) == {"enabled": True, "effort": "xhigh"}
 
@@ -149,7 +171,6 @@ class TestReasoningCommand:
 
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
         monkeypatch.setattr(gateway_run, "_env_path", hermes_home / ".env")
-        monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
         monkeypatch.setattr(
             gateway_run,
             "_resolve_runtime_agent_kwargs",

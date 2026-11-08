@@ -42,9 +42,44 @@ export interface ArtifactRecord {
 
 export type ArtifactRegistry = Record<string, ArtifactRecord[]>
 
+export const $artifactRegistry = atom<ArtifactRegistry>({})
+
+/** Per-artifact selected version index; absent = newest. */
+export const $artifactVersionSelection = atom<Record<string, number>>({})
+
 const MAX_ARTIFACTS_PER_SESSION = 24
 const MAX_VERSIONS_PER_ARTIFACT = 20
 const MAX_SESSIONS = 40
+
+/**
+ * Global retained-content budget in UTF-16 code units (the representation
+ * actually held by JS strings). Count caps alone still admit up to
+ * 40×24×20 = 19,200 unbounded content strings; this bounds the duplicate
+ * history the registry pins in memory (#108172). Content is never truncated:
+ * the transcript stays the durable copy, evicted cards re-register on render,
+ * and the single newest record is always retained even when oversized.
+ */
+const MAX_REGISTRY_CONTENT_UNITS = 4 * 1024 * 1024
+
+function recordContentUnits(record: ArtifactRecord): number {
+  let total = 0
+
+  for (const version of record.versions) {
+    total += version.content.length
+  }
+
+  return total
+}
+
+function registryContentUnits(records: readonly ArtifactRecord[]): number {
+  let total = 0
+
+  for (const record of records) {
+    total += recordContentUnits(record)
+  }
+
+  return total
+}
 
 function pruneRegistry(registry: ArtifactRegistry): ArtifactRegistry {
   const entries = Object.entries(registry)
@@ -64,13 +99,137 @@ function pruneRegistry(registry: ArtifactRegistry): ArtifactRegistry {
     })
     .slice(0, MAX_SESSIONS)
 
-  return Object.fromEntries(entries)
+  return Object.fromEntries(enforceContentBudget(entries))
 }
 
-export const $artifactRegistry = atom<ArtifactRegistry>({})
+/**
+ * Enforce {@link MAX_REGISTRY_CONTENT_UNITS} after the count caps.
+ *
+ * 1. Evict the globally-oldest HISTORICAL versions first — every record's
+ *    latest version survives this pass.
+ * 2. If the latest-only records still exceed the budget, evict the oldest
+ *    whole records; the registry's single newest record is always retained,
+ *    even when it alone is over budget. Content is never truncated or
+ *    rewritten — eviction removes whole version entries / whole records only.
+ * 3. Explicit version selections ($artifactVersionSelection pins by array
+ *    index) follow their hash: a selected surviving version keeps pointing at
+ *    the same content after index shifts, and a selection whose version was
+ *    evicted snaps back to newest.
+ */
+function enforceContentBudget(entries: readonly (readonly [string, ArtifactRecord[]])[]): [string, ArtifactRecord[]][] {
+  // Capture each explicitly selected version's hash BEFORE pruning: after the
+  // array shifts, the selection index no longer names the version the user
+  // pinned, so the hash is the only stable handle.
+  const selection = $artifactVersionSelection.get()
+  const selectedHashes = new Map<string, string>()
 
-/** Per-artifact selected version index; absent = newest. */
-export const $artifactVersionSelection = atom<Record<string, number>>({})
+  for (const [artifactId, index] of Object.entries(selection)) {
+    const hash = findArtifact(Object.fromEntries(entries), artifactId)?.versions[index]?.hash
+
+    if (hash) {
+      selectedHashes.set(artifactId, hash)
+    }
+  }
+
+  const working: [string, ArtifactRecord[]][] = entries.map(([sessionId, records]) => [
+    sessionId,
+    records.map(record => ({ ...record, versions: [...record.versions] }))
+  ])
+
+  if (registryContentUnits(working.flatMap(([, records]) => records)) <= MAX_REGISTRY_CONTENT_UNITS) {
+    return working
+  }
+
+  // Pass 1: drop globally-oldest historical versions until the registry fits.
+  const historical = working
+    .flatMap(([, records]) => records)
+    .flatMap(record => record.versions.slice(0, -1).map(version => ({ record, version })))
+    .sort((left, right) => left.version.createdAt - right.version.createdAt)
+
+  for (const { record, version } of historical) {
+    if (registryContentUnits(working.flatMap(([, records]) => records)) <= MAX_REGISTRY_CONTENT_UNITS) {
+      break
+    }
+
+    record.versions = record.versions.filter(candidate => candidate !== version)
+  }
+
+  // Pass 2: latest-only records still over budget — evict the oldest whole
+  // records until the registry fits. The registry's newest record is never
+  // evicted, even when it alone is oversized.
+  const byAge = working
+    .flatMap(([sessionId, records]) => records.map(record => ({ record, sessionId })))
+    .sort((left, right) => left.record.updatedAt - right.record.updatedAt)
+
+  for (const { record, sessionId } of byAge) {
+    if (registryContentUnits(working.flatMap(([, records]) => records)) <= MAX_REGISTRY_CONTENT_UNITS) {
+      break
+    }
+
+    const retained = working.flatMap(([, records]) => records)
+
+    if (retained.length <= 1) {
+      break
+    }
+
+    const sessionEntry = working.find(([id]) => id === sessionId)
+
+    if (sessionEntry) {
+      sessionEntry[1] = sessionEntry[1].filter(candidate => candidate !== record)
+    }
+  }
+
+  reconcileVersionSelection(working, selectedHashes)
+
+  return working.filter(([, records]) => records.length > 0)
+}
+
+/**
+ * Re-point explicit version selections after pruning shifted version arrays.
+ * The hash of each selected version is captured against the pruned records:
+ * a selected surviving version keeps pointing at the same content (whatever
+ * its new index), and a selection whose version was evicted snaps back to
+ * newest (absent = newest).
+ */
+function reconcileVersionSelection(
+  entries: readonly (readonly [string, ArtifactRecord[]])[],
+  selectedHashes: ReadonlyMap<string, string>
+): void {
+  const selection = $artifactVersionSelection.get()
+  const prunedById = new Map<string, ArtifactRecord>()
+
+  for (const [, records] of entries) {
+    for (const record of records) {
+      prunedById.set(record.id, record)
+    }
+  }
+
+  let updated: Record<string, number> | null = null
+
+  for (const [artifactId, selectedHash] of selectedHashes) {
+    const record = prunedById.get(artifactId)
+    const next: Record<string, number> = updated ?? { ...selection }
+    const newIndex = record?.versions.findIndex(version => version.hash === selectedHash) ?? -1
+
+    if (newIndex < 0 || newIndex === record!.versions.length - 1) {
+      // Selected version was evicted (or the record went away, or pruning
+      // left it as the newest): absent = newest.
+      delete next[artifactId]
+      updated = next
+
+      continue
+    }
+
+    if (newIndex !== selection[artifactId]) {
+      next[artifactId] = newIndex
+      updated = next
+    }
+  }
+
+  if (updated) {
+    $artifactVersionSelection.set(updated)
+  }
+}
 
 /** Lookup against a registry value, for components that already subscribe to
  *  the atom and need the record to change identity when it does. */

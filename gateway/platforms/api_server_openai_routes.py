@@ -713,7 +713,12 @@ def _parse_chat_messages(messages: list[Any]) -> tuple:
     """Chat ``messages`` -> ``(system_prompt, conversation_messages, error_response_or_None)``.
 
     System messages -> ephemeral system prompt layered ON TOP of core, flattened to text
-    (Anthropic rejects images there, OpenAI text models ignore them)."""
+    (Anthropic rejects images there, OpenAI text models ignore them).
+
+    ``tool`` messages (OpenAI function-calling format) and assistant ``tool_calls`` are
+    preserved as replayable history: clients such as Open WebUI pre-execute built-in tools
+    and send the results back in the same request, so a request legitimately ends with
+    ``tool`` rows (and empty assistant tool-call carriers) rather than a user turn."""
     from gateway.platforms.api_server import (
         _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content)
     system_prompt = None
@@ -724,13 +729,41 @@ def _parse_chat_messages(messages: list[Any]) -> tuple:
         if role == "system":
             content = _normalize_chat_content(raw_content)
             system_prompt = content if system_prompt is None else system_prompt + "\n" + content
-        elif role in {"user", "assistant"}:
+        elif role in {"user", "assistant", "tool"}:
             try:
                 content = _normalize_multimodal_content(raw_content)
             except ValueError as exc:
                 return None, None, _multimodal_validation_error(exc, param=f"messages[{idx}].content")
-            conversation_messages.append({"role": role, "content": content})
+            entry: dict[str, Any] = {"role": role, "content": content}
+            if role == "assistant" and isinstance(msg.get("tool_calls"), list):
+                entry["tool_calls"] = msg["tool_calls"]
+            conversation_messages.append(entry)
     return system_prompt, conversation_messages, None
+
+
+def _select_current_turn(conversation_messages: list[dict[str, Any]]) -> tuple:
+    """``(user_message, history)`` for the current turn, or ``(None, None)`` when no
+    visible user turn exists.
+
+    Legacy behavior: the last visible user/assistant message is the current turn.
+    Tool-tailed requests (Open WebUI built-in tools end the body with ``tool`` rows
+    after empty assistant tool-call carriers) carry no visible trailing turn: the
+    last visible USER message becomes the current turn and the trailing tool
+    context replays as history."""
+    from gateway.platforms.api_server import _content_has_visible_payload
+    last = conversation_messages[-1] if conversation_messages else None
+    if last is not None and last.get("role") in {"user", "assistant"} \
+            and _content_has_visible_payload(last.get("content", "")):
+        return last.get("content", ""), conversation_messages[:-1]
+    user_idx = next(
+        (i for i in range(len(conversation_messages) - 1, -1, -1)
+         if conversation_messages[i].get("role") == "user"
+         and _content_has_visible_payload(conversation_messages[i].get("content", ""))),
+        None)
+    if user_idx is None:
+        return None, None
+    return (conversation_messages[user_idx].get("content", ""),
+            conversation_messages[:user_idx] + conversation_messages[user_idx + 1:])
 
 
 def _parse_responses_input(raw_input: Any) -> tuple:
@@ -886,9 +919,8 @@ class OpenAICompatRoutesMixin:
         system_prompt, conversation_messages, messages_err = _parse_chat_messages(messages)
         if messages_err is not None:
             return messages_err
-        user_message: Any = (conversation_messages[-1].get("content", "") if conversation_messages else "")
-        history = conversation_messages[:-1]
-        if not _content_has_visible_payload(user_message):
+        user_message, history = _select_current_turn(conversation_messages)
+        if user_message is None:
             return _invalid_request("No user message found in messages")
 
         # X-Hermes-Session-Key scopes long-term memory per channel; independent of

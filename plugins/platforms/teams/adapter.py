@@ -126,7 +126,13 @@ class _AiohttpBridgeAdapter:
 
     def register_route(self, method: HttpMethod, path: str, handler: HttpRouteHandler) -> None:
         async def _aiohttp_handler(request: web.Request) -> web.Response:
-            result: HttpResponse = await handler(HttpRequest(body=await request.json(), headers=dict(request.headers)))
+            try:
+                body = await request.json()
+            except ValueError:
+                body = None
+            if not isinstance(body, dict):  # a Bot Framework activity is a JSON object; anything else is a 400
+                return web.Response(status=400, body=json.dumps({"error": "Bad Request"}), content_type="application/json")
+            result: HttpResponse = await handler(HttpRequest(body=body, headers=dict(request.headers)))
             status = result.get("status", 200)
             resp_body = result.get("body")
             if resp_body is not None:

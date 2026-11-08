@@ -634,6 +634,7 @@ gateway:
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}：{reason}\n\n"
     truncated_full_above: "預覽已截斷：完整指令（{total} 個字元）在上方的訊息中。"
     truncated_deny_only: "預覽已截斷（{total} 個字元），且無法在此顯示完整指令，因此只提供拒絕。請在 CLI 或桌面應用程式中查看。"
+    text_prompt_deny_only: "完整的核准提示對此平台而言過長，因此只提供拒絕。請在 CLI 或桌面應用程式中查看。"
   notify:
     media_kind:
       audio: "音訊"

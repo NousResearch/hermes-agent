@@ -71,29 +71,29 @@ class A2ASecurityContext:
     allow_all_users: bool
     requested_host: str
     push_secret: str
+    # A2A_PEER_TOKENS is set but holds no ``name:token`` pair (a bare token): the operator asked for
+    # auth, so this never reads as "no token configured" — every request is refused instead (#148961).
+    unusable_peer_tokens: bool = False
 
     @classmethod
     def capture(cls) -> A2ASecurityContext:
         bearer_token = _startup_env("A2A_BEARER_TOKEN")
         raw_peer_tokens = _startup_env("A2A_PEER_TOKENS")
         peer_tokens = _parse_peer_tokens(raw_peer_tokens)
-        if raw_peer_tokens and not peer_tokens:
-            logger.warning("A2A: A2A_PEER_TOKENS is set but parsed to zero name:token pairs "
-                           "(expected \"name:token,name:token\") — the listener stays localhost-only "
-                           "until the value is fixed.")
         return cls(bearer_token=bearer_token, peer_tokens=tuple(peer_tokens.items()),
+                   unusable_peer_tokens=bool(raw_peer_tokens) and not peer_tokens,
                    trusted_peers=_configured_trusted_peers(),
                    allow_all_users=_startup_env("A2A_ALLOW_ALL_USERS").lower() in {"1", "true", "yes"},
                    requested_host=_unbracket(_startup_env("A2A_HOST")) or "127.0.0.1", push_secret=_startup_env("A2A_PUSH_SECRET") or bearer_token)
 
     def localhost_only(self) -> bool:
-        return not (self.bearer_token or self.peer_tokens)
+        return not (self.bearer_token or self.peer_tokens or self.unusable_peer_tokens)
 
     def resolve_bind_host(self) -> str:
         """Localhost unless a token is configured AND a wider host was asked for."""
         if self.requested_host in {"127.0.0.1", "localhost", "::1"}:
             return self.requested_host
-        if self.localhost_only():
+        if not (self.bearer_token or self.peer_tokens):  # no usable credential: never widen the bind
             logger.warning("A2A: A2A_HOST=%s ignored — no A2A_BEARER_TOKEN or A2A_PEER_TOKENS set; "
                            "binding to 127.0.0.1. Configure a token to expose A2A remotely.", self.requested_host)
             return "127.0.0.1"

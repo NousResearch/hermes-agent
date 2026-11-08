@@ -240,3 +240,28 @@ def test_html_5xx_page_is_not_a_parse_error(standalone, monkeypatch, status, phr
     assert standalone.run("hello *world*")["success"] is True
     assert [c.kwargs["parse_mode"] for c in standalone.bot.send_message.await_args_list] == ["MarkdownV2", None]
 
+
+def test_a_sender_written_to_the_earlier_contract_still_delivers(standalone, monkeypatch) -> None:
+    """A user plugin re-registering telegram with the documented ``standalone_sender_fn`` signature
+    (no ``notify``) is reached through the real registry lookup and is never handed ``notify``; a
+    sender taking ``**kwargs`` still gets it."""
+    from gateway.platform_registry import platform_registry
+    from hermes_cli.plugins import discover_plugins
+    discover_plugins()
+    entry = platform_registry.get("telegram")
+    calls = []
+
+    async def documented(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
+        calls.append(message)
+        return {"success": True, "message_id": "user-plugin"}
+
+    monkeypatch.setattr(entry, "standalone_sender_fn", documented)
+    assert standalone.run("daily brief", notify=True) == {"success": True, "message_id": "user-plugin"}
+
+    async def open_kwargs(pconfig, chat_id, message, **kwargs):
+        calls.append(kwargs.get("notify"))
+        return {"success": True, "message_id": "kw"}
+
+    monkeypatch.setattr(entry, "standalone_sender_fn", open_kwargs)
+    assert standalone.run("daily brief", notify=True)["success"] is True
+    assert calls == ["daily brief", True]

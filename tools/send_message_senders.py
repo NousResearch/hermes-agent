@@ -2,6 +2,8 @@
 
 from pm import install_hint
 import contextlib
+import functools
+import inspect
 import logging
 import os
 import re
@@ -112,6 +114,23 @@ def _plugin_standalone_sender(platform_name, *, label=None, discover=True):
     if entry is None or entry.standalone_sender_fn is None:
         return None, {"error": f"{label or platform_name} plugin not registered or missing standalone_sender_fn"}
     return entry.standalone_sender_fn, None
+
+
+@functools.lru_cache(maxsize=64)
+def _accepts_kwarg(fn, name):
+    """True when ``fn`` takes keyword ``name`` (named or through ``**kwargs``); an uninspectable
+    callable is assumed to (the documented contract)."""
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return any(p.kind is p.VAR_KEYWORD or (p.name == name and p.kind is not p.POSITIONAL_ONLY) for p in params)
+
+
+def _optional_sender_kwargs(sender, **kwargs):
+    """``kwargs`` minus the optional ones ``sender`` does not take: a ``standalone_sender_fn``
+    written to the earlier contract (no ``notify``) keeps working. ``None`` values are dropped too."""
+    return {k: v for k, v in kwargs.items() if v is not None and _accepts_kwarg(sender, k)}
 
 
 async def _registry_standalone_send(platform_name, pconfig, chat_id, message, thread_id=None):

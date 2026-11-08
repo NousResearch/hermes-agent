@@ -1927,6 +1927,17 @@ DEFAULT_CONFIG = {
         # Max triage tasks decomposed per tick, bounding the aux-LLM burst from a bulk load. Excess
         # defers to the next tick.
         "auto_decompose_per_tick": 3,
+        # Overlap thresholds for dropping a decomposition child that duplicates work the board
+        # already owns. Titles are compared as lowercased content-word sets (Jaccard). A child that
+        # is merely NARROWER than the parent is wanted output, so the parent bar is measured against
+        # the parent's TITLE, never its body: a body-inclusive containment test dropped every real
+        # subtask of a spec-like parent (t_d97ab27d, 2026-11-08). Same-file pairs compare at the
+        # lower bar because two workers editing one file is the hazard t_2e0cd7e4 recorded.
+        "decompose": {
+            "sibling_overlap": 0.75,
+            "same_file_overlap": 0.4,
+            "parent_overlap": 0.75,
+        },
         # Running tasks with no heartbeat (last_heartbeat_at) for this many seconds are reclaimed to
         # ready on the next tick; a still-running local worker is terminated first. 0 = off.
         "dispatch_stale_timeout_seconds": 14400,

@@ -333,6 +333,33 @@ def capable_profiles(
     return tuple(found)
 
 
+def general_reviewer(
+    rule: Mapping[str, Any], *, exclude: Sequence[str] = (),
+) -> Optional[str]:
+    """The reviewer to hand an UNCLASSIFIED card to, or ``None`` when nobody qualifies.
+
+    :func:`capable_profiles` returns nothing for a card with no ``task_class`` — there is no class
+    to match — which left an unclassified review card with nowhere to go: it was refused, parked
+    and re-promoted on every tick (t_e148930c, 120 refusals on 2026-11-08). Rather than guess a
+    class, name a reviewer whose recorded duty covers work products: the first profile in
+    declaration order that may review ``code-review`` or ``docs-review``, is not retired, and is
+    not excluded from general review. Deterministic, and bounded by the same record as everything
+    else here.
+    """
+    skip = {str(name) for name in exclude}
+    for name, entry in (rule.get("profiles") or {}).items():
+        if name in skip or not isinstance(entry, Mapping):
+            continue
+        if not entry.get("review_allowed") or entry.get("excluded_from_general_review"):
+            continue
+        if "*" in [str(item) for item in (entry.get("must_not_serve") or [])]:
+            continue
+        classes = [str(item) for item in (entry.get("review_classes") or [])]
+        if "code-review" in classes or "docs-review" in classes:
+            return str(name)
+    return None
+
+
 def assessment(
     profile: str,
     task_class: Optional[str],

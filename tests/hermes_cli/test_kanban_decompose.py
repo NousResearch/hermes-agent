@@ -317,7 +317,13 @@ def test_decompose_drops_siblings_that_edit_the_same_file(kanban_home):
     }, "the second same-file child must not be spawned"
 
 
-def test_decompose_with_only_duplicates_leaves_the_card_in_triage(kanban_home):
+def test_decompose_with_only_duplicates_promotes_the_root_as_one_card(kanban_home):
+    """Every proposal duplicated work already owned, so the root runs as one card.
+
+    Leaving it in triage made it an orphan: the dispatcher re-asks about every triage card on
+    every tick and nothing ever runs the work. The card is promoted instead, with a comment
+    naming the drops so a human can still re-specify or archive it.
+    """
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title=_PARENT_TITLE, body=_PARENT_BODY, triage=True)
 
@@ -326,11 +332,16 @@ def test_decompose_with_only_duplicates_leaves_the_card_in_triage(kanban_home):
         {"title": _PARENT_TITLE, "body": "again", "assignee": "engineer", "parents": []},
     ])
 
-    assert outcome.ok is False
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is False
     assert "every proposed child duplicates" in outcome.reason
     with kbc.connect() as conn:
         root = kb.get_task(conn, tid)
-    assert root is not None and root.status == "triage", "a human must still pick it up"
+        comments = [c.body for c in kb.list_comments(conn, tid)]
+    assert root is not None and root.status in ("todo", "ready"), (
+        "the work must leave triage and run as one card")
+    assert any("every proposed child duplicates" in body for body in comments), (
+        "the drops must be recorded on the card, not only in a log line")
 
 
 def test_a_dropped_sibling_leaves_no_child_waiting_on_it(kanban_home):
@@ -364,7 +375,8 @@ def test_a_child_waiting_on_parent_scope_duplicate_is_cascaded_away(kanban_home)
     """Nothing else owns the parent's own scope, so waiting on it can only deadlock.
 
     The root waits on every child, so the edge cannot be satisfied by the parent either; the
-    dependent child is dropped with its prerequisite and the card stays in triage.
+    dependent child is dropped with its prerequisite. Every child is then gone, so the root is
+    promoted as one card rather than left in triage.
     """
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title=_PARENT_TITLE, body=_PARENT_BODY, triage=True)
@@ -374,10 +386,46 @@ def test_a_child_waiting_on_parent_scope_duplicate_is_cascaded_away(kanban_home)
         {"title": "Write the changelog note", "body": "", "assignee": "engineer", "parents": [0]},
     ])
 
-    assert outcome.ok is False
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is False
     assert "every proposed child duplicates" in outcome.reason
     with kbc.connect() as conn:
-        assert kb.get_task(conn, tid).status == "triage"
+        assert kb.get_task(conn, tid).status in ("todo", "ready")
         assert kb.list_events(conn, tid), "the drop must be recorded, not silent"
 
 
+
+
+# --- narrower children survive (t_d97ab27d) ---------------------------------
+# The parent below is the real card that was re-decomposed 111 times on
+# 2026-11-08. Its body is a specification, so every child's words come from the
+# parent; the old 0.8 containment test dropped all of them on every pass.
+_MUREKA_TITLE = (
+    "Fix the Mureka lane so a remix run can complete: sync stem zip, purpose "
+    "field, mp3/size preflight, extension")
+_MUREKA_BODY = (
+    "A remix run must sync the stem zip before the request is submitted, send the "
+    "purpose field, preflight the mp3 size, and return the extension on the "
+    "completed remix. Each step is a separate defect in the lane.")
+
+
+def test_narrower_children_are_not_dropped_as_parent_duplicates(kanban_home):
+    """A child that carves a piece out of the parent's spec is new work, not a duplicate."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title=_MUREKA_TITLE, body=_MUREKA_BODY, triage=True)
+
+    outcome = _decompose_with(kanban_home, tid, [
+        {"title": "Sync the stem zip before the remix request is submitted",
+         "body": "", "assignee": "engineer", "parents": []},
+        {"title": "Send the purpose field on the Mureka remix call",
+         "body": "", "assignee": "engineer", "parents": []},
+        {"title": "Preflight the mp3 size before upload",
+         "body": "", "assignee": "engineer", "parents": []},
+        {"title": "Return the extension on a completed remix",
+         "body": "", "assignee": "engineer", "parents": []},
+    ])
+
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is True
+    assert outcome.child_ids is not None and len(outcome.child_ids) == 4, (
+        "all four narrower children must survive; dropping them was the 2026-11-08 bug")

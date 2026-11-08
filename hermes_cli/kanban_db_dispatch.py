@@ -2387,12 +2387,87 @@ def routing_gate(row, assignee: str, *, lane: str):
     )
 
 
-def _park_routing_refusal(conn: sqlite3.Connection, task_id: str, refusal) -> None:
-    """Record the refusal and park the card, naming profile/class/decision/rule.
+def _reroute_target(conn: sqlite3.Connection, task_id: str, refusal) -> Optional[str]:
+    """The profile to hand a refused card to instead of parking it, or ``None``.
 
-    Q1 is a capability wall (install the skill or reassign); Q2 is a routing decision a human
-    owns (reassign to a profile this class is routed to). Both land ``blocked`` so the card is
-    visible on the board instead of respawning forever.
+    Q1 is a missing skill: another profile does not fix a card whose own worker cannot start, and
+    a Q2 verdict is the only one the record can answer with an alternative. The rule already names
+    the profiles it would accept (``capable_profiles``); an unclassified review card has no class
+    to match, so its alternative is the broadest general reviewer.
+
+    A card that has already been rerouted for this class is never rerouted again: that is the
+    ping-pong the park exists to stop, and one hop is enough to prove the rule has no answer.
+    """
+    if getattr(refusal, "question", None) != "Q2":
+        return None
+    try:
+        for event in _kb.list_events(conn, task_id):
+            if event.kind != "rerouted":
+                continue
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            if payload.get("task_class") == getattr(refusal, "task_class", None):
+                return None
+    except Exception:
+        _kb._log.debug("kanban dispatch: could not read reroute history for %s", task_id, exc_info=True)
+        return None
+    capable = [str(p) for p in (getattr(refusal, "capable_profiles", ()) or ()) if p]
+    task_class = getattr(refusal, "task_class", None)
+    if task_class is not None:
+        # A named class is only handed on when the rule names someone who may take it.
+        return capable[0] if capable else None
+    if getattr(refusal, "lane", None) != "review":
+        return None
+    # Unclassified: there is no class to match, so the alternative is a general reviewer.
+    try:
+        from hermes_cli.kanban_fleet_routing import general_reviewer, load_rule
+
+        rule, _path = load_rule()
+        return general_reviewer(rule, exclude=(getattr(refusal, "profile", "") or "",))
+    except Exception:
+        _kb._log.debug("kanban dispatch: general reviewer lookup failed", exc_info=True)
+        return None
+
+
+def _reroute_refused_card(
+    conn: sqlite3.Connection, task_id: str, refusal, target: str,
+) -> bool:
+    """Assign the card to ``target`` and record why. False when the write did not land."""
+    try:
+        # assign_task opens its own txn and appends an ``assigned`` event; do not nest it.
+        if not _kb.assign_task(conn, task_id, target):
+            return False
+    except Exception:
+        _kb._log.exception("kanban dispatch: could not reroute %s to %s", task_id, target)
+        return False
+    try:
+        with _kb.write_txn(conn):
+            _kb._append_event(conn, task_id, "rerouted", {
+                **refusal.as_event(),
+                "from_profile": getattr(refusal, "profile", None),
+                "to_profile": target,
+                "task_class": getattr(refusal, "task_class", None),
+                "lane": getattr(refusal, "lane", None),
+            })
+    except Exception:
+        _kb._log.debug("kanban dispatch: rerouted event failed for %s", task_id, exc_info=True)
+    try:
+        _kb.add_comment(
+            conn, task_id, "kanban-dispatch",
+            f"Auto-route: {refusal.as_text()} — reassigned to '{target}', a profile this class is "
+            "routed to, instead of parking the card. Reassign it back if that is wrong.",
+        )
+    except Exception:
+        _kb._log.debug("kanban dispatch: reroute comment failed for %s", task_id, exc_info=True)
+    return True
+
+
+def _park_routing_refusal(conn: sqlite3.Connection, task_id: str, refusal) -> None:
+    """Answer a refusal: reroute when the rule names somewhere to send the card, else park it.
+
+    Q1 is a capability wall (install the skill) and a Q2 with no alternative is a policy verdict a
+    human owns; both land ``blocked`` so the card is visible instead of respawning forever. A Q2
+    that the rule itself can answer is handed to the profile it names, because parking a card the
+    rule can already route is what turned one refusal into 120 (t_e148930c, 2026-11-08).
     """
     reason = f"{refusal.as_text()} [card {task_id}]"
     kind = "capability" if refusal.question == "Q1" else "needs_input"
@@ -2401,6 +2476,16 @@ def _park_routing_refusal(conn: sqlite3.Connection, task_id: str, refusal) -> No
             _kb._append_event(conn, task_id, "routing_refused", refusal.as_event())
     except Exception:  # the block below is the part that must not be skipped
         _kb._log.debug("kanban dispatch: routing_refused event failed for %s", task_id, exc_info=True)
+    target = _reroute_target(conn, task_id, refusal)
+    if target is not None and _reroute_refused_card(conn, task_id, refusal, target):
+        try:
+            _kb._log.info(
+                "kanban dispatch: rerouted %s to %s instead of parking it (%s/%s)",
+                task_id, target, refusal.task_class or "(unclassified)", refusal.lane,
+            )
+        except Exception:
+            pass
+        return
     try:
         _kb.block_task(conn, task_id, reason=reason, kind=kind, counts_toward_loop=False)
     except Exception:

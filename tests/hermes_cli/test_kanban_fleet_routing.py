@@ -477,3 +477,59 @@ def test_review_competence_on_the_recorded_rule_is_only_the_recorded_grant():
         "a competence grant may never name a class the profile may not serve")
     assert "execution" not in entry.get("review_classes", ()), (
         "the grant must not be laundered into the profile's standing review duty")
+
+
+# --- auto-route instead of parking (t_e148930c) -----------------------------
+# A refused card that the rule itself can place was parked and re-promoted on
+# every tick: one unclassified review card burned 3.8 hours and 120 refusals on
+# 2026-11-08. The refusal names where it could go, so dispatch sends it there.
+
+def test_general_reviewer_names_a_recorded_general_reviewer(fleet):
+    rule, _path = fr.load_rule()
+    assert fr.general_reviewer(rule) == "reviewer"
+    assert fr.general_reviewer(rule, exclude=("reviewer",)) == "generalist"
+    assert fr.general_reviewer(rule, exclude=("reviewer", "generalist")) is None, (
+        "a retired or review-less profile must never be offered")
+
+
+def test_dispatch_reroutes_an_unclassified_review_card_to_a_general_reviewer(fleet, no_profile_gate):
+    """A profile absent from the rule cannot review, but the card need not park.
+
+    ``outsider`` can start a review turn (so Q1 passes) and holds no recorded routing
+    permission (Q2 refuses). With no class on the card there is no class to match, so the
+    fallback is a general reviewer rather than a human.
+    """
+    _write_profile(fleet["home"], "outsider", ("demo", "sdlc-review"))
+    spawned: list[str] = []
+
+    with connect() as conn:
+        tid = kb.create_task(conn, title="review this handoff", assignee="outsider")
+        kb.request_review(conn, tid, summary="ready")
+        res = _dispatch(conn, lambda task, workspace, board=None: spawned.append(task.id) or 4242)
+        task = kb.get_task(conn, tid)
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+
+    assert [entry[0] for entry in res.routing_refused] == [tid]
+    assert task is not None and task.assignee == "reviewer"
+    assert task.status in ("review", "ready"), "the card waits for the next tick under its new assignee"
+    assert "rerouted" in kinds and "blocked" not in kinds
+
+
+def test_a_reroute_happens_once_per_class(fleet):
+    """Second hop is the ping-pong the park exists to stop."""
+    from types import SimpleNamespace
+
+    refusal = SimpleNamespace(
+        question="Q2", profile="reviewer", task_class="execution", lane="review",
+        capable_profiles=("generalist",),
+        as_event=lambda: {"question": "Q2", "profile": "reviewer", "task_class": "execution"},
+        as_text=lambda: "fleet routing refusal (Q2) profile='reviewer'",
+    )
+    with connect() as conn:
+        tid = kb.create_task(conn, title="defect", assignee="reviewer",
+                             task_class="execution")
+        assert kbd._reroute_target(conn, tid, refusal) == "generalist"
+        assert kbd._reroute_refused_card(conn, tid, refusal, "generalist")
+        assert kb.get_task(conn, tid).assignee == "generalist"
+        assert kbd._reroute_target(conn, tid, refusal) is None, (
+            "a card already rerouted for this class must park, not bounce again")

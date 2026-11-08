@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -249,12 +250,39 @@ _DUPLICATE_STOPWORDS = frozenset({
     "before", "when", "then", "than", "also", "make", "adds", "new",
 })
 #: Sibling titles at or above this Jaccard overlap are treated as the same work.
-_SIBLING_OVERLAP = 0.75
+_DEFAULT_SIBLING_OVERLAP = 0.75
 #: Two children naming the same file are duplicates at this lower overlap.
-_SAME_FILE_OVERLAP = 0.4
-#: A child whose vocabulary is this covered by the parent is re-doing the parent.
-_PARENT_COVERAGE = 0.8
+_DEFAULT_SAME_FILE_OVERLAP = 0.4
+#: A child that restates the parent's TITLE (Jaccard, both ways) is re-doing it.
+#: Deliberately measured against the title, not title+body: a child's words
+#: nearly always come from the parent's specification, so a body-inclusive
+#: containment test dropped every genuinely narrower child (t_d97ab27d, 2026-11-08).
+_DEFAULT_PARENT_OVERLAP = 0.75
+#: Same stated file lowers the parent bar, but not to mere vocabulary overlap.
+_SAME_FILE_PARENT_OVERLAP = 0.6
 _PATH_RE = re.compile(r"[\w./-]+\.(?:py|ts|tsx|js|jsx|json|md|sql|yaml|yml)\b")
+
+
+def _thresholds() -> tuple[float, float, float]:
+    """``(sibling, same_file, parent)`` overlap thresholds from ``kanban.decompose``.
+
+    Read fresh per decomposition so a threshold can be tuned on the live board
+    without a gateway restart; a bad or missing value falls back to its default.
+    """
+    defaults = (_DEFAULT_SIBLING_OVERLAP, _DEFAULT_SAME_FILE_OVERLAP, _DEFAULT_PARENT_OVERLAP)
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = ((load_config() or {}).get("kanban") or {}).get("decompose") or {}
+    except Exception:
+        return defaults
+    resolved: list[float] = []
+    for key, default in zip(("sibling_overlap", "same_file_overlap", "parent_overlap"), defaults):
+        try:
+            resolved.append(float(cfg.get(key, default)))
+        except (TypeError, ValueError):
+            resolved.append(default)
+    return resolved[0], resolved[1], resolved[2]
 
 
 def _work_fingerprint(*texts: object) -> frozenset:
@@ -289,6 +317,7 @@ def _overlap(a: frozenset, b: frozenset) -> float:
 
 def _duplicate_reason(
     child: dict, seen: dict, parent_fp: frozenset, parent_paths: set[str],
+    thresholds: Optional[tuple[float, float, float]] = None,
 ) -> tuple[str, Optional[int]]:
     """Why ``child`` must not be spawned, or ``("", None)`` when it is new work.
 
@@ -298,17 +327,26 @@ def _duplicate_reason(
     doing), and a second child for work an earlier child claims means two
     workers editing one file at the same time — the failure recorded on
     ``t_2e0cd7e4``, where a parked defect card decomposed into concurrent edits.
+
+    What it must NOT do is drop a child for being narrower than the parent. A
+    child's words nearly always come from the parent's specification, so
+    containment is not evidence of duplication; the parent test is therefore a
+    two-way Jaccard measurement, which only fires when the child restates the
+    parent's scope rather than carving a piece out of it.
     """
+    sibling_overlap, same_file_overlap, parent_overlap = thresholds or _thresholds()
     fp = _work_fingerprint(child["title"])
-    if fp and len(fp) >= 3 and parent_fp and len(fp & parent_fp) / len(fp) >= _PARENT_COVERAGE:
-        return "duplicates the parent's own scope", None
     paths = _stated_paths(child["title"], child.get("body"))
-    if paths and parent_paths and paths & parent_paths and fp and len(fp & parent_fp) / len(fp) >= _SAME_FILE_OVERLAP:
-        return "duplicates the parent's own scope on the same file", None
+    if fp and parent_fp:
+        parent_sim = _overlap(fp, parent_fp)
+        if parent_sim >= parent_overlap:
+            return "duplicates the parent's own scope", None
+        if paths and parent_paths and paths & parent_paths and parent_sim >= _SAME_FILE_PARENT_OVERLAP:
+            return "duplicates the parent's own scope on the same file", None
     for prior_index, prior in sorted(seen.items()):
-        if _overlap(fp, prior["fp"]) >= _SIBLING_OVERLAP:
+        if _overlap(fp, prior["fp"]) >= sibling_overlap:
             return f"duplicates tasks[{prior_index}]", prior_index
-        if paths and prior["paths"] and paths & prior["paths"] and _overlap(fp, prior["fp"]) >= _SAME_FILE_OVERLAP:
+        if paths and prior["paths"] and paths & prior["paths"] and _overlap(fp, prior["fp"]) >= same_file_overlap:
             return f"duplicates tasks[{prior_index}] on the same file", prior_index
     return "", None
 
@@ -320,8 +358,9 @@ def _drop_duplicates(
     """Remove children that duplicate the parent's scope or an earlier child.
 
     Returns ``(children, "")`` or ``([], reason)`` when every proposal was a
-    duplicate — the card then stays in triage for a human instead of silently
-    creating nothing. Sibling ``parents`` indices are remapped to the survivors.
+    duplicate — the caller then promotes the root as a single card, naming the
+    drops, rather than leaving an orphan in triage. Sibling ``parents`` indices
+    are remapped to the survivors.
 
     A dependency edge must never lose its owner. Deleting an edge because its
     target was dropped lets a promoted child run without the prerequisite it
@@ -336,14 +375,15 @@ def _drop_duplicates(
     """
     if not children:
         return children, ""
-    parent_fp = _work_fingerprint(parent_title, parent_body)
+    parent_fp = _work_fingerprint(parent_title)
     parent_paths = _stated_paths(parent_title, parent_body)
+    thresholds = _thresholds()
     keep = [True] * len(children)
     seen: dict[int, dict] = {}
     absorbed_by: dict[int, int] = {}
     dropped: list[str] = []
     for idx, child in enumerate(children):
-        reason, owner = _duplicate_reason(child, seen, parent_fp, parent_paths)
+        reason, owner = _duplicate_reason(child, seen, parent_fp, parent_paths, thresholds)
         if not reason:
             seen[idx] = {
                 "fp": _work_fingerprint(child["title"]),
@@ -448,7 +488,26 @@ def _apply_fanout(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
         parent_body=getattr(task, "body", None),
     )
     if reason:
-        return DecomposeOutcome(task_id, False, reason)
+        # Every proposal duplicated work already owned. Leaving the card in
+        # triage made it an orphan: the dispatcher re-asks about it on every tick
+        # and nothing ever runs it. Promote the root as ONE card instead — the
+        # work then executes, and the comment says why it was not split.
+        logger.warning("decompose: task %s — %s; promoting the root as one card", task_id, reason)
+        try:
+            with kbc.connect_closing() as conn:
+                kb.add_comment(
+                    conn, task_id, author or "auto-decomposer",
+                    f"Auto-decomposer: {reason} Promoted as a single card so the work still "
+                    "runs; re-specify or archive it if the split was wanted.",
+                )
+                promoted = kb.specify_triage_task(conn, task_id, author=author)
+        except Exception:
+            logger.exception("decompose: could not promote %s after dropping every child", task_id)
+            return DecomposeOutcome(task_id, False, reason)
+        if not promoted:
+            return DecomposeOutcome(task_id, False, reason)
+        return DecomposeOutcome(
+            task_id, True, f"{reason} — promoted as a single card", fanout=False)
     try:
         with kbc.connect_closing() as conn:
             child_ids = decompose_triage_task(
@@ -471,6 +530,66 @@ def _apply_fanout(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
     )
 
 
+#: A card that has failed to decompose this many times is left alone for the window.
+_DECOMPOSE_FAILURE_LIMIT = 3
+_DECOMPOSE_FAILURE_WINDOW_SECONDS = 6 * 3600
+
+
+def _decomposed_children(conn, task_id: str) -> list[str]:
+    """Child ids for an already-decomposed card: the event first, then the links.
+
+    ``decompose_triage_task`` refuses a second fan-out by looking for the
+    ``decomposed`` event. Asking the same question here, before the aux LLM is
+    called, is what stops a card that has already decomposed being re-planned on
+    every dispatcher tick (t_d97ab27d: 111 paid calls on 2026-11-08).
+    """
+    for event in reversed(kb.list_events(conn, task_id)):
+        if event.kind != "decomposed":
+            continue
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        ids = payload.get("child_ids")
+        if isinstance(ids, list) and ids:
+            return [str(i) for i in ids]
+    try:
+        rows = conn.execute(
+            "SELECT child_id FROM task_links WHERE parent_id = ? ORDER BY rowid", (task_id,),
+        ).fetchall()
+    except Exception:  # a board without links must not break decomposition
+        return []
+    return [str(row[0]) for row in rows]
+
+
+def _recent_decompose_failures(conn, task_id: str) -> int:
+    """How many ``decompose_failed`` events this card has inside the window."""
+    cutoff = int(time.time()) - _DECOMPOSE_FAILURE_WINDOW_SECONDS
+    return sum(
+        1 for event in kb.list_events(conn, task_id)
+        if event.kind == "decompose_failed" and int(event.created_at or 0) >= cutoff
+    )
+
+
+def _note_already_decomposed(conn, task_id: str, children: list[str]) -> None:
+    """Leave one comment explaining why the card is parked in triage. Idempotent."""
+    marker = "Auto-decomposer: already decomposed into"
+    for comment in kb.list_comments(conn, task_id):
+        if (comment.body or "").startswith(marker):
+            return
+    kb.add_comment(
+        conn, task_id, "auto-decomposer",
+        f"{marker} {', '.join(children)}. Triage is its resting place until a human "
+        "decides whether to run the children, re-specify this card, or archive it. "
+        "Decomposition is not re-attempted while those children exist.",
+    )
+
+
+def _record_decompose_failure(conn, task_id: str, reason: str) -> None:
+    """Count one failed plan so a repeat failure cannot loop unbounded."""
+    try:
+        kb._append_event(conn, task_id, "decompose_failed", {"reason": reason[:400]})
+    except Exception:
+        logger.debug("decompose: could not record failure for %s", task_id, exc_info=True)
+
+
 def decompose_task(
     task_id: str,
     *,
@@ -479,7 +598,47 @@ def decompose_task(
 ) -> DecomposeOutcome:
     """Decompose a triage task into a graph of child tasks. Expected failures
     (not in triage, no aux client, API error, malformed/empty reply) surface
-    as ``ok=False``."""
+    as ``ok=False``.
+
+    Two guards run before the aux LLM is touched, because the dispatcher asks
+    about every triage card on every tick:
+
+    * a card that already decomposed is reported, not re-planned;
+    * a card that has failed ``_DECOMPOSE_FAILURE_LIMIT`` times in the window is
+      left for a human rather than retried.
+    """
+    task, reason = _load_triage_task(task_id)
+    if task is None:
+        return DecomposeOutcome(task_id, False, reason)
+
+    with kbc.connect_closing() as conn:
+        children = _decomposed_children(conn, task_id)
+        if children:
+            _note_already_decomposed(conn, task_id, children)
+            return DecomposeOutcome(
+                task_id, False, f"already decomposed into {', '.join(children)}")
+        failures = _recent_decompose_failures(conn, task_id)
+
+    if failures >= _DECOMPOSE_FAILURE_LIMIT:
+        return DecomposeOutcome(
+            task_id, False,
+            f"decomposition failed {failures}x in the last "
+            f"{_DECOMPOSE_FAILURE_WINDOW_SECONDS // 3600}h; left for a human")
+
+    outcome = _decompose_task_unplanned(task_id, author=author, timeout=timeout)
+    if not outcome.ok and outcome.reason:
+        with kbc.connect_closing() as conn:
+            _record_decompose_failure(conn, task_id, outcome.reason)
+    return outcome
+
+
+def _decompose_task_unplanned(
+    task_id: str,
+    *,
+    author: Optional[str] = None,
+    timeout: Optional[int] = None,
+) -> DecomposeOutcome:
+    """The original plan-and-fan-out path, with the pre-checks already done."""
     task, reason = _load_triage_task(task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, reason)

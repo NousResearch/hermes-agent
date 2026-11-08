@@ -88,15 +88,41 @@ it('keeps one bubble when the interim is redelivered after the turn settled', as
   expect(visibleAssistantTexts(stream)).toEqual([T])
 })
 
-it('renders one bubble when the post-tool response repeats the pre-tool text', async () => {
+it('seals a post-tool reply even when it repeats the pre-tool commentary', async () => {
   const { stream, send } = mount()
-  await send('message.start', {})
+  await send('message.start')
   await send('message.delta', { text: 'Done.' })
-  await send('tool.start', { name: 'terminal', tool_id: 't1', args: { command: 'pwd' } })
-  await send('tool.complete', { name: 'terminal', tool_id: 't1', result: 'out' })
+  await send('tool.start', { name: 'terminal', tool_id: 'same1', args: { command: 'pwd' } })
+  await send('tool.complete', { name: 'terminal', tool_id: 'same1', result: 'out' })
   await send('message.delta', { text: 'Done.' })
+  // A legitimate seal, not an old frame: the current response says the same
+  // words as the pre-tool response.
   await send('message.interim', { text: 'Done.' })
-  await send('message.complete', { text: 'Done.' })
 
+  const live = stream.state().messages.find(m => m.role === 'assistant' && !m.hidden)
+  expect(live?.interim).toBe(true)
+  expect(stream.state().streamId).toBeNull()
+
+  await send('message.complete', { text: 'Done.' })
   expect(visibleAssistantTexts(stream)).toEqual(['Done.'])
+})
+
+it('does not treat a queued next-turn prompt as this turn\'s replay boundary', async () => {
+  const { stream, send } = mount()
+  await send('message.start')
+  await send('message.interim', { text: 'pastel skies' })
+  await send('message.delta', { text: 'new segment streaming' })
+  const current = stream.state()
+  // A queued prompt may be visible below an in-flight assistant response.
+  stream.states.set(SID, {
+    ...current,
+    messages: [
+      ...current.messages,
+      { id: `user-queued-${SID}`, role: 'user', parts: [{ type: 'text', text: 'next prompt' }] }
+    ]
+  })
+
+  await send('message.interim', { text: 'pastel skies' })
+  expect(visibleAssistantTexts(stream)).toEqual(['pastel skies', 'new segment streaming'])
+  expect(stream.state().streamId).not.toBeNull()
 })

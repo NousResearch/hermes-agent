@@ -657,7 +657,10 @@ export function useMessageStream({
         const liveMessage = streamId != null ? (state.messages.find(message => message.id === streamId) ?? null) : null
 
         if (liveMessage) {
-          const lastUserIndex = state.messages.findLastIndex(message => message.role === 'user')
+          // A queued prompt belongs to the next turn; it is not the boundary of this seal.
+          const lastUserIndex = state.messages.findLastIndex(
+            message => message.role === 'user' && message.id !== `user-queued-${sessionId}`
+          )
           const normalizedIncoming = authoritativeText.replace(/\s+/g, ' ').trim()
           const prefixEnd = liveMessage.parts.findLastIndex(part => part.type === 'tool-call')
 
@@ -703,7 +706,16 @@ export function useMessageStream({
               return candidate === normalizedIncoming
             })
 
-          if (stale) {
+          // An identical post-tool response still needs its legitimate interim
+          // seal. Dropping that lifecycle transition makes message.complete
+          // merge the pre-tool words into the current reply a second time.
+          const currentResponse = hasNewResponse
+            ? chatMessageText({ ...liveMessage, parts: liveMessage.parts.slice(prefixEnd + 1) })
+                .replace(/\s+/g, ' ')
+                .trim()
+            : ''
+
+          if (stale && !(prefixEnd >= 0 && currentResponse === normalizedIncoming)) {
             return state
           }
         }

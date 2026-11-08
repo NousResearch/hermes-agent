@@ -169,9 +169,36 @@ async def test_conflict_ladder_climbs_across_progress_between_conflicts(monkeypa
         assert adapter._polling_conflict_count == expected
 
     # A quiet period after the last 409 ends the episode.
-    adapter._polling_last_conflict_monotonic -= tg_adapter._POLLING_CONFLICT_QUIET_PERIOD
+    adapter._polling_conflict_quiet_since -= tg_adapter._POLLING_CONFLICT_QUIET_PERIOD
     adapter._record_polling_progress(adapter._polling_generation)
     assert adapter._polling_conflict_count == 0
+
+
+@pytest.mark.asyncio
+async def test_conflict_recovery_downtime_does_not_count_as_quiet_period(monkeypatch):
+    """The quiet window opens at the first progress after a restart: a slow recovery (60s backoff plus
+    bounded stop, drain and start) must not end the episode on its first successful poll, or a
+    continuing storm restarts at (1/5) and never reaches the final error."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.set_fatal_error_handler(AsyncMock())
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(tg_adapter.time, "monotonic", lambda: clock["now"])
+
+    async def slow_recovery(*_a, **_k):
+        clock["now"] += tg_adapter._POLLING_CONFLICT_QUIET_PERIOD + 15
+
+    adapter._drain_polling_connections = slow_recovery
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    updater = SimpleNamespace(start_polling=AsyncMock(), stop=AsyncMock(), running=True)
+    adapter._app = SimpleNamespace(updater=updater)
+    conflict = type("Conflict", (Exception,), {})("Conflict: terminated by other getUpdates request")
+
+    await adapter._handle_polling_conflict(conflict)
+    adapter._record_polling_progress(adapter._polling_generation)
+    assert adapter._polling_conflict_count == 1
+    clock["now"] += 5
+    await adapter._handle_polling_conflict(conflict)
+    assert adapter._polling_conflict_count == 2
 
 
 @pytest.mark.asyncio

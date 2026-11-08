@@ -1,6 +1,6 @@
 name: shopmate
 repo: https://github.com/DaveTech2/Shopmate
-sha: 9047be6a1bf579abc9e4694379cba70613ef640b
+sha: f25da12357377c49be1c12d234f5eb820e3bce8d
 title: Shopmate
 description: >-
   Personal shopper agent: the customer says what they want and Shopmate finds it (live Google
@@ -19,7 +19,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/DaveTech2/Shopmate#readme
-version: "0.2.2"
+version: "0.2.3"
 capabilities:
   provides_tools:
     - shop_categories

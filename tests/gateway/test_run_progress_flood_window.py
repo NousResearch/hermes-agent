@@ -66,15 +66,15 @@ class FourToolAgent:
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
-async def _run(monkeypatch, tmp_path, retry_after):
+async def _run(monkeypatch, tmp_path, retry_after, adapter=None, agent_cls=FourToolAgent):
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
     fake_run_agent = types.ModuleType("run_agent")
-    fake_run_agent.AIAgent = FourToolAgent
+    fake_run_agent.AIAgent = agent_cls
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
-    adapter = FloodedEditAdapter(retry_after)
+    adapter = adapter or FloodedEditAdapter(retry_after)
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.adapters = {adapter.platform: adapter}
     runner._voice_mode, runner._prefill_messages, runner._running_agents = {}, [], {}
@@ -115,3 +115,63 @@ async def test_flood_refused_finalize_edit_is_not_retried_as_plain_text():
 
     assert result.error == "flood_control:30"
     assert adapter._bot.edit_message_text.await_count == 1
+
+
+class FloodOnceAdapter(FloodedEditAdapter):
+    """The first edit is refused with ``error`` (and ``retry_after``); later edits land."""
+
+    def __init__(self, error: str, retry_after=None):
+        super().__init__(0.0)
+        self.error, self.refused_retry_after, self.landed = error, retry_after, []
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(content)
+        if len(self.edits) == 1:
+            return SendResult(success=False, error=self.error, retry_after=self.refused_retry_after)
+        self.landed.append((time.monotonic(), content))
+        return SendResult(success=True, message_id=message_id)
+
+
+class LongLastToolAgent:
+    """Two tool events, then a long-running last tool that emits no further progress."""
+
+    finished_at = 0.0
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    @property
+    def is_interrupted(self) -> bool:
+        return False
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "web_search", "search 0", {})
+        time.sleep(1.8)  # health: allow HX013 -- the gap must outlast the loop's real 1.5s edit throttle
+        self.tool_progress_callback("tool.started", "terminal", "long build", {})
+        time.sleep(4.0)  # health: allow HX013 -- the busy tool outlives the 1 s flood window
+        LongLastToolAgent.finished_at = time.monotonic()
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+@pytest.mark.asyncio
+async def test_progress_held_by_a_flood_window_lands_when_it_closes_while_the_agent_is_busy(monkeypatch, tmp_path):
+    adapter = FloodOnceAdapter("flood_control:1.0", retry_after=1.0)
+
+    await _run(monkeypatch, tmp_path, 1.0, adapter=adapter, agent_cls=LongLastToolAgent)
+
+    in_turn = [content for at, content in adapter.landed if at < LongLastToolAgent.finished_at]
+    assert in_turn and "long build" in in_turn[0], adapter.landed  # not left stale until the turn ends
+    assert len(adapter.sent) == 1  # still no fallback send into the penalty
+
+
+@pytest.mark.asyncio
+async def test_flood_window_uses_the_wait_stated_in_raw_platform_wording(monkeypatch, tmp_path):
+    """The overflow-split path forwards PTB's text without ``retry_after``: the stated wait counts."""
+    adapter = FloodOnceAdapter("Flood control exceeded. Retry in 2 seconds")
+
+    await _run(monkeypatch, tmp_path, 0.0, adapter=adapter)
+
+    first_tick = adapter.landed[0][0] if adapter.landed else None
+    assert first_tick is not None, adapter.edits  # a 2 s penalty is not stretched into the 30 s default
+    assert len(adapter.sent) == 1

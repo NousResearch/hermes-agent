@@ -11,6 +11,7 @@ capabilities:
   provides_tools: []
   provides_hooks:
     - pre_gateway_dispatch
+    - post_gateway_admission
     - pre_llm_call
     - post_llm_call
     - pre_tool_call

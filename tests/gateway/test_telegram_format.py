@@ -565,11 +565,24 @@ async def test_send_escapes_chunk_indicator_for_markdownv2(adapter):
 
 
 class TestEditMessageStreamingSafety:
+    @pytest.fixture(autouse=True)
+    def _real_link_preview_options(self, monkeypatch):
+        # The suite's telegram stub makes LinkPreviewOptions a MagicMock whose
+        # attributes are always truthy mocks; record the real kwargs instead.
+        import plugins.platforms.telegram.adapter as tg_adapter
+
+        monkeypatch.setattr(
+            tg_adapter, "LinkPreviewOptions", lambda **kw: SimpleNamespace(**kw)
+        )
+
     @staticmethod
     def _assert_link_previews_disabled(kwargs):
         assert (
             kwargs.get("disable_web_page_preview") is True
-            or kwargs.get("link_preview_options") is not None
+            or (
+                kwargs.get("link_preview_options") is not None
+                and kwargs["link_preview_options"].is_disabled is True
+            )
         )
 
     @pytest.mark.asyncio

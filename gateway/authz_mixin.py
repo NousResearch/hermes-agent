@@ -717,7 +717,8 @@ class GatewayAuthorizationMixin:
                 not is_bot and not self._bot_loop_guard_instance().tracking_chains):
             return True
         allowed, state = self._under_authorization_profile(source, lambda: self._bot_loop_guard_instance().chain_admit(
-            self._bot_loop_guard_conversation(source), str(source.user_id or ""), str(event.text or ""), is_bot=is_bot))
+            self._bot_loop_guard_conversation(source), str(source.user_id or ""), str(event.text or ""),
+            is_bot=is_bot, thread_id=source.thread_id))
         if not allowed:
             logger.info("Bot loop guard ended a bot exchange in %s chat %s (%s from %s; gateway.bot_loop_guard).",
                         source.platform.value if source.platform else "", source.chat_id, state, source.user_id)
@@ -727,7 +728,7 @@ class GatewayAuthorizationMixin:
         """This turn's reply to a bot peer went out: its next message answers an answer."""
         if getattr(source, "is_bot", False):
             self._under_authorization_profile(source, lambda: self._bot_loop_guard_instance().note_reply(
-                self._bot_loop_guard_conversation(source), str(source.user_id or "")))
+                self._bot_loop_guard_conversation(source), str(source.user_id or ""), thread_id=source.thread_id))
 
     def _is_user_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool = True) -> bool:
         """Whether a user may use the bot.

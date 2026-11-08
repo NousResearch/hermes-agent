@@ -434,6 +434,16 @@ mattermost:
 
 A bot sender is admitted only through that platform's `*_ALLOW_BOTS` setting. Hermes never sends it runtime notices (busy and interrupt acknowledgements, progress, the "not processed" and retry hints, model-fallback and inactivity warnings, failed-delegation notices), only the model's reply, and a bot it is addressed by may still be answered with silence. `gateway.bot_loop_guard` ends the exchange: `max_hops` (default 4) bot messages after your last message, a repeated message counted once, and no answer to a bot answering a reply Hermes delivered to it unless `bot_replies_expect_reply: true`; `enabled: false` turns the rules off.
 
+By default, `gateway.bot_loop_guard.chain_scope: channel` shares those exchange rules across a channel. Set it to `thread` to give each platform thread or topic its own hop count, duplicate detection, and delivered-reply tracking. A human message then resets only that thread's chain. Messages with a missing or empty thread ID share the channel chain. Both modes keep profiles, platforms, and chats separate; the `max_events` traffic budget and its cooldown always cover the whole channel, across threads.
+
+```yaml
+gateway:
+  bot_loop_guard:
+    chain_scope: thread  # channel (default) | thread
+```
+
+Use `hermes config set gateway.bot_loop_guard.chain_scope thread` or the configuration editor to change it. The gateway reads the setting live; invalid values fall back to `channel`, like other unusable bot-loop settings. Switching scope selects the chains for the new scope; it does not clear existing chains, which still expire normally. This setting applies to messaging gateway exchanges, not Bot Mode's `message_agent` exchanges.
+
 ### Admins vs Regular Users
 
 Allowlists answer "can this person reach the bot at all?" The **admin / user split** answers "now that they're in, what are they allowed to do?"

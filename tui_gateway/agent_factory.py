@@ -669,8 +669,15 @@ def _make_agent(
             importlib.import_module(_mod).wait_for_mcp_discovery()
     cfg = _load_cfg()
     # Load hooks alongside the same profile config used to construct this agent.
-    from agent.shell_hooks import register_from_config
-    register_from_config(cfg)
+    # Discovery MUST run first: ``PluginManager.discover_and_load()`` rebuilds
+    # the hook table, so a config hook appended before it is wiped by the lazy
+    # discovery inside the first ``invoke_hook`` and never fires.
+    from hermes_cli import plugins as _plugins
+    _plugins._ensure_plugins_discovered()
+    from agent.shell_hooks import sync_from_config
+    # sync (not register): it also REMOVES hooks a rebuild dropped, so a wiped
+    # manager table is repaired instead of being skipped as "already wired".
+    sync_from_config(lambda: cfg)
     system_prompt = _startup_system_prompt(cfg, session_id or key)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     fallback_notice = runtime.pop("_fallback_notice", None)

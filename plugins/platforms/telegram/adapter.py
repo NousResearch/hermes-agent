@@ -148,14 +148,15 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
 
-# Telegram truncates ``BotCommand`` descriptions at 256 chars.
-_BOT_COMMAND_DESCRIPTION_LIMIT = 256
+_BOT_COMMAND_DESCRIPTION_LIMIT = 256  # Telegram's ``BotCommand`` description cap
 
 
-def _unauthorized() -> str:
-    """Every refused button tap answers with the same sentence — resolved per tap so the active
-    language applies (never bound at import)."""
+def _unauthorized() -> str:  # one sentence for every refused tap, resolved per tap (never bound at import)
     return unauthorized_action_notice(Platform.TELEGRAM)[:_TOAST_LIMIT]
+
+
+def _toast(key: str, **kwargs: Any) -> str:  # ``t()`` for ``query.answer(text=...)``, cut at the toast cap
+    return t(key, **kwargs)[:_TOAST_LIMIT]
 
 
 def _bold_label_html(line: str) -> str:
@@ -182,7 +183,7 @@ from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, 
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, log_resolved, tap_matches_prompt
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
-from plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, answer_callback, toast as _toast
+from plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, answer_callback
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
 from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
@@ -4669,9 +4670,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             if data.startswith(prefix):
                 await handler(query, data, cb)
                 return
-        # No handler owns it (stale build, game/web-app tap without data): ack anyway, or the client spins (#78788).
         logger.debug("[%s] unhandled callback query (data=%r)", self.name, data[:64])
-        await answer_callback(query)
+        await answer_callback(query)  # no handler owns it (stale build, data-less game tap): ack anyway or it spins (#78788)
 
     async def _claim_callback_state(self, query, cb: dict[str, Any], state: dict, key, denial: str, resolved: str, *, pop: bool = True):
         """Auth-gate a button tap, then claim its pending entry; None (after answering) when refused or expired."""

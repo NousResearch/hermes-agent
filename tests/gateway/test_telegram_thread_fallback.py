@@ -854,8 +854,9 @@ async def test_deleted_anchor_and_dead_topic_media_reply_still_reaches_chat_root
         chat_id="123", animation_url="https://example.com/anim.gif", metadata=dict(_GONE_META))
 
     assert result.success is True
-    last = call_log[-1]
-    assert (last.get("message_thread_id"), last.get("direct_messages_topic_id"), last.get("reply_to_message_id")) == (None, None, None)
+    routes = [(c.get("message_thread_id"), c.get("direct_messages_topic_id"), c.get("reply_to_message_id")) for c in call_log]
+    # anchor dropped with the topic kept, then the native id, then the root without the anchor
+    assert routes == [(20197, None, 462), (20197, None, None), (None, 20197, None), (None, None, None)]
 
 
 @pytest.mark.asyncio

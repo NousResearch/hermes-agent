@@ -114,4 +114,15 @@ describe('withoutCoveredAssistantPrefix', () => {
 
     expect(withoutCoveredAssistantPrefix(durable, local)).toBe(local)
   })
+  it('preserves a new reasoning-only suffix after a covered tool occurrence', () => {
+    const call = upsertToolPart([], { name: 'search_files', tool_id: 'call-new-suffix' }, 'complete', 2)[0]
+    const durable = [assistant([assistantTextPart('same reply'), call], 'stored')]
+    const newReasoning = reasoningPart('Starting the next round.')
+    const local = [assistant([assistantTextPart('same reply'), call, newReasoning], 'live')]
+
+    // A shared tool proves the earlier reply is covered, but not the
+    // narration newly arriving after it in that same live bubble.
+    expect(withoutCoveredAssistantPrefix(durable, local)).toEqual([assistant([newReasoning], 'live')])
+  })
+
 })

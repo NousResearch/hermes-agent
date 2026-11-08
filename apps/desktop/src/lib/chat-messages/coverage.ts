@@ -92,6 +92,11 @@ export function withoutCoveredAssistantPrefix(stored: ChatMessage[], local: Chat
     if (consumed < walkable.length) {
       stopped = true
       remaining.push(consumed ? { ...message, parts: message.parts.slice(sliceFrom) } : message)
+    } else if (sliceFrom < message.parts.length) {
+      // Narration after the last covered occurrence can belong to the next
+      // segment. No durable occurrence proves this trailing part was seen.
+      stopped = true
+      remaining.push({ ...message, parts: message.parts.slice(sliceFrom) })
     }
   }
 

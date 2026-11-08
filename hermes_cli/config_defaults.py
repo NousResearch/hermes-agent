@@ -834,8 +834,8 @@ DEFAULT_CONFIG = {
         "tui_agents_nudge": True,
         "bell_on_complete": False,
         "bell_on_prompt": False,   # bell when a blocking prompt opens (clarify/approval/sudo)
-        # Stream reasoning live before the response; otherwise thinking models show only a spinner
-        # for tens of seconds.
+        "terminal_progress": True,  # TUI OSC 9;4 tab progress per turn (Ghostty 1.2+, iTerm2 3.6.6+, ConEmu)
+        # Stream reasoning live before the response; else thinking models show only a spinner for tens of seconds.
         "show_reasoning": True,
         # Post-response "Reasoning" recap collapses to 10 lines; true prints it all (live streaming
         # is always full).

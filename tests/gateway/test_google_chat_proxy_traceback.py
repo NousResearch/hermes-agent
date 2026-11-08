@@ -82,3 +82,27 @@ def test_debug_traceback_never_carries_the_env_proxy_secret(monkeypatch, caplog,
 def test_debug_traceback_kept_through_a_proxy_holding_no_secret(monkeypatch, caplog, op):
     _, logs = _send(monkeypatch, caplog, op, {"HTTPS_PROXY": "http://127.0.0.1:1"})
     assert "Traceback (most recent call last)" in logs, logs
+
+
+def test_httplib2_unparseable_secret_redacts_even_under_no_proxy_star(monkeypatch, caplog):
+    # httplib2 parses the proxy URL (``Port could not be cast``) before it reads NO_PROXY=*.
+    httplib2 = pytest.importorskip("httplib2")
+
+    def _through_httplib2(*_args, **_kwargs):
+        httplib2.Http(timeout=3).request("https://chat.googleapis.com/v1/spaces/S/messages", "POST")
+
+    adapter = _adapter()
+    adapter._create_message = _async(_through_httplib2)
+    from plugins.platforms.google_chat import adapter as gc
+
+    monkeypatch.setattr(gc, "HttpError", http_error)
+    for name in ENV_PROXY_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://bob:qzxqzxqzx#x@127.0.0.1:1")
+    monkeypatch.setenv("NO_PROXY", "*")
+    with caplog.at_level(logging.DEBUG):
+        result = asyncio.run(SENDS["send_card"](adapter))
+    logs = _rendered(caplog)
+    assert not result.success and " via " in (result.error or ""), result
+    for text in (result.error or "", logs):
+        assert "qzx" not in text and "qzx" not in unquote(text), text[-2000:]

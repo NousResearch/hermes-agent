@@ -173,3 +173,34 @@ def test_a_send_that_no_proxy_bypasses_keeps_its_real_error(monkeypatch, caplog,
     error, _ = _send_under(monkeypatch, caplog, sender, {"HTTPS_PROXY": _SECRET, "HTTP_PROXY": _SECRET,
                                                           "NO_PROXY": BYPASSED[layout]})
     assert error and not re.search(r"\b[A-Z]\w+ via ", error), error
+
+
+@pytest.mark.parametrize("no_proxy", [" *", "* ", "*\t"])
+@pytest.mark.parametrize("sender", SENDERS)
+@pytest.mark.parametrize("shape", SHAPES)
+def test_a_padded_star_no_proxy_still_redacts(monkeypatch, caplog, sender, no_proxy, shape):
+    # urllib, requests, aiohttp and httplib2 treat only an exact ``*`` as "bypass every host".
+    secret = shape.format(pw="qzxqzxqzx")
+    error, logs = _send_under(monkeypatch, caplog, sender, {"HTTPS_PROXY": secret, "HTTP_PROXY": secret,
+                                                            "NO_PROXY": no_proxy})
+    assert error
+    for text in (error, logs):
+        assert "qzx" not in text and "qzx" not in unquote(text), text[-2000:]
+
+
+def test_simplex_trailing_dot_host_is_not_bypassed_by_its_bare_name(monkeypatch, caplog):
+    # No library strips the trailing dot: ``localhost.`` is proxied, and websockets echoes a proxy with a path.
+    pytest.importorskip("websockets")
+    from plugins.platforms.simplex import adapter as sx
+
+    secret = "http://bob:qzxqzxqzx@127.0.0.1:1/p"
+    for name in (*ENV_PROXY_VARS, "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", secret)
+    monkeypatch.setenv("HTTP_PROXY", secret)
+    monkeypatch.setenv("NO_PROXY", "localhost")
+    result = asyncio.run(asyncio.wait_for(
+        sx._standalone_send(SimpleNamespace(extra={"ws_url": "ws://localhost.:5225"}), "@alice", "hi"), 60))
+    error = str(result.get("error") or "")
+    assert re.search(r"\bInvalidProxy via ", error) and "qzx" not in unquote(error), error
+

@@ -1,0 +1,24 @@
+name: crash-test
+title: Crash Test
+repo: https://github.com/salch-cred/crash-test
+sha: 00f30620de92a470721b19a158fe26ceee8b0025
+description: >-
+  A safety rating for AI agents. For one armed turn it breaks tools the way
+  real systems break (timeouts, outages, empty or cut-off results), then rates
+  what the agent did: retried, worked around it, told the truth, or claimed
+  success anyway. 1-5 stars and an HTML report, comparable across models by
+  seed. Blocked calls never run, silent faults only touch reads, and the agent
+  gets no tools from it, so it cannot tell it is being tested.
+
+maintainer: salch-cred
+tier: community
+category: tools
+requires_hermes: ">=0.23"
+docs_url: https://github.com/salch-cred/crash-test
+version: "0.1.0"
+
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, pre_tool_call, transform_tool_result, transform_llm_output, on_session_end]
+  provides_middleware: []
+  requires_env: []

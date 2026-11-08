@@ -17,12 +17,8 @@ from gateway.config import PlatformConfig
 # ---------------------------------------------------------------------------
 # Mock the telegram package if it's not installed
 # ---------------------------------------------------------------------------
-from plugins.platforms.telegram.adapter import (
-    TelegramAdapter,
-    _escape_mdv2,
-    _strip_mdv2,
-    _wrap_markdown_tables,
-)
+from plugins.platforms.telegram.adapter import TelegramAdapter, _strip_mdv2
+from plugins.platforms.telegram.telegram_markdown import _escape_mdv2, _wrap_markdown_tables
 
 
 def _assert_balanced_mdv2_code_entities(text: str) -> None:

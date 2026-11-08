@@ -583,6 +583,18 @@ class SessionManager:
         except Exception:
             logger.debug("ACP: bounded MCP discovery wait failed", exc_info=True)
 
+        # Shell hooks (``hooks:`` in config.yaml) are process-wide and this is the
+        # ACP surface's only agent build, so without this call a ``pre_tool_call``
+        # guard configured by the user is enforced on the CLI and gateway and
+        # silently ignored in an IDE session (#41457). Non-interactive, like
+        # tui_gateway: a consent prompt here blocks the event loop.
+        try:
+            from agent.shell_hooks import register_from_config
+
+            register_from_config(config)
+        except Exception:
+            logger.debug("ACP: config shell hook registration failed", exc_info=True)
+
         try:
             agent = AIAgent(**kwargs)
         except Exception as exc:

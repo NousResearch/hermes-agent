@@ -3612,7 +3612,7 @@ class TestConversationContext:
     async def test_existing_session_gets_only_what_follows_its_own_last_turn(self, adapter):
         adapter._session_store.add("k", "s1", "a-turn")
         self._script(adapter, "get", [
-            _ctx_event("before", 100), _ctx_event("a-turn", 110), _ctx_event("after-1", 120),
+            _ctx_event("before", 10), _ctx_event("a-turn", 110), _ctx_event("after-1", 120),
             _ctx_event("in-a-thread", 125, root=ROOT), _ctx_event("reaction", 126, kind=7),
             _ctx_event("after-2", 130, pubkey=AGENT_PUBKEY), _ctx_event(TRIGGER, 140), _ctx_event("later", 150),
         ])
@@ -3655,7 +3655,7 @@ class TestConversationContext:
     async def test_existing_thread_session_skips_our_own_replies_after_the_cut(self, adapter):
         adapter._session_store.add("k", "s1", "q1")
         self._script(adapter, "thread", [
-            _ctx_event(ROOT, 100), _ctx_event("q1", 105, root=ROOT),
+            _ctx_event(ROOT, 10), _ctx_event("q1", 105, root=ROOT),
             _ctx_event("ours", 110, pubkey=SELF_PUBKEY, root=ROOT), _ctx_event("reply", 115, root=ROOT),
             _ctx_event(TRIGGER, 120, root=ROOT),
         ])
@@ -3741,7 +3741,7 @@ class TestConversationContext:
         adapter._message_handler = AsyncMock()
         adapter.send_reaction = AsyncMock(return_value=True)
         self._script(adapter, "thread", [
-            _ctx_event(ROOT, 100), _ctx_event("q1", 105, root=ROOT),
+            _ctx_event(ROOT, 10), _ctx_event("q1", 105, root=ROOT),
             _ctx_event("ours", 110, pubkey=SELF_PUBKEY, root=ROOT), _ctx_event("reply", 115, root=ROOT),
             _ctx_event(TRIGGER, 120, root=ROOT),
         ])
@@ -3761,7 +3761,7 @@ class TestConversationContext:
         adapter.config.extra["thread_sessions_per_user"] = True
         adapter._session_store.add("k", "s1", "q1")
         self._script(adapter, "thread", [
-            _ctx_event(ROOT, 100), _ctx_event("q1", 105, root=ROOT),
+            _ctx_event(ROOT, 10), _ctx_event("q1", 105, root=ROOT),
             _ctx_event("ours", 110, pubkey=SELF_PUBKEY, root=ROOT), _ctx_event(TRIGGER, 120, root=ROOT),
         ])
         assert self._lines(await self._ctx(adapter, thread=ROOT, session_id="s1", trigger_ts=120)) == ["[Chip] ours"]
@@ -3785,6 +3785,79 @@ class TestConversationContext:
         adapter._run_cli = cli  # the same full page forever: dedup ends it, the page cap bounds it
         assert await self._ctx(adapter, trigger_ts=199) is None
         assert len(cli.calls) <= 4
+
+    @pytest.mark.asyncio
+    async def test_cut_looks_back_for_author_clock_skew(self, adapter):
+        """A message posted after the last seen turn but stamped a little earlier is not lost."""
+        adapter._session_store.add("k", "s1", "turn")
+        self._script(adapter, "get", [
+            _ctx_event("old", 10), _ctx_event("skewed", 95), _ctx_event("turn", 100), _ctx_event(TRIGGER, 120)])
+        assert self._lines(await self._ctx(adapter, session_id="s1", trigger_ts=120)) == ["[Ana] skewed"]
+
+    @pytest.mark.asyncio
+    async def test_a_turn_whose_context_failed_is_not_a_cut(self, adapter):
+        """Turn N's fetch failed, so N+1 must still carry what came before N."""
+        adapter._session_store.add("k", "s1", "t-old", "t-n")
+        self._script(adapter, "get", [
+            _ctx_event("t-old", 10), _ctx_event("gap-1", 100), _ctx_event("t-n", 200), _ctx_event(TRIGGER, 220)])
+        adapter._mark_context_gap("t-n")
+        assert self._lines(await self._ctx(adapter, session_id="s1", trigger_ts=220)) == ["[Ana] gap-1"]
+
+    @pytest.mark.asyncio
+    async def test_failed_fetch_and_timeout_record_the_gap(self, adapter, monkeypatch):
+        self._script(adapter, "get", "", code=2, stderr='{"error":"relay_error","message":"down"}')
+        assert await self._ctx(adapter) is None and TRIGGER in adapter._context_gaps
+        monkeypatch.setattr(_buzz_mod, "_CONTEXT_BUDGET", 0.2)
+
+        async def stuck(args, *, input_text=None, timeout=None):
+            await asyncio.sleep(30)
+
+        adapter._run_cli = stuck
+        adapter.handle_message = AsyncMock()
+        adapter._message_handler = AsyncMock()
+        adapter.send_reaction = AsyncMock(return_value=True)
+        await adapter._dispatch_message(text="hi", chat_id=CHANNEL, chat_type="group", user_id=OTHER_PUBKEY,
+                                        user_name="Ana", message_id="slow-one", created_at=120)
+        assert "slow-one" in adapter._context_gaps
+
+    @pytest.mark.asyncio
+    async def test_author_without_pubkey_does_not_shift_names(self, adapter):
+        anon = _ctx_event("anon", 100)
+        anon["pubkey"] = ""
+        self._script(adapter, "get", [anon, _ctx_event("b", 110, pubkey=AGENT_PUBKEY), _ctx_event(TRIGGER, 120)])
+        assert self._lines(await self._ctx(adapter, trigger_ts=120)) == ["[unknown] anon", "[Bot B] b"]
+
+    @pytest.mark.asyncio
+    async def test_session_replaced_during_the_fetch_is_recomputed(self, adapter):
+        source = adapter.build_source(chat_id=CHANNEL, chat_type="group", user_id=OTHER_PUBKEY, thread_id=ROOT)
+        key = adapter._source_session_key(source)
+        adapter._session_store.add(key, "old", "q1")
+        cli = _ScriptedCli()
+        history = [_ctx_event(ROOT, 10), _ctx_event("q1", 105, root=ROOT), _ctx_event("reply", 115, root=ROOT),
+                   _ctx_event(TRIGGER, 120, root=ROOT)]
+        calls = {"n": 0}
+
+        async def fake(args, *, input_text=None, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:  # a /new lands while the first fetch is in flight
+                adapter._session_store.add(key, "new")
+            return 0, json.dumps(history), ""
+
+        adapter._run_cli = fake
+        context = await adapter._context_for(source, CHANNEL, "group", TRIGGER, 120, ROOT)
+        assert self._lines(context) == [f"[Ana] {ROOT}", "[Ana] q1", "[Ana] reply"]  # fresh: the new session
+        assert calls["n"] == 2
+
+    @pytest.mark.parametrize("gpu,tpu,thread,shared", [
+        (True, False, True, True), (True, True, True, False), (False, True, True, True),
+        (False, False, True, True), (True, False, False, False), (False, False, False, True)])
+    def test_shared_matches_the_session_key_builder(self, adapter, gpu, tpu, thread, shared):
+        adapter.config.extra.update(group_sessions_per_user=gpu, thread_sessions_per_user=tpu)
+        thread_id = ROOT if thread else None
+        a = adapter.build_source(chat_id=CHANNEL, chat_type="group", user_id=OTHER_PUBKEY, thread_id=thread_id)
+        b = adapter.build_source(chat_id=CHANNEL, chat_type="group", user_id=AGENT_PUBKEY, thread_id=thread_id)
+        assert (adapter._source_session_key(a) == adapter._source_session_key(b)) is shared
+        assert adapter._session_is_shared("group", thread_id) is shared
 
     @pytest.mark.asyncio
     async def test_our_lines_are_never_marked_unverified(self, adapter):

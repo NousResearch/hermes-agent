@@ -105,7 +105,12 @@ def _checked_entry(authority, receipt, source, route):
         raise ValueError('entry mismatch')
     row = authority.db.get_session(entry.session_id)
     if row is None or (row['session_key'], row['chat_id'], row['user_id']) != (route, source.chat_id, source.user_id):
-        raise ValueError('stored identity mismatch')
+        if row is None:
+            raise ValueError(f'stored identity mismatch: no sessions row for {entry.session_id} '
+                             f'(expected route {route!r})')
+        raise ValueError('stored identity mismatch: '
+                         f'row key={row["session_key"]!r} chat_id={row["chat_id"]!r} user_id={row["user_id"]!r} '
+                         f'vs route={route!r} chat_id={source.chat_id!r} user_id={source.user_id!r}')
     return entry
 
 

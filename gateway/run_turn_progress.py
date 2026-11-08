@@ -42,6 +42,25 @@ def _append_progress_repeat_count(message: str, occurrences: int) -> str:
     return f"{message} {suffix}"
 
 
+def _note_flood(st, result) -> bool:
+    """True when a failed progress edit was refused by flood control; arms ``st.flood_until`` from
+    the result's ``retry_after`` (default 30s) so no progress call fires into the open window."""
+    from gateway.delivery_ledger import is_flood_error
+    error = getattr(result, "error", "") or ""
+    if not (is_flood_error(error) or "flood" in error.lower() or "retry after" in error.lower()):
+        return False
+    try:
+        wait = float(getattr(result, "retry_after", None) or 30.0)
+    except (TypeError, ValueError):
+        wait = 30.0
+    st.flood_until = time.monotonic() + wait
+    return True
+
+
+def _in_flood_window(st) -> bool:
+    return time.monotonic() < st.flood_until
+
+
 def _tool_lifecycle_payload(call_id, tool_name, args) -> dict:
     """The ``ToolStartPayload`` contract every client reads (``tool_id``/``name``/``context``),
     plus the ``tool_call_id``/``tool_name`` the gateway's own consumers were built on."""
@@ -572,6 +591,9 @@ class GatewayTurnProgressMixin:
         _progress_len_fn: Any
         _PROGRESS_TEXT_LIMIT: int
         _edit_accepts_metadata: bool
+        # monotonic() until which a flood-refused edit's retry_after runs: no progress call fires
+        # into that window, the buffer just keeps absorbing lines (#76494).
+        flood_until: float = 0.0
 
     def _progress_edit_state(self, adapter) -> TurnRunner._ProgressEditState:
         ctx = self._ctx
@@ -636,7 +658,7 @@ class GatewayTurnProgressMixin:
         Returns True when it delivered/split the buffer or a transient edit failure left it
         intact for retry — either way the caller skips the normal send/edit path this tick.
         """
-        if not st.progress_lines or not st.can_edit:
+        if not st.progress_lines or not st.can_edit or _in_flood_window(st):
             return False
         groups = self._split_progress_groups(st, st.progress_lines)
         if len(groups) <= 1:
@@ -644,7 +666,7 @@ class GatewayTurnProgressMixin:
         if st.progress_msg_id is not None:
             result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(groups[0]))
             if not result.success:
-                if getattr(result, "retryable", False):
+                if getattr(result, "retryable", False) or _note_flood(st, result):
                     logger.debug("[%s] Transient overflow edit failure — keeping can_edit=True", st.adapter.name)
                     return True
                 st.can_edit = False
@@ -682,7 +704,7 @@ class GatewayTurnProgressMixin:
         return raw
 
     async def _flush_progress_edit(self, st) -> None:
-        if st.can_edit and st.progress_lines and st.progress_msg_id:
+        if st.can_edit and st.progress_lines and st.progress_msg_id and not _in_flood_window(st):
             with suppress(Exception):
                 await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st.progress_lines))
 
@@ -719,6 +741,8 @@ class GatewayTurnProgressMixin:
         Transient network errors (ConnectError, timeouts) must not disable editing; only permanent
         failures (not found, permissions) set can_edit=False. Flood control backs off but keeps editing.
         """
+        if _in_flood_window(st):
+            return False
         if st.can_edit and st.progress_msg_id is not None:
             result = await self._edit_progress_message(st, st.progress_msg_id, "\n".join(st.progress_lines))
             if result.success:
@@ -726,10 +750,13 @@ class GatewayTurnProgressMixin:
             if getattr(result, "retryable", False):
                 logger.debug("[%s] Transient edit failure — keeping can_edit=True", st.adapter.name)
                 return False
-            if any(w in (getattr(result, "error", "") or "").lower() for w in ("flood", "retry after")):
+            if _note_flood(st, result):
+                # Never answer a flood-refused edit with a fresh send into the same chat: Telegram
+                # bills every call against the open penalty and escalates it (#76494). The buffer
+                # stays intact; a later tick (or the final flush) edits the same bubble.
                 logger.info("[%s] Progress edit flood control, backing off", st.adapter.name)
-            else:
-                st.can_edit = False
+                return False
+            st.can_edit = False
             await self._send_progress_text(st, msg)
             return True
         # First tool: send all accumulated text as a new message; editing unsupported: just this line.

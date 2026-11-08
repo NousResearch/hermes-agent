@@ -1,0 +1,24 @@
+name: site-skills
+repo: https://github.com/imamalkan-hub/site-skills
+sha: a0d53d64ce0d085641e032c39c83286e312c09f7
+description: >-
+  Twelve portable Agent Plugins v1 skills, each a short research guide to one public
+  reference or directory site in the sleep-health, dental, home-improvement and
+  superyacht-charter space (findsleepdoctors.com, sleepclinicdirectory.com,
+  sleepclinicsau.com, frenectomyguide.com, qsedationdentistry.com,
+  schlafklinikfinder.com, chalazionguide.com, sleepclinicguide.com, dipandheat.com,
+  garagevertical.com, golfbayguide.com, superyachtcharterguide.com). Skills only —
+  no tools, hooks, middleware, MCP servers, environment variables, Python dependencies
+  or plugin code. Disclosure — every skill is static text whose links point at the
+  author's own public sites; no network calls, shell commands or credential access.
+maintainer: imamalkan-hub
+tier: community
+category: web
+docs_url: https://github.com/imamalkan-hub/site-skills#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

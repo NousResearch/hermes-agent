@@ -310,6 +310,20 @@ def test_a_custom_zen_endpoint_is_not_classified_as_the_main_runtimes_go(is_asyn
 
 
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_a_custom_zen_endpoints_payment_error_benches_that_endpoint_not_go(is_async):
+    """The same Zen endpoint under a Go session answers 402: the endpoint that sent it is benched, Go stays eligible."""
+    from agent import auxiliary_client as aux
+
+    health, zen_url = {}, "https://opencode.ai/zen/v1"
+    zen = _wire(lambda r: httpx.Response(402, json={"error": {"message": "Insufficient Balance"}}, request=r),
+                key="sk-zen", url=zen_url, is_async=is_async)
+    runtime = {"provider": "opencode-go", "base_url": "https://opencode.ai/zen/go/v1", "api_key": "sk-go"}
+    assert _routed_call([zen] * 2, provider="custom", is_async=is_async, health=health, main_runtime=runtime) == "fallback"
+    with patch.object(aux, "_aux_unhealthy_until", health):
+        assert (aux._is_provider_unhealthy("opencode-go"), aux._is_provider_unhealthy("custom", zen_url)) == (False, True)
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
 def test_observers_see_the_providers_own_error_when_its_stream_was_judged(monkeypatch, is_async):
     """A stream negotiation is classified where it failed; ``post_auxiliary_call`` still reports the provider's error."""
     from hermes_cli import plugins

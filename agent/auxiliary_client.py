@@ -3523,8 +3523,8 @@ def _recoverable_pool_provider(
                     # rejection at any other host (registry default vs configured proxy) says nothing
                     # about that key, so it must not be marked exhausted.
                     rt_base = str(runtime.get("base_url") or getattr(pconfig, "inference_base_url", "") or "").rstrip("/")
-                    # Classification also needs the same relay path: one host can serve two products (OpenCode Zen at
-                    # /zen, Go at /zen/go), and a Zen request judged by Go's profile loses its same-key retry.
+                    # ``same_path``: naming the backend that sent a request (not the pool to rotate) also needs the
+                    # path, as one host can serve two products (OpenCode Zen at /zen, Go at /zen/go).
                     if rt_base and base_url_host_matches(base, base_url_hostname(rt_base)) and (
                             not same_path or _relay_path(base) == _relay_path(rt_base)):
                         return rt_provider
@@ -7741,7 +7741,7 @@ def _ladder_provider_fallback(failure: aux_errors.Failure, route: _LadderRoute, 
         # Mark the concrete backend (not the "auto" label) that sent the failed request unhealthy, so later aux
         # calls skip it instead of paying another doomed RTT: a rebuilt retry may have reached another backend.
         sender = _failure_sender(route, failure)
-        failed_provider = _recoverable_pool_provider(resolved_provider, sender, main_runtime=route.main_runtime)
+        failed_provider = _recoverable_pool_provider(resolved_provider, sender, route.main_runtime, same_path=True)
         sender_url = "" if sender is route.client else str(getattr(sender, "base_url", "") or "")
         _mark_provider_unhealthy(
             failed_provider or _classification_provider(sender, resolved_provider, route.main_runtime),

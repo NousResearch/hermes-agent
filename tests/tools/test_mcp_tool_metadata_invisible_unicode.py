@@ -23,7 +23,9 @@ def test_tool_schema_strips_hidden_free_text_but_keeps_the_call_contract():
         "type": "object",
         "properties": {
             "query": {"type": "string", "title": f"Q{HIDDEN}", "description": f"Search text{HIDDEN}",
-                      "default": f"d{HIDDEN}"},
+                      "default": f"d{HIDDEN}",
+                      # Instance data: a keyword-named key inside it is plain data, not the keyword.
+                      "examples": [{"propertyName": f"x{HIDDEN}", "enum": f"y{HIDDEN}"}]},
             "mode": {"anyOf": [{"type": "string", "enum": [tagged_choice, "slow"],
                                 "description": f"speed{HIDDEN}"}, {"type": "null"}]},
             tagged_key: {"type": "string", "description": f"legacy{HIDDEN}"},
@@ -38,7 +40,8 @@ def test_tool_schema_strips_hidden_free_text_but_keeps_the_call_contract():
     props = schema["parameters"]["properties"]
     free_text = [schema["description"], props["query"]["title"], props["query"]["description"],
                  props["query"]["default"], props["mode"]["description"], props[tagged_key]["description"],
-                 schema["parameters"]["dependentSchemas"]["enum"]["description"]]
+                 schema["parameters"]["dependentSchemas"]["enum"]["description"],
+                 *props["query"]["examples"][0].values()]
     assert not any(_invisible(text) for text in free_text)
     assert props["query"]["description"] == "Search text" and FAMILY in schema["description"]
     assert tagged_key in props and props["mode"]["enum"] == [tagged_choice, "slow"]

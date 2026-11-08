@@ -217,6 +217,15 @@ describe('cachedProfileModelOptions', () => {
     })
   })
 
+  it('does not seed a cold session from provider shells with no selectable models', () => {
+    const client = new QueryClient()
+    client.setQueryData(modelOptionsQueryKey('default', 'earlier-session'), {
+      providers: [row('openai', [])]
+    })
+
+    expect(cachedProfileModelOptions(client, 'default')).toBeUndefined()
+  })
+
   it('never borrows another profile or registry connection catalog', () => {
     const client = new QueryClient()
 

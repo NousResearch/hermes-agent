@@ -675,11 +675,15 @@ import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { wireWindowReveal } from './window-reveal'
 import {
+  restoredInstanceWindowOptions,
   restoredSessionWindowOptions,
+  restoreInstanceWindows,
   restoreSessionWindows,
   sanitizeWindowSessionState,
+  type SavedInstanceWindow,
   type SavedSessionWindow,
-  serializeWindowSessionState
+  serializeWindowSessionState,
+  WINDOW_INSTANCE_ID_PATTERN
 } from './window-session-state'
 import {
   bindGeometryPersistence,
@@ -13843,8 +13847,9 @@ function createSessionWindow(
 // remembers which EXTRA pop-out windows existed, so "don't make me re-pop-out
 // every window" works without duplicating either existing schema.
 
-function captureWindowSessionState(): SavedSessionWindow[] {
+function captureWindowSessionState(): { windows: SavedSessionWindow[]; instanceWindows: SavedInstanceWindow[] } {
   const windows: SavedSessionWindow[] = []
+  const instances: SavedInstanceWindow[] = []
 
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) {
@@ -13868,14 +13873,35 @@ function captureWindowSessionState(): SavedSessionWindow[] {
     })
   }
 
-  return windows
+  // File > New Window instances (hermes:window:openInstance / createInstanceWindow)
+  // are a second, separate kind of secondary window — tracked in their own
+  // `instanceWindows` Set, not sessionWindowLaunchInfo, and routed by
+  // profile/connectionId (via windowConnectionRoutes) rather than a sessionId.
+  for (const win of instanceWindows) {
+    if (!win || win.isDestroyed()) {
+      continue
+    }
+
+    const route = windowConnectionRoutes.get(win.webContents.id)
+    const { x, y, width, height } = win.getNormalBounds()
+
+    instances.push({
+      connectionId: route?.connectionId ?? null,
+      profile: route?.profile ?? null,
+      geometry: { x, y, width, height, isMaximized: win.isMaximized() },
+      windowId: instanceWindowIds.get(win.webContents.id) ?? null,
+      profileWindow: instanceWindowProfilePins.get(win.webContents.id) === true
+    })
+  }
+
+  return { windows, instanceWindows: instances }
 }
 
 function persistWindowSessionState() {
   try {
-    const windows = captureWindowSessionState()
+    const { windows, instanceWindows: instances } = captureWindowSessionState()
     fs.mkdirSync(path.dirname(DESKTOP_WINDOW_SESSION_STATE_PATH), { recursive: true })
-    writeFileAtomic(DESKTOP_WINDOW_SESSION_STATE_PATH, serializeWindowSessionState(windows))
+    writeFileAtomic(DESKTOP_WINDOW_SESSION_STATE_PATH, serializeWindowSessionState(windows, instances))
   } catch (err) {
     rememberLog(`[window-sessions] persist failed: ${err?.message || err}`)
   }
@@ -13919,7 +13945,7 @@ async function savedSessionWindowExists(window: SavedSessionWindow): Promise<boo
 async function restoreWindowSessionsOnce() {
   const state = readWindowSessionState()
 
-  if (!state || state.windows.length === 0) {
+  if (!state || (state.windows.length === 0 && state.instanceWindows.length === 0)) {
     return
   }
 
@@ -13934,6 +13960,18 @@ async function restoreWindowSessionsOnce() {
       }),
     quitting: () => appQuitting || quitInProgress,
     log: rememberLog
+  })
+
+  restoreInstanceWindows(state, {
+    open: window =>
+      createInstanceWindow(
+        window.profile ? { connectionId: window.connectionId, profile: window.profile } : undefined,
+        null,
+        restoredInstanceWindowOptions(window, screen.getAllDisplays()),
+        window.windowId,
+        window.profileWindow
+      ),
+    quitting: () => appQuitting || quitInProgress
   })
 }
 
@@ -14035,6 +14073,24 @@ function createBrowserWindow(tabId) {
 // garbage-collected, and drops it on close.
 const instanceWindows = new Set<any>()
 
+// Stable per-window identity for each live instance window, keyed by
+// webContents.id (BUILD-STABLE-WINDOW-ID). Populated once, in
+// createInstanceWindow, with either the restored id (quit/relaunch) or a
+// freshly minted one (ordinary open) — captureWindowSessionState reads this
+// map back out so the SAME id round-trips through the next quit, letting the
+// renderer's windowScopedKey (src/store/windows.ts) recover this window's own
+// sessionTiles.v2/layoutTree.v2 instead of booting into empty storage.
+const instanceWindowIds = new Map<number, string>()
+// Launch intent is separate from the current boot route: inherited New Window
+// routes must not become explicit-profile New-session defaults after restore.
+const instanceWindowProfilePins = new Map<number, boolean>()
+
+// All windowIds currently claimed by a live instance window — the collision
+// guard createInstanceWindow consults before reusing a restored id.
+function liveInstanceWindowIds(): Set<string> {
+  return new Set(instanceWindowIds.values())
+}
+
 // Cascade a new instance off whichever window spawned it so it doesn't land
 // exactly on top of its source. Falls back to the persisted primary geometry
 // when there's no live source window (e.g. all windows closed on macOS). The
@@ -14057,9 +14113,19 @@ function nextInstanceBounds(source: BrowserWindow | null = BrowserWindow.getFocu
 // streamed answer never stalls in the background) but is a peer, not the
 // primary: it never overwrites mainWindow or re-homes the source. Its renderer
 // joins the requested pooled backend through its own connection/profile route.
+// `savedWindowId` (BUILD-STABLE-WINDOW-ID) is the identity to REUSE, passed by
+// restoreWindowSessionsOnce for a window recovered from window-session-state.json
+// — never supplied by the menu/IPC open paths, which always want a fresh id.
+// Malformed input (fails WINDOW_INSTANCE_ID_PATTERN) and a collision with
+// another window's id CURRENTLY live in instanceWindowIds both fall back to a
+// freshly minted uuid rather than ever reusing/propagating a bad or
+// double-claimed identity.
 function createInstanceWindow(
   options?: DesktopProfileRoute,
-  source: BrowserWindow | null = BrowserWindow.getFocusedWindow() || mainWindow
+  source: BrowserWindow | null = BrowserWindow.getFocusedWindow() || mainWindow,
+  bounds?: { width: number; height: number; x?: number; y?: number },
+  savedWindowId?: string | null,
+  savedProfileWindow?: boolean
 ) {
   const route = resolveDesktopWindowLaunch(
     options,
@@ -14068,10 +14134,17 @@ function createInstanceWindow(
   )
 
   validateDesktopProfileRoute(route)
+
+  if (typeof savedProfileWindow === 'boolean') {
+    route.profileWindow = savedProfileWindow
+  }
+
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
-    ...nextInstanceBounds(source),
+    ...(bounds
+      ? { width: bounds.width, height: bounds.height, ...(Number.isFinite(bounds.x) && Number.isFinite(bounds.y) ? { x: bounds.x, y: bounds.y } : {}) }
+      : nextInstanceBounds(source)),
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
     title: 'Hermes',
@@ -14122,15 +14195,37 @@ function createInstanceWindow(
 
   win.on('closed', () => {
     instanceWindows.delete(win)
+    instanceWindowIds.delete(win.webContents.id)
+    instanceWindowProfilePins.delete(win.webContents.id)
   })
 
   attachRendererConsoleCapture(win, 'instance', rememberLog)
+
+  // Per-window identity (t_7690aaea follow-up; reuse across restart —
+  // BUILD-STABLE-WINDOW-ID): without this, every peer window's renderer
+  // shares the exact same localStorage keys for session tiles and pane
+  // layout (same origin, no partition), so two open windows silently
+  // overwrite each other's tabs last-write-wins. The renderer's storage
+  // choke point (src/lib/storage.ts windowScopedKey) namespaces those keys
+  // by this id; the primary window gets none and keeps the legacy key.
+  // A restored window REUSES its pre-quit id (when valid and not already
+  // claimed by another live window) so it recovers its own saved layout
+  // instead of a fresh, empty one.
+  const windowId =
+    savedWindowId && WINDOW_INSTANCE_ID_PATTERN.test(savedWindowId) && !liveInstanceWindowIds().has(savedWindowId)
+      ? savedWindowId
+      : crypto.randomUUID()
+
+  instanceWindowIds.set(win.webContents.id, windowId)
+  instanceWindowProfilePins.set(win.webContents.id, route.profileWindow)
+
   loadWindowUrl(
     win,
     buildInstanceWindowUrl({
       ...route,
       devServer: DEV_SERVER,
-      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
+      windowId
     }),
     'Instance window'
   )
@@ -18319,6 +18414,39 @@ app.on('will-quit', () => {
 app.on('quit', () => {
   quitFinalization.cancel()
 })
+
+// SIGINT/SIGTERM safety net (#t_7690aaea). `npm run dev` wraps Electron in
+// `concurrently -k "npm:dev:renderer" "npm:dev:electron"`; Ctrl+C on that
+// wrapper delivers a raw SIGINT straight to this process (same foreground
+// process group), not a window-level Cmd+Q. The pre-existing SIGINT/SIGTERM
+// forwarding in entry.ts only exists inside the Linux/WSLg relaunch branch
+// (wslgLaunchArgs() returns null on every other platform, macOS included),
+// so on macOS/Windows/ordinary Linux this process had NO signal handler at
+// all: Node's default disposition is an immediate process.exit() with no
+// 'before-quit'/'will-quit' lifecycle whatsoever — not a teardown race, a
+// total skip of persistWindowSessionState() and every other quit-time write.
+// The same gap applies to any OS-level stop (launchd/systemd sending
+// SIGTERM). Routing both signals through app.quit() makes any of these a
+// real graceful quit, indistinguishable from the Quit menu item / Cmd+Q.
+// A second signal (impatient double Ctrl+C, or a stalled teardown) forces an
+// immediate hard exit rather than hanging — the same bounded-escape-hatch
+// shape as quitFinalization's Windows hardExit, just signal-triggered and
+// cross-platform instead of will-quit-armed and Windows-only.
+let quitSignalReceived = false
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    if (quitSignalReceived) {
+      process.exit(0)
+
+      return
+    }
+
+    quitSignalReceived = true
+    setTimeout(() => process.exit(0), 2_000).unref()
+    app.quit()
+  })
+}
 
 // Answered synchronously so preload can publish the verdict before the
 // renderer's first script — see the note there on why it cannot decide this

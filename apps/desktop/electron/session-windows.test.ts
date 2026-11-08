@@ -108,6 +108,19 @@ test('buildInstanceWindowUrl marks a packaged full peer', () => {
   assert.match(url, /^file:\/\/.*index\.html\?peer=1$/)
 })
 
+test('buildInstanceWindowUrl carries the per-window identity before any profile fields (#t_7690aaea)', () => {
+  const url = new URL(buildInstanceWindowUrl({ devServer: 'http://localhost:5173/', windowId: 'abc-123' }))
+
+  assert.equal(url.searchParams.get('peer'), '1')
+  assert.equal(url.searchParams.get('windowId'), 'abc-123')
+})
+
+test('buildInstanceWindowUrl omits windowId entirely when none is given (the primary window never carries one)', () => {
+  const url = new URL(buildInstanceWindowUrl({ devServer: 'http://localhost:5173/' }))
+
+  assert.equal(url.searchParams.has('windowId'), false)
+})
+
 test('full peers carry their boot owner but only explicit profile windows pin future chats', () => {
   for (const source of [{ devServer: 'http://localhost:5173/' }, { rendererIndexPath: '/opt/app/index.html' }]) {
     for (const connectionId of [null, 'remote&work']) {

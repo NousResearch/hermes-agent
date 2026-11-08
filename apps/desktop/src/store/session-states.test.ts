@@ -1054,6 +1054,93 @@ describe('dropTilesForProfile', () => {
   })
 })
 
+// --- Per-window TILES_KEY isolation (t_7690aaea follow-up) -----------------
+//
+// hermes.desktop.sessionTiles.v2 is read/written at module load (see
+// loadTilesByProfile/persistTiles), through the same windowScopedKey choke
+// point as layout-persistence.ts. These tests re-import the module graph
+// under different window.location.search values the way dropTilesForProfile
+// above re-imports it between profiles, proving two peer windows' tiles
+// never collide and the main window's legacy key is untouched.
+describe('per-window session tile isolation', () => {
+  afterEach(() => {
+    window.localStorage.clear()
+    window.history.replaceState(null, '', '/')
+    vi.resetModules()
+  })
+
+  it('gives two different peer windows independent tile state that does not collide', async () => {
+    window.localStorage.clear()
+    window.history.replaceState(null, '', '/?peer=1&windowId=win-a')
+    vi.resetModules()
+    const winA = await import('@/store/session-states')
+    const profileA = await import('@/store/profile')
+    profileA.$activeGatewayProfile.set('default')
+    winA.openSessionTile('session-a')
+    expect(winA.$sessionTiles.get().map(t => t.storedSessionId)).toEqual(['session-a'])
+
+    window.history.replaceState(null, '', '/?peer=1&windowId=win-b')
+    vi.resetModules()
+    const winB = await import('@/store/session-states')
+    const profileB = await import('@/store/profile')
+    profileB.$activeGatewayProfile.set('default')
+    // Window B boots empty — it must not inherit window A's tile.
+    expect(winB.$sessionTiles.get()).toEqual([])
+    winB.openSessionTile('session-b')
+    expect(winB.$sessionTiles.get().map(t => t.storedSessionId)).toEqual(['session-b'])
+
+    const rawA = window.localStorage.getItem('hermes.desktop.sessionTiles.v2::win:win-a')
+    const rawB = window.localStorage.getItem('hermes.desktop.sessionTiles.v2::win:win-b')
+    expect(JSON.parse(rawA!).default.map((t: { storedSessionId: string }) => t.storedSessionId)).toEqual([
+      'session-a'
+    ])
+    expect(JSON.parse(rawB!).default.map((t: { storedSessionId: string }) => t.storedSessionId)).toEqual([
+      'session-b'
+    ])
+    // Neither peer ever wrote the legacy shared key.
+    expect(window.localStorage.getItem('hermes.desktop.sessionTiles.v2')).toBeNull()
+  })
+
+  it("the main window's legacy unscoped tiles key round-trips exactly as before (no regression)", async () => {
+    window.localStorage.clear()
+    window.history.replaceState(null, '', '/')
+    vi.resetModules()
+    const main = await import('@/store/session-states')
+    const profile = await import('@/store/profile')
+    profile.$activeGatewayProfile.set('default')
+    main.openSessionTile('main-session')
+
+    const raw = window.localStorage.getItem('hermes.desktop.sessionTiles.v2')
+    expect(JSON.parse(raw!).default.map((t: { storedSessionId: string }) => t.storedSessionId)).toEqual([
+      'main-session'
+    ])
+    expect(
+      Object.keys(window.localStorage).some(key => typeof key === 'string' && key.includes('::win:'))
+    ).toBe(false)
+
+    vi.resetModules()
+    const reloaded = await import('@/store/session-states')
+    expect(reloaded.$sessionTiles.get().map(t => t.storedSessionId)).toEqual(['main-session'])
+  })
+
+  it('falls back to the shared legacy tiles key when a peer window has no/a malformed windowId', async () => {
+    for (const search of ['/?peer=1', '/?peer=1&windowId=', '/?peer=1&windowId=bad/id']) {
+      window.localStorage.clear()
+      window.history.replaceState(null, '', search)
+      vi.resetModules()
+      const mod = await import('@/store/session-states')
+      const profile = await import('@/store/profile')
+      profile.$activeGatewayProfile.set('default')
+      mod.openSessionTile('fallback-session')
+
+      const raw = window.localStorage.getItem('hermes.desktop.sessionTiles.v2')
+      expect(JSON.parse(raw!).default.map((t: { storedSessionId: string }) => t.storedSessionId)).toEqual([
+        'fallback-session'
+      ])
+    }
+  })
+})
+
 describe('releaseSessionTranscript', () => {
   afterEach(() => {
     $sessionStates.set({})

@@ -11,9 +11,12 @@ import { test } from 'vitest'
 
 import {
   parseWindowSessionState,
+  restoredInstanceWindowOptions,
   restoredSessionWindowOptions,
+  restoreInstanceWindows,
   restoreSessionWindows,
   sanitizeWindowSessionState,
+  type SavedInstanceWindow,
   type SavedSessionWindow,
   serializeWindowSessionState
 } from './window-session-state'
@@ -150,6 +153,159 @@ test('restoredSessionWindowOptions clamps to the available display', () => {
   const small = [{ workArea: { x: 0, y: 0, width: 600, height: 700 } }]
   const oversized = window('a', { geometry: { width: 5000, height: 5000, isMaximized: false } }).geometry
   const opts = restoredSessionWindowOptions({ ...window('a'), geometry: oversized }, small)
+  assert.ok(opts.width <= 600)
+  assert.ok(opts.height <= 700)
+})
+
+// ─── instance windows (File > New Window) ───────────────────────────────────
+
+function instance(overrides: Partial<SavedInstanceWindow> = {}): SavedInstanceWindow {
+  return { profile: 'default', connectionId: null, geometry: GEOMETRY, windowId: null, profileWindow: false, ...overrides }
+}
+
+test('sanitizeWindowSessionState keeps valid instance windows and drops garbage ones', () => {
+  const result = sanitizeWindowSessionState({
+    version: 1,
+    windows: [],
+    instanceWindows: [
+      { profile: 'default', connectionId: null, geometry: GEOMETRY },
+      { profile: 'work', connectionId: 'conn-a', geometry: GEOMETRY },
+      { profile: 'default', connectionId: null, geometry: { width: 'x' } }, // bad geometry
+      null // garbage row
+    ]
+  })
+
+  assert.equal(result?.instanceWindows.length, 2)
+  assert.equal(result?.instanceWindows[0].profile, 'default')
+  assert.equal(result?.instanceWindows[1].connectionId, 'conn-a')
+})
+
+// --- Stable per-window identity (BUILD-STABLE-WINDOW-ID) --------------------
+//
+// RED: createInstanceWindow always mints a fresh crypto.randomUUID() and
+// SavedInstanceWindow/sanitizeWindowSessionState never persisted a window's
+// id, so a restored peer could never recover its own scoped
+// sessionTiles.v2/layoutTree.v2 storage (windowScopedKey in src/store/windows.ts
+// namespaces by that id). These tests fail against the pre-fix shape (no
+// `windowId` field) and the pre-fix (connectionId, profile) dedup, which
+// collapsed multiple same-route peers into one saved row.
+
+test('sanitizeWindowSessionState preserves multiple instance windows sharing the same profile/connection (distinct windowId)', () => {
+  const result = sanitizeWindowSessionState({
+    version: 1,
+    windows: [],
+    instanceWindows: [
+      instance({ windowId: 'win-a' }),
+      instance({ windowId: 'win-b' }),
+      instance({ windowId: 'win-c' })
+    ]
+  })
+
+  assert.equal(result?.instanceWindows.length, 3)
+  assert.deepEqual(
+    result?.instanceWindows.map(w => w.windowId).sort(),
+    ['win-a', 'win-b', 'win-c']
+  )
+})
+
+test('sanitizeWindowSessionState drops a second instance window row that collides on the exact same windowId', () => {
+  const result = sanitizeWindowSessionState({
+    version: 1,
+    windows: [],
+    instanceWindows: [instance({ windowId: 'dup-1' }), instance({ windowId: 'dup-1', profile: 'work' })]
+  })
+
+  assert.equal(result?.instanceWindows.length, 1)
+  assert.equal(result?.instanceWindows[0].profile, 'default')
+})
+
+test('sanitizeWindowSessionState rejects a malformed windowId (degrades to null, never propagates garbage)', () => {
+  const result = sanitizeWindowSessionState({
+    version: 1,
+    windows: [],
+    instanceWindows: [
+      instance({ windowId: 'has space' }),
+      instance({ windowId: '../etc/passwd' }),
+      instance({ windowId: 'a'.repeat(65) }),
+      instance({ windowId: 42 as unknown as string })
+    ]
+  })
+
+  assert.equal(result?.instanceWindows.length, 4)
+  assert.ok(result?.instanceWindows.every(w => w.windowId === null))
+})
+
+test('sanitizeWindowSessionState keeps legacy instance windows (no windowId at all) without colliding on each other', () => {
+  const result = sanitizeWindowSessionState({
+    version: 1,
+    windows: [],
+    instanceWindows: [instance(), instance(), instance({ connectionId: 'conn-a' })]
+  })
+
+  // Pre-fix behavior deduped these down to 2 by (connectionId, profile); a
+  // legacy record carries no identity to dedupe by, so every one must survive.
+  assert.equal(result?.instanceWindows.length, 3)
+  assert.ok(result?.instanceWindows.every(w => w.windowId === null))
+})
+
+test('serializeWindowSessionState / parseWindowSessionState round-trip preserves windowId', () => {
+  const windows: SavedSessionWindow[] = []
+  const instances = [instance({ connectionId: 'conn-a', windowId: 'win-a' }), instance({ windowId: null })]
+  const parsed = parseWindowSessionState(serializeWindowSessionState(windows, instances))
+  assert.deepEqual(parsed?.instanceWindows, instances)
+})
+
+test('profileWindow preserves explicit booleans and defaults missing or malformed legacy metadata to unpinned', () => {
+  const rawPins = [true, false, undefined, 'true', 1, null]
+
+  const parsed = parseWindowSessionState(JSON.stringify({ version: 1, windows: [], instanceWindows:
+    rawPins.map((profileWindow, index) => ({ ...instance({ windowId: `peer-${index}` }), profileWindow }))
+  }))
+
+  assert.deepEqual(parsed?.instanceWindows.map(w => w.profileWindow), [true, false, false, false, false, false])
+  assert.deepEqual(parseWindowSessionState(serializeWindowSessionState([], parsed!.instanceWindows)), parsed)
+})
+
+test('sanitizeWindowSessionState defaults instanceWindows to [] when the field is absent (back-compat with pre-fix saved state)', () => {
+  const result = sanitizeWindowSessionState({ version: 1, windows: [window('sess-1')] })
+  assert.deepEqual(result?.instanceWindows, [])
+  assert.equal(result?.windows.length, 1)
+})
+
+test('serializeWindowSessionState / parseWindowSessionState round-trip includes instance windows', () => {
+  const windows = [window('sess-1')]
+  const instances = [instance({ connectionId: 'conn-a' })]
+  const parsed = parseWindowSessionState(serializeWindowSessionState(windows, instances))
+  assert.deepEqual(parsed?.windows, windows)
+  assert.deepEqual(parsed?.instanceWindows, instances)
+})
+
+test('restoreInstanceWindows opens every saved instance window unconditionally (no existence probe)', () => {
+  const opened: Array<string | null> = []
+  restoreInstanceWindows(sanitizeWindowSessionState({ version: 1, windows: [], instanceWindows: [instance(), instance({ profile: 'work' })] }), {
+    open: w => opened.push(w.profile),
+    quitting: () => false
+  })
+  assert.deepEqual(opened, ['default', 'work'])
+})
+
+test('restoreInstanceWindows stops opening more windows once quitting() flips true', () => {
+  const opened: Array<string | null> = []
+  let quit = false
+  restoreInstanceWindows(sanitizeWindowSessionState({ version: 1, windows: [], instanceWindows: [instance(), instance({ profile: 'work' })] }), {
+    open: w => {
+      quit = true
+      opened.push(w.profile)
+    },
+    quitting: () => quit
+  })
+  assert.deepEqual(opened, ['default'])
+})
+
+test('restoredInstanceWindowOptions clamps to the available display', () => {
+  const small = [{ workArea: { x: 0, y: 0, width: 600, height: 700 } }]
+  const oversized = instance({ geometry: { width: 5000, height: 5000, isMaximized: false } }).geometry
+  const opts = restoredInstanceWindowOptions({ ...instance(), geometry: oversized }, small)
   assert.ok(opts.width <= 600)
   assert.ok(opts.height <= 700)
 })

@@ -125,6 +125,43 @@ export function isPeerInstanceWindow(search = typeof window === 'undefined' ? ''
   }
 }
 
+// Only word characters/hyphens, bounded: Electron mints this id itself
+// (crypto.randomUUID()), so anything else arriving here is corrupt/foreign
+// query-string noise, not a real identity to scope storage by.
+const WINDOW_INSTANCE_ID_PATTERN = /^[\w-]{1,64}$/
+
+/**
+ * This peer window's stable identity (see createInstanceWindow's
+ * buildInstanceWindowUrl in electron/main.ts), used ONLY to namespace the
+ * renderer's own per-window tab/layout storage keys (lib/storage.ts
+ * windowScopedKey) — session tiles, the layout tree, and the sibling
+ * LAYOUT_KEYS. Without it, every window sharing this origin's localStorage
+ * (main + every "File > New Window" peer; Electron partitions localStorage
+ * by origin, not by BrowserWindow) read and wrote the exact same keys, so
+ * whichever window's renderer last serialized its layout silently clobbered
+ * every other window's tabs (t_7690aaea).
+ *
+ * The MAIN window never carries `windowId` and so always returns null here —
+ * its storage stays on the original unscoped keys, matching every
+ * pre-fix single-window install exactly. A peer whose id is missing or
+ * fails the shape check ALSO returns null rather than throwing or scoping on
+ * garbage: a corrupt/foreign query string degrades to the legacy shared
+ * behavior (the pre-fix bug for that one window), never a crash.
+ */
+export function windowInstanceId(search = typeof window === 'undefined' ? '' : window.location.search): null | string {
+  try {
+    if (!isPeerInstanceWindow(search)) {
+      return null
+    }
+
+    const raw = new URLSearchParams(search).get('windowId')?.trim()
+
+    return raw && WINDOW_INSTANCE_ID_PATTERN.test(raw) ? raw : null
+  } catch {
+    return null
+  }
+}
+
 // The one window that runs the first-run intro and holds the boot overlay for it: not an auxiliary
 // renderer, not a full peer (⌘⇧N) and not a subagent watcher.
 export const isMainWindow = (): boolean => !isAuxiliaryWindow() && !isPeerInstanceWindow() && !isWatchWindow()
@@ -139,6 +176,24 @@ export function isProfilePinnedWindow(search = typeof window === 'undefined' ? '
   } catch {
     return false
   }
+}
+
+/**
+ * Namespace a persisted storage key by this window's own instance id — call
+ * ONLY for keys that describe a single window's tab/pane layout (session
+ * tiles, the layout tree, and the sibling LAYOUT_KEYS entries). A peer
+ * instance window with a valid `windowId` gets back a key unique to it; the
+ * main window (and a peer with no/malformed id) gets back `key` UNCHANGED,
+ * so a pre-fix single-window install's saved state round-trips exactly as
+ * before (t_7690aaea). Global/shared preferences (theme, interface mode,
+ * telemetry, …) must never be passed through this — they stay on the bare
+ * key so every window agrees, by design (see lib/storage.ts's header comment
+ * on the cross-window-sync choke point).
+ */
+export function windowScopedKey(key: string, search = typeof window === 'undefined' ? '' : window.location.search): string {
+  const id = windowInstanceId(search)
+
+  return id ? `${key}::win:${id}` : key
 }
 
 // The profile a helper window (the HUD) was asked to boot against, carried in

@@ -93,9 +93,18 @@ function buildSessionWindowUrl(
 // separate marker lets the renderer distinguish a peer from the one primary
 // app window: app-launch source restoration belongs to the primary only, while
 // a peer keeps the already-running backend it joined during boot.
+//
+// `windowId` (t_7690aaea follow-up) is this peer's stable per-window identity:
+// the renderer's storage choke point (src/lib/storage.ts windowScopedKey)
+// namespaces its own tab/layout persistence keys by it so two peer windows
+// sharing the same localStorage origin stop colliding last-write-wins on each
+// other's session tiles and pane layout. The primary window carries no
+// windowId and keeps the legacy, unscoped keys so existing single-window
+// installs are unaffected.
 interface InstanceWindowUrlOptions extends Partial<DesktopWindowLaunch> {
   devServer?: string
   rendererIndexPath?: string
+  windowId?: string
 }
 
 function buildInstanceWindowUrl({
@@ -103,9 +112,10 @@ function buildInstanceWindowUrl({
   devServer,
   profile,
   profileWindow,
-  rendererIndexPath
+  rendererIndexPath,
+  windowId
 }: InstanceWindowUrlOptions = {}) {
-  const query = `?peer=1${profile ? `&profile=${encodeURIComponent(profile)}&connectionId=${encodeURIComponent(connectionId ?? '')}${profileWindow ? '&profileWindow=1' : ''}` : ''}`
+  const query = `?peer=1${windowId ? `&windowId=${encodeURIComponent(windowId)}` : ''}${profile ? `&profile=${encodeURIComponent(profile)}&connectionId=${encodeURIComponent(connectionId ?? '')}${profileWindow ? '&profileWindow=1' : ''}` : ''}`
 
   if (devServer) {
     const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer

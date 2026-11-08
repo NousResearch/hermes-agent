@@ -15,9 +15,36 @@ export interface SavedSessionWindow {
   geometry: NonNullable<ReturnType<typeof sanitizeWindowState>>
 }
 
+// "Instance" windows (File > New Window / hermes:window:openInstance) are a
+// different kind of secondary window from the session pop-outs above: a full
+// peer app window routed to a profile/connectionId, not a single chat. They
+// have no sessionId and nothing to existence-probe — a profile route is
+// always safe to reopen — so they get their own minimal saved shape and
+// their own array rather than overloading SavedSessionWindow.
+// Stable per-window identity, minted once by createInstanceWindow
+// (crypto.randomUUID()) and carried through buildInstanceWindowUrl's
+// `windowId` query param. The renderer's storage choke point
+// (src/store/windows.ts windowScopedKey) namespaces its own tab/layout
+// persistence keys by this id — reusing the SAME id across a quit/relaunch
+// is what lets a reopened peer recover its own scoped sessionTiles.v2 /
+// layoutTree.v2 instead of booting into empty storage (BUILD-STABLE-WINDOW-ID).
+// `null` covers two legitimate cases: a pre-fix saved record that predates
+// this field, and a value that failed WINDOW_ID_PATTERN — both degrade to a
+// freshly minted id at reopen, same as createInstanceWindow's own default.
+export interface SavedInstanceWindow {
+  profile: string | null
+  connectionId: string | null
+  geometry: NonNullable<ReturnType<typeof sanitizeWindowState>>
+  windowId: string | null
+  // Missing legacy metadata cannot distinguish inherited from explicit routes.
+  // Default to unpinned; retain the boot route without inventing a session default.
+  profileWindow: boolean
+}
+
 export interface WindowSessionState {
   version: 1
   windows: SavedSessionWindow[]
+  instanceWindows: SavedInstanceWindow[]
 }
 
 // Session/profile/connection ids are opaque identifiers Hermes itself mints
@@ -25,6 +52,16 @@ export interface WindowSessionState {
 // something pathological into a later file path or URL.
 const identifier = (value: unknown): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= 256
+
+// Mirrors WINDOW_INSTANCE_ID_PATTERN in apps/desktop/src/store/windows.ts —
+// the renderer only recognizes a windowId query value that matches this
+// exact shape, so a saved id that WOULD be rejected there must also be
+// rejected here (degrade to null) rather than round-tripping into the next
+// reopen's URL unexamined.
+export const WINDOW_INSTANCE_ID_PATTERN = /^[\w-]{1,64}$/
+
+const sanitizedWindowId = (value: unknown): string | null =>
+  typeof value === 'string' && WINDOW_INSTANCE_ID_PATTERN.test(value) ? value : null
 
 export function sanitizeWindowSessionState(raw: unknown): WindowSessionState | null {
   if (!raw || typeof raw !== 'object' || (raw as any).version !== 1 || !Array.isArray((raw as any).windows)) {
@@ -57,7 +94,50 @@ export function sanitizeWindowSessionState(raw: unknown): WindowSessionState | n
     windows.push({ profile, connectionId, sessionId: row.sessionId, watch: row.watch === true, geometry })
   }
 
-  return { version: 1, windows }
+  const instanceWindows: SavedInstanceWindow[] = []
+  const seenInstanceIds = new Set<string>()
+  const rawInstances = Array.isArray((raw as any).instanceWindows) ? ((raw as any).instanceWindows as any[]) : []
+
+  for (const row of rawInstances) {
+    if (!row || typeof row !== 'object') {
+      continue
+    }
+
+    const profile = row.profile === null || identifier(row.profile) ? (row.profile ?? null) : undefined
+    const connectionId = row.connectionId === null || identifier(row.connectionId) ? (row.connectionId ?? null) : undefined
+
+    if (profile === undefined || connectionId === undefined) {
+      continue
+    }
+
+    const geometry = sanitizeWindowState(row.geometry)
+
+    if (!geometry) {
+      continue
+    }
+
+    // Dedup key is the windowId ALONE, never (connectionId, profile): a user
+    // can legitimately have several peer windows open on the exact same
+    // profile/connection route (multiple "File > New Window" instances),
+    // and collapsing them by route was the t_7690aaea regression this file
+    // exists to fix. A legacy row (no/invalid windowId) carries no identity
+    // to collide on and is never deduped against another row — only an
+    // EXACT windowId match (a corrupt file listing the same id twice) is
+    // rejected, since two live windows can never share one storage scope.
+    const windowId = sanitizedWindowId(row.windowId)
+
+    if (windowId !== null) {
+      if (seenInstanceIds.has(windowId)) {
+        continue
+      }
+
+      seenInstanceIds.add(windowId)
+    }
+
+    instanceWindows.push({ profile, connectionId, geometry, windowId, profileWindow: row.profileWindow === true })
+  }
+
+  return { version: 1, windows, instanceWindows }
 }
 
 export function parseWindowSessionState(text: string): WindowSessionState | null {
@@ -68,8 +148,8 @@ export function parseWindowSessionState(text: string): WindowSessionState | null
   }
 }
 
-export function serializeWindowSessionState(windows: SavedSessionWindow[]): string {
-  return JSON.stringify({ version: 1, windows }, null, 2)
+export function serializeWindowSessionState(windows: SavedSessionWindow[], instanceWindows: SavedInstanceWindow[] = []): string {
+  return JSON.stringify({ version: 1, windows, instanceWindows }, null, 2)
 }
 
 /**
@@ -118,6 +198,36 @@ export async function restoreSessionWindows(
 
 export function restoredSessionWindowOptions(
   window: SavedSessionWindow,
+  displays: unknown[]
+): ReturnType<typeof computeWindowOptions> {
+  return computeWindowOptions(window.geometry, displays)
+}
+
+/**
+ * Reopen every saved instance window via the injected `open` callback (the
+ * real createInstanceWindow path). Unlike session windows, an instance
+ * window has nothing to existence-probe — a profile/connectionId route is
+ * always safe to reopen — so this is just a straight loop, still aborting if
+ * a quit arrives mid-restore.
+ */
+export function restoreInstanceWindows(
+  state: WindowSessionState | null,
+  deps: {
+    open: (window: SavedInstanceWindow) => void
+    quitting: () => boolean
+  }
+): void {
+  for (const window of state?.instanceWindows ?? []) {
+    if (deps.quitting()) {
+      return
+    }
+
+    deps.open(window)
+  }
+}
+
+export function restoredInstanceWindowOptions(
+  window: SavedInstanceWindow,
   displays: unknown[]
 ): ReturnType<typeof computeWindowOptions> {
   return computeWindowOptions(window.geometry, displays)

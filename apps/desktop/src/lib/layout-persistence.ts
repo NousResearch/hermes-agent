@@ -1,6 +1,7 @@
 import { atom, type WritableAtom } from 'nanostores'
 
 import type { InterfaceMode } from '@/store/interface-mode'
+import { windowScopedKey } from '@/store/windows'
 
 import { type Codec, Codecs } from './persisted'
 import { readKey, writeKey } from './storage'
@@ -25,7 +26,7 @@ export const LAYOUT_KEYS = {
 } as const
 
 function migrateLayoutScopes(initialMode: InterfaceMode) {
-  const marker = 'hermes.desktop.layoutModeScopes.v1'
+  const marker = windowScopedKey('hermes.desktop.layoutModeScopes.v1')
   const legacy = new Map<string, string>()
 
   if (readKey(marker) !== null) {
@@ -36,7 +37,7 @@ function migrateLayoutScopes(initialMode: InterfaceMode) {
 
   if (initialMode === 'simple') {
     for (const key of Object.values(LAYOUT_KEYS)) {
-      const raw = readKey(key)
+      const raw = readKey(windowScopedKey(key))
 
       if (raw === null) {
         continue
@@ -44,9 +45,9 @@ function migrateLayoutScopes(initialMode: InterfaceMode) {
 
       legacy.set(key, raw)
 
-      if (readKey(`${key}.simple`) === null) {
-        writeKey(`${key}.simple`, raw)
-        saved = readKey(`${key}.simple`) === raw && saved
+      if (readKey(windowScopedKey(`${key}.simple`)) === null) {
+        writeKey(windowScopedKey(`${key}.simple`), raw)
+        saved = readKey(windowScopedKey(`${key}.simple`)) === raw && saved
       }
     }
   }
@@ -79,7 +80,7 @@ export function createLayoutPersistence(initialMode: InterfaceMode, persistent: 
 
       if (persistent && !held) {
         // Explicit empties keep migration retries from reviving cleared state.
-        writeKey(keyFor(key), mode === 'simple' ? (raw ?? 'null') : raw)
+        writeKey(windowScopedKey(keyFor(key)), mode === 'simple' ? (raw ?? 'null') : raw)
       }
     }
   }
@@ -97,7 +98,9 @@ export function createLayoutPersistence(initialMode: InterfaceMode, persistent: 
         return memory.get(mode)!
       }
 
-      const raw = persistent ? (readKey(keyFor(key)) ?? (mode === 'simple' ? (legacy.get(key) ?? null) : null)) : null
+      const raw = persistent
+        ? (readKey(windowScopedKey(keyFor(key))) ?? (mode === 'simple' ? (legacy.get(key) ?? null) : null))
+        : null
 
       if (raw !== null) {
         try {

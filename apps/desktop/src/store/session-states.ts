@@ -95,7 +95,7 @@ import {
 } from './session-request-router'
 import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
-import { isBrowserWindow, isSecondaryWindow } from './windows'
+import { isBrowserWindow, isSecondaryWindow, windowScopedKey } from './windows'
 
 // ---------------------------------------------------------------------------
 // Reactive per-runtime session state (view mirror of the wiring cache).
@@ -1327,7 +1327,7 @@ function parseTileList(value: unknown): StoredTile[] {
 
 function loadTilesByProfile(): Record<string, StoredTile[]> {
   const byProfile: Record<string, StoredTile[]> = Object.create(null)
-  const parsed = readJson<unknown>(TILES_KEY)
+  const parsed = readJson<unknown>(windowScopedKey(TILES_KEY))
 
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
     for (const [profile, list] of Object.entries(parsed as Record<string, unknown>)) {
@@ -1458,7 +1458,7 @@ function persistTiles() {
     return
   }
 
-  writeJson(TILES_KEY, Object.keys(tilesByProfile).length === 0 ? null : tilesByProfile)
+  writeJson(windowScopedKey(TILES_KEY), Object.keys(tilesByProfile).length === 0 ? null : tilesByProfile)
 }
 
 function saveTiles(tiles: SessionTile[]) {

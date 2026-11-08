@@ -7,7 +7,9 @@ import {
   isProfilePinnedWindow,
   openBrowserInNewWindow,
   openNewWindow,
-  openSessionInNewWindow
+  openSessionInNewWindow,
+  windowInstanceId,
+  windowScopedKey
 } from './windows'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
@@ -58,6 +60,57 @@ describe('isProfilePinnedWindow', () => {
     expect(isProfilePinnedWindow('?peer=1&profile=work&connectionId=remote')).toBe(false)
     expect(isProfilePinnedWindow('?profileWindow=0')).toBe(false)
     expect(isProfilePinnedWindow('')).toBe(false)
+  })
+})
+
+describe('windowInstanceId', () => {
+  it('reads a well-formed id off an actual peer window', () => {
+    expect(windowInstanceId('?peer=1&windowId=abc-123_DEF')).toBe('abc-123_DEF')
+  })
+
+  it('ignores windowId on a non-peer window (main, secondary, HUD, browser)', () => {
+    expect(windowInstanceId('?windowId=abc-123')).toBeNull()
+    expect(windowInstanceId('?win=secondary&windowId=abc-123')).toBeNull()
+    expect(windowInstanceId('')).toBeNull()
+  })
+
+  it('falls back to null for a missing windowId on a peer window', () => {
+    expect(windowInstanceId('?peer=1')).toBeNull()
+    expect(windowInstanceId('?peer=1&windowId=')).toBeNull()
+  })
+
+  it('falls back to null for a malformed windowId instead of scoping on garbage', () => {
+    // Over length, path-separator, and whitespace injections must all fail
+    // closed rather than becoming part of a storage key unchecked.
+    expect(windowInstanceId(`?peer=1&windowId=${'a'.repeat(65)}`)).toBeNull()
+    expect(windowInstanceId('?peer=1&windowId=' + encodeURIComponent('../etc/passwd'))).toBeNull()
+    expect(windowInstanceId('?peer=1&windowId=' + encodeURIComponent('has space'))).toBeNull()
+  })
+})
+
+describe('windowScopedKey', () => {
+  it('leaves the key unchanged for the main window (no windowId at all)', () => {
+    expect(windowScopedKey('hermes.desktop.sessionTiles.v2', '')).toBe('hermes.desktop.sessionTiles.v2')
+  })
+
+  it('namespaces the key by a valid peer windowId', () => {
+    expect(windowScopedKey('hermes.desktop.sessionTiles.v2', '?peer=1&windowId=win-a')).toBe(
+      'hermes.desktop.sessionTiles.v2::win:win-a'
+    )
+  })
+
+  it('gives two different peer windows two different keys', () => {
+    const a = windowScopedKey('hermes.desktop.layoutTree.v2', '?peer=1&windowId=win-a')
+    const b = windowScopedKey('hermes.desktop.layoutTree.v2', '?peer=1&windowId=win-b')
+
+    expect(a).not.toBe(b)
+  })
+
+  it('falls back to the unscoped legacy key for a malformed/missing peer windowId', () => {
+    expect(windowScopedKey('hermes.desktop.layoutTree.v2', '?peer=1')).toBe('hermes.desktop.layoutTree.v2')
+    expect(windowScopedKey('hermes.desktop.layoutTree.v2', '?peer=1&windowId=bad/id')).toBe(
+      'hermes.desktop.layoutTree.v2'
+    )
   })
 })
 

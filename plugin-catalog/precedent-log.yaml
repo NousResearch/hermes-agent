@@ -1,14 +1,14 @@
 name: precedent-log
 repo: https://github.com/quotumorg/precedent-log
-sha: e23d1bd836ff8690ab9b73ac70bec4e3feba5b5e
-description: "Saves a human's answer to a blocked Kanban question as a ruling for later workers. Shows rulings and vetoes in Desktop with confirmed retirement. Disclosure — Saves human rulings under HERMES_HOME/precedent-log/ and injects matching rulings into Kanban worker prompts; in the default enforce mode it vetoes a worker's kanban_block up to twice per task when an active ruling matches, which can leave a no-edit worker's card running (set precedent_log.veto: advisory to only annotate). While enabled it blocks execute_code and process stdin writes in every Kanban worker and delegated subagent, and blocks worker commands that name its store. Reads four private Hermes board/delegation helpers (read-only, no core overrides) that may break on a core update. Desktop reads and retires rulings through host-routed gateway slash RPC, possibly to a remote gateway. No network calls, shell, credentials or telemetry in the plugin runtime; the bundled demo/ harness is opt-in and spawns subprocesses and provider calls when run."
+sha: 8741e9f121aad297c2383f51a30ac444f08438b8
+description: "Saves a human's answer to a blocked Kanban question as a ruling for later workers. Shows rulings and vetoes in Desktop with confirmed retirement. Disclosure — Saves human rulings under HERMES_HOME/precedent-log/ and injects matching rulings into Kanban worker prompts; in the default enforce mode it vetoes a worker's kanban_block up to twice per task when an active ruling matches, which can leave a no-edit worker's card running (set precedent_log.veto: advisory to only annotate). In calls carrying a Kanban task marker on boards with active rulings it blocks execute_code and process stdin writes (precedent_log.guard: strict extends this to every marked worker and delegated subagent), and blocks worker commands that name its store. Reads four private Hermes board/delegation helpers (read-only, no core overrides) that may break on a core update. Desktop reads and retires rulings through host-routed gateway slash RPC, possibly to a remote gateway. No network calls, shell, credentials or telemetry in the plugin runtime; the bundled demo/ harness is opt-in and spawns subprocesses and provider calls when run."
 maintainer: quotumorg
 tier: community
 category: automation
 requires_hermes: ">=0.23.0"
-version: "0.4.1"
-docs_url: https://github.com/quotumorg/precedent-log/blob/e23d1bd836ff8690ab9b73ac70bec4e3feba5b5e/README.md
-image: https://raw.githubusercontent.com/quotumorg/precedent-log/e23d1bd836ff8690ab9b73ac70bec4e3feba5b5e/docs/catalog-1200x600.png
+version: "0.4.2"
+docs_url: https://github.com/quotumorg/precedent-log/blob/8741e9f121aad297c2383f51a30ac444f08438b8/README.md
+image: https://raw.githubusercontent.com/quotumorg/precedent-log/8741e9f121aad297c2383f51a30ac444f08438b8/docs/catalog-1200x600.png
 readme: true
 platforms: [linux, macos]
 known_issues:

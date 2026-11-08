@@ -70,11 +70,19 @@ def _program_name(word: str) -> str:
 
 def classify_osascript(text: str) -> set[str]:
     """Descriptions that apply to *text*; empty when every ``osascript`` run is a visible,
-    read-only program. A heredoc body is consumed with the command that owns it."""
+    read-only program. The raw text and the backslash-newline-joined text are both read and the
+    findings united: joining is how the shell reads ``osa\\<newline>script``, but a quoted heredoc
+    body keeps its bytes, so joining there could forge a terminator. A variant only adds findings."""
+    joined = re.sub(r"\\\r?\n", "", text)
+    found = _classify(text)
+    return found | _classify(joined) if joined != text else found
+
+
+def _classify(text: str) -> set[str]:
+    """One reading of :func:`classify_osascript`. A heredoc body is consumed with its command."""
     from tools.approval_detection import _iter_shell_command_word_spans, _shell_command_segment
 
     found: set[str] = set()
-    text = re.sub(r"\\\r?\n", "", text)  # `osa\<newline>script` is one word to the shell
     if not _mentions_osascript(text):
         return found
     body_span = (-1, -1)  # a heredoc body already read; command words inside it are data

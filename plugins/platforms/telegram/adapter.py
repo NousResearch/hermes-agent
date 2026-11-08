@@ -5782,9 +5782,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
 
     @staticmethod
     def _entity_sources(message: Message):
-        """``(text, entities)`` pairs for the message text and caption."""
-        yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
-        yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
+        """``(text, entities)`` pairs for the message text and caption; a text-less ``rich_message``
+        contributes its flattened text with no entities, so the raw @handle fallback still sees it."""
+        text = getattr(message, "text", None) or ""
+        caption = getattr(message, "caption", None) or ""
+        yield text, getattr(message, "entities", None) or []
+        yield caption, getattr(message, "caption_entities", None) or []
+        if not text and not caption:
+            yield rich_message_text(message), []
 
     @staticmethod
     def _entity_type(entity) -> str:
@@ -5930,7 +5935,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             return False
         return any(
             pattern.search(candidate)
-            for candidate in (getattr(message, "text", None), getattr(message, "caption", None)) if candidate
+            for candidate in (getattr(message, "text", None), getattr(message, "caption", None),
+                              rich_message_text(message)) if candidate
             for pattern in self._mention_patterns)
 
     def _is_guest_mention(self, message: Message) -> bool:

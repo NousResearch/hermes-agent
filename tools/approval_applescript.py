@@ -46,7 +46,6 @@ _RISKY_RE = re.compile(
     r"|«",
     re.IGNORECASE,
 )
-_JXA_RE = re.compile(r"(?:^|\s)-l\s*['\"]?\s*j(?:ava)?script\b", re.IGNORECASE)
 # Commands that run a program taken from their arguments. When their command names osascript
 # anywhere (quoted included), the AppleScript cannot be read from this command line.
 _CARRIERS = frozenset({
@@ -55,8 +54,7 @@ _CARRIERS = frozenset({
     "caffeinate", "arch", "sandbox-exec", "unbuffer", "perl", "ruby", "php", "node", "nodejs",
     "osacompile", "automator",
 })
-_INTERPRETER_RE = re.compile(r"python[23]?(?:\.\d+)*|perl\d*|ruby[\d.]*|pwsh|powershell")
-_HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)-?\s*(?P<q>['\"]?)(?P<delim>[^\s'\"<>;&|]+)(?P=q)")
+_HEREDOC_RE = re.compile(r"<<(?P<dash>-?)[ \t]*(?P<q>['\"]?)(?P<delim>[^\s'\"<>;&|()]+)(?P=q)(?=[\s;&|<>)]|$)")
 
 
 def _program_name(word: str) -> str:
@@ -76,11 +74,12 @@ def classify_osascript(text: str) -> set[str]:
     from tools.approval_detection import _iter_shell_command_word_spans, _shell_command_segment
 
     found: set[str] = set()
+    text = re.sub(r"\\\r?\n", "", text)  # `osa\<newline>script` is one word to the shell
     if not _mentions_osascript(text):
         return found
-    skip_until = -1
+    body_span = (-1, -1)  # a heredoc body already read; command words inside it are data
     for start, end, word in _iter_shell_command_word_spans(text):
-        if start < skip_until:
+        if body_span[0] <= start < body_span[1]:
             continue
         name = _program_name(word)
         segment = _shell_command_segment(text, start)
@@ -91,15 +90,15 @@ def classify_osascript(text: str) -> set[str]:
             elif _mentions_osascript(args) and _runs_its_arguments(name, args):
                 found.add(OSASCRIPT_OPAQUE_DESCRIPTION)  # `sh -c "osascript ..."`, `xargs osascript`
             continue
-        program, opaque, heredoc = _osascript_program(args)
+        program, opaque, jxa, heredoc = _osascript_program(args)
         if heredoc is not None:
-            delim, quoted = heredoc
-            body, skip_until = _heredoc_body(text, start + len(segment), delim)
+            delim, quoted, strip_tabs = heredoc
+            body, body_span = _heredoc_body(text, start + len(segment), delim, strip_tabs)
             opaque = opaque or (not quoted and _expands(body))  # an unquoted delimiter expands the body
             program += "\n" + body
         if opaque or _expands(args):
             found.add(OSASCRIPT_OPAQUE_DESCRIPTION)
-        if _JXA_RE.search(args) or _RISKY_RE.search(program):
+        if jxa or _RISKY_RE.search(program):
             found.add(OSASCRIPT_RISKY_DESCRIPTION)
     return found
 
@@ -111,11 +110,13 @@ def _mentions_osascript(text: str) -> bool:
 
 def _runs_its_arguments(name: str, args: str) -> bool:
     """Whether the command *name* executes a program named in *args* (a carrier)."""
+    from tools.approval_detection import _interpreter_family
+
     if name == "find":
         return bool(re.search(r"(?:^|\s)-(?:exec|execdir|ok|okdir)\b", args))
     if name == "env":
         return bool(re.search(r"(?:^|\s)(?:-\w*S|--split-string)", args))
-    return name in _CARRIERS or bool(_INTERPRETER_RE.fullmatch(name))
+    return name in _CARRIERS or _interpreter_family(name) is not None
 
 
 def _expands(raw: str) -> bool:
@@ -124,20 +125,23 @@ def _expands(raw: str) -> bool:
     return any(kind != "quote" and quote != "'" and raw[i] in "$`" for kind, i, _, quote in _scan_shell(raw))
 
 
-def _osascript_program(args: str) -> tuple[str, bool, tuple[str, bool] | None]:
-    """``(program_text, opaque, heredoc)`` for one osascript argv tail.
+def _osascript_program(args: str) -> tuple[str, bool, bool, tuple[str, bool, bool] | None]:
+    """``(program_text, opaque, jxa, heredoc)`` for one osascript argv tail, read from the
+    shell-decoded words (so ``'-l' JavaScript`` and ``-e'...'`` count like their plain spellings).
 
     ``program_text`` joins every ``-e`` argument and here-string. ``opaque`` is True when part of the
     program is not on this command line: a script-file operand, ``-`` / no ``-e`` (stdin), a ``<``
-    redirect, ``-i`` (interactive), or unparseable quoting. ``heredoc`` is ``(delimiter, quoted)``."""
+    redirect, ``-i`` (interactive), a heredoc whose delimiter cannot be read, or unparseable quoting.
+    ``jxa`` is True for any ``-l`` language other than AppleScript. ``heredoc`` is
+    ``(delimiter, quoted, strip_tabs)``."""
     from tools.approval_detection import _shell_segment_tokens
 
     tokens = _shell_segment_tokens(args, 0)
     if tokens is None:
-        return "", True, None
+        return "", True, False, None
     pieces: list[str] = []
     heredoc = None
-    opaque = False
+    jxa = opaque = False
     i = 0
     while i < len(tokens):
         token = tokens[i]
@@ -149,17 +153,23 @@ def _osascript_program(args: str) -> tuple[str, bool, tuple[str, bool] | None]:
             pieces.append(nxt)
             i += 2
             continue
-        if token in ("<<", "<<-"):
-            raw = _HEREDOC_RE.search(args)
-            heredoc = (nxt.lstrip("-"), bool(raw and raw.group("q")))
-            i += 2
+        if token == "<<":
+            if heredoc is not None:
+                opaque = True  # two bodies: fail closed
+            heredoc = _heredoc_operator(args)
+            if heredoc is None:
+                opaque = True  # a delimiter this reader cannot spell
+            # shlex splits `<<-EOF` into `<<`, `-EOF` and `<<- EOF` into `<<`, `-`, `EOF`.
+            i += 3 if nxt == "-" else 2
             continue
         if token in ("<", "<>"):
-            return " ".join(pieces), True, heredoc
-        if token in ("-e", "-l", "-s"):
+            return " ".join(pieces), True, jxa, heredoc
+        if token in ("-e", "-l", "-s") or (token.startswith("-l") and len(token) > 2):
             if token == "-e":
                 pieces.append(nxt)
-            i += 2
+            language = nxt if token == "-l" else token[2:] if token.startswith("-l") else ""
+            jxa = jxa or bool(language and language.lower() != "applescript")
+            i += 1 if len(token) > 2 else 2
             continue
         if token.startswith("-e") and len(token) > 2:
             pieces.append(token[2:])
@@ -167,20 +177,38 @@ def _osascript_program(args: str) -> tuple[str, bool, tuple[str, bool] | None]:
             break  # after -e or a heredoc, operands are the program's own argv
         elif token.startswith("-i") or token == "-" or not token.startswith("-"):
             # `-i` reads an interactive session; a first operand is a script file (`-` is stdin).
-            return " ".join(pieces), True, heredoc
+            return " ".join(pieces), True, jxa, heredoc
         i += 1
     if not pieces and heredoc is None:
         opaque = True  # no -e, no heredoc: the program is read from stdin
-    return "\n".join(pieces), opaque, heredoc
+    return "\n".join(pieces), opaque, jxa, heredoc
 
 
-def _heredoc_body(text: str, after: int, delim: str) -> tuple[str, int]:
-    """``(body, end_offset)`` of the heredoc starting on the line after *after*. An unterminated
-    body runs to the end of *text*, as the shell reads it."""
+def _heredoc_operator(args: str) -> tuple[str, bool, bool] | None:
+    """``(delimiter, quoted, strip_tabs)`` of the first unquoted ``<<`` here-document operator in
+    *args*, read from the raw text (shlex cannot tell ``<<-EOF`` from ``<< -EOF``); None when its
+    delimiter is not a plain word."""
+    from tools.approval_detection import _scan_shell
+
+    for kind, i, _, quote in _scan_shell(args):
+        if kind == "char" and quote is None and args.startswith("<<", i) and not args.startswith("<<<", i) \
+                and (i == 0 or args[i - 1] != "<"):
+            match = _HEREDOC_RE.match(args, i)
+            if match is None:
+                return None
+            return match.group("delim"), bool(match.group("q")), bool(match.group("dash"))
+    return None
+
+
+def _heredoc_body(text: str, after: int, delim: str, strip_tabs: bool) -> tuple[str, tuple[int, int]]:
+    """``(body, (body_start, body_end))`` of the heredoc that starts on the line after *after*.
+    The body ends at a line that is exactly *delim* (leading tabs allowed only for ``<<-``), as
+    the shell reads it; an unterminated body runs to the end of *text*."""
     newline = text.find("\n", after)
     if newline < 0:
-        return "", len(text)
-    end = re.compile(rf"^\t*{re.escape(delim)}[ \t]*$", re.MULTILINE).search(text, newline + 1)
+        return "", (len(text), len(text))
+    tabs = r"\t*" if strip_tabs else ""
+    end = re.compile(rf"^{tabs}{re.escape(delim)}$", re.MULTILINE).search(text, newline + 1)
     if end is None:
-        return text[newline + 1:], len(text)
-    return text[newline + 1:end.start()], end.end()
+        return text[newline + 1:], (newline + 1, len(text))
+    return text[newline + 1:end.start()], (newline + 1, end.end())

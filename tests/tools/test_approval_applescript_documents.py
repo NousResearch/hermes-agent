@@ -55,6 +55,14 @@ FRONTMOST = ("osascript -e 'tell application \"System Events\" to get name of fi
     'command osascript -e \'quit app "Pages"\'',
     "osa''script -e 'quit app \"Pages\"'",
     FRONTMOST + ' && osascript -e \'tell app "Keynote" to close front document saving no\'',
+    # Review rows: a quoted or attached `-l`, a backslash-newline inside the name, a second command
+    # on a heredoc's opening line, and `<<- EOF` with a blank line in the body.
+    'osascript \'-l\' JavaScript -e \'Application("Keynote").documents[0]["cl"+"ose"]({saving:"no"})\'',
+    'osascript -lJavaScript -e \'Application("Keynote").documents.length\'',
+    'osa\\\nscript -e \'tell app "Keynote" to quit\'',
+    'osascript <<\'EOF\'; osascript -e \'tell app "Keynote" to quit\'\nget name of me\nEOF',
+    'osascript <<- EOF\nget name of me\n\ntell application "Keynote" to quit\nEOF',
+    'osascript <<-EOF\n\tget name of me\n\ttell application "Keynote" to quit\n\tEOF',
 ])
 def test_risky_program_is_flagged(command):
     assert detect_dangerous_command(command)[1] == RISKY, command
@@ -82,6 +90,9 @@ def test_risky_program_is_flagged(command):
     'osascript <<EOF\ntell app "$APP" to get name\nEOF',
     "X=osascript; $X -e 'quit'",
     "$(which osascript) -e 'quit'",
+    # Interpreters the detector already knows (bun/deno) carry osascript like python/node do.
+    'bun -e \'require("child_process").execFileSync("osascript", ["-e", "tell application \\"Keynote\\" to quit"])\'',
+    'deno eval \'new Deno.Command("osascript", {args: ["-e", "quit app \\"Keynote\\""]}).outputSync()\'',
 ])
 def test_unreviewable_program_is_flagged(command):
     assert detect_dangerous_command(command)[1] == OPAQUE, command
@@ -103,6 +114,9 @@ def test_unreviewable_program_is_flagged(command):
     "grep -rn osascript tools/",
     "find . -name '*osascript*'",
     "which osascript",
+    # A read-only heredoc whose body merely contains the word in prose, and an explicit AppleScript `-l`.
+    "osascript <<'EOF'\nget name of me\nEOF",
+    "osascript -l AppleScript -e 'get name of me'",
 ])
 def test_read_only_and_unrelated_commands_are_unchanged(command):
     assert detect_dangerous_command(command) == (False, None, None), command

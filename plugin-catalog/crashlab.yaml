@@ -1,21 +1,24 @@
 name: crashlab
 title: CrashLab
 repo: https://github.com/dolepee/crashlab
-sha: 443dee443336f1d0bc3ca3f9f942424c4d82aeac
+sha: b58224928e4b3b102db2101545afcedeaaba0eaa
 description: Test recovery before delivery, after commit and across restart; inspect saved records, verify the repair and keep a reusable regression.
 maintainer: dolepee
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.5.0"
-docs_url: https://github.com/dolepee/crashlab/blob/443dee443336f1d0bc3ca3f9f942424c4d82aeac/README.md
+version: "0.5.4"
+docs_url: https://github.com/dolepee/crashlab/blob/b58224928e4b3b102db2101545afcedeaaba0eaa/README.md
 platforms:
   - linux
   - macos
 screenshots:
-  - https://raw.githubusercontent.com/dolepee/crashlab/443dee443336f1d0bc3ca3f9f942424c4d82aeac/docs/dashboard-desktop.png
-  - https://raw.githubusercontent.com/dolepee/crashlab/443dee443336f1d0bc3ca3f9f942424c4d82aeac/docs/dashboard-mobile.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/b58224928e4b3b102db2101545afcedeaaba0eaa/docs/dashboard-desktop.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/b58224928e4b3b102db2101545afcedeaaba0eaa/docs/dashboard-mobile.png
 known_issues:
+  - "Execution needs human approval for the captured plan; trusted local cases and applications remain required."
+  - "Older evaluator bundles require an explicit new baseline after evaluator changes; VERIFIED status never transfers."
+  - "Noninteractive install can require npm ci; local application runtimes and dependencies are separate."
   - "Restart needs an owned foreground process group and record-level observation; numeric-only HTTP counts are rejected."
   - "Replay requires identical evaluator hashes and a direct Python launch; dependencies remain separate."
   - "Kist and Flaskr are externally sourced repair examples, not adoption or general autonomous-repair evidence."
@@ -46,5 +49,8 @@ capabilities:
     - crashlab_experiment_import
   provides_hooks:
     - pre_verify
-  provides_middleware: []
+    - pre_tool_call
+    - post_approval_response
+  provides_middleware:
+    - tool_execution
   requires_env: []

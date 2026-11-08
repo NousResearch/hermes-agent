@@ -130,6 +130,20 @@ def test_expiring_bound_entry_renews_in_place_and_keeps_attribution(pool, wire, 
     assert refresh.call_count == 1
 
 
+def test_in_place_renewal_moves_every_holder_of_the_revoked_token(pool, no_refresh_post):
+    """A renewal revokes the old token: the compressor and fallback-restore snapshot must follow it."""
+    from types import SimpleNamespace
+    agent = _agent(pool, "second")
+    agent.context_compressor = SimpleNamespace(api_key=BOUND)
+    agent._primary_runtime = {"api_key": BOUND, "anthropic_api_key": BOUND, "compressor_api_key": BOUND}
+    entry = next(e for e in pool.entries() if e.id == "second")
+    pool._replace_entry(entry, replace(entry, access_token=RENEWED))
+    assert agent._try_refresh_anthropic_client_credentials() is True
+    assert agent.context_compressor.api_key == RENEWED
+    assert set(agent._primary_runtime[k] for k in ("api_key", "anthropic_api_key", "compressor_api_key")) == {RENEWED}
+    agent._anthropic_client.close()
+
+
 def test_bound_entry_renewed_elsewhere_is_adopted(pool, no_refresh_post):
     agent = _agent(pool, "second")
     entry = next(e for e in pool.entries() if e.id == "second")

@@ -1000,7 +1000,7 @@ async def test_anchorless_wakeup_reaches_chat_root_when_native_topic_is_deleted(
 
     assert result.success is True
     routes = [(c.get("message_thread_id"), c.get("direct_messages_topic_id")) for c in call_log]
-    assert routes == [(20197, None), (None, 20197), (None, None)]
+    assert routes == [(20197, None), (20197, None), (None, 20197), (None, None)]
     assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is None
 
 
@@ -1064,3 +1064,25 @@ async def test_forum_topic_deleted_wording_is_not_a_dead_topic_fallback():
 
     assert result.success is False
     assert [c.get("message_thread_id") for c in call_log] == [77]
+
+
+@pytest.mark.asyncio
+async def test_private_topic_thread_not_found_flake_retries_same_thread_first():
+    """A one-off "thread not found" in a Hermes private topic lane retries the same thread_id; it never moves the
+    message to the native DM-topic id (#87051) when the lane is alive."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if len(call_log) == 1:
+            raise FakeBadRequest("Message thread not found")
+        return SimpleNamespace(message_id=9)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+    meta = {"thread_id": "20197", "telegram_dm_topic_reply_fallback": True, "direct_messages_topic_id": "20197"}
+
+    result = await adapter.send(chat_id="123", content="wakeup", metadata=meta)
+
+    assert result.success is True
+    assert [(c.get("message_thread_id"), c.get("direct_messages_topic_id")) for c in call_log] == [(20197, None), (20197, None)]

@@ -167,8 +167,8 @@ class TestSlackSendClarify:
         await adapter.send_clarify(
             chat_id="C1", question="Pick", choices=huge, clarify_id="cid5", session_key="sk5")
         body = mock_client.chat_postMessage.call_args[1]["blocks"][0]["text"]["text"]
-        assert len(body) <= 3000
-        assert all(f"\n{n}. " in body for n in (1, 2, 3, 4)) and body.endswith("…")
+        assert len(body) <= 3000 and "…" in body
+        assert all(f"\n{n}. " in body and f"tail {n - 1}" in body for n in (1, 2, 3, 4))
 
         # A question that alone nearly fills the section is cut, not the list after it.
         await adapter.send_clarify(

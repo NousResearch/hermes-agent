@@ -123,8 +123,9 @@ def numbered_clarify_choices(choices, *, max_label_cols: int, escape=None,
     columns, else ``None``. Button-capable adapters put this in the message body and switch to
     positional (``1``, ``2``, …) button labels: a clipped label with no tooltip is unanswerable
     (#78115), and the body is the only place a long option renders in full. Over ``max_chars``
-    every line stays (a button whose line was cut is unanswerable): the long options are shortened
-    before escaping, so a cut never splits an escape."""
+    every line stays (a button whose line was cut is unanswerable): the long options lose their
+    middle (start and end kept, so options sharing a long opening still differ) before escaping,
+    so a cut never splits an escape."""
     texts = [str(c).strip() for c in choices]
     if all(display_width(t) <= max_label_cols for t in texts):
         return None
@@ -135,7 +136,8 @@ def numbered_clarify_choices(choices, *, max_label_cols: int, escape=None,
     out, each = _render(texts), max(map(len, texts))
     while max_chars is not None and len_fn(out) > max_chars and each > 1:
         each = min(each - 1, each * 4 // 5) or 1
-        out = _render([t if len(t) <= each else t[:each].rstrip() + "…" for t in texts])
+        out = _render([t if len(t) <= each else f"{t[:(each + 1) // 2].rstrip()}…{t[len(t) - each // 2:].lstrip()}"
+                       for t in texts])
     return out
 
 

@@ -20,6 +20,7 @@ caller is a fresh local process with no dashboard identity; loopback + lease ide
 """
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
 import os
@@ -42,14 +43,15 @@ def _loopback_peer(request: Request) -> bool:
 
 
 def _owned_lease(session_id: str, lease_id: str, profile_home: str, origin: str) -> bool:
-    """True when this process holds exactly that lease and advertises ``origin`` on it."""
+    """True when this process holds exactly that lease and advertises ``origin`` on it.
+    Reads the registry file, so callers run it off the event loop."""
     from hermes_cli.active_sessions import active_session_registry_snapshot
 
-    home = Path(profile_home)
     try:
-        entries = active_session_registry_snapshot(home, strict=True)
-    except Exception:
-        _log.debug("session-attach: registry read failed for %s", profile_home, exc_info=True)
+        entries = active_session_registry_snapshot(Path(profile_home), strict=True)
+    except OSError:
+        # An unreadable or absent registry for that home is simply "not ours".
+        _log.debug("session-attach: registry unreadable for %s", profile_home, exc_info=True)
         return False
     for entry in entries:
         if entry.get("session_id") != session_id or entry.get("lease_id") != lease_id:
@@ -63,6 +65,14 @@ def _owned_lease(session_id: str, lease_id: str, profile_home: str, origin: str)
     return False
 
 
+def _fenced_identity(session_id: str, lease_id: str, profile_home: str, origin: str) -> bool:
+    """Everything the handshake checks that touches the filesystem (resolve + registry read)."""
+    if str(Path(profile_home).resolve()) != profile_home:
+        # The client sends its resolved home; anything else is not the shape we fenced.
+        return False
+    return _owned_lease(session_id, lease_id, profile_home, origin)
+
+
 @router.get(PATH)
 async def session_attach(request: Request, session_id: str = "", lease_id: str = "", profile_home: str = ""):
     from hermes_cli.web_server_chat import _build_gateway_ws_url
@@ -74,10 +84,7 @@ async def session_attach(request: Request, session_id: str = "", lease_id: str =
         raise refused
     if not session_id or not lease_id or not profile_home:
         raise refused
-    if str(Path(profile_home).resolve()) != profile_home:
-        # The client sends its resolved home; anything else is not the shape we fenced.
-        raise refused
-    if not _owned_lease(session_id, lease_id, profile_home, origin):
+    if not await asyncio.to_thread(_fenced_identity, session_id, lease_id, profile_home, origin):
         raise refused
     websocket_url = _build_gateway_ws_url()
     if not websocket_url:

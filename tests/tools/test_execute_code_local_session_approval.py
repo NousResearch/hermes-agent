@@ -216,7 +216,7 @@ def test_delegated_child_keeps_whole_script_gate(child_env, turn, notifier, sour
     if not notifier:
         A.unregister_gateway_notify(SESSION_KEY)
     with delegated_child_context("child-session"):
-        code, result = _run_unguarded_rm(victim)
+        _code, result = _run_unguarded_rm(victim)
     if notifier:
         assert result.get("error") == _DENIED_SCRIPT, result
     else:
@@ -234,7 +234,7 @@ def test_side_task_keeps_whole_script_gate(child_env, turn, source):
     victim.mkdir()
     prompts = turn(source=source, execute_code="once")
     with _side_task(child_env):
-        code, result = _run_unguarded_rm(victim)
+        _code, result = _run_unguarded_rm(victim)
     assert _is_undelivered_refusal(result.get("error", ""), A._EXECUTE_CODE_DESCRIPTION), result
     assert "ran" not in result.get("output", "") and victim.is_dir()
     assert prompts == []

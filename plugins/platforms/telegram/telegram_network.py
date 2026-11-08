@@ -62,6 +62,24 @@ SEED_FALLBACK_IPS: list[str] = ["149.154.166.110", "149.154.167.220"]
 _UNSET = object()
 
 
+def proxy_target_hosts(base_url: Optional[str], fallback_ips: Iterable[str] = ()) -> list[str]:
+    """The hosts a Bot API request actually reaches, for the NO_PROXY check: a configured
+    ``base_url`` server's ``host:port`` (a local ``telegram-bot-api`` on 127.0.0.1:8081 must
+    match ``NO_PROXY=127.0.0.1``), else api.telegram.org and its fallback IPs."""
+    if base_url:
+        from urllib.parse import urlsplit
+        parts = urlsplit(base_url if "//" in base_url else f"//{base_url}")
+        try:
+            port = parts.port or (80 if parts.scheme == "http" else 443)
+        except ValueError:
+            port = None
+        host = parts.hostname or ""
+        if host:
+            host = f"[{host}]" if ":" in host else host
+            return [f"{host}:{port}" if port else host]
+    return [_TELEGRAM_API_HOST, *fallback_ips]
+
+
 def _resolve_proxy_url(target_hosts=None) -> str | None:
     from gateway.platforms.base import resolve_proxy_url  # env vars + macOS system proxy
     return resolve_proxy_url("TELEGRAM_PROXY", target_hosts=target_hosts)

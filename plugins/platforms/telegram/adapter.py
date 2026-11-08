@@ -192,7 +192,8 @@ from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, l
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
 from plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, answer_callback, answer_or_note
 from plugins.platforms.telegram.telegram_network import (
-    SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
+    SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, proxy_target_hosts,
+    tcp_keepalive_socket_options)
 from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
 from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
 from utils import env_float, env_int
@@ -2889,7 +2890,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             else:
                 logger.info("[%s] Auto-discovered Telegram fallback IPs: %s", self.name, ", ".join(fallback_ips))
         proxy_url = self._ptb_proxy_url = resolve_proxy_url(
-            "TELEGRAM_PROXY", target_hosts=["api.telegram.org", *fallback_ips],
+            "TELEGRAM_PROXY", target_hosts=proxy_target_hosts(self.config.extra.get("base_url"), fallback_ips),
             configured=self.config.extra.get("proxy_url"))
 
         def _pair(general_httpx: dict, updates_httpx: dict, **extra) -> tuple:

@@ -169,8 +169,9 @@ def _telegram_bot(token, extra=None):
     try:
         from telegram.request import HTTPXRequest
         from gateway.platforms.base import resolve_proxy_url, safe_proxy_url_for_log
+        from plugins.platforms.telegram.telegram_network import proxy_target_hosts
         kwargs = _telegram_request_kwargs()
-        proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"],
+        proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_target_hosts(base_url),
                                   configured=extra.get("proxy_url"))
         if proxy:
             logger.info("send_message: standalone Telegram send routed through proxy %s", safe_proxy_url_for_log(proxy))

@@ -1370,6 +1370,14 @@ def _classify_400(c: _Ctx) -> Verdict:
     verdict = _first_match(msg, _IMAGE_TOOL_RULES)
     if verdict is not None:
         return verdict
+    # Gemini (and other providers) report a revoked/invalid API key as HTTP 400
+    # "API key not valid" / "API_KEY_INVALID" instead of 401/403, so credential-pool
+    # rotation never runs. Treat these as auth failures so the next pool key is tried.
+    # Narrow on purpose: key-validity wording only, so an arbitrary 400 keeps classifying
+    # as format_error exactly as today (#150942).
+    if any(p in msg for p in ("api key not valid", "pass a valid api key",
+                              "invalid api key", "invalid_api_key")):
+        return _V_AUTH_ROTATE
     # Codex ChatGPT-account model rejection: exact normalized text only, so arbitrary 400s never
     # rotate. Before request-validation, whose "not supported" wording would abort as format_error (#71970).
     if CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER in msg:

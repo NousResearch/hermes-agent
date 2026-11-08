@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
+import { TRANSLATIONS } from '@/i18n'
 import { en } from '@/i18n/en'
 
 import {
   ERROR_CODE_KEYS,
   errorCardActions,
+  errorCardOffers,
   errorCardSeverity,
-  errorRecoveryPlan,
+  errorCardShowsDiagnostics,
   type ErrorSurface,
   formatErrorDiagnostics,
   formatResetClock,
@@ -148,7 +150,7 @@ describe('error copy never names a hidden Retry', () => {
       retryable: false
     }
 
-    expect(errorRecoveryPlan(surface).retry).toBe(true)
+    expect(errorCardOffers(surface, 'retry')).toBe(true)
   })
 
   it('a WAF block names the firewall and the User-Agent fix, not the key and not a retry', () => {
@@ -179,11 +181,7 @@ describe('free-tier refusals', () => {
 
   it('carries the backend sentence and offers the free sign-in, never an OAuth re-login', () => {
     expect(surface.message).toBe('Using Hermes without signing in is switched off right now. To sign in: /login.')
-    const plan = errorRecoveryPlan(surface)
-    expect(plan.signInFreeTier).toBe(true)
-    expect(plan.signInAgain).toBe(false)
-    expect(plan.retry).toBe(false)
-    expect(plan.switchProvider).toBe(true)
+    expect(errorCardActions(surface)).toEqual({ primary: 'sign_in_free_tier' })
   })
 
   it('renders the backend sentence as the body under its own title', () => {
@@ -197,7 +195,7 @@ describe('free-tier refusals', () => {
     expect(errorCardText(en.assistant.thread, bare).body).toBe(
       en.assistant.thread.errorCodes.free_tier_rate_limited.body
     )
-    expect(errorRecoveryPlan(bare).retry).toBe(true)
+    expect(errorCardOffers(bare, 'retry')).toBe(true)
   })
 })
 
@@ -206,7 +204,39 @@ describe('cron session read-only (#141348)', () => {
     const surface = parseErrorSurface({ layer: 'gateway', code: 'cron_session_read_only', retryable: false })
 
     expect(errorCardText(en.assistant.thread, surface)).toEqual(en.assistant.thread.errorCodes.cron_session_read_only)
-    expect(errorRecoveryPlan(surface)).toMatchObject({ retry: false, startNewSession: true })
+    expect(errorCardActions(surface)).toEqual({ primary: 'start_new_session' })
+  })
+})
+
+describe('managed local model server down', () => {
+  it('names the local model server, not a custom one, and offers another model, never a key update', () => {
+    const surface = parseErrorSurface({ layer: 'endpoint', code: 'local_runtime_unavailable', retryable: false })
+    const { body, title } = errorCardText(en.assistant.thread, surface)
+
+    expect(`${title} ${body}`).toContain('local model server')
+    // The card is the same in Desktop and the Webapp, which has no Local models pane.
+    expect(body).not.toMatch(/custom|Settings|Local models/)
+    expect(errorCardActions(surface)).toEqual({ primary: 'switch_provider' })
+  })
+
+  it('offers Retry first while the server is still starting', () => {
+    const surface = parseErrorSurface({ layer: 'endpoint', code: 'local_runtime_unavailable', retryable: true })
+
+    expect(errorCardActions(surface)).toEqual({ primary: 'retry', secondary: 'switch_provider' })
+  })
+
+  it('says Retry only while the server is starting, in every locale', () => {
+    const card = (retryable: boolean, thread = en.assistant.thread) =>
+      errorCardText(thread, parseErrorSurface({ layer: 'endpoint', code: 'local_runtime_unavailable', retryable }))
+
+    expect(card(true).body).toMatch(/retry/i)
+    expect(card(false).body).not.toMatch(/retry/i)
+    expect(card(false).body).toContain('hermes model')
+
+    for (const copy of Object.values(TRANSLATIONS)) {
+      expect(card(false, copy.assistant.thread).body).not.toBe(card(true, copy.assistant.thread).body)
+      expect(card(false, copy.assistant.thread).body).toContain('hermes model')
+    }
   })
 })
 
@@ -221,7 +251,7 @@ describe('usage-window refusal', () => {
     expect(body).not.toBe(errorCardText(en.assistant.thread, plain).body)
   })
 
-  it('an older backend (no structured limit): Open billing, Retry and the model menu; no diagnostics', () => {
+  it('an older backend (no structured limit): Open billing and the model menu; no diagnostics', () => {
     const surface = parseErrorSurface({
       code: 'usage_window',
       layer: 'billing',
@@ -229,15 +259,13 @@ describe('usage-window refusal', () => {
       retryable: true
     })!
 
-    const plan = errorRecoveryPlan(surface)
-    expect(plan.openBilling && plan.retry && plan.switchProvider).toBe(true)
-    expect(plan.switchToModel || plan.useCredits).toBe(false)
-    expect(plan.diagnostics).toBe(false)
+    expect(errorCardActions(surface)).toEqual({ primary: 'open_billing', secondary: 'choose_model' })
+    expect(errorCardShowsDiagnostics(surface)).toBe(false)
     expect(surface.resetsAt).toBe(1_800_000_000)
-    // Every other billing failure keeps today's card.
-    const plain = errorRecoveryPlan(parseErrorSurface({ code: 'billing', layer: 'billing', retryable: false }))
-    expect(plain.openBilling).toBe(false)
-    expect(plain.diagnostics).toBe(true)
+    // Out of credits is a fault worth diagnosing.
+    expect(errorCardShowsDiagnostics(parseErrorSurface({ code: 'billing', layer: 'billing', retryable: false }))).toBe(
+      true
+    )
   })
 
   it('with a structured limit: one-click Switch to <model> and Use credits, no provider menu', () => {
@@ -262,35 +290,27 @@ describe('usage-window refusal', () => {
         { label: 'bad', model: 'bad', note: '', provider: 'nous' }
       ]
     })
-    const plan = errorRecoveryPlan(surface)
-    expect(plan.switchToModel && plan.useCredits && plan.retry).toBe(true)
-    expect(plan.openBilling || plan.switchProvider || plan.diagnostics).toBe(false)
+    expect(errorCardActions(surface)).toEqual({ primary: 'switch_to_model', secondary: 'use_credits' })
 
     // No balance: Add credits (Billing) instead of Use credits.
-    const add = errorRecoveryPlan(
-      parseErrorSurface({
-        code: 'usage_window',
-        layer: 'billing',
-        retryable: true,
-        usage_limit: { credits: { action: 'add_credits' }, suggestions: [] }
-      })
-    )
+    const add = parseErrorSurface({
+      code: 'usage_window',
+      layer: 'billing',
+      retryable: true,
+      usage_limit: { credits: { action: 'add_credits' }, suggestions: [] }
+    })
 
-    expect(add.openBilling).toBe(true)
-    expect(add.useCredits || add.switchToModel || add.switchProvider).toBe(false)
+    expect(errorCardActions(add)).toEqual({ primary: 'open_billing' })
 
     // Keep going off and no balance: both steps live on the Billing page, so Open billing (not Use credits).
-    const both = errorRecoveryPlan(
-      parseErrorSurface({
-        code: 'usage_window',
-        layer: 'billing',
-        retryable: true,
-        usage_limit: { credits: { action: 'add_credits_and_keep_going' }, suggestions: [] }
-      })
-    )
+    const both = parseErrorSurface({
+      code: 'usage_window',
+      layer: 'billing',
+      retryable: true,
+      usage_limit: { credits: { action: 'add_credits_and_keep_going' }, suggestions: [] }
+    })
 
-    expect(both.openBilling).toBe(true)
-    expect(both.useCredits || both.switchToModel || both.switchProvider).toBe(false)
+    expect(errorCardActions(both)).toEqual({ primary: 'open_billing' })
   })
 
   it('falls back to its own table body when an older backend sent no sentence', () => {
@@ -328,14 +348,12 @@ describe('limit reset (#98852)', () => {
 })
 
 describe('out of credits (not a window plan)', () => {
-  it('keeps the card unchanged for Nous and other providers alike', () => {
+  it('offers Billing, then another provider, for Nous and other providers alike', () => {
     for (const provider of ['nous', 'example']) {
-      const plan = errorRecoveryPlan(
-        parseErrorSurface({ code: 'billing', layer: 'billing', provider, retryable: false })!
-      )
+      const surface = parseErrorSurface({ code: 'billing', layer: 'billing', provider, retryable: false })
 
-      expect(plan.openBilling).toBe(false)
-      expect(plan.switchProvider && plan.diagnostics).toBe(true)
+      expect(errorCardActions(surface)).toEqual({ primary: 'open_billing', secondary: 'switch_provider' })
+      expect(errorCardShowsDiagnostics(surface)).toBe(true)
     }
   })
 })
@@ -359,6 +377,13 @@ describe('error card actions: one main action, at most one second option', () =>
     expect(at({ ...limit('add_credits', []), resets_at: later })).toEqual({
       primary: 'open_billing',
       secondary: 'retry_at_reset'
+    })
+    // Too far ahead for a browser timer (a monthly window): no Retry until it passes.
+    expect(at({ ...limit('add_credits', []), resets_at: later + 30 * 86_400 })).toEqual({ primary: 'open_billing' })
+    // The reset has passed: the allowance is back, so a plain Retry.
+    expect(at({ ...limit('add_credits', []), resets_at: later - 1200 })).toEqual({
+      primary: 'open_billing',
+      secondary: 'retry'
     })
     // An older backend sends no structured limit: Billing, or another model.
     expect(at({ code: 'usage_window', layer: 'billing', retryable: true })).toEqual({

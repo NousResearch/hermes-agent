@@ -3,7 +3,7 @@ import { type BillingBlock, mergeUsage } from '@hermes/shared'
 import { noteTurnSettled } from '@/app/session/hooks/use-session-actions/settled-turns'
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
-import type { GatewayEventPayload } from '@/lib/chat-messages'
+import { type GatewayEventPayload, markQueuedPromptStarted } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -39,7 +39,7 @@ function firstBillingLine(text: string): string {
  * composer. A wall in a session that is NOT on screen also raises one sticky,
  * billing-specific toast — never the generic "Hermes error" — with a smart CTA
  * (Nous → in-app Settings → Billing, other providers → their billing page); on
- * screen the banner alone carries it (one event, one surface).
+ * screen the banner and the turn's card carry it, so no toast repeats them.
  */
 function surfaceBillingBlock(sessionId: string, raw: unknown, toast: boolean): void {
   if (!raw || typeof raw !== 'object') {
@@ -198,8 +198,16 @@ function handleMessageStart(ctx: GatewayEventContext): boolean {
       return state
     }
 
+    // A projected queued prompt drawn before this start is this turn's
+    // prompt from here on, even while its row is still on screen.
+    const messages = markQueuedPromptStarted(state.messages)
+
     return {
       ...state,
+      messages,
+      // Rows on screen now are earlier turns (or this turn's prompt): an
+      // interim seal on one of them no longer means its call is running.
+      turnAnchorId: messages.at(-1)?.id ?? null,
       busy: true,
       awaitingResponse: true,
       sawAssistantPayload: false,
@@ -426,7 +434,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       payload?.persisted_turn,
       Boolean(payload?.response_transformed),
       typeof payload?.status === 'string' ? payload.status : undefined,
-      payload?.response_reused === true
+      payload?.response_reused === true,
+      typeof payload?.failure_reason === 'string' ? payload.failure_reason : undefined
     )
 
     if (payload?.status === 'complete') {

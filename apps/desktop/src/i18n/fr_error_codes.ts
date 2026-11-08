@@ -19,5 +19,11 @@ export const frErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   launch_credentials_unavailable: {
     title: 'La clé API de cette conversation a changé',
     body: "Cette conversation a démarré avec une clé API qui a depuis été modifiée ou supprimée ; votre message n'a donc pas été envoyé. Une conversation ouverte ne passe jamais d'elle-même à une autre clé. Utilisez « Démarrer une nouvelle session » pour utiliser votre clé actuelle."
+  },
+  local_runtime_unavailable: {
+    title: 'Impossible de joindre le serveur de modèles local',
+    body: 'Le serveur de modèles local ne tourne pas encore : il est peut-être encore en train de démarrer. Réessayez dans un instant, ou passez à un autre modèle.',
+    bodyNoRetry:
+      'Le serveur de modèles local est arrêté. Démarrez-le depuis l’application de bureau Hermes ou avec `hermes model` dans un terminal, ou passez à un autre modèle.'
   }
 }

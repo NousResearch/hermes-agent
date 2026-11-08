@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import threading
 
-from gateway.session_contract import Principal, SessionRef
+from gateway.session_contract import SessionActor, SessionRef
 from hermes_state_keys import CRON_PRINCIPAL_ID, cron_request_id
 from hermes_state_runtime import RuntimeStoreError, admit_session_input, get_session_admission
 
@@ -90,7 +90,7 @@ def bind_execution(authority, session_id, job_id, execution_id):
 
 def _actor(authority, actor):
     if actor is None:
-        return Principal(CRON_PRINCIPAL_ID, authority.profile_id,
+        return SessionActor(CRON_PRINCIPAL_ID, authority.profile_id,
                          frozenset({'session:create', 'session:submit', 'session:read', 'session:control'}), 'cron-ticker')
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
@@ -98,7 +98,7 @@ def _actor(authority, actor):
         raise RuntimeStoreError('permission_denied')
     # Cron fires belong to the profile scheduler, not the transport that observes
     # them. The same execution ID from ticker and CLI must dedupe together.
-    return Principal(CRON_PRINCIPAL_ID, authority.profile_id, actor.capabilities, actor.transport_id)
+    return SessionActor(CRON_PRINCIPAL_ID, authority.profile_id, actor.capabilities, actor.transport_id)
 
 
 def _create(authority, actor, params):
@@ -296,10 +296,15 @@ async def execute(authority, ref, row, policy):
     job = dict(data['cron_job'], execution_id=execution_id)
     token = bind_execution(authority, ref.session_id, job['id'], execution_id)
     try:
+        from cron.cancellation import CancelRequest, _CombinedCancelEvent
+
         db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
         with _profile_runtime_scope(db_path.parent):
+            # The forwarded ``cron.cancel`` carries no reason, so the operator's marker is read here
+            # first: a stopped agent run reports "cancelled on request", not a lost fire claim.
+            stop = _CombinedCancelEvent(CancelRequest(execution_id), cancel)
             result = await asyncio.to_thread(_run_identified, run_job, job, execution_id,
-                                             extra_prompt=data['extra_prompt'], cancel_event=cancel)
+                                             extra_prompt=data['extra_prompt'], cancel_event=stop)
         # run_job stamps run-side verdicts on ITS job copy (quota hold, unreachable model); the
         # firing scheduler's bookkeeping reads them off its own dict, so they ride the result.
         flags = {key: job[key] for key in RUN_JOB_FLAGS if key in job}

@@ -89,7 +89,6 @@ def _make_runner():
     runner.adapters = {}
     runner._running_agents = {}
     runner._running_agents_ts = {}
-    runner._session_run_generation = {}
     runner._pending_messages = {}
     runner._draining = False
     runner._update_runtime_status = MagicMock()

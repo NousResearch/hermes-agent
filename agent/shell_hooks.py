@@ -91,6 +91,11 @@ def _payload_fields(kwargs: dict[str, Any]) -> dict[str, Any]:
     except OSError:
         cwd = ""
     from hermes_cli.profiles import get_active_profile_name
+    from agent.delegation_context import owned_kanban_task
+    extra = {k: v for k, v in kwargs.items() if k not in _TOP_LEVEL_PAYLOAD_KEYS}
+    # Resolve in the firing execution before the descendant environment is scrubbed.
+    # This is payload metadata, never permission for the hook to act as the worker.
+    extra["kanban_task_id"] = owned_kanban_task()
     return {
         "tool_name": kwargs.get("tool_name"),
         "tool_input": kwargs.get("args") if isinstance(kwargs.get("args"), dict) else None,
@@ -98,7 +103,7 @@ def _payload_fields(kwargs: dict[str, Any]) -> dict[str, Any]:
         "cwd": cwd,
         # Resolved at fire time: a multiplexed gateway's hook script must know which profile fired it.
         "profile": get_active_profile_name(),
-        "extra": {k: v for k, v in kwargs.items() if k not in _TOP_LEVEL_PAYLOAD_KEYS},
+        "extra": extra,
     }
 
 
@@ -667,7 +672,17 @@ def _parse_context(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     return {"context": context} if isinstance(context, str) and context.strip() else None
 
 
-_RESPONSE_PARSERS: dict[str, Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = {"pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify}
+def _parse_pre_llm_call(data: dict[str, Any]) -> Optional[dict[str, Any]]:
+    # A turn veto before any inference request, in either dialect (as for pre_tool_call); else context.
+    for verb, primary, secondary, _ in _PRE_TOOL_DIALECTS:
+        if data.get(verb) == "block":
+            return {"action": "block", "message": _block_message(data.get(primary), data.get(secondary))}
+    return _parse_context(data)
+
+
+_RESPONSE_PARSERS: dict[str, Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = {
+    "pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify, "pre_llm_call": _parse_pre_llm_call,
+}
 
 
 def _parse_response(event: str, stdout: str) -> Optional[dict[str, Any]]:

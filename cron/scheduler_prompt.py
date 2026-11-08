@@ -290,6 +290,17 @@ _CRON_HINT = (
 )
 
 
+def _run_time_line() -> str:
+    """This fire's wall-clock time in the configured zone. The system prompt is date-only (byte-stable
+    for caching), so without it a 07:00 brief can't tell itself from a 19:00 retry. Kept outside
+    ``_CRON_HINT`` and after it: the hint stays byte-stable, and cron sessions are fresh per fire."""
+    from hermes_time import safe_strftime
+    now = _hermes_now()
+    offset = now.strftime("%z")
+    zone = f" (UTC{offset[:3]}:{offset[3:]})" if offset else ""
+    return f"[CURRENT RUN TIME: {safe_strftime(now, '%A, %Y-%m-%d %H:%M %Z').strip()}{zone}]\n\n"
+
+
 def _build_job_prompt(
     job: dict, prerun_script: Optional[tuple] = None, extra_prompt: Optional[str] = None,
     runtime_data_prompt: Optional[str] = None,
@@ -343,7 +354,7 @@ def _build_job_prompt(
         prompt = f"{notepad_section}{prompt}"
         has_injected_data = True
 
-    prompt = _CRON_HINT + prompt
+    prompt = _CRON_HINT + _run_time_line() + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

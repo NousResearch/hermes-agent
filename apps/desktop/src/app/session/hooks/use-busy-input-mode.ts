@@ -9,6 +9,7 @@ import {
   normalizeBusyInputMode
 } from '@/store/busy-input-mode'
 import { serverOwnsComposerQueue } from '@/store/composer-queue'
+import { $connectionWires } from '@/store/connection-wire'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState, knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
 import { requestForSessionProfile } from '@/store/session-request-router'
@@ -27,6 +28,8 @@ export function useBusyInputMode({
   const connection = useStore($connection)
   const profile = useStore($activeGatewayProfile)
   const gatewayState = useStore($gatewayState)
+  // A public connection's wire is known only at its gateway.ready; re-read ownership then.
+  useStore($connectionWires)
 
   const route = storedSessionId
     ? (sessionTileOwnerRoute(storedSessionId) ?? knownSessionOwner(ownerLookupSessionRows(), storedSessionId))

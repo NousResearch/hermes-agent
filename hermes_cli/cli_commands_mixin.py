@@ -474,6 +474,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                 print(f"\n{diff}")
 
     def _rollback_restore(self, mgr, cwd, target_hash: str, file_path, restore_all: bool) -> None:
+        taken = self._checkpoint_taken_at(cwd, target_hash)
         result = mgr.restore(cwd, target_hash, file_path=file_path,
                              safe=not restore_all and not file_path)
         if not result["success"]:
@@ -483,10 +484,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
               else f"  {_t('rollback.restored_all', **restored)}")
         _rollback_kept(result)
         print(f"  {_t('rollback.snapshot_saved')}")
-        # Also undo the last conversation turn so the agent's context matches the restored files.
-        if self.conversation_history:
-            self.undo_last(prefill=False)
-            print(f"  {_t('rollback.chat_turn_undone')}")
+        # Also undo the last chat turn so the agent's context matches the files (not one /undo kept).
+        self._rollback_chat_turn(taken)
 
     # ---- /diff ----------------------------------------------------------------------------
     def _handle_diff_command(self, command: str):
@@ -1362,6 +1361,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
         def produce():
             from agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
+            from gateway.session_context import declare_stateless_channel
+            declare_stateless_channel()  # nothing drains a bg_* session's completions later: delegations join (#140569)
             set_sudo_password_callback(self._sudo_password_callback)
             set_approval_callback(self._approval_callback)
             set_unlock_prompt_callback(self._vault_unlock_callback)
@@ -1402,10 +1403,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                         response = _gt("model.error_prefix", error=result["error"])
                     return response
                 finally:
-                    # One agent per /bg task in a long-lived CLI process: close()
-                    # is the owner boundary (memory shutdown, tool subprocesses,
-                    # httpx clients); an unclosed side agent leaks all of them
-                    # until the CLI exits (#50197).
+                    # One agent per /bg task in a long-lived CLI: close() is the owner boundary (memory,
+                    # tool subprocesses, httpx clients); unclosed, they leak until the CLI exits (#50197).
                     with suppress(Exception):
                         bg_agent.close()
             finally:

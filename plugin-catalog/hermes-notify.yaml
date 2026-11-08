@@ -1,0 +1,34 @@
+name: hermes-notify
+title: Hermes Pocket
+repo: https://github.com/Belweave/hermes-notify
+sha: "698b66b6d64a87d317ba97938f37f9ed75f04cd6"
+description: "Release workspaces, progress, replies and exact phone approvals through Notify. Disclosure — when enabled, sends release workspace data, model-written notifications and questions, and each Hermes approval request's redacted command and description to the third-party Notify service (notify.belweave.ai) and to a Cloudflare Worker you deploy and configure yourself; once you select `security.approval.transport: notify`, Hermes command approvals are answered from your phone through Notify (approve-once or deny only, denied on timeout or error); phone replies are injected into the session only when you set allow_reply_injection; uses NOTIFY_API_TOKEN (and HERMES_NOTIFY_PUBLISH_TOKEN for the Worker) and runs one background delivery thread."
+maintainer: belweave
+tier: community
+category: automation
+version: "0.2.0"
+readme: true
+platforms: [macos]
+screenshots:
+  - https://raw.githubusercontent.com/Belweave/hermes-notify/698b66b6d64a87d317ba97938f37f9ed75f04cd6/docs/screenshots/release-phone.png
+  - https://raw.githubusercontent.com/Belweave/hermes-notify/698b66b6d64a87d317ba97938f37f9ed75f04cd6/docs/screenshots/approval-phone.png
+  - https://raw.githubusercontent.com/Belweave/hermes-notify/698b66b6d64a87d317ba97938f37f9ed75f04cd6/docs/screenshots/shipped-phone.png
+known_issues:
+  - One native phone approval passed; the full deployed App, sign-in and Live Activity flow remain unverified.
+  - A configured Cloudflare Worker and verified origin-specific owner are needed for private Apps.
+  - Requires the public approval transport and Desktop SDK; a minimum released Hermes version is not yet verified.
+capabilities:
+  provides_tools:
+    - notify_release
+    - notify_publish_app
+    - notify_send
+    - notify_ask
+    - notify_replies
+    - notify_status
+  provides_hooks:
+    - pre_approval_request
+    - post_approval_response
+  provides_middleware: []
+  requires_env:
+    - NOTIFY_API_TOKEN
+requires_hermes: ">=0.22.6"

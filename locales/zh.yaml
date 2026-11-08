@@ -66,6 +66,9 @@ gateway:
     usage_switch_model: "`/model <name>` — 切换模型"
     usage_switch_provider: "`/model <name> --provider <slug>` — 切换提供方"
     usage_persist: "`/model <name> --global` — 永久保存"
+    usage_reset: "`/model reset` — 清除本会话的模型覆盖"
+    reset_done: "已清除本会话的模型覆盖 — 现在使用 `{model}`（频道/全局默认）。会话历史已保留。"
+    reset_none: "本会话没有激活的模型覆盖 — 已在使用 `{model}`（频道/全局默认）。"
     err_skew: "此网关运行的是 {boot_rev} 的代码，但磁盘上的检出版本已是 {disk_rev}。此时切换模型可能因模块过期而崩溃——请重启网关以加载新代码：hermes gateway restart"
     err_switch_failed: "切换到模型 {model} 失败（{error}）；继续使用 {current}。"
     err_config_not_updated: "config.yaml 未更新（{error}）"
@@ -971,9 +974,6 @@ platform:
     approved: "✅ 已批准。"
     denied: "❌ 已拒绝。"
     approval_expired: "⌛ 审批已过期——命令未执行（已超时或已在别处处理）。"
-  yuanbao:
-    slow_response_notice: "任务有点复杂，正在努力处理中，请耐心等待..."
-    owner_command_denied: "⚠️ {command} 仅在私聊模式下对创建者可用"
   shared:
     truncated_suffix: "\n...（已截断）"
     unknown: "未知"
@@ -1368,6 +1368,12 @@ platform:
       unauthorized: "只有已授权的 Matrix 用户才能使用这些控件。"
       not_requester: "只有发起此操作的用户才能使用这些控件。"
   feishu:
+    clarify:
+      title: "Hermes 需要你的输入"
+      other: "✏️ 其他（输入回答）"
+      awaiting_typed: "等待 {user} 输入回答…"
+    picker:
+      apply_error: "应用所选项时出错：{error}"
     approval:
       action_session: "本会话"
       action_always: "始终"
@@ -1471,6 +1477,8 @@ platform:
     prompt_other: "✏️ 其他（输入回答）"
     prompt_expired: ⌛ 该提示已不再等待回答。请以普通消息发送您的回复。
 slash:
+  rewind:
+    description: "回溯到之前的提示以编辑并重新发送,或从该处分叉 (Esc Esc)"
   approve:
     description: "批准待处理的危险命令"
   bg:
@@ -1698,6 +1706,20 @@ slash:
   quit:
     description: "退出 CLI（加 --delete 可同时删除会话历史）"
 cli:
+  backtrack:
+    title: "↺ 对话记录 — 选择要编辑的提示"
+    keys_hint: "浏览对话记录 · ↑↓/jk 滚动 · ←→/hl 提示 · ↵ 编辑 · f 分叉 · esc 返回"
+    prime_hint: "再按一次 esc 编辑上一条消息"
+    no_previous: "没有可编辑的上一条消息。"
+    editing_hint: "↺ 正在编辑提示 {number} — Enter 回溯到此处并发送 · Esc Esc 取消"
+    edit_cancelled: "↺ 已取消回溯;未删除任何内容。"
+    rewound: "↺ 已回溯到提示 {number}(已归档 {count} 条消息);正在发送编辑内容。"
+    forked: "⑂ 已在提示 {number} 之前分叉;原始会话 {parent} 未改变。请编辑下方提示,然后按 Enter 发送。"
+    nothing: "(._.) 没有可回溯的之前提示。"
+    target_changed: "(x_x) 自你选择提示 {number} 后会话已变化;未删除任何内容。你的编辑已放回输入框。"
+    invalid: "(._.) 没有提示 {value} — 请选择 1 到 {total}。"
+    usage: "用法:/rewind [N | fork N]"
+    rewind_failed: "(x_x) 回溯失败;历史记录未改变:{error}"
   modern:
     thought_for: "思考了 {seconds} 秒"
     thought: "思考"
@@ -2009,6 +2031,8 @@ cli:
     usage_switch_reasoning: "切换并设置推理强度"
     usage_switch_provider: "切换提供方"
     usage_refresh: "重新获取实时模型列表"
+    reset_none: "已在使用配置的默认模型（{model}）— 无需重置。"
+    reset_no_default: "config.yaml 中没有 model.default — 没有可重置的目标。"
     choice_switch_anyway: "仍然切换"
     desc_switch_anyway: "在当前 Hermes 会话中使用此模型。"
     choice_cancel: "取消"
@@ -2159,6 +2183,7 @@ cli:
     images_attached_other: "📎 已附加 {count} 张图片"
     command_interrupted: "命令已中断。"
     welcome: "欢迎使用 Hermes Agent！输入你的消息，或输入 /help 查看命令。"
+    vscode_images_hint: "VS Code 可以在这里以完整分辨率显示图片：请在设置中开启 terminal.integrated.enableImages。"
     activated_skills_label: "已激活的技能："
     redaction_disabled_title: "⚠  密钥脱敏已禁用"
     redaction_disabled_body: "（HERMES_REDACT_SECRETS={value}）。API 密钥和 token 可能会原样出现在聊天输出、会话 JSON 和日志中。在 config.yaml 中设置 {setting} 可重新启用。"
@@ -2613,6 +2638,7 @@ cli:
     goal_turns: "⊙ 目标 {used}/{max}"
     goal: "⊙ 目标"
     ctx_pinned: " 已固定"
+    ctx_fallback: " 默认值"
     ctx_unknown: "上下文 --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 暂存（{count} 项）"
@@ -3952,3 +3978,8 @@ plan_usage:
   large_notice_limit: "大型模型：已达{name}上限（{resets}）。"
   large_notice_limit_stops: "大型模型：已达{name}上限（{resets}），在此之前无法运行。"
   large_notice_percent: "大型模型：每条消息消耗更多套餐用量。每月大型模型上限：已用 {percent}。"
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ 已撤销回合中更改的文件：{files}。运行 /rollback 列出检查点并恢复其中一个。"
+    more: "另外 {count} 个"

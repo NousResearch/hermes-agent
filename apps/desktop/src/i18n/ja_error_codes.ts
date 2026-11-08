@@ -55,7 +55,7 @@ export const jaErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   truncated: {
     title: '返信が途中で切れました',
     body: (_provider, model) =>
-      `${model || 'モデル'} が完了前に出力上限に達したため、何も実行されませんでした。「続行」で中断したところから再開できます。`
+      `${model || 'モデル'} の返答が完了前に止まりました。「続行」で中断したところから再開できます。`
   },
   loop_error: {
     title: 'Hermes はこのステップを完了できませんでした',
@@ -105,5 +105,11 @@ export const jaErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   launch_credentials_unavailable: {
     title: 'このチャットの API キーが変更されました',
     body: 'このチャットの開始時の API キーがその後変更または削除されたため、メッセージは送信されませんでした。開いているチャットが自動で別のキーに切り替わることはありません。「新しいセッションを開始」で現在のキーを使ってください。'
+  },
+  local_runtime_unavailable: {
+    title: 'ローカルモデルサーバーに接続できません',
+    body: 'ローカルモデルサーバーはまだ動作していません。起動中の可能性があります。少し待ってから再試行するか、別のモデルに切り替えてください。',
+    bodyNoRetry:
+      'ローカルモデルサーバーはオフになっています。Hermes デスクトップアプリか、ターミナルの `hermes model` から起動するか、別のモデルに切り替えてください。'
   }
 }

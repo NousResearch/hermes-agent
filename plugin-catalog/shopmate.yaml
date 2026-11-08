@@ -1,17 +1,17 @@
 name: shopmate
 repo: https://github.com/DaveTech2/Shopmate
-sha: f25da12357377c49be1c12d234f5eb820e3bce8d
+sha: 0da88dbe455bd56d1b59f9075dbccdbdd4d0b434
 title: Shopmate
 description: >-
   Personal shopper agent: the customer says what they want and Shopmate finds it (live Google
   Shopping prices, photos and merchants via SerpAPI, or a labelled demo catalog without a key),
-  then shows the price plus the delivery fee to the customer's location — from a shared location
-  pin, maps link, area name or full address anywhere in the world — with doorstep or nearest
+  then shows the price plus the delivery fee to the customer's location — detected automatically
+  (city level, from the network) or from a shared pin, maps link, area name or full address anywhere in the world — with doorstep or nearest
   pickup-stop options. On an explicit yes it builds the order, takes payment by Paystack in local
   currencies (NGN, GHS, KES, ZAR, USD, XOF, EGP, RWF) or crypto via NOWPayments, and verifies payment
   with the provider before marking the order paid. 13 native tools plus the shopmate:shopping skill.
-  Disclosure — network calls to serpapi.com, api.paystack.co, api.nowpayments.io, open.er-api.com and
-  nominatim.openstreetmap.org; carts, saved locations and orders (customer name, email, phone and
+  Disclosure — network calls to serpapi.com, api.paystack.co, api.nowpayments.io, open.er-api.com,
+  ipapi.co and nominatim.openstreetmap.org; carts, saved locations and orders (customer name, email, phone and
   address) are stored in the plugin data directory; checkout never creates a payment without
   confirm=true after the customer sees the summary.
 maintainer: DaveTech2
@@ -19,7 +19,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/DaveTech2/Shopmate#readme
-version: "0.2.3"
+version: "0.3.0"
 capabilities:
   provides_tools:
     - shop_categories

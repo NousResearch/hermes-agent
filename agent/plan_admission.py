@@ -13,6 +13,7 @@ route metadata only - never message content, keys or responses.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import fcntl
 import json
@@ -117,6 +118,63 @@ def plan_admission(base_url, *, model=None, purpose: str = "chat", wait_seconds:
                         "plan admission busy: another process holds the Z.ai GLM Coding Plan slot"
                     ) from None
                 time.sleep(0.25)
+        waited = time.monotonic() - t0
+        _log("acquire", wait_s=waited, base_url=base_url, model=model, purpose=purpose)
+        _local.depth = 1
+        try:
+            yield None
+        finally:
+            _local.depth = 0
+            _log("release", wait_s=0.0, base_url=base_url, model=model, purpose=purpose)
+    finally:
+        if acquired:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+        os.close(fd)
+
+
+@contextlib.asynccontextmanager
+async def plan_admission_async(base_url, *, model=None, purpose: str = "chat", wait_seconds: float | None = None):
+    """Async twin of :func:`plan_admission`: identical semantics, cooperative waiting.
+
+    Same host-wide flock, same thread-local re-entry protocol, same fail-closed
+    bounded wait - but the wait polls with ``await asyncio.sleep`` so a contended
+    acquisition never blocks the running event loop. Auxiliary async call sites
+    use this so a held main-turn slot delays them without freezing the process.
+    """
+    if not is_plan_route(base_url):
+        yield None
+        return
+    depth = getattr(_local, "depth", 0)
+    if depth > 0:
+        # Re-entry inside the same process reuses the outer hold.
+        _local.depth = depth + 1
+        try:
+            yield None
+        finally:
+            _local.depth = depth
+        return
+    os.makedirs(_admission_dir(), mode=0o700, exist_ok=True)
+    fd = os.open(lock_path(), os.O_CREAT | os.O_RDWR, 0o600)
+    acquired = False
+    t0 = time.monotonic()
+    waited = 0.0
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except OSError:
+                waited = time.monotonic() - t0
+                if waited >= (DEFAULT_WAIT_SECONDS if wait_seconds is None else wait_seconds):
+                    _log("busy", wait_s=waited, base_url=base_url, model=model, purpose=purpose)
+                    raise PlanAdmissionBusy(
+                        "plan admission busy: another process holds the Z.ai GLM Coding Plan slot"
+                    ) from None
+                await asyncio.sleep(0.25)
         waited = time.monotonic() - t0
         _log("acquire", wait_s=waited, base_url=base_url, model=model, purpose=purpose)
         _local.depth = 1

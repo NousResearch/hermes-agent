@@ -784,7 +784,12 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         _completions = getattr(getattr(agent.client, "chat", None), "completions", None)
         if not callable(getattr(_completions, "prepare", None)):
             api_kwargs.pop("_moa_prepared_request", None)
-        return agent.client.chat.completions.create(**api_kwargs)
+        # Owner rule (fleet): the MoA facade return is a chat-completions request
+        # too; it holds the same host-wide plan slot (no-op for every other route).
+        from agent.plan_admission import plan_admission
+
+        with plan_admission(getattr(agent, "base_url", None), model=getattr(agent, "model", None), purpose="chat_moa_facade"):
+            return agent.client.chat.completions.create(**api_kwargs)
     request_client = make_client("chat_completion_request")
     # Owner rule (fleet): one GLM-backed process at a time on the shared Z.ai
     # GLM Coding Plan route. plan_admission is a no-op for every other route.

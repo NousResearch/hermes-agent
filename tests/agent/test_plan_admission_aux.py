@@ -1,0 +1,252 @@
+"""Auxiliary/MoA seam gating for agent.plan_admission (rebase follow-up commit).
+
+The main-transport gate (tests/agent/test_plan_admission.py) proves the two
+chat-completion choke points. This module proves the auxiliary and MoA seams
+hold the SAME host-wide slot: an async admission twin that waits cooperatively
+(never blocking the event loop), fail-closed bounded waits, cross-thread
+serialisation behind a sync holder, same-thread re-entry, and wiring coverage
+for every aux/MoA call site. Invented data only; no network, no real provider
+calls.
+"""
+import asyncio
+import json
+import subprocess
+import sys
+import textwrap
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+from agent import plan_admission as pa
+
+PLAN_A = "https://api.z.ai/api/coding/paas/v4"
+NON_PLAN = "https://auxiliary-provider.example/v1"
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(autouse=True)
+def admission_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa, "_admission_dir", lambda: str(tmp_path / "admission"))
+    yield str(tmp_path / "admission")
+
+
+HOLDER = textwrap.dedent(
+    """
+    import sys, time
+    sys.path.insert(0, {root!r})
+    from agent import plan_admission as pa
+    pa._admission_dir = lambda: {adir!r}
+    with pa.plan_admission({base_url!r}, model="glm-5.3", purpose="test_holder", wait_seconds={wait}):
+        print("HELD", flush=True)
+        time.sleep({hold})
+    """
+)
+
+
+def _spawn_holder(adir, base_url=PLAN_A, hold=1.2, wait=5.0):
+    proc = subprocess.Popen(
+        [sys.executable, "-c", HOLDER.format(root=str(ROOT), adir=adir, base_url=base_url, hold=hold, wait=wait)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    line = proc.stdout.readline().strip()
+    assert line == "HELD", f"holder failed to start: {{line!r}}".format(line=line)
+    return proc
+
+
+def _log_rows(adir):
+    path = Path(adir) / "log.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+# ---------------------------------------------------------------- async basics
+
+
+def test_async_admission_acquires_when_free(admission_dir):
+    async def run():
+        async with pa.plan_admission_async(PLAN_A, model="glm-5.3", purpose="test", wait_seconds=2) as token:
+            assert token is None  # acquired: inside the hold
+            rows = [r for r in _log_rows(admission_dir) if r["event"] == "acquire"]
+            assert rows and rows[-1]["purpose"] == "test"
+
+    asyncio.run(run())
+
+
+def test_async_admission_noop_for_non_plan_route(admission_dir):
+    async def run():
+        started = time.monotonic()
+        async with pa.plan_admission_async(NON_PLAN, model="m", purpose="test", wait_seconds=5):
+            pass
+        assert time.monotonic() - started < 0.5
+        assert not _log_rows(admission_dir)  # never touches the lock or the log
+
+    asyncio.run(run())
+
+
+def test_async_admission_fail_closed_while_held(admission_dir):
+    holder = _spawn_holder(admission_dir, hold=3.0)
+
+    async def run():
+        with pytest.raises(pa.PlanAdmissionBusy):
+            async with pa.plan_admission_async(PLAN_A, model="glm-5.3", purpose="contender", wait_seconds=0.8):
+                pytest.fail("contender acquired while a holder owns the slot")
+
+    try:
+        asyncio.run(run())
+    finally:
+        holder.kill()
+        holder.wait()
+    busy = [r for r in _log_rows(admission_dir) if r["event"] == "busy"]
+    assert busy and busy[-1]["purpose"] == "contender"
+
+
+def test_async_admission_waits_then_acquires_after_release(admission_dir):
+    holder = _spawn_holder(admission_dir, hold=1.2)
+
+    async def run():
+        t0 = time.monotonic()
+        async with pa.plan_admission_async(PLAN_A, model="glm-5.3", purpose="late", wait_seconds=6):
+            elapsed = time.monotonic() - t0
+        return elapsed
+
+    try:
+        elapsed = asyncio.run(run())
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait()
+    assert elapsed >= 1.0, "contender acquired before the holder released"
+    acquire = [r for r in _log_rows(admission_dir) if r["event"] == "acquire" and r["purpose"] == "late"]
+    assert acquire and acquire[-1]["wait_s"] >= 1.0
+
+
+def test_event_loop_stays_responsive_while_contending(admission_dir):
+    """The whole point of the async twin: waiting must not freeze the loop."""
+    holder = _spawn_holder(admission_dir, hold=1.5)
+
+    async def run():
+        ticks = 0
+
+        async def heartbeat():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.05)
+                ticks += 1
+
+        beat = asyncio.ensure_future(heartbeat())
+        t0 = time.monotonic()
+        async with pa.plan_admission_async(PLAN_A, model="glm-5.3", purpose="responsive", wait_seconds=10):
+            elapsed = time.monotonic() - t0
+        beat.cancel()
+        try:
+            await beat
+        except asyncio.CancelledError:
+            pass
+        return ticks, elapsed
+
+    try:
+        ticks, elapsed = asyncio.run(run())
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait()
+    assert elapsed >= 1.0
+    assert ticks >= 10, f"event loop starved during contended wait (only {{ticks}} ticks)".format(ticks=ticks)
+
+
+# ------------------------------------------------------- cross-thread + re-entry
+
+
+def test_async_contender_serialises_behind_sync_holder_same_process(admission_dir):
+    """A sync hold in a worker thread must gate an async contender on the loop."""
+    release = threading.Event()
+
+    def sync_holder():
+        with pa.plan_admission(PLAN_A, model="glm-5.3", purpose="sync_holder"):
+            release.wait(5.0)
+
+    worker = threading.Thread(target=sync_holder)
+    worker.start()
+    time.sleep(0.3)  # let the worker take the slot
+
+    async def run():
+        async def contender():
+            async with pa.plan_admission_async(PLAN_A, model="glm-5.3", purpose="async_contender", wait_seconds=5):
+                return time.monotonic()
+
+        task = asyncio.ensure_future(contender())
+        await asyncio.sleep(0.6)  # contender is now polling behind the worker's hold
+        assert not task.done(), "async contender must not acquire while the sync holder owns the slot"
+        release.set()
+        acquired_at = await task
+        return acquired_at
+
+    try:
+        acquired_at = asyncio.run(run())
+    finally:
+        release.set()
+        worker.join(6)
+    assert time.monotonic() - acquired_at < 2.0
+    purposes = [r["purpose"] for r in _log_rows(admission_dir) if r["event"] == "acquire"]
+    assert purposes == ["sync_holder", "async_contender"]  # strict order: holder first
+
+
+def test_sync_and_async_share_thread_local_reentry(admission_dir):
+    async def run():
+        with pa.plan_admission(PLAN_A, model="glm-5.3", purpose="outer_sync"):
+            t0 = time.monotonic()
+            async with pa.plan_admission_async(PLAN_A, model="glm-5.3", purpose="inner_async", wait_seconds=2):
+                inner_elapsed = time.monotonic() - t0
+        return inner_elapsed
+
+    inner_elapsed = asyncio.run(run())
+    assert inner_elapsed < 0.3, "same-thread re-entry must reuse the outer hold, not re-lock"
+    acquires = [r for r in _log_rows(admission_dir) if r["event"] == "acquire"]
+    assert len(acquires) == 1 and acquires[0]["purpose"] == "outer_sync"
+
+
+# ---------------------------------------------------------------------- wiring
+
+
+def test_wiring_covers_aux_and_moa_seams():
+    aux_src = (ROOT / "agent" / "auxiliary_client.py").read_text(encoding="utf-8")
+    helpers_src = (ROOT / "agent" / "chat_completion_helpers.py").read_text(encoding="utf-8")
+    gate_src = (ROOT / "agent" / "plan_admission.py").read_text(encoding="utf-8")
+
+    # The async twin exists with the same fail-closed contract.
+    assert "async def plan_admission_async" in gate_src
+    assert "PlanAdmissionBusy" in gate_src.split("plan_admission_async")[-1]
+
+    # Every ungated aux entry point is wrapped by a gated namesake.
+    for gated, ungated, purpose in [
+        ("def _relay_sync_stream(", "_relay_sync_stream_ungated", "aux_relay"),
+        ("def _create_with_progress(", "_create_with_progress_ungated", "aux_progress"),
+        ("async def _acreate_with_stream(", "_acreate_with_stream_ungated", "aux_async_stream"),
+        ("async def _acreate_with_progress(", "_acreate_with_progress_ungated", "aux_async_progress"),
+    ]:
+        assert gated in aux_src, gated
+        assert ungated in aux_src, ungated
+        assert purpose in aux_src, purpose
+        # The gated name appears BEFORE its ungated twin (wrapper first, body after),
+        # and the wrapper forwards into the ungated body.
+        assert aux_src.index(gated) < aux_src.index("def " + ungated), gated
+        wrapper_call = ungated + "(client"  # forwarding call inside the wrapper
+        assert aux_src.count(wrapper_call) >= 1, wrapper_call
+
+    # The MoA facade return and the MoA/Codex stream branch are gated too.
+    assert "chat_moa_facade" in helpers_src
+    assert "aux_moa_codex" in aux_src
+
+    # No leftover direct aux entry: the ungated bodies are only referenced by
+    # their wrappers inside this module.
+    for ungated in ("_relay_sync_stream_ungated", "_create_with_progress_ungated",
+                    "_acreate_with_stream_ungated", "_acreate_with_progress_ungated"):
+        module_refs = [line for line in aux_src.splitlines() if ungated in line and "def " not in line]
+        forwarding = [line for line in module_refs if "return await " in line or "return " in line]
+        assert forwarding, ungated + " never forwarded"

@@ -2678,7 +2678,32 @@ async def _relay_async_completion(
         raise
 
 
+def _aux_plan_admission(client: Any, kwargs: dict[str, Any], *, purpose: str):
+    """Owner fleet rule (shared Z.ai GLM Coding Plan): auxiliary traffic holds the
+    same host-wide slot as main turns. No-op for every non-plan route - the
+    route predicate decides, so shim clients for other wire formats pass through."""
+    from agent.plan_admission import plan_admission
+
+    return plan_admission(str(getattr(client, "base_url", "") or ""), model=kwargs.get("model"), purpose=purpose)
+
+
+def _aux_plan_admission_async(client: Any, kwargs: dict[str, Any], *, purpose: str):
+    """Async twin: same host-wide slot with a cooperative bounded wait (never
+    blocks the running event loop while another process holds the slot)."""
+    from agent.plan_admission import plan_admission_async
+
+    return plan_admission_async(str(getattr(client, "base_url", "") or ""), model=kwargs.get("model"), purpose=purpose)
+
+
 def _relay_sync_stream(
+    client: Any, kwargs: dict[str, Any], *, provider: str | None = None, api_mode: str | None = None
+) -> Any:
+    """Gated wrapper: holds the host-wide plan slot across open + consume."""
+    with _aux_plan_admission(client, kwargs, purpose="aux_relay"):
+        return _relay_sync_stream_ungated(client, kwargs, provider=provider, api_mode=api_mode)
+
+
+def _relay_sync_stream_ungated(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None, api_mode: str | None = None
 ) -> Any:
     from agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
@@ -6946,6 +6971,15 @@ def _affordable_max_tokens_from_error(exc: Exception) -> Optional[int]:
 def _create_with_progress(
     client: Any, kwargs: dict[str, Any], task: Optional[str] = None, *, force_stream: bool = False
 ) -> Any:
+    """Gated wrapper: holds the host-wide plan slot across the whole progress/
+    retry ladder (including the stream+aggregate path of the once-helper)."""
+    with _aux_plan_admission(client, kwargs, purpose="aux_progress"):
+        return _create_with_progress_ungated(client, kwargs, task, force_stream=force_stream)
+
+
+def _create_with_progress_ungated(
+    client: Any, kwargs: dict[str, Any], task: Optional[str] = None, *, force_stream: bool = False
+) -> Any:
     """Credit-aware :func:`_create_with_progress_once`: a 402 naming an affordable
     budget retries ONCE with that cap (only ever lowering); anything else re-raises."""
     try:
@@ -7215,6 +7249,12 @@ async def _aggregate_chat_stream_async(
 
 
 async def _acreate_with_stream(client: Any, kwargs: dict[str, Any], task: Optional[str] = None) -> Any:
+    """Gated wrapper: holds the host-wide plan slot across open + consume."""
+    async with _aux_plan_admission_async(client, kwargs, purpose="aux_async_stream"):
+        return await _acreate_with_stream_ungated(client, kwargs, task)
+
+
+async def _acreate_with_stream_ungated(client: Any, kwargs: dict[str, Any], task: Optional[str] = None) -> Any:
     """Async create() for stream-only providers: ``stream=True`` + aggregate the async chunks."""
     stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs, client)
     chunks = await client.chat.completions.create(**stream_kwargs)
@@ -7229,6 +7269,15 @@ def _async_client_streams_internally(client: Any) -> bool:
 
 
 async def _acreate_with_progress(
+    client: Any, kwargs: dict[str, Any], task: Optional[str] = None, *, force_stream: bool = False
+) -> Any:
+    """Gated wrapper: holds the host-wide plan slot across the whole async
+    progress/retry ladder (open + consume)."""
+    async with _aux_plan_admission_async(client, kwargs, purpose="aux_async_progress"):
+        return await _acreate_with_progress_ungated(client, kwargs, task, force_stream=force_stream)
+
+
+async def _acreate_with_progress_ungated(
     client: Any, kwargs: dict[str, Any], task: Optional[str] = None, *, force_stream: bool = False
 ) -> Any:
     """Async :func:`_create_with_progress`: stream + re-aggregate (ticking the hook per substantive
@@ -8067,7 +8116,8 @@ def _call_llm_impl(
         if task == "moa_aggregator" and isinstance(client, CodexAuxiliaryClient):
             # Responses-shim clients consume the stream internally and return a completed
             # object Relay's managed stream would iterate; the MoA facade wraps it as one chunk.
-            return client.chat.completions.create(**kwargs)
+            with _aux_plan_admission(client, kwargs, purpose="aux_moa_codex"):
+                return client.chat.completions.create(**kwargs)
         return _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
 
     def _primary(**validate_kw: Any) -> Any:

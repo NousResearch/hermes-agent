@@ -1,6 +1,6 @@
 name: kin
 repo: https://github.com/vdimarco/hermes-kin
-sha: 62b87499020ecdbe8acf18b980be6eb2ac6e1918
+sha: 1cd9dc44aa1f655314e0a62330849d1d84b019a6
 description: The companion for Hermes Desktop who actually pays attention — a floating mood pane that knows when your work is stuck or done, plus an optional overlay HUD with a plain-English task drawer, opt-in voice that drafts instead of sending, and snap/terminal screen diagnosis.
 maintainer: vdimarco
 tier: community
@@ -8,8 +8,8 @@ category: desktop
 requires_hermes: ">=0.22.0"
 version: "0.2.0"
 screenshots:
-  - https://raw.githubusercontent.com/vdimarco/hermes-kin/62b87499020ecdbe8acf18b980be6eb2ac6e1918/docs/overlay-sections.png
-  - https://raw.githubusercontent.com/vdimarco/hermes-kin/62b87499020ecdbe8acf18b980be6eb2ac6e1918/docs/overlay-plain.png
+  - https://raw.githubusercontent.com/vdimarco/hermes-kin/1cd9dc44aa1f655314e0a62330849d1d84b019a6/docs/overlay-sections.png
+  - https://raw.githubusercontent.com/vdimarco/hermes-kin/1cd9dc44aa1f655314e0a62330849d1d84b019a6/docs/overlay-plain.png
 capabilities:
   provides_tools: []
   provides_hooks: [post_tool_call, api_request_error, on_session_start, on_session_end, pre_llm_call]

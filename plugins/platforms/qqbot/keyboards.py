@@ -96,12 +96,12 @@ def _single_row_keyboard(group_id: str, *buttons: tuple) -> InlineKeyboard:
     return InlineKeyboard(content=KeyboardContent(rows=[row]))
 
 
-def build_approval_keyboard(session_key: str, *, allow_permanent: bool = True) -> InlineKeyboard:
+def build_approval_keyboard(session_key: str, *, allow_permanent: bool = True, allow_once: bool = True) -> InlineKeyboard:
     """Build ``[✅ 允许一次] [⭐ 始终允许] [❌ 拒绝]`` (one group, so a click greys the rest). ⭐ is hidden when
     persistent scope is unavailable; *session_key* rides in ``button_data`` so the decision routes correctly."""
     prefix = f"{APPROVAL_BUTTON_PREFIX}{session_key}"
-    buttons = [("allow", "✅ 允许一次", "已允许", f"{prefix}:allow-once", 1)]
-    if allow_permanent:
+    buttons = [("allow", "✅ 允许一次", "已允许", f"{prefix}:allow-once", 1)] if allow_once else []
+    if allow_once and allow_permanent:
         buttons.append(("always", "⭐ 始终允许", "已始终允许", f"{prefix}:allow-always", 1))
     buttons.append(("deny", "❌ 拒绝", "已拒绝", f"{prefix}:deny", 0))
     return _single_row_keyboard("approval", *buttons)

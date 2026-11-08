@@ -36,6 +36,9 @@ def _apply_reasoning(runner, live, effort):
 async def _pick_model(authority, owner, live, payload, row):
     """The chat's ``/model <name> [--provider p]`` resolution, guarded like a LOCAL pick, then committed
     as its session override. Returns the receipt fields, or the guard's confirmation request."""
+    if 'service_tier' in payload:
+        raise RuntimeStoreError('invalid_params', field='payload.service_tier',
+                                detail='compound service-tier picks require a local session policy')
     from gateway.session_mutation_model import _Route, _selection_guard_refusal, is_model_reset
     from gateway.slash_commands_model import _ModelSwitchContext
     from hermes_constants import get_hermes_home

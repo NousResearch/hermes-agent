@@ -300,6 +300,11 @@ async def _project_result(authority, ref, live, params, result, editor_servers, 
     current = authority.db.get_session(ref.session_id)
     owns_projection = current is not None and (
         current['runtime_generation'] == result.get('execution_generation', params.get('expected_generation')))
+    if operation == 'model' and 'service_tier' in result and applied and owns_projection:
+        # Clear the previous pin once, before publication can fail. Replaying this receipt must
+        # preserve a later /fast choice, which does not advance the model generation.
+        authority.runner._set_session_service_tier_override(
+            authority.sessions[ref.session_id].route, None, clear=True)
     if operation == 'compress' and applied and owns_projection and live is not None:
         # Before the boundary evicts the agent whose compressor holds the running count.
         from gateway.session_usage import note_compression

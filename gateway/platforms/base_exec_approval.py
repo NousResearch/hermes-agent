@@ -184,6 +184,11 @@ async def send_full_command(adapter: Any, chat_id: str, command: str, metadata: 
     cap = getattr(adapter, "MAX_SPLIT_MESSAGES", 0)
     if cap and len(adapter.truncate_message(adapter.format_message(content), adapter.MAX_MESSAGE_LENGTH)) > cap:
         return False
+    # A send that cannot report a lost chunk (the relay: its connector splits, and the wire result has no
+    # partial field) proves delivery only when the command fits one message.
+    if not getattr(adapter, "reports_partial_delivery", True) and adapter.message_len_fn_for_chat(chat_id)(
+            adapter.format_message(content)) > adapter.max_message_length_for_chat(chat_id):
+        return False
     # A mid-turn send: unmarked, a stream-is-the-message adapter seals the live response with it.
     result = await adapter.send(chat_id, content, metadata={**(metadata or {}), "_interim_send": True})
     raw = getattr(result, "raw_response", None)

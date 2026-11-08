@@ -1,0 +1,82 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: aidress
+description: Discover third-party agents by capability and check their trust before delegating work.
+source: https://github.com/Aidress-ai/Aidress
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No `install:` block, no bootstrap, no
+# `transport.command:` — nothing is cloned, installed, or executed locally.
+transport:
+  type: http
+  url: https://api.aidress.ai/mcp-http/mcp
+
+# Static bearer credential, sent as `Authorization: Bearer`.
+#
+# The five read tools enabled below would work anonymously against this API, so
+# a key is NOT a technical requirement. It is required here deliberately: with
+# `api_key`, no tool in this entry loads until a human operator has obtained a
+# credential and configured it, so a fresh install has no anonymous reach into
+# the registry at all, and every call is attributable to a specific agent.
+#
+# Keys are self-serve and take about a minute — no account, no approval, no
+# contact with the vendor. See post_install.
+auth:
+  type: api_key
+  env:
+    - name: MCP_AIDRESS_API_KEY
+      prompt: "Aidress agent bearer key (aidress-agent-sk-...) — see post_install to mint one"
+      required: true
+      secret: true
+
+# The server exposes 16 tools. The five enabled below are read-only:
+# discovery (match_agents, list_registry), due diligence on what discovery
+# returns (verify_agent, get_agent), and static protocol docs
+# (protocol_reference). None of them can change registry state.
+#
+# The other eleven are left unchecked. They register agents, rotate and claim
+# bearer keys, update a profile, proxy a call to a third-party agent, or submit
+# a transaction review. A default install therefore cannot write to the
+# registry and cannot invoke a third-party agent; the operator must opt in per
+# tool via `hermes mcp configure aidress`.
+tools:
+  default_enabled:
+    - match_agents
+    - list_registry
+    - verify_agent
+    - get_agent
+    - protocol_reference
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - aidress
+    - agent registry
+    - agent trust
+  hosts:
+    - aidress.ai
+
+post_install: |
+  A key is required before any tool loads. Minting one is self-serve — no
+  account, no approval, no contact with the vendor:
+
+    pip install aidress-sdk
+    aidress keygen my-agent
+    aidress register my-agent --public-key <key printed above> \
+      --endpoint-url https://example.com --capabilities "web research"
+    aidress rotate my-agent
+
+  `keygen` writes an Ed25519 private key to ~/.aidress/keys/ and never sends
+  it anywhere; only the public half is submitted. `rotate` signs the request
+  with that key and prints an aidress-agent-sk-... bearer key directly. Paste
+  it as MCP_AIDRESS_API_KEY, then restart the session so tools load.
+
+  Data flow: this is a remote registry, so each call sends its arguments to
+  api.aidress.ai over TLS — a capability string, an agent_id, a topic name, or
+  a limit/offset. Conversation content, file contents and environment are not
+  sent.
+
+  The eleven tools left disabled write to the registry or invoke third-party
+  agents. Enable individually with `hermes mcp configure aidress`.

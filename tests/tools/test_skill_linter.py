@@ -128,6 +128,34 @@ def test_present_reference_link_not_flagged(tmp_path):
     assert "dangling-reference" not in _rules(findings)
 
 
+def test_reference_shapes_that_name_no_single_file_are_not_dangling(tmp_path):
+    """Globs, ``{placeholder}`` templates and ``...`` elisions name a shape, not a file.
+
+    The reference regex stopped at ``*``/``{``, so ``references/foo-*.md`` arrived as
+    ``references/foo-`` and the "dupes, placeholders, globs" exemption could never fire.
+    """
+    skill_dir = tmp_path / "my-skill"
+    (skill_dir / "references").mkdir(parents=True)
+    (skill_dir / "references" / "foo-1.md").write_text("x")
+    for ref in (
+        "references/foo-*.md",
+        "{output-dir}/references/NN-ref-{slug}.md",
+        "references/...",
+    ):
+        content = CLEAN + f"\nWrite each note to `{ref}`.\n"
+        assert "dangling-reference" not in _rules(lint_content(content, skill_dir=skill_dir)), ref
+
+
+def test_a_real_missing_reference_is_still_flagged_beside_a_glob(tmp_path):
+    """The exemption stays per-reference: a glob must not silence a real missing file."""
+    skill_dir = tmp_path / "my-skill"
+    (skill_dir / "references").mkdir(parents=True)
+    (skill_dir / "references" / "foo-1.md").write_text("x")
+    content = CLEAN + "\nSee references/foo-*.md and references/missing.md.\n"
+    messages = [f.message for f in lint_content(content, skill_dir=skill_dir) if f.rule == "dangling-reference"]
+    assert messages == ["body references 'references/missing.md' but that file does not exist in the skill directory."]
+
+
 def test_posix_primitive_without_platforms_warns(tmp_path):
     skill_dir = tmp_path / "my-skill"
     (skill_dir / "scripts").mkdir(parents=True)

@@ -1,0 +1,6 @@
+name: waterloo-jane-street-qr
+version: "1.0.0"
+description: "Institutional-grade quantitative research, pricing, and execution assistant engineered to Waterloo IMO/ICPC/Putnam standards. Features 14 rigorous math and market-making engines, strict probabilistic EV enforcement, and real-time risk guards."
+repository: "https://github.com/georgxzh/hermes-agent-plugin-hackathon"
+subdirectory: "waterloo-jane-street-qr"
+commit: "3f3cc050abc79b786c95dfd2a769971177c3bf50"

@@ -9,7 +9,7 @@ import pytest
 SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "optional-skills" / "creative" / "fal-3d" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-import fal_3d  # noqa: E402
+import fal_3d
 
 # Input keys each endpoint's fal OpenAPI schema declares (captured 2026-09-26). A payload key
 # outside this set would be forwarded to an endpoint that never declared it.
@@ -30,6 +30,13 @@ DECLARED = {
                                "should_remesh", "target_polycount", "is_a_t_pose", "geometry_resolution",
                                "enable_rigging", "rigging_height_meters", "topology", "enable_animation",
                                "animation_action_id"},
+    "meshy/t2.5/text-to-3d": {"prompt", "mode", "texture_prompt", "texture_image_url", "texture_model", "seed",
+                              "enable_safety_checker", "pose_mode", "enable_pbr", "target_polycount",
+                              "enable_prompt_expansion", "enable_rigging", "rigging_height_meters",
+                              "enable_animation", "animation_action_id"},
+    "meshy/t2.5/image-to-3d": {"image_url", "should_texture", "texture_prompt", "texture_image_url", "texture_model",
+                               "enable_safety_checker", "pose_mode", "enable_pbr", "target_polycount",
+                               "enable_rigging", "rigging_height_meters", "enable_animation", "animation_action_id"},
     "fal-ai/hunyuan-3d/v3.1/pro/text-to-3d": {"prompt", "generate_type", "enable_pbr", "face_count"},
     "fal-ai/hunyuan-3d/v3.1/pro/image-to-3d": {"input_image_url", "generate_type", "enable_pbr", "face_count",
                                                 "back_image_url", "left_image_url", "right_image_url", "top_image_url",

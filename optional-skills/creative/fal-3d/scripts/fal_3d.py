@@ -30,8 +30,8 @@ from typing import Any, Dict, Optional
 # ``faces`` is the (min, max) face/polygon range the endpoint accepts, or None.
 
 
-def _tripo_p2(a: argparse.Namespace, image_url: Optional[str]) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {"image_url": image_url} if image_url else {"prompt": a.prompt}
+def _tripo_p2(a: argparse.Namespace, image_url: Optional[str]) -> dict[str, Any]:
+    payload: dict[str, Any] = {"image_url": image_url} if image_url else {"prompt": a.prompt}
     if a.no_texture:
         payload["texture"] = False
         payload["pbr"] = False
@@ -51,8 +51,8 @@ def _tripo_p2(a: argparse.Namespace, image_url: Optional[str]) -> Dict[str, Any]
     return payload
 
 
-def _meshy_71(a: argparse.Namespace, image_url: Optional[str]) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {"image_url": image_url} if image_url else {"prompt": a.prompt}
+def _meshy_71(a: argparse.Namespace, image_url: Optional[str]) -> dict[str, Any]:
+    payload: dict[str, Any] = {"image_url": image_url} if image_url else {"prompt": a.prompt}
     if image_url:
         payload["should_texture"] = not a.no_texture
     else:
@@ -68,8 +68,24 @@ def _meshy_71(a: argparse.Namespace, image_url: Optional[str]) -> Dict[str, Any]
     return payload
 
 
-def _hunyuan_pro(a: argparse.Namespace, image_url: Optional[str]) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {"input_image_url": image_url} if image_url else {"prompt": a.prompt}
+def _meshy_t25(a: argparse.Namespace, image_url: Optional[str]) -> dict[str, Any]:
+    # Same knobs as 7.1 minus topology: T2.5 "Smart Topology" output is triangle-only.
+    payload: dict[str, Any] = {"image_url": image_url} if image_url else {"prompt": a.prompt}
+    if image_url:
+        payload["should_texture"] = not a.no_texture
+    else:
+        payload["mode"] = "preview" if a.no_texture else "full"
+    if a.pbr and not a.no_texture:
+        payload["enable_pbr"] = True
+    if a.faces is not None:
+        payload["target_polycount"] = a.faces
+    if a.seed is not None and not image_url:
+        payload["seed"] = a.seed
+    return payload
+
+
+def _hunyuan_pro(a: argparse.Namespace, image_url: Optional[str]) -> dict[str, Any]:
+    payload: dict[str, Any] = {"input_image_url": image_url} if image_url else {"prompt": a.prompt}
     payload["generate_type"] = "Geometry" if a.no_texture else "Normal"
     if a.pbr and not a.no_texture:
         payload["enable_pbr"] = True
@@ -78,8 +94,8 @@ def _hunyuan_pro(a: argparse.Namespace, image_url: Optional[str]) -> Dict[str, A
     return payload
 
 
-def _hunyuan_rapid(a: argparse.Namespace, image_url: Optional[str]) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {"input_image_url": image_url} if image_url else {"prompt": a.prompt}
+def _hunyuan_rapid(a: argparse.Namespace, image_url: Optional[str]) -> dict[str, Any]:
+    payload: dict[str, Any] = {"input_image_url": image_url} if image_url else {"prompt": a.prompt}
     if a.no_texture:
         payload["enable_geometry"] = True
     elif a.pbr:
@@ -87,8 +103,8 @@ def _hunyuan_rapid(a: argparse.Namespace, image_url: Optional[str]) -> Dict[str,
     return payload
 
 
-def _trellis_2(a: argparse.Namespace, image_url: Optional[str]) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {"image_url": image_url}
+def _trellis_2(a: argparse.Namespace, image_url: Optional[str]) -> dict[str, Any]:
+    payload: dict[str, Any] = {"image_url": image_url}
     if a.faces is not None:
         payload["decimation_target"] = a.faces
     if a.seed is not None:
@@ -96,7 +112,7 @@ def _trellis_2(a: argparse.Namespace, image_url: Optional[str]) -> Dict[str, Any
     return payload
 
 
-MODELS: Dict[str, Dict[str, Any]] = {
+MODELS: dict[str, dict[str, Any]] = {
     "hunyuan-3.1-rapid": {
         "text": "fal-ai/hunyuan-3d/v3.1/rapid/text-to-3d", "image": "fal-ai/hunyuan-3d/v3.1/rapid/image-to-3d",
         "build": _hunyuan_rapid, "faces": None, "seed": False,
@@ -120,6 +136,12 @@ MODELS: Dict[str, Dict[str, Any]] = {
         "build": _meshy_71, "faces": (100, 300_000), "seed": True,
         "kind": "game-ready assets, optional rigging upstream",
         "notes": "Meshy 7.1 (Sep 2026). $0.80 untextured (--no-texture), $1.20 textured; --pbr adds metallic/roughness/normal maps. Prompt max 600 chars. Also returns FBX/USDZ/OBJ URLs.",
+    },
+    "meshy-t2.5": {
+        "text": "meshy/t2.5/text-to-3d", "image": "meshy/t2.5/image-to-3d",
+        "build": _meshy_t25, "faces": (100, 30_000), "seed": True,
+        "kind": "cheapest textured game asset, triangles only",
+        "notes": "Meshy T2.5 (Nov 2026). $0.20 untextured, $0.60 textured, PBR included. --faces 100-30k (default 15k); no --quad. Prompt max 600 chars.",
     },
     "trellis-2": {
         "text": None, "image": "fal-ai/trellis-2",
@@ -154,7 +176,7 @@ def endpoint_for(model: str, image_url: Optional[str]) -> str:
     return ep
 
 
-def build_payload(model: str, args: argparse.Namespace, image_url: Optional[str]) -> Dict[str, Any]:
+def build_payload(model: str, args: argparse.Namespace, image_url: Optional[str]) -> dict[str, Any]:
     meta = MODELS[model]
     requested_faces = args.faces
     args.faces = clamp_faces(model, args.faces)
@@ -182,7 +204,7 @@ def _file_url(value: Any) -> Optional[str]:
     return None
 
 
-def pick_mesh(result: Dict[str, Any]) -> tuple[str, str]:
+def pick_mesh(result: dict[str, Any]) -> tuple[str, str]:
     """Return (url, extension) of the primary mesh: GLB first, then whatever the endpoint shipped."""
     for key in ("model_glb", "model_mesh"):
         url = _file_url(result.get(key))
@@ -217,7 +239,7 @@ def resolve_image(image: Optional[str], dry_run: bool) -> Optional[str]:
     return fal_client.upload_file(pathlib.Path(path))
 
 
-def generate(model: str, endpoint: str, payload: Dict[str, Any], output: str) -> Dict[str, Any]:
+def generate(model: str, endpoint: str, payload: dict[str, Any], output: str) -> dict[str, Any]:
     try:
         import fal_client
     except ImportError:
@@ -233,7 +255,7 @@ def generate(model: str, endpoint: str, payload: Dict[str, Any], output: str) ->
         fh.write(resp.read())
     preview = _file_url(result.get("thumbnail") or result.get("rendered_image"))
     raw_urls = result.get("model_urls")
-    urls: Dict[str, Any] = raw_urls if isinstance(raw_urls, dict) else {}
+    urls: dict[str, Any] = raw_urls if isinstance(raw_urls, dict) else {}
     return {
         "output": output, "url": url, "format": ext, "model": model, "endpoint": endpoint,
         "preview_url": preview, "seed": result.get("seed"),
@@ -249,7 +271,7 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--image", help="reference image: local path (uploaded to fal) or URL (image-to-3D)")
     p.add_argument("--no-texture", action="store_true", help="geometry only, no textures (cheaper on tripo/meshy)")
     p.add_argument("--pbr", action="store_true", help="request PBR material maps (metallic/roughness/normal)")
-    p.add_argument("--quad", action="store_true", help="quad topology instead of triangles (tripo-p2, meshy-7.1)")
+    p.add_argument("--quad", action="store_true", help="quad topology instead of triangles (tripo-p2, meshy-7.1; not meshy-t2.5)")
     p.add_argument("--faces", type=int, help="target face / polygon count (clamped to the model's range)")
     p.add_argument("--texture-quality", choices=["fast", "standard", "detailed", "extreme"], help="tripo-p2 texture tier")
     p.add_argument("--seed", type=int, help="seed (models that declare one)")

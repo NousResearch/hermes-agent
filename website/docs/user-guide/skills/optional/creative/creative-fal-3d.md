@@ -57,6 +57,7 @@ code instead).
 | `hunyuan-3.1-pro` | yes | yes | 40k–1.5M | dense high-poly mesh; $0.375; `--no-texture` gives a white geometry-only model |
 | `tripo-p2` | yes | yes | ≤ 25k | production PBR assets, `--quad` topology, `--texture-quality`, seedable, `--negative-prompt`; $1.00–1.30 |
 | `meshy-7.1` | yes | yes | 100–300k | game-ready assets, `--quad`, `--pbr`, seedable (text); $0.80 untextured / $1.20 textured; also returns FBX + USDZ |
+| `meshy-t2.5` | yes | yes | 100–30k | cheapest textured game asset: $0.20 untextured / $0.60 textured, PBR included, seedable (text); triangles only (no `--quad`) |
 | `trellis-2` | no | yes | 5k–2M vertices | open Microsoft model, image only, GPU-time billing; good for a single clean product shot |
 
 Prices come from fal's model pages at authoring time and change; `--dry-run` never
@@ -112,9 +113,9 @@ bills. Every endpoint is queue-based: the script blocks until the mesh is ready.
    mesh with `MEDIA:<absolute path of chest.glb>`, show the `preview_url` render so
    the user can judge without opening a viewer, and mention the seed when present.
 6. Iterate by changing one thing at a time (prompt wording, model, seed, `--faces`).
-   Escalate cost only when the cheap tier fails: `hunyuan-3.1-rapid` → `hunyuan-3.1-pro`
-   → `tripo-p2` (cheaper, `--faces` ≤ 25k, seedable) → `meshy-7.1` (when FBX/USDZ
-   downloads or higher polycounts are needed). `--quad` (tripo, meshy) gives cleaner
+   Escalate cost only when the cheap tier fails: `hunyuan-3.1-rapid` (or `meshy-t2.5`
+   for a low-poly game asset with PBR) → `hunyuan-3.1-pro` → `tripo-p2` (cheaper, `--faces` ≤ 25k, seedable) → `meshy-7.1` (when FBX/USDZ
+   downloads or higher polycounts are needed). `--quad` (tripo, meshy-7.1) gives cleaner
    topology for sculpting and rigging; triangles are fine for engines.
 
 ## Pitfalls
@@ -123,8 +124,8 @@ bills. Every endpoint is queue-based: the script blocks until the mesh is ready.
   40,000 (its floor); 999,999 on `tripo-p2` becomes 25,000. Models with no face knob
   (`hunyuan-3.1-rapid`) drop it and the script prints a `note: ... ignored` line on
   stderr. `--list` shows each range.
-- **`--seed` is only honoured where declared**: tripo-p2, meshy-7.1 text-to-3D,
-  trellis-2. Hunyuan has no seed knob; Meshy image-to-3D has none either.
+- **`--seed` is only honoured where declared**: tripo-p2, meshy-7.1 / meshy-t2.5
+  text-to-3D, trellis-2. Hunyuan has no seed knob; Meshy image-to-3D has none either.
 - **`--no-texture` maps per model**: tripo `texture=false, pbr=false`; meshy
   `mode=preview` / `should_texture=false`; hunyuan pro `generate_type=Geometry`;
   hunyuan rapid `enable_geometry=true`. Trellis always textures.

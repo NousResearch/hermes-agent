@@ -4,7 +4,6 @@
 ``parse_v4a_patch(text) -> (ops, error)`` and ``apply_v4a_operations(ops, file_ops)``."""
 
 import contextlib
-import difflib
 import inspect
 import ntpath
 import posixpath
@@ -16,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optiona
 if TYPE_CHECKING:  # annotations only; the real import is per-call in apply_v4a_operations
     from tools.file_operations_common import PatchResult
 
-from tools.file_operations_common import PatchResult
+from tools.file_operations_common import PatchResult, bounded_unified_diff
 
 
 class OperationType(Enum):
@@ -336,9 +335,7 @@ def _written(result: Any, diff: str, path: str, read_sha256: Optional[str]) -> A
 
 def _unified_diff(path: str, old: str, new: Optional[str]) -> str:
     """Unified diff ``a/path`` -> ``b/path`` (``new=None`` = deletion, ``/dev/null``)."""
-    return ''.join(difflib.unified_diff(
-        old.splitlines(keepends=True), [] if new is None else new.splitlines(keepends=True),
-        fromfile=f"a/{path}", tofile="/dev/null" if new is None else f"b/{path}"))
+    return bounded_unified_diff(old, new, f"a/{path}", "/dev/null" if new is None else f"b/{path}")
 
 
 def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> PatchResult:

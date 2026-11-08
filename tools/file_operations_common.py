@@ -279,6 +279,62 @@ def _has_bom(text: Optional[str]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Bounded unified diff
+# ---------------------------------------------------------------------------
+
+# Port of MiniMax-AI/minimax-code#284.
+# difflib's matcher costs roughly (changed lines) x (lines between the first and last
+# change). A patch that touches every other line of a 20k-line file measured 10 s of
+# CPU after the file was already written. This cap admits a full rewrite of any file up
+# to ~4k lines and ~1-2 s of diff work on larger ones; past it the edit still lands and
+# the diff becomes a one-line notice.
+_MAX_DIFF_WORK = 40_000_000
+
+
+def _diff_work_estimate(old: list[str], new: list[str]) -> tuple[int, int]:
+    """``(changed lines, span lines)`` after trimming the common head/tail, in O(n log n).
+
+    Lines unique to both sides are matched in order (patience LIS), so a reordering counts as
+    change: a sorted 100k-line file costs difflib ~55 s even though no line was added."""
+    from bisect import bisect_left
+    from collections import Counter
+    limit = min(len(old), len(new))
+    head = 0
+    while head < limit and old[head] == new[head]:
+        head += 1
+    tail = 0
+    while tail < limit - head and old[-1 - tail] == new[-1 - tail]:
+        tail += 1
+    old_mid, new_mid = old[head:len(old) - tail], new[head:len(new) - tail]
+    old_count, new_count = Counter(old_mid), Counter(new_mid)
+    repeated_common = sum(min(n, new_count[line]) for line, n in old_count.items()
+                          if line in new_count and (n > 1 or new_count[line] > 1))
+    new_pos = {line: i for i, line in enumerate(new_mid) if new_count[line] == 1}
+    tails: list[int] = []
+    for line in old_mid:
+        if old_count[line] == 1 and line in new_pos:
+            i = bisect_left(tails, new_pos[line])
+            tails[i:i + 1] = [new_pos[line]]
+    matched = len(tails) + repeated_common
+    return len(old_mid) + len(new_mid) - 2 * matched, max(len(old_mid), len(new_mid))
+
+
+def bounded_unified_diff(old_text: str, new_text: Optional[str], fromfile: str, tofile: str) -> str:
+    """``difflib.unified_diff`` text, or a one-line ``# diff omitted`` notice when computing it
+    would be slow. The caller has already written the file; only the preview is dropped."""
+    import difflib
+    old = old_text.splitlines(keepends=True)
+    new = [] if new_text is None else new_text.splitlines(keepends=True)
+    changed, span = _diff_work_estimate(old, new)
+    if changed * span > _MAX_DIFF_WORK:
+        shown = fromfile if tofile == "/dev/null" else tofile
+        shown = shown.removeprefix("a/").removeprefix("b/")
+        return (f"# diff omitted for {shown}: about {changed} changed lines across {span} lines is "
+                "too large to diff quickly. The edit was applied; use read_file to inspect it.\n")
+    return "".join(difflib.unified_diff(old, new, fromfile=fromfile, tofile=tofile))
+
+
+# ---------------------------------------------------------------------------
 # Pagination clamps
 # ---------------------------------------------------------------------------
 

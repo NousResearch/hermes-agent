@@ -23,6 +23,11 @@ _GROQ_400 = (
     "Error code: 400 - {'error': {'message': \"'reasoning_effort' must be one of 'low', "
     "'medium', or 'high'\", 'type': 'invalid_request_error'}}"
 )
+# Go-style validator naming the struct field (CamelCase) with "should be one of".
+_GO_VALIDATOR_400 = (
+    "Error code: 400 - {'error': {'message': 'field ReasoningEffort invalid, should be one of: "
+    "low, medium, high, xhigh, none', 'type': 'invalid_request_error'}}"
+)
 
 
 class _APIError(Exception):
@@ -31,7 +36,7 @@ class _APIError(Exception):
         self.status_code = status_code
 
 
-@pytest.mark.parametrize("body", [_TOKENPLAN_400, _OFF_LOW_HIGH_MAX_400, _GROQ_400])
+@pytest.mark.parametrize("body", [_TOKENPLAN_400, _OFF_LOW_HIGH_MAX_400, _GROQ_400, _GO_VALIDATOR_400])
 def test_closed_level_set_rejection_is_reasoning_mandatory(body):
     result = classify_api_error(_APIError(body, 400), provider="custom", model="m")
     assert result.reason == FailoverReason.reasoning_mandatory
@@ -49,7 +54,7 @@ def test_other_enum_wording_keeps_its_classification(body):
     assert result.reason != FailoverReason.reasoning_mandatory
 
 
-@pytest.mark.parametrize("body", [_OFF_LOW_HIGH_MAX_400, _GROQ_400])
+@pytest.mark.parametrize("body", [_OFF_LOW_HIGH_MAX_400, _GROQ_400, _GO_VALIDATOR_400])
 def test_rejected_enabled_level_retries_with_the_route_default(body):
     agent = _WireAgent({"enabled": True, "effort": "medium"})
     assert _wire_reasoning_config(agent) == {"enabled": True, "effort": "medium"}  # the request that 400ed

@@ -562,8 +562,8 @@ UNSUPPORTED_PARAM_MARKERS = (
 # using this account" is route gating for the provider-fallback rung) nor the adjective in
 # "... not supported with reasoning models".
 _REASONING_FIELD_TOKEN = re.compile(
-    r"(?<![\w\-/])(?:reasoning_effort|thinking_config|thinking_budget|enable_thinking|thinkingconfig"
-    r"|thinkingbudget|reasoning|thinking|think)(?![\w\-/])(?!\s+models?\b)"
+    r"(?<![\w\-/])(?:reasoning_effort|reasoningeffort|thinking_config|thinking_budget|enable_thinking"
+    r"|thinkingconfig|thinkingbudget|reasoning|thinking|think)(?![\w\-/])(?!\s+models?\b)"
 )
 
 # Structured rejection of a reasoning field, read from the stringified body: OpenAI-style
@@ -588,8 +588,10 @@ _REASONING_REQUIRED_MARKERS = (
 # routes, code ``invalid_parameter_error``). The field is understood and has to stay on the wire;
 # only the disabled level is invalid, so the floor step-up (the weakest accepted level) is the
 # right recovery. Neither the strip rung nor its "unsupported" wording matches this message, so
-# without these markers the title lane fails outright instead of retrying at the floor.
-_REASONING_LEVEL_REJECTION_MARKERS = ("must be one of", "invalid value for")
+# without these markers the title lane fails outright instead of retrying at the floor. Go-style
+# validators phrase it "field ReasoningEffort invalid, should be one of: low, medium, …" (the
+# struct field name, hence the compact ``reasoningeffort`` token above).
+_REASONING_LEVEL_REJECTION_MARKERS = ("must be one of", "should be one of", "invalid value for")
 
 
 def is_reasoning_level_rejection(error_msg: str) -> bool:

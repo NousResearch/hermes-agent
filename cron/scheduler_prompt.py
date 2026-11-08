@@ -73,6 +73,8 @@ _PROMPT_HEADING = "## Prompt\n\n"
 _RESPONSE_HEADING = "## Response\n\n"
 _PROMPT_SEPARATOR = "\n\n"  # writer's blank line after the prompt body
 _RESPONSE_TERMINATOR = "\n"  # writer's trailing newline after the response body
+# Archive text for a run whose agent produced no reply (nothing is delivered for it).
+NO_RESPONSE_PLACEHOLDER = "(No response generated)"
 _PROMPT_FRAME_RE = re.compile(
     rf"(?m)^{re.escape(_PROMPT_FRAME)}(\d+)\n{re.escape(_PROMPT_HEADING)}")
 _RESPONSE_FRAME_RE = re.compile(
@@ -122,7 +124,7 @@ def _archive_answer(archive: str) -> str | None:
         return archive.strip()
     else:
         answer = archive.rpartition("## Response")[2].strip()
-    if (not answer or answer == _sched.NO_RESPONSE_PLACEHOLDER
+    if (not answer or answer == NO_RESPONSE_PLACEHOLDER
             or _sched._is_cron_silence_response(answer)):
         return None
     return answer

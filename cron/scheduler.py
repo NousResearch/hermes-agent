@@ -538,9 +538,6 @@ from cron.cancellation import (CancelRequest, _CancelEventLike, _CombinedCancelE
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
 
-# Archive text for a run whose agent produced no reply (nothing is delivered for it).
-NO_RESPONSE_PLACEHOLDER = "(No response generated)"
-
 # Agent-declared failure marker for cron runs. Unlike SILENT, it is deliberately strict so a
 # report that merely quotes the token cannot turn a healthy run into a failed one.
 CRON_FAILURE_MARKER = "[CRON_FAILURE]"
@@ -4384,7 +4381,7 @@ from cron.scheduler_script import (
 from cron.scheduler_prompt import (
     _PROMPT_FRAME, _PROMPT_HEADING, _PROMPT_SEPARATOR, _RESPONSE_FRAME, _RESPONSE_HEADING,
     _RESPONSE_TERMINATOR, _block_and_pause_job, _build_job_prompt, _guard_job_credential_exfil,
-    _job_doc_header, _parse_wake_gate,
+    NO_RESPONSE_PLACEHOLDER, _job_doc_header, _parse_wake_gate,
 )
 from cron.scheduler_preflight import (
     BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,

@@ -185,11 +185,14 @@ def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
 
 # Strings the server matches calls against: rewriting them would break a working tool, so they stay
 # byte-exact (a hidden char there is logged instead).
-# Values the server matches calls against; dependentRequired / discriminator.propertyName name properties.
-_SCHEMA_CONTRACT_KEYS = frozenset({"enum", "const", "required", "$ref", "pattern", "dependentRequired", "propertyName"})
+# dependentRequired values and a discriminator (propertyName + mapping $refs) name properties too.
+_SCHEMA_CONTRACT_KEYS = frozenset({"enum", "const", "required", "$ref", "pattern", "dependentRequired", "discriminator"})
+# Literal instance data, not schema: a keyword-named key inside it ({"enum": ...}) is plain data.
+_SCHEMA_DATA_KEYS = frozenset({"default", "examples"})
 
 
-def strip_schema_annotations(node, tool_name: str = "", _contract: bool = False, _names: bool = False):
+def strip_schema_annotations(node, tool_name: str = "", _contract: bool = False, _names: bool = False,
+                             _data: bool = False):
     """Strip invisible TAG/bidi chars from every free-text string in a JSON schema (descriptions,
     titles, defaults, examples) at any depth, leaving property names and enum/const/required/$ref/
     pattern values exact. Returns ``node`` itself when nothing changed (schemas are frozen wire bytes)."""
@@ -204,12 +207,14 @@ def strip_schema_annotations(node, tool_name: str = "", _contract: bool = False,
         if _names:  # a ``properties`` map: keys are argument names, values are sub-schemas
             for name in node:
                 strip_schema_annotations(name, tool_name, True)
-        items = [(k, strip_schema_annotations(v, tool_name, _contract or (not _names and k in _SCHEMA_CONTRACT_KEYS),
-                                              not _names and k in _SCHEMA_MAP_KEYS))
+        schema = not (_names or _data or _contract)
+        items = [(k, strip_schema_annotations(v, tool_name, _contract or (schema and k in _SCHEMA_CONTRACT_KEYS),
+                                              schema and k in _SCHEMA_MAP_KEYS,
+                                              _data or (schema and k in _SCHEMA_DATA_KEYS)))
                  for k, v in node.items()]
         return node if all(nv is v for (_, nv), v in zip(items, node.values())) else dict(items)
     if isinstance(node, list):
-        items = [strip_schema_annotations(v, tool_name, _contract) for v in node]
+        items = [strip_schema_annotations(v, tool_name, _contract, False, _data) for v in node]
         return node if all(n is v for n, v in zip(items, node)) else items
     return node
 

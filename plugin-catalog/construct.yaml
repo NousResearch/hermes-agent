@@ -1,21 +1,21 @@
 name: construct
 title: Construct
 repo: https://github.com/rtmandreyev/construct
-sha: 6c1cfdfbb85ff6ed1bd93dcaab7947f493e3d595
+sha: 24a1bc838076c94728376850d461b383d003caa9
 subdir: hermes/construct
-version: "1.2.0"
+version: "1.2.1"
 category: tools
 maintainer: rtmandreyev
 requires_hermes: ">=0.22"
 known_issues:
   - Tested end to end on macOS (Hermes Desktop and CLI); Linux and Windows are untested.
 screenshots:
-  - https://raw.githubusercontent.com/rtmandreyev/construct/6c1cfdfbb85ff6ed1bd93dcaab7947f493e3d595/docs/media/new-1.2-hermes.jpg
-  - https://raw.githubusercontent.com/rtmandreyev/construct/6c1cfdfbb85ff6ed1bd93dcaab7947f493e3d595/docs/media/hermes-villa-built.jpg
-  - https://raw.githubusercontent.com/rtmandreyev/construct/6c1cfdfbb85ff6ed1bd93dcaab7947f493e3d595/docs/media/hermes-villa-provenance.jpg
-  - https://raw.githubusercontent.com/rtmandreyev/construct/6c1cfdfbb85ff6ed1bd93dcaab7947f493e3d595/docs/media/hermes-villa-gltf.jpg
-  - https://raw.githubusercontent.com/rtmandreyev/construct/6c1cfdfbb85ff6ed1bd93dcaab7947f493e3d595/docs/media/hermes-villa-kit.jpg
-  - https://raw.githubusercontent.com/rtmandreyev/construct/6c1cfdfbb85ff6ed1bd93dcaab7947f493e3d595/examples/villa-savoye/blender.jpg
+  - https://raw.githubusercontent.com/rtmandreyev/construct/24a1bc838076c94728376850d461b383d003caa9/docs/media/new-1.2-hermes.jpg
+  - https://raw.githubusercontent.com/rtmandreyev/construct/24a1bc838076c94728376850d461b383d003caa9/docs/media/hermes-villa-built.jpg
+  - https://raw.githubusercontent.com/rtmandreyev/construct/24a1bc838076c94728376850d461b383d003caa9/docs/media/hermes-villa-provenance.jpg
+  - https://raw.githubusercontent.com/rtmandreyev/construct/24a1bc838076c94728376850d461b383d003caa9/docs/media/hermes-villa-gltf.jpg
+  - https://raw.githubusercontent.com/rtmandreyev/construct/24a1bc838076c94728376850d461b383d003caa9/docs/media/hermes-villa-kit.jpg
+  - https://raw.githubusercontent.com/rtmandreyev/construct/24a1bc838076c94728376850d461b383d003caa9/examples/villa-savoye/blender.jpg
 docs_url: https://github.com/rtmandreyev/construct/blob/main/hosts/hermes/construct/README.md
 description: >-
   Hermes researches a thing and writes one exact, checked description of it: named parts at real sizes, how they fit,

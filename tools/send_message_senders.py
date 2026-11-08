@@ -109,8 +109,9 @@ def _telegram_bot(token):
     """Bot honouring TELEGRAM_PROXY (standalone sends time out where api.telegram.org is
     blocked); falls back to a direct connection."""
     from telegram import Bot
+    from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, safe_proxy_url_for_log
+    proxy = None
     try:
-        from gateway.platforms.base import resolve_proxy_url, safe_proxy_url_for_log
         proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
         if not proxy:
             return Bot(token=token)
@@ -118,7 +119,8 @@ def _telegram_bot(token):
         logger.info("send_message: standalone Telegram send routed through proxy %s", safe_proxy_url_for_log(proxy))
         return Bot(token=token, request=HTTPXRequest(proxy=proxy), get_updates_request=HTTPXRequest(proxy=proxy))
     except Exception as proxy_err:
-        logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", proxy_err)
+        logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection",
+                       describe_proxy_error(proxy_err, proxy) or proxy_err)
     return Bot(token=token)
 
 

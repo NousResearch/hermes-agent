@@ -108,7 +108,7 @@ class TestFragmentAfterToolWork:
 class TestLooksLikeDegenerateFinal:
     EN = "Build the workbook and report back."
 
-    @pytest.mark.parametrize("text", ["пар", "?warming up", ",and", "ошибка", "!warming"])
+    @pytest.mark.parametrize("text", ["пар", "?warming up", ",and", "ошибка", "!warming", "🔍 **", "📊 ***"])
     def test_fragments_in_an_english_conversation(self, text):
         assert looks_like_degenerate_final(text, user_message=self.EN)
 

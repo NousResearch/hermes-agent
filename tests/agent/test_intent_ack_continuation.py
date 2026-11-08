@@ -17,18 +17,18 @@ These are invariant assertions about how the mode string and the detector
 gates relate, not snapshots of the marker lists.
 """
 
-from unittest.mock import MagicMock, patch
-
 from types import SimpleNamespace
 from typing import Union
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agent.agent_runtime_helpers import (
     intent_ack_continuation_mode,
     looks_like_codex_intermediate_ack,
+    post_work_narration_intent,
 )
+from agent.conversation_loop import _NARRATION_FINAL_NUDGE
 from providers.base import ProviderProfile
 
 # An ACP agent whose binary is ``copilot``: the "on <X> via acpx" cue names only external_process profiles.
@@ -79,9 +79,7 @@ def test_true_is_all_api_modes():
 
 
 
-def test_unrecognized_attr_defaults_like_auto():
-    """A missing/unrecognized ``_intent_ack_continuation`` value falls back to the
-    historical auto behavior: codex-only scope, off elsewhere."""
+def test_missing_attr_defaults_to_auto():
     bare = SimpleNamespace(api_mode="chat_completions", model="x", _strip_think_blocks=lambda c: c)
     assert intent_ack_continuation_mode(bare) == "off"
     bare_codex = SimpleNamespace(api_mode="codex_responses", model="x", _strip_think_blocks=lambda c: c)
@@ -275,53 +273,32 @@ def test_pronounless_action_guardrails_reject_questions_and_finals():
 
 # ── detector: progress narration patterns (issue #74604) ────────────────────
 
-NARRATION_USER = "What is the full analysis of the dataset?"
-NARRATION_ACK = "I am now compiling the complete answer."
+
+@pytest.mark.parametrize("text", [
+    "I am now compiling the complete answer.",
+    "[PROCESSING...] I am now compiling the complete answer.",
+    "I'm currently generating the report.",
+    "I’m now putting together the final summary…",
+    "I am currently drafting the response",
+])
+def test_progress_narration_is_detected(text):
+    assert post_work_narration_intent(text)
 
 
-def test_progress_narration_detected_as_intermediate_ack():
-    """Issue #74604: 'I am now compiling the complete answer.' is a progress
-    narration that should trigger a continuation, not end the turn. The
-    detector must catch 'i am now' + 'compiling' as a future-ack + action.
-    """
-    a = _agent(True, "chat_completions")
-    msgs = [{"role": "user", "content": NARRATION_USER}]
-    assert looks_like_codex_intermediate_ack(
-        a, NARRATION_USER, NARRATION_ACK, msgs, require_workspace=False
-    )
-
-
-def test_progress_narration_with_generating():
-    """'I'm currently generating the report.' should also be caught."""
-    a = _agent(True, "chat_completions")
-    msgs = [{"role": "user", "content": "Create the report"}]
-    assert looks_like_codex_intermediate_ack(
-        a, "Create the report",
-        "I'm currently generating the report.",
-        msgs, require_workspace=False,
-    )
-
-# ── detector: concise final answers remain terminal (#74604) ───────────────
-
-CONCISE_ANSWERS = [
+@pytest.mark.parametrize("text", [
+    # Legitimately short finals (the cron "nothing to report" shape included).
+    "No new items.", "Done. The file has been updated.", "42", "✅", "[SILENT]",
     "The server is healthy. All services are running normally.",
-    "42",
-    "Done. The file has been updated.",
-    "Based on the analysis, the root cause is a missing index on the users table.",
-]
-
-
-@pytest.mark.parametrize("answer", CONCISE_ANSWERS)
-def test_concise_final_answer_not_detected_as_intermediate_ack(answer):
-    """A valid concise final answer with finish_reason=stop must NOT trigger
-    a continuation — it should remain terminal. This is the guard against
-    over-filtering that GottZ's triage on #76013 asked for.
-    """
-    a = _agent(True, "chat_completions")
-    msgs = [{"role": "user", "content": "What is the answer?"}]
-    assert not looks_like_codex_intermediate_ack(
-        a, "What is the answer?", answer, msgs, require_workspace=False
-    )
+    # First-person present tense that IS the answer, or carries one.
+    "I'm currently building on the free tier, so the limits are 100 req/min.",
+    "I am now compiling the complete answer. Root cause: a missing index on users.",
+    "I am currently writing this from memory: the flag is --force.",
+    # Future-tense announcements belong to the stall/ack guards, not this one.
+    "I'll compile the complete answer.",
+    "",
+])
+def test_answers_are_not_progress_narration(text):
+    assert not post_work_narration_intent(text)
 
 
 # ── #74604 end-to-end: the REAL loop continues a narrated stop ──────────────
@@ -355,9 +332,8 @@ def loop_agent():
         agent.tool_delay = 0
         agent.compression_enabled = False
         agent.save_trajectories = False
-        # Explicit opt-in: the loop tests exercise the mechanism, not the
-        # transport-scoped default (chat_completions would otherwise be off).
-        agent._intent_ack_continuation = True
+        # Default config on purpose: chat_completions leaves intent_ack_continuation "off",
+        # which is the transport #74604 was reported on; the narration guard must still fire.
         return agent
 
 
@@ -404,8 +380,7 @@ def test_loop_continues_narrated_stop_before_tool_work(loop_agent):
     assert loop_agent.client.chat.completions.create.call_count == 2, (
         "A narrated stop must trigger a continuation (second API call), not end the turn."
     )
-    nudge = _user_rows_sent(loop_agent, 1)[-1]
-    assert "continue" in nudge.lower()
+    assert _user_rows_sent(loop_agent, 1)[-1] == _NARRATION_FINAL_NUDGE
     assert "The full analysis" in result["final_response"]
 
 
@@ -425,26 +400,22 @@ def test_loop_continues_narrated_stop_after_tool_work(loop_agent):
         "A post-work narrated stop must trigger a continuation, not end the turn "
         "with the narration as the answer."
     )
-    nudge = _user_rows_sent(loop_agent, 36)[-1]
-    assert "continue" in nudge.lower()
+    assert _user_rows_sent(loop_agent, 36)[-1] == _NARRATION_FINAL_NUDGE
     assert "root cause is a missing index" in result["final_response"]
 
 
 def test_loop_narration_path_is_bounded_and_terminates(loop_agent):
-    """A model that keeps narrating instead of delivering ends after the bounded
-    continuation counter (2) — the second narration itself becomes the answer
-    (only 1 re-prompt left before the cap), never a loop."""
+    """A model that keeps narrating instead of delivering is re-prompted at most twice (the
+    shared per-turn continuation cap); the third narration ends the turn, never a loop."""
     result = _run(loop_agent, [
         _tool_round("call_1"),
         _final(NARRATION),
         _final("I'm currently generating the report."),
+        _final("I am now finalizing the answer."),
     ])
 
-    # 1 tool round + 1 narrated stop + 1 continuation call after the first
-    # nudge = 3; the second narrated stop exhausts the 2-continuation cap and
-    # ends the turn with that narration as the answer.
-    assert loop_agent.client.chat.completions.create.call_count == 3
-    assert result["final_response"] == "I'm currently generating the report."
+    assert loop_agent.client.chat.completions.create.call_count == 4
+    assert result["final_response"] == "I am now finalizing the answer."
 
 
 def test_loop_concise_answer_after_tool_work_remains_terminal(loop_agent):
@@ -457,6 +428,14 @@ def test_loop_concise_answer_after_tool_work_remains_terminal(loop_agent):
 
     assert loop_agent.client.chat.completions.create.call_count == 2
     assert "3 defects" in result["final_response"]
+
+
+def test_loop_short_no_tool_answer_remains_terminal(loop_agent):
+    """A cron-style "nothing to report" answer is delivered on the first call."""
+    result = _run(loop_agent, [_final("No new items.")])
+
+    assert loop_agent.client.chat.completions.create.call_count == 1
+    assert result["final_response"] == "No new items."
 
 
 def test_loop_narration_ignored_when_stall_guards_disabled(loop_agent):

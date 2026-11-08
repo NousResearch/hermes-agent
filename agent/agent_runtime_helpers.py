@@ -3117,14 +3117,10 @@ def sanitize_api_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]
     return _realign_tool_result_names(messages)
 
 
-_ACK_FUTURE_RE = re.compile(
-    r"\b(i['’]ll|i will|let me|i can do that|i can help with that"
-    r"|i am now|i'm now|i am currently|i'm currently)\b")
+_ACK_FUTURE_RE = re.compile(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b")
 _ACK_ACTION_MARKERS = (
     "look into", "look at", "inspect", "scan", "check", "analyz", "review", "explore", "read", "open",
     "run", "test", "fix", "debug", "search", "find", "walkthrough", "report back", "summarize",
-    "compiling", "writing", "generating", "creating", "building", "preparing", "assembling",
-    "putting together",
 )
 _ACK_WORKSPACE_MARKERS = (
     "directory", "current directory", "current dir", "cwd", "repo", "repository", "codebase",
@@ -3289,19 +3285,19 @@ def looks_like_codex_intermediate_ack(
     )
 
 
-# Post-work progress narration (#74604): after real tool work the model announces it is
-# assembling the deliverable ("I am now compiling the complete answer.") and stops with
-# ``finish_reason=stop`` — a silent abandonment the trailing-continue-intent detector
-# cannot see (the "now" markers target a FUTURE action; this shape claims one in
-# progress). First-person-present marker + an output-production gerund over the WHOLE
-# (short) message: a narration that then delivers the answer exceeds the length cap and
-# stays terminal.
+# Progress-narration final (#74604): the model announces it is assembling the deliverable ("I am
+# now compiling the complete answer.") and stops with ``finish_reason=stop``. The trailing
+# continue-intent detector misses it (its markers are FUTURE actions; this claims one IN
+# PROGRESS). Anchored over the WHOLE short message: a first-person present-progressive marker
+# plus an output-production gerund, so a reply that narrates and then delivers stays terminal.
 _POST_WORK_NARRATION_RE = re.compile(
-    r"\A(?:\bi(?:['’])?m (?:now|currently)\b|\bi am (?:now|currently)\b)"
-    r"[^.!?\n]{0,120}"
-    r"(compiling|writing|generating|creating|building|preparing|assembling|putting together"
-    r"|finalizing|finalising|summarizing|summarising|drafting|composing)"
-    r"[^.!?\n]{0,80}[.!:\u2026]?\s*\Z",
+    r"\A(?:\[[^\]\n]{0,40}\]\s*)?"  # optional status tag: "[PROCESSING...] I am now ..."
+    r"(?:i(?:['’])?m|i am) (?:now|currently)(?: \w+){0,2}? "
+    r"(?:compiling|writing|generating|creating|building|preparing|assembling|putting together"
+    r"|finalizing|finalising|summarizing|summarising|drafting|composing)\b"
+    # The rest is a bare noun phrase ("the complete answer"): any clause break, digit or colon
+    # means the message carries content ("... on the free tier, so the limit is 100").
+    r"[^.!?\n,;:\d]{0,80}[.!\u2026]*\s*\Z",
     re.IGNORECASE,
 )
 
@@ -3310,14 +3306,11 @@ _POST_WORK_NARRATION_MAX_CHARS = 240
 
 
 def post_work_narration_intent(text: str) -> bool:
-    """Whether ``text`` reads as a mid-delivery progress note that ends the turn after tool work (#74604).
+    """Whether ``text`` is ONLY a progress note about producing the answer (#74604).
 
-    Fires on the issue's reported shape — "~35 tool calls, then 'I am now compiling the
-    complete answer.', then stop" — and its sibling "I'm currently generating the report."
-    variant. Guardrails: short (a substantive reply is an answer regardless of first-person
-    verbs; the whole message must be the narration, not a long reply ending on one) and
-    requires BOTH the present-progressive first-person marker and an output-production
-    action, so terse real answers and reasoning-style planning monologue stay terminal.
+    Requires the present-progressive first-person marker AND an output-production verb over the
+    whole message (<= 240 chars), so terse real answers and a narration followed by the actual
+    answer stay terminal.
     """
     t = (text or "").strip()
     if not t or len(t) > _POST_WORK_NARRATION_MAX_CHARS:
@@ -3351,6 +3344,10 @@ def looks_like_degenerate_final(text: str, user_message: Any = None) -> bool:
     if not t or len(t) > _DEGENERATE_FINAL_MAX_CHARS or t.endswith(_SENTENCE_TERMINALS):
         return False
     if t[0] in _DEGENERATE_LEADING_PUNCT and len(t) > 1 and t[1].isalpha():
+        return True
+    # A presentation symbol plus dangling Markdown emphasis and nothing else ("🔍 **", #118367): the
+    # opening of a report that never came. A bare emoji ("✅") or "**Done**" stays an answer.
+    if "*" in t and not any(ch.isalnum() for ch in t) and any(not ch.isascii() and not ch.isspace() for ch in t):
         return True
     if not any(ch.isalpha() for ch in t) or any(ch.isascii() and ch.isalnum() for ch in t):
         return False

@@ -31,19 +31,20 @@ def test_a_failed_turn_still_raises_so_the_job_is_marked_failed():
         _final_response_from_result(result, "job1", "Morning brief", _AIAgent)
 
 
-def test_stop_finished_markdown_stub_raises_instead_of_being_delivered():
-    """A symbol-plus-markdown stub is not a usable completed cron report."""
+@pytest.mark.parametrize("final_response", ["🔍 **", "I am now compiling the complete answer."])
+def test_stop_finished_degenerate_output_raises_instead_of_being_delivered(final_response):
+    """A symbol-plus-markdown stub or a bare progress note is not a usable cron report."""
     result = {
-        "final_response": "🔍 **", "failed": False, "completed": True,
+        "final_response": final_response, "failed": False, "completed": True,
         "turn_exit_reason": "text_response(finish_reason=stop)",
         "messages": [{"role": "user", "content": "Send the morning report"}],
     }
 
-    with pytest.raises(RuntimeError, match="degenerate near-empty"):
+    with pytest.raises(RuntimeError, match="degenerate stop completion"):
         _final_response_from_result(result, "job1", "Morning brief", _AIAgent)
 
 
-@pytest.mark.parametrize("final_response", ["Done", "✅", "[SILENT]", "{}"])
+@pytest.mark.parametrize("final_response", ["Done", "No new items.", "✅", "[SILENT]", "{}", "**Done**"])
 def test_stop_finished_legitimate_short_output_fails_open(final_response):
     result = {
         "final_response": final_response, "failed": False, "completed": True,

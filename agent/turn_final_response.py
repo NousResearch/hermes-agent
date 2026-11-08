@@ -118,6 +118,7 @@ def finish_text_response(
     stop gates accept it."""
     from agent.conversation_loop import (
         _CODEX_ACK_CONTINUATION_NUDGE, _DEGENERATE_FINAL_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT,
+        _NARRATION_FINAL_NUDGE,
     )
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> FinalResponseVerdict:
@@ -246,20 +247,14 @@ def finish_text_response(
         and _tool_rows > 0
         and looks_like_degenerate_final(_stall_text, user_message=user_message)
     )
-    # Post-work progress narration (#74604): the turn did real tool work, then the model
-    # announced mid-delivery progress ("I am now compiling the complete answer.") and stopped
-    # with finish_reason=stop — the reported incident's shape. The trailing-continue-intent
-    # stall guard above cannot see it (its markers are all FUTURE actions; this shape claims
-    # one IN PROGRESS), and the ack detector below is silent on it too: its no-prior-tool-row
-    # gate is false here by construction. The sibling of the degenerate guard: same scope knob
-    # (_ack_mode), same _tool_rows window, SAME bounded counter; a second narration ends the
-    # turn as the answer, because the nudge row closes the tool-work window just like the
-    # degenerate path.
+    # Progress-narration guard (#74604): the reply is ONLY a note that the answer is being
+    # produced ("I am now compiling the complete answer."), before or after tool work. Gated like
+    # the stall guard above (agent.stall_guards, on for every transport) rather than the
+    # Responses-scoped ack knob: the reported incident ran on chat_completions. Same bounded counter.
     _post_work_narration = (
         bool(getattr(agent, "_stall_guards", True))
-        and _ack_mode != "off"
+        and agent.valid_tool_names
         and codex_ack_continuations < 2
-        and _tool_rows > 0
         and post_work_narration_intent(_stall_text)
     )
     # Precedence: an announced next action outranks a mid-delivery narration and the fragment
@@ -297,7 +292,7 @@ def finish_text_response(
             )
         elif _continuation_kind == "narration":
             logger.warning(
-                "Post-work narration: %d-char progress note %r ended the turn after %d tool "
+                "Narration final: %d-char progress note %r ended the turn after %d tool "
                 "result(s) — re-prompting (%d/2)", len(_stall_text), _stall_text[:40],
                 _tool_rows, codex_ack_continuations + 1,
             )
@@ -311,10 +306,9 @@ def finish_text_response(
         agent._emit_interim_assistant_message(interim_msg)
         append_message(messages, {
             "role": "user",
-            "content": (
-                _DEGENERATE_FINAL_NUDGE if _continuation_kind == "degenerate"
-                else _CODEX_ACK_CONTINUATION_NUDGE
-            ),
+            "content": {
+                "degenerate": _DEGENERATE_FINAL_NUDGE, "narration": _NARRATION_FINAL_NUDGE,
+            }.get(_continuation_kind, _CODEX_ACK_CONTINUATION_NUDGE),
         })
         agent._session_messages = messages
         # An acknowledgment is non-final: its text must not suppress iteration-limit

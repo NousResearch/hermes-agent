@@ -2068,14 +2068,14 @@ def _cron_turn_user_message(messages) -> object | None:
 
 
 def _is_degenerate_stop_completion(result: dict, final_response: str) -> bool:
-    """Whether a verified ``finish_reason=stop`` response has no usable content.
+    """Whether a ``finish_reason=stop`` response carries no usable content (#118367).
 
-    This is intentionally narrower than a length limit.  Cron does not know
-    whether a job expects a one-word answer, an explicit ``[SILENT]`` reply,
-    or a short script, so it only rejects the fragment shapes the agent already
-    identifies and the observed emoji-plus-unclosed-Markdown stub.  If either
-    the stop metadata or the originating user message is unavailable, it
-    fails open rather than guessing.
+    The agent loop re-prompts these shapes a bounded number of times; this is the delivery-side
+    backstop for when the model keeps producing them. Deliberately not a length limit: "Done",
+    "No new items.", "✅", ``[SILENT]`` and ``{}`` are real cron answers. Only the shared
+    fragment predicate (which also covers the ``🔍 **`` stub) and a bare progress note ("I am now
+    compiling the complete answer.") qualify, and only with stop metadata and the originating user
+    message available; otherwise it fails open.
     """
     if result.get("turn_exit_reason") != "text_response(finish_reason=stop)":
         return False
@@ -2083,22 +2083,10 @@ def _is_degenerate_stop_completion(result: dict, final_response: str) -> bool:
     if not user_message:
         return False
 
-    from agent.agent_runtime_helpers import looks_like_degenerate_final
+    from agent.agent_runtime_helpers import looks_like_degenerate_final, post_work_narration_intent
 
-    if looks_like_degenerate_final(final_response, user_message=user_message):
-        return True
-
-    text = final_response.strip()
-    # A bare emoji (for example ✅) is a valid terse response.  The reported
-    # ``🔍 **`` shape is different: it contains a non-ASCII presentation symbol
-    # followed by Markdown emphasis delimiters but no letters or digits, so it
-    # cannot communicate a report and is not a script token such as ``{}``.
-    return (
-        len(text) <= 24
-        and "*" in text
-        and not any(char.isalnum() for char in text)
-        and any(not char.isascii() and not char.isspace() for char in text)
-    )
+    return (looks_like_degenerate_final(final_response, user_message=user_message)
+            or post_work_narration_intent(final_response))
 
 
 def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgent) -> str:
@@ -2116,7 +2104,7 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
         raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
     if _is_degenerate_stop_completion(result, final_response_text):
-        raise RuntimeError("agent returned a degenerate near-empty stop completion")
+        raise RuntimeError(f"agent returned a degenerate stop completion with no usable content: {final_response_text[:60]!r}")
     if max_iteration_summary:
         logger.warning(
             "Job '%s' reached the iteration limit but produced a final fallback response; "

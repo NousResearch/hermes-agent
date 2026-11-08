@@ -691,13 +691,25 @@ def _rewrite_cron_refs(consolidated: list[dict[str, Any]], pruned: list[dict[str
 
 def _write_file(path: Path, label: str, render: Any) -> bool:
     """Best-effort write of *render()* (or the JSON dump of a non-callable payload); True once written.
-    Rendering runs inside the guard so a serialisation error is logged, not raised."""
+    Rendering runs inside the guard so a serialisation error is logged, not raised; a partial file a
+    failed write left behind is removed, so an existing report file is always a complete one."""
     try:
         path.write_text(render() if callable(render) else json.dumps(render, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         return True
     except Exception as e:
         logger.debug("Curator %s write failed: %s", label, e)
+        path.unlink(missing_ok=True)
         return False
+
+
+def _notify_post_curator_run(run_dir: Optional[Path]) -> None:
+    """``post_curator_run`` for a finished pass whose run.json and REPORT.md both exist; fired after the
+    pass's state is saved, so a slow plugin load never delays what ``hermes curator status`` reports."""
+    if run_dir is None or not ((run_dir / "run.json").is_file() and (run_dir / "REPORT.md").is_file()):
+        return
+    from hermes_cli.lifecycle import invoke_hook  # observers + plugins; each callback isolated there
+    invoke_hook("post_curator_run", run_dir=str(run_dir), run_json_path=str(run_dir / "run.json"),
+                report_md_path=str(run_dir / "REPORT.md"))
 
 
 def _write_run_report(
@@ -738,14 +750,10 @@ def _write_run_report(
         "llm_final": llm_meta.get("final", ""), "llm_summary": llm_meta.get("summary", ""),
         "llm_error": llm_meta.get("error"), "tool_calls": llm_meta.get("tool_calls", []),
     }
-    wrote_json = _write_file(run_dir / "run.json", "run.json", payload)
-    wrote_md = _write_file(run_dir / "REPORT.md", "REPORT.md", lambda: _render_report_markdown(payload))
+    _write_file(run_dir / "run.json", "run.json", payload)
+    _write_file(run_dir / "REPORT.md", "REPORT.md", lambda: _render_report_markdown(payload))
     if jobs_updated > 0:  # only when a job was touched, to keep no-op run dirs uncluttered
         _write_file(run_dir / "cron_rewrites.json", "cron_rewrites.json", cron_rewrites)
-    if wrote_json and wrote_md:  # observers are promised both files on disk
-        from hermes_cli.lifecycle import invoke_hook  # observers + plugins; each callback isolated there
-        invoke_hook("post_curator_run", run_dir=str(run_dir), run_json_path=str(run_dir / "run.json"),
-                    report_md_path=str(run_dir / "REPORT.md"))
     return run_dir
 
 
@@ -991,6 +999,7 @@ def run_curator_review(
         save_state(state2)
         _record_run_metric(trigger, dry_run, counts, before_report, after_report, llm_meta, hermes_home)
         _notify(on_summary, f"curator: {final_summary}")
+        _notify_post_curator_run(state2.get("last_report_path") and Path(state2["last_report_path"]))
 
     if synchronous:
         _llm_pass()

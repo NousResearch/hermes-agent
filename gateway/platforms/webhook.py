@@ -16,6 +16,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -860,11 +861,37 @@ class WebhookAdapter(BasePlatformAdapter):
     # --- Signature validation ---
 
     def _validate_signature(self, request: web.Request, body: bytes, secret: str) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, Standard Webhooks, Linear, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, GitLab, Svix, Standard Webhooks, Linear, Pocket, generic HMAC-SHA256)."""
         headers = request.headers
 
         def _header(name: str) -> str:
             return headers.get(name, "") or headers.get(name.lower(), "") or headers.get(name.upper(), "")
+
+        def _has_header(name: str) -> bool:
+            return name in headers or name.lower() in headers or name.upper() in headers
+
+        # Either Pocket header commits the request to Pocket authentication. An incomplete or
+        # invalid pair must not fall through to a valid signature from another scheme.
+        pocket_sig = _header("X-HeyPocket-Signature")
+        pocket_ts = _header("X-HeyPocket-Timestamp")
+        if _has_header("X-HeyPocket-Signature") or _has_header("X-HeyPocket-Timestamp"):
+            if not pocket_sig or not pocket_ts:
+                return False
+            try:
+                timestamp_ms = int(pocket_ts)
+                now_ms = time.time() * 1000
+            except (TypeError, ValueError, OverflowError):
+                return False
+            if not math.isfinite(now_ms):
+                return False
+            # Compare integers first so hostile arbitrary-precision timestamps cannot overflow
+            # when Python converts them to float for the exact replay-window check.
+            window_ms = _V2_REPLAY_WINDOW_SECONDS * 1000
+            if abs(timestamp_ms - int(now_ms)) > window_ms + 1:
+                return False
+            if abs(timestamp_ms - now_ms) > window_ms:
+                return False
+            return _hmac_str_equal(pocket_sig, _hex_hmac(secret, pocket_ts.encode() + b"." + body))
 
         # Svix / AgentMail: signed content is "{id}.{timestamp}.{raw_body}". Standard Webhooks
         # (webhook-*; GitLab signing tokens) is the same scheme under other header names, but GitLab

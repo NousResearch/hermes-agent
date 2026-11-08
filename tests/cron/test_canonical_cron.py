@@ -159,10 +159,13 @@ def test_real_client_rpc_timeout_on_a_slow_status_is_waited_out(monkeypatch):
     """The exception ``GatewayClient.rpc`` raises when an answer misses its budget is the one the
     observer waits out: the first status poll is never answered, the next one is."""
     import json
+    from websockets.protocol import State
     from hermes_cli import gateway_client
     from cron.scheduler_authority import run_canonical_job
 
     class Socket:
+        state = State.OPEN  # GatewayClient.rpc reads the socket state before it sends
+
         def __init__(self):
             self.inbox = asyncio.Queue()
             self.polls = 0

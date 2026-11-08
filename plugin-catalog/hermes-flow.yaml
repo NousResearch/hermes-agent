@@ -1,7 +1,7 @@
 name: hermes-flow
 repo: https://github.com/rewanthtammana/hermes-flow
 sha: 32a0ba9898ac650e5d38b0d22d8222f3d9a44828
-description: Reconstruct Hermes agent sessions as local graphs and compare them with trusted paths.
+description: "Reconstruct Hermes agent sessions as local graphs and compare them with trusted paths. Disclosure — reads the profile's state.db read-only and writes reports only where you point it; the optional bundled customer_review example, when you run it yourself, installs and enables a demo plugin and demo skills in your active profile, raises delegation.max_spawn_depth to 2 if it is lower, and makes openai-codex model calls with that profile's existing sign-in."
 maintainer: rewanthtammana
 tier: community
 category: general

@@ -240,6 +240,12 @@ export function ChatSessionList({
                     <span className="truncate">{s.source}</span>
                   </>
                 )}
+                {s.profile && (
+                  <>
+                    <span aria-hidden>·</span>
+                    <span className="truncate">{s.profile}</span>
+                  </>
+                )}
               </span>
             </ListItem>
           );

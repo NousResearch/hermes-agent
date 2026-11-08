@@ -125,9 +125,12 @@ class TelegramTopicRoutingMixin:
             for topic in (entry.get("topics") or []) if chat_id is not None else ():
                 if isinstance(topic, dict) and topic.get("thread_id") and topic.get("name"):
                     found.append((str(chat_id), str(topic["thread_id"]), str(topic["name"]), kind))
+
+        def _match_key(name: str) -> str:  # resolve_channel_name's normalisation: a "#x" label resolves as "x"
+            return name.lstrip("#").strip().lower()
         chats_per_name: dict[str, set] = {}
         for chat_id, _tid, name, _kind in found:
-            chats_per_name.setdefault(name.lower(), set()).add(chat_id)
+            chats_per_name.setdefault(_match_key(name), set()).add(chat_id)
         return [{"id": f"{chat_id}:{tid}", "thread_id": tid, "type": kind,
-                 "name": name if len(chats_per_name[name.lower()]) == 1 else f"{chat_id} / {name}"}
+                 "name": name if len(chats_per_name[_match_key(name)]) == 1 else f"{chat_id} / {name}"}
                 for chat_id, tid, name, kind in found]

@@ -53,3 +53,16 @@ def test_channel_directory_lists_configured_topics_without_sessions(tmp_path):
                            "777:9": "777 / Reports", "-1001:5": "Ops"}
         assert resolve_channel_name("telegram", "Ops") == "-1001:5"
         assert resolve_channel_name("telegram", "777 / Reports") == "777:9"
+
+def test_topic_names_differing_only_by_hash_are_qualified(tmp_path):
+    """``Reports`` and ``#Reports`` resolve as the same name, so both must be chat-qualified."""
+    from gateway.channel_directory import build_channel_directory, resolve_channel_name
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra={
+        "dm_topics": [{"chat_id": 111, "topics": [{"name": "Reports", "thread_id": 1}]},
+                      {"chat_id": 222, "topics": [{"name": "#Reports", "thread_id": 2}]}]}))
+    with patch("gateway.channel_directory.DIRECTORY_PATH", tmp_path / "channel_directory.json"), \
+         patch("gateway.channel_directory._build_from_sessions", return_value=[]):
+        directory = asyncio.run(build_channel_directory({Platform.TELEGRAM: adapter}))
+        for entry in directory["platforms"]["telegram"]:
+            assert resolve_channel_name("telegram", entry["name"]) == entry["id"]

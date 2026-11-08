@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v10"
+SCANNER_VERSION = "skills-guard-v11"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {
@@ -576,9 +576,41 @@ def _statement_owners(lines: list) -> list:
     return owners
 
 
-def _demote_inert_path_reference(pid: str, severity: str, description: str, line: str, owner_line: str,
-                                 suffix: str) -> tuple[str, str]:
-    """``(severity, description)`` for a path-token match, lowered when the line cannot act where it sits."""
+# ── Suppressed named-variable existence checks (#151110) ──
+# Bare ``printenv`` dumps the whole environment, but ``printenv NAME >/dev/null 2>&1`` asks whether ONE
+# variable is set and throws the value away — the shell idiom behind "is IDENTITY configured?" checks,
+# which discloses nothing. Every dump shape keeps full severity: no operand or flags only, a printed
+# value, a stderr-only redirect, a pipe to another command, and any second ``printenv`` on the line that
+# is not suppressed (one suppressed call does not launder the line).
+_PRINTENV_RE = re.compile(r'(?<![A-Za-z0-9_])printenv\b')
+# A shell command ends at ``&&``/``||``, a pipe, ``;``, a subshell paren, a backtick or ``$(`` — a bare
+# ``&`` too, but not the one inside ``&>`` or ``2>&1``.
+_COMMAND_SEGMENT_END_RE = re.compile(r'\|\||(?<![>&])&(?!>)|[|;()]|`|\$\(')
+# Stdout discarded to /dev/null. The ``2>`` form is excluded on purpose: it hides stderr only, so the
+# value still prints.
+_STDOUT_TO_NULL_RE = re.compile(r'(?:^|[\s;|&(])(?:1|&)?>>?\s*[\'"]?/dev/null')
+_REDIRECTION_RE = re.compile(r'\d?&?>>?\s*[\'"]?[^\s;|&<>]+[\'"]?|\d?>&\d')
+
+
+def _suppressed_named_printenv(line: str) -> bool:
+    """Every ``printenv`` on *line* names at least one variable and discards stdout to ``/dev/null``."""
+    invocations = list(_PRINTENV_RE.finditer(line))
+    for invocation in invocations:
+        rest = line[invocation.end():]
+        boundary = _COMMAND_SEGMENT_END_RE.search(rest)
+        segment = rest[:boundary.start()] if boundary else rest
+        if not _STDOUT_TO_NULL_RE.search(segment):
+            return False
+        if not any(not word.startswith("-") for word in _REDIRECTION_RE.sub(" ", segment).split()):
+            return False
+    return bool(invocations)
+
+
+def _contextual_severity(pid: str, severity: str, description: str, line: str, owner_line: str,
+                         suffix: str) -> tuple[str, str]:
+    """``(severity, description)`` for a match, lowered when the line's own context makes it inert."""
+    if pid == "dump_all_env" and _suppressed_named_printenv(line):
+        return "low", "named-variable existence check with output discarded (not an environment dump)"
     if pid not in _PATH_REFERENCE_PATTERN_IDS:
         return severity, description
     if line.lstrip().startswith(_COMMENT_PREFIX.get(suffix, ())):
@@ -714,7 +746,7 @@ def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
             scan_line = traversal_lines[i - 1] if pid in _PATH_TRAVERSAL_PATTERN_IDS else line
             if i not in docstring_lines and pattern.search(scan_line):
                 text = line.strip()
-                line_severity, line_description = _demote_inert_path_reference(
+                line_severity, line_description = _contextual_severity(
                     pid, severity, description, line, lines[owners[i - 1]], suffix)
                 findings.append(Finding(pid, line_severity, category, rel_path, i,
                                         text if len(text) <= 120 else text[:117] + "...", line_description))

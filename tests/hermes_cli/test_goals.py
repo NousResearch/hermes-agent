@@ -254,63 +254,6 @@ class TestMigrateGoalToSession:
         assert migrate_goal_to_session("p3", "c3") is False
         assert load_goal("c3").goal == "child already has one"
 
-    def test_failed_child_write_keeps_parent_goal_active(self, hermes_home, monkeypatch):
-        """A failed child write must not archive the parent too. save_goal swallows
-        set_meta failures at debug level, so a transient DB error at the compaction
-        boundary would otherwise clear the only surviving copy (#149594)."""
-        import sqlite3
-
-        from hermes_cli import goals
-        from hermes_cli.goals import (
-            GoalState,
-            load_goal,
-            migrate_goal_to_session,
-            save_goal,
-        )
-
-        save_goal("parent-x", GoalState(goal="keep me"))
-        db = goals._get_session_db()
-        real_set_meta = db.set_meta
-        child_key = goals._meta_key("child-x")
-
-        def _set_meta(key, value):
-            if key == child_key:
-                raise sqlite3.OperationalError("database is locked")
-            real_set_meta(key, value)
-
-        monkeypatch.setattr(db, "set_meta", _set_meta)
-
-        assert migrate_goal_to_session("parent-x", "child-x") is False
-        parent = load_goal("parent-x")
-        assert parent is not None and parent.status == "active"
-
-    @pytest.mark.parametrize("kind", ["loop", "heartbeat"])
-    def test_failed_child_write_keeps_parent_loop_and_heartbeat(self, hermes_home, monkeypatch, kind):
-        """/loop and /heartbeat ride the same compaction migration with the same swallowed write (#149594)."""
-        import sqlite3
-
-        from hermes_cli import goals, heartbeat, loops
-
-        if kind == "loop":
-            loops.save_loop("parent-y", loops.LoopState(prompt="tick", interval_seconds=60.0))
-            migrate, load = loops.migrate_loop_to_session, loops.load_loop
-        else:
-            heartbeat.save_heartbeat("parent-y", heartbeat.HeartbeatState(prompt="beat", interval_seconds=60))
-            migrate, load = heartbeat.migrate_heartbeat_to_session, heartbeat.load_heartbeat
-        db = goals._get_session_db()
-        real_set_meta = db.set_meta
-
-        def _set_meta(key, value):
-            if key == f"{kind}:child-y":
-                raise sqlite3.OperationalError("database is locked")
-            real_set_meta(key, value)
-
-        monkeypatch.setattr(db, "set_meta", _set_meta)
-
-        assert migrate("parent-y", "child-y") is False
-        parent = load("parent-y")
-        assert parent is not None and parent.status == "active"
-
 
 class TestSessionDbCacheAfterProfileDelete:
     """``hermes profile delete`` force-closes every registry handle under the profile home

@@ -1289,11 +1289,59 @@ def _match_extensionless_path(scan_text: str, match: re.Match) -> Optional[tuple
     return None
 
 
+# Reply text still carrying a MEDIA tag that resolved to nothing — logged as a warning so a
+# malformed tag is never silent again (the class that let eight replies leak the tag as text).
+_UNDELIVERED_MEDIA_TAG_RE = re.compile(
+    r"MEDIA:\s*(?:~/|/|[A-Za-z]:[/\\])[^\n]*?\.(?:" + _MEDIA_EXT_ALTERNATION + r")",
+    re.IGNORECASE)
+
+
 def _normalize_media_tag_path(raw: str) -> str:
     path = str(raw or "").strip()
     if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
         path = path[1:-1].strip()
     return path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+
+
+# A model sometimes splits the filename from its extension with a space when it echoes a human
+# document title — ``MEDIA:/x/outbox/23. Breviar … (I9-2022). docx``. Neither tag regex accepts
+# it (the extension alternation requires the final dot to END the path token), so the whole tag
+# matched nothing: no upload was attempted, nothing was logged, and the literal ``MEDIA:`` text
+# reached the chat. Measured 2026-11-07 on eight replies of one firm's channel.
+_SPACED_MEDIA_EXT_RE = re.compile(
+    r"MEDIA:(?P<body>[^\n]*?)\.(?P<sp>[^\S\n]+)(?P<ext>(?:" + _MEDIA_EXT_ALTERNATION + r"))\b",
+    re.IGNORECASE)
+
+
+def _repair_spaced_media_extension(content: str) -> str:
+    """Join a whitespace run a model inserted between a MEDIA path and its extension.
+
+    Only a tag on a ``MEDIA:`` line, only a known deliverable extension, and only when the joined
+    path EXISTS on disk — the repair never invents a path, and a tag whose joined path is absent is
+    left intact for the ordinary validators (which keep it visible, as before). Both call sites
+    (``extract_media`` and the display strip) work on the repaired text, so the tag is deleted from
+    the reply exactly when its file was found.
+    """
+    if "MEDIA:" not in content:
+        return content
+    pos = 0
+    while True:
+        match = _SPACED_MEDIA_EXT_RE.search(content, pos)
+        if match is None:
+            return content
+        joined = (content[match.start() + len("MEDIA:"):match.start("sp")]
+                  + content[match.end("sp"):match.end()])
+        candidate = _normalize_media_tag_path(joined)
+        try:
+            exists = bool(candidate) and os.path.isfile(os.path.expanduser(candidate))
+        except (OSError, RuntimeError, ValueError):
+            exists = False
+        if not exists:
+            pos = match.end()
+            continue
+        removed = match.end("sp") - match.start("sp")
+        content = content[:match.start("sp")] + content[match.end("sp"):]
+        pos = match.end("ext") - removed
 
 
 def _path_lacks_deliverable_extension(path: str) -> bool:
@@ -3206,6 +3254,7 @@ class BasePlatformAdapter(ABC):
         ``[[as_document]]`` (unmodified sendDocument for large images) is detected by dispatch sites
         on the ORIGINAL response and only stripped here."""
         media = []
+        content = _repair_spaced_media_extension(content)
         has_voice_tag = "[[audio_as_voice]]" in content
         cleaned = content.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
         # Scan a masked copy so example/stored MEDIA paths (code, quotes, JSON values) are never
@@ -3238,6 +3287,17 @@ class BasePlatformAdapter(ABC):
             spans = _deliverable_tag_spans(cleaned)
             if spans:
                 cleaned = re.sub(r'\n{3,}', '\n\n', _delete_spans(cleaned, spans)).strip()
+        # A tag that survived the strip points at no file this host can read, so nothing was
+        # uploaded and the member is about to see the literal tag. Say so once per reply: the
+        # silent case (a malformed tag matching no regex at all) is what hid the 2026-11-07
+        # defect for eight deliveries.
+        leftovers = _UNDELIVERED_MEDIA_TAG_RE.findall(cleaned)
+        if leftovers:
+            logger.warning(
+                "MEDIA directive left in reply undelivered (%d, no resolvable file): %s",
+                len(leftovers),
+                "; ".join(_log_safe_path(tag) for tag in leftovers[:3]),
+            )
         return media, cleaned
 
     @staticmethod
@@ -3247,6 +3307,7 @@ class BasePlatformAdapter(ABC):
         ``validate_media_delivery_path`` accepts the path, so undeliverable paths stay visible."""
         if not _has_media_directives(text):
             return text
+        text = _repair_spaced_media_extension(text)
         return re.sub(r'\n{3,}', '\n\n', _strip_media_tag_directives(text)).rstrip()
 
     @staticmethod

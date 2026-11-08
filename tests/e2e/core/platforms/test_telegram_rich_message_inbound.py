@@ -35,3 +35,17 @@ def test_rich_message_blocks_reach_the_agent_as_text(rig) -> None:
     assert C.turns(rig, token) == 1
     assert rig.gw.user_rows(f"[in:{token}]") == [
         f"Can't you update it? [in:{token}]\n\n• Kapazität: 1TB\n• Modell: HD103UJ"]
+
+
+def test_rich_message_group_mention_reaches_the_agent(rig) -> None:
+    """In a require_mention group, a rich-only message that @mentions the bot is answered, not dropped."""
+    token, aid = "richgrp", "A-richgrp"
+    rig.director.script(token, C.answer(aid, "on it"))
+    uid, gid = int(rig.drv.user_id), int(rig.drv.group_chat_id)
+    handle = "@hermes_standin_bot"
+    chat = {"id": gid, "type": "supergroup", "title": "Standin Group"}
+    rig.drv.standin._inbound(chat, uid, rich_message={"blocks": [
+        {"type": "paragraph", "text": [handle, f" please look [in:{token}]"]},
+        {"type": "paragraph", "text": "second paragraph"}]})
+    C.wait_reply(rig, str(gid), aid, "the rich_message group mention to be answered")
+    assert C.turns(rig, token) == 1

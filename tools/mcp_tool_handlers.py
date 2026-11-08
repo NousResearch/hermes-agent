@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from hermes_platform import declaration
 from tools.registry import invalidate_check_fn_cache, tool_error
 from tools.ansi_strip import strip_unicode_tags, strip_unicode_tags_deep
-from tools.mcp_tool_common import _exc_str, _sanitize_error, mcp_field, _core
+from tools.mcp_tool_common import _exc_str, _sanitize_error, exact_mcp_identifier, mcp_field, _core
 from tools import mcp_tool_loop as _loop
 from tools.mcp_tool_content import (
     _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block, _mcp_result_with_native_images,
@@ -793,7 +793,10 @@ def _render_resource_list(all_resources, server_name: str) -> dict:
         mime = mcp_field(r, "mime_type", "mimeType")
         if mime:
             entry["mimeType"] = str(mime)  # camelCase: this is the tool's own JSON output shape
-        resources.append(strip_unicode_tags_deep(entry))
+        entry = strip_unicode_tags_deep(entry)
+        if "uri" in entry:  # read_resource sends it back verbatim
+            entry["uri"] = exact_mcp_identifier(str(r.uri), "resource uri")
+        resources.append(entry)
     return {"resources": resources}
 
 
@@ -811,11 +814,15 @@ def _render_read_resource(result, server_name: str) -> dict:
 def _render_prompt_list(all_prompts, server_name: str) -> dict:
     prompts = []
     for p in all_prompts:
-        entry = _pick(p, ("name", "name"), ("description", "description", True))
+        # get_prompt sends the prompt and argument names back verbatim: only the prose is stripped.
+        entry = {**_pick(p, ("name", "name")), **strip_unicode_tags_deep(_pick(p, ("description", "description", True)))}
+        if "name" in entry:
+            exact_mcp_identifier(entry["name"], "prompt name")
         if getattr(p, "arguments", None):
-            entry["arguments"] = [{"name": a.name, **_pick(a, ("description", "description", True), ("required", "required"))}
+            entry["arguments"] = [{"name": exact_mcp_identifier(a.name, f"prompt {p.name!r} argument name"),
+                                   **strip_unicode_tags_deep(_pick(a, ("description", "description", True), ("required", "required")))}
                                   for a in p.arguments]
-        prompts.append(strip_unicode_tags_deep(entry))
+        prompts.append(entry)
     return {"prompts": prompts}
 
 

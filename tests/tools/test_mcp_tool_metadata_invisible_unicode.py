@@ -33,6 +33,8 @@ def test_tool_schema_strips_hidden_free_text_but_keeps_the_call_contract():
         "required": ["query"],
         "dependentRequired": {"query": [tagged_key]},
         "discriminator": {"propertyName": tagged_key},
+        # draft-07: an array value names properties, an object value is a sub-schema.
+        "dependencies": {"mode": [tagged_key], "query": {"description": f"dep7{HIDDEN}"}},
         # An argument literally named "enum" in a name->schema map is a name, not the keyword.
         "dependentSchemas": {"enum": {"description": f"dep{HIDDEN}"}},
     })
@@ -41,6 +43,7 @@ def test_tool_schema_strips_hidden_free_text_but_keeps_the_call_contract():
     free_text = [schema["description"], props["query"]["title"], props["query"]["description"],
                  props["query"]["default"], props["mode"]["description"], props[tagged_key]["description"],
                  schema["parameters"]["dependentSchemas"]["enum"]["description"],
+                 schema["parameters"]["dependencies"]["query"]["description"],
                  *props["query"]["examples"][0].values()]
     assert not any(_invisible(text) for text in free_text)
     assert props["query"]["description"] == "Search text" and FAMILY in schema["description"]
@@ -48,6 +51,7 @@ def test_tool_schema_strips_hidden_free_text_but_keeps_the_call_contract():
     # Strings that name a property stay byte-identical to that property's key.
     assert schema["parameters"]["dependentRequired"]["query"] == [tagged_key]
     assert schema["parameters"]["discriminator"]["propertyName"] == tagged_key
+    assert schema["parameters"]["dependencies"]["mode"] == [tagged_key]
     json.dumps(schema)
 
 

@@ -191,6 +191,15 @@ _SCHEMA_CONTRACT_KEYS = frozenset({"enum", "const", "required", "$ref", "pattern
 _SCHEMA_DATA_KEYS = frozenset({"default", "examples"})
 
 
+def _strip_schema_child(key, value, tool_name: str, contract: bool, data: bool, schema: bool):
+    if schema and key == "dependencies" and isinstance(value, dict):
+        # draft-07: an array value lists property names (contract), an object value is a sub-schema.
+        new = {name: strip_schema_annotations(dep, tool_name, isinstance(dep, list)) for name, dep in value.items()}
+        return value if all(new[name] is dep for name, dep in value.items()) else new
+    return strip_schema_annotations(value, tool_name, contract or (schema and key in _SCHEMA_CONTRACT_KEYS),
+                                    schema and key in _SCHEMA_MAP_KEYS, data or (schema and key in _SCHEMA_DATA_KEYS))
+
+
 def strip_schema_annotations(node, tool_name: str = "", _contract: bool = False, _names: bool = False,
                              _data: bool = False):
     """Strip invisible TAG/bidi chars from every free-text string in a JSON schema (descriptions,
@@ -208,10 +217,7 @@ def strip_schema_annotations(node, tool_name: str = "", _contract: bool = False,
             for name in node:
                 strip_schema_annotations(name, tool_name, True)
         schema = not (_names or _data or _contract)
-        items = [(k, strip_schema_annotations(v, tool_name, _contract or (schema and k in _SCHEMA_CONTRACT_KEYS),
-                                              schema and k in _SCHEMA_MAP_KEYS,
-                                              _data or (schema and k in _SCHEMA_DATA_KEYS)))
-                 for k, v in node.items()]
+        items = [(k, _strip_schema_child(k, v, tool_name, _contract, _data, schema)) for k, v in node.items()]
         return node if all(nv is v for (_, nv), v in zip(items, node.values())) else dict(items)
     if isinstance(node, list):
         items = [strip_schema_annotations(v, tool_name, _contract, False, _data) for v in node]

@@ -28,3 +28,12 @@ def test_thinking_exhausted_copy_does_not_mention_max_tokens():
 def test_ceiling_no_text_copy_does_not_mention_max_tokens():
     assert "max_tokens" not in _CEILING_NO_TEXT
     assert "/model" in _CEILING_NO_TEXT
+
+
+def test_no_failure_code_copy_names_the_removed_output_cap_knob():
+    # Whole class, not just the three strings in the report: no user-facing failure
+    # copy may send the user to a max_tokens setting Hermes does not read.
+    from agent.turn_failure_copy import _FAILURE_CODE_COPY
+
+    offenders = [code for code, text in _FAILURE_CODE_COPY.items() if "max_tokens" in text]
+    assert offenders == []

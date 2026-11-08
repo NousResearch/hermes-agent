@@ -18,7 +18,7 @@ import asyncio
 import re
 from contextlib import contextmanager
 from typing import Any, Optional
-from urllib.parse import parse_qsl, quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
 
 from hermes_constants import get_hermes_home_override
 from utils import is_truthy_value
@@ -65,32 +65,6 @@ def normalize_url_for_request(url: str) -> str:
     safe = "/%:@!$&'()*+,;="
     return urlunsplit((parsed.scheme, netloc, quote(parsed.path, safe=safe),
                        quote(parsed.query, safe=safe + "?"), quote(parsed.fragment, safe=safe + "?")))
-
-
-# Unambiguously credential-bearing query param names. Deliberately narrow: bare
-# English words that double as page facets (``code``, ``key``, ``auth``,
-# ``session``, ``sig``) are EXCLUDED so ordinary browsing is not blocked.
-_SENSITIVE_QUERY_PARAM_NAMES = frozenset({
-    "access_token", "api_key", "apikey", "auth_token", "authorization", "awsaccesskeyid",
-    "client_secret", "credential", "credentials", "jwt", "password", "passwd", "secret",
-    "session_id", "signature", "token", "x_amz_security_token", "x_amz_signature",
-    "x-amz-security-token", "x-amz-signature"})
-
-
-def sensitive_query_param_name(url: str) -> Optional[str]:
-    """First credential-named query parameter in ``url`` (with a value), if any. Checked before
-    handing URLs to third-party fetch/browser backends: catches opaque magic links, OAuth codes,
-    signed-URL signatures and custom ``?token=...`` values that prefix-based redaction misses."""
-    if not isinstance(url, str) or "?" not in url:
-        return None
-    try:
-        parsed = urlsplit(url.strip())
-    except ValueError:
-        return None
-    if parsed.scheme.lower() not in _HTTP_SCHEMES or not parsed.query:
-        return None
-    return next((key for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-                 if value and unquote(key).lower() in _SENSITIVE_QUERY_PARAM_NAMES), None)
 
 
 # Cloud metadata hostnames — always blocked regardless of DNS or config toggle.
@@ -226,6 +200,63 @@ def _normalize_hostname(host: Optional[str]) -> str:
     return (host or "").strip().lower().rstrip(".")
 
 
+# urllib.parse and WHATWG parsers (browsers, Node-based fetch backends, also urllib3) can take a
+# different host from one string: WHATWG ends the authority at ``\``, percent-decodes the host and
+# accepts ``http:\\host`` or ``http:///host``; urlsplit does none of these. So
+# ``http://127.0.0.1:8080\@1.1.1.1`` is 1.1.1.1 here and 127.0.0.1:8080 in a browser. Such
+# URLs are refused rather than guessed at. WHATWG strips every C0 control from the ends, but urlsplit
+# keeps a trailing one in the host, so only ordinary whitespace is stripped before looking for controls.
+_URL_EDGE_WHITESPACE = " \t\n\r\x0b\x0c"
+# Dots IDNA maps to "." (ideographic, fullwidth, halfwidth ideographic); used when IDNA encoding fails.
+_IDNA_DOTS = str.maketrans(dict.fromkeys("。．｡", "."))
+
+
+def _url_hostname(url: str, *, percent_decode: bool = False) -> str:
+    """The host of *url* in the form a WHATWG client dials it: IDNA-encoded (so ``169.254.169.254。``
+    is ``169.254.169.254``), lowercased, trailing dot dropped, optionally percent-decoded first."""
+    host = urlsplit(url.strip(_URL_EDGE_WHITESPACE)).hostname or ""
+    if percent_decode:
+        host = unquote(host)
+    try:
+        host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        host = host.translate(_IDNA_DOTS)
+    return _normalize_hostname(host)
+
+
+def _authority_ambiguity(url: str, *, floor: bool = False) -> Optional[str]:
+    """Why another client could read a different host or port from an http(s) *url* than urlsplit
+    does, else None. ``\\`` and ``@`` after the authority (path, query, fragment) are accepted: every
+    parser has fixed the host by then, and WHATWG's ``\\`` -> ``/`` rewrite only changes the path.
+    ``floor`` keeps only what can move the host itself (controls, no ``//``, ``\\`` in the authority):
+    userinfo and an unparseable port (templated ``{port}``/``%d`` literals) leave the host as is, and
+    the floor checks a percent-encoded host after decoding it."""
+    url = url.strip(_URL_EDGE_WHITESPACE)
+    parts = urlsplit(url)
+    if parts.scheme.lower() not in _HTTP_SCHEMES:
+        return None
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in url):
+        return "control character in URL"  # urlsplit silently drops tab/CR/LF anywhere
+    if not parts.netloc:
+        return "authority not introduced by //"
+    if "\\" in parts.netloc:
+        return "backslash in authority"
+    if floor:
+        return None
+    _, at, host = parts.netloc.rpartition("@")
+    if at:
+        return "userinfo in authority"
+    if "%" in host:
+        return "percent-encoding in host"
+    if any(c.isspace() for c in host):
+        return "whitespace in host"
+    try:
+        parts.port
+    except ValueError:
+        return "invalid port"
+    return None
+
+
 def _parse_ip(hostname: str) -> Optional[_IPAddress]:
     """IP object for a literal-IP hostname, else None."""
     try:
@@ -287,9 +318,15 @@ def is_always_blocked_url(url: str) -> bool:
     hostnames/IPs, regardless of backend, routing, or ``allow_private_urls``. For callers that
     deliberately bypass the full check (e.g. hybrid cloud browser routing private URLs to a local
     sidecar) but must still enforce the floor. False for ordinary private/loopback URLs, DNS
-    failures and parse errors (the caller's ordinary fail-closed path handles those)."""
+    failures and parse errors (the caller's ordinary fail-closed path handles those); True for an
+    http(s) URL whose host another client could read differently, which may hide a metadata target.
+    A percent-encoded host is judged decoded, as WHATWG clients read it."""
     try:
-        hostname = _normalize_hostname(urlparse(url).hostname)
+        reason = _authority_ambiguity(url, floor=True)
+        if reason is not None:
+            logger.warning("Blocked request — ambiguous URL authority (always-blocked floor): %s", reason)
+            return True
+        hostname = _url_hostname(url, percent_decode=True)
         if not hostname:
             return False
         if hostname in _BLOCKED_HOSTNAMES:
@@ -338,15 +375,20 @@ def _resolved_ip_block_reason(ip: _IPAddress, allow_private: bool) -> Optional[s
 
 def is_safe_url(url: str) -> bool:
     """True if the URL target is not a private/internal address. Resolves the hostname and checks
-    every answer; fails closed on DNS errors and unexpected exceptions. ``allow_private_urls``
-    skips private-IP blocking, but cloud metadata endpoints remain blocked regardless."""
+    every answer; fails closed on DNS errors, unexpected exceptions and URLs whose authority other
+    clients could parse differently (userinfo included). ``allow_private_urls`` skips private-IP
+    blocking, but cloud metadata endpoints remain blocked regardless."""
     try:
-        parsed = urlparse(url)
-        hostname = _normalize_hostname(parsed.hostname)
-        scheme = (parsed.scheme or "").strip().lower()
+        scheme = (urlparse(url).scheme or "").strip().lower()
         if scheme not in _HTTP_SCHEMES:
             logger.warning("Blocked request — unsupported URL scheme: %s", scheme or "<empty>")
             return False
+        reason = _authority_ambiguity(url)
+        if reason is not None:
+            # The reason only: the URL may carry userinfo credentials.
+            logger.warning("Blocked request — ambiguous URL authority: %s", reason)
+            return False
+        hostname = _url_hostname(url)
         if not hostname:
             return False
 

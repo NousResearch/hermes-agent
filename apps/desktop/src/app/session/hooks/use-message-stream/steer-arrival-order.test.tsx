@@ -37,7 +37,7 @@ import { useMessageStream } from './index'
 const SID = 'steer-order-session'
 
 let handleEvent: ((event: GatewayEvent) => void) | null = null
-let redirect: ((text: string) => Promise<boolean>) | null = null
+let redirect: ((text: string, mode?: 'interrupt' | 'steer') => Promise<boolean>) | null = null
 let states: Map<string, ClientSessionState>
 
 /** Stub only the RPC boundary; both action handlers and streaming reducers are real. */
@@ -276,6 +276,64 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
       'user:second correction',
       'assistant:final output'
     ])
+  })
+
+  it.each([false, true])('an accepted steer marks its arrival: the tool keeps running above, the answer streams below (tile=%s)', async tile => {
+    await mountHarness(tile)
+
+    emit({ payload: {}, session_id: SID, type: 'message.start' })
+    emit({ payload: { text: 'checking first' }, session_id: SID, type: 'message.delta' })
+    await flushDeltas()
+    emit({ payload: { args: { command: 'sleep 5' }, name: 'terminal', tool_id: 't1' }, session_id: SID, type: 'tool.start' })
+
+    requestGatewayMock.mockImplementationOnce(async () => ({ status: 'queued' }))
+    await act(async () => {
+      await expect(redirect!('use the other file', 'steer')).resolves.toBe(true)
+    })
+    expect(requestGatewayMock).toHaveBeenLastCalledWith('session.steer', { session_id: SID, text: 'use the other file' })
+
+    // The steer interrupts nothing: the tool it waits on still reads as running.
+    const sealed = states.get(SID)!.messages[0]
+    expect(sealed.parts.find(part => part.type === 'tool-call')).not.toHaveProperty('completedAt')
+    expect(sealed.pending).toBe(true)
+
+    emit({ payload: { name: 'terminal', result: 'ok', tool_id: 't1' }, session_id: SID, type: 'tool.complete' })
+    expect(states.get(SID)!.messages[0].pending).toBe(false)
+
+    emit({ payload: { text: 'switched to the other file' }, session_id: SID, type: 'message.delta' })
+    await flushDeltas()
+    emit({ payload: { text: 'switched to the other file' }, session_id: SID, type: 'message.complete' })
+
+    expect(transcript()).toEqual([
+      'assistant:checking first',
+      'user:use the other file',
+      'assistant:switched to the other file'
+    ])
+  })
+
+  it.each([false, true])('an accepted steer paints text still buffered above it, and a lost tool.complete cannot outlive the turn (tile=%s)', async tile => {
+    await mountHarness(tile)
+
+    emit({ payload: {}, session_id: SID, type: 'message.start' })
+    emit({ payload: { text: 'Hello' }, session_id: SID, type: 'message.delta' })
+    await flushDeltas()
+    emit({ payload: { args: { command: 'sleep 5' }, name: 'terminal', tool_id: 't1' }, session_id: SID, type: 'tool.start' })
+    // Buffered, not yet painted: the delta timer has not fired.
+    emit({ payload: { text: ' world' }, session_id: SID, type: 'message.delta' })
+
+    requestGatewayMock.mockImplementationOnce(async () => ({ status: 'queued' }))
+    await act(async () => {
+      await expect(redirect!('change course', 'steer')).resolves.toBe(true)
+    })
+
+    // tool.complete for t1 is lost; the answer to the steer completes the turn.
+    emit({ payload: { text: 'new direction' }, session_id: SID, type: 'message.delta' })
+    await flushDeltas()
+    emit({ payload: { text: 'new direction' }, session_id: SID, type: 'message.complete' })
+
+    expect(transcript()).toEqual(['assistant:Hello world', 'user:change course', 'assistant:new direction'])
+    expect(states.get(SID)!.messages.every(message => !message.pending)).toBe(true)
+    expect(states.get(SID)!.messages[0].parts.find(part => part.type === 'tool-call')).toHaveProperty('completedAt')
   })
 
   it.each([false, true])('a refused redirect preserves the continuing stream (tile=%s)', async tile => {

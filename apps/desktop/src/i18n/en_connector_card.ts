@@ -38,7 +38,7 @@ export const enConnectorCard: Translations['connectors'] = {
     allApps: 'All apps',
     receiptConnected: apps => `Connected: ${apps}`,
     receiptNone: 'No new apps connected',
-    receiptTimedOut: 'Closed after 5 minutes',
+    receiptTimedOut: 'Closed after 10 minutes',
     finishInBrowser: 'Finish in your browser',
     signInFailed: "Couldn't connect. Click to retry"
   }

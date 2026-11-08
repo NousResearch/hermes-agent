@@ -15,12 +15,12 @@ def rows(authority, sid):
 
 
 async def verify_envelope_guards(runner, source):
-    from gateway.session_contract import Principal, Submission
+    from gateway.session_contract import SessionActor, Submission
     from hermes_state_runtime import RuntimeStoreError
     authority = runner.session_authority
     ref = authority.register(source)
     before = rows(authority, ref.session_id)
-    actor = Principal('authenticated-viewer', 'default', frozenset({'session:submit'}), 'fixture')
+    actor = SessionActor('authenticated-viewer', 'default', frozenset({'session:submit'}), 'fixture')
     try:
         await authority.submit(actor, Submission('forged-source', ref, {
             'text': 'FORGED', 'native_text_v1': {'source': {'internal': True}}}, 'queue'))

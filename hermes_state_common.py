@@ -81,6 +81,11 @@ def _sql_literal(text: str) -> str:
 QUEUED_PROMPT_METADATA_KEY = "_queued_prompt"
 
 
+# ``display_metadata = <this>`` merges a JSON object parameter into the column (its keys win, a null value
+# removes a key): a row-addressed rewrite must not wipe a key another writer added meanwhile (a reaction).
+_MERGE_DISPLAY_META = "json_patch(CASE WHEN json_valid(display_metadata) THEN display_metadata ELSE '{}' END, COALESCE(?, '{}'))"
+
+
 def _sql_json_extract(expression: str, path: str) -> str:
     """Build a non-throwing JSON marker lookup for a JSON TEXT column."""
 
@@ -359,6 +364,22 @@ def _placeholders(items) -> str:
     return ",".join("?" for _ in range(items if isinstance(items, int) else len(items)))
 
 
+# A first prompt is durable in ``session_admissions`` from admission on, while its transcript row lands
+# only at turn start; a restart in between leaves the admission ``unknown`` and the session at 0
+# messages. Only a session with neither messages nor an admission is an empty launch stub.
+_NOT_A_LAUNCH_STUB_SQL = (
+    "(s.message_count > 0 OR EXISTS (SELECT 1 FROM session_admissions a WHERE a.target_session_id = s.id))")
+
+
+def launch_stub_filter_sql(db) -> str:
+    """``sessions s`` predicate that drops empty launch stubs (the CLI crashed or a resume failed before
+    the first turn). A read-only open does not migrate, so a store from before the runtime tables may
+    lack ``session_admissions``; messages alone decide there."""
+    if db._read_all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_admissions'"):
+        return _NOT_A_LAUNCH_STUB_SQL
+    return "s.message_count > 0"
+
+
 def _source_match_clause(sources, local_created_sources=None) -> tuple[str, list]:
     """``sessions s`` source predicate. With ``local_created_sources``, a ``source='local'`` row
     matches only when ``created_source`` is one of those surfaces; the placeholder ``'unknown'``
@@ -507,6 +528,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     hidden INTEGER NOT NULL DEFAULT 0,
     last_read_at REAL,
     tool_names TEXT,
+    transcript_revision INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id),
     FOREIGN KEY (system_prompt_hash) REFERENCES system_prompts(hash)
 );
@@ -766,6 +788,25 @@ WHEN EXISTS (SELECT 1 FROM session_admissions WHERE target_session_id = old.id)
   OR EXISTS (SELECT 1 FROM worker_executions WHERE session_id = old.id)
 BEGIN
     SELECT RAISE(ABORT, 'Refused to delete a session that has gateway runtime history: state.db was upgraded by a newer Hermes, and this older Hermes cannot delete such sessions. Downgrading is unsupported. Run hermes update to go back to the newer release, or restore the pre-update snapshot: https://hermes-agent.nousresearch.com/docs/getting-started/updating#rolling-back-to-an-older-release');
+END;
+DROP TRIGGER IF EXISTS messages_transcript_revision_update;
+CREATE TRIGGER IF NOT EXISTS messages_transcript_revision_update
+AFTER UPDATE OF role, content, api_content, tool_calls, tool_call_id, tool_name, reasoning, reasoning_content,
+    reasoning_details ON messages
+BEGIN
+    -- An in-place rewrite (prompt expansion, multimodal context, a redaction) moves neither the
+    -- active row count nor the highest id; this write-side revision is what a transcript-derived
+    -- cache keys on (conversation_revision). Whoever wrote the row, old builds included.
+    UPDATE sessions SET transcript_revision = transcript_revision + 1 WHERE id = new.session_id;
+END;
+DROP TRIGGER IF EXISTS messages_display_revision_update;
+CREATE TRIGGER IF NOT EXISTS messages_display_revision_update
+AFTER UPDATE OF codex_reasoning_items, codex_message_items, display_kind, display_metadata ON messages
+BEGIN
+    -- A reaction, a display rewrite or checkpoint pruning: a transcript poller's cursor
+    -- (transcript_cursor_state) keys on these too. Its own name, so an older build's open, which
+    -- recreates the trigger above with that build's column list, leaves this one in place.
+    UPDATE sessions SET transcript_revision = transcript_revision + 1 WHERE id = new.session_id;
 END;
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
@@ -1099,12 +1140,6 @@ BEGIN
                   WHERE id = new.session_id AND {FTS_TRIGRAM_SESSION_SQL});
 END;
 """
-
-_FTS_CJK_TRIGGERS = ("messages_fts_cjk_insert", "messages_fts_cjk_delete", "messages_fts_cjk_update")
-
-# Set when a tokenizer-less process dropped the cjk triggers to keep writes alive: the cjk index is missing rows
-# and must not serve reads until `hermes sessions optimize-storage` rebuilds it on a capable host.
-FTS_CJK_STALE_KEY = "fts_cjk_stale"
 
 # Set when a base/trigram FTS index was detached after runtime corruption; startup must rebuild the complete
 # index before reinstalling sync triggers (rows written while they were absent leave an unknown gap).

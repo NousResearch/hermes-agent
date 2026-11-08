@@ -355,7 +355,6 @@ _BLOCKED_TOP = frozenset(
 
 _BLOCKED_PAIRS = {
     ("config", "edit"): "`config edit` opens an editor and is not available in Hermes Console.",
-    ("mcp", "serve"): "`mcp serve` starts a server and is not available in Hermes Console.",
     ("profile", "alias"): "`profile alias` creates shell wrappers and is not available in Hermes Console.",
     ("skills", "config"): "`skills config` is interactive and is not available in Hermes Console.",
     ("skills", "publish"): "`skills publish` is not available in Hermes Console.",
@@ -716,12 +715,14 @@ def _sessions_repair(_engine: HermesConsoleEngine, args: list[str]) -> int | Non
         "sessions repair", args, (("--check-only",), dict(action="store_true")),
         (("--no-backup",), dict(action="store_true")))
     from hermes_state import DEFAULT_DB_PATH
-    from hermes_state_repair import _db_opens_cleanly, repair_state_db_schema
+    from hermes_state_repair import HealthCheckUnavailable, _db_opens_cleanly, repair_state_db_schema
     db_path = DEFAULT_DB_PATH
     if not db_path.exists():
         print(f"No session database at {db_path} (nothing to repair).")
         return
     reason = _db_opens_cleanly(db_path)
+    if isinstance(reason, HealthCheckUnavailable):
+        raise ConsoleCommandError(f"Could not check {db_path}: {reason}")
     if reason is None:
         print(f"{db_path} opens cleanly; no repair needed.")
         return

@@ -1,0 +1,21 @@
+name: motion-index
+repo: https://github.com/minutechreview/hermes-motion-index
+sha: 0a510494589d83e865a771b4e6139b8cfab04933
+description: "Browse 49 motion-graphics styles as live previews in a Hermes Desktop pane, and let the agent find a style, turn it into a ready-to-build brief for your topic (length and 9:16/16:9 filled in), or suggest a new style to the Motion Index library. Disclosure — the motion_suggest tool posts a style title, link and an optional note (up to 1000 characters) to https://motion.minutechbuilds.com/api/submit when the agent calls it; the tool asks the model to confirm with the user first but Hermes does not enforce that; the Desktop pane loads preview videos and poster images from https://motion.minutechbuilds.com/demos/; search, styles and briefs come from the bundled data/catalog.json. No file writes, shell, credentials, telemetry or background work."
+maintainer: minutechreview
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+title: "Motion Index"
+platforms: []
+capabilities:
+  provides_tools:
+    - motion_search
+    - motion_style
+    - motion_brief
+    - motion_suggest
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+docs_url: https://github.com/minutechreview/hermes-motion-index#readme

@@ -119,6 +119,7 @@ class NtfyAdapter(BasePlatformAdapter):
     """ntfy adapter: HTTP-streaming subscription in, HTTP POST publish out."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    serial_receive_loop = True  # the stream loop awaits each message before reading the next line
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config=config, platform=Platform("ntfy"))

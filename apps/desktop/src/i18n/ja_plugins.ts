@@ -37,7 +37,37 @@ export const jaPluginSettings = {
       versionLabel: 'バージョン',
       reviewedPin: sha => (sha ? `レビュー済みのピン ${sha}` : 'レビュー済みのピン'),
       latestCommit: '最新のコミット',
+      sourceMoved: sha =>
+        sha
+          ? `レビュー後にリポジトリが変更されました。インストールする前に新しいバージョン（コミット ${sha}）を確認してください。`
+          : 'レビュー後にリポジトリが変更されました。新しいバージョンを読み込んでいます…',
+      legacyBackendConfirm:
+        'このバックエンドはこのアプリより古いため、レビューしたバージョンがそのままインストールされることを保証できません。その後リポジトリが変更されていれば、新しいバージョンがインストールされます。この保証を得るにはバックエンドを更新してください。',
+      installAnyway: 'このままインストール',
+      partialInstall: sha =>
+        sha
+          ? `プラグインは一部だけインストールされました。エージェント部分はコミット ${sha} でインストール済みですが、レビュー後にリポジトリが変更されたため、デスクトップ部分は続けてインストールできませんでした。「詳細」で強制再インストールをオンにすると両方を表示中のバージョンに置き換えます。キャンセルするとエージェント部分だけが残ります。`
+          : 'プラグインは一部だけインストールされました。エージェント部分はインストール済みですが、レビュー後にリポジトリが変更されたため、デスクトップ部分は続けてインストールできませんでした。「詳細」で強制再インストールをオンにすると両方を表示中のバージョンに置き換えます。キャンセルするとエージェント部分だけが残ります。',
       nothingToInstall: 'このパッケージにはここでインストールするものがありません。'
     }
   }
 } satisfies Pick<SettingsOverrides, 'pluginPages' | 'plugins'>
+
+/** Japanese copy for the Capabilities ▸ Plugins tab: the page blurb and a plugin's folder access. */
+export const jaPluginsTab = {
+  pageBlurb:
+    'プラグインはこのアプリ、エージェント、または両方を拡張できます。それぞれに独立したスイッチがあります。',
+  folderAccess: {
+    title: 'フォルダーへのアクセス',
+    hint: (name: string) => `${name} はこれらのフォルダー内のファイルを読み取り、変更できます。取り消しはすぐに反映されます。`,
+    revoke: '取り消す',
+    revokeLabel: (path: string) => `${path} へのアクセスを取り消す`,
+    revoked: (name: string, path: string) => `${name} は ${path} を使用できなくなりました。`,
+    revokeFailed: (name: string) => `${name} のフォルダーアクセスを取り消せませんでした`,
+    pickerTitle: (name: string) => `${name} 用のフォルダーを選択`,
+    pickerButton: 'アクセスを許可',
+    refusedProtected: (name: string) =>
+      `${name} はこのフォルダーを使用できません。Hermes の設定、キー、またはプラグインデータが含まれています。それらを含まないフォルダーを選択してください。`,
+    loadFailed: (name: string) => `${name} と共有しているフォルダーを読み込めませんでした。`
+  }
+} satisfies NonNullable<NonNullable<TranslationOverrides['skills']>['plugins']>

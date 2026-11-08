@@ -71,6 +71,8 @@ def policy_identity(policy, unhashed=()):
             data.pop(name, None)
     if not data.get('client_env_remote'):
         data.pop('client_env_remote', None)
+    if data.get('edit_approval_policy', 'ask') == 'ask':
+        data.pop('edit_approval_policy', None)
     for name in unhashed:  # _legacy_identities: a field the stamping gateway did not have yet
         data.pop(name, None)
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
@@ -264,8 +266,12 @@ def recover_config_secrets(authority, policy, skip=None):
         config = _load_gateway_config(home / 'config.yaml') if any(path[0] is not None for path, _ in entries) else {}
         route = None  # computed on the first mismatch only: an unchanged source never needs it
         values, dropped = RecoveredSecrets(), []
+        frozen = None  # parsed on the first legacy entry only
         for path, fingerprint in entries:
             value, lookup = config, path
+            if path[0] == 'custom_providers' and len(path) > 2 and type(path[1]) is int:
+                frozen = json.loads(policy.config_json) if frozen is None else frozen
+                lookup = _current_custom_path(frozen, config, path)
             if path[0] is None:
                 from tools.terminal_scope import build_profile_terminal_scope
                 value, lookup = build_profile_terminal_scope(home), path[1:]
@@ -293,6 +299,36 @@ def recover_config_secrets(authority, policy, skip=None):
         logger.warning('Frozen config reference unreadable: %s', type(exc).__name__)
         raise RuntimeStoreError('launch_credentials_unavailable', field='config_secret_ref',
                                 detail=f'unreadable ({type(exc).__name__})') from exc
+
+
+def _current_custom_path(frozen, config, path):
+    """*path* (``custom_providers[i]...``, an index into the frozen list) re-pointed at the profile's
+    entry of the SAME canonical identity (``custom_provider_slug``), wherever a reorder moved it.
+    An entry the profile no longer declares maps to no index (absent), never to whatever entry now
+    sits at ``i``, unless that entry is the same endpoint renamed in place (the fingerprint then decides,
+    as on main). A frozen entry with no name has no identity: its index is all there is."""
+    from hermes_cli.providers import custom_provider_slug
+
+    def identity(entry):
+        if not isinstance(entry, dict) or not (entry.get('name') or entry.get('provider_key')):
+            return None
+        return custom_provider_slug(str(entry.get('name') or ''), str(entry.get('provider_key') or ''))
+
+    held = frozen.get('custom_providers')
+    mine = identity(held[path[1]]) if isinstance(held, list) and 0 <= path[1] < len(held) else None
+    current = config.get('custom_providers')
+    if mine is None or not isinstance(current, list):
+        return path
+    if 0 <= path[1] < len(current) and identity(current[path[1]]) == mine:
+        return path  # unmoved (also keeps a duplicate-named later entry on its own index)
+    for index, entry in enumerate(current):
+        if identity(entry) == mine:  # the first match, as the runtime's own name lookup takes
+            return (path[0], index, *path[2:])
+    from hermes_cli.runtime_provider_custom import _entry_url, _normalize_base_url_for_match as url
+    if 0 <= path[1] < len(current) and isinstance(current[path[1]], dict) \
+            and url(_entry_url(current[path[1]])) == url(_entry_url(held[path[1]])):
+        return path  # renamed in place: same endpoint at the same index, as main read it (the fingerprint decides)
+    return (path[0], len(current), *path[2:])  # gone: past the end reads as absent
 
 
 def _entry_owner_path(entry, config):

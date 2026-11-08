@@ -6,7 +6,7 @@ import path from 'node:path'
 import { test, vi } from 'vitest'
 
 import type { InstallStamp, PayloadRuntime } from './install-stamp'
-import { bundledPayload, installIdForRoot, payloadPythonPath } from './payload-backend'
+import { bundledPayload, installIdForRoot, payloadPythonPath, payloadTicketRuntime } from './payload-backend'
 
 function stamp(runtime: PayloadRuntime, payload: InstallStamp['payload'] = 'bundled'): InstallStamp {
   return {
@@ -64,6 +64,21 @@ test('bundled launch paths come from build metadata without filesystem access', 
     probe.mockRestore()
     read.mockRestore()
   }
+})
+
+test('ticket minting runs the payload python, never the CLI shim', () => {
+  const payload = {
+    storePython: '/p/tools/python',
+    repoDir: '/p/repo',
+    sitePackages: '/p/venv/site-packages',
+    shim: '/p/bin/hermes'
+  }
+
+  const runtime = payloadTicketRuntime(payload)
+
+  assert.equal(runtime.ticketCommand, payload.storePython)
+  assert.notEqual(runtime.ticketCommand, payload.shim)
+  assert.deepEqual(runtime.ticketEnv, { PYTHONPATH: payloadPythonPath(payload) })
 })
 
 // ─── update channel helpers ─────────────────────────────────────────

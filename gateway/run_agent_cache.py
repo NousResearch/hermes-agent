@@ -19,6 +19,7 @@ from gateway.session_prompt_pin import PROMPT_PIN_VERSION, sanitize_prompt_pin
 from gateway.run_shutdown import _log_suppressed
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
+from hermes_cli.observability.shared_metrics_busy import observe_running_chats
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner
@@ -293,6 +294,15 @@ class GatewayAgentCacheMixin:
             model = pin_model_for_route(provider, primary.get("base_url", getattr(agent, "base_url", None)), model)
         return model
 
+    def _persist_active_agents(self) -> None:
+        """Persist the live in-flight agent count to ``gateway_state.json`` at every turn boundary.
+        Passes ONLY ``active_agents`` so the read-merge-write keeps lifecycle state (gateway_state=None
+        would clobber it). Best-effort: a failed write must never disrupt a turn. The running-turn
+        set also feeds the day's peak of chats running at once (in memory, see shared_metrics_busy)."""
+        from gateway.run import _write_runtime_status_quiet
+        _write_runtime_status_quiet(active_agents=self._active_work_count())
+        observe_running_chats(key for key, _ in self._running_agent_items())
+
     def _release_running_agent_state(
         self, session_key: str, *, run_generation: Optional[int] = None
     ) -> bool:
@@ -307,13 +317,17 @@ class GatewayAgentCacheMixin:
         state = self._peek_session_state(session_key)
         if state is not None:
             if state.turn.lease is not None:
-                try:
-                    state.turn.lease.release()
-                except Exception:
-                    logger.debug("Failed to release active session slot", exc_info=True)
+                from gateway.active_lease_io import release_soon
+                release_soon(state.turn.lease)
             # One structured reset instead of a drifting pop-list. Turn-lease tokens are deliberately NOT
             # cleared here — _release_turn_lease owns them.
             state.turn.clear()
+            retired, state.turn.retired_agents = state.turn.retired_agents, []
+            for agent in retired:
+                # Evicted mid-turn (a one-turn agent): its turn no longer uses it.
+                self._spawn_release_thread(self._release_evicted_agent_soft, (agent,),
+                                           f"agent-retire-{str(session_key)[:24]}", inline_fallback=True,
+                                           session_key=session_key)
         # Turn boundary: a running-agent slot was just released; persist the new (lower) in-flight count
         # so the dashboard readout stays current. Preserves gateway_state (see _persist_active_agents).
         self._persist_active_agents()
@@ -813,7 +827,8 @@ class GatewayAgentCacheMixin:
         )
         return hashlib.sha256(repr(key_tuple).encode("utf-8")).hexdigest()
 
-    def _evict_cached_agent(self, session_key: str, *, commit_memory: bool = False) -> None:
+    def _evict_cached_agent(self, session_key: str, *, commit_memory: bool = False,
+                            release_after_turn: bool = False) -> None:
         """Remove a cached agent (/new, /model, ...) and soft-release its LLM client pool (AIAgent
         holds reference cycles; without it RSS grows across /new). Soft = frees clients and child
         subagents but PRESERVES terminal sandbox / browser / bg processes since the session may
@@ -825,6 +840,9 @@ class GatewayAgentCacheMixin:
         reference cycles (callbacks, tool state) that delay refcount collection, so a manual release is
         required to keep gateway RSS flat across many /new, /model, undo and reset operations (#29298, same
         leak class as #25315).
+
+        ``release_after_turn``: an agent still mid-turn is released when that turn's running slot
+        clears (``_release_running_agent_state``) instead of being left to the garbage collector.
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
         # Prompt-stability state rides the agent-cache lifecycle: a fresh agent must re-render its
@@ -846,7 +864,11 @@ class GatewayAgentCacheMixin:
                 evicted = _cache.pop(session_key, None)
         agent = _first_agent(evicted)
         # Never tear down an agent that's mid-turn — its client, sandbox and child subagents are in use.
-        if agent is None or agent is _AGENT_PENDING_SENTINEL or id(agent) in self._running_agent_ids():
+        if agent is None or agent is _AGENT_PENDING_SENTINEL:
+            return
+        if id(agent) in self._running_agent_ids():
+            if release_after_turn and state is not None:
+                state.turn.retired_agents.append(agent)
             return
         if commit_memory:
             target, args = self._commit_then_release_soft, (agent, session_key, True)

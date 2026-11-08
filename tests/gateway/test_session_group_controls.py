@@ -140,3 +140,192 @@ def test_groups_list_pages_the_actor_visible_rooms(tmp_path):
                 break
             params = {'limit': 2, 'offset': page['next_offset']}
         assert pages == [['m1', 'm2'], ['m3']], pages
+
+
+def test_profiles_list_names_every_profile_on_disk_and_its_install(tmp_path, monkeypatch):
+    """RT-38 (#140417): with one gateway per profile (no multiplexing, no hosted_rooms entries) the
+    authority's roster must still name every profile under this root, and carry ``install_id`` as
+    the pre-authority ``profiles.list`` did. Desktop's roster merge drops every union agent the
+    active source did not return, so a default-only answer showed one bot after ``hermes update``."""
+    home = tmp_path / 'state'
+    for name in ('helper', 'writer'):
+        (home / 'profiles' / name).mkdir(parents=True)
+        (home / 'profiles' / name / 'config.yaml').write_text('model:\n  default: m\n')
+    (home / 'profiles' / 'writer' / 'profile.yaml').write_text('display_name: Writer Bot\n')
+    (home / 'profiles' / 'ghost').mkdir()  # no identity marker: never listed
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setenv('HOME', str(tmp_path / 'user'))
+    (home / 'config.yaml').write_text('model:\n  default: fixture-model\n')
+    with SessionDB(home / 'state.db') as db:
+        db.create_session('theirs', source='cli', user_id='another')
+        writer_db = SessionDB(home / 'profiles' / 'writer' / 'state.db')
+        writer_db.create_session('writer-chat', source='gui', user_id='another')
+        writer_db.set_session_title('writer-chat', 'Bot Chat')
+        writer_db.close()
+        authority = SimpleNamespace(profile_id=str(home), instance_id='owner', db=db, events={}, sessions={})
+
+        async def probe():
+            connection = AuthorityConnection(authority, object(), {'user_id': 'reader'})
+            return await connection.dispatch({'id': 'r', 'method': 'profiles.list', 'params': {}})
+        result = asyncio.run(probe())['result']
+    from hermes_cli.install_identity import get_install_id
+    assert result['install_id'] and result['install_id'] == get_install_id()
+    rows = {row['name']: row for row in result['profiles']}
+    assert list(rows) == ['default', 'helper', 'writer'], rows
+    assert rows['writer']['display_name'] == 'Writer Bot'
+    # Discovery is metadata only: a profile this socket does not route to adds no session fields.
+    assert 'canonical_session' not in rows['writer'] and 'last_session' not in rows['writer']
+
+
+def test_profiles_list_discovered_rows_keep_the_profiles_own_metadata(tmp_path, monkeypatch):
+    """#143215: a discovered row hardcoded ``description: ''``, sent the handle as
+    ``display_name`` and carried neither ``has_avatar`` nor ``ui_meta_revisions``, so Desktop's
+    Bots tab read every un-named profile as untouched art with a blank description and the Edit
+    profile dialog seeded that blank over the stored one. The pre-authority handler sent the
+    profile's own description and an empty override, so the regression is the row shape."""
+    home = tmp_path / 'state'
+    for name in ('helper', 'writer'):
+        (home / 'profiles' / name).mkdir(parents=True)
+        (home / 'profiles' / name / 'config.yaml').write_text('model:\n  default: m\n')
+    writer = home / 'profiles' / 'writer'
+    (writer / 'profile.yaml').write_text(
+        'description: Writes the release notes\n'
+        'display_name: Writer Bot\n'
+        'ui_meta:\n  hermes-bots:\n    title: Writer\n'
+        '_ui_meta_revisions:\n  hermes-bots: 3\n')
+    (writer / 'assets').mkdir()
+    (writer / 'assets' / 'avatar.png').write_bytes(b'\x89PNG\r\n\x1a\n')
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setenv('HOME', str(tmp_path / 'user'))
+    (home / 'config.yaml').write_text('model:\n  default: fixture-model\n')
+    rows = {row['name']: row for row in _list_profiles(home)['result']['profiles']}
+    assert rows['writer']['description'] == 'Writes the release notes'
+    assert rows['writer']['display_name'] == 'Writer Bot'
+    assert rows['writer']['has_avatar'] is True
+    assert rows['writer']['ui_meta_revisions'] == {'hermes-bots': 3}
+    # No ``display_name`` in profile.yaml means no override at all: Desktop title-cases the
+    # handle itself only while the field is empty.
+    assert rows['helper']['display_name'] == ''
+    assert rows['helper']['description'] == ''
+    assert rows['helper']['has_avatar'] is False
+    assert rows['helper']['ui_meta_revisions'] == {}
+
+
+def _roster_home(tmp_path, monkeypatch):
+    home = tmp_path / 'state'
+    for name in ('helper', 'writer'):
+        (home / 'profiles' / name).mkdir(parents=True)
+        (home / 'profiles' / name / 'config.yaml').write_text('model:\n  default: m\n')
+    (home / 'profiles' / 'writer' / 'profile.yaml').write_text('display_name: Writer Bot\n')
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setenv('HOME', str(tmp_path / 'user'))
+    (home / 'config.yaml').write_text('model:\n  default: fixture-model\n')
+    return home
+
+
+def _list_profiles(home):
+    with SessionDB(home / 'state.db') as db:
+        authority = SimpleNamespace(profile_id=str(home), instance_id='owner', db=db, events={}, sessions={})
+
+        async def probe():
+            connection = AuthorityConnection(authority, object(), {'user_id': 'reader'})
+            return await connection.dispatch({'id': 'r', 'method': 'profiles.list', 'params': {}})
+        return asyncio.run(probe())
+
+
+def test_profiles_list_carries_each_sibling_profiles_saved_description(tmp_path, monkeypatch):
+    """Bot Mode reads every bot's Description from this roster (Edit profile, the avatar prompt,
+    role search, Duplicate). A sibling's saved description was blanked, so it looked unsaved."""
+    home = _roster_home(tmp_path, monkeypatch)
+    (home / 'profile.yaml').write_text('description: Project Manager\n')
+    (home / 'profiles' / 'writer' / 'profile.yaml').write_text(
+        'display_name: Writer Bot\ndescription: Creative Director\n')
+    rows = {row['name']: row for row in _list_profiles(home)['result']['profiles']}
+    assert rows['default']['description'] == 'Project Manager'
+    assert rows['writer']['description'] == 'Creative Director'
+    assert rows['helper']['description'] == ''
+
+
+def test_profiles_list_survives_an_undecodable_sibling_profile_yaml(tmp_path, monkeypatch, caplog):
+    """@dokterdok on #140972: a sibling profile.yaml saved in a legacy Windows code page raised
+    UnicodeDecodeError and failed the healthy default's whole roster. The roster still answers,
+    that profile keeps a basic row, and the unreadable file is logged."""
+    home = _roster_home(tmp_path, monkeypatch)
+    (home / 'profiles' / 'helper' / 'profile.yaml').write_bytes('display_name: Andr\xe9\n'.encode('cp1252'))
+    with caplog.at_level('WARNING', logger='gateway.session_group_controls'):
+        reply = _list_profiles(home)
+    assert 'result' in reply, reply
+    rows = {row['name']: row for row in reply['result']['profiles']}
+    assert list(rows) == ['default', 'helper', 'writer']
+    # An unreadable profile.yaml carries no override at all — the row does not invent one from
+    # the handle (#143215); Desktop title-cases the name when ``display_name`` is empty.
+    assert rows['helper']['display_name'] == ''
+    assert rows['writer']['display_name'] == 'Writer Bot'
+    assert any('helper' in record.getMessage() and 'profile.yaml' in record.getMessage()
+               for record in caplog.records)
+
+
+def test_profiles_list_reuses_its_disk_scan_until_a_profile_changes(tmp_path, monkeypatch):
+    """@kshitijk4poor on #140972: the Bots pane polls profiles.list every 5 s, and each call
+    re-enumerated profiles/ and re-parsed every profile.yaml. An unchanged tree is served from
+    cache; a new profile or an edited profile.yaml is picked up on the next call."""
+    import os
+
+    from hermes_cli import profiles
+    import hermes_yaml
+    home = _roster_home(tmp_path, monkeypatch)
+    scans, parses = [], []
+    real_iter, real_load = profiles._iter_named_profile_dirs, hermes_yaml.safe_load
+    monkeypatch.setattr(profiles, '_iter_named_profile_dirs',
+                        lambda *a, **k: scans.append(1) or real_iter(*a, **k))
+    monkeypatch.setattr(hermes_yaml, 'safe_load', lambda text: parses.append(text) or real_load(text))
+
+    def sibling_parses():
+        return sum('Writer' in str(text) for text in parses)
+
+    _list_profiles(home)
+    first_scans, first_parses = len(scans), sibling_parses()
+    assert first_scans and first_parses
+    _list_profiles(home)
+    assert (len(scans), sibling_parses()) == (first_scans, first_parses)
+
+    meta = home / 'profiles' / 'writer' / 'profile.yaml'
+    meta.write_text('display_name: Renamed Writer\n')
+    stat = meta.stat()
+    os.utime(meta, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    (home / 'profiles' / 'scout').mkdir()
+    (home / 'profiles' / 'scout' / 'config.yaml').write_text('model:\n  default: m\n')
+    rows = {row['name']: row for row in _list_profiles(home)['result']['profiles']}
+    assert rows['writer']['display_name'] == 'Renamed Writer'
+    assert 'scout' in rows
+
+
+def test_profiles_list_cache_sees_changes_inside_one_mtime_tick(tmp_path, monkeypatch):
+    """Independent review on #140972, then CI: the stat caches missed a change made inside one
+    kernel timestamp tick. Linux stamps mtime AND ctime from the coarse clock, and a dir's size and
+    inode survive a file appearing and vanishing in it, so every stat field can be unchanged. The
+    test forces that case on every run by making every stat key identical (one frozen tick)."""
+    from gateway import session_group_controls as g
+    home = _roster_home(tmp_path, monkeypatch)
+    root = home / 'profiles'
+    monkeypatch.setattr(g, '_stat_key', lambda stat: ('one-tick',))
+
+    lone = root / 'lone'
+    lone.mkdir()
+    (lone / 'profile.yaml').write_text('display_name: Lone\n')
+    assert 'lone' in [p.name for p in g._named_profile_dirs()]
+    # Deleting the profile's only identity file, inside the same tick, drops it from the roster.
+    (lone / 'profile.yaml').unlink()
+    assert 'lone' not in [p.name for p in g._named_profile_dirs()]
+    # Recreating a different marker inside the same tick lists it again.
+    (lone / 'SOUL.md').write_text('hi\n')
+    assert 'lone' in [p.name for p in g._named_profile_dirs()]
+
+    # An edit that keeps every stat field serves the new content.
+    meta = root / 'writer' / 'profile.yaml'
+    meta.write_text('display_name: AAAA\n')
+    assert g._discovered_profile_meta('writer', meta) == {'display_name': 'AAAA'}
+    meta.write_text('display_name: BBBB\n')
+    assert g._discovered_profile_meta('writer', meta) == {'display_name': 'BBBB'}
+    meta.unlink()
+    assert g._discovered_profile_meta('writer', meta) == {}

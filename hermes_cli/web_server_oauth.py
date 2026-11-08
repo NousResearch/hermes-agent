@@ -1,5 +1,5 @@
 """Dashboard OAuth/login-status helpers: provider catalog, per-provider device pollers,
-Anthropic/Copilot/Claude-Code status probes.
+Anthropic/Claude-Code status probes, and the poller for provider-profile device logins.
 """
 
 import contextlib
@@ -92,33 +92,9 @@ def _claude_code_only_status() -> dict[str, Any]:
     return dict(_LOGGED_OUT)
 
 
-def _copilot_acp_status() -> dict[str, Any]:
-    """Status for copilot-acp. ``logged_in`` only on positive evidence (env token or known on-disk
-    store); the CLI may hold its session in an OS keychain Hermes can't read, so the unverified
-    state reads "managed by the Copilot CLI" — never signed out."""
-    try:
-        from hermes_cli.auth import get_external_process_provider_status
-        status = get_external_process_provider_status("copilot-acp") or {}
-    except Exception:
-        status = {}
-    verified = bool(status.get("auth_verified"))
-    configured = bool(status.get("configured"))
-    if verified:
-        source_label = status.get("auth_source") or "Copilot credentials detected"
-    elif configured:
-        found = status.get("resolved_command") or status.get("command") or "copilot"
-        source_label = f"Managed by the GitHub Copilot CLI ({found})"
-    else:
-        source_label = "GitHub Copilot CLI not found on PATH"
-    return {
-        "logged_in": verified, "source": "copilot_cli", "source_label": source_label, "token_preview": None,
-        "expires_at": None, "has_refresh_token": False, "configured": configured,
-    }
-
-
 def _external_process_cli_command(provider_id: str, default: str) -> str:
     """Render an external-process provider's sign-in command with the CLI actually configured
-    (``HERMES_COPILOT_ACP_COMMAND`` / ``COPILOT_CLI_PATH``); others get ``default`` untouched."""
+    (its profile's ``process_command_env_vars`` override); others get ``default`` untouched."""
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY, get_external_process_provider_status
         pconfig = PROVIDER_REGISTRY.get(provider_id)
@@ -138,7 +114,8 @@ def _external_process_cli_command(provider_id: str, default: str) -> str:
 # Hand-tuned OAuth/account cards: the bits not derivable from the unified provider catalog
 # (``flow``, ``status_fn``, ``cli_command``, display order). OVERRIDE BASE for
 # ``_build_oauth_catalog()``, which unions them with every accounts-tab provider so new
-# providers appear automatically. Also carries two non-catalog rows the Accounts tab needs:
+# providers appear automatically (a provider profile customises its own card through
+# ``account_card`` / ``account_status`` / ``start_device_login``). Also carries two non-catalog rows:
 # the Anthropic credential-status card and the synthetic ``claude-code`` row.
 # ``flow``: ``device_code`` = show code + URL + poll; ``external`` = delegated to a terminal/CLI.
 _OAUTH_PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
@@ -159,10 +136,6 @@ _OAUTH_PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "xai-oauth", "name": "xAI Grok OAuth (SuperGrok / Premium+)", "flow": "device_code",
      "cli_command": "hermes auth add xai-oauth",
      "docs_url": "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth", "status_fn": None},
-    # `copilot login` is the non-interactive subcommand; `copilot /login` is not valid
-    # (slash-commands only exist inside an interactive session).
-    {"id": "copilot-acp", "name": "GitHub Copilot (ACP)", "flow": "external", "cli_command": "copilot login",
-     "docs_url": "https://docs.github.com/en/copilot", "status_fn": _copilot_acp_status},
     # Anthropic / Claude entries sit at the bottom. Deliberately flow == "external": an
     # in-dashboard Connect button would let a scriptable HTTP endpoint mint Claude Pro/Max
     # subscription tokens outside Anthropic's own client, against its OAuth usage policies.
@@ -233,51 +206,33 @@ def _record_sign_in_state(sess: dict[str, Any], state: Any) -> None:
             sess["account_email"] = state.email or None
             # None when the config was left on the user's own model, as the poll route documents.
             sess["model"] = state.model if state.model_changed else None
+            # What the free tier's handoff did (moved apps, apps to reconnect); empty without one.
+            sess["handoff"] = list(state.handoff)
+            # The same result as fields, so the desktop can name the apps and follow a retry.
+            sess["handoff_status"] = state.handoff_status
             return
-        if kind == "declined":
-            sess["status"], sess["reason"] = "denied", "user_declined"
-            sess["error_message"] = state.copy
+        if kind == "cancelled":
+            sess["status"] = "cancelled"
             return
         if kind == "timed_out":
             sess["status"], sess["reason"] = "error", "timeout"
             # The enriched device-auth guidance, which the dashboard has room for.
             sess["error_message"] = state.detail or state.copy
             return
-        if kind == "retired":
-            sess["status"], sess["reason"] = "error", "account_retired"
-            sess["error_message"] = state.copy
-            return
-        if kind == "superseded":
-            # Two producers, two screens: the user's own DELETE is a cancellation, while a sign-in
-            # started somewhere else (a chat, the terminal) voided this code and is an error the
-            # renderer has a dedicated screen for.
-            if sess.get("cancelled"):
-                sess["status"] = "cancelled"
-            else:
-                sess["status"], sess["reason"] = "error", "superseded"
-                sess["error_message"] = state.copy
-            return
-        if kind == "failed":
-            sess["status"] = "error"
-            sess["reason"] = state.reason or "error"
-            sess["error_message"] = state.copy    # the chat form: no raw exception reaches the UI
-            # Whether a later attempt can succeed, and the wait the service named (seconds).
-            sess["retryable"] = bool(getattr(state, "retryable", False))
-            sess["retry_after"] = int(getattr(state, "retry_after", 0) or 0)
-            return
-        # already_signed_in / unavailable: the start route refuses these, so this is unreachable
-        # through the dashboard; record rather than crash.
         sess["status"] = "error"
-        sess["reason"] = kind or "error"
-        sess["error_message"] = state.copy
+        sess["reason"] = getattr(state, "reason", "") or kind or "error"
+        sess["error_message"] = state.copy    # the chat form: no raw exception reaches the UI
+        # Whether a later attempt can succeed, and the wait the service named (seconds).
+        sess["retryable"] = bool(getattr(state, "retryable", False))
+        sess["retry_after"] = int(getattr(state, "retry_after", 0) or 0)
 
 
 @_oauth_poller("nous")
-def _nous_promotion_poller(session_id: str, sess: dict[str, Any]) -> None:
-    """Drain the sign-in the start route began: one shared flow, rendered onto the session.
+def _nous_sign_in_poller(session_id: str, sess: dict[str, Any]) -> None:
+    """Drain the sign-in the start route began: the one shared flow, rendered onto the session.
 
     The generator was created and advanced to its ``Code`` state by ``_start_nous_device_code``, so
-    it is already holding the transfer's codes and its HTTP client. Nothing here is wrapped in
+    it is already holding the device code and its HTTP client. Nothing here is wrapped in
     ``_profile_scope``: that context manager holds a process-global lock and swaps module
     attributes across its ``yield``, and this loop can last the sign-in code's whole expiry. The
     generator scopes its own short config/auth-store sections instead.
@@ -291,72 +246,6 @@ def _nous_promotion_poller(session_id: str, sess: dict[str, Any]) -> None:
     finally:
         with contextlib.suppress(Exception):
             gen.close()     # unwinds the suspended HTTP client if we leave early
-
-
-@_oauth_poller("nous")
-def _nous_plain_poller(session_id: str, sess: dict[str, Any]) -> None:
-    """Background poller for a plain Nous device-code login (no free-tier identity to transfer).
-
-    A sign-in that carries the free tier's connectors runs through ``anon_auth.run_sign_in`` and
-    ``_nous_promotion_poller`` instead; this is the "connect another Nous account" path.
-    """
-    from hermes_cli.web_server_profiles import _profile_scope
-    from hermes_cli.auth import _poll_for_token, persist_nous_credentials, refresh_nous_oauth_from_state
-    from hermes_cli import anon_auth
-    import httpx
-    portal_base_url, client_id = sess["portal_base_url"], sess["client_id"]
-
-    def _cancelled() -> bool:
-        # The user abandoned this sign-in (DELETE /sessions/{id}) while this thread was blocked
-        # on the portal: nothing it learns afterwards may reach the auth store.
-        with _oauth_sessions_lock:
-            if sess.get("cancelled"):
-                sess["status"] = "cancelled"
-                return True
-            return False
-
-    with httpx.Client(timeout=httpx.Timeout(15.0), headers={"Accept": "application/json"}) as client:
-        token_data = _poll_for_token(
-            client=client, portal_base_url=portal_base_url, client_id=client_id,
-            device_code=sess["device_code"], expires_in=max(60, int(sess["expires_at"] - time.time())),
-            poll_interval=sess["interval"],
-        )
-    if _cancelled():
-        return
-    # Same post-processing as _nous_device_code_login (validate/refresh JWT)
-    now = datetime.now(UTC)
-    token_ttl = int(token_data.get("expires_in") or 0)
-    auth_state = {
-        "portal_base_url": portal_base_url,
-        "inference_base_url": token_data.get("inference_base_url"),
-        "client_id": client_id,
-        "scope": token_data.get("scope") or sess.get("scope"),
-        "token_type": token_data.get("token_type", "Bearer"),
-        "access_token": token_data["access_token"],
-        "refresh_token": token_data.get("refresh_token"),
-        "obtained_at": now.isoformat(),
-        "expires_at": (
-            datetime.fromtimestamp(now.timestamp() + token_ttl, tz=UTC).isoformat()
-            if token_ttl else None
-        ),
-        "expires_in": token_ttl,
-    }
-    # The profile comes from the poller's own session dict: a cancel or the 15-minute sweep drops
-    # the registry entry, and a lookup by id would then save into the dashboard's launch profile.
-    with _profile_scope(sess.get("profile")):
-        full_state = refresh_nous_oauth_from_state(auth_state, timeout_seconds=15.0, force_refresh=False)
-        # The final cancellation check and the save share the session lock, so a cancel cannot
-        # land between them.
-        with _oauth_sessions_lock:
-            if sess.get("cancelled"):
-                sess["status"] = "cancelled"
-                return
-            persist_nous_credentials(full_state)
-        # A config left on the free tier's route by a retired identity still has to move.
-        settled = anon_auth.settle_after_upgrade(full_state)
-    with _oauth_sessions_lock:
-        sess["account_email"] = None
-        sess["model"] = settled.get("model") or None
 
 
 @_oauth_poller("minimax")
@@ -447,3 +336,50 @@ def _xai_device_poller(session_id: str, sess: dict[str, Any]) -> None:
         # duplicates the single-use refresh token and triggers ``refresh_token_reused`` churn.
         # An interactive login is an explicit re-enable, so clear any prior suppression.
         unsuppress_credential_source("xai-oauth", "device_code")
+
+
+def _sleep_unless_cancelled(sess: dict[str, Any], seconds: float) -> bool:
+    """Sleep *seconds* in short ticks; True as soon as the session is cancelled."""
+    deadline = time.monotonic() + seconds
+    while True:
+        with _oauth_sessions_lock:
+            if sess.get("cancelled"):
+                return True
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return False
+        time.sleep(min(0.25, left))
+
+
+_DEVICE_LOGIN_ENDINGS = {"denied": "Authorization was denied.", "expired": "Device code expired before approval"}
+
+
+@_oauth_poller("provider-profile")
+def _profile_device_poller(session_id: str, sess: dict[str, Any]) -> None:
+    """Drive a device-code login a provider profile owns (``ProviderProfile.start_device_login``):
+    one ``poll_device_login`` per interval (each bound to the session's profile) until approved, then
+    ``save_device_login`` under the session's profile scope, in one critical section with the cancel check like the built-in savers."""
+    from hermes_cli.web_server_profiles import _config_profile_scope, _profile_scope
+    profile, state, interval = sess["_provider_profile"], sess["_device_state"], int(sess["interval"])
+    result: dict[str, Any] = {}
+    while time.time() < sess["expires_at"]:
+        if _sleep_unless_cancelled(sess, interval):
+            break
+        with _config_profile_scope(sess.get("profile")):  # await-safe: no skills lock across the wait
+            result = dict(profile.poll_device_login(state) or {})
+        state = result.get("state", state)
+        if result.get("status") != "pending":
+            break
+        interval = int(result.get("interval") or interval)
+    with _profile_scope(sess.get("profile")), _oauth_sessions_lock:
+        if sess.get("cancelled"):
+            sess["status"] = "cancelled"
+            return
+        status = result.get("status")
+        if status in (None, "pending"):     # the code's lifetime ran out
+            status = "expired"
+        if status != "approved":
+            sess["status"] = status if status in _DEVICE_LOGIN_ENDINGS else "error"
+            sess["error_message"] = result.get("message") or _DEVICE_LOGIN_ENDINGS.get(status) or "Sign-in failed"
+            return
+        profile.save_device_login(result.get("credential"))

@@ -11,20 +11,24 @@ prepared (authorized, routed), its replay check passed and ``pre_gateway_dispatc
 from collections import OrderedDict
 
 # Deliveries consumed here are never committed, so the FIFO's replay check cannot recognize a
-# relay re-send of one (an ACK lost in flight): (platform, chat, provider message id) of each.
+# relay re-send of one (an ACK lost in flight): (profile, platform, chat, provider message id) of
+# each; the profile keeps one channel message delivered to two served profiles apart.
 _consumed: OrderedDict = OrderedDict()
 _CONSUMED_MAX = 512
 
 
-def may_answer_live_turn(runner) -> bool:
-    """Whether any in-flight work could consume an inbound right now: a running turn (its clarify
-    or approval prompt, busy steer/interrupt), a pending clarify (an idle plugin command's
+def may_answer_live_turn(runner, event) -> bool:
+    """Whether the chat's in-flight work could consume *event* right now: a running turn (its
+    clarify or approval prompt, busy steer/interrupt), a pending clarify (an idle plugin command's
     ``ask_choice`` registers one before any turn slot is claimed) or an idle-time prompt
-    (slash-confirm, ``/update``). A miss only means the delivery queues like any follow-up."""
+    (slash-confirm, ``/update``). A read only: nothing is routed before the delivery is prepared,
+    and a miss only means it queues like any follow-up."""
     from tools import clarify_gateway, slash_confirm
-    if runner._running_agent_items() or clarify_gateway.has_any_pending() or slash_confirm._pending:
+    key = runner._session_key_for_source(event.source)
+    if runner._is_session_running(key) or clarify_gateway.has_pending(key) or slash_confirm.get_pending(key):
         return True
-    return any(state.persistent.update_prompt_pending for state in runner._sessions_map().values())
+    state = runner._peek_session_state(key)
+    return bool(state is not None and state.persistent.update_prompt_pending)
 
 
 async def answers_live_turn(runner, event) -> bool:
@@ -45,7 +49,9 @@ async def answers_live_turn(runner, event) -> bool:
 
 def _replay_key(event):
     source = event.source
-    return (source.platform.value, source.chat_id, event.message_id) if event.message_id else None
+    if not event.message_id:
+        return None
+    return (getattr(source, 'profile', None), source.platform.value, source.chat_id, event.message_id)
 
 
 def was_consumed(event) -> bool:

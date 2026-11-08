@@ -139,7 +139,7 @@ async def admit_producer(adapter, event):
         # A relay delivery the chat's running turn or pending prompt may consume
         # (``session_ingress_live_turn``) takes the prepared path: its replay check and
         # ``pre_gateway_dispatch`` run first, as on a direct adapter's ``_handle_message``.
-        live = not webhook and may_answer_live_turn(authority.runner)
+        live = not webhook and may_answer_live_turn(authority.runner, event)
         if not (webhook or hooks or live):
             return await _admit_native(authority, event)
         from gateway.session_authority import native_write_started

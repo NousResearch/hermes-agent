@@ -4820,9 +4820,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
 
         last_visible_role = _last_template_visible_role(compressed)
+        from agent.message_metadata import MESSAGE_UID, mark_inflight_restatement, message_uid_or_none, record_absorbed_message, typed_ask_fields
         if self._has_merged_inflight_replay(inflight):
-            # Never copy a summary carrier (its metadata marks it synthetic): restate as a plain user row.
-            replay = {"role": "user", "content": task_text}
+            # Never copy a summary carrier (its metadata marks it synthetic): a plain user row, keeping only the ask stamp.
+            replay = {"role": "user", "content": task_text, "display_metadata": typed_ask_fields(inflight)}
         else:
             replay = _fresh_compaction_message_copy(inflight)
         replay.pop(_COMPACTION_TAIL_MARKER, None)
@@ -4848,7 +4849,6 @@ Write only the summary body. Do not include any preamble or prefix."""
         # occurrence of it. When the original survived in the protected head,
         # retaining it gives the durable transcript two active rows with the
         # same message_uid and renders the request twice after reload.
-        from agent.message_metadata import MESSAGE_UID, mark_inflight_restatement, message_uid_or_none, record_absorbed_message
         mark_inflight_restatement(replay)  # only the standalone row: the merged layout is already a summary
 
         if replay_uid := message_uid_or_none(replay):

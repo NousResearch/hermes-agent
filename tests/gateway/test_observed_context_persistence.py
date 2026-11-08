@@ -8,7 +8,8 @@ from gateway.turn_context import TurnContext
 
 
 def test_observed_context_native_image_turn_persists_clean_multimodal_message(monkeypatch):
-    """The observed wrapper is API-only even when native vision uses content parts."""
+    """The observed wrapper is API-only even when native vision uses content parts: a str persist
+    override cannot replace list content, so the WRAPPED list was persisted and re-wrapped every turn."""
     native_message = [
         {"type": "text", "text": "What is in this image?"},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
@@ -31,7 +32,8 @@ def test_observed_context_native_image_turn_persists_clean_multimodal_message(mo
     runner._ctx = ctx
     monkeypatch.setattr(runner, "_native_image_run_message", lambda: native_message)
 
-    runner._run_conversation_with_approval(Agent(), [], "earlier group chatter", None, None)
+    # Production always hands a clean str override (the timestamp-strip path), so the native list must win.
+    runner._run_conversation_with_approval(Agent(), [], "earlier group chatter", "What is in this image?", None)
 
     assert captured["message"][0]["text"].startswith(_OBSERVED_GROUP_CONTEXT_HEADER)
     assert captured["persist_user_message"] == native_message

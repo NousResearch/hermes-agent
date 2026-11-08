@@ -48,3 +48,62 @@ def test_canonical_roster_reads_separate_group_state_for_owner_and_sibling(tmp_p
             assert roster[damaged]["display_name"] == damaged
             assert key not in roster[damaged].get("ui_meta", {})
             assert state_path.read_text() == "[invalid"
+
+
+def test_canonical_roster_projects_pending_mixed_ui_update_after_profile_write_failure(tmp_path, monkeypatch):
+    """The canonical roster must honor a committed journal even before metadata materialization."""
+    import tui_gateway.server as srv
+    import utils
+
+    home = tmp_path / "state"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "user")
+    (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+
+    group_key = "hermes-bots-groups"
+    original = {
+        "display_name": "default",
+        "ui_meta": {group_key: {"rooms": {"old": {"log": [{"text": "old"}]}}},
+                    "room-theme": {"color": "blue"}},
+        "_ui_meta_revisions": {group_key: 3, "room-theme": 1},
+    }
+    profile = home / "profile.yaml"
+    profile.write_text(yaml.safe_dump(original), encoding="utf-8")
+    unchanged = profile.read_bytes()
+    new_group = {"rooms": {"new": {"log": [{"text": "new"}]}}}
+    real_write = utils.atomic_yaml_write
+
+    def fail_profile_write(path, data, **kwargs):
+        if Path(path) == profile:
+            raise OSError("synthetic read-only profile.yaml")
+        return real_write(path, data, **kwargs)
+
+    with SessionDB(home / "state.db") as db:
+        authority = SimpleNamespace(profile_id=str(home), instance_id="owner", db=db, events={}, sessions={})
+        connection = AuthorityConnection(authority, object(), {"user_id": "reader"})
+        with monkeypatch.context() as fault:
+            fault.setattr(utils, "atomic_yaml_write", fail_profile_write)
+            result = srv._methods["profiles.configure"]("write", {
+                "name": "default",
+                "ui_meta": {group_key: new_group, "room-theme": {"color": "green"}},
+                "ui_meta_expected_revisions": {group_key: 3, "room-theme": 1},
+            })
+            assert result["result"]["applied"]["ui_meta"] is True
+            state = yaml.safe_load((home / "state" / "group-chat.yaml").read_text())
+            assert "pending_ui_meta" in state
+            assert profile.read_bytes() == unchanged
+
+            response = asyncio.run(connection.dispatch({
+                "id": "read", "method": "profiles.list", "params": {"include_sessions": False},
+            }))
+            assert "result" in response, response
+            row = next(p for p in response["result"]["profiles"] if p["name"] == "default")
+            assert row["ui_meta"][group_key] == new_group
+            assert row["ui_meta"]["room-theme"] == {"color": "green"}
+            assert row["ui_meta_revisions"][group_key] == 4
+            assert row["ui_meta_revisions"]["room-theme"] == 2
+            # A read must neither write profile.yaml nor retire the pending journal.
+            assert profile.read_bytes() == unchanged
+            assert "pending_ui_meta" in yaml.safe_load((home / "state" / "group-chat.yaml").read_text())

@@ -128,38 +128,25 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-def _telegram_request_kwargs():
-    """PTB ``HTTPXRequest`` timeouts: the gateway adapter's ``_build_ptb_requests`` values and
-    ``HERMES_TELEGRAM_HTTP_*`` overrides, so this lane never runs on PTB's 5s/1s/20s defaults."""
-    from utils import env_float
-    return {"connect_timeout": env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
-            "read_timeout": env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
-            "write_timeout": env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
-            "pool_timeout": env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
-            "media_write_timeout": 60.0}
-
-
-def _telegram_fallback_transport(extra):
-    """The adapter's ``TelegramFallbackTransport`` (known IPv4 literals, Host/SNI kept) over the
-    configured ``extra.fallback_ips`` or the seed IPs; no DoH discovery on a one-shot send.
-    ``None`` when ``HERMES_TELEGRAM_DISABLE_FALLBACK_IPS`` opts out, as for the gateway."""
+def _telegram_fallback_ips(extra):
+    """The configured ``extra.fallback_ips`` or the seed IPs (no DoH discovery on a one-shot send);
+    ``[]`` when ``HERMES_TELEGRAM_DISABLE_FALLBACK_IPS`` opts out, as for the gateway."""
     if os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"}:
-        return None
-    from agent.ssl_verify import platform_ssl_context
-    from plugins.platforms.telegram.telegram_network import (
-        SEED_FALLBACK_IPS, TelegramFallbackTransport, parse_fallback_ip_env)
+        return []
+    from plugins.platforms.telegram.telegram_network import SEED_FALLBACK_IPS, parse_fallback_ip_env
     # TELEGRAM_FALLBACK_IPS reaches ``extra["fallback_ips"]`` through the gateway env bridge.
     configured = extra.get("fallback_ips") or ""
     if not isinstance(configured, str):
         configured = ",".join(str(ip) for ip in configured)
-    ips = parse_fallback_ip_env(configured) or list(SEED_FALLBACK_IPS)
-    return TelegramFallbackTransport(ips, verify=platform_ssl_context())
+    return parse_fallback_ip_env(configured) or list(SEED_FALLBACK_IPS)
 
 
 def _telegram_bot(token, extra=None):
-    """Bot built like the gateway adapter's: ``extra.base_url``/``base_file_url`` (self-hosted or
-    compatible Bot API), the adapter's timeouts, then TELEGRAM_PROXY / ``extra.proxy_url``, else the
-    fallback-IP transport on api.telegram.org. Falls back to PTB defaults (same URLs) on failure."""
+    """Bot built by the gateway adapter's request builder (``telegram_network.build_ptb_requests``:
+    pool size, keepalive limits, timeouts, TLS verify): ``extra.base_url``/``base_file_url``
+    (self-hosted or compatible Bot API), TELEGRAM_PROXY / ``extra.proxy_url`` checked against the
+    server actually reached, else the fallback-IP transport on api.telegram.org. Falls back to PTB
+    defaults (same URLs) on failure."""
     from telegram import Bot
     from gateway.platforms.base import describe_proxy_error
     extra = extra or {}
@@ -168,18 +155,17 @@ def _telegram_bot(token, extra=None):
     urls = {"base_url": base_url, "base_file_url": extra.get("base_file_url") or base_url} if base_url else {}
     try:
         from telegram.request import HTTPXRequest
+        from agent.ssl_verify import platform_ssl_context
         from gateway.platforms.base import resolve_proxy_url, safe_proxy_url_for_log
-        from plugins.platforms.telegram.telegram_network import proxy_target_hosts
-        kwargs = _telegram_request_kwargs()
-        proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_target_hosts(base_url),
+        from plugins.platforms.telegram.telegram_network import build_ptb_requests, proxy_target_hosts
+        fallback_ips = [] if base_url else _telegram_fallback_ips(extra)  # a custom server is reached directly
+        proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_target_hosts(base_url, fallback_ips),
                                   configured=extra.get("proxy_url"))
         if proxy:
             logger.info("send_message: standalone Telegram send routed through proxy %s", safe_proxy_url_for_log(proxy))
-            return Bot(token=token, request=HTTPXRequest(proxy=proxy, **kwargs),
-                       get_updates_request=HTTPXRequest(proxy=proxy, **kwargs), **urls)
-        transport = None if base_url else _telegram_fallback_transport(extra)
-        httpx_kwargs = {"transport": transport} if transport is not None else None
-        return Bot(token=token, request=HTTPXRequest(httpx_kwargs=httpx_kwargs, **kwargs), **urls)
+        request, updates_request = build_ptb_requests(
+            HTTPXRequest, fallback_ips=fallback_ips, proxy_url=proxy, verify=platform_ssl_context())
+        return Bot(token=token, request=request, get_updates_request=updates_request, **urls)
     except Exception as request_err:
         withheld = describe_proxy_error(request_err, proxy)
         logger.warning("send_message: failed to build the Telegram request (%s), using PTB defaults",

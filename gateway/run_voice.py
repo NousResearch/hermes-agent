@@ -416,8 +416,25 @@ class GatewayVoiceMixin:
     def _should_echo_stt_transcripts(self) -> bool:
         return bool(getattr(self.config, "stt_echo_transcripts", True))
 
+    def _spawn_voice_reply_task(self, event: MessageEvent, text: str) -> None:
+        """Detach the auto voice reply from the turn's delivery path.
+
+        The synthesis runs in a worker thread with no upper bound once the provider wedges
+        (the tool's executor join cannot cancel a stalled connection), so awaiting it here
+        pinned the final text send, the session's busy slot and the durable active-turn marker
+        behind a possibly-hours-long hang. The text reply ships immediately; audio follows as
+        best-effort. The task is kept referenced until done (same pattern as ``_background_tasks``).
+        """
+        tasks = getattr(self, "_background_tasks", None)
+        if tasks is None:
+            tasks = self._background_tasks = set()
+        task = asyncio.create_task(self._send_voice_reply(event, text))
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
-        """Generate TTS audio and send as a voice message before the text reply. The TTS tool
+        """Generate TTS audio and send it as a best-effort follow-up to the text reply (the turn
+        no longer waits on synthesis; see ``_spawn_voice_reply_task``). The TTS tool
         may return one combined file or several separately valid ones (combination unavailable /
         over a platform limit); legacy single-file results keep working."""
         audio_path, actual_paths = None, []
@@ -455,6 +472,10 @@ class GatewayVoiceMixin:
     async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: list[str]) -> None:
         """Play the files in the connected voice channel, else send them as voice messages."""
         adapter = self._delivery_adapter_for(event.source)
+        if adapter is None:
+            logger.warning("Auto voice reply has no delivery adapter for platform=%s profile=%s",
+                           event.source.platform, getattr(event.source, "profile", None))
+            return
         guild_id = self._get_guild_id(event)
         play = getattr(adapter, "play_in_voice_channel", None)
         is_in_vc = getattr(adapter, "is_in_voice_channel", None)
@@ -463,6 +484,7 @@ class GatewayVoiceMixin:
                 await play(guild_id, path)
             return
         if not callable(send_voice := getattr(adapter, "send_voice", None)):
+            logger.warning("Auto voice reply adapter does not support send_voice")
             return
         reply_anchor = self._reply_anchor_for_event(event)
         # notify=True mirrors the final-text path in platforms/base.py so notification-gating
@@ -470,5 +492,9 @@ class GatewayVoiceMixin:
         thread_meta = dict(self._thread_metadata_for_source(event.source, reply_anchor) or {})
         thread_meta["notify"] = True
         for path in audio_paths:
-            await send_voice(chat_id=event.source.chat_id, audio_path=path, reply_to=reply_anchor,
-                             metadata=thread_meta)
+            result = await send_voice(
+                chat_id=event.source.chat_id, audio_path=path, reply_to=reply_anchor,
+                metadata=thread_meta,
+            )
+            if getattr(result, "success", None) is False:
+                logger.warning("Auto voice reply send_voice failed: %s", getattr(result, "error", None))

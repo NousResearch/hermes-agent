@@ -3524,9 +3524,9 @@ def _recoverable_pool_provider(
                     # about that key, so it must not be marked exhausted.
                     rt_base = str(runtime.get("base_url") or getattr(pconfig, "inference_base_url", "") or "").rstrip("/")
                     # ``same_path``: naming the backend that sent a request (not the pool to rotate) also needs the
-                    # path, as one host can serve two products (OpenCode Zen at /zen, Go at /zen/go).
-                    if rt_base and base_url_host_matches(base, base_url_hostname(rt_base)) and (
-                            not same_path or _relay_path(base) == _relay_path(rt_base)):
+                    # origin and path, as one host can serve two products (OpenCode Zen at /zen, Go at /zen/go).
+                    if rt_base and base_url_host_matches(base, base_url_hostname(rt_base)) and (not same_path or (
+                            base_url_origin(base), _relay_path(base)) == (base_url_origin(rt_base), _relay_path(rt_base))):
                         return rt_provider
     return None
 

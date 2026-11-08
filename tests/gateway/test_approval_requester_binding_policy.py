@@ -52,3 +52,46 @@ def test_a_dm_admin_is_not_a_group_admin_on_buttons_either():
     text = approval_refusal("g", "bob", admin_ids=policy_for_runner_source(runner, source).admin_user_ids)
     assert native == text == "Alice"
     assert approval_refusal("g", "carol", extra={"group_allow_admin_from": ["carol"]}) is None
+
+
+def test_an_id_less_tap_checked_against_one_request_never_settles_another():
+    """Bob's legacy (id-less) card passes his own check; his request then expires and Alice's becomes
+    the oldest. The settle re-checks Bob against the entry it actually settles, so Alice's stays pending."""
+    from gateway.approval_actor import approval_refusal
+    from tools import approval
+
+    write_approvers([])
+    bob = pending_from("bob", "Bob", "s")
+    alice = pending_from("alice", "Alice", "s")
+    assert approval_refusal("s", "bob") is None
+    approval.withdraw_gateway_approval("s", bob.data["request_id"], "timeout")
+    assert approval.resolve_gateway_approval_card("s", "once", None, actor_id="bob") == 0
+    assert alice.result is None and not alice.event.is_set()
+    assert approval.resolve_gateway_approval_card("s", "once", None, actor_id="alice") == 1
+    assert alice.result == "once"
+
+
+@pytest.mark.asyncio
+async def test_a_telegram_tap_settles_only_what_the_tapper_may_answer(monkeypatch):
+    """The production callback: the tap's request expires between the refusal check and the settle."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from tests.gateway.test_telegram_approval_buttons import _make_adapter
+    from tools import approval
+
+    write_approvers([])
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*")
+    bob = pending_from("bob", "Bob", "agent:main:telegram:group:1:9")
+    alice = pending_from("alice", "Alice", "agent:main:telegram:group:1:9")
+    class _ExpiresBobOnClaim(dict):  # Bob's wait times out right after his tap passed the check
+        def pop(self, key, *default):
+            value = super().pop(key, *default)
+            approval.withdraw_gateway_approval("agent:main:telegram:group:1:9", bob.data["request_id"], "timeout")
+            return value
+
+    adapter = _make_adapter()
+    adapter._approval_state = _ExpiresBobOnClaim({4: "agent:main:telegram:group:1:9"})
+    query = AsyncMock(data="ea:once:4", message=MagicMock(chat_id=1, text_html="x"),
+                      from_user=MagicMock(first_name="Bob", id="bob"))
+    await adapter._handle_callback_query(MagicMock(callback_query=query), MagicMock())
+    assert alice.result is None and not alice.event.is_set()

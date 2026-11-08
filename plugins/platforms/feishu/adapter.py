@@ -2386,7 +2386,8 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             return
         try:
             from tools.approval import resolve_gateway_approval_card
-            count = resolve_gateway_approval_card(state["session_key"], choice, state.get("request_id"))
+            count = resolve_gateway_approval_card(state["session_key"], choice, state.get("request_id"),
+                                                  actor_id=user_id or open_id, extra=self.config.extra)
             logger.info(
                 "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                 count, state["session_key"], choice, user_name,

@@ -5634,7 +5634,8 @@ class SlackAdapter(BasePlatformAdapter):
         # timeout (count == 0) shows "expired", not "approved".
         try:
             from tools.approval import resolve_gateway_approval_card
-            count = resolve_gateway_approval_card(session_key, choice, request_id)
+            count = resolve_gateway_approval_card(session_key, choice, request_id, actor_id=user_id,
+                                                  extra=self.config.extra)
             logger.info(
                 "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)", count,
                 session_key, choice, user_name)

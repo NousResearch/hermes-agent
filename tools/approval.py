@@ -17,7 +17,7 @@ import importlib
 import logging
 import os
 import threading
-from typing import Optional
+from typing import Any, Iterable, Optional
 
 from utils import env_var_enabled, is_truthy_value
 from agent.i18n import t
@@ -50,7 +50,7 @@ _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 
 # --- Per-session approval state (thread-safe) -----------------------------------------------------------------------
 
-_lock = threading.Lock()
+_lock = threading.RLock()  # re-entrant: a card settle checks and resolves under one hold
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
@@ -178,15 +178,30 @@ def resolve_gateway_approval(session_key: str, choice: str,
     return len(targets)
 
 
-def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Optional[str]) -> int:
+def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Optional[str], *,
+                                  actor_id: Any = None, admin_ids: Iterable[str] = (), extra: Any = None) -> int:
     """Resolve the approval a native button card was rendered for.
 
     With the card's request id only that request can resolve: a card whose request already
     settled (timed out, answered by ``/approve``) resolves nothing instead of the next queued
-    approval in the same session. A card sent without an id keeps the FIFO behaviour."""
-    if request_id:
-        return resolve_gateway_approval(session_key, choice, request_id=request_id)
-    return resolve_gateway_approval(session_key, choice)
+    approval in the same session. A card sent without an id keeps the FIFO behaviour.
+
+    With *actor_id* the clicker's authority (``gateway.approval_actor.may_answer``, with the
+    platform *extra* / *admin_ids*) is checked against the very entry this call settles, inside
+    the same critical section: a FIFO tap checked against one request can never settle another
+    that became the oldest in between (it resolves nothing instead)."""
+    with _lock:  # re-entrant: the settle below takes it again
+        queue = _gateway_queues.get(session_key) or []
+        target = next((e for e in queue if e.data.get("request_id") == request_id), None) if request_id else (
+            queue[0] if queue else None)
+        if target is not None and actor_id is not None:
+            from gateway.approval_actor import may_answer
+            if not may_answer(target.authority, actor_id, admin_ids, extra):
+                return 0
+            request_id = target.data.get("request_id")  # settle exactly the entry just checked
+        if request_id:
+            return resolve_gateway_approval(session_key, choice, request_id=request_id)
+        return resolve_gateway_approval(session_key, choice)
 
 
 def withdraw_gateway_approval(session_key: str, request_id: str, cause: str) -> bool:

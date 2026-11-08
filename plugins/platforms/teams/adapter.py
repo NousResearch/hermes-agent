@@ -656,7 +656,7 @@ class TeamsAdapter(BasePlatformAdapter):
         # Cards from an older build carry cmd/desc in the button data instead.
         cmd, desc = self._approval_previews.get(data.get("prompt_id", ""), (data.get("cmd", ""), data.get("desc", "")))
         if not has_blocking_approval(session_key) or not resolve_gateway_approval_card(
-                session_key, choice, data.get("request_id")):
+                session_key, choice, data.get("request_id"), actor_id=clicker, extra=self.config.extra):
             body = _approval_body(cmd, desc)
             return self._invoke_card([*body, TextBlock(text=t("platform.shared.approval_expired"), wrap=True)])
         body = _approval_body(cmd, desc)

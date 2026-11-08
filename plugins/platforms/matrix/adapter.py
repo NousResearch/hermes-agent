@@ -2551,7 +2551,8 @@ class MatrixAdapter(BasePlatformAdapter):
             return True
         try:
             from tools.approval import resolve_gateway_approval_card
-            count = resolve_gateway_approval_card(prompt.session_key, choice, prompt.request_id)
+            count = resolve_gateway_approval_card(prompt.session_key, choice, prompt.request_id,
+                                                  actor_id=sender, extra=self.config.extra)
             if count:
                 prompt.resolved = True
                 self._approval_prompts_by_event.pop(reacts_to, None)

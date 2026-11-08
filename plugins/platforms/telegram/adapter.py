@@ -4771,7 +4771,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
         try:  # resolve FIRST, render after: a tap after the wait timed out (count == 0) is not "Approved" (#63501)
             from tools.approval import resolve_gateway_approval_card
-            count = resolve_gateway_approval_card(session_key, choice, request_id)
+            count = resolve_gateway_approval_card(session_key, choice, request_id,
+                                                  actor_id=getattr(query.from_user, "id", ""), extra=self.config.extra)
             logger.info("Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)

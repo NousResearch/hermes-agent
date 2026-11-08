@@ -8,10 +8,10 @@ handler had left to do never ran (a model switch kept its picker state, since th
 after the toast), and the tap produced no feedback at all.
 
 ``answer_callback`` is the one choke point for those answers. A refused answer is reported as
-``False`` instead of raising, and the caller can ask for a plain chat message when the tap was
-for a menu that has already expired — the one case where the toast was the only thing the user
-would have seen, and "Picker expired — use /model again." is still a usable next step as a
-normal message. Every other error keeps raising: a broken answer must stay visible.
+``False`` instead of raising. ``answer_or_note`` covers taps on a menu that has already expired —
+the one case where the toast was the only thing the user would have seen, and "Picker expired —
+use /model again." is still a usable next step as a normal message, posted in the chat and forum
+topic the card lives in. Every other error keeps raising: a broken answer must stay visible.
 """
 
 import logging
@@ -47,14 +47,8 @@ def is_stale_query_error(exc: BaseException) -> bool:
     return isinstance(exc, BadRequest)
 
 
-async def answer_callback(
-    query: Any, text: Optional[str] = None, *, chat_note: bool = False, chat_id: Optional[str] = None,
-) -> bool:
-    """Ack a button tap; ``False`` when Telegram refused it because the query expired.
-
-    ``chat_note`` posts *text* into the chat as an ordinary message when the answer could not
-    be delivered, so an expired-menu tap still tells the user what to do next.
-    """
+async def answer_callback(query: Any, text: Optional[str] = None) -> bool:
+    """Ack a button tap; ``False`` when Telegram refused it because the query expired."""
     try:
         if text is None:
             await query.answer()
@@ -64,18 +58,20 @@ async def answer_callback(
         if not is_stale_query_error(exc):
             raise
         logger.debug("[Telegram] callback answer refused for an expired query", exc_info=True)
-        if chat_note and text:
-            await _post_chat_note(query, str(text), chat_id)
         return False
     return True
 
 
-async def _post_chat_note(query: Any, text: str, chat_id: Optional[str] = None) -> None:
-    """Deliver an expired-tap note as a normal message: best effort, never fatal."""
-    target = chat_id if chat_id is not None else getattr(getattr(query, "message", None), "chat_id", None)
-    if target is None:
+async def answer_or_note(adapter: Any, query: Any, text: str) -> None:
+    """Answer an expired-menu tap; when Telegram refused the late answer, post *text* as a normal
+    message through the adapter's topic-aware control send, in the tapped card's forum topic."""
+    message = getattr(query, "message", None)
+    if await answer_callback(query, text) or getattr(message, "chat_id", None) is None:
         return
+    thread_id = getattr(message, "message_thread_id", None)
+    in_topic = thread_id is not None and getattr(message, "is_topic_message", False) is True
     try:
-        await query.get_bot().send_message(chat_id=target, text=text)
+        await adapter._send_control_message(
+            str(message.chat_id), text, parse_mode=None, thread_id=str(thread_id) if in_topic else None, metadata=None)
     except Exception:
         logger.debug("[Telegram] expired-tap chat note could not be sent", exc_info=True)

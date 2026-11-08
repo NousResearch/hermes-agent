@@ -136,10 +136,23 @@ def _settle_api_runtime_lock(agent, result, captured):
         result.update(final_response='', failed=True, completed=False, error=str(exc))
 
 
+def _transient_auth_cause(exc: BaseException):
+    """The retryable, no-re-login ``AuthError`` in *exc*'s cause chain, else None."""
+    from hermes_cli.auth_constants import is_transient_auth_error
+    seen: set[int] = set()
+    link: BaseException | None = exc
+    while link is not None and id(link) not in seen:
+        seen.add(id(link))
+        if is_transient_auth_error(link):
+            return link
+        link = link.__cause__ or link.__context__
+    return None
+
+
 def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, str, bool]:
     """``(chat text, failure_reason, retryable)`` for a model/credential resolution failure before the turn."""
     from agent.error_classifier import FailoverReason
-    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_cli.auth import AuthError, format_auth_error, is_rate_limited_auth_error
     from hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
     from hermes_state_runtime import RuntimeStoreError
     auth_permanent = FailoverReason.auth_permanent.value
@@ -162,6 +175,9 @@ def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, 
         # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
         from gateway.run import _gateway_provider_error_reply
         return _gateway_provider_error_reply(str(exc)), auth_permanent, False
+    if (transient := _transient_auth_cause(exc)) is not None:
+        # The sign-in is intact; its token endpoint failed transiently. /login would not help.
+        return f"⚠️ {format_auth_error(transient)}", FailoverReason.server_error.value, True
     if platform == Platform.LOCAL:
         # The local operator reads the terminal: the resolver's own sentence ("provider 'custom'
         # resolved without credentials ...") is the diagnosis; /login is not.

@@ -24,6 +24,7 @@ from agent.secret_scope import get_secret as _get_secret, get_secret_str
 from agent.retry_utils import reset_delay_from_message
 from hermes_cli.auth_plugin_providers import plugin_refresh_hook
 from agent.credential_pool_plugin import apply_plugin_refresh_result, plugin_row_is_expiring, recover_failed_plugin_refresh
+from agent.credential_pool_refresh_failure import mark_refresh_failed
 from agent.credential_persistence import (
     fingerprint_secret_value,
     is_borrowed_credential_source,
@@ -1827,8 +1828,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             handled, result = recover_failed_plugin_refresh(self, entry, exc)
             if handled:
                 return result
-        self._mark_exhausted(entry, None)
-        return None
+        return mark_refresh_failed(self, entry, exc)  # benches the row; always None
 
     def _mark_dead_refresh_grant(self, entry: PooledCredential, exc: Exception) -> None:
         """Mark a row whose refresh token was terminally rejected DEAD, if the quarantine kept it.

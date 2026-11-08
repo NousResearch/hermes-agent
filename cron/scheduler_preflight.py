@@ -50,6 +50,8 @@ def _is_transient_provider_resolve_error(exc: BaseException) -> bool:
         getattr(socket, n) for n in ("EAI_NONAME", "EAI_AGAIN", "EAI_FAIL", "EAI_NODATA")
         if hasattr(socket, n)
     }
+    from hermes_cli.auth_constants import is_transient_auth_error
+
     # Walk the cause chain; the scheduler wraps raw transport errors.
     seen: set[int] = set()
     cur: Optional[BaseException] = exc
@@ -57,7 +59,9 @@ def _is_transient_provider_resolve_error(exc: BaseException) -> bool:
         seen.add(id(cur))
         module = type(cur).__module__ or ""
         msg = str(cur).lower()
-        if type(cur).__name__ in _TRANSIENT_NET_EXC_NAMES:
+        # An OAuth token endpoint that failed transiently (5xx, reset) during the resolve: the
+        # sign-in is kept, so the run is as re-runnable as one that lost DNS.
+        if type(cur).__name__ in _TRANSIENT_NET_EXC_NAMES or is_transient_auth_error(cur):
             return True
         if any(m in module for m in ("httpx", "httpcore", "aiohttp")) and any(
             needle in msg for needle in _TRANSIENT_HTTP_NEEDLES):
@@ -104,6 +108,7 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
 
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_cli.auth_constants import is_transient_auth_error
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         kwargs = {"requested": requested, "target_model": model}
@@ -111,9 +116,10 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
             kwargs["explicit_base_url"] = job.get("base_url")
         resolve_runtime_provider(**kwargs)
     except AuthError as exc:
-        if is_rate_limited_auth_error(exc):
+        if is_rate_limited_auth_error(exc) or is_transient_auth_error(exc):
             # Quota/rate-limit is not a missing credential: let the real path report it and hold
-            # the job through the provider's window (cron/quota_hold.py, #89376).
+            # the job through the provider's window (cron/quota_hold.py, #89376). Neither is a
+            # token endpoint that failed transiently: the sign-in is kept, the run retries it.
             return None
         return (
             f"provider credential missing: {exc} {_credential_store_scope_label()}. "

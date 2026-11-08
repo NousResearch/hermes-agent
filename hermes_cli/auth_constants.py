@@ -137,6 +137,17 @@ class AuthError(RuntimeError):
         self.retryable = retryable
 
 
+# The provider's token/auth service failed transiently (5xx, timeout, reset connection): the stored
+# sign-in is intact and a later attempt can succeed.
+TEMPORARILY_UNAVAILABLE_CODE = "temporarily_unavailable"
+
+
+def is_transient_auth_error(error: BaseException) -> bool:
+    """True for an :class:`AuthError` whose raiser said a later attempt can succeed and no re-login
+    is needed (token endpoint 5xx, edge challenge): not a missing or lost credential."""
+    return isinstance(error, AuthError) and error.retryable is True and not error.relogin_required
+
+
 def _provider_error_factory(provider: str) -> Callable[..., AuthError]:
     def factory(message: str, code: Optional[str] = None, *, relogin: bool = False) -> AuthError:
         return AuthError(message, provider=provider, code=code, relogin_required=relogin)

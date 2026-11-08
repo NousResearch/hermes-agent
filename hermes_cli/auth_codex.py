@@ -477,7 +477,10 @@ def _codex_refresh_failure_error(response: httpx.Response) -> AuthError:
     relogin_required = (
         code in {"invalid_grant", "invalid_token", "invalid_request", "refresh_token_reused"}
         or response.status_code in {401, 403})
-    return _codex_err(message, code, relogin=relogin_required)
+    error = _codex_err(message, code, relogin=relogin_required)
+    # A 5xx is the token endpoint failing, not a verdict on the grant: a later refresh can succeed.
+    error.retryable = response.status_code >= 500 and not relogin_required
+    return error
 
 
 def refresh_codex_oauth_pure(

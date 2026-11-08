@@ -3826,13 +3826,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             self._bot.edit_message_text(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
 
     async def _edit_markdown_or_plain(self, chat_id: str, message_id: str, formatted: str, plain: str, warn_fmt: str) -> bool:
-        """MarkdownV2 edit with plain-text fallback. Returns True on a "not modified" no-op (caller may
-        skip further work); the fallback edit's exceptions propagate."""
+        """MarkdownV2 edit, plain fallback on a parse error; True on a "not modified" no-op. Errors propagate."""
         try:
             await self._edit_text(chat_id, message_id, formatted, ParseMode.MARKDOWN_V2)
         except Exception as fmt_err:
             if "not modified" in str(fmt_err).lower():
                 return True
+            if getattr(fmt_err, "retry_after", None) is not None or "retry after" in str(fmt_err).lower():
+                raise  # flood, not formatting: a plain re-edit is one more call into the penalty (#76494)
             logger.warning(warn_fmt, self.name, _redact_telegram_error_text(fmt_err))
             await self._edit_text(chat_id, message_id, plain)
         return False
@@ -3929,8 +3930,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 await self._edit_text(chat_id, message_id, truncated)
                 self._last_overflow_preview[_preview_key] = truncated
                 return SendResult(success=True, message_id=message_id)
-            # Flood control: short waits retry inline; long waits fail immediately so streaming falls back
-            # to a normal final send instead of a clipped partial.
+            # Flood control: short waits retry inline; long ones fail closed (``flood_control:<s>``) to the caller.
             retry_after = getattr(e, "retry_after", None)
             if retry_after is not None or "retry after" in err_str:
                 wait = retry_after if retry_after else 1.0

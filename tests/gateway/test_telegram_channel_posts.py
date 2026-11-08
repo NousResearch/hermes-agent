@@ -210,9 +210,10 @@ async def test_media_handler_uses_effective_message_for_channel_post(
     adapter._enqueue_photo_event = MagicMock()
 
     adapter_module = sys.modules["plugins.platforms.telegram.adapter"]
-    monkeypatch.setattr(
-        adapter_module, "cache_image_from_bytes", lambda *a, **k: "/cache/photo.png"
-    )
+    async def _cache(*_a, **_k):
+        return "/cache/photo.png"
+
+    monkeypatch.setattr(adapter_module, "cache_image_from_bytes_async", _cache)
 
     await adapter._handle_media_message(update, MagicMock())
 
@@ -255,11 +256,11 @@ async def test_media_handler_blocks_unauthorized_channel_post(
 
     cache_calls = []
     adapter_module = sys.modules["plugins.platforms.telegram.adapter"]
-    monkeypatch.setattr(
-        adapter_module,
-        "cache_image_from_bytes",
-        lambda *a, **k: cache_calls.append(a) or "/cache/photo.png",
-    )
+    async def _cache(*a, **_k):
+        cache_calls.append(a)
+        return "/cache/photo.png"
+
+    monkeypatch.setattr(adapter_module, "cache_image_from_bytes_async", _cache)
 
     await adapter._handle_media_message(update, MagicMock())
 

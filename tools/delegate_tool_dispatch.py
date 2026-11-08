@@ -441,7 +441,11 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         for c in child_agents:
             _signal_child_stop(c, "Async delegation cancelled")
 
-    return dispatch_async_delegation_batch(
+    # Submission can start the runner before returning. An exception afterwards
+    # is uncertain ownership, not proof that queued children can be cancelled.
+    for child in child_agents:
+        child._worker_dispatch_transferred = True
+    result = dispatch_async_delegation_batch(
         # Call-wide goals: completion formatting indexes them by task_index.
         goals=[t["goal"] for t in unit.task_list], context=unit.context,
         toolsets=None,  # metadata for the completion block only; subagents inherit the parent's toolsets
@@ -457,6 +461,10 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
                           and unit.live_writers[i].path is not None},
         progress_fn=lambda: _batch_progress_token(child_agents), **routing,
     )
+    if isinstance(result, dict) and result.get("status") != "dispatched":
+        for child in child_agents:
+            child._worker_dispatch_transferred = False
+    return result
 
 def _restore_parent_cancellation(unit: _Batch) -> None:
     """Rejected children stay owned by the parent: re-attach them (``_attach_child`` replays a stop that

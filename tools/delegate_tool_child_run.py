@@ -113,6 +113,9 @@ def _append_missed_steer(entry: dict[str, Any], late_steer: Optional[str]) -> No
 
 def _close_child(child: Any, log_message: str) -> None:
     """Best-effort ``child.close()`` (tool sandboxes, browser daemons, httpx clients)."""
+    from tools.delegate_tool_admission import cancel_unstarted_child
+    with _quiet("Failed to release unstarted child reservation", exc_info=True):
+        cancel_unstarted_child(child)
     with _quiet(log_message, exc_info=True):
         close = getattr(child, "close", None)
         if callable(close):
@@ -482,9 +485,19 @@ def _defer_close_after_timeout(child: Any, child_future: Any, *, cleanup: Any = 
     sweep + one delayed re-sweep for a connection opened in between; a worker that still won't settle keeps its
     resources until process exit.
     """
+    from concurrent.futures import Future
+    closed = Future()
+    child._delegate_close_future = closed
     context = contextvars.copy_context()
     finish = cleanup or (lambda: _close_child(child, "Failed to close timed-out child after worker exit"))
-    child_future.add_done_callback(lambda _done: context.run(finish))
+
+    def close_after_exit(_done):
+        try:
+            context.run(finish)
+        finally:
+            closed.set_result(None)
+
+    child_future.add_done_callback(close_after_exit)
     # Bounded drain (#94248 native half): the deferred close above only fires once the abandoned worker
     # unwinds, but that worker is typically parked inside an in-flight OpenSSL read (Codex / httpx). Never
     # hard-close that transport from this thread — releasing FDs under a live SSL read is the #29507/#70773
@@ -1016,6 +1029,7 @@ class _ChildRun:
                 )
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
+        child._delegate_conversation_future = future
         # One wait covers both ways out: the worker finishing, or the heartbeat's stale verdict.
         # Without the second, a worker wedged after its final answer holds a finite (-Q / Bot Chat
         # one-shot) turn — and its session lease — forever, since that runtime has no gateway

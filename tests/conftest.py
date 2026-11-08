@@ -450,9 +450,10 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
 # Backward-compat alias — old tests reference this fixture name. Keep it
 # as a no-op wrapper so imports don't break.
 @pytest.fixture(autouse=True)
-def _isolate_hermes_home(_hermetic_environment):
-    """Alias preserved for any test that yields this name explicitly."""
-    return
+def _isolate_hermes_home(_hermetic_environment, monkeypatch, tmp_path):
+    """Preserve the legacy fixture name and isolate the cross-profile authority."""
+    from tools import host_policy
+    monkeypatch.setattr(host_policy, "policy_root", lambda: tmp_path / "host-policy")
 
 
 @pytest.fixture(autouse=True)

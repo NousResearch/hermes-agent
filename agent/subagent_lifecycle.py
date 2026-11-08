@@ -20,6 +20,7 @@ from concurrent.futures import Future, TimeoutError
 from typing import Any, Callable, Mapping, Optional
 
 from agent.interrupt_compat import request_hard_interrupt
+from agent.subagent_lifecycle_admission import serialized_launch
 
 PUBLIC_CONTRACT_VERSION = 1
 _MAX_GOAL_CHARS = 16_000
@@ -274,6 +275,7 @@ class SubagentLifecycleService:
     def __init__(self, parent_agent_resolver: Callable[[], Any]) -> None:
         self._parent_agent_resolver = parent_agent_resolver
 
+    @serialized_launch
     def launch(self, request: SubagentLaunchRequest | Mapping[str, Any]) -> SubagentHandle:
         parent = self._parent_agent_resolver()
         if parent is None:
@@ -307,6 +309,8 @@ class SubagentLifecycleService:
         )
         subagent_id = str(getattr(child, "_subagent_id", "") or "")
         if not subagent_id:
+            from tools.delegate_tool_child_run import _close_child
+            _close_child(child, "Failed to close lifecycle child without an identity")
             raise SubagentLifecycleError("Hermes failed to assign a child identity.")
         created = time.time()
         handle = SubagentHandle(
@@ -319,7 +323,16 @@ class SubagentLifecycleService:
             _REGISTRY.records[subagent_id] = record
             if request.correlation_id:
                 _REGISTRY.correlations[correlation_key] = subagent_id
-        record.future = _EXECUTOR.submit(self._run, record, request.goal, parent)
+        try:
+            record.future = _EXECUTOR.submit(contextvars.copy_context().run, self._run, record, request.goal, parent)
+        except BaseException:
+            from tools.delegate_tool_admission import discard_unstarted_child
+            discard_unstarted_child(parent, child)
+            with _REGISTRY.lock:
+                _REGISTRY.records.pop(subagent_id, None)
+                if request.correlation_id:
+                    _REGISTRY.correlations.pop(correlation_key, None)
+            raise
         return handle
 
     def status(self, handle: SubagentHandle | Mapping[str, Any]) -> SubagentStatus:

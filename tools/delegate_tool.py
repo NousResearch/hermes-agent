@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
+from tools.delegate_tool_admission import admitted_child
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -394,6 +395,7 @@ def _build_child_agent(
         )
     return child
 
+@admitted_child
 def _run_single_child(
     task_index: int, goal: str, child=None, parent_agent=None, *, owner_session_id: Optional[str] = None,
     owner_transport: Any = None, owner_session_record: Any = None, **_kwargs,
@@ -674,47 +676,12 @@ def delegate_task(
     # Batch-level model/provider labels (transcript headers, completion block): blank when tasks took different
     # routes, so each child reports what it actually runs on.
     creds = runnable[0].creds if all(r.creds == runnable[0].creds for r in runnable) else dict.fromkeys(runnable[0].creds)
-    err = _oneshot_spawn_budget(parent_agent, len(runnable))
-    if err:
-        return tool_error(err)
-
-    overall_start = time.monotonic()
-    # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
-    # content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.
-    #
-    # The transcripts' profile home is resolved from stable parent-owned
-    # state (the parent's per-profile SessionDB path), NOT ambient
-    # get_hermes_dir(): this thread may have crossed a raw threading.Thread
-    # boundary that dropped the session's _HERMES_HOME_OVERRIDE ContextVar,
-    # and process-wide HERMES_HOME is unstable under concurrent
-    # multi-profile workers — either way transcripts could land in the
-    # wrong profile (#91996). state.db sits directly under the home, so
-    # its parent IS the home; None falls back to today's ambient resolve
-    # (with a warning — that fallback is exactly the #91996 failure mode).
-    _live_home = _parent_live_home(parent_agent)
-
-    from tools.delegation_live_log import create_live_transcripts
-    live_deleg_id, live_writers, live_paths = create_live_transcripts(
-        task_list, context, model=creds.get("model"), provider=creds.get("provider"),
-        home=_live_home,
+    from tools.delegate_tool_admission import build_and_dispatch
+    return build_and_dispatch(
+        task_list, task_schemas, routes, parent_agent=parent_agent, creds=creds, context=context,
+        top_role=top_role, max_children=max_children, max_iterations=default_max_iter,
+        task_images=task_images, background=background, refused=refused,
     )
-    if refused:  # settled before anything runs: transcripts and manifest show the refusal (async units skip them)
-        _settle_refused_transcripts(refused, live_deleg_id, live_writers, _live_home)
-    _announce_batch(parent_agent, len(task_list), live_deleg_id)
-    origin = _capture_origin()
-
-    children, err = _build_children(
-        task_list, task_schemas, routes, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
-    )
-    if err:
-        return tool_error(err)
-    batch = _Batch(
-        task_list, children, parent_agent, creds, context, top_role, max_children,
-        live_deleg_id, live_writers, live_paths, *origin, overall_start,
-        live_home=_live_home, refused=refused,
-    )
-    return _run_batch(batch, background)
 
 
 # ── OpenAI function-calling schema ──────────────────────────────────────────

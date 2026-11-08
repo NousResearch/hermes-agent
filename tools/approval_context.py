@@ -306,6 +306,9 @@ def _get_approval_config() -> dict:
 
 def _get_approval_mode() -> str:
     """Return 'manual', 'smart', or 'off' (a hosted-room policy overrides config)."""
+    from tools.approval_host_policy import managed_mode
+    if (mode := managed_mode()) is not None:
+        return mode
     try:
         from gateway.hosted_room_execution_policy import current_room_execution_policy
         if (room_policy := current_room_execution_policy()) is not None:
@@ -359,10 +362,11 @@ def approval_timeout_notice_kwargs() -> dict:
 
 def _binary_approval_mode(key: str) -> str:
     """Read ``approvals.<key>`` as 'approve' or 'deny' (default deny)."""
+    from tools.approval_host_policy import binary_mode
     try:
         from hermes_cli.config import load_config_readonly
         mode = str(cfg_get(load_config_readonly(), "approvals", key, default="deny")).lower().strip()
-        return "approve" if mode in {"approve", "off", "allow", "yes"} else "deny"
+        return binary_mode(key, "approve" if mode in {"approve", "off", "allow", "yes"} else "deny")
     except Exception:
         return "deny"
 

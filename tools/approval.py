@@ -200,12 +200,14 @@ def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Opt
     With the card's request id only that request can resolve: a card whose request already
     settled (timed out, answered by ``/approve``) resolves nothing instead of the next queued
     approval in the same session. A card sent without an id keeps the FIFO behaviour. A Deny-only
-    card's request refuses any other choice, so a forged or hand-added approve tap resolves nothing."""
-    if choice != "deny":
-        with _lock:
-            target = _card_target(session_key, request_id)
-            if target is not None and target.data.get("card_deny_only"):
-                return 0
+    card's request refuses any other choice, so a forged or hand-added approve tap resolves nothing.
+    The settle names the entry that was checked: an id-less (FIFO) tap whose checked head times out
+    before the settle resolves nothing, never the next (possibly Deny-only) request behind it."""
+    with _lock:
+        target = _card_target(session_key, request_id)
+        if target is not None and choice != "deny" and target.data.get("card_deny_only"):
+            return 0
+        request_id = target.data.get("request_id") if target is not None else request_id
     if request_id:
         return resolve_gateway_approval(session_key, choice, request_id=request_id)
     return resolve_gateway_approval(session_key, choice)

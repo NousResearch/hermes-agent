@@ -735,6 +735,8 @@ gateway:
     compressing_head: "⏳ Konteks word saamgepers"
     queued_head: "⏳ In die tou vir die volgende beurt"
     queued_tail: ". Ek sal antwoord sodra die huidige taak klaar is."
+    explainer_queued: '⏳ Boodskap gestoor — wag vir ’n gratis beurt{detail}. Dit word in aankomsvolgorde beantwoord.'
+    explainer_holders: ' ({count} take loop, oudste {oldest})'
     interrupting_head: "⚡ Huidige taak word onderbreek"
     interrupting_tail: ". Ek sal binnekort op jou boodskap antwoord."
     slash_rejected: "⏳ Agent loop — `/{command}` kan nie midde-in 'n beurt uitgevoer word nie. Wag vir die huidige antwoord of gebruik eers `/stop`."

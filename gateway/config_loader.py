@@ -92,6 +92,11 @@ _TOPLEVEL_BRIDGE: tuple = (
     *_presence("room_link_url"),
     ("profile_routes", "profile_routes", "none", lambda v: isinstance(v, list), None),
     *_presence("max_concurrent_sessions"),
+    *_presence(
+        "turn_priority", "autonomous_turn_cap", "turn_priority_human_platforms",
+        "busy_explainer_after_seconds", "busy_explainer_refresh_seconds",
+        "busy_explainer_max_messages",
+    ),
     ("systemd_watchdog_seconds", "systemd_watchdog_seconds", "nested", None, None),
     ("streaming", "streaming", "dict", None, None),
     *_presence(

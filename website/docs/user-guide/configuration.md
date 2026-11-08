@@ -2729,6 +2729,39 @@ group_sessions_per_user: true  # true = per-user isolation in groups/channels, f
 
 For the behavior details and examples, see [Sessions](./sessions.md) and the [Discord guide](./messaging/discord.md).
 
+## Turn-Queue Priority and the Busy Explainer
+
+A human message should never wait 35 silent minutes behind autonomous lanes that
+share the gateway process. Two `gateway.*` knobs govern this (see
+`gateway/turn_queue_policy.py`):
+
+```yaml
+gateway:
+  turn_priority: human_first       # human_first | off
+  autonomous_turn_cap: null        # positive int = max simultaneous non-human turns
+  turn_priority_human_platforms: []  # [] = built-in set; e.g. [discord, telegram, local]
+  busy_explainer_after_seconds: 30 # 0 disables the receipt
+  busy_explainer_refresh_seconds: 120
+  busy_explainer_max_messages: 2
+```
+
+With `turn_priority: human_first` (the default) every admitted **human-platform**
+message arms the busy explainer: while its turn is still **queued** after
+`busy_explainer_after_seconds`, the chat gets one receipt — "⏳ Message saved —
+waiting for a free turn slot (N turns running, oldest Xm)" — refreshed at most every
+`busy_explainer_refresh_seconds`, at most `busy_explainer_max_messages` times. Once
+the turn is claimed the existing long-running heartbeat narrates it, so the two never
+double-post; follow-ups sent while the same session is already running get the
+existing busy ack instead of an explainer.
+
+Setting `autonomous_turn_cap` adds the enforcement: at most that many
+**autonomous-class** turns (local/TUI sessions, api_server, webhook, relay,
+anything not on a human platform) may hold the claim→execute→settle path at once.
+Human turns bypass the gate; the cap keeps a fleet of automation turns from
+saturating the event loop and GIL that everyone shares. Arrival order inside one
+conversation is untouched — this is a lane width, not a re-ordering. Add `"local"`
+to `turn_priority_human_platforms` when a TUI/desktop seat is a person, not a bot.
+
 ## Native Hosted-Room Discussion Limits
 
 Native server-hosted rooms share these Discussion ceilings across all members

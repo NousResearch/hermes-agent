@@ -735,6 +735,8 @@ gateway:
     compressing_head: "⏳ جارٍ ضغط السياق"
     queued_head: "⏳ في قائمة الانتظار للدور التالي"
     queued_tail: ". سأردّ بعد انتهاء المهمة الحالية."
+    explainer_queued: '⏳ تم حفظ الرسالة — في انتظار دور متاح{detail}. سيأتي الرد حسب ترتيب الوصول.'
+    explainer_holders: ' ({count} مهام قيد التشغيل، الأقدم {oldest})'
     interrupting_head: "⚡ جارٍ مقاطعة المهمة الحالية"
     interrupting_tail: ". سأردّ على رسالتك بعد قليل."
     slash_rejected: "⏳ الوكيل قيد التشغيل — لا يمكن تشغيل `/{command}` في منتصف الدور. انتظر الرد الحالي أو استخدم `/stop` أولًا."

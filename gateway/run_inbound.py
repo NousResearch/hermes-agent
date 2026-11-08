@@ -1259,6 +1259,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # A failed admit stays the authority's answer (refusal notice or turn error), never a
         # pending legacy turn: that would run unadmitted, outside the FIFO's order.
         note_busy_admitting(event)
+        # Queue-wait receipt eligibility (est-38ov8): a message admitted over an IDLE session
+        # has no busy ack behind it — if its turn then waits on a saturated pipeline, only an
+        # explainer can tell the person their message is saved and coming. Mid-run (busy)
+        # follow-ups already get the busy ack, so they never double-post.
+        event._busy_explainer_eligible = not busy
         return True, await admit_message(authority, event)
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:

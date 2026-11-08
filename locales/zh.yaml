@@ -735,6 +735,8 @@ gateway:
     compressing_head: "⏳ 正在压缩上下文"
     queued_head: "⏳ 已排队至下一回合"
     queued_tail: "。当前任务完成后我会回复。"
+    explainer_queued: '⏳ 消息已保存 — 正在等待空闲轮次{detail}。将按到达顺序回复。'
+    explainer_holders: '（{count} 个任务运行中，最久 {oldest}）'
     interrupting_head: "⚡ 正在中断当前任务"
     interrupting_tail: "。我很快就会回复你的消息。"
     slash_rejected: "⏳ 代理正在运行——`/{command}` 无法在回合中途执行。请等待当前回复完成，或先执行 `/stop`。"

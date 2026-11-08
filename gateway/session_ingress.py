@@ -85,6 +85,18 @@ async def admit_message(authority, event):
         if adopters.get(receipt.admission_id) is event:
             del adopters[receipt.admission_id]
         return None if status == 'terminal' else pause_notice(authority, receipt.ref, 'unknown_execution')
+    # Durable but not answered yet: arm the queue-wait receipt (first send after
+    # gateway.busy_explainer_after_seconds, refreshed on the cadence) so an admitted human
+    # message is never 35 silent minutes — est-38ov8. The scheduler applies the eligibility
+    # gates (idle-path stamp, human platform, not a command, knob > 0) and never raises.
+    from gateway.turn_queue_policy import resolve_policy, schedule_busy_explainer
+    try:
+        _runner = getattr(authority, 'runner', None)
+        schedule_busy_explainer(
+            authority, event, receipt.admission_id,
+            resolve_policy(getattr(_runner, 'config', None)))
+    except Exception:
+        logger.debug("busy explainer could not be scheduled", exc_info=True)
     if accepted is not None and not accepted.done():
         accepted.set_result(None)
     try:

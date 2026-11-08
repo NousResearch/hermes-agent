@@ -856,6 +856,8 @@ gateway:
     compressing_head: "⏳ Compression du contexte"
     queued_head: "⏳ Mis en file pour le prochain tour"
     queued_tail: ". Je répondrai dès que la tâche en cours sera terminée."
+    explainer_queued: '⏳ Message enregistré — en attente d’un tour libre{detail}. Il sera traité dans l’ordre d’arrivée.'
+    explainer_holders: ' ({count} tours en cours, le plus ancien {oldest})'
     interrupting_head: "⚡ Interruption de la tâche en cours"
     interrupting_tail: ". Je réponds à votre message dans un instant."
     slash_rejected: "⏳ L'agent est en cours d'exécution — `/{command}` ne peut pas s'exécuter au milieu d'un tour. Attendez la fin de la réponse en cours ou faites `/stop` d'abord."

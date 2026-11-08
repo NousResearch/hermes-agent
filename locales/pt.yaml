@@ -735,6 +735,8 @@ gateway:
     compressing_head: "⏳ Comprimindo contexto"
     queued_head: "⏳ Na fila para o próximo turno"
     queued_tail: ". Responderei quando a tarefa atual terminar."
+    explainer_queued: '⏳ Mensagem salva — aguardando um turno livre{detail}. Será respondida por ordem de chegada.'
+    explainer_holders: ' ({count} turnos em execução, o mais antigo {oldest})'
     interrupting_head: "⚡ Interrompendo a tarefa atual"
     interrupting_tail: ". Responderei à sua mensagem em breve."
     slash_rejected: "⏳ O agente está em execução — `/{command}` não pode rodar no meio do turno. Aguarde a resposta atual ou use `/stop` primeiro."

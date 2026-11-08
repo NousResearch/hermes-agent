@@ -745,6 +745,8 @@ gateway:
     compressing_head: "⏳ Kontextus tömörítése"
     queued_head: "⏳ Sorba állítva a következő körre"
     queued_tail: ". Válaszolok, amint a jelenlegi feladat befejeződik."
+    explainer_queued: '⏳ Az üzenet mentve — szabad helyre vár{detail}. Ékezési sorrendben válaszolok.'
+    explainer_holders: ' ({count} futó feladat, legrégebbi {oldest})'
     interrupting_head: "⚡ A jelenlegi feladat megszakítása"
     interrupting_tail: ". Hamarosan válaszolok az üzenetedre."
     slash_rejected: "⏳ Az ügynök fut — a `/{command}` nem futtatható kör közben. Várd meg a jelenlegi választ, vagy előbb add ki a `/stop` parancsot."

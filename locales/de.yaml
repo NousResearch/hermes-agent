@@ -735,6 +735,8 @@ gateway:
     compressing_head: "⏳ Kontext wird komprimiert"
     queued_head: "⏳ Für den nächsten Zug eingereiht"
     queued_tail: ". Ich antworte, sobald die aktuelle Aufgabe abgeschlossen ist."
+    explainer_queued: '⏳ Nachricht gespeichert — warte auf einen freien Durchlauf{detail}. Sie wird der Reihe nach beantwortet.'
+    explainer_holders: ' ({count} Läufe aktiv, ältester {oldest})'
     interrupting_head: "⚡ Aktuelle Aufgabe wird unterbrochen"
     interrupting_tail: ". Ich antworte gleich auf Ihre Nachricht."
     slash_rejected: "⏳ Agent läuft — `/{command}` kann nicht mitten im Zug ausgeführt werden. Warten Sie auf die aktuelle Antwort oder verwenden Sie zuerst `/stop`."

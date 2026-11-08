@@ -735,6 +735,8 @@ gateway:
     compressing_head: "⏳ コンテキストを圧縮中"
     queued_head: "⏳ 次のターンにキューしました"
     queued_tail: "。現在のタスクが完了したら応答します。"
+    explainer_queued: '⏳ メッセージは保存しました — 空き順番を待っています{detail}。到着順に回答します。'
+    explainer_holders: '(現在 {count} 件稼働中、最古 {oldest})'
     interrupting_head: "⚡ 現在のタスクを中断中"
     interrupting_tail: "。まもなくメッセージに応答します。"
     slash_rejected: "⏳ エージェントが実行中です — `/{command}` はターンの途中では実行できません。現在の応答を待つか、先に `/stop` してください。"

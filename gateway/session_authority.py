@@ -1264,7 +1264,20 @@ class SessionAuthority:
             await asyncio.sleep(_CLAIM_RETRY_MIN_S)
 
     async def _execute_claimed(self, ref, live, row):
-        """Run the claimed admission: ``(response, outcome)``. The executing stamp clears the moment
+        """Run the claimed admission under the turn-queue cap (see
+        ``gateway.turn_queue_policy``): an autonomous-class row holds one of at most
+        ``gateway.autonomous_turn_cap`` in-flight slots across claim→settle, so N long
+        automation turns cannot saturate the loop and GIL that human-class claims need.
+        Human-class rows take the unguarded path; ``(cap off)`` is byte-identical to
+        before. The gate spans ``_execute_claimed_inner`` only — never the whole drain
+        loop — so a settled turn frees its slot before the FIFO advances."""
+        from gateway.turn_queue_policy import resolve_policy, turn_capacity
+        policy = resolve_policy(getattr(self.runner, "config", None))
+        async with turn_capacity(policy, policy.class_of_principal(row.get("principal_id"))):
+            return await self._execute_claimed_inner(ref, live, row)
+
+    async def _execute_claimed_inner(self, ref, live, row):
+        """``(response, outcome)``. The executing stamp clears the moment
         execution returns; a lost managed worker settles an automation turn (``settled_unknown``) or pauses
         the FIFO and re-raises ManagedExecutionUnknown."""
         from gateway.session_finite import execute_finite_admission

@@ -735,6 +735,8 @@ gateway:
     compressing_head: "⏳ 컨텍스트 압축 중"
     queued_head: "⏳ 다음 턴 대기열에 추가됨"
     queued_tail: ". 현재 작업이 끝나면 응답할게요."
+    explainer_queued: '⏳ 메시지는 저장되었습니다 — 빈 순서를 기다립니다{detail}. 도착 순서대로 답변합니다.'
+    explainer_holders: ' ({count}개 작업 실행 중, 가장 오래된 {oldest})'
     interrupting_head: "⚡ 현재 작업 중단 중"
     interrupting_tail: ". 곧 메시지에 응답할게요."
     slash_rejected: "⏳ 에이전트가 실행 중이에요 — `/{command}`은(는) 턴 도중에 실행할 수 없어요. 현재 응답을 기다리거나 먼저 `/stop`하세요."

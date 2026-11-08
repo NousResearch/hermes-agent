@@ -744,6 +744,8 @@ gateway:
     compressing_head: "⏳ Compressing context"
     queued_head: "⏳ Queued for the next turn"
     queued_tail: ". I'll respond once the current task finishes."
+    explainer_queued: '⏳ Message saved — waiting for a free turn slot{detail}. It will be answered in arrival order.'
+    explainer_holders: ' ({count} turns running, oldest {oldest})'
     interrupting_head: "⚡ Interrupting current task"
     interrupting_tail: ". I'll respond to your message shortly."
     slash_rejected: "⏳ Agent is running — `/{command}` can't run mid-turn. Wait for the current response or `/stop` first."

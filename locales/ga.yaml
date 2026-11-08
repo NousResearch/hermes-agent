@@ -735,6 +735,8 @@ gateway:
     compressing_head: "⏳ Ag dlúthú an chomhthéacs"
     queued_head: "⏳ I scuaine don chéad seal eile"
     queued_tail: ". Freagróidh mé nuair a chríochnóidh an tasc reatha."
+    explainer_queued: '⏳ Teachtaire sábháilte — ag fanacht le slot saor{detail}. Freastalfa air in ord teachta.'
+    explainer_holders: ' ({count} rith ar siúl, is sine {oldest})'
     interrupting_head: "⚡ Ag cur isteach ar an tasc reatha"
     interrupting_tail: ". Freagróidh mé do theachtaireacht go luath."
     slash_rejected: "⏳ Tá an gníomhaire ag rith — ní féidir `/{command}` a rith i lár seala. Fan leis an bhfreagra reatha nó `/stop` ar dtús."

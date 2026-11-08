@@ -613,6 +613,22 @@ class GatewayConfig:
     group_sessions_per_user: bool = True  # Isolate group sessions per participant when user IDs exist
     thread_sessions_per_user: bool = False  # False = threads shared across participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active sessions
+    # Turn-queue dispatch policy (gateway/turn_queue_policy.py). ``turn_priority``:
+    # "human_first" (default) | "off". Under "human_first" an autonomous-class turn
+    # (local/api_server/webhook/relay principal, non-human platform) may hold at most
+    # ``autonomous_turn_cap`` in-flight slots at once — unset caps the priority to pure
+    # visibility (the explainer receipts) without refusing any automation lane.
+    # ``turn_priority_human_platforms`` replaces the built-in human set (e.g. add "local"
+    # where the TUI is a person). ``busy_explainer_after_seconds`` (default 30, 0 disables)
+    # is how long a saved-but-unanswered human message waits before the chat gets one
+    # receipt; ``busy_explainer_refresh_seconds`` (default 120) and
+    # ``busy_explainer_max_messages`` (default 2) bound the repeats.
+    turn_priority: str = "human_first"
+    autonomous_turn_cap: Optional[int] = None
+    turn_priority_human_platforms: list = field(default_factory=list)  # [] = built-in set
+    busy_explainer_after_seconds: float = 30.0
+    busy_explainer_refresh_seconds: float = 120.0
+    busy_explainer_max_messages: int = 2
     # The default profile's gateway serves every profile on the host (profiles stamped into session
     # keys, per-profile adapters/credentials). On by default (DEFAULT_CONFIG), but UNSET here is
     # ``None``: a request the gateway settles at boot, not a verdict. ``hermes_cli.gateway_multiplex_mode
@@ -658,6 +674,8 @@ class GatewayConfig:
         "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
         "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
         "max_concurrent_sessions", "multiplex_profiles",
+        "turn_priority", "autonomous_turn_cap", "busy_explainer_after_seconds",
+        "busy_explainer_refresh_seconds", "busy_explainer_max_messages",
         "on_all_adapters_down",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
@@ -773,6 +791,31 @@ class GatewayConfig:
         max_concurrent_sessions = _coerce_optional_positive_int(
             pick("max_concurrent_sessions"), key_label("max_concurrent_sessions")
         )
+        turn_priority = _normalize_choice(pick("turn_priority"), {"human_first", "off"}, "human_first")
+        autonomous_turn_cap = _coerce_optional_positive_int(
+            pick("autonomous_turn_cap"), key_label("autonomous_turn_cap")
+        )
+        _tq_platforms = pick("turn_priority_human_platforms")
+        turn_priority_human_platforms = (
+            [str(p).strip().lower() for p in _tq_platforms if str(p).strip()]
+            if isinstance(_tq_platforms, (list, tuple)) else []
+        )
+
+        def _explainer_float(key: str, default: float, lo: float) -> float:
+            raw = pick(key)
+            if raw is None:
+                return default
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                logger.warning("Ignoring invalid %s=%r (expected a number)", key_label(key), raw)
+                return default
+            return min(max(value, lo), 3600.0)
+
+        try:
+            busy_explainer_max_messages = min(max(int(pick("busy_explainer_max_messages")), 0), 10)
+        except (TypeError, ValueError):
+            busy_explainer_max_messages = 2
 
         try:
             session_store_max_age_days = max(int(data.get("session_store_max_age_days", 90)), 0)
@@ -798,6 +841,14 @@ class GatewayConfig:
             loop_watchdog_max_strikes=max_strikes,
             on_all_adapters_down=on_all_adapters_down,
             max_concurrent_sessions=max_concurrent_sessions,
+            turn_priority=turn_priority,
+            autonomous_turn_cap=autonomous_turn_cap,
+            turn_priority_human_platforms=turn_priority_human_platforms,
+            busy_explainer_after_seconds=_explainer_float(
+                "busy_explainer_after_seconds", 30.0, 0.0),
+            busy_explainer_refresh_seconds=_explainer_float(
+                "busy_explainer_refresh_seconds", 120.0, 1.0),
+            busy_explainer_max_messages=busy_explainer_max_messages,
             unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), UNAUTHORIZED_DM_BEHAVIORS, "pair"),
             unauthorized_dm_decline_message=str(data.get("unauthorized_dm_decline_message") or "").strip(),
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),

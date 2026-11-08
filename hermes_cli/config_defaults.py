@@ -2122,6 +2122,20 @@ DEFAULT_CONFIG = {
         "loop_watchdog_probe_interval_s": 30.0,
         "loop_watchdog_probe_timeout_s": 10.0,
         "loop_watchdog_max_strikes": 3,
+        # Turn-queue dispatch policy (gateway/turn_queue_policy.py): human-platform turns
+        # never wait behind automation. turn_priority "human_first" | "off";
+        # autonomous_turn_cap bounds simultaneously in-flight NON-human turns (null = no
+        # cap, visibility only); turn_priority_human_platforms replaces the built-in human
+        # set when e.g. the TUI is a person ("local"). The busy explainer posts one receipt
+        # to a chat whose admitted human message has waited
+        # busy_explainer_after_seconds (0 disables), refreshed at most every
+        # busy_explainer_refresh_seconds up to busy_explainer_max_messages.
+        "turn_priority": "human_first",
+        "autonomous_turn_cap": None,
+        "turn_priority_human_platforms": [],
+        "busy_explainer_after_seconds": 30.0,
+        "busy_explainer_refresh_seconds": 120.0,
+        "busy_explainer_max_messages": 2,
         # Allow all users without allowlists (security opt-in).
         "allow_all_users": False,
         # Bot-to-bot loop guard: admitted bot messages per conversation before a cooldown.

@@ -735,6 +735,8 @@ gateway:
     compressing_head: "⏳ Bağlam sıkıştırılıyor"
     queued_head: "⏳ Sonraki tur için sıraya alındı"
     queued_tail: ". Mevcut görev bitince yanıtlayacağım."
+    explainer_queued: '⏳ Mesaj kaydedildi — boş sıra bekleniyor{detail}. Geliş sırasına göre yanıtlanacak.'
+    explainer_holders: ' ({count} görev çalışıyor, en eski {oldest})'
     interrupting_head: "⚡ Mevcut görev kesiliyor"
     interrupting_tail: ". Mesajınızı kısa süre içinde yanıtlayacağım."
     slash_rejected: "⏳ Ajan çalışıyor — `/{command}` tur ortasında çalıştırılamaz. Mevcut yanıtı bekleyin veya önce `/stop` kullanın."

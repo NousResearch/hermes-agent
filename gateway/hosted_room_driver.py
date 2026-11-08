@@ -863,6 +863,19 @@ def cancel_task(
         stale="task changed during cancellation")
 
 
+def cancel_deferred_task(
+    db_path: DbPath, identity: TaskIdentity, *, cancel_id: str, expected_execution_generation: int,
+    expected_cancel_generation: int, clock: Clock,
+) -> dict[str, Any]:
+    """Commit a confirmed Discard only while the selected attempt remains deferred."""
+    now = _timestamp(clock)
+    return _transition(
+        db_path, identity, now=now, sql=_task_update(_CANCEL_SET, f"status='deferred' AND {_GENERATION_FENCE}"),
+        set_params=(expected_cancel_generation + 1, _identifier(cancel_id, label="cancel_id"), now, now),
+        fence_params=(expected_execution_generation, expected_cancel_generation),
+        stale="deferred cancellation belongs to a replaced attempt")
+
+
 def begin_task_cancel(
     db_path: DbPath, identity: TaskIdentity, *, cancel_id: Any, expected_cancel_generation: int, clock: Clock
 ) -> dict[str, Any]:

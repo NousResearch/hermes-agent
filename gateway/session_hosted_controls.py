@@ -3,7 +3,7 @@ from dataclasses import asdict
 
 from gateway import hosted_room_driver as tasks
 from hermes_state_runtime import RuntimeStoreError
-from tui_gateway.hosted_room_driver import HostedRoomBinding, discarded_receipt
+from tui_gateway.hosted_room_driver import HostedRoomBinding, _TerminalReceipt, discarded_receipt
 from tui_gateway.hosted_room_prepare_stall import RETRY_TASK_PREFIX
 from tui_gateway.hosted_room_service import attempt_action, task_member_id
 
@@ -60,6 +60,14 @@ class HostedControls:
         self.runtime.wakeup()
         return result
 
+    def _cancel_deferred(self, task, cancel_id):
+        result = tasks.cancel_deferred_task(self.db_path, task['identity'], cancel_id=cancel_id,
+                                   expected_execution_generation=task['execution_generation'],
+                                   expected_cancel_generation=task['cancel_generation'],
+                                   clock=self.runtime.clock)
+        self.runtime.wakeup()
+        return result
+
     def _discard_peer(self, binding, task, cancel_id):
         """Discard a deferred peer turn the way Disband ends it, since its member's gateway may still
         run it, and never start it there: the member's gateway is asked which run this turn's
@@ -85,11 +93,7 @@ class HostedControls:
         if not closed and not self._stop_deferred_peer(binding.room_id, task):
             raise RuntimeStoreError('session_busy', detail=(
                 "the member's gateway has not confirmed this turn's run stopped; Discard again once it has"))
-        result = tasks.cancel_task(self.db_path, task['identity'], cancel_id=cancel_id,
-                                   expected_cancel_generation=task['cancel_generation'],
-                                   clock=self.runtime.clock)
-        self.runtime.wakeup()
-        return result
+        return self._cancel_deferred(task, cancel_id)
 
     def retry_room_task(self, room_id, *, member_id, task_id, execution_generation):
         if isinstance(task_id, str) and task_id.startswith(RETRY_TASK_PREFIX):
@@ -125,29 +129,33 @@ class HostedControls:
         from gateway.session_hosted_member_homes import moved_attempt_gone, unsettled_legacy_homes
         task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
         if task['status'] != 'deferred':
-            return None  # refused under the lock
+            return  # refused under the lock
         held = unsettled_legacy_homes(self, room_id, task)
         if held:
             raise RuntimeStoreError('session_busy', field='home', detail=(
                 f'an older home of this profile may still run this turn: {held[0]}'))
         if moved_attempt_gone(self, room_id, task):
-            return None
+            return
         rpc, profile = self._resolve_member_transport(binding, task), task['payload']['target_profile']
         ref = getattr(rpc, 'ref', None)
         # A fresh transport to another profile's daemon learns its session id by resolving it.
         session_id = ref.session_id if ref is not None else self.runtime._resume_exact(rpc, room_id, profile)
         if session_id is None:
-            return None  # that daemon answered: no room session, nothing runs
+            return  # that daemon answered: no room session, nothing runs
         receipt = self.runtime._terminal_receipt(rpc, profile, session_id, task)
-        if receipt is not None:
-            return self.runtime._fenced(tasks.settle_recovered_task, binding, task,
-                                        self.runtime._ensure_lease(binding), **asdict(receipt))
-        info = rpc.info(profile=profile, source='bot_room', session_id=session_id)
-        if info.get('status') == 'unknown':
-            raise RuntimeStoreError('unknown_execution')
-        if info.get('active'):
-            raise RuntimeStoreError('session_busy')
-        return None
+        if receipt is None:
+            info = rpc.info(profile=profile, source='bot_room', session_id=session_id)
+            lost = self.runtime._settle_lost_attempt(rpc, profile, session_id, task, info)
+            if lost is False:
+                raise RuntimeStoreError('unknown_execution')
+            if info.get('active'):
+                raise RuntimeStoreError('session_busy')
+            receipt = (lost if isinstance(lost, _TerminalReceipt) else
+                       self.runtime._terminal_receipt(rpc, profile, session_id, task))
+            if receipt is None:
+                return None
+        return self.runtime._fenced(tasks.settle_recovered_task, binding, task,
+                                    self.runtime._ensure_lease(binding), **asdict(receipt))
 
     def _retry_peer(self, binding, task):
         """A member on another gateway may still hold this generation: replay it under its own key
@@ -163,11 +171,7 @@ class HostedControls:
                 # key proves cancellation; a conflicting admitted run must keep the turn.
                 if exc.error_code != 'idempotency_key_conflict' or not self.close_peer_admission(binding, task):
                     raise
-                result = tasks.cancel_task(self.db_path, task['identity'],
-                    cancel_id=f"discard:{task['execution_generation']}",
-                    expected_cancel_generation=task['cancel_generation'], clock=self.runtime.clock)
-                self.runtime.wakeup()
-                return result
+                return self._cancel_deferred(task, f"discard:{task['execution_generation']}")
         except PeerRunsHTTPError as exc:
             raise RuntimeStoreError(
                 exc.error_code if exc.error_code in _GRANT_ERRORS else 'peer_unreachable') from exc

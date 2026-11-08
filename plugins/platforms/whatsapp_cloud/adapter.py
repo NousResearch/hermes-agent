@@ -506,10 +506,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Approve / Deny buttons only (a 3-button cap leaves no room for the session/always
         tiers); a tap resolves via ``tools.approval.resolve_gateway_approval``."""
         approval_id = uuid.uuid4().hex[:12]
-        interactive = self._button_interactive(
-            self._truncate_body(prompt.text),
-            (f"appr:{approval_id}:approve", self._truncate_button_label(t("platform.whatsapp.approve_button"))),
-            (f"appr:{approval_id}:deny", self._truncate_button_label(t("platform.whatsapp.deny_button"))))
+        buttons = [(f"appr:{approval_id}:{c}", self._truncate_button_label(t(f"platform.whatsapp.{c}_button")))
+                   for c in ("approve", "deny") if c == "deny" or "once" in prompt.choices]  # Deny-only: cut command
+        interactive = self._button_interactive(self._truncate_body(prompt.text), *buttons)
         result = await self._send_interactive(
             prompt.chat_id, interactive, prompt.metadata, self._exec_approval_state, approval_id, prompt.session_key)
         if result.success and prompt.request_id:

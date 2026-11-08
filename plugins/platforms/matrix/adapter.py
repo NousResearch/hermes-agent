@@ -1684,9 +1684,10 @@ class MatrixAdapter(BasePlatformAdapter):
         tier = "once"
         if not prompt.smart_denied:
             tier = "always" if "always" in choices else ("session" if "session" in choices else "once")
+        # A Deny-only card (command not shown in full) must not tell the user how to approve it.
+        hint = f"{t(self._EA_TYPED_HINT_KEYS[tier])}\n\n" if "once" in choices else ""
         text = (
-            f"{prompt.text}\n\n"
-            f"{t(self._EA_TYPED_HINT_KEYS[tier])}\n\n"
+            f"{prompt.text}\n\n{hint}"
             f"{t('platform.matrix.approval.legend_intro')}\n" + "\n".join(t(self._EA_LEGEND_KEYS[c]) for c in choices))
         reactions = tuple(self._EA_REACTIONS[c] for c in choices)
         session_key, chat_id = prompt.session_key, prompt.chat_id

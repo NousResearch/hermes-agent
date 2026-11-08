@@ -178,12 +178,34 @@ def resolve_gateway_approval(session_key: str, choice: str,
     return len(targets)
 
 
+def _card_target(session_key: str, request_id: Optional[str]):
+    """The entry a card tap resolves: its own request, else the oldest (FIFO). Caller holds ``_lock``."""
+    queue = _gateway_queues.get(session_key) or []
+    if not request_id:
+        return queue[0] if queue else None
+    return next((e for e in queue if e.data.get("request_id") == request_id), None)
+
+
+def restrict_gateway_approval_card_to_deny(session_key: str, request_id: Optional[str]) -> None:
+    """Mark a pending request whose card could not show the whole command: a card tap may only deny it."""
+    with _lock:
+        entry = _card_target(session_key, request_id) if request_id else None
+        if entry is not None:
+            entry.data["card_deny_only"] = True
+
+
 def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Optional[str]) -> int:
     """Resolve the approval a native button card was rendered for.
 
     With the card's request id only that request can resolve: a card whose request already
     settled (timed out, answered by ``/approve``) resolves nothing instead of the next queued
-    approval in the same session. A card sent without an id keeps the FIFO behaviour."""
+    approval in the same session. A card sent without an id keeps the FIFO behaviour. A Deny-only
+    card's request refuses any other choice, so a forged or hand-added approve tap resolves nothing."""
+    if choice != "deny":
+        with _lock:
+            target = _card_target(session_key, request_id)
+            if target is not None and target.data.get("card_deny_only"):
+                return 0
     if request_id:
         return resolve_gateway_approval(session_key, choice, request_id=request_id)
     return resolve_gateway_approval(session_key, choice)

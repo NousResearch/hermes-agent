@@ -151,31 +151,34 @@ describe('hovered zone retargets the tab verbs', () => {
     expect(model.allPaneIds(tree.$layoutTree.get()!)).toContain('files')
   })
 
-  // Regression test for #149088: unanchored re-open of an already-open tile
-  // must NOT relocate the tile to the hovered/focused column.
-  it('unanchored re-open of an already-open tile stays in place', async () => {
-    const { tree } = await setup()
+  // Regression test for #149088: a sidebar re-open has no relocation intent.
+  // Assert the actual tree group, not only the persisted placement hint.
+  it('unanchored re-open preserves an existing tile in its original column', async () => {
+    const { model, tree } = await setup()
     const sessionStates = await import('@/store/session-states')
+    const session = await import('@/store/session')
 
-    // Simulate an already-open tile in grp-main (workspace zone)
-    tree.noteActiveTreeGroup('grp-main')
-    tree.noteHoveredTreeGroup('grp-side')
-
-    // Use patchSessionTile to set initial state (saveTiles is not exported)
     const initialTile: SessionTile = {
-      storedSessionId: 'session-1',
-      anchor: 'workspace',
-      dir: 'right',
+      storedSessionId: 'b',
+      anchor: 'session-tile:c',
+      dir: 'center',
       workspaceMode: 'sessions'
     }
-    sessionStates.patchSessionTile('session-1', initialTile)
+    session.$selectedStoredSessionId.set(null)
+    sessionStates.$sessionTiles.set([initialTile])
 
-    // Call openSessionTile WITHOUT an anchor (unanchored re-open)
-    sessionStates.openSessionTile('session-1', 'right')
+    expect(model.findGroupOfPane(tree.$layoutTree.get()!, 'session-tile:b')?.id).toBe('grp-side')
 
-    // The tile should NOT have moved — no relocation intent without explicit anchor
-    const tilesAfter = sessionStates.$sessionTiles.get()
-    expect(tilesAfter.find(t => t.storedSessionId === 'session-1')?.anchor).toBe('workspace')
+    // Both targeting ladders point at the OTHER column. Without the
+    // unanchored-open guard, moveTreePane moves b into grp-main.
+    tree.noteActiveTreeGroup('grp-main')
+    tree.noteHoveredTreeGroup('grp-main')
+    sessionStates.openSessionTile('b', 'center')
+
+    expect(model.findGroupOfPane(tree.$layoutTree.get()!, 'session-tile:b')?.id).toBe('grp-side')
+    expect(sessionStates.$sessionTiles.get().find(t => t.storedSessionId === 'b')?.anchor).toBe(
+      'session-tile:c'
+    )
   })
 
   // Regression test for #149088: new tab placement docks into the FOCUSED column,

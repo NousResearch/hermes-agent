@@ -1,17 +1,15 @@
 name: payops
 repo: https://github.com/BigWave45/payops-hermes-
-sha: 96d4463354657e217c9d993e567236a27921eedf
+sha: 7712f084392769356bdb294c4b48bf99bf7faadb
 subdir: ""
-description: Read-only Paystack and Flutterwave transaction inspection and reconciliation for Hermes agents.
+description: Read-only Paystack transaction inspection and reconciliation for Hermes agents.
 maintainer: BigWave45
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/BigWave45/payops-hermes-/blob/96d4463354657e217c9d993e567236a27921eedf/README.md
-version: "0.2.0"
+docs_url: https://github.com/BigWave45/payops-hermes-/blob/7712f084392769356bdb294c4b48bf99bf7faadb/README.md
+version: "0.2.1"
 readme: true
-known_issues:
-  - Flutterwave v4 requires Hermes client_credentials OAuth support from companion PR NousResearch/hermes-agent#150013; until that support is upstream, use the documented BigWave45 Hermes fork. Paystack can be used independently.
 capabilities:
   provides_tools:
     - payops_list_transactions
@@ -20,5 +18,3 @@ capabilities:
   provides_middleware: []
   requires_env:
     - PAYSTACK_SECRET_KEY
-    - FLUTTERWAVE_CLIENT_ID
-    - FLUTTERWAVE_CLIENT_SECRET

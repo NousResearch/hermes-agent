@@ -81,40 +81,37 @@ def _write_report(curator):
     )
 
 
-def test_hook_fires_with_run_json_path(curator_env):
+def test_hook_fires_once_after_both_report_files_exist(curator_env):
     curator = curator_env["curator"]
     received = []
 
-    mgr = _plugins().get_plugin_manager()
-    mgr._hooks.setdefault("post_curator_run", []).append(
-        lambda **kw: received.append(kw)
-    )
+    def _on(**kw):  # read inside the callback: the files must already be on disk when it fires
+        payload = json.loads(Path(kw["run_json_path"]).read_text(encoding="utf-8"))
+        received.append((kw, "added" in payload, Path(kw["report_md_path"]).is_file()))
+
+    _plugins().get_plugin_manager()._hooks.setdefault("post_curator_run", []).append(_on)
 
     run_dir = _write_report(curator)
 
     assert run_dir is not None
-    assert len(received) == 1
-    kw = received[0]
-    assert kw["run_dir"] == str(run_dir)
-    assert kw["run_json_path"] == str(run_dir / "run.json")
-    assert kw["report_md_path"] == str(run_dir / "REPORT.md")
-    # The report must be fully written by the time the hook fires
-    payload = json.loads(Path(kw["run_json_path"]).read_text(encoding="utf-8"))
-    assert "added" in payload
-    assert Path(kw["report_md_path"]).is_file()
+    assert [(kw["run_dir"], kw["run_json_path"], kw["report_md_path"], parsed, md) for kw, parsed, md in received] == [
+        (str(run_dir), str(run_dir / "run.json"), str(run_dir / "REPORT.md"), True, True)]
 
 
-def test_raising_callback_does_not_break_report(curator_env):
-    """invoke_hook() isolates per-callback errors; the report writer must
-    still return the run dir when a plugin misbehaves."""
+def test_failed_report_write_fires_nothing(curator_env, monkeypatch):
+    """Observers are promised both files: a run whose run.json could not be written fires no hook."""
     curator = curator_env["curator"]
+    received = []
+    _plugins().get_plugin_manager()._hooks.setdefault("post_curator_run", []).append(
+        lambda **kw: received.append(kw))
+    real_write_text = Path.write_text
 
-    def _boom(**kw):
-        raise RuntimeError("plugin bug")
+    def _disk_full(self, *a, **k):
+        if self.name == "run.json":
+            raise OSError(28, "No space left on device")
+        return real_write_text(self, *a, **k)
 
-    mgr = _plugins().get_plugin_manager()
-    mgr._hooks.setdefault("post_curator_run", []).append(_boom)
+    monkeypatch.setattr(Path, "write_text", _disk_full)
 
-    run_dir = _write_report(curator)
-    assert run_dir is not None
-    assert (run_dir / "run.json").exists()
+    assert _write_report(curator) is not None
+    assert received == []

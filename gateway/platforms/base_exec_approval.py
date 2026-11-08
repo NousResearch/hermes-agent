@@ -92,6 +92,22 @@ def code_fence(command: str) -> str:
     return "`" * max(3, max((len(run) for run in re.findall(r"`+", command)), default=0) + 1)
 
 
+def fit_fenced(command: str, fit) -> tuple[str, str]:
+    """``(shown, fence)``: the fence is sized from the text actually shown, not the whole ``command``, so
+    a long backtick run the cut drops cannot inflate the card past the platform cap. ``fit(fence)``
+    returns the longest prefix of ``command`` that fits beside ``fence``. A wider fence only shortens
+    that prefix, so the smallest fence its own prefix cannot close is found by bisection."""
+    lo, hi = 3, len(code_fence(command))
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if len(code_fence(fit("`" * mid))) <= mid:
+            hi = mid
+        else:
+            lo = mid + 1
+    shown = fit("`" * lo)
+    return shown, code_fence(shown)
+
+
 def render_exec_approval(adapter: Any, command: str, description: str, smart_denied: bool,
                          full_command_shown: bool) -> tuple[str, bool]:
     """``(card text, truncated)`` for ``adapter``'s markup. A preview that cannot hold the whole command
@@ -99,18 +115,23 @@ def render_exec_approval(adapter: Any, command: str, description: str, smart_den
     that only Deny is offered because it could not be (#62359)."""
     if adapter._EA_REASON_BUDGET:
         description = adapter._ea_fit(str(description or ""), adapter._EA_REASON_BUDGET)
-    # A ``` inside the command would close a markdown fence early; a longer fence holds it, and its
+    # A ``` inside the shown preview would close a markdown fence early; a longer fence holds it, and its
     # extra backticks come out of the preview budget.
-    fence = code_fence(command)
-    budget = adapter._exec_approval_cmd_budget(description, smart_denied) - 2 * (len(fence) - 3)
-    preview = adapter._ea_fit(command, budget)
-    truncated = preview != command
-    notice = ""
-    if truncated:
-        key = "truncated_full_above" if full_command_shown else "truncated_deny_only"
-        notice = "\n\n" + adapter._ea_escape(t(f"gateway.exec_approval.{key}", total=len(command)))
+    base = adapter._exec_approval_cmd_budget(description, smart_denied)
+    key = "truncated_full_above" if full_command_shown else "truncated_deny_only"
+    cut_notice = "\n\n" + adapter._ea_escape(t(f"gateway.exec_approval.{key}", total=len(command)))
+
+    def fit(fence: str) -> str:
+        budget = base - 2 * (len(fence) - 3)
+        preview = adapter._ea_fit(command, budget)
+        if preview == command:
+            return preview
         # The notice shares the cap the budget was sized for; a tiny fixed budget keeps half its preview.
-        preview = adapter._ea_fit(command, max(budget - adapter.message_len_fn(notice), budget // 2))
+        return adapter._ea_fit(command, max(budget - adapter.message_len_fn(cut_notice), budget // 2))
+
+    preview, fence = fit_fenced(command, fit)
+    truncated = preview != command
+    notice = cut_notice if truncated else ""
     code_open, code_close = (part.replace("```", fence, 1) for part in (adapter._EA_CODE_OPEN, adapter._EA_CODE_CLOSE))
     text = (f"{adapter._EA_HEADER}"
             f"{code_open}{adapter._ea_escape(preview)}{code_close}"

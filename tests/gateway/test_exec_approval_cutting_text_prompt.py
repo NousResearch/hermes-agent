@@ -109,3 +109,21 @@ def test_short_command_is_shown_whole_with_every_choice(make, pending):
     delivered = wire[-1]
     assert TAIL in delivered and "/approve" in delivered and "/deny" in delivered
     assert not pending.data.get("card_deny_only")
+
+
+@pytest.mark.parametrize("command", ["echo " + "`" * 2100 + " ; rm -rf ~", "`" * 3000, "`" * 5000],
+                         ids=["echo-2100-ticks", "3000-ticks", "5000-ticks"])
+def test_a_long_backtick_run_never_leaves_the_fence_open_past_the_cut(command, pending):
+    """The fence is sized from the shortened command, so the cut can never drop the closing fence."""
+    import re
+
+    adapter, wire = _ntfy()
+    adapter.pause_typing_for_chat = lambda _c: None
+    _render(adapter, command)
+    delivered = wire[-1]
+    assert len(delivered) <= adapter.max_message_length_for_chat("chat") and "Preview shortened" in delivered
+    fence = re.search(r"\n(`{3,})\n", delivered).group(1)
+    assert delivered.endswith("\n" + fence)  # the closing fence survived the cut
+    shown = delivered[delivered.index("\n" + fence + "\n") + len(fence) + 2:-len(fence) - 1]
+    assert max(map(len, re.findall("`+", shown)), default=0) < len(fence)  # and nothing shown closes it early
+    assert pending.data.get("card_deny_only") is True

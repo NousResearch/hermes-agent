@@ -4135,10 +4135,10 @@ class BasePlatformAdapter(ABC):
     async def _play_tts_file(
         self, event: MessageEvent, text_content: str, tts_path: str, first: bool,
         metadata: dict[str, Any], record_delivery: Callable) -> bool:
-        """Play one synthesized TTS file. Returns True when the ORIGINAL reply text rode along as a
-        Telegram caption (first file, ≤1024 UTF-16 units, as the Bot API counts) so the text send is skipped."""
+        """Play one synthesized TTS file. Returns True when the ORIGINAL reply text rode
+        along as a Telegram caption (first file, ≤1024 chars) so the text send is skipped."""
         caption = None
-        if first and self.platform == Platform.TELEGRAM and text_content and utf16_len(text_content) <= 1024:
+        if first and self.platform == Platform.TELEGRAM and text_content and text_content[:1024] == text_content:
             caption = text_content
         tts_result = await self.play_tts(
             chat_id=event.source.chat_id, audio_path=tts_path, caption=caption, metadata=metadata)

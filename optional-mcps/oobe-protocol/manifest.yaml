@@ -1,0 +1,69 @@
+# Hermes catalog proposal for a hosted read-only OOBE Protocol MCP surface.
+#
+# The hosted endpoint is intended to run with SAP_MCP_CATALOG_READONLY=true.
+# The previous SAP MCP PR was closed because the entry name collided with SAP SE
+# and the default remote tool surface exposed transaction/spend helpers. This
+# manifest intentionally avoids both by using neutral OOBE Protocol naming and a
+# read-only default tool allow-list.
+manifest_version: 1
+
+name: oobe-protocol
+description: >-
+  Read-only OOBE Protocol agent discovery on Solana: browse public agent
+  profiles, protocol indexes, network stats, and bundled skill metadata.
+source: https://github.com/OOBE-PROTOCOL/sap-mcp
+
+# Official OOBE-hosted remote MCP over Streamable HTTP. The hosted catalog
+# endpoint must be deployed with SAP_MCP_CATALOG_READONLY=true so tools/list
+# exposes only read/discovery tools and no signing, transaction submit, x402
+# spend, local bridge, install, self-update, webhook, memory-write, or
+# meta-execution helpers.
+transport:
+  type: http
+  url: https://mcp.sap.oobeprotocol.ai/mcp
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    # Core protocol/network discovery
+    - sap_network_stats
+    - sap_protocol_invariants
+    - sap_get_global_state
+    - sap_get_network_overview
+    # Agent lookup and directory search
+    - sap_discover_agents
+    - sap_list_agents
+    - sap_get_agent
+    - sap_get_agent_profile
+    - sap_get_agent_stats
+    - sap_is_agent_active
+    # Public protocol/tool indexes
+    - sap_fetch_protocol_index
+    - sap_fetch_capability_index
+    - sap_fetch_tool_category_index
+    - sap_fetch_tool
+    # Public record fetches
+    - sap_fetch_feedback
+    # SNS read helpers
+    - sap_sns_check_domain
+    - sap_sns_resolve_domain
+    - sap_sns_get_domain_records
+    - sap_sns_resolve_wallet
+    # Bundled skill metadata
+    - sap_skills_list
+
+suggest:
+  keywords:
+    - oobe
+    - oobe protocol
+    - agent discovery
+    - solana agents
+  hosts:
+    - oobeprotocol.ai
+
+post_install: |
+  No account or credentials needed. This Hermes catalog entry exposes only
+  read-only OOBE Protocol discovery tools. It cannot sign, submit, build, or
+  pay for blockchain transactions.

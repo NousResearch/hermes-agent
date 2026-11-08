@@ -10,6 +10,13 @@ requires_hermes: ">=0.23.0"
 version: "0.2.0"
 docs_url: https://github.com/0xdopewilly/hermes-emporium#readme
 image: https://raw.githubusercontent.com/0xdopewilly/hermes-emporium/fbb14b105a2770d12ded0f8ffd153dac7ac35756/docs/banner.png
+screenshots:
+- https://raw.githubusercontent.com/0xdopewilly/hermes-emporium/3054699240bb8dd3d387b01592efdcc709d1bc0d/screenshots/01-storefront.jpg
+- https://raw.githubusercontent.com/0xdopewilly/hermes-emporium/3054699240bb8dd3d387b01592efdcc709d1bc0d/screenshots/02-approval.jpg
+- https://raw.githubusercontent.com/0xdopewilly/hermes-emporium/3054699240bb8dd3d387b01592efdcc709d1bc0d/screenshots/03-agents-hiring-agents.jpg
+- https://raw.githubusercontent.com/0xdopewilly/hermes-emporium/3054699240bb8dd3d387b01592efdcc709d1bc0d/screenshots/04-receipt-on-chain.jpg
+- https://raw.githubusercontent.com/0xdopewilly/hermes-emporium/3054699240bb8dd3d387b01592efdcc709d1bc0d/screenshots/05-the-books.jpg
+- https://raw.githubusercontent.com/0xdopewilly/hermes-emporium/3054699240bb8dd3d387b01592efdcc709d1bc0d/screenshots/06-lock-held.jpg
 platforms: []
 capabilities:
   provides_tools:

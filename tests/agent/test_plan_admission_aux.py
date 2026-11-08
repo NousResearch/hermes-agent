@@ -235,11 +235,14 @@ def test_wiring_covers_aux_and_moa_seams():
         assert gated in aux_src, gated
         assert ungated in aux_src, ungated
         assert purpose in aux_src, purpose
-        # The gated name appears BEFORE its ungated twin (wrapper first, body after),
-        # and the wrapper forwards into the ungated body.
-        assert aux_src.index(gated) < aux_src.index("def " + ungated), gated
-        wrapper_call = ungated + "(client"  # forwarding call inside the wrapper
-        assert aux_src.count(wrapper_call) >= 1, wrapper_call
+        # The gated name appears BEFORE its ungated twin (wrapper first, body
+        # after), and the wrapper's forwarding call sits BETWEEN them.
+        wrapper_line = aux_src[: aux_src.index(gated)].count("\n") + 1
+        body_line = aux_src[: aux_src.index("def " + ungated)].count("\n") + 1
+        assert wrapper_line < body_line, gated
+        call_refs = [i for i, line in enumerate(aux_src.splitlines()) if (ungated + "(") in line and "def " not in line]
+        assert call_refs, ungated + " never forwarded"
+        assert any(wrapper_line < idx < body_line for idx in call_refs), ungated + " forwarded outside its wrapper"
 
     # The MoA facade return and the MoA/Codex stream branch are gated too.
     assert "chat_moa_facade" in helpers_src
@@ -337,7 +340,6 @@ def test_aux_relay_close_releases_and_delegates(admission_dir, monkeypatch):
     import agent.auxiliary_client as ac  # noqa: F401
     stream = _LazyPlanStream()
     out = _relay_with_stub_stream(admission_dir, monkeypatch, stream)
-    out.response = None if False else None  # no-op; delegation checked below
     assert not stream.closed
     out.close()
     assert stream.closed  # delegated to the inner stream
@@ -354,3 +356,52 @@ def test_aux_relay_error_mid_consume_releases(admission_dir, monkeypatch):
         list(out)
     assert states[0] == "held"
     assert _lock_probe(admission_dir)(0) == "free"  # released despite the error
+
+
+# ------------------------------------------------- stranger-thread release
+# Review pass 3 (probe P11/P14, HIGH): releasing the gate from a thread other
+# than the opener left the opener's thread-local depth stuck >0, so every
+# later plan-route call on the opener thread silently skipped the flock. The
+# registry-based nesting makes release thread-agnostic; this test pins it.
+
+def test_stranger_thread_close_does_not_poison_opener(admission_dir, monkeypatch):
+    import fcntl
+
+    import agent.auxiliary_client as ac  # noqa: F401
+
+    stream = _LazyPlanStream()
+    out = _relay_with_stub_stream(admission_dir, monkeypatch, stream)
+    closed_from_stranger = threading.Event()
+
+    def stranger():
+        out.close()  # monitor-style close from a non-opener thread
+        closed_from_stranger.set()
+
+    worker = threading.Thread(target=stranger)
+    worker.start()
+    worker.join(5)
+    assert closed_from_stranger.is_set() and stream.closed
+    assert _lock_probe(admission_dir)(0) == "free"  # slot genuinely released
+
+    # The opener thread's NEXT gated call must truly acquire the flock again:
+    # while it holds, a second fd must be refused (a depth-poisoned thread
+    # would pass through with no lock and this probe would see "free").
+    probe_states = []
+
+    def opener_next():
+        with pa.plan_admission(PLAN_A, model="glm-5.3", purpose="opener_next", wait_seconds=3):
+            fd = os.open(pa.lock_path(), os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                probe_states.append("free")
+            except OSError:
+                probe_states.append("held")
+            finally:
+                os.close(fd)
+
+    opener_next()
+    assert probe_states == ["held"], f"opener thread not re-acquiring: {probe_states}"
+
+    # And the registry must be clean afterwards (no phantom holds).
+    assert pa._nest_depth(threading.get_ident()) == 0

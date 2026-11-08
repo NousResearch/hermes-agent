@@ -2738,6 +2738,12 @@ class _PlanGatedStream:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._pgs_stream, name)
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name.startswith("_pgs_"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._pgs_stream, name, value)
+
 
 def _relay_sync_stream(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None, api_mode: str | None = None

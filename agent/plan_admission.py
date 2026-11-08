@@ -60,7 +60,43 @@ class PlanAdmissionBusy(RuntimeError):
     """Another process holds plan admission; fail closed, never proceed unlocked."""
 
 
-_local = threading.local()
+# Nesting registry keyed by opener thread. A threading.local depth would be
+# reset by whichever thread runs the release (stream handles are legitimately
+# closed from monitor/stranger threads), permanently poisoning the opener
+# thread into the re-entry branch with no flock held. A lock-guarded
+# process-global map keeps the same per-thread nesting semantics while letting
+# ANY thread release safely. Thread idents can recycle; a dead thread's
+# unclosed generator heals via the GC-driven release, as before.
+_HOLDS_LOCK = threading.Lock()
+_HOLDS: dict = {}
+
+
+def _nest_acquire(ident: int, fd: int | None = None) -> int:
+    with _HOLDS_LOCK:
+        rec = _HOLDS.get(ident)
+        if rec is None:
+            _HOLDS[ident] = {"count": 1, "fd": fd}
+            return 1
+        rec["count"] += 1
+        return rec["count"]
+
+
+def _nest_release(ident: int) -> int:
+    with _HOLDS_LOCK:
+        rec = _HOLDS.get(ident)
+        if rec is None:
+            return 0
+        rec["count"] -= 1
+        if rec["count"] <= 0:
+            del _HOLDS[ident]
+            return 0
+        return rec["count"]
+
+
+def _nest_depth(ident: int) -> int:
+    with _HOLDS_LOCK:
+        rec = _HOLDS.get(ident)
+        return rec["count"] if rec else 0
 
 
 def _log(event: str, *, wait_s: float, base_url, model, purpose: str) -> None:
@@ -86,18 +122,22 @@ def _log(event: str, *, wait_s: float, base_url, model, purpose: str) -> None:
 
 @contextlib.contextmanager
 def plan_admission(base_url, *, model=None, purpose: str = "chat", wait_seconds: float | None = None):
-    """Serialize plan-route requests host-wide for the duration of the block."""
+    """Serialize plan-route requests host-wide for the duration of the block.
+
+    Re-entry nests per opener thread; release is thread-agnostic (stream
+    handles are closed from monitor threads), so nesting is tracked in a
+    lock-guarded process-global registry instead of a thread-local."""
     if not is_plan_route(base_url):
         yield None
         return
-    depth = getattr(_local, "depth", 0)
-    if depth > 0:
+    ident = threading.get_ident()
+    if _nest_depth(ident) > 0:
         # Re-entry inside the same process reuses the outer hold.
-        _local.depth = depth + 1
+        _nest_acquire(ident)
         try:
             yield None
         finally:
-            _local.depth = depth
+            _nest_release(ident)
         return
     os.makedirs(_admission_dir(), mode=0o700, exist_ok=True)
     fd = os.open(lock_path(), os.O_CREAT | os.O_RDWR, 0o600)
@@ -120,12 +160,12 @@ def plan_admission(base_url, *, model=None, purpose: str = "chat", wait_seconds:
                 time.sleep(0.25)
         waited = time.monotonic() - t0
         _log("acquire", wait_s=waited, base_url=base_url, model=model, purpose=purpose)
-        _local.depth = 1
+        _nest_acquire(ident, fd=fd)
         try:
             yield None
         finally:
-            _local.depth = 0
-            _log("release", wait_s=0.0, base_url=base_url, model=model, purpose=purpose)
+            if _nest_release(ident) == 0:
+                _log("release", wait_s=0.0, base_url=base_url, model=model, purpose=purpose)
     finally:
         if acquired:
             try:
@@ -147,14 +187,14 @@ async def plan_admission_async(base_url, *, model=None, purpose: str = "chat", w
     if not is_plan_route(base_url):
         yield None
         return
-    depth = getattr(_local, "depth", 0)
-    if depth > 0:
+    ident = threading.get_ident()
+    if _nest_depth(ident) > 0:
         # Re-entry inside the same process reuses the outer hold.
-        _local.depth = depth + 1
+        _nest_acquire(ident)
         try:
             yield None
         finally:
-            _local.depth = depth
+            _nest_release(ident)
         return
     os.makedirs(_admission_dir(), mode=0o700, exist_ok=True)
     fd = os.open(lock_path(), os.O_CREAT | os.O_RDWR, 0o600)
@@ -177,12 +217,12 @@ async def plan_admission_async(base_url, *, model=None, purpose: str = "chat", w
                 await asyncio.sleep(0.25)
         waited = time.monotonic() - t0
         _log("acquire", wait_s=waited, base_url=base_url, model=model, purpose=purpose)
-        _local.depth = 1
+        _nest_acquire(ident, fd=fd)
         try:
             yield None
         finally:
-            _local.depth = 0
-            _log("release", wait_s=0.0, base_url=base_url, model=model, purpose=purpose)
+            if _nest_release(ident) == 0:
+                _log("release", wait_s=0.0, base_url=base_url, model=model, purpose=purpose)
     finally:
         if acquired:
             try:

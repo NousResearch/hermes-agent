@@ -80,7 +80,8 @@ _TRUST_GATE_ARGUMENTS_TRUNCATION_MARKER = "\n... [arguments truncated]"
 
 
 def _is_secret_argument_name(key: Any) -> bool:
-    from agent.redact import SECRET_HEADER_NAME_LIST, is_secret_field_name
+    from agent.redact import is_secret_field_name
+    from agent.redact_headers import SECRET_HEADER_NAME_LIST
     return is_secret_field_name(key) or (isinstance(key, str) and key.casefold() in SECRET_HEADER_NAME_LIST)
 
 

@@ -588,29 +588,31 @@ async def test_overflow_reply_anchor_retry_preserves_private_topic_route(error_t
 
 
 @pytest.mark.asyncio
-async def test_control_private_topic_thread_rejection_does_not_fall_back_to_anchor_route():
+async def test_control_message_to_dead_private_topic_lands_in_root_without_its_anchor():
+    """A rejected private topic is tried once by its native id, then delivered to the chat root
+    without the reply anchor (which points into the dead topic)."""
     adapter = _make_adapter()
     call_log = []
 
     async def mock_send_message(**kwargs):
         call_log.append(dict(kwargs))
-        raise FakeBadRequest("Message thread not found")
+        if kwargs.get("message_thread_id") or kwargs.get("direct_messages_topic_id"):
+            raise FakeBadRequest("Message thread not found")
+        return SimpleNamespace(message_id=9)
 
     adapter._bot = SimpleNamespace(send_message=mock_send_message)
 
-    with pytest.raises(FakeBadRequest, match="Message thread not found"):
-        await adapter._send_control_message(
-            "123", "control", parse_mode=None, thread_id="20197",
-            metadata={
-                "thread_id": "20197",
-                "telegram_dm_topic_reply_fallback": True,
-                "telegram_reply_to_message_id": "462",
-            })
+    sent = await adapter._send_control_message(
+        "123", "control", parse_mode=None, thread_id="20197",
+        metadata={
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+            "telegram_reply_to_message_id": "462",
+        })
 
-    assert len(call_log) == 1
-    assert call_log[0]["reply_to_message_id"] == 462
-    assert call_log[0]["message_thread_id"] == 20197
-
+    assert sent.message_id == 9
+    assert [(c.get("message_thread_id"), c.get("direct_messages_topic_id"), c.get("reply_to_message_id"))
+            for c in call_log] == [(20197, None, 462), (None, 20197, 462), (None, None, None)]
 
 @pytest.mark.asyncio
 async def test_send_image_upload_fallback_blocks_connect_time_rebind(monkeypatch):
@@ -774,3 +776,40 @@ async def test_thread_fallback_only_fires_once():
     # The key point: the message was delivered despite the invalid thread
 
 
+
+
+@pytest.mark.asyncio
+async def test_reply_into_dead_private_topic_reaches_chat_root_and_prunes_binding(tmp_path):
+    """Topics turned off client-side: a private-topic reply is tried by thread id, then by native
+    topic id, then lands in the chat root without the dead topic's anchor, and the stale binding
+    is pruned so inbound recovery stops steering into it."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="123", user_id="123")
+    db.create_session(session_id="s1", source="telegram", user_id="123")
+    db.bind_telegram_topic(chat_id="123", thread_id="20197", user_id="123", session_key="k", session_id="s1")
+    adapter = _make_adapter()
+    adapter._session_store = SimpleNamespace(_db=db)
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("message_thread_id") or kwargs.get("direct_messages_topic_id"):
+            raise FakeBadRequest("Message thread not found")
+        return SimpleNamespace(message_id=77)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123", content="the answer", reply_to="462",
+        metadata={"thread_id": "20197", "telegram_dm_topic_reply_fallback": True,
+                  "telegram_reply_to_message_id": "462"})
+
+    assert result.success is True
+    routes = [(c.get("message_thread_id"), c.get("direct_messages_topic_id"), c.get("reply_to_message_id")) for c in call_log]
+    assert routes[0] == (20197, None, 462)
+    assert (None, 20197, 462) in routes
+    assert routes[-1] == (None, None, None)
+    assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is None
+    assert db.is_telegram_topic_mode_enabled(chat_id="123", user_id="123") is False

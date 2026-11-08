@@ -267,8 +267,10 @@ def test_chatgpt_auxiliary_terminal_error_cannot_rotate_or_fallback(monkeypatch,
     def forbidden(*args, **kwargs):
         pytest.fail("A terminal ChatGPT plan error reached credential rotation or provider fallback")
 
-    monkeypatch.setattr(auxiliary, "_ladder_credential_rungs", forbidden)
-    monkeypatch.setattr(auxiliary, "_ladder_provider_fallback", forbidden)
+    for action in ("_refresh_provider_credentials", "_recover_provider_pool",
+                   "_try_configured_fallback_chain", "_try_main_fallback_chain",
+                   "_try_payment_fallback", "_try_main_agent_model_fallback"):
+        monkeypatch.setattr(auxiliary, action, forbidden)
     ladder = auxiliary._aux_recovery_ladder(
         error, client=client, kwargs={}, task="compression", async_mode=False,
         base_info="https://api.openai.com/v1", resolved_provider="openai-chatgpt",

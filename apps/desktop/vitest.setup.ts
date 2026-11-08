@@ -1,5 +1,7 @@
 import { configure } from '@testing-library/react'
+import { afterEach } from 'vitest'
 
+import { clearPlaybackSourceCache } from './src/lib/playback-source-cache'
 import { InertResizeObserver } from './src/test/jsdom'
 
 // Shared tooltips measure their arrow through Radix's useSize hook.
@@ -78,3 +80,7 @@ if ('Element' in globalThis) {
 // as the 15s testTimeout above it while still finishing below it, so a
 // genuinely hung await still surfaces as this assertion, not a test timeout.
 configure({ asyncUtilTimeout: 12_000 })
+
+// Resolved stream URLs outlive a mount on purpose; a test file reusing one path must not
+// inherit the previous case's source.
+afterEach(() => clearPlaybackSourceCache())

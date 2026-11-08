@@ -7,7 +7,7 @@ import pytest
 from hermes_cli import auth, auth_chatgpt
 
 
-@pytest.mark.parametrize("failure", [httpx.ConnectError, httpx.ReadTimeout])
+@pytest.mark.parametrize("failure", [httpx.ConnectError, httpx.ReadTimeout, 402, 429, 500])
 def test_chatgpt_auxiliary_network_failure_stays_on_the_selected_plan(monkeypatch, tmp_path, failure):
     from agent import auxiliary_client as aux
 
@@ -32,6 +32,8 @@ def test_chatgpt_auxiliary_network_failure_stays_on_the_selected_plan(monkeypatc
     def send(request):
         requests.append(request)
         if request.url.host == "api.openai.com":
+            if isinstance(failure, int):
+                return httpx.Response(failure, json={"error": {"message": "Fixture request refused"}})
             raise failure("Temporary fixture transport failure", request=request)
         assert request.url.host == "openrouter.ai"
         return httpx.Response(200, json={
@@ -43,10 +45,12 @@ def test_chatgpt_auxiliary_network_failure_stays_on_the_selected_plan(monkeypatc
     monkeypatch.setattr("agent.process_bootstrap.build_keepalive_http_client",
                         lambda *args, **kwargs: httpx.Client(transport=httpx.MockTransport(send)))
     monkeypatch.setattr(aux, "_TRANSIENT_RETRY_BACKOFF_BASE", 0)
+    monkeypatch.setattr("agent.auxiliary_rate_limit_backoff.rate_limit_wait", lambda *args, **kwargs: 0)
     aux._evict_cached_clients("openai-chatgpt")
     aux._evict_cached_clients("openrouter")
     try:
-        with pytest.raises(openai.APIConnectionError):
+        expected = openai.APIStatusError if isinstance(failure, int) else openai.APIConnectionError
+        with pytest.raises(expected):
             aux.call_llm(task="compression", messages=[{"role": "user", "content": "Summarize"}])
     finally:
         aux._evict_cached_clients("openai-chatgpt")

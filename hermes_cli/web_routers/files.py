@@ -8,6 +8,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import hashlib
 import logging
 import mimetypes
 import os
@@ -28,6 +29,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.home_data_layout import SECRET_CACHE_STORES
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.staged_uploads import (
     ensure_profile_subdir, is_staged_upload, removed_on_failure, resolve_upload_home,
@@ -82,7 +84,8 @@ _FS_READDIR_HIDDEN = {
 _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
     "google_token.json", "google_oauth_pending.json", "google_oauth.json",
-    "webhook_subscriptions.json", "bws_cache.json", "bws_cache.enc.json",
+    "webhook_subscriptions.json",
+    *(PurePosixPath(store).name for store in SECRET_CACHE_STORES),  # secret caches, Photon sidecar token
     ".git-credentials",  # git's credential-store cache (file_safety blocks it too)
 })
 
@@ -691,7 +694,9 @@ async def _managed_file_response(
     content_disposition_type: str,
     media_only: bool = False,
 ) -> FileResponse:
-    """Range-aware response after applying managed-file policy."""
+    """Range-aware response after applying managed-file policy. A player source
+    (``media_only``) has no size cap: it is served from disk one Range at a
+    time, as an SSH profile's clip already is, so a long recording plays."""
     authority = getattr(request.state, "file_ticket_authority", None)
     if authority is not None:
         from hermes_cli.web_server_file_response import OpenedFileResponse
@@ -707,7 +712,8 @@ async def _managed_file_response(
     _policy, target, _display_path, max_bytes, mime_type = _managed_readable_file(request, path)
     if media_only and target.suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
         raise HTTPException(status_code=415, detail="Unsupported media type")
-    _managed_file_size(target, max_bytes)
+    if not media_only:
+        _managed_file_size(target, max_bytes)
     await asyncio.to_thread(_refuse_live_database, target)
     return FileResponse(
         path=str(target),
@@ -726,7 +732,7 @@ def _open_ticket_file(request: Request, authority: file_tickets.FileAuthority, *
         )
         if media_only and target.suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
             raise HTTPException(status_code=415, detail="Unsupported media type")
-        return target, max_bytes
+        return target, None if media_only else max_bytes
 
     return _pin_ticket_file(authority, checked)
 
@@ -833,7 +839,7 @@ async def stream_managed_file(
     media pipeline may reject an attachment response as an ``<audio>``/
     ``<video>`` source. Browser media elements authenticate with a reusable
     path-bound ``?ticket=``; the session token is never accepted in this URL.
-    Same size cap, sensitive guard and MIME detection as download. A
+    No size cap (Range-served); sensitive guard and MIME detection as download. A
     ``session_id`` resolves ``/workspace`` in that session's own sandbox, as the
     ticket route does. An SSH profile's clip streams from its SSH machine
     (``_remote_fs_backend``, the rule download uses), one Range at a time.
@@ -1212,12 +1218,29 @@ async def fs_read_data_url(
     target, st = _fs_regular_file(target, _fs_profile_home(profile))
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
+    # A transcript image is read again on every remount. The browser keeps the body in its own
+    # HTTP cache and revalidates each time, so an unchanged file costs a 304 instead of its bytes
+    # over a slow link, and a rewritten one is fetched fresh.
+    validators = {"Cache-Control": "private, no-cache", "ETag": _fs_etag(target, st)}
+    if {validators["ETag"], "*"} & _if_none_match(request):
+        return Response(status_code=304, headers=validators)
+
     def _render() -> JSONResponse:
         encoded = base64.b64encode(_fs_read_bytes(target)).decode("ascii")
-        return JSONResponse({"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"})
+        return JSONResponse({"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}, headers=validators)
 
     # Read, encode and render off the event loop: up to 16 MB inline stalls every other request (and /api/ws).
     return await asyncio.to_thread(_render)
+
+
+def _fs_etag(target: Path, st: os.stat_result) -> str:
+    """A validator that changes whenever the file at *target* does."""
+    identity = f"{target}\0{st.st_dev}\0{st.st_ino}\0{st.st_size}\0{st.st_mtime_ns}"
+    return '"' + hashlib.sha256(identity.encode("utf-8", "surrogateescape")).hexdigest()[:32] + '"'
+
+
+def _if_none_match(request: Request) -> set[str]:
+    return {tag.strip().removeprefix("W/") for tag in request.headers.get("if-none-match", "").split(",")}
 
 
 def _remote_download_target(backend, path: str) -> tuple[str, int]:
@@ -1235,14 +1258,10 @@ def _remote_download_target(backend, path: str) -> tuple[str, int]:
 
 def _remote_stream_target(backend, path: str) -> tuple[str, int]:
     """*path* on the SSH workspace as media the stream route may serve, and its size: download's
-    checks, then the host stream's media-type and size caps."""
-    from hermes_cli.web_server import _MANAGED_FILE_MAX_BYTES
-
+    checks, then the host stream's media-type check. No size cap: served one Range at a time."""
     target, size = _remote_download_target(backend, path)
     if PurePosixPath(target).suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
         raise HTTPException(status_code=415, detail="Unsupported media type")
-    if size > _MANAGED_FILE_MAX_BYTES:
-        raise HTTPException(status_code=413, detail="File is too large")
     return target, size
 
 

@@ -52,6 +52,7 @@ import { PluginFolderAccess } from './plugin-folder-access'
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
 import { PluginPageAccess } from './plugin-page-access'
 import { runPluginUpdate } from './plugin-update'
+import { PluginUpdateAllActions } from './plugin-update-all'
 
 /** Deep-link anchor for a package row (`/capabilities?tab=plugins&plugin=<key>`).
  *  Accepts the agent key, the agent name, or the desktop record id. */
@@ -550,6 +551,7 @@ export function PluginActions({ profile }: { profile: ProfileScope }) {
 
   return (
     <>
+      <PluginUpdateAllActions scope={scope} />
       <Button onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })} size="xs" variant="textStrong">
         {d.installModal.installFromGit}
       </Button>
@@ -762,10 +764,14 @@ export const PluginsTab = memo(function PluginsTab({
       }
     }
 
+    // On only when every half it actuates is on: a package whose desktop half
+    // is off (pane missing) must not read On just because its agent half is.
+    const on = (!agent || agent.status === 'enabled') && (!desktop || desktop.status !== 'disabled')
+
     return (
       <CatalogSwitch
         aria-label={pkg.name}
-        checked={agent ? agent.status === 'enabled' : desktop?.status !== 'disabled'}
+        checked={on}
         disabled={agent ? !agent.key || agentBusy(agent) : false}
         onCheckedChange={setEnabled}
         size="xs"

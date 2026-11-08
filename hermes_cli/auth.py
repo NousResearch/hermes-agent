@@ -257,7 +257,7 @@ from hermes_cli.auth_plugin_providers import (
     canonical_registry_rows as _canonical_registry_rows, get_plugin_oauth_auth_status,
     registry_lookup as _registry_lookup, sync_plugin_provider_registry)
 
-sync_plugin_provider_registry()
+PROVIDER_REGISTRY.sync_before_first_read()  # not at import: listing providers reads config
 
 
 def get_anthropic_key() -> str:

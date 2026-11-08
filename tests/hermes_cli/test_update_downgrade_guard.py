@@ -133,6 +133,34 @@ def test_check_holds_a_release_that_update_would_refuse(repo, tmp_path, monkeypa
     assert "Selected release available" not in out and "moves it back" not in out
 
 
+@pytest.mark.parametrize("blobless", [False, True], ids=["full-clone", "blobless-clone"])
+def test_a_runtime_target_whose_state_modules_moved_into_the_package_is_not_refused(repo, tmp_path, blobless):
+    """A target beside this checkout's history that keeps the state store under ``src/hermes_agent/``
+    still defines the runtime ledger: the guard must find it there, and must not trust a no-match
+    while those nested blobs are missing from a blobless clone."""
+    _git(repo, "checkout", "-q", "-b", "moved", "HEAD~1")
+    package = repo / "src" / "hermes_agent" / "hermes_state"
+    package.mkdir(parents=True)
+    _git(repo, "mv", "hermes_state_common.py", str(package / "common.py"))
+    (package / "common.py").write_text(
+        "SCHEMA_SQL = '''CREATE TABLE IF NOT EXISTS session_admissions (seq INTEGER)'''\n")
+    _git(repo, "commit", "-qam", "state store inside the package")
+    moved = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    root = repo
+    if blobless:
+        _git(repo, "config", "uploadpack.allowFilter", "true")
+        root = tmp_path / "partial"
+        _git(tmp_path, "clone", "-q", "--filter=blob:none", "--no-checkout", repo.as_uri(), str(root))
+        _git(root, "fetch", "-q", "origin", "moved")
+        _git(root, "update-ref", "HEAD", _git(repo, "rev-parse", "main"))
+    ledgered = tmp_path / "ledgered"
+    _ledgered_store(ledgered)
+    git = guard._updater_git(["git"], root)
+    assert not guard.target_predates_runtime(None, root, moved, git=git, remote=lambda ref: None)
+    assert guard.downgrade_refusal(["git"], repo, moved, home=ledgered) is None
+
+
 def test_the_runtime_schema_marker_is_still_in_this_trees_state_schema():
     from hermes_state_common import SCHEMA_SQL
 
@@ -174,7 +202,7 @@ def test_present_commit_with_missing_schema_blobs_uses_remote_without_git_writes
     before = {p.relative_to(clone): p.read_bytes() for p in (clone / ".git").rglob("*") if p.is_file()}
     assert git("cat-file", "-e", f"{target}^{{commit}}") == 0
     assert git("cat-file", "-e", f"{target}:hermes_state_common.py") != 0
-    grep = probe("grep", "-q", "-F", guard._RUNTIME_SCHEMA_MARKER, target, "--", guard.STATE_MODULES)
+    grep = probe("grep", "-q", "-F", guard._RUNTIME_SCHEMA_MARKER, target, "--", *guard.STATE_MODULES)
     assert grep.returncode != 0 and grep.stderr
     remote = None if remote_result == "no-reader" else Mock(return_value=remote_result)
     assert guard.target_predates_runtime(None, clone, target, git=git, remote=remote) is (remote_result is True)

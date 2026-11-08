@@ -1,7 +1,7 @@
 import type { PluginTranslate } from '@hermes/plugin-sdk'
 
-// Bind the message SHAPE to a plugin translator: string leaves resolve now,
-// function leaves forward their args through t(path, …).
+// Resolve leaves when read: a module-level translator keeps its identity
+// across language changes, including while an async caller holds this binding.
 export type Bound<T> = {
   [K in keyof T]: T[K] extends (...args: infer A) => string
     ? (...args: A) => string
@@ -15,12 +15,14 @@ export function bind<T extends object>(t: PluginTranslate, template: T, prefix =
 
   for (const [key, value] of Object.entries(template)) {
     const path = prefix ? `${prefix}.${key}` : key
-    out[key] =
-      typeof value === 'function'
+
+    if (typeof value === 'string') {
+      Object.defineProperty(out, key, { enumerable: true, get: () => t(path) })
+    } else {
+      out[key] = typeof value === 'function'
         ? (...args: unknown[]) => t(path, ...args)
-        : value && typeof value === 'object'
-          ? bind(t, value as object, path)
-          : t(path)
+        : bind(t, value as object, path)
+    }
   }
 
   return out as Bound<T>

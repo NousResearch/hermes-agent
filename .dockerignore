@@ -33,7 +33,7 @@ node_modules
 .build/
 
 # Built artifacts that are regenerated inside the image.  Excluded so local
-# rebuilds on the developer's machine don't invalidate the npm-install layer
+# rebuilds on the developer's machine don't invalidate the dependency-install layer
 # that now depends on the full ui-tui/packages/hermes-ink/ tree being present.
 ui-tui/dist/
 ui-tui/packages/hermes-ink/dist/
@@ -78,7 +78,7 @@ runtime/
 
 # Desktop app source (Tauri/Electron); the app is never installed in the container.
 # apps/shared is the dashboard↔desktop websocket helper and is linked from
-# web/package.json as a file: workspace dep — keep it in the build context.
+# web/package.json as a workspace:* dep — keep it in the build context.
 # apps/desktop is the Webapp renderer's build input (webapp_build stage); its
 # local build outputs stay out.
 apps/

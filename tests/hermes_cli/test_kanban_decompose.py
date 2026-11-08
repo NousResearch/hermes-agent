@@ -250,3 +250,134 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert outcome.ok is False
 
 
+# --- duplicate suppression (t_2e0cd7e4) -------------------------------------
+# A parked defect card decomposed into children that re-did the parent's own
+# work and into two siblings editing one file, so one bug became three
+# concurrent edits. The decomposer must refuse to spawn work it already owns.
+
+_PARENT_TITLE = "Fleet routing refuses execution-class cards on review lanes"
+_PARENT_BODY = "The refusal comes from hermes_cli/kanban_fleet_routing.py."
+
+
+def _decompose_with(kanban_home, tid, tasks, profiles=("orchestrator", "engineer")):
+    payload = jsonlib.dumps({"fanout": True, "rationale": "split", "tasks": tasks})
+    patches = _patch_list_profiles(list(profiles))
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(payload):
+            return decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+
+def test_decompose_drops_a_child_that_duplicates_the_parents_scope(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title=_PARENT_TITLE, body=_PARENT_BODY, triage=True)
+
+    outcome = _decompose_with(kanban_home, tid, [
+        {"title": _PARENT_TITLE, "body": "", "assignee": "engineer", "parents": []},
+        {"title": "Add regression test for reviewer-raised defect cards",
+         "body": "", "assignee": "engineer", "parents": []},
+    ])
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids is not None and len(outcome.child_ids) == 1
+    with kbc.connect() as conn:
+        child = kb.get_task(conn, outcome.child_ids[0])
+    assert child is not None
+    assert child.title == "Add regression test for reviewer-raised defect cards"
+
+
+def test_decompose_drops_siblings_that_edit_the_same_file(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="Ship the routing governance release",
+                             body="Coordinate the work in one pass.", triage=True)
+
+    outcome = _decompose_with(kanban_home, tid, [
+        {"title": "Patch kanban_fleet_routing.py to accept execution cards on review lane",
+         "body": "", "assignee": "engineer", "parents": []},
+        {"title": "Update kanban_fleet_routing.py so execution cards on review lanes are accepted",
+         "body": "", "assignee": "engineer", "parents": []},
+        {"title": "Write the changelog note", "body": "", "assignee": "engineer", "parents": []},
+    ])
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids is not None and len(outcome.child_ids) == 2
+    with kbc.connect() as conn:
+        titles = set()
+        for cid in outcome.child_ids:
+            child = kb.get_task(conn, cid)
+            assert child is not None
+            titles.add(child.title)
+    assert titles == {
+        "Patch kanban_fleet_routing.py to accept execution cards on review lane",
+        "Write the changelog note",
+    }, "the second same-file child must not be spawned"
+
+
+def test_decompose_with_only_duplicates_leaves_the_card_in_triage(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title=_PARENT_TITLE, body=_PARENT_BODY, triage=True)
+
+    outcome = _decompose_with(kanban_home, tid, [
+        {"title": _PARENT_TITLE, "body": "", "assignee": "engineer", "parents": []},
+        {"title": _PARENT_TITLE, "body": "again", "assignee": "engineer", "parents": []},
+    ])
+
+    assert outcome.ok is False
+    assert "every proposed child duplicates" in outcome.reason
+    with kbc.connect() as conn:
+        root = kb.get_task(conn, tid)
+    assert root is not None and root.status == "triage", "a human must still pick it up"
+
+
+def test_a_dropped_sibling_leaves_no_child_waiting_on_it(kanban_home):
+    """Round-1 review: dropping a child silently deleted the edge of any kept child naming it.
+
+    The kept child then promoted with its prerequisite owned by nobody. A sibling absorbed into an
+    accepted child must repoint the edge at the survivor.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="Ship the routing governance release",
+                             body="Coordinate the work in one pass.", triage=True)
+
+    outcome = _decompose_with(kanban_home, tid, [
+        {"title": "Add regression test for reviewer-raised defect cards",
+         "body": "", "assignee": "engineer", "parents": []},
+        # exact duplicate of the previous child -> dropped, absorbed into it
+        {"title": "Add regression test for reviewer-raised defect cards",
+         "body": "", "assignee": "engineer", "parents": []},
+        {"title": "Write the changelog note", "body": "", "assignee": "engineer", "parents": [1]},
+    ])
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids is not None and len(outcome.child_ids) == 2
+    survivor, changelog = outcome.child_ids
+    with kbc.connect() as conn:
+        assert kb.parent_ids(conn, changelog) == [survivor], (
+            "the changelog's prerequisite was dropped, so the edge must point at the survivor")
+
+
+def test_a_child_waiting_on_parent_scope_duplicate_is_cascaded_away(kanban_home):
+    """Nothing else owns the parent's own scope, so waiting on it can only deadlock.
+
+    The root waits on every child, so the edge cannot be satisfied by the parent either; the
+    dependent child is dropped with its prerequisite and the card stays in triage.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title=_PARENT_TITLE, body=_PARENT_BODY, triage=True)
+
+    outcome = _decompose_with(kanban_home, tid, [
+        {"title": _PARENT_TITLE, "body": "", "assignee": "engineer", "parents": []},
+        {"title": "Write the changelog note", "body": "", "assignee": "engineer", "parents": [0]},
+    ])
+
+    assert outcome.ok is False
+    assert "every proposed child duplicates" in outcome.reason
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, tid).status == "triage"
+        assert kb.list_events(conn, tid), "the drop must be recorded, not silent"
+
+

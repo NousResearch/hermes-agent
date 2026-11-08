@@ -13,6 +13,13 @@ expected failures). ``fanout=false`` collapses to the ``specify`` behaviour
 (tighten + promote, no children), making ``decompose`` a strict superset.
 Unknown assignees are rewritten to ``default_assignee`` — a child NEVER ends
 up with ``assignee=None``.
+
+A proposed child that re-does the parent's own scope, or that lands on a file an
+earlier sibling already edits, is dropped before creation (``_drop_duplicates``);
+if every child is dropped the card stays in triage for a human. Without that
+guard one parked defect card (t_2e0cd7e4) decomposed into three concurrent edits
+of the same file, so the board manufactures duplicate work faster than anyone can
+review it.
 """
 
 from __future__ import annotations
@@ -237,6 +244,163 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
     return DecomposeOutcome(task.id, True, "single task (no fanout)", fanout=False, new_title=title_val)
 
 
+_DUPLICATE_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "that", "this", "from", "into", "after",
+    "before", "when", "then", "than", "also", "make", "adds", "new",
+})
+#: Sibling titles at or above this Jaccard overlap are treated as the same work.
+_SIBLING_OVERLAP = 0.75
+#: Two children naming the same file are duplicates at this lower overlap.
+_SAME_FILE_OVERLAP = 0.4
+#: A child whose vocabulary is this covered by the parent is re-doing the parent.
+_PARENT_COVERAGE = 0.8
+_PATH_RE = re.compile(r"[\w./-]+\.(?:py|ts|tsx|js|jsx|json|md|sql|yaml|yml)\b")
+
+
+def _work_fingerprint(*texts: object) -> frozenset:
+    """Content words of ``texts``, lowercased; the unit of duplicate detection."""
+    words: set[str] = set()
+    for text in texts:
+        if not isinstance(text, str):
+            continue
+        for word in re.findall(r"[a-z0-9]+", text.lower()):
+            if len(word) > 2 and word not in _DUPLICATE_STOPWORDS:
+                words.add(word)
+    return frozenset(words)
+
+
+def _stated_paths(*texts: object) -> set[str]:
+    """File paths named in ``texts`` (``kanban_fleet_routing.py`` → the leaf)."""
+    found: set[str] = set()
+    for text in texts:
+        if not isinstance(text, str):
+            continue
+        for match in _PATH_RE.findall(text):
+            found.add(match.replace("\\", "/").rsplit("/", 1)[-1].lower())
+    return found
+
+
+def _overlap(a: frozenset, b: frozenset) -> float:
+    if not a or not b:
+        return 0.0
+    union = a | b
+    return len(a & b) / len(union) if union else 0.0
+
+
+def _duplicate_reason(
+    child: dict, seen: dict, parent_fp: frozenset, parent_paths: set[str],
+) -> tuple[str, Optional[int]]:
+    """Why ``child`` must not be spawned, or ``("", None)`` when it is new work.
+
+    A triage card is decomposed when one big request hides several jobs. It must
+    never be decomposed into the same job more than once: the parent already
+    owns its own scope (re-doing it makes the graph wait on work it is itself
+    doing), and a second child for work an earlier child claims means two
+    workers editing one file at the same time — the failure recorded on
+    ``t_2e0cd7e4``, where a parked defect card decomposed into concurrent edits.
+    """
+    fp = _work_fingerprint(child["title"])
+    if fp and len(fp) >= 3 and parent_fp and len(fp & parent_fp) / len(fp) >= _PARENT_COVERAGE:
+        return "duplicates the parent's own scope", None
+    paths = _stated_paths(child["title"], child.get("body"))
+    if paths and parent_paths and paths & parent_paths and fp and len(fp & parent_fp) / len(fp) >= _SAME_FILE_OVERLAP:
+        return "duplicates the parent's own scope on the same file", None
+    for prior_index, prior in sorted(seen.items()):
+        if _overlap(fp, prior["fp"]) >= _SIBLING_OVERLAP:
+            return f"duplicates tasks[{prior_index}]", prior_index
+        if paths and prior["paths"] and paths & prior["paths"] and _overlap(fp, prior["fp"]) >= _SAME_FILE_OVERLAP:
+            return f"duplicates tasks[{prior_index}] on the same file", prior_index
+    return "", None
+
+
+def _drop_duplicates(
+    task_id: str, children: list[dict], *,
+    parent_title: object = None, parent_body: object = None,
+) -> tuple[list[dict], str]:
+    """Remove children that duplicate the parent's scope or an earlier child.
+
+    Returns ``(children, "")`` or ``([], reason)`` when every proposal was a
+    duplicate — the card then stays in triage for a human instead of silently
+    creating nothing. Sibling ``parents`` indices are remapped to the survivors.
+
+    A dependency edge must never lose its owner. Deleting an edge because its
+    target was dropped lets a promoted child run without the prerequisite it
+    declared (the review finding on ``t_2e0cd7e4``); pointing it at nothing
+    stalls it forever, because the graph refuses to promote a child whose parent
+    is not done. So a kept child that named a dropped SIBLING is repointed at the
+    sibling that absorbed that work, and a kept child that named a child dropped
+    for re-doing the PARENT's scope is dropped too: the root waits on every
+    child (``kanban_db_graph.decompose_triage_task`` links each child as a parent
+    of the root), so the parent's own scope can never run before its children and
+    no edge can be satisfied by waiting on the root.
+    """
+    if not children:
+        return children, ""
+    parent_fp = _work_fingerprint(parent_title, parent_body)
+    parent_paths = _stated_paths(parent_title, parent_body)
+    keep = [True] * len(children)
+    seen: dict[int, dict] = {}
+    absorbed_by: dict[int, int] = {}
+    dropped: list[str] = []
+    for idx, child in enumerate(children):
+        reason, owner = _duplicate_reason(child, seen, parent_fp, parent_paths)
+        if not reason:
+            seen[idx] = {
+                "fp": _work_fingerprint(child["title"]),
+                "paths": _stated_paths(child["title"], child.get("body")),
+            }
+            continue
+        keep[idx] = False
+        dropped.append(f"tasks[{idx}] {reason}")
+        logger.warning("decompose: task %s dropped tasks[%d] — %s", task_id, idx, reason)
+        if owner is not None:
+            absorbed_by[idx] = owner
+
+    def _owner(start: int) -> int | None:
+        """The kept child that now owns ``start``'s work, or None if nobody does."""
+        target = start
+        while not keep[target]:
+            if target not in absorbed_by:
+                return None
+            target = absorbed_by[target]
+        return target
+
+    # Cascade: a prerequisite dropped with no surviving owner takes its dependants
+    # with it, transitively. ``absorbed_by`` points at kept siblings only, so each
+    # hop is final and this terminates.
+    changed = True
+    while changed:
+        changed = False
+        for idx in range(len(children)):
+            if not keep[idx]:
+                continue
+            for parent in children[idx]["parents"]:
+                if _owner(parent) is None:
+                    keep[idx] = False
+                    reason = f"depends on tasks[{parent}], dropped with no surviving owner"
+                    dropped.append(f"tasks[{idx}] {reason}")
+                    logger.warning("decompose: task %s dropped tasks[%d] — %s", task_id, idx, reason)
+                    changed = True
+                    break
+
+    if not any(keep):
+        return [], "every proposed child duplicates work already owned: " + "; ".join(dropped)
+    index_map = {old: new for new, old in enumerate(i for i in range(len(children)) if keep[i])}
+    kept: list[dict] = []
+    for idx, child in enumerate(children):
+        if not keep[idx]:
+            continue
+        repointed: list[int] = []
+        for parent in child["parents"]:
+            owner = _owner(parent)
+            mapped = index_map[owner] if owner is not None else None
+            if mapped is not None and mapped != index_map[idx] and mapped not in repointed:
+                repointed.append(mapped)
+        child["parents"] = repointed
+        kept.append(child)
+    return kept, ""
+
+
 def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[list[dict], str]:
     """Validate/normalise the LLM's ``tasks`` list; ``(children, "")`` or ``([], reason)``.
     Unknown assignees route to the default; never assignee=None."""
@@ -271,11 +435,18 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
     return children, ""
 
 
-def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
+def _apply_fanout(task: kb.Task, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
+    task_id = task.id
     raw_tasks = parsed.get("tasks") or []
     if not isinstance(raw_tasks, list) or not raw_tasks:
         return DecomposeOutcome(task_id, False, "decomposer returned fanout=true with empty tasks list")
     children, reason = _clean_children(task_id, raw_tasks, routing)
+    if reason:
+        return DecomposeOutcome(task_id, False, reason)
+    children, reason = _drop_duplicates(
+        task_id, children, parent_title=getattr(task, "title", None),
+        parent_body=getattr(task, "body", None),
+    )
     if reason:
         return DecomposeOutcome(task_id, False, reason)
     try:
@@ -333,7 +504,7 @@ def decompose_task(
     audit_author = author or _profile_author()
     if not parsed.get("fanout"):
         return _apply_single(task, parsed, routing, audit_author)
-    return _apply_fanout(task_id, parsed, routing, audit_author)
+    return _apply_fanout(task, parsed, routing, audit_author)
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:

@@ -392,7 +392,8 @@ def _head_tail_preview(page: _Pageable, max_chars: int):
     if last_nl > head_budget // 2:
         head = head[:last_nl + 1]
     hidden = len(output) - len(head) - len(tail)
-    marker = f"\n[... {hidden:,} chars elided; full output in the spillover file ...]\n"
+    # Neutral on purpose: the inline fallback for a failed save reuses this preview.
+    marker = f"\n[... {hidden:,} chars elided ...]\n"
     return f"{lead}{head}{marker}{tail}", True
 
 

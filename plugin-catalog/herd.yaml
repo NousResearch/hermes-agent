@@ -1,6 +1,6 @@
 name: herd
 repo: https://github.com/welliv/hermes-herd
-sha: 3df3742224fdaaf4d95fe5639e87ffcbe64b447d
+sha: b7308f61b414dae8463ffe8b34d7e7e1bf67b53f
 description: >-
   Keep one Hermes across every machine. Settings, skills, memory and API keys
   follow the user between devices while each machine keeps what belongs to it —

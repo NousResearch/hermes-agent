@@ -1,0 +1,19 @@
+name: doc-markdown
+repo: https://github.com/TakeshiTGAL/hermes-plugin-doc-markdown
+sha: 4206b7f8066fe84f2c295f480a441f47154d9315
+description: "Convert one local file to Markdown with doc_convert on Linux and macOS, built on Microsoft's MarkItDown. Microsoft and MarkItDown are trademarks of the Microsoft group of companies. Disclosure — the doc_markdown toolset is on by default on every surface, including a gateway, so anyone you allow there can call doc_convert; stop it with hermes tools. It does not fetch pages. Unattended sessions still convert when Hermes calls the tool. This plugin creates no cron job. A child process runs MarkItDown with no Hermes keys in its environment; on macOS the plugin runs ps about every 10 ms to watch that child's memory. It stops 8 seconds after its converters load, at 60 seconds if loading never finishes, or above 922746880 bytes. It is not a sandbox: after realpath it may read any allowlisted path it can open. Unpublished Hermes code locates the Hermes home, and a failed check refuses the path. Removal deletes the plugin directory, not the markitdown package. Windows was not tested."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-doc-markdown#readme
+version: "0.1.0"
+requires_hermes: ">=0.21.4"
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools:
+  - doc_convert
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

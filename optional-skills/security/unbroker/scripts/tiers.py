@@ -43,6 +43,11 @@ def plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
         or cfg.get("email_mode", "draft_only")
     actions: list[dict] = []
     for b in brokers_list:
+        if b.get("defunct"):
+            # Dead domain (seized/NXDOMAIN): excluded from every scan/act surface so it
+            # never wedges a crawl, queues an opt-out against a corpse, or re-checks one.
+            # batch_plan surfaces the ids so the run book can say why they are absent.
+            continue
         opt = b.get("optout") or {}
         search = b.get("search") or {}
         # Defensive shape coercion: a subagent may have written a malformed record (requires as a
@@ -71,6 +76,7 @@ def plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
             "antibot": search.get("antibot"),
             "search_by": vectors_mod.supported_by(b),
             "search_vectors": svectors,
+            "search_vectors_count": len(svectors),
             "optout_url": opt.get("url"),
             "optout_email": opt.get("email"),
             "disclosure_fields": sorted(disclosure.keys()),
@@ -95,7 +101,7 @@ def fanout(brokers_list: list[dict], batch_size: int = 5) -> dict:
     Scanning many brokers serially is slow and burns context; above `batch_size`
     the agent is expected to spawn one subagent per batch (see SKILL.md).
     """
-    ids = [b.get("id") for b in brokers_list if b.get("id")]
+    ids = [b.get("id") for b in brokers_list if b.get("id") and not b.get("defunct")]
     batches = [ids[i:i + batch_size] for i in range(0, len(ids), batch_size)]
     return {
         "broker_count": len(ids),
@@ -103,6 +109,22 @@ def fanout(brokers_list: list[dict], batch_size: int = 5) -> dict:
         "should_fanout": len(ids) > batch_size,
         "batches": batches,
     }
+
+
+def runnable_for(subject_dossier: dict, brokers_list: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(runnable, unsearchable) split of the broker list for THIS subject.
+
+    A broker with zero runnable search vectors (e.g. a name-only site in a phone-led run
+    with no name on file) cannot be scanned at all -- exclude it up front instead of
+    leaving it wedged in `unscanned` forever.
+    """
+    runnable: list[dict] = []
+    unsearchable: list[dict] = []
+    for b in brokers_list:
+        if b.get("defunct"):
+            continue  # dead domains are neither runnable nor unsearchable: they are absent
+        (runnable if vectors_mod.search_vectors(subject_dossier, b) else unsearchable).append(b)
+    return runnable, unsearchable
 
 
 # States that mean "the crawl reached a verdict for this broker".
@@ -122,7 +144,9 @@ def batch_plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
     children is ONE action, not N. Read-only: computes, never mutates the ledger.
     """
     ledger = ledger or {}
+    defunct = [b.get("id") for b in brokers_list if b.get("defunct")]
     actions = plan(subject_dossier, brokers_list, cfg, browser_clears_captcha)
+    vcount = {a["broker_id"]: a["search_vectors_count"] for a in actions}
 
     # child id -> parent id (only for parents present in this plan set)
     child_to_parent: dict[str, str] = {}
@@ -134,6 +158,8 @@ def batch_plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
         return (ledger.get(bid) or {}).get("state", "new")
 
     groups: dict[str, list[dict]] = {
+        "unsearchable": [],     # no runnable search vector for THIS subject (e.g. a name-only
+                                # site in a phone-led run) -> excluded from the crawl, not pending
         "unscanned": [],        # no verdict yet -> Phase 1 crawl
         "found": [],            # direct removable listing -> Phase 2 opt-out (incl. reappeared/action_selected)
         "indirect_exposure": [],# PII on a third party's record -> CCPA/GDPR delete email
@@ -176,7 +202,10 @@ def batch_plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
         elif st in groups:
             groups[st].append(row)
         elif st not in _SCANNED_STATES:
-            groups["unscanned"].append(row)
+            if not vcount.get(bid):
+                groups["unsearchable"].append(row)
+            else:
+                groups["unscanned"].append(row)
         else:
             groups.setdefault(st, []).append(row)
 
@@ -190,6 +219,7 @@ def batch_plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
     return {
         "subject": subject_dossier.get("subject_id"),
         "phase": "discover" if groups["unscanned"] else "delete",
+        "defunct": defunct,
         "counts": {k: len(v) for k, v in groups.items()},
         "groups": groups,
         "cluster_savings": {p: kids for p, kids in covered_by_parent.items()},
@@ -223,8 +253,12 @@ def synthesize_steps(r: dict) -> list[str]:
                      + " -- prefer deletion over suppression.")
     if r.get("notes"):
         steps.append(str(r["notes"]))
-    for q in (r.get("optout_quirks") or [])[:3]:
+    quirks = r.get("optout_quirks") or []
+    for q in quirks[:4]:
         steps.append(str(q))
+    if len(quirks) > 4:
+        steps.append(f"(+{len(quirks) - 4} more quirks in this broker's record -- read them "
+                     "before filing; the record is the source of truth)")
     return steps
 
 
@@ -277,6 +311,10 @@ def _batch_next(groups: dict, covered: dict) -> list[str]:
         tips.append(f"Cluster dedup: {n} child site(s) covered by parent removals -- skip separate opt-outs.")
     if groups["in_progress"]:
         tips.append(f"{len(groups['in_progress'])} in progress: resolve verification links, then confirm removal.")
+    if groups.get("unsearchable"):
+        tips.append(f"{len(groups['unsearchable'])} broker(s) have no runnable search vector for "
+                    "this subject (missing identifier, e.g. a name-only site in a phone-led "
+                    "run) -- excluded from the crawl, not pending.")
     if groups.get("human"):
         tips.append(f"{len(groups['human'])} parked human task(s): present via `tasks` at end of run "
                     "(do not re-scan or re-queue them).")

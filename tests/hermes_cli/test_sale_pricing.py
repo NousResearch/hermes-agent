@@ -178,3 +178,22 @@ def test_a_successful_catalog_fetch_stays_cached(monkeypatch):
     assert "a/b" in fetch_models_with_pricing(base_url="https://example.test")
     assert len(calls) == 1
 
+
+
+def test_fetch_models_with_pricing_keeps_the_display_name_for_nous_only(monkeypatch):
+    """The limit card names a model the way the catalog does ("Model A"); a name equal to the id
+    adds nothing and is dropped."""
+    payload = {"data": [
+        {"id": "a/b", "name": "  A B Model ", "pricing": {"prompt": "0.000002", "completion": "0.00001"}},
+        {"id": "c/d", "name": "c/d", "pricing": {"prompt": "0.000002", "completion": "0.00001"}},
+    ]}
+    resp = MagicMock()
+    resp.read.return_value = json.dumps(payload).encode()
+    resp.__enter__ = lambda self: self
+    resp.__exit__ = lambda *a: False
+    monkeypatch.setattr(models_mod, "_urlopen_model_catalog_request", lambda req, timeout=8.0: resp)
+
+    fetch = lambda **kw: fetch_models_with_pricing(api_key="sk-test", base_url="https://example.test", force_refresh=True, **kw)
+    nous = fetch(include_sale_original=True)
+    assert nous["a/b"]["name"] == "A B Model" and "name" not in nous["c/d"]
+    assert "name" not in fetch()["a/b"]

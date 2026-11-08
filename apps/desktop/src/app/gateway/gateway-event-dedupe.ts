@@ -46,9 +46,11 @@ export interface GatewayEventDedupe {
 }
 
 function sessionKey(event: GatewayEvent): string {
+  // Native authorities own a replay epoch per session/profile; equal stored
+  // IDs in different profile islands must never share a duplicate bucket.
   // Before `gateway.ready` a socket has no epoch; bucket by connection so the
   // pair still deduplicates within one backend URL.
-  const epoch = event.replayEpoch ?? `conn:${event.connectionId ?? ''}`
+  const epoch = event.replay_epoch ?? event.replayEpoch ?? `conn:${event.connectionId ?? ''}`
 
   return `${epoch}\u0000${event.session_id}`
 }

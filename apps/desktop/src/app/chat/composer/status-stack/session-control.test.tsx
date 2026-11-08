@@ -260,6 +260,36 @@ describe('ComposerStatusStack session-control UI', () => {
     }
   })
 
+  // 12b. the loop's next-run label is a live countdown, not a value frozen at render time
+  it('counts a loop down to its next wakeup and makes an overdue one explicit', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(1_700_000_030_000))
+
+    try {
+      $sessionControlBySession.set({
+        [SID]: mockEntry({ snapshot: sampleSnapshot({ goal: null, loop: sampleLoop({ next_due_at: 1_700_002_730 }) }) })
+      })
+
+      renderStack()
+
+      expect(screen.getByText(/Loop active · Run 3\/10 · next 00:45:00/)).toBeTruthy()
+
+      act(() => {
+        vi.advanceTimersByTime(61_000)
+      })
+
+      expect(screen.getByText(/Loop active · Run 3\/10 · next 00:43:59/)).toBeTruthy()
+
+      act(() => {
+        vi.advanceTimersByTime(44 * 60_000)
+      })
+
+      expect(screen.getByText(/Loop active · Run 3\/10 · due — waiting for idle/)).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   // 13. action rejection produces alert/live feedback
   it('displays an alert role when action rejects', async () => {
     mockRunSessionControlAction.mockRejectedValue(new Error('Gateway rejected mutation'))

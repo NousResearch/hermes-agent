@@ -75,6 +75,7 @@ def test_collector_continues_after_one_generation_cannot_be_removed(tmp_path, mo
     assert not removable.exists()
 
 
+@pytest.mark.platforms("any")
 def test_next_reader_removes_lease_left_by_hard_exit(tmp_path):
     from hermes_cli.runtime_state import lease_directory
 
@@ -104,6 +105,7 @@ os._exit(0)
     assert list(leases.iterdir()) == []
 
 
+@pytest.mark.platforms("posix")
 @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root opens mode-0 files")
 def test_prune_keeps_unopenable_sibling_lease(tmp_path):
     """A lease this user cannot open (root-owned, `sudo hermes` on the same checkout) is HELD:
@@ -124,6 +126,7 @@ def test_prune_keeps_unopenable_sibling_lease(tmp_path):
         foreign.chmod(0o600)
 
 
+@pytest.mark.platforms("posix")
 def test_lease_taken_while_a_peer_pruned_it_is_retaken(tmp_path, monkeypatch):
     """A peer's prune can lock-and-unlink our lease between create and flock; the writer must
     end up holding a lease the collectors can see, never an unlinked inode."""

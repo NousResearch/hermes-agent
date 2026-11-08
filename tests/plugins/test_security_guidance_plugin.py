@@ -78,7 +78,7 @@ class TestPatternsData:
         p = _load_patterns()
         for rule in p.SECURITY_PATTERNS:
             assert "ruleName" in rule
-            assert "reminder" in rule and rule["reminder"]
+            assert rule.get("reminder")
             # At least one of substrings/regex/path_check must be present —
             # otherwise the rule could never fire.
             assert any(k in rule for k in ("substrings", "regex", "path_check")), rule

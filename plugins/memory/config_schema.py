@@ -25,6 +25,10 @@ KIND_JSON = "json"
 # Storage backends understood by web_server (see its read/write dispatch).
 STORAGE_FLAT_JSON = "flat_json"
 STORAGE_HONCHO_HOST_BLOCK = "honcho_host_block"
+# The provider's read_config_fields / write_config_fields own the file layout
+# (agent.memory_provider.MemoryProvider); loading them loads the provider itself (in the plugin
+# host when ``plugins.isolation`` is ``host``), and its writer also receives submitted secrets.
+STORAGE_PROVIDER = "provider"
 
 
 @dataclass(frozen=True)
@@ -84,6 +88,7 @@ class ProviderConfigSchema:
 
 
 _SCHEMA_CACHE: dict[str, ProviderConfigSchema] = {}
+_SCHEMA_FAILURES_LOGGED: set[str] = set()
 
 
 def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
@@ -101,15 +106,38 @@ def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
         return _SCHEMA_CACHE[key]
 
     try:
-        spec = importlib.util.spec_from_file_location(f"_hermes_memory_config_schema.{name}", path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        schema = getattr(module, "CONFIG_SCHEMA", None)
+        from plugins.memory import _is_bundled
+        from hermes_cli.plugin_isolation import user_plugin_host
+        host = None if _is_bundled(provider_dir) else user_plugin_host()
+        if host is not None:  # plugins.isolation: host — a user schema file is user code too
+            schema = _schema_from_record(host.config_schema(path))
+        else:
+            spec = importlib.util.spec_from_file_location(f"_hermes_memory_config_schema.{name}", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            schema = getattr(module, "CONFIG_SCHEMA", None)
     except Exception:
-        # Never cache a failed load: it would pin an empty panel until restart.
-        _log.exception("failed to load config schema for memory provider %r", name)
+        # Never cache a failed load: it would pin an empty panel until restart. Log the traceback
+        # once per file, though: the panel polls, and an outdated plugin fails the same way each time.
+        if key in _SCHEMA_FAILURES_LOGGED:
+            _log.debug("failed to load config schema for memory provider %r", name, exc_info=True)
+        else:
+            _SCHEMA_FAILURES_LOGGED.add(key)
+            _log.exception("failed to load config schema for memory provider %r", name)
         return None
 
     if schema is not None:
         _SCHEMA_CACHE[key] = schema
     return schema
+
+
+def _schema_from_record(record) -> ProviderConfigSchema | None:
+    """Rebuild a schema that crossed the plugin-host boundary as plain data."""
+    if not record:
+        return None
+    fields = tuple(
+        ProviderField(**{**f, "options": tuple(ProviderFieldOption(**o) for o in f.get("options") or ()),
+                         "aliases": tuple(f.get("aliases") or ()),
+                         "env_fallbacks": tuple(f.get("env_fallbacks") or ())})
+        for f in record.get("fields") or ())
+    return ProviderConfigSchema(**{**record, "fields": fields})

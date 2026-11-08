@@ -1,0 +1,18 @@
+name: limbic
+repo: https://github.com/dyiapanis/limbic
+sha: 03ae74f6e1a1f323e65d8aed1c6f12cdcc8b3300
+description: "Local long-term memory for Hermes agents: facts and preferences stay on your machine in one SQLite file with bundled embedding and natural language inference (NLI) models, decaying and reconsolidating organically with use and abstaining rather than guessing. No LLM calls.\n\nDisclosures\n- Network: downloads ~1.0GB of pinned ONNX models from huggingface.co on first session start (Arctic Embed 2.0 L int8, ~570MB; MiniLMv2 NLI, ~430MB), verified against pinned commits and hashes; nothing else leaves the machine.\n- Local files: reads and writes limbic.db and limbic_params.json under HERMES_HOME, plus a model cache at ~/.cache/limbic (outside HERMES_HOME); at every model load it deletes files in those cache folders that are not in the pinned manifest.\n- No shell commands, no long-running background services, no stored credentials, no telemetry. Disclosure — the agent-facing tools are remember, recall and forget (forget lists candidate facts for a query, then deletes the one fact id the user picks, scoped to the current user, and appends a hash-only receipt of the content's sha256, length, user id and fact id to limbic.db.deletions.jsonl beside the database); on first primary session start downloads ~1.0GB of ONNX models (Arctic Embed 2.0 L int8 embedding, ~570MB; MiniLMv2 NLI, ~430MB, on first contradiction check) from huggingface.co at pinned commits with hash checks into ~/.cache/limbic/ (outside HERMES_HOME; %USERPROFILE%\\\\.cache\\\\limbic on Windows); at every model load, every file in those cache folders that is not in the pinned manifest is deleted — including unrelated files if you point embedding/nli cache_dir at a shared folder; ships the English spaCy pipeline (en_core_web_sm, ~15MB of model data) in the plugin folder; other spaCy NER models are optional: `hermes limbic languages --set <lang>` and `hermes limbic setup` run `python -m spacy download <model>`, which pip-installs each model package (~14.5MB, version picked by spaCy, not hash-pinned) from spaCy's GitHub releases into Hermes's own Python environment, and `hermes limbic setup` also pre-downloads both ONNX models; memory stays local in limbic.db under HERMES_HOME, facts whose trust decays to zero are deleted automatically, and hermes backup adds VACUUM snapshots under HERMES_HOME/backups; no telemetry."
+maintainer: dyiapanis
+tier: community
+category: memory
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/dyiapanis/limbic#readme
+version: "0.9.5"
+image: https://raw.githubusercontent.com/dyiapanis/limbic/03ae74f6e1a1f323e65d8aed1c6f12cdcc8b3300/assets/banner.png
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

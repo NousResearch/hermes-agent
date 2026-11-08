@@ -44,7 +44,7 @@ import { $zoneEditorOpen } from '../zone-editor'
 /** Miniature render of a layout tree — the preset card thumbnail. A zone whose
  *  every pane the preset leaves resting is drawn as a ghost: the slot is there,
  *  nothing is in it yet. */
-function TreeThumbnail({ node, resting }: { node: LayoutNode; resting: ReadonlySet<string> }) {
+export function TreeThumbnail({ node, resting }: { node: LayoutNode; resting: ReadonlySet<string> }) {
   if (node.type === 'group') {
     const ghost = node.panes.every(id => resting.has(id))
 

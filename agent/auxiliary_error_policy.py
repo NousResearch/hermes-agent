@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from typing import Any, NamedTuple, Optional
 
-import httpx
-
 from agent.auxiliary_call_outcome import is_cancellation
 from agent.error_classifier import (
     POLICY_REFUSAL_REASONS, TRANSIENT_REASONS, ClassifiedError, FailoverReason, classify_api_error,
@@ -47,6 +45,8 @@ def classify_attempt(error: Exception, provider: Optional[str], client: Any = No
                      base_url: Optional[str] = "") -> ClassifiedError:
     """``classify_api_error`` on the backend, model, endpoint and credential ``client`` was sent to."""
     slug = str(provider or "").strip().lower()
+    import httpx  # late: this module sits on the bootstrap/conftest import chain, which has no httpx
+
     url, key = getattr(client, "base_url", None), getattr(client, "api_key", None)
     if is_cancellation(error):  # a cancelled task: no retry, no other provider
         return ClassifiedError(_R.unknown, provider=slug, retryable=False, message=str(error),

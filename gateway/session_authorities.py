@@ -190,14 +190,19 @@ def served_profile_name(home) -> str:
 
 
 def authority_home(authority) -> Path:
-    """The profile home owning this authority's store: the store path's parent directory, resolved.
+    """The profile home owning this authority's store.
 
-    Never ``Path(authority.db.db_path).resolve().parent``: that follows a ``state.db`` symlinked
-    outside its profile home to the link target's directory (no ``.env``, no ``skills/``), which
-    scoped multiplex cron runs to the wrong home (#145075). Resolving the DIRECTORY instead keeps
-    the canonical home ``run_runtime`` serves (and stamps into stored credential references) for
-    every store that is not itself a link. Touches the disk: async callers run it off the loop.
+    The gateway's per-profile build records the reserved home on the authority, and that wins:
+    the runner opens every store through ``hermes_state_registry.acquire``, which resolves the
+    path, so for a ``state.db`` symlinked outside its home (#145075) ``db.db_path`` is already
+    the link TARGET and no path arithmetic on it recovers the home. Scoping there sent cron runs
+    to a directory with no ``.env`` and no ``skills/``. Authorities built elsewhere (one store,
+    no reservation) fall back to the store's own directory. May touch the disk: async callers
+    run it off the loop.
     """
+    home = getattr(authority, 'home', None)
+    if home is not None:
+        return Path(home)
     return Path(authority.db.db_path).parent.resolve()
 
 

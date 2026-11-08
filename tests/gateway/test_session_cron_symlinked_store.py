@@ -18,7 +18,6 @@ import pytest
 def symlinked_store_authority(tmp_path, monkeypatch):
     """An authority whose state.db is a symlink to a store outside the profile home."""
     from gateway.session_authority import SessionAuthority
-    from hermes_state import SessionDB
     from hermes_state_runtime import begin_runtime_epoch
     
     # Profile home
@@ -36,8 +35,9 @@ def symlinked_store_authority(tmp_path, monkeypatch):
     
     monkeypatch.setenv('HERMES_HOME', str(profile_home))
     
-    # Open the database through the symlink
-    db = SessionDB(symlink_db)
+    # Open through the runner's registry, as the gateway does: it resolves the link.
+    from hermes_state_registry import acquire
+    db = acquire(symlink_db)
     
     runner = SimpleNamespace(_draining=False)
     authority = SessionAuthority(
@@ -45,7 +45,8 @@ def symlinked_store_authority(tmp_path, monkeypatch):
         profile_id=str(profile_home),  # The profile_id IS the home, as set in run_runtime.py
         instance_id='test',
         db=db,
-        epoch=begin_runtime_epoch(db, instance_id='test')
+        epoch=begin_runtime_epoch(db, instance_id='test'),
+        home=profile_home,  # recorded by run_runtime._build_profile_authority
     )
     
     return authority, profile_home, store_dir

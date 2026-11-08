@@ -132,9 +132,12 @@ async def keyed_turn(table, key, *, queued=None):
 
 
 class SessionAuthority:
-    def __init__(self, runner, *, profile_id, instance_id, db, epoch):
+    def __init__(self, runner, *, profile_id, instance_id, db, epoch, home=None):
         self.runner = runner
         self.profile_id = profile_id
+        # The reserved profile home this authority serves (``authority_home``); None outside the
+        # gateway's per-profile build, where the store's own directory is the home.
+        self.home = home
         self.instance_id = instance_id
         self.db = db
         self.epoch = epoch
@@ -1438,7 +1441,7 @@ def backfill_compression_created_sources(db):
     return stamped
 
 
-async def initialize_session_authority(runner, *, profile_id, instance_id, db=None, register=True):
+async def initialize_session_authority(runner, *, profile_id, instance_id, db=None, register=True, home=None):
     """Call after exclusive profile ownership, before connecting adapters/API.
 
     ``register=False`` builds a served secondary's authority without making it the runner's
@@ -1462,7 +1465,8 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     await asyncio.to_thread(release_handed_off_receipts, db, epoch=epoch)
     from gateway.session_bot import release_superseded_bot_chat_at_boot
     await asyncio.to_thread(release_superseded_bot_chat_at_boot, db, runner.session_store)
-    authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch,
+                                 home=home)
     # A receipt's compression catch-up (#140060) writes: it commits off the loop too, before the
     # authority is published, so the recovery below only reads.
     from gateway.session_local_adoption import adopt_local_compressions

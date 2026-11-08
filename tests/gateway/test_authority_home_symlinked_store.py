@@ -18,8 +18,10 @@ def _symlinked_db(tmp_path):
 
 
 def _authority(home, db_path):
+    # The gateway's shape: acquire() hands the authority the RESOLVED store path (the link
+    # target), and _build_profile_authority records the reserved home beside it.
     return SimpleNamespace(
-        profile_id=str(home), db=SimpleNamespace(db_path=str(db_path)))
+        profile_id=str(home), home=home, db=SimpleNamespace(db_path=str(db_path.resolve())))
 
 
 def test_cron_owner_keyed_by_profile_home_not_db_symlink_parent(tmp_path):

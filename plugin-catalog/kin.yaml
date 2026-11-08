@@ -2,7 +2,7 @@ name: kin
 title: Avatar
 repo: https://github.com/vdimarco/hermes-kin
 sha: 1c258c9c18c4c3104ad8c5e21faf749fb61fc962
-description: "An avatar for Hermes Desktop that keeps an eye on your work. It tells you when a turn is stuck, done, or waiting on you. Pick one of thirteen original characters, six 3D busts and seven 2D cartoons, each with a voice of their own. An optional overlay adds a plain-English task drawer, opt-in voice, and screen diagnosis. Your avatar writes drafts and never sends for you."
+description: "Gives Hermes Desktop a face. Pick one of thirteen original characters, six 3D busts and seven 2D cartoons, each with its own voice. It watches your sessions, frowns when a step fails, and grins when a turn finishes. An optional overlay adds a plain-English task drawer, voice input, and one-click screen diagnosis."
 maintainer: vdimarco
 tier: community
 category: desktop

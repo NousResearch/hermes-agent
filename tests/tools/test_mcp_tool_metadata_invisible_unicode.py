@@ -29,11 +29,14 @@ def test_tool_schema_strips_hidden_free_text_but_keeps_the_call_contract():
             tagged_key: {"type": "string", "description": f"legacy{HIDDEN}"},
         },
         "required": ["query"],
+        # An argument literally named "enum" in a name->schema map is a name, not the keyword.
+        "dependentSchemas": {"enum": {"description": f"dep{HIDDEN}"}},
     })
     schema = _convert_mcp_schema("srv", tool)
     props = schema["parameters"]["properties"]
     free_text = [schema["description"], props["query"]["title"], props["query"]["description"],
-                 props["query"]["default"], props["mode"]["description"], props[tagged_key]["description"]]
+                 props["query"]["default"], props["mode"]["description"], props[tagged_key]["description"],
+                 schema["parameters"]["dependentSchemas"]["enum"]["description"]]
     assert not any(_invisible(text) for text in free_text)
     assert props["query"]["description"] == "Search text" and FAMILY in schema["description"]
     assert tagged_key in props and props["mode"]["enum"] == [tagged_choice, "slow"]

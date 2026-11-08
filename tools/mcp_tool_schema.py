@@ -204,7 +204,7 @@ def strip_schema_annotations(node, tool_name: str = "", _contract: bool = False,
             for name in node:
                 strip_schema_annotations(name, tool_name, True)
         items = [(k, strip_schema_annotations(v, tool_name, _contract or (not _names and k in _SCHEMA_CONTRACT_KEYS),
-                                              not _names and k in ("properties", "patternProperties", "$defs")))
+                                              not _names and k in _SCHEMA_MAP_KEYS))
                  for k, v in node.items()]
         return node if all(nv is v for (_, nv), v in zip(items, node.values())) else dict(items)
     if isinstance(node, list):

@@ -8,6 +8,7 @@ import time
 
 from plugins.platforms.signal import signal_rate_limit as rl
 from plugins.platforms.signal.signal_format import markdown_to_signal
+from gateway.platforms.base import describe_proxy_error, first_proxy_env_value  # httpx reads HTTPS_PROXY itself
 from tools.send_message_senders import _error, _success
 
 logger = logging.getLogger(__name__)
@@ -41,10 +42,10 @@ async def _signal_send_batch(post, scheduler, rl, idx, n_batches, att_batch, bat
         except Exception as e:
             if attempt >= max_attempts:
                 logger.error("Signal: send error on batch %d/%d after %d attempts: %s",
-                             idx + 1, n_batches, attempt, str(e))
+                             idx + 1, n_batches, attempt, describe_proxy_error(e, first_proxy_env_value()) or str(e))
                 return False
             logger.warning("Signal: transient error on batch %d/%d (attempt %d/%d): %s; will retry",
-                           idx + 1, n_batches, attempt, max_attempts, str(e))
+                           idx + 1, n_batches, attempt, max_attempts, describe_proxy_error(e, first_proxy_env_value()) or str(e))
 
 
 async def _send_signal(extra, chat_id, message, media_files=None):
@@ -100,7 +101,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                     await _rpc_send(f"(More images coming — pausing ~{rl._format_wait(estimated)} "
                                     f"for Signal rate limit, batch {idx + 1}/{n_batches}.)", id_prefix="notice", timeout=30.0)
                 except Exception as _e:
-                    logger.warning("Signal: inline notice failed: %s", _e)
+                    logger.warning("Signal: inline notice failed: %s", describe_proxy_error(_e, first_proxy_env_value()) or _e)
             outcome = await _signal_send_batch(_post, scheduler, rl, idx, n_batches, att_batch,
                                                plain_text if idx == 0 else "")
             if outcome is False:
@@ -118,7 +119,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         # Result-safe chat identifier for tool transcripts/log consumers.
         return _success("signal", "group:***" if str(chat_id).startswith("group:") else chat_id, warnings)
     except Exception as e:
-        return _error(f"Signal send failed: {e}")
+        return _error(f"Signal send failed: {describe_proxy_error(e, first_proxy_env_value()) or e}")
 
 
 async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):

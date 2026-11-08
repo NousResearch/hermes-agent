@@ -30,7 +30,7 @@ from gateway.platforms._shared import (
 )
 from gateway.config import Platform, PlatformConfig
 from hermes_constants import hermes_home_key
-from gateway.platforms.base import BasePlatformAdapter, SendResult, cache_image_from_url
+from gateway.platforms.base import BasePlatformAdapter, SendResult, cache_image_from_url, describe_proxy_error, first_proxy_env_value
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 
@@ -665,7 +665,7 @@ async def _standalone_send(
             await asyncio.sleep(0.5)  # let the daemon process the command before closing
         return {"success": True, "platform": "simplex", "chat_id": chat_id}
     except Exception as e:
-        return send_error(f"SimpleX send failed: {e}")
+        return send_error(f"SimpleX send failed: {describe_proxy_error(e, first_proxy_env_value()) or e}")  # websockets reads *_PROXY
 
 
 _SETUP_PROMPTS = (

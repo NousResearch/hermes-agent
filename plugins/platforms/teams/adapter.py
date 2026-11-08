@@ -58,7 +58,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
-)
+    describe_proxy_error, first_proxy_env_value, resolve_proxy_url)
 from gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_deadline_line
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent, MessageType
@@ -242,8 +242,8 @@ async def _standalone_send(
     except asyncio.CancelledError:
         raise
     except Exception as e:
-        logger.debug("Teams standalone send raised", exc_info=True)
-        return send_error(f"Teams standalone send failed: {e}")
+        logger.debug("Teams standalone send raised", exc_info=not (shown := describe_proxy_error(e, resolve_proxy_url())))
+        return send_error(f"Teams standalone send failed: {shown or e}")  # the text may echo the proxy URL
 
 
 # SDK module → names rebound into this module's globals by check_teams_requirements().
@@ -713,8 +713,8 @@ class TeamsAdapter(BasePlatformAdapter):
             result = await self._send_card(prompt.chat_id, card)
             return SendResult(success=True, message_id=getattr(result, "id", None) if result else None)
         except Exception as e:
-            logger.error("[teams] send_exec_approval failed: %s", e, exc_info=True)
-            return SendResult(success=False, error=str(e), retryable=True)
+            logger.error("[teams] send_exec_approval failed: %s", (shown := describe_proxy_error(e, first_proxy_env_value())) or e, exc_info=not shown)
+            return SendResult(success=False, error=shown or str(e), retryable=True)
 
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None
@@ -735,8 +735,8 @@ class TeamsAdapter(BasePlatformAdapter):
                     result = await self._app.send(chat_id, chunk)
                 last_message_id = getattr(result, "id", None)
                 self._remember_sent(result)
-            except Exception as e:
-                return SendResult(success=False, error=str(e), retryable=True)
+            except Exception as e:  # the SDK's httpx client reads HTTPS_PROXY: the text may echo it
+                return SendResult(success=False, error=describe_proxy_error(e, first_proxy_env_value()) or str(e), retryable=True)
         return SendResult(success=True, message_id=last_message_id)
 
     async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
@@ -771,8 +771,8 @@ class TeamsAdapter(BasePlatformAdapter):
             result = await self._send_via_conv_ref(chat_id, activity, activity)
             return SendResult(success=True, message_id=getattr(result, "id", None))
         except Exception as e:
-            logger.error("[teams] send_%s failed: %s", media_label, e, exc_info=True)
-            return SendResult(success=False, error=str(e), retryable=True)
+            logger.error("[teams] send_%s failed: %s", media_label, (shown := describe_proxy_error(e, first_proxy_env_value())) or e, exc_info=not shown)
+            return SendResult(success=False, error=shown or str(e), retryable=True)
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
                          metadata: Optional[dict[str, Any]] = None) -> SendResult:

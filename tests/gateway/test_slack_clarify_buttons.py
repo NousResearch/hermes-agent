@@ -170,6 +170,14 @@ class TestSlackSendClarify:
         assert len(body) <= 3000
         assert all(f"\n{n}. " in body for n in (1, 2, 3, 4)) and body.endswith("…")
 
+        # A question that alone nearly fills the section is cut, not the list after it.
+        await adapter.send_clarify(
+            chat_id="C1", question="q" * 2990, choices=[f"{n}" * 60 for n in range(1, 5)],
+            clarify_id="cid6", session_key="sk6")
+        body = mock_client.chat_postMessage.call_args[1]["blocks"][0]["text"]["text"]
+        assert len(body) <= 3000 and body.endswith(f"\n4. {'4' * 60}")
+        assert all(f"\n{n}. {str(n) * 60}" in body for n in (1, 2, 3, 4))
+
     @pytest.mark.asyncio
     async def test_short_choices_no_numbered_list(self):
         """When every option fits its button, the body stays the question alone (#78115)."""

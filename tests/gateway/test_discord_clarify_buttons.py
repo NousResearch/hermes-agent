@@ -299,7 +299,7 @@ class TestDiscordSendClarify:
 @pytest.mark.asyncio
 async def test_many_long_choices_fit_content_and_render_literally():
     """A dozen long options (#78115): the numbered list lands in content within Discord's
-    2000-char cap, keeps whole lines, and escapes markdown so each option reads as typed."""
+    2000-char cap, keeps a line for every button, and escapes markdown so each option reads as typed."""
     adapter = _make_adapter()
     channel = MagicMock()
     channel.send = AsyncMock(return_value=MagicMock(id=1))
@@ -315,6 +315,6 @@ async def test_many_long_choices_fit_content_and_render_literally():
     assert len(content) <= 2000
     assert "Which plan?" in content
     assert r"1. Option 1: refactor the \*auth\* module and keep \_\_init\_\_ exports" in content
-    listed = [ln for ln in content.splitlines() if ln[:1].isdigit()]
-    assert listed and all(ln.endswith("x" * 40) for ln in listed)
+    listed = [ln.split(". ", 1)[0] for ln in content.splitlines() if ln[:1].isdigit()]
+    assert listed == [str(n) for n in range(1, 13)]
 

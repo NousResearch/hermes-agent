@@ -134,3 +134,41 @@ def test_a_root_layout_package_brings_its_desktop_half_as_the_installers_publish
     (package / "plugin.js").unlink()
     webapp.post("/api/desktop-plugins/reconcile")
     assert "radar" not in _loaded(webapp)
+
+
+def _refusing_package(home, name, source, outside):
+    """A root-layout package whose root holds a link: the plain-tree check refuses its desktop half."""
+    package = home / "plugins" / name
+    package.mkdir(parents=True)
+    (package / "plugin.js").write_text(source, encoding="utf-8")
+    (package / "leak.txt").symlink_to(outside)
+    return package
+
+
+def test_a_refused_update_is_reported_and_the_working_copy_stays(webapp, hermes_root, tmp_path):
+    package = hermes_root / "plugins" / "radar"
+    package.mkdir(parents=True)
+    (package / "plugin.js").write_text("v1", encoding="utf-8")
+    assert _loaded(webapp)["radar"][0] == "v1"
+
+    (tmp_path / "secret").write_text("x", encoding="utf-8")
+    (package / "leak.txt").symlink_to(tmp_path / "secret")
+    (package / "plugin.js").write_text("v2", encoding="utf-8")
+    later = os.stat(package / "plugin.js").st_mtime_ns + 10**9
+    os.utime(package / "plugin.js", ns=(later, later))
+
+    body = webapp.post("/api/desktop-plugins/reconcile").json()
+    assert body["touched"] == []
+    assert [(entry["name"], "leak.txt" in entry["reason"]) for entry in body["refused"]] == [("radar", True)]
+    assert _loaded(webapp)["radar"][0] == "v1"
+
+
+def test_a_refused_package_leaves_its_name_to_a_profiles_half(webapp, hermes_root, tmp_path):
+    (tmp_path / "secret").write_text("x", encoding="utf-8")
+    _refusing_package(hermes_root, "radar", "default", tmp_path / "secret")
+    profile = hermes_root / "profiles" / "work" / "plugins" / "radar"
+    profile.mkdir(parents=True)
+    (profile / "plugin.js").write_text("work", encoding="utf-8")
+
+    assert webapp.post("/api/desktop-plugins/reconcile").json()["refused"] == []
+    assert _loaded(webapp)["radar"][0] == "work"

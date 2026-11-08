@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
 from tools.delegate_tool_child_run import (
     _ChildRun, _attach_child, _build_child_goal_message, _close_child, _detach_child, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
-    _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
+    _lease_child_credential, _merge_late_steer, _register_child, _reserve_child_transcript, _start_heartbeat, _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
@@ -288,6 +288,12 @@ def _build_child_agent(
             request_overrides = {} if override_provider else dict(getattr(parent_agent, "request_overrides", {}) or {})
         parent_sid = getattr(parent_agent, "session_id", None)
         child_session_db = _open_child_session_db(parent_agent)
+        # Children run provider-less. Under compression.checkpoint_required the child arms the same gate
+        # (read inside the delegated profile scope, as the child reads it) and would die at its first
+        # compaction, so it inherits the provider, scoped as a fork. Cost: one initialize() per spawn.
+        from agent.conversation_compression_checkpoint import checkpoint_required_from_config
+
+        child_checkpoint_required = checkpoint_required_from_config()
         with delegated_child_context():
             try:
                 child = AIAgent(
@@ -295,7 +301,8 @@ def _build_child_agent(
                     enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                     ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
                     side_agent=True,
-                    skip_context_files=True, skip_memory=True, clarify_callback=None,
+                    skip_context_files=True, skip_memory=not child_checkpoint_required,
+                    memory_agent_context="subagent", clarify_callback=None,
                     thinking_callback=(
                         (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
                         if child_progress_cb else None
@@ -324,11 +331,15 @@ def _build_child_agent(
     _apply_child_cache_ttl(child)
     if child_session_db is not None:
         child._owns_session_db = True  # released by the child's close(), never by the parent
+    _reserve_child_transcript(child)
     # Ownership transfer for the dedicated handle: the child's close() must release it (nothing else holds a
     # reference), and no parent teardown can close it out from under a background child (#81267).
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
+    # Plugins see one conversation per delegation tree.
+    from agent.prompt_cache_scope import conversation_id
+    child._inherited_conversation_id = conversation_id(parent_agent)
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
@@ -338,9 +349,13 @@ def _build_child_agent(
     except TypeError:
         child._delegate_parent_ref = None  # non-weakref-able test doubles
     # Sidebar marker: subagent sessions stay out of session pickers even when a
-    # parent delete orphans them (mirrors /branch's ``_branched_from``).
+    # parent delete orphans them (mirrors /branch's ``_branched_from``). The
+    # subagent_id lets a viewer find the stored transcript once the live registry
+    # has forgotten the child (``delegate_tool_sessions``).
     if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
+        from tools.delegate_tool_sessions import SUBAGENT_ID_KEY
         child._session_init_model_config["_delegate_from"] = parent_sid
+        child._session_init_model_config[SUBAGENT_ID_KEY] = subagent_id
     child._delegate_profile_home = profile_home  # _ChildRun.await_child runs the conversation in this scope
     if child_pool is not None:
         child._credential_pool = child_pool

@@ -34,11 +34,23 @@ export const fmtMonth = new Intl.DateTimeFormat(undefined, { month: 'long' })
 export const fmtMonthYear = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' })
 
 // ── Relative time ──────────────────────────────────────────────────────────
-const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })
+const relativeFormats = new Map<string | undefined, Intl.RelativeTimeFormat>()
+
+function relativeFormat(locale?: string): Intl.RelativeTimeFormat {
+  let format = relativeFormats.get(locale)
+
+  if (!format) {
+    format = new Intl.RelativeTimeFormat(locale, { numeric: 'auto', style: 'short' })
+    relativeFormats.set(locale, format)
+  }
+
+  return format
+}
 
 // Localized bidirectional "in 5 min" / "2 hr ago" — coarsest sensible unit so a
 // daily job reads "in 14 hr", not "in 840 min".
-export function relativeTime(targetMs: number, nowMs = Date.now()): string {
+export function relativeTime(targetMs: number, nowMs = Date.now(), locale?: string): string {
+  const rtf = relativeFormat(locale)
   const diff = targetMs - nowMs
   const abs = Math.abs(diff)
   const sign = diff < 0 ? -1 : 1

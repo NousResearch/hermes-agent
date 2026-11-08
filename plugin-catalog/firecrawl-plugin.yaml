@@ -1,0 +1,17 @@
+name: firecrawl-plugin
+title: Firecrawl
+repo: https://github.com/firecrawl/firecrawl-hermes-plugin
+sha: 32368200ee1c139f5a079bb899db5f2760f0efd5
+description: "Search, scrape, crawl, map, interact, monitor and research through Firecrawl's hosted MCP server, with Firecrawl skills. Adds the full Firecrawl tool set (Alexandria data providers, people and company search, developer, paper and US government search) beside the bundled Firecrawl web backend, using the same FIRECRAWL_API_KEY; supports Hermes-managed OAuth through a native MCP entry. Disclosure — Connects to Firecrawl's hosted MCP server at `mcp.firecrawl.dev` and sends it the queries, URLs, prompts and files the agent asks Firecrawl to process, authenticated with `FIRECRAWL_API_KEY` or a Hermes-managed Firecrawl OAuth sign-in; calls use Firecrawl account credits."
+maintainer: firecrawl
+tier: community
+category: web
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/firecrawl/firecrawl-hermes-plugin/blob/32368200ee1c139f5a079bb899db5f2760f0efd5/README.md
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [FIRECRAWL_API_KEY]

@@ -94,6 +94,17 @@ function completedInstallMatches({ source, receipt, installedLock, key, nativeKe
     && linkedPackageDirs(source, installedLock).every(dir => existsSync(join(dir, 'package.json')))
 }
 
+// The reuse check reads the trees: an error from a run that lost its lock meanwhile (the new owner
+// moved them aside) is the lost lock, not a missing file.
+function reusable(lock, paths) {
+  try {
+    return completedInstallMatches(paths)
+  } catch (error) {
+    lock.check()
+    throw error
+  }
+}
+
 // One run at a time per checkout. The callers hold different locks or none (`hermes update`,
 // `hermes --tui`, the dashboard, Desktop, another profile), and a run moves trees in and out of
 // place, so even a reuse check must not run beside an install. The owner refreshes the lock's
@@ -596,10 +607,11 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
   try {
     const previous = previousTrees(source, lock.check)
     previous.recover()
-    if (reuse && completedInstallMatches({ source, receipt, installedLock, key, nativeKey })) {
+    if (reuse && reusable(lock, { source, receipt, installedLock, key, nativeKey })) {
       lock.check()
       if (prepareElectron) prepareElectronRuntime({ source, install, env, run: lock.run })
       console.log(`node-deps: reusing completed install (${selected.join(', ')})`)
+      lock.release()
       return { source, workspaces: selected }
     }
     if (!install) throw new Error('Workspace dependencies are stale or missing and lazy installs are disabled; run an explicit build/update')
@@ -638,9 +650,16 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
       if (error.code === 'ENODEPSLOCK') throw error
       console.warn(`node-deps: could not delete the previous dependencies yet (${error.code ?? error.message}); the next run removes them`)
     }
-  } finally {
-    lock.release()
+  } catch (error) {
+    // A release that fails too (a leaked guard) must not hide why the run failed.
+    try {
+      lock.release()
+    } catch (release) {
+      console.warn(`node-deps: could not release the checkout lock (${release.message})`)
+    }
+    throw error
   }
+  lock.release()
   return { source, workspaces: selected }
 }
 

@@ -499,16 +499,44 @@ class EmailAdapter(BasePlatformAdapter):
         self._thread_context: dict[str, dict[str, str]] = {}
         logger.info("[Email] Adapter initialized for %s", self._address)
 
-    def _trim_seen_uids(self) -> None:
-        """Keep only the highest half of UIDs once over the cap (UIDs are monotonic; UNSEEN prevents re-delivery)."""
+    def _trim_seen_uids(self, imap: imaplib.IMAP4) -> None:
+        """Forget only the UIDs the server already reports \\Seen; keep every UID that is still UNSEEN.
+
+        The previous shape kept the highest 1000 UIDs by count and justified forgetting the
+        rest with "UIDs are monotonic; UNSEEN prevents re-delivery". That justification held
+        only because the dispatch fetch set \\Seen as a side effect, which ``(BODY.PEEK[])``
+        deliberately stops doing: a dispatched message stays UNSEEN, so this set is the only
+        thing keeping ``_fetch_new_messages`` from dispatching it a second time, and a
+        count-based trim dropped exactly that guarantee. The connect-time ``search ALL``
+        baseline is the same exposure: those messages are typically UNSEEN too, so forgetting
+        them re-dispatches mail that predates the adapter.
+
+        So the trim now asks the server what is provably safe to forget. A \\Seen message can
+        never be returned by ``search UNSEEN``, so its UID is genuinely dead weight. When the
+        probe cannot answer, nothing is dropped: for this set, keeping a few thousand extra
+        bytes is strictly better than re-dispatching the operator's mail.
+        """
         if len(self._seen_uids) <= self._seen_uids_max:
             return
         try:
-            sorted_uids = sorted(self._seen_uids, key=lambda u: int(u))  # UIDs are bytes like b'1234'
-            self._seen_uids = set(sorted_uids[-(self._seen_uids_max // 2):])
-            logger.debug("[Email] Trimmed seen UIDs to %d entries", len(self._seen_uids))
-        except (ValueError, TypeError):
-            self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
+            status, data = imap.uid("search", None, "SEEN")
+        except Exception as e:
+            logger.warning("[Email] Could not probe \\Seen UIDs before trimming: %s", e)
+            return
+        if status != "OK" or not data:
+            logger.warning("[Email] \\Seen probe returned %s; keeping all %d seen UIDs",
+                           status, len(self._seen_uids))
+            return
+        seen_on_server = set(data[0].split() if data[0] else ())
+        dropped = self._seen_uids & seen_on_server
+        self._seen_uids -= dropped
+        logger.debug("[Email] UID trim forgot %d \\Seen UIDs, kept %d",
+                     len(dropped), len(self._seen_uids))
+        if len(self._seen_uids) > self._seen_uids_max:
+            logger.warning(
+                "[Email] %d seen UIDs remain above the %d cap and all are still UNSEEN on the "
+                "server. Keeping them: forgetting one would re-dispatch that message.",
+                len(self._seen_uids), self._seen_uids_max)
 
     def _connect_imap(self) -> imaplib.IMAP4:
         """Create an IMAP connection using implicit TLS, STARTTLS, or plaintext."""
@@ -572,7 +600,7 @@ class EmailAdapter(BasePlatformAdapter):
                     status, data = imap.uid("search", None, "ALL")
                     self._seen_uids.update(data[0].split() if status == "OK" and data and data[0] else ())
                     passed = "[Email] IMAP connection test passed. %d existing messages skipped."
-                self._trim_seen_uids()
+                self._trim_seen_uids(imap)
                 logger.info(passed, len(self._seen_uids))
             self._seen_uids_snapshot[self._address] = set(self._seen_uids)
             return True
@@ -670,7 +698,7 @@ class EmailAdapter(BasePlatformAdapter):
     def _mark_uid_consumed(self, imap: imaplib.IMAP4, uid: Any) -> None:
         """Remember a rejected UID and mark it seen without fetching its MIME body."""
         self._seen_uids.add(uid)
-        self._trim_seen_uids()
+        self._trim_seen_uids(imap)
         status, _ = imap.uid("store", uid, "+FLAGS.SILENT", r"(\Seen)")
         if status != "OK":
             logger.warning("[Email] Could not mark rejected UID %s seen", uid)
@@ -701,13 +729,13 @@ class EmailAdapter(BasePlatformAdapter):
                     if not accepted:
                         self._mark_uid_consumed(imap, uid)
                         continue
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    status, msg_data = imap.uid("fetch", uid, "(BODY.PEEK[])")  # PEEK: never mark as read
                     if status != "OK":
                         continue  # transient per-UID refusal: leave unseen so the next poll retries
                     # Mark seen once a response arrived (even malformed) so garbage is skipped once, not retried forever —
                     # but NOT before the fetch: a connection failure must leave the rest of the batch eligible for the next poll.
                     self._seen_uids.add(uid)
-                    self._trim_seen_uids()
+                    self._trim_seen_uids(imap)
                     if (raw_email := _imap_payload(msg_data)) is None:
                         logger.warning("[Email] Unexpected IMAP response structure for UID %s, skipping", uid)
                         continue

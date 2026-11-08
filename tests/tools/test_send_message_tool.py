@@ -29,10 +29,10 @@ from gateway.config import Platform
 from tools.send_message_tool import (
     _resolve_slack_user_target,
     _send_matrix_via_adapter,
-    _send_telegram,
     _send_to_platform,
     send_message_tool,
 )
+from plugins.platforms.telegram.standalone import _send_telegram
 from tools.send_message_targets import _parse_target_ref
 from plugins.platforms.signal.standalone import _send_signal
 # Discord helpers moved to the plugin in #24325.  Import from the new path

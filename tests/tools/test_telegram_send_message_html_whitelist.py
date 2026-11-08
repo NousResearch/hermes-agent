@@ -45,7 +45,7 @@ def _no_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
                                    "<script>", "<em ", "</ i>"])
 def test_non_telegram_angle_brackets_take_the_markdown_branch(
         monkeypatch: pytest.MonkeyPatch, prose: str) -> None:
-    from tools.send_message_senders import _telegram_format
+    from plugins.platforms.telegram.standalone import _telegram_format
 
     _install_telegram_mock(monkeypatch, MagicMock())
     message = f"**Заголовок** и {prose} в тексте"
@@ -68,7 +68,7 @@ def test_non_telegram_angle_brackets_take_the_markdown_branch(
 ])
 def test_telegram_tags_take_the_html_branch(
         monkeypatch: pytest.MonkeyPatch, markup: str) -> None:
-    from tools.send_message_senders import _telegram_format
+    from plugins.platforms.telegram.standalone import _telegram_format
 
     _install_telegram_mock(monkeypatch, MagicMock())
     formatted, parse_mode, has_html = _telegram_format(markup)

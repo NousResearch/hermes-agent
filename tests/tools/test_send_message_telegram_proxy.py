@@ -69,7 +69,7 @@ class TestSendTelegramStandaloneProxy:
         instances whose ``proxy=`` kwarg is the configured URL — applied to
         both ``request`` and ``get_updates_request``.
         """
-        from tools.send_message_tool import _send_telegram
+        from plugins.platforms.telegram.standalone import _send_telegram
 
         proxy_url = "socks5://127.0.0.1:1080"
         monkeypatch.setenv("TELEGRAM_PROXY", proxy_url)
@@ -117,7 +117,7 @@ class TestSendTelegramStandaloneProxy:
         transport, so a blocked api.telegram.org DNS path fails over like the gateway does.
         """
         from plugins.platforms.telegram.telegram_network import SEED_FALLBACK_IPS, TelegramFallbackTransport
-        from tools.send_message_tool import _send_telegram
+        from plugins.platforms.telegram.standalone import _send_telegram
 
         for var in (
             "TELEGRAM_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
@@ -206,13 +206,13 @@ def test_standalone_requests_match_the_gateway_adapter_build(monkeypatch: pytest
     """The standalone Bot gets the gateway's pool size, keepalive limits and TLS context, not a
     hand-copied subset (HERMES_TELEGRAM_HTTP_POOL_SIZE, platform keepalive, platform_ssl_context)."""
     import ssl
-    from tools.send_message_tool import _send_telegram
+    from plugins.platforms.telegram.standalone import _send_telegram
 
     for var in ("TELEGRAM_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HERMES_TELEGRAM_HTTP_POOL_SIZE", "64")
     shared = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    monkeypatch.setattr("agent.ssl_verify.platform_ssl_context", lambda: shared)
+    monkeypatch.setattr("plugins.platforms.telegram.telegram_network.platform_ssl_context", lambda: shared)
     monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
     monkeypatch.setattr("gateway.platforms.base._detect_macos_system_proxy", lambda: None)
     bot = _make_bot()

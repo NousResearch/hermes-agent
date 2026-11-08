@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools import send_message_senders as senders
+from plugins.platforms.telegram import standalone as senders
 
 
 class BadRequest(Exception):

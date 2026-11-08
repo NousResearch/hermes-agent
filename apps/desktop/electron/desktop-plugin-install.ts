@@ -524,6 +524,20 @@ export async function probePluginRepo(gitBin: string, identifier: string): Promi
   }
 }
 
+/** The catalog entry a standalone plugin records (`INSTALL_ORIGIN`): the commit checked out, plus the
+ *  catalog pin it satisfies when that pin names a tag object rather than the commit itself, so a check
+ *  against the catalog's `sha` (the agent's `.install-metadata` record does the same) sees it as current. */
+async function installOrigin(
+  gitBin: string,
+  cloneRoot: string,
+  { catalogName, repo, pin }: { catalogName: string; repo: string; pin?: string }
+): Promise<InstallOrigin> {
+  const sha = await headSha(gitBin, cloneRoot)
+  const reviewed = pin?.trim().toLowerCase()
+
+  return { catalogName, repo, sha, ...(reviewed && reviewed !== sha ? { pin: reviewed } : {}) }
+}
+
 export interface DesktopPluginInstallOptions {
   force?: boolean
   /** The commit the install dialog reviewed (`probePluginRepo`'s `sha`): the half is installed from
@@ -572,7 +586,9 @@ export async function installDesktopPluginFromGit(
       // A standalone plugin installed from a catalog entry records that entry, at the commit checked out
       // (a tag pin is peeled), so the card shows it installed.
       const origin: InstallOrigin | null =
-        catalogName && !packageName ? { catalogName, repo: gitUrl, sha: await headSha(gitBin, cloneRoot) } : null
+        catalogName && !packageName
+          ? await installOrigin(gitBin, cloneRoot, { catalogName, repo: gitUrl, pin: sha })
+          : null
 
       // Under the root's writer lock: the exists check and the publish must not
       // interleave with a reconcile pass copying the same package folder.

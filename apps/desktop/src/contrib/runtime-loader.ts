@@ -597,7 +597,7 @@ const PACKAGE_MARKER = '.hermes-package.json'
  *  the card shows it installed. No package, so the folder stays standalone. */
 const INSTALL_ORIGIN = '.hermes-origin.json'
 
-type PackageOrigin = { catalogName?: string; repo?: string; sha?: string }
+type PackageOrigin = { catalogName?: string; pin?: string; repo?: string; sha?: string }
 
 interface PackageMarker {
   /** The package is a symlinked dev checkout; `source` is its `desktop/` dir. */
@@ -639,7 +639,11 @@ const nonEmpty = (value: unknown) => (typeof value === 'string' && value ? value
 function packageOrigin(parsed: Record<string, unknown>): PackageOrigin | undefined {
   const repo = nonEmpty(parsed.repo)
 
-  return repo ? { catalogName: nonEmpty(parsed.catalogName), repo, sha: nonEmpty(parsed.sha) } : undefined
+  const pin = nonEmpty(parsed.pin)
+
+  return repo
+    ? { catalogName: nonEmpty(parsed.catalogName), repo, sha: nonEmpty(parsed.sha), ...(pin ? { pin } : {}) }
+    : undefined
 }
 
 async function readPackageMarker(desktop: Window['hermesDesktop'], folder: string): Promise<null | PackageMarker> {

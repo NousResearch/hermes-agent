@@ -223,7 +223,10 @@ export async function writeDesktopHalfMarker(dir: string, marker: DesktopHalfMar
 export interface InstallOrigin {
   catalogName: string
   repo: string
+  /** The commit checked out. */
   sha: string
+  /** The catalog pin it satisfies when that is not `sha` itself (an annotated tag's object). */
+  pin?: string
 }
 
 /** Write (or, with no catalog entry, drop) a standalone plugin's install origin. A repository may ship

@@ -117,6 +117,20 @@ def test_a_different_plugin_of_that_name_still_needs_force(home, repo, monkeypat
     assert "edited" in (_folder(home) / "plugin.js").read_text(encoding="utf-8")
 
 
+def test_a_tag_pin_records_the_commit_and_the_tag_it_satisfies(home, repo, monkeypatch):
+    commit = _commit(repo, DESKTOP_ONLY)
+    _git(repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "tag", "-a", "v1", "-m", "v1")
+    tag = _git(repo, "rev-parse", "v1")
+    assert tag != commit
+    _catalog(monkeypatch, tag)
+
+    result = install.install_desktop_plugin(URL, ref=commit, catalog_name="gizmo")
+
+    assert result["ok"] is True, result
+    origin = json.loads((_folder(home) / halves.INSTALL_ORIGIN).read_text(encoding="utf-8"))
+    assert origin == {"catalogName": "gizmo", "repo": URL, "sha": commit, "pin": tag}
+
+
 def test_the_gateway_marks_an_already_exists_refusal_so_the_dialog_offers_force():
     from tui_gateway.methods_tools import _refusal_data
 

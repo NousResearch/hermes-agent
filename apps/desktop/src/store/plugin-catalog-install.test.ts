@@ -167,4 +167,48 @@ describe('openCatalogPluginInstall', () => {
     expect($pluginInstallRequest.get()).toMatchObject({ catalogName: 'accent-picker', sha: 'b'.repeat(40) })
     $pluginRecords.set({})
   })
+
+  it('counts a desktop-only entry pinned to an annotated tag as current at the commit that tag names', () => {
+    $agentPlugins.set([])
+    $pluginRecords.set({
+      accent: {
+        id: 'accent',
+        kind: 'disk',
+        name: 'Accent Picker',
+        packageOrigin: {
+          catalogName: 'accent-picker',
+          pin: 't'.repeat(40),
+          repo: 'https://github.com/x/y',
+          sha: 'c'.repeat(40)
+        },
+        status: 'loaded'
+      }
+    })
+
+    openCatalogPluginInstall({ name: 'accent-picker', repo: 'https://github.com/x/y', sha: 't'.repeat(40) }, null)
+
+    expect($pluginInstallRequest.get()).toBeNull()
+    expect($notifications.get()[0]).toMatchObject({ kind: 'success' })
+    $pluginRecords.set({})
+  })
+
+  it("never lets a package's app-wide desktop half stand in for this profile's agent half", () => {
+    // Installed in another profile: the desktop half is on disk, this profile has no agent row.
+    $agentPlugins.set([])
+    $pluginRecords.set({
+      pkg: {
+        id: 'pkg',
+        kind: 'disk',
+        name: 'Pkg',
+        packageName: 'pkg',
+        packageOrigin: { catalogName: 'pkg', repo: 'https://github.com/x/pkg', sha: 'a'.repeat(40) },
+        status: 'loaded'
+      }
+    })
+
+    openCatalogPluginInstall({ name: 'pkg', repo: 'https://github.com/x/pkg', sha: 'a'.repeat(40) }, 'other')
+
+    expect($pluginInstallRequest.get()).toMatchObject({ catalogName: 'pkg', profile: 'other' })
+    $pluginRecords.set({})
+  })
 })

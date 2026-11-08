@@ -4428,16 +4428,18 @@ class SlackAdapter(BasePlatformAdapter):
                     "so a retry or edit can re-drive the turn", self.name, _ts)
             raise
 
-    async def _drop_bot_sender(self, event: dict) -> bool:
+    async def _drop_bot_sender(self, event: dict, team_id: str = "") -> bool:
         """allow_bots gate: ``none`` drops all bot posts (default), ``mentions`` those not
         @mentioning us, ``all`` accepts — own posts always drop (echo loops). Unlabeled events
         without ``client_msg_id`` are probed via users.info (humans carry it, stray bots don't)."""
         msg_user = event.get("user", "")
+        team_id = team_id or self._event_team_id(event)
+        bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         sender_is_bot = self._event_declares_bot_sender(event)
         if not sender_is_bot and msg_user and not event.get("client_msg_id"):
             sender_is_bot = await self._resolve_user_is_bot(
                 msg_user, chat_id=event.get("channel", ""),
-                team_id=str(event.get("team") or event.get("team_id") or ""))
+                team_id=team_id)
         if not sender_is_bot:
             return False
         allow_bots = self._slack_allow_bots()
@@ -4447,12 +4449,12 @@ class SlackAdapter(BasePlatformAdapter):
             # Mentions may live only in Block Kit, not the flat text.
             # See #52387.
             text_check = _slack_mention_detection_text(event)
-            if self._bot_user_id and f"<@{self._bot_user_id}>" not in text_check:
+            if bot_uid and f"<@{bot_uid}>" not in text_check:
                 logger.debug(
                     "[Slack] Dropping bot message under allow_bots=mentions: "
-                    "no <@%s> mention in flat text or blocks", self._bot_user_id)
+                    "no <@%s> mention in flat text or blocks", bot_uid)
                 return True
-        return bool(msg_user and self._bot_user_id and msg_user == self._bot_user_id)
+        return bool(msg_user and bot_uid and msg_user == bot_uid)
 
     async def _prefilter_inbound(
         self, event: dict, payload: Optional[dict]) -> Optional[tuple[dict, str, str]]:
@@ -4460,10 +4462,8 @@ class SlackAdapter(BasePlatformAdapter):
         Returns ``(event, team_id, channel_id)`` for messages the handler should consider."""
         # Entry log BEFORE any filtering so operators can tell "dropped here"
         # from "never subscribed in the manifest". Metadata only, never text.
-        # DEBUG entry log — fires BEFORE any filtering so users debugging bot-to-bot interop, allow_bots
-        # config, or SLACK_ALLOWED_USERS drops can confirm whether the event actually arrived from Slack
-        # (vs. being silently filtered upstream by the app's event subscriptions — Socket Mode will not
-        # deliver events the app manifest hasn't subscribed to). See #30091.
+        # Socket Mode only delivers subscribed events; this distinguishes missing subscriptions
+        # from allow_bots or SLACK_ALLOWED_USERS drops. See #30091.
         if logger.isEnabledFor(logging.DEBUG):
             _bot_profile = event.get("bot_profile") or {}
             logger.debug(
@@ -4488,7 +4488,7 @@ class SlackAdapter(BasePlatformAdapter):
         if self._is_ignored_channel(channel_id):
             logger.info("[Slack] Ignoring message in configured ignored channel %s", channel_id)
             return None
-        if await self._drop_bot_sender(event):
+        if await self._drop_bot_sender(event, dedup_team_id):
             return None
         # Edits were normalized above so an @mention added by edit can wake the bot once;
         # the normalized event retains the edited message's own subtype.

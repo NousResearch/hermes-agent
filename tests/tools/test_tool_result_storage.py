@@ -839,3 +839,16 @@ class TestMcpEnvelopeSpillover:
         assert '"kernel"' not in preview
         spill = (get_spillover_dir() / "tc_exec_tail.txt").read_text(encoding="utf-8")
         assert spill.index("LAST_LINE") < spill.index('"kernel"')
+
+    def test_failed_save_preview_points_to_no_file(self, monkeypatch):
+        """The inline fallback reuses the preview, so its elision marker must not claim a saved file."""
+        import tools.tool_result_storage as trs
+        monkeypatch.setattr(trs, "_write_to_spillover", lambda *a, **k: None)
+        output = "HEAD\n" + ("filler line\n" * 4_000) + "error: LAST_LINE\n"
+        result = maybe_persist_tool_result(
+            content=json.dumps({"output": output, "exit_code": 2}), tool_name="terminal",
+            tool_use_id="tc_term_unsaved", env=None, threshold=30_000)
+
+        assert "could not be saved" in result
+        assert "chars elided" in result and "error: LAST_LINE" in result
+        assert "spillover" not in result

@@ -1,0 +1,24 @@
+name: sogni
+repo: https://github.com/RichardChua1234/hermes-plugin-sogni
+sha: e92169cf154de46bf3012f652b9113403b01c14b
+subdir: ""
+description: "Sogni AI image generation backend for image_generate: text-to-image and image-to-image (identity edit) on Sogni's decentralised GPU network, driven through Sogni's own sogni-agent CLI. Registers as an image_gen provider, so the normal image_generate tool works unchanged — aspect ratio, count, negative prompt, seed and style are threaded through. Disclosure — every generation submits a job to the Sogni network via the sogni-agent-hermes CLI, which this plugin spawns as a subprocess, so unlike Hermes's bundled providers it is not zero-install: it needs Node.js and npm install -g @sogni-ai/sogni-agent (or SOGNI_AGENT_BIN pointing at an existing binary). The prompt and any reference image path are sent to api.sogni.ai on the way to the network and the finished image is downloaded from media.sogni.ai; the plugin authenticates with SOGNI_API_KEY, read through Hermes's secret scope and never from a file or the ambient environment, and it presents an honest custom User-Agent because Cloudflare (Error 1010) rejects library-default ones. Generation is billed to your Sogni account per job with no Hermes approval prompt, and the plugin reports the model used but enforces no budget cap, so an unattended run can spend your balance. Generated media is written under $HERMES_HOME/cache/images/. No telemetry, no stored credentials, no background processes beyond the CLI call, no self-updates."
+maintainer: RichardChua1234
+tier: community
+category: tools
+requires_hermes: ">=0.20.2"
+docs_url: https://github.com/RichardChua1234/hermes-plugin-sogni#readme
+version: "1.0.0"
+title: "Sogni AI Images"
+platforms: []
+known_issues:
+  - "Not zero-install: requires Node.js plus the separately installed sogni-agent CLI (npm install -g @sogni-ai/sogni-agent). If the CLI is missing the plugin reports it as a typed error instead of failing silently."
+  - "Editing is supported only through the identity-edit model families, which take a source image; text-to-image models accept no source image and the plugin rejects the request rather than ignoring it."
+  - "Sogni bills per job and the plugin cannot cap spend; allow it to run unattended only with a balance you are willing to burn."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - SOGNI_API_KEY
+    - SOGNI_AGENT_BIN

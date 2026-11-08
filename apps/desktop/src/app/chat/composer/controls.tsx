@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import type { ReadableAtom } from 'nanostores'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -37,7 +38,7 @@ const keepEditorFocus = (event: { preventDefault: () => void }) => {
 
 interface ConversationProps {
   active: boolean
-  level: number
+  levelStore: ReadableAtom<number>
   muted: boolean
   status: ConversationStatus
   onEnd: () => void
@@ -290,7 +291,7 @@ function HudWindowButtons() {
 
 function ConversationPill({
   disabled,
-  level,
+  levelStore,
   muted,
   onEnd,
   onStopTurn,
@@ -361,7 +362,7 @@ function ConversationPill({
         }}
         type="button"
       >
-        <ConversationIndicator level={level} listening={listening} speaking={speaking} />
+        <ConversationIndicator levelStore={levelStore} listening={listening} speaking={speaking} />
         <span>{c.endShort}</span>
       </Button>
       <span className="sr-only" role="status">
@@ -372,14 +373,18 @@ function ConversationPill({
 }
 
 function ConversationIndicator({
-  level,
+  levelStore,
   listening,
   speaking
 }: {
-  level: number
+  levelStore: ReadableAtom<number>
   listening: boolean
   speaking: boolean
 }) {
+  // Only the indicator subscribes to the audio meter. The level used to be
+  // React state in ChatBar, so every meter report re-rendered the composer.
+  const level = useStore(levelStore)
+
   if (speaking) {
     return <Loader2 className={cn('animate-spin', iconSize.xs)} />
   }

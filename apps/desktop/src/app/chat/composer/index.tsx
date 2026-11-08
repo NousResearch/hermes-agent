@@ -1160,7 +1160,7 @@ export function ChatBar({
       compactModelPill={poppedOut || compactPill}
       conversation={{
         active: voiceConversationActive,
-        level: conversation.level,
+        levelStore: conversation.levelStore,
         muted: conversation.muted,
         onEnd: endConversation,
         onStart: startConversation,

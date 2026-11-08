@@ -605,6 +605,48 @@ platforms:
 - The card stream is stopped exactly once when the turn finalizes, including
   on interrupt/disconnect, so no dangling live indicator is left behind.
 
+#### Rich task cards (opt-in)
+
+On top of native task cards, `display.tool_progress_native: true` switches the card to a richer
+publisher. It needs `platforms.slack.extra.native_task_cards: true` as well (it refines the basic card,
+it does not replace the setting), and it is off by default. With it off, Hermes behaves exactly as
+described above.
+
+```yaml
+platforms:
+  slack:
+    extra:
+      native_task_cards: true
+display:
+  platforms:
+    slack:
+      tool_progress_native: true
+      tool_progress_native_mode: plan        # plan | timeline
+```
+
+What changes compared with the basic card:
+
+- **Subagents** get their own card in the thread (identity header, ordered rows, summary), closed on
+  completion or when the turn ends. A child still running when the parent turn ends is shown as
+  "result pending" instead of an error.
+- **Reasoning** appears as live and completed rows in the card.
+- **Tool rows** can carry argument details, source chips and a result preview.
+- **Long turns** roll over to a fresh card before Slack's ~5 minute stream lifetime (age or size
+  threshold) instead of reacting to a closed stream.
+- **Secrets** in tool arguments, previews and reasoning are redacted before they reach Slack, and a
+  guarded client drops writes from stopped, stale or interrupted turns.
+
+| Key (under `display` or `display.platforms.slack`) | Default | Meaning |
+|---|---|---|
+| `tool_progress_native` | `false` | Turn the rich publisher on. |
+| `tool_progress_native_mode` | `plan` | Slack card layout: `plan` or `timeline` (`dense` is accepted as an alias for `plan`). |
+| `tool_progress_native_rollover_age_s` | `240` | Seconds before a card rolls over to a new stream. |
+| `tool_progress_native_rollover_chars` | `40000` | Accumulated characters before a card rolls over. |
+| `tool_progress_native_reasoning_chars` | `0` | Cap on reasoning text kept per card (`0` = uncapped per burst). |
+| `tool_progress_native_output_chars` | `0` | Per-tool result preview length (`0` = no output rows). |
+
+Relay connectors and adapters without direct Slack transport keep the basic card even with the flag on.
+
 ### Session Isolation
 
 ```yaml

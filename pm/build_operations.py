@@ -24,8 +24,19 @@ def check_project_lock(
     ``quiet`` captures uv's output instead of reporting it: for a caller that
     expects a stale lock and says so itself, the red failure tail is noise.
     The error still carries uv's message.
+
+    A validation that fails on a *fetch* is retried once with ``--offline``.
+    Validating rewrites nothing, so uv only needs the metadata it has already
+    cached; a GitHub release host returning 504 for an opt-in extra must not
+    fail a test environment whose venv is current. The retry announces itself
+    (stderr, always — a silent downgrade would hide that the check was offline)
+    and a cache that cannot answer either fails naming the network cause, never
+    as a dependency conflict. A real install still descends the dependency:
+    this covers the validation step only.
     """
-    from pm.environment import managed_environment
+    from dataclasses import replace
+
+    from pm.environment import RetrievalFailure, managed_environment, retrieval_reason
     from pm.operations import _require_install_allowed
 
     if not offline:
@@ -38,7 +49,25 @@ def check_project_lock(
         cache=Path(cache) if cache is not None else None, env=env,
         offline=offline, explicit=explicit, output=None if quiet else sys.stderr,
     )
-    environment.check_lock(source)
+    try:
+        environment.check_lock(source)
+    except RetrievalFailure as failure:
+        if offline:
+            raise
+        # Silent and offline: uv reads only what is cached, so this is the same
+        # validation without the network. Its output would read as a second failure.
+        try:
+            replace(environment, offline=True, output=None).check_lock(source)
+        except InstallError as offline_failure:
+            raise RetrievalFailure(
+                "venv",
+                f"{failure.cause}\nand the offline retry failed too: {offline_failure.cause}",
+                f"the network fetch failed ({retrieval_reason(failure.cause)}) and uv's cache "
+                f"cannot answer without it; restore network access, then retry.",
+            ) from failure
+        print(f"⚠ lock validation is offline: {retrieval_reason(failure.cause)}; uv.lock and the "
+              f"environment are unchanged — uv's cache proves the lock current without the network",
+              file=sys.stderr, flush=True)
 
 
 def export_requirements(

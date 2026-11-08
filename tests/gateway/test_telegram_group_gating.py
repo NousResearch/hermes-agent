@@ -1248,3 +1248,21 @@ def test_rich_message_wake_word_or_mention_in_group_is_dispatched():
     mentioned = _group_message(None)
     mentioned.api_kwargs = {"rich_message": {"blocks": [{"type": "paragraph", "text": "@hermes_bot look"}]}}
     assert adapter._should_process_message(mentioned) is True
+
+
+def test_rich_message_handle_inside_code_span_does_not_wake_the_bot():
+    """A rich-only group message that pastes the bot handle as ``code`` is not a mention, exactly like
+    plain text whose @handle sits under a ``code`` entity; the same handle outside code still wakes it."""
+    adapter = _make_adapter(require_mention=True)
+    plain = _group_message("run @hermes_bot to test", entities=[SimpleNamespace(type="code", offset=4, length=11)])
+    in_code = _group_message(None)
+    in_code.api_kwargs = {"rich_message": {"blocks": [
+        {"type": "paragraph", "text": ["run ", {"type": "code", "text": "@hermes_bot"}, " to test"]},
+        {"type": "pre", "text": "@hermes_bot --help"}]}}
+    outside = _group_message(None)
+    outside.api_kwargs = {"rich_message": {"blocks": [
+        {"type": "paragraph", "text": ["@hermes_bot run ", {"type": "code", "text": "make"}]}]}}
+
+    assert adapter._should_process_message(plain) is False
+    assert adapter._should_process_message(in_code) is False
+    assert adapter._should_process_message(outside) is True

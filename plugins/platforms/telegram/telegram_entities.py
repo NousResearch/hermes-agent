@@ -14,55 +14,60 @@ from typing import Any
 # Real clients nest a handful of levels; content deeper than this is dropped so a hostile payload
 # (valid JSON thousands of levels deep) cannot hit the recursion limit and drop the whole update.
 _MAX_RICH_DEPTH = 64
+_CODE_TYPES = frozenset({"code", "pre"})
 
 
-def _rich_inline(value: Any, depth: int = 0) -> str:
+def _rich_inline(value: Any, depth: int = 0, skip_code: bool = False) -> str:
     """Plain text of a rich ``text`` value: a string, a list of runs, or a span dict (bold, link…)
-    whose content sits in ``text`` or ``children``, falling back to a link's ``url``."""
+    whose content sits in ``text`` or ``children``, falling back to a link's ``url``. ``skip_code``
+    blanks ``code``/``pre`` spans."""
     if depth > _MAX_RICH_DEPTH:
         return ""
     if isinstance(value, str):
         return value
     if isinstance(value, list):
-        return "".join(_rich_inline(part, depth + 1) for part in value)
+        return "".join(_rich_inline(part, depth + 1, skip_code) for part in value)
     if isinstance(value, Mapping):
+        if skip_code and value.get("type") in _CODE_TYPES:
+            return " "
         for key in ("text", "children"):
             if value.get(key) is not None:
-                return _rich_inline(value[key], depth + 1)
+                return _rich_inline(value[key], depth + 1, skip_code)
         return str(value.get("url") or "")
     return ""
 
 
-def _rich_lines(blocks: Any, prefix: str = "", depth: int = 0) -> list[str]:
+def _rich_lines(blocks: Any, prefix: str = "", depth: int = 0, skip_code: bool = False) -> list[str]:
     """One line per paragraph-like block; a list item's ``label`` (bullet/number) prefixes its first line."""
     lines: list[str] = []
     if depth > _MAX_RICH_DEPTH:
         return lines
     for block in blocks if isinstance(blocks, list) else []:
-        if not isinstance(block, Mapping):
+        if not isinstance(block, Mapping) or (skip_code and block.get("type") in _CODE_TYPES):
             continue
         if "text" in block:
-            lines.append(prefix + _rich_inline(block["text"]))
+            lines.append(prefix + _rich_inline(block["text"], skip_code=skip_code))
             prefix = ""
         for item in block.get("items") or []:
             if isinstance(item, Mapping):
                 label = str(item.get("label") or "-")
-                lines += _rich_lines(item.get("blocks") or [item], f"{label} ", depth=depth + 1)
+                lines += _rich_lines(item.get("blocks") or [item], f"{label} ", depth + 1, skip_code)
         if block.get("blocks"):
-            lines += _rich_lines(block["blocks"], prefix, depth + 1)
+            lines += _rich_lines(block["blocks"], prefix, depth + 1, skip_code)
     return lines
 
 
-def rich_message_text(message: Any) -> str:
+def rich_message_text(message: Any, skip_code: bool = False) -> str:
     """Flattened text of a ``rich_message`` payload ("" when there is none), for inbound messages and
-    the replied-to message alike. PTB keeps the Bot API field in ``api_kwargs``, a ``mappingproxy``
-    (not a ``dict``), when it has no attribute for it."""
+    the replied-to message alike; ``skip_code`` leaves out ``code``/``pre`` spans (mention scanning).
+    PTB keeps the Bot API field in ``api_kwargs``, a ``mappingproxy`` (not a ``dict``), when it has no
+    attribute for it."""
     rich = getattr(message, "rich_message", None)
     if rich is None and isinstance(kwargs := getattr(message, "api_kwargs", None), Mapping):
         rich = kwargs.get("rich_message")
     if not isinstance(rich, Mapping):
         return ""
-    return "\n".join(_rich_lines(rich.get("blocks"))).strip()
+    return "\n".join(_rich_lines(rich.get("blocks"), skip_code=skip_code)).strip()
 
 
 def rich_message_filter(filters: Any) -> Any:

@@ -4,7 +4,7 @@
 unconditionally: a -q turn never builds the prompt_toolkit application, so
 ``CLIApp._clarify_callback`` polls its response queue with nothing able to
 answer it — the turn hangs until ``agent.clarify_timeout`` expires (default
-3600 s, 0 = unlimited). The gateway, cron jobs, the kanban dispatcher and
+90 s, 0 = unlimited). The gateway, cron jobs, the kanban dispatcher and
 inter-agent wakeups all deliver work as ``hermes chat -q``, so an agent that
 calls ``clarify`` in those turns stalls silently. This pins an immediate
 headless answer for -q, wired at the ``CLIAgentSetupMixin`` agent

@@ -699,6 +699,8 @@ declare global {
         force?: boolean
         /** The commit the dialog reviewed; Electron installs exactly that tree or refuses. */
         sha?: string
+        /** The catalog entry being installed: a standalone plugin records it so its card shows it installed. */
+        catalogName?: string
       }) => Promise<{
         ok: boolean
         pluginName?: string
@@ -706,6 +708,8 @@ declare global {
         error?: string
         /** The reviewed commit is gone from the source: the dialog reads it again. */
         sourceMoved?: boolean
+        /** A plugin of that name is installed: Force replaces it. */
+        exists?: boolean
       }>
       /** Delete a STANDALONE desktop plugin folder (`<desktop-plugins root>/<name>`);
        *  Electron re-checks containment and refuses unified-package halves. */

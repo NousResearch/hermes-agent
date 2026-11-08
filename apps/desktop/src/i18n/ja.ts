@@ -29,6 +29,11 @@ import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
 
 export const jaOverrides = {
+  gatewayGroupOpen: {
+    opening: "グループチャットを開いています…",
+    lookupFailed: "ゲートウェイでこのグループを検索できませんでした。もう一度お試しください。",
+    missing: "このグループチャットはもう存在しません。"
+  },
   catalog: jaCatalog,
   connectors: jaConnectors.connectors,
   externalOpenFailed: {

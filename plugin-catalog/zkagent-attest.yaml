@@ -1,7 +1,7 @@
 name: zkagent-attest
 repo: https://github.com/MCPVOT/hermes-zkagent
 sha: 544e4d6bcf2f906e0d30e5d5b81950e12898062d
-description: "Prove what your agent did without revealing what it did: every tool call is recorded, the session is proved inside a signed cap, and one action can be disclosed on request."
+description: "Prove what your agent did without revealing what it did: every tool call is recorded, the session is proved inside a signed cap, and one action can be disclosed on request. Replay protection spans both verification modes, so a receipt and the session that contains it cannot both be accepted."
 maintainer: MCPVOT
 tier: community
 category: tools

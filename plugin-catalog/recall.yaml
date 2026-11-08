@@ -1,8 +1,8 @@
 name: recall
 title: recall
-version: "0.2.0"
+version: "0.2.1"
 repo: https://github.com/memeshee/hermes-recall
-sha: 421b3206f255405311af611944d535b6e961dade
+sha: 40abe2d7a959bb968bb118be6f4cc84cd780857d
 description: >-
   Local file recall: a private on-device index of the documents already on the user's machine, with
   a search tool over file content (SQLite FTS5, no network and no embedding service), a
@@ -12,31 +12,35 @@ description: >-
   answers a document question. Five tools (recall_index, recall_search, recall_open, recall_stats,
   recall_forget), a bounded background refresh on session start, and the /recall slash command.
   Extraction is standard library only (FlateDecode-aware PDF stream extractor, OOXML text nodes).
-  Disclosure - reads the contents of files under the folders the user points it at (defaults
-  ~/Documents, ~/Desktop, ~/Downloads, ~/Projects) and may be pointed at any folder the user names,
-  stores the extracted text in a plaintext SQLite index under HERMES_HOME/plugin-data/recall/, and
-  injects short excerpts of that text into the model prompt on turns whose message looks
-  document-related (disable with the ambient setting or use recall_forget to drop paths). Indexed
-  text reaches the user's model provider in the normal course of a turn. Credential stores (.env,
-  *.pem, id_rsa, .ssh, .aws, auth.json, state.db and a wider built-in denylist) are refused by name
-  before any file is opened, and recall_open refuses them too. Files on disk are never modified,
-  moved or deleted; nothing is written outside the plugin data directory; no network calls and no
-  credentials.
+  Disclosure - reads the contents of files under the folders the user points it at (default
+  ~/Documents; any folder can be named, and a folder inside Hermes' own home is refused) and stores
+  the extracted text in a plaintext SQLite index under HERMES_HOME/plugin-data/recall/. Short
+  excerpts of that text are injected into the model prompt on turns whose message looks
+  document-related (disable with the ambient setting, or drop paths with recall_forget). Indexed
+  text reaches the user's model provider in the normal course of a turn. Every read goes through one
+  path policy applied to the RESOLVED path, before any file is opened: credential stores (.env,
+  *.pem, id_rsa, .ssh, .aws, auth.json, state.db and a wider built-in denylist), anything inside
+  Hermes' home (~/.hermes: vault, session transcripts, mcp-tokens/, webhook_subscriptions.json,
+  dashboard session token, this plugin's own index) and virtual filesystems such as /proc are all
+  refused, so a symlink named notes.txt that points at ~/.ssh/id_rsa is refused too. Files on disk
+  are never modified, moved or deleted; nothing is written outside the plugin data directory; no
+  network calls and no credentials.
 maintainer: memeshee
 tier: community
 category: tools
 requires_hermes: ">=0.19.0"
 docs_url: https://github.com/memeshee/hermes-recall#readme
-image: https://raw.githubusercontent.com/memeshee/hermes-recall/421b3206f255405311af611944d535b6e961dade/docs/answer.png
+image: https://raw.githubusercontent.com/memeshee/hermes-recall/40abe2d7a959bb968bb118be6f4cc84cd780857d/docs/answer.png
 screenshots:
-  - https://raw.githubusercontent.com/memeshee/hermes-recall/421b3206f255405311af611944d535b6e961dade/docs/answer.png
-  - https://raw.githubusercontent.com/memeshee/hermes-recall/421b3206f255405311af611944d535b6e961dade/docs/refusal.png
-  - https://raw.githubusercontent.com/memeshee/hermes-recall/421b3206f255405311af611944d535b6e961dade/docs/title.png
+  - https://raw.githubusercontent.com/memeshee/hermes-recall/40abe2d7a959bb968bb118be6f4cc84cd780857d/docs/answer.png
+  - https://raw.githubusercontent.com/memeshee/hermes-recall/40abe2d7a959bb968bb118be6f4cc84cd780857d/docs/refusal.png
+  - https://raw.githubusercontent.com/memeshee/hermes-recall/40abe2d7a959bb968bb118be6f4cc84cd780857d/docs/title.png
 platforms: []
 known_issues:
   - Scanned PDFs and images are indexed by filename only - there is no OCR, and recall_stats reports the skip reasons.
   - Ranking is lexical (BM25 plus path, recency and phrase boosts), not semantic; no embedding model is used.
-  - The first index of a large folder costs roughly 20 ms per file.
+  - The first index of a large folder costs roughly 16 ms per file (measured over 3,000 files of a mixed real tree).
+  - Name-based filtering cannot be complete for a password written inside an ordinary document; the Hermes-home, credential-directory and virtual-filesystem rules are enforced regardless of filename.
 capabilities:
   provides_tools:
     - recall_index

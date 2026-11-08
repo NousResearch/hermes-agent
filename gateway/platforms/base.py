@@ -2062,6 +2062,38 @@ class BasePlatformAdapter(ABC):
         """
         return False
 
+    def notify_send_path_recovered(self) -> None:
+        """A degraded send path proved healthy again: replay the replies it stranded.
+
+        ``send_path_degraded`` ledger rows are deliberately reconnect-only (a redelivery
+        timer would re-claim the same row on every tick), so an adapter's own recovery
+        transition is their ONLY in-process retry trigger. Without this hook, a reply
+        rejected while the adapter was still reconnecting IN PLACE (no replacement
+        adapter was ever installed, so ``_finalize_delivery_obligation`` never ran the
+        reconnect sweep) stayed ``failed`` until the next gateway restart.
+
+        The runner's runtime sweep is idempotent: it claims only rows this process owns,
+        only for this platform/profile, and stamps every redelivery with a visible
+        marker. Arming it on each recovery is therefore safe.
+        """
+        runner = getattr(self, "gateway_runner", None)
+        redeliver = getattr(runner, "_redeliver_failed_obligations_for_platform", None)
+        platform = getattr(self, "platform", None)
+        if not callable(redeliver) or platform is None:
+            return
+        task = getattr(self, "_send_path_recovery_task", None)
+        if task is not None and not task.done():
+            return  # one in-flight sweep is enough: claiming is atomic
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no loop (construction/unit context): the boot sweep remains the fallback
+        try:
+            self._send_path_recovery_task = loop.create_task(
+                redeliver(platform, profile=getattr(self, "_owner_profile", None)))  # type: ignore[arg-type]
+        except Exception:
+            logger.debug("send-path recovery redelivery scheduling failed", exc_info=True)
+
     def _mark_connected(self, *, listener_base: Optional[str] = None) -> None:
         """``listener_base`` (``http://host:port``) is stamped by port-binders after a REAL bind: under the
         multiplexer it is the shared listener a served profile's ``/p/<profile>/`` mirror hangs off, and

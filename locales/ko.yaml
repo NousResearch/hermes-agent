@@ -634,6 +634,7 @@ gateway:
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
     truncated_full_above: "미리보기가 줄여졌습니다: 전체 명령({total}자)은 위 메시지에 있습니다."
     truncated_deny_only: "미리보기가 줄여졌고({total}자) 전체 명령을 여기에 표시할 수 없어 거부만 선택할 수 있습니다. CLI나 데스크톱 앱에서 확인하세요."
+    text_prompt_deny_only: "전체 승인 프롬프트가 이 플랫폼에는 너무 길어 거부만 선택할 수 있습니다. CLI나 데스크톱 앱에서 확인하세요."
   notify:
     media_kind:
       audio: "오디오"

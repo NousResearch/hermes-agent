@@ -3,7 +3,8 @@
 ntfy, DingTalk, Photon and LINE (``splits_long_messages = False``) deliver only the first N
 characters of a message. The default prompt puts the command first, so on those surfaces a long
 command pushed the answer instructions and the deadline past the cut. Here the instructions come
-first, and a command that would still be cut is shown shortened with the prompt marked Deny-only:
+first, and a command that would still be cut is shown shortened with the prompt marked Deny-only
+(a command that fits only beside Deny is shown whole, with a notice saying why only Deny is offered):
 the same rule and notice the button cards use (``render_exec_approval``).
 """
 
@@ -57,9 +58,14 @@ def _cutting_text_prompt(adapter: Any, chat_id: str, command: str, description: 
     full = prompt(choices, "", command, code_fence(command))
     if measure(full) <= limit:
         return full, False
-    notice = t("gateway.exec_approval.truncated_deny_only", total=len(command)) + "\n"
     deny = [t("gateway.exec_approval.text_choice_deny", prefix=prefix)]
-    # The fence is sized from the shortened command, so it always closes within the cut.
-    shown, fence = fit_fenced(command, lambda fence: fit_prefix(
-        command, max(0, limit - measure(prompt(deny, notice, "", fence)) - measure("...")), measure))
+    # The whole command fits beside Deny alone but not beside every choice: say so, not "shortened".
+    whole = prompt(deny, t("gateway.exec_approval.text_prompt_deny_only") + "\n", command, code_fence(command))
+    if measure(whole) <= limit:
+        return whole, True
+    notice = t("gateway.exec_approval.truncated_deny_only", total=len(command)) + "\n"
+    # The fence is sized from the shortened command, so it always closes within the cut; the budget stays
+    # under the whole command so the "shortened" notice is never shown beside the full text.
+    shown, fence = fit_fenced(command, lambda fence: fit_prefix(command, max(0, min(
+        measure(command) - 1, limit - measure(prompt(deny, notice, "", fence)) - measure("..."))), measure))
     return prompt(deny, notice, shown, fence), True

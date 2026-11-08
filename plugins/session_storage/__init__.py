@@ -1,7 +1,7 @@
 """Session storage provider discovery: bundled ``plugins/session_storage/<name>/`` then user
 ``$HERMES_HOME/plugins/<name>/`` (bundled wins on collision). The local backend is core
 (``hermes_state_port_local``), not discovered here. Hosted backends are standalone plugins built on
-the ``hermes_state_port`` ABCs; no
+the ``hermes_state_port`` ABCs and run the shared suite in ``hermes_conformance.storage``; no
 production caller uses a provider yet (``hermes_state_port``).
 
 Providers load in-process only: under ``plugins.isolation: host`` a user provider is refused

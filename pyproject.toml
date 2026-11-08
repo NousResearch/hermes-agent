@@ -710,6 +710,8 @@ include = [
   "pm.*",
   "tools",
   "tools.*",
+  "hermes_conformance",
+  "hermes_conformance.*",
 ]
 
 [tool.setuptools.package-data]

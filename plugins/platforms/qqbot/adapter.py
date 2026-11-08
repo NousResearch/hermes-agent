@@ -40,7 +40,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, describe_proxy_error,
+    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
@@ -67,7 +67,7 @@ from .constants import (
     QUICK_DISCONNECT_THRESHOLD, MAX_QUICK_DISCONNECT_COUNT, MAX_MESSAGE_LENGTH,
     DEDUP_WINDOW_SECONDS, DEDUP_MAX_SIZE, MSG_TYPE_TEXT, MSG_TYPE_MARKDOWN, MSG_TYPE_MEDIA,
     MSG_TYPE_INPUT_NOTIFY, MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO, MEDIA_TYPE_VOICE, MEDIA_TYPE_FILE)
-from .utils import coerce_list as _coerce_list, build_user_agent
+from .utils import coerce_list as _coerce_list, build_user_agent, describe_connect_proxy_error
 from .chunked_upload import (
     ChunkedUploader, UploadDailyLimitExceededError, UploadFileTooLargeError)
 from .keyboards import (
@@ -220,7 +220,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             self._wire_plugin_handlers(None)
             return True
         except Exception as exc:
-            message = f"QQ startup failed: {(shown := describe_proxy_error(exc, _ws_proxy())) or exc}"  # may echo a proxy secret
+            message = f"QQ startup failed: {(shown := describe_connect_proxy_error(exc, _ws_proxy())) or exc}"  # may echo a proxy secret
             self._set_fatal_error("qq_connect_error", message, retryable=True)
             logger.error("[%s] %s", self._log_tag, message, exc_info=not shown)
             await self._cleanup()
@@ -421,7 +421,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             logger.info("[%s] Reconnected", self._log_tag)
             return True
         except Exception as exc:
-            logger.warning("[%s] Reconnect failed: %s", self._log_tag, describe_proxy_error(exc, _ws_proxy()) or exc)
+            logger.warning("[%s] Reconnect failed: %s", self._log_tag, describe_connect_proxy_error(exc, _ws_proxy()) or exc)
             return False
 
     async def _read_events(self) -> None:

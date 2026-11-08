@@ -1,0 +1,32 @@
+name: cwtch-platform
+title: Cwtch
+repo: https://github.com/just-a-dev20/hermes-cwtch-platform
+sha: 91d887f899a98bfbda36125e9e5aab4c1424688c
+description: >-
+  Chat with Hermes over Cwtch, the peer-to-peer messenger on Tor: the bot runs
+  its own Cwtch profile and contacts reach it by its onion address, without
+  accounts, phone numbers or servers. Direct conversations, text only.
+  Disclosure — loads the libCwtch library the user installs from a Cwtch
+  release (not shipped) in a child process the plugin starts; libCwtch runs its
+  own tor, which connects to the Tor network. The bot's profile and message
+  history are stored under HERMES_HOME/cwtch, encrypted with
+  CWTCH_PROFILE_PASSWORD. Incoming contact requests are accepted by default;
+  Hermes authorization still applies to every message. No telemetry,
+  self-updates or added tools.
+maintainer: just-a-dev20
+tier: community
+category: platform
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/just-a-dev20/hermes-cwtch-platform/blob/91d887f899a98bfbda36125e9e5aab4c1424688c/README.md
+version: "1.0.0"
+platforms: []
+known_issues:
+  - Tested live on Windows 11; the test suite runs on Linux and Windows. Not yet tried on macOS.
+  - Cwtch groups and file transfer are not bridged.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - CWTCH_PROFILE_PASSWORD
+    - CWTCH_LIB_PATH

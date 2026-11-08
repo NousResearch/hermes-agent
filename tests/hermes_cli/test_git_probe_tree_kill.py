@@ -21,6 +21,7 @@ import pytest
 
 from hermes_cli import _subprocess_compat
 from hermes_cli._subprocess_compat import bounded_git_probe, kill_process_tree
+from tests.waiting import wait_until
 
 pytestmark = pytest.mark.platforms("posix")  # POSIX process-group semantics
 
@@ -110,6 +111,31 @@ def test_group_kill_skipped_when_child_shares_our_group():
     # We are alive to make this assertion — killpg on our own group would have
     # taken the test runner down. The direct child is still killed.
     assert proc.returncode is not None
+
+
+def test_grace_kill_takes_a_term_ignoring_member_once_the_leader_exits(tmp_path):
+    """``grace`` returns as soon as the leader exits on SIGTERM; a group member that ignores
+    SIGTERM must not outlive it (the leader-only wait used to orphan it)."""
+    marker = tmp_path / "member.pid"
+    script = tmp_path / "leader.sh"
+    # A separate `sh -c` (not `$BASHPID`, which macOS's bash 3.2 lacks): `$$` is the member's own
+    # pid, and the ignored TERM disposition survives the exec into sleep.
+    script.write_text("#!/bin/sh\n"
+                      f"sh -c 'trap \"\" TERM; echo $$ > {marker}; exec sleep 300' &\n"
+                      "sleep 300\n")
+    script.chmod(0o755)
+    proc = subprocess.Popen([str(script)], process_group=0, stdin=subprocess.DEVNULL)
+    member = _wait_marker(marker)
+
+    kill_process_tree(proc, grace=5.0)
+
+    try:
+        assert proc.returncode is not None
+        wait_until(lambda: not _pid_alive(member), timeout=3.0,
+                   what=f"SIGTERM-ignoring member {member} to die with the graced kill")
+    finally:
+        if _pid_alive(member):  # reparented out of our subtree: the live-system guard refuses os.kill
+            subprocess.run(["kill", "-9", str(member)], check=False)
 
 
 def test_fast_path_unaffected(tmp_path):

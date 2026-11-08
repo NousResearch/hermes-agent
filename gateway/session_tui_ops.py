@@ -11,6 +11,7 @@ them. ``dispatch`` already runs every handler under the owning profile's scope (
 import asyncio
 from datetime import datetime
 import json
+import re
 import uuid
 from functools import partial
 from pathlib import Path
@@ -192,11 +193,13 @@ async def pause_delegation(connection, ref, params):
     return {'paused': set_spawn_paused(paused)}
 
 
-_ROLLBACK_FIELDS = {'list': {'session_id', 'profile'}, 'diff': {'session_id', 'profile', 'hash'},
+_ROLLBACK_FIELDS = {'list': {'session_id', 'profile', 'undo_since', 'undo_message_id'}, 'diff': {'session_id', 'profile', 'hash'},
                     'restore': {'session_id', 'profile', 'hash', 'file_path', 'all'},
                     'session_diff': {'session_id', 'profile'}}
-# ``rollback.session_diff`` body bound: well inside one 8 MiB frame (the classic CLI shows 400 lines).
-_SESSION_DIFF_CHARS = 2 * 1024 * 1024
+# ``rollback.session_diff`` stat + body bound, in bytes on the wire: half the 8 MiB frame every client
+# accepts (``hermes_cli/gateway_client.py``). Counted JSON-escaped, since a control character is one
+# character but six bytes (``\u0001``); the classic CLI shows 400 lines either way.
+_SESSION_DIFF_BYTES = 4 * 1024 * 1024
 
 
 async def rollback(connection, ref, params, *, kind):
@@ -211,7 +214,10 @@ async def rollback(connection, ref, params, *, kind):
     fields = _ROLLBACK_FIELDS[kind]
     if any(key in params and (not isinstance(params[key], str) or (key == 'hash' and not params[key]))
            for key in ('hash', 'file_path')) or (kind in ('diff', 'restore') and 'hash' not in params) or (
-               params.get('all') is not None and not isinstance(params['all'], bool)):  # nullable: null is omitted
+               params.get('all') is not None and not isinstance(params['all'], bool)) or (  # nullable: null is omitted
+               params.get('undo_since') is not None and (isinstance(params['undo_since'], bool)
+                                                         or not isinstance(params['undo_since'], (int, float)))) or (
+               params.get('undo_message_id') is not None and type(params['undo_message_id']) is not int):
         raise RuntimeStoreError('invalid_params')
     live = _live_ref(connection, ref, params, fields, 'session:read' if kind != 'restore' else 'session:control')
     authority = connection.authority
@@ -237,11 +243,6 @@ async def rollback(connection, ref, params, *, kind):
         cwd = policy.cwd
         if not mgr.enabled and kind in ('list', 'session_diff'):
             return {'enabled': False, 'checkpoints': []} if kind == 'list' else {'enabled': False}
-        if kind == 'list':
-            # The TUI renders ``message``; the manager calls it ``reason``.
-            return {'enabled': True, 'checkpoints': [
-                {'hash': c.get('hash', ''), 'timestamp': c.get('timestamp', ''), 'message': c.get('reason', '')}
-                for c in mgr.list_checkpoints(cwd)]}
         # Host checkpoints are not a container-backed session's tree (main's _container_checkpoint_refusal),
         # classified under the session's frozen terminal policy, not the owner's ambient one.
         from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
@@ -250,6 +251,24 @@ async def rollback(connection, ref, params, *, kind):
             refusal = mgr.unsupported_backend_reason(task_id)
         finally:
             reset_terminal_scope(token)
+        if kind == 'list':
+            # The TUI renders ``message``; the manager calls it ``reason``.
+            listed = {'enabled': True, 'checkpoints': [
+                {'hash': c.get('hash', ''), 'timestamp': c.get('timestamp', ''), 'message': c.get('reason', '')}
+                for c in mgr.list_checkpoints(cwd)]}
+            if params.get('undo_since') is not None and not refusal:
+                # An /undo's /rollback line. ``undo_message_id`` (the rewound user row) fixes the kept prefix
+                # whose newest row bounds the span from below, so a turn started since cannot move it;
+                # without it ``undo_since`` is already bounded by the client (the rewired classic CLI).
+                from gateway.session_local_recovery import transcript_target
+                from tools.checkpoint_undo_hint import undo_hint_payload, undo_span_start
+                kept, transcript = [], transcript_target(authority, ref)
+                if (cut := params.get('undo_message_id')) is not None:
+                    kept = [m for m in authority.db.get_messages_as_conversation(
+                        transcript, include_row_ids=True) if m.get('_row_id', cut) < cut]
+                if hint := undo_hint_payload(mgr, cwd, undo_span_start(params['undo_since'], kept), task_id=None):
+                    listed['undo_hint'] = hint
+            return listed
         if kind == 'session_diff':
             return _session_diff(mgr, cwd, refusal)
         try:
@@ -271,11 +290,14 @@ async def rollback(connection, ref, params, *, kind):
         if refusal:
             return {'success': False, 'error': refusal}
         # Main's whole-tree /rollback keeps the user's hand-edits unless ``--all`` (``all``) says otherwise.
+        from tools.checkpoint_undo_hint import checkpoint_taken_at
+        taken.append(checkpoint_taken_at(cwd, target))
         return mgr.restore(cwd, target, file_path=file_path or None,
                            safe=not file_path and not params.get('all'))
+    taken = []
     result = await asyncio.to_thread(run)
     if kind == 'restore' and result.get('success') and not file_path:
-        result['history_removed'] = await _rewind_last_turn(connection, ref)
+        result['history_removed'] = await _rewind_last_turn(connection, ref, taken[0] if taken else None)
     return result
 
 
@@ -288,22 +310,46 @@ def _session_diff(mgr, cwd, refusal):
     if not result.get('success'):
         return {'enabled': True, 'success': False, 'error': str(result.get('error') or '')}
     diff = result.get('diff', '')
-    body = diff if len(diff) <= _SESSION_DIFF_CHARS else diff[:_SESSION_DIFF_CHARS].rpartition('\n')[0]
-    return {'enabled': True, 'success': True, 'stat': result.get('stat', ''), 'diff': body,
+    stat = _fit_frame(result.get('stat', ''), _SESSION_DIFF_BYTES)
+    body = _fit_frame(diff, _SESSION_DIFF_BYTES - _wire_bytes(stat))
+    return {'enabled': True, 'success': True, 'stat': stat, 'diff': body,
             'diff_lines': len(diff.splitlines()), 'empty': bool(result.get('empty'))}
 
 
-async def _rewind_last_turn(connection, ref):
+def _wire_bytes(text):
+    """Bytes ``text`` takes inside a frame: JSON-escaped as ``serialize_frame`` writes it, then UTF-8."""
+    return len(json.dumps(text, ensure_ascii=False).encode('utf-8', 'surrogatepass')) - 2
+
+
+def _fit_frame(text, budget):
+    """The longest whole-line prefix of ``text`` whose wire size fits ``budget`` bytes. The caller
+    reports the uncut line count, so the client names the cut instead of the frame dropping the socket."""
+    if len(text) * 6 <= budget or (len(text) <= budget and _wire_bytes(text) <= budget):
+        return text
+    kept, used = [], 0
+    # Lines end at ``\n`` only (``splitlines`` would also cut at ``\r``, ``\f``, U+2028 inside a diff line).
+    for line in re.split(r'(?<=\n)', text[:budget + 1]):  # chars cost >= 1 byte; +1 keeps a cut line over
+        used += _wire_bytes(line)
+        if used > budget:
+            break
+        kept.append(line)
+    return ''.join(kept).removesuffix('\n')
+
+
+async def _rewind_last_turn(connection, ref, taken=None):
     """Drop the newest user turn and everything after it (main's full ``/rollback`` restore) via the
-    owner's revision-fenced ``rewind`` mutation; 0 when the transcript has no user turn."""
+    owner's revision-fenced ``rewind`` mutation; 0 when the transcript has no user turn, or when that turn
+    ended before the checkpoint taken at ``taken`` (``/undo`` already removed the turn that made it)."""
     authority = connection.authority
     from agent.context_compressor import user_originated_turn_view
     from gateway.session_local_recovery import local_history
-    rows = await asyncio.to_thread(local_history, authority, ref)
-    target = next((row['row_id'] for row in reversed(rows) if isinstance(row.get('row_id'), int)
-                   and not row.get('archived') and user_originated_turn_view(row) is not None), None)
-    if target is None:
+    from tools.checkpoint_undo_hint import rollback_rewinds_newest_turn
+    rows = [row for row in await asyncio.to_thread(local_history, authority, ref) if not row.get('archived')]
+    users = [i for i, row in enumerate(rows) if isinstance(row.get('row_id'), int)
+             and user_originated_turn_view(row) is not None]
+    if not users or not rollback_rewinds_newest_turn(rows, users, taken):
         return 0
+    target = rows[users[-1]]['row_id']
     from gateway.session_mutations import mutate_session
     from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
     handle = authority._handle(ref)

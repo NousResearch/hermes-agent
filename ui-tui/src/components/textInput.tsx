@@ -2,7 +2,7 @@ import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
-import { setInputSelection } from '../app/inputSelectionStore.js'
+import { setInputSelection, takeInputCursor } from '../app/inputSelectionStore.js'
 import { getUiState } from '../app/uiStore.js'
 import { highlightMask, highlightsStable } from '../domain/composerHighlights.js'
 import { readClipboardText, writeClipboard, writeClipboardText } from '../lib/clipboard.js'
@@ -752,7 +752,19 @@ function useFwdDelete(active: boolean) {
   return ref
 }
 
-type PasteResult = { cursor: number; value: string } | null
+type InputHandler = (inp: string, k: Key, event: InputEvent) => void
+
+interface PasteInsert {
+  cursor: number
+  /**
+   * Re-place the insertion on the owner's live value, which can be ahead of
+   * this input's; null when it no longer belongs there. Commit the result at once.
+   */
+  land?: (view: { caret: number; value: string }) => PasteInsert | null
+  value: string
+}
+
+type PasteResult = PasteInsert | null
 
 const isPasteResultPromise = (
   value: PasteResult | Promise<PasteResult> | null | undefined
@@ -781,6 +793,16 @@ export function TextInput({
   )
 
   const [sel, setSel] = useState<null | { end: number; start: number }>(null)
+  // Bumped on every submit so the value-sync effect below re-runs even when the parent's value
+  // ends where it started: text + Return in ONE stdin read (`tmux send-keys 'text' Enter`) emits
+  // the text and the submit's clear in the same React batch, so `value` never visibly changes and
+  // the submitted text would stay in the composer.
+  const [submitSeq, setSubmitSeq] = useState(0)
+  // Keys that arrive after a submit, before the parent's response has rendered (a kitty Enter
+  // and the next keystroke share one read). They replay once the value-sync effect has applied
+  // the parent's answer, so they edit the next draft instead of the submitted one.
+  const postSubmitKeys = useRef<null | Parameters<InputHandler>[]>(null)
+  const handleInputRef = useRef<InputHandler>(() => {})
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
   const { stdout } = useStdout()
@@ -797,6 +819,8 @@ export function TextInput({
   const emittedValueRef = useRef<string | null>(null)
   const keyBurstTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const editVersionRef = useRef(0)
+  // Commits of async paste results, so one paste landing does not read as an edit to another.
+  const pasteLandingsRef = useRef(0)
   const parentChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingParentValue = useRef<string | null>(null)
   const localRenderTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -947,15 +971,23 @@ export function TextInput({
     }
 
     pendingParentValue.current = null
-    setCur(value.length)
+    const at = takeInputCursor(value) ?? value.length
+    setCur(at)
     setSel(null)
-    curRef.current = value.length
+    curRef.current = at
     selRef.current = null
     vRef.current = value
     lineWidthRef.current = stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value)
     undo.current = []
     redo.current = []
-  }, [value])
+  }, [value, submitSeq])
+
+  // Declared after the value sync so it runs once the parent's answer to a submit is applied.
+  useEffect(() => {
+    const queued = postSubmitKeys.current
+    postSubmitKeys.current = null
+    queued?.forEach(([inp, k, event]) => handleInputRef.current(inp, k, event))
+  }, [submitSeq])
 
   // The composer unmounts while full-screen monitors own input. Keep its
   // insertion point with the shell, not with transient steer/secret inputs.
@@ -1031,6 +1063,7 @@ export function TextInput({
           return true
         })
       },
+      cursor: curRef.current,
       end: selected?.end ?? curRef.current,
       start: selected?.start ?? curRef.current,
       value: vRef.current
@@ -1204,7 +1237,10 @@ export function TextInput({
   }
 
   const emitPaste = (e: PasteEvent) => {
+    // Typed keys still waiting on their frame flush belong before the paste.
+    flushKeyBurst()
     const startVersion = editVersionRef.current
+    const startLandings = pasteLandingsRef.current
     const range = selRange()
 
     // Stage replacement in the handler's snapshot. Keep the actual draft intact
@@ -1220,9 +1256,28 @@ export function TextInput({
 
       void h
         .then(result => {
-          if (result && editVersionRef.current === startVersion) {
-            commit(result.value, result.cursor)
-          } else if (result && fallbackText && PRINTABLE.test(fallbackText)) {
+          if (!result) {
+            return
+          }
+
+          // Only other pastes landing since: this one still belongs in the draft.
+          if (editVersionRef.current - startVersion === pasteLandingsRef.current - startLandings) {
+            // A staged selection replacement already targets the exact draft:
+            // apply the direct insert rather than `land`, which would re-place
+            // into the LIVE draft at the raw cursor and resurrect the text the
+            // selection removed.
+            const landed =
+              range !== null
+                ? result
+                : result.land
+                  ? result.land({ caret: curRef.current, value: vRef.current })
+                  : result
+
+            if (landed) {
+              pasteLandingsRef.current += 1
+              commit(landed.value, landed.cursor)
+            }
+          } else if (fallbackText && PRINTABLE.test(fallbackText)) {
             // User typed while async paste was in-flight — fall back to raw text insert
             // so the pasted content is not silently lost.
             const cur = curRef.current
@@ -1414,8 +1469,20 @@ export function TextInput({
     }
   }
 
+  const submit = (text: string) => {
+    postSubmitKeys.current = []
+    setSubmitSeq(n => n + 1)
+    cbSubmit.current?.(text)
+  }
+
+  // Holds keys while a submit is pending. The replay goes through this gate too, so a replayed
+  // Enter queues the keys after it until its own submit has been answered.
+  const queueAfterSubmit = (handler: InputHandler): InputHandler =>
+    (handleInputRef.current = (inp, k, event) =>
+      postSubmitKeys.current ? void postSubmitKeys.current.push([inp, k, event]) : handler(inp, k, event))
+
   useInput(
-    (inp: string, k: Key, event: InputEvent) => {
+    queueAfterSubmit((inp: string, k: Key, event: InputEvent) => {
       const eventRaw = event.keypress.raw
 
       // Configured voice shortcut wins over composer-level defaults like
@@ -1483,7 +1550,7 @@ export function TextInput({
         if (insertNewline) {
           commit(ins(pending.value, pending.cursor, '\n'), pending.cursor + 1)
         } else {
-          cbSubmit.current?.(pending.value)
+          submit(pending.value)
         }
 
         return
@@ -1748,7 +1815,7 @@ export function TextInput({
       }
 
       commit(v, c)
-    },
+    }),
     { isActive: focus }
   )
 
@@ -1863,9 +1930,7 @@ interface TextInputProps {
   mask?: string
   mouseApiRef?: MutableRefObject<null | TextInputMouseApi>
   onChange: (v: string) => void
-  onPaste?: (
-    e: PasteEvent
-  ) => { cursor: number; value: string } | Promise<{ cursor: number; value: string } | null> | null
+  onPaste?: (e: PasteEvent) => PasteInsert | Promise<PasteResult> | null
   onSubmit?: (v: string) => void
   placeholder?: string
   /** Hex color for placeholder text (theme muted); SGR dim when omitted. */
@@ -1910,7 +1975,7 @@ export const shouldPassThroughToGlobalHandler = (
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
   (key.ctrl && input === 'o') ||
-  (key.ctrl && (input === 'r' || input === 't')) ||
+  (key.ctrl && (input === 'p' || input === 'r' || input === 't')) ||
   key.tab ||
   (key.shift && key.tab) ||
   key.pageUp ||

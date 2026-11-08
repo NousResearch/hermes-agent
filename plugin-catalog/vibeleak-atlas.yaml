@@ -1,0 +1,21 @@
+name: vibeleak-atlas
+title: VibeLeak Atlas
+version: "0.2.1"
+repo: https://github.com/abundantbeing/vibeleak-atlas
+sha: 898323b75fa926c9b4a1a7675091ed647def3617
+description: "Owner-approved VibeLeak website assessments in a native Hermes Desktop workbench. You approve each scan before it runs, private evidence and fix-plan drafts stay on your machine, and read-only local folder review is opt-in. Website assessments need an optional VibeLeak owner API key (Pro plan). Desktop-only, inside the plugin SDK surface; no agent tools, hooks, middleware or required environment variables. Disclosure — website assessments you approve send the target hostname to VibeLeak (www.vibeleak.app) with your VibeLeak owner API key (Pro plan); the optional hosting map, after a separate approval, sends up to 12 assessed hostnames to Cloudflare DNS over HTTPS and maps them with a bundled DB-IP country database; local folder review reads only a folder you grant and makes no network calls; results are stored under the plugin's data directory."
+maintainer: abundantbeing
+tier: community
+category: desktop
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/abundantbeing/vibeleak-atlas/blob/898323b75fa926c9b4a1a7675091ed647def3617/README.md
+image: https://raw.githubusercontent.com/abundantbeing/vibeleak-atlas/898323b75fa926c9b4a1a7675091ed647def3617/.github/assets/readme/vibeleak-symbol.png
+platforms: [windows]
+known_issues:
+  - "Website assessments need a VibeLeak owner API key, which is part of the Pro plan. Local folder review needs no key or account."
+  - "Rescan comparisons stay non-comparable until VibeLeak returns coverage and version context, which some deployments do not return yet."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

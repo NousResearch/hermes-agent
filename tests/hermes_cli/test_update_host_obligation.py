@@ -142,6 +142,11 @@ def _host_record(tmp_path, monkeypatch, profiles: list[str]) -> None:
         json.dumps({"role": "gateway", "pid": os.getpid(), "profiles": profiles}), encoding="utf-8")
 
 
+def _is_gateway_restart(argv: list[str]) -> bool:
+    """A ``gateway restart`` relaunch, whatever flags follow the verb (the update passes ``--interrupt``)."""
+    return "gateway" in argv and argv[argv.index("gateway") + 1:argv.index("gateway") + 2] == ["restart"]
+
+
 def test_recovery_restarts_one_host_process_for_all_the_profiles_it_serves(tmp_path, monkeypatch):
     """N payload profiles served by ONE host gateway = one relaunch, not N that kill each other."""
     _host_record(tmp_path, monkeypatch, ["coder", "writer", "default"])
@@ -153,7 +158,7 @@ def test_recovery_restarts_one_host_process_for_all_the_profiles_it_serves(tmp_p
 
     result = recovery.restart_profiles(["coder", "writer", "default"], run=fake_run)
 
-    relaunches = [argv for argv in argvs if argv[-2:] == ["gateway", "restart"]]
+    relaunches = [argv for argv in argvs if _is_gateway_restart(argv)]
     assert len(relaunches) == 1, "one host process must be relaunched once for every profile it serves"
     reported = [*result["verified"], *result["relaunch_attempted"], *result["failed"]]
     assert sorted(reported) == ["coder", "default", "writer"], "every requested profile keeps an outcome"
@@ -171,7 +176,7 @@ def test_recovery_keeps_separate_processes_separate(tmp_path, monkeypatch):
 
     recovery.restart_profiles(["coder", "writer"], run=fake_run)
 
-    assert len([argv for argv in argvs if argv[-2:] == ["gateway", "restart"]]) == 2
+    assert len([argv for argv in argvs if _is_gateway_restart(argv)]) == 2
 
 
 

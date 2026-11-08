@@ -307,22 +307,25 @@ async def start_gateway(profile: Optional[str] = None):
 
 
 @router.post("/api/gateway/stop")
-async def stop_gateway(profile: Optional[str] = None):
-    from hermes_cli.web_server_gateway import multiplexed_profile_refusal
+async def stop_gateway(profile: Optional[str] = None, interrupt: bool = False):
+    from hermes_cli.web_server_gateway import live_session_refusal, multiplexed_profile_refusal
     # A served profile has no gateway of its own to stop: the child prints "No gateway running for this
     # profile" (exit 0) while the multiplexer keeps serving it and the UI flips to "stopped".
     refusal = await asyncio.to_thread(multiplexed_profile_refusal, profile, "stop")
     if refusal:
         raise HTTPException(status_code=409, detail=refusal)
+    # Live sessions refuse a stop unless the caller interrupts them deliberately (`?interrupt=true`).
+    if not interrupt and (refusal := await asyncio.to_thread(live_session_refusal, profile, "stop")):
+        raise HTTPException(status_code=409, detail=refusal)
     with http_failure("Failed to spawn gateway stop", 500, "Failed to stop gateway"):
-        proc = _spawn_hermes_action(_gateway_subcommand(profile, "stop"), "gateway-stop")
+        proc = _spawn_hermes_action(_gateway_subcommand(profile, "stop") + ["--interrupt"] * interrupt, "gateway-stop")
     return {"ok": True, "pid": proc.pid, "name": "gateway-stop"}
 
 
 # --- Credential pool (auth.json -> credential_pool.<provider>[]): secrets are
 # redacted on read; only the agent sees raw values at session start.
 #
-# load_pool() may hit the network synchronously (Copilot token exchange over raw
+# load_pool() may hit the network synchronously (a provider token exchange over raw
 # urllib, whose timeout does NOT bound DNS resolution) — on a networkless host it
 # once froze the uvicorn loop for 17 minutes. Every pool load below runs off-loop.
 

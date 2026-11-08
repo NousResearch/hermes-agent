@@ -4,6 +4,7 @@ from pathlib import Path, PurePosixPath
 import re
 import struct
 
+from hermes_cli._startup_fast import project_root_str
 from hermes_cli.main_desktop import (
     _HTML_TAG_WITH_URL,
     _MODULE_TAG,
@@ -71,7 +72,7 @@ def _verify_packaged_entry(resources: Path) -> None:
 
 def checkout_root() -> Path:
     """The checkout this module was imported from: the only root the receipt may describe."""
-    return Path(__file__).resolve().parent.parent
+    return Path(project_root_str())
 
 
 def _root_to_verify(project_root: Path | None) -> Path:

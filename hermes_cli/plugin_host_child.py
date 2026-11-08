@@ -14,6 +14,7 @@ plugin lands in the host log instead of corrupting the wire.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import importlib
 import importlib.metadata
@@ -29,13 +30,18 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli.plugin_host_wire import (
-    Channel, Opaque, PROTOCOL_VERSION, PluginHostUnsupported, bind_serving_request, decode, describe_signature,
-    encode, is_async_callable, serving_request,
+    Channel, Opaque, PROTOCOL_VERSION, PluginHostUnsupported, bind_serving_request, declared_member, decode,
+    describe_signature, encode, is_async_callable, restore_arguments, serving_request,
 )
 
 logger = logging.getLogger("hermes_cli.plugin_host_child")
 
 _ENTRY_POINTS_GROUP = "hermes_agent.plugins"
+
+# The plugin whose code this request runs (its ``plugin_key``) and the load it runs in: bound per incoming
+# request, so it follows that code onto the host loop's tasks; a thread the plugin starts itself has none.
+_EXECUTING_PLUGIN: contextvars.ContextVar[tuple[str, Optional[int]]] = contextvars.ContextVar(
+    "plugin_host_executing", default=("", None))
 
 
 class RemoteRegistration:
@@ -135,6 +141,7 @@ class HostRuntime:
         self._lock = threading.Lock()
         self.unload_callbacks: dict[str, list[Callable[[], Any]]] = {}
         self.modules: dict[str, str] = {}
+        self.loads: dict[str, Optional[int]] = {}  # plugin_key -> its current load, as Hermes numbered it
         self.asgi_apps: dict[str, Any] = {}
         self.profiles: dict[str, dict[str, Any]] = {}
         self.instance_modules: dict[str, Any] = {}
@@ -210,6 +217,14 @@ class HostRuntime:
         return self._send_call("facade", plugin_key, {"facade": facade, "method": method, "probe": _probe,
                                                       "args": args, "kwargs": kwargs}, allow_objects=False)
 
+    def session_event(self, plugin_id: str, session_id: str, event: str, payload: dict) -> Any:
+        """``emit_plugin_session_event`` in the gateway process, which holds the sessions, sent as the
+        plugin whose code is running (``plugin``). ``payload`` is already plain JSON, so it travels as
+        is (no ``encode``: its keys are the plugin's own)."""
+        plugin, load = _EXECUTING_PLUGIN.get()
+        return self.channel.call("session_event", {"plugin": plugin, "load": load, "plugin_id": plugin_id,
+                                                   "session_id": session_id, "event": event, "payload": payload})
+
     def spawn(self, coro: Any, *, name: Optional[str] = None) -> Any:
         if not inspect.iscoroutine(coro):
             raise TypeError("spawn_task() requires a coroutine object")
@@ -220,7 +235,13 @@ class HostRuntime:
         handler = _HANDLERS.get(method)
         if handler is None:
             raise ValueError(f"unknown plugin host request {method!r}")
-        return handler(self, params)
+        ref = params.get("ref")
+        plugin = str(params.get("plugin_key") or "") if ref is None else self.owners.get(int(ref), "")
+        token = _EXECUTING_PLUGIN.set((plugin, params["load"] if "load" in params else self.loads.get(plugin)))
+        try:
+            return handler(self, params)
+        finally:
+            _EXECUTING_PLUGIN.reset(token)
 
     def _run(self, result: Any) -> Any:
         """Await plugin coroutines on the host loop, still attributed to the request being served
@@ -230,7 +251,12 @@ class HostRuntime:
         return result
 
     def _encode_result(self, plugin_key: str, value: Any) -> Any:
-        return encode(value, functools.partial(self.ref_for, plugin_key, allow_objects=False))
+        def refs(obj: Any) -> Optional[dict]:
+            if _provider_base(obj) is not None:  # e.g. the engine ``clone_for_agent`` returns
+                return self._describe_object(plugin_key, obj)
+            return self.ref_for(plugin_key, obj, allow_objects=False)
+
+        return encode(value, refs)
 
     def _decode_args(self, params: dict[str, Any]):
         return decode(params.get("args") or [], None), decode(params.get("kwargs") or {}, None)
@@ -247,6 +273,7 @@ class HostRuntime:
             raise AttributeError(f"Plugin '{params.get('name')}' has no register() function")
         module_name = getattr(target, "__name__", None) or getattr(register, "__module__", None)
         self.modules[plugin_key] = str(module_name or "")
+        self.loads[plugin_key] = params.get("load")
         self._run(register(RemotePluginContext(self, plugin_key, params)))
         return {"module": module_name}
 
@@ -261,6 +288,7 @@ class HostRuntime:
         if module is None:
             module = self.instance_modules[str(params["path"])] = _import_plugin(params)
         self.modules[plugin_key] = module.__name__
+        self.loads[plugin_key] = params.get("load")
         base = _import_base(str(params["base"]))
         capture = str(params["capture"])
         captured: list[Any] = []
@@ -348,6 +376,9 @@ class HostRuntime:
         if method.startswith("_"):
             raise AttributeError(method)
         args, kwargs = self._decode_args(params)
+        base = _provider_base(obj)
+        if base is not None:  # the ABC's annotations say what Hermes passed (``home_path: Path``)
+            args, kwargs = restore_arguments(declared_member(base, method), args, kwargs)
         return self._encode_result(self.owners.get(ref, ""), self._run(getattr(obj, method)(*args, **kwargs)))
 
     def op_obj_getattr(self, params: dict[str, Any]) -> Any:
@@ -395,6 +426,7 @@ class HostRuntime:
             for ref in [r for r, owner in self.owners.items() if owner == plugin_key]:
                 self.refs.pop(ref, None)
                 self.owners.pop(ref, None)
+        self.loads.pop(plugin_key, None)
         module_name = self.modules.pop(plugin_key, "")
         if module_name:
             for name in [m for m in sys.modules if m == module_name or m.startswith(module_name + ".")]:
@@ -441,6 +473,18 @@ class _CapturingContext(RemotePluginContext):
 def _import_base(ref: str) -> type:
     module, attr = ref.split(":")
     return getattr(importlib.import_module(module), attr)
+
+
+def _provider_base(value: Any) -> Optional[type]:
+    """The provider ABC (``HOST_OBJECT_BASES``) ``value`` implements. Only an already-imported base
+    can match: a plugin object subclassing it imported it."""
+    from hermes_cli.plugin_isolation import HOST_OBJECT_BASES
+    for ref in HOST_OBJECT_BASES.values():
+        module, attr = ref.split(":")
+        base = getattr(sys.modules.get(module), attr, None)
+        if isinstance(base, type) and isinstance(value, base):
+            return base
+    return None
 
 
 def _is_provider_object(value: Any) -> bool:
@@ -507,7 +551,6 @@ def _take_protocol_streams():
 def capture_profiles(path: str, module_name: str) -> list[Any]:
     """Import a model-provider plugin and return the profiles it passes to ``register_provider``."""
     import providers
-    from providers.base import ProviderProfile
     providers.list_providers()  # bundled + known profiles register before the capture window
     captured: list[Any] = []
     original = providers.register_provider
@@ -516,12 +559,22 @@ def capture_profiles(path: str, module_name: str) -> list[Any]:
         _import_plugin({"path": path, "module_name": module_name, "name": Path(path).name})
     finally:
         providers.register_provider = original  # type: ignore[assignment]
-    for profile in captured:
-        if type(profile).create_client is not ProviderProfile.create_client:
-            raise PluginHostUnsupported(
-                f"provider profile {getattr(profile, 'name', '?')!r} overrides create_client(), which returns "
-                "a live SDK client; it runs only in-process")
     return captured
+
+
+def _host_unsupported_reason(profile: Any) -> str | None:
+    """Why *profile* cannot run behind the plugin host (it then loads in-process), or None."""
+    from providers.base import ProviderProfile
+    if type(profile).create_client is not ProviderProfile.create_client:
+        return "it overrides create_client(), which returns a live SDK client"
+    return None
+
+
+def _extraction_entry(profile: Any) -> dict[str, Any]:
+    reason = _host_unsupported_reason(profile)
+    if reason is not None:
+        return {"name": profile.name, "in_process": reason}
+    return describe_profile(profile)
 
 
 def describe_profile(profile: Any) -> dict[str, Any]:
@@ -557,7 +610,7 @@ def extract_profiles_main(path: str, module_name: str) -> int:
     del reader
     import hermes_bootstrap
     try:
-        payload = {"profiles": [describe_profile(p) for p in capture_profiles(path, module_name)]}
+        payload = {"profiles": [_extraction_entry(p) for p in capture_profiles(path, module_name)]}
     except Exception as exc:
         payload = {"error": f"{type(exc).__name__}: {exc}"}
     writer.write(json.dumps(payload).encode("utf-8"))
@@ -571,6 +624,8 @@ def main() -> int:
     logging.basicConfig(stream=sys.stderr, level=os.environ.get("HERMES_PLUGIN_HOST_LOG_LEVEL", "WARNING"),
                         format="%(levelname)s %(name)s: %(message)s")
     runtime = HostRuntime(reader, writer)
+    from hermes_cli import plugin_events
+    plugin_events._session_event_forwarder = runtime.session_event
     runtime.channel.start()
     runtime.stopped.wait()
     runtime.channel.close("host shutdown")

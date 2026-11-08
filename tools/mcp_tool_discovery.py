@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -755,6 +756,50 @@ def mcp_servers_awaiting_connect() -> list[str]:
     return _awaiting_connect(_enabled_config_names(), _core._mcp_registry_scope())
 
 
+# One settings-driven reconnect at a time (see restart_mcp_servers_with_new_inputs).
+_RESTART_LOCK = threading.Lock()
+
+
+def restart_mcp_servers_with_new_inputs(names: set[str]) -> list[str]:
+    """Reconnect each live server in *names* whose resolved launch inputs (stdio command/env/cwd,
+    HTTP url/headers) no longer hash to what it connected with, e.g. after a plugin settings form
+    saved a new ``${VAR}`` its ``env`` passes through. A server whose inputs did not change keeps
+    its connection. Returns the names restarted.
+
+    Serialized: a second save waits for the first reconnect, then compares against what THAT one
+    connected with, so a newer key is never lost to an older in-flight start. A connection this
+    profile only borrows (same inputs as another profile's) is left running for its owner; this
+    profile just detaches and connects its own."""
+    with _RESTART_LOCK:
+        scope = _core._mcp_registry_scope()
+        owned, borrowed = [], []
+        with _owner_secret_scope():
+            servers = _config._load_mcp_config()
+            for name in sorted(names):
+                config = servers.get(name)
+                with _core._lock:
+                    key = _resolve_server_key(name, scope, current=False)
+                    server = _core._servers.get(key)
+                recorded = getattr(server, "_resolved_identity", None)
+                if config is None or recorded is None or not mcp_server_enabled(config):
+                    continue
+                # Render as the connect path does (plugin servers join the config after load's render pass).
+                if _registration._adopter_identity_digest(name, _config._interpolate_env_vars(config)) != recorded:
+                    (owned if key == _server_key(name, scope, current=False) else borrowed).append((name, key))
+        if not owned and not borrowed:
+            return []
+        changed = sorted(name for name, _key in owned + borrowed)
+        logger.info("MCP server(s) %s: launch inputs changed; reconnecting", ", ".join(changed))
+        if owned:
+            _lifecycle.shutdown_mcp_servers(scope=scope, names={name for name, _key in owned})
+        for _name, key in borrowed:
+            _registration._remove_server_scope(key, scope)
+        for name in changed:
+            _clear_connect_failure(name)
+        discover_mcp_tools()
+        return changed
+
+
 def _forget_lazy_server(key) -> None:
     """Drop a schema-cache (lazy) registration whose config entry is gone: its cached tools would
     otherwise stay callable and spawn the server on first use."""
@@ -814,10 +859,14 @@ def get_mcp_status(configured: Optional[dict[str, dict]] = None, *, include_runt
         enabled = mcp_server_enabled(cfg)  # evaluated unconditionally: malformed values warn even when connected
         server = active_servers.get(name)
         live = server is not None and server.session is not None
+        # A server that connected and then parked (reconnects exhausted) records no connect error,
+        # but it is down all the same; never-tried servers stay "configured".
+        parked = server is not None and not live and server._park_reason is not None
         # An in-flight or failed first-use connect outranks "lazy": that server is no longer
         # merely waiting to be spawned, and the error is the actionable part.
         status = ("connected" if live else "disabled" if not enabled else "connecting" if name in connecting
-                  else "failed" if name in connect_errors else "lazy" if name in lazy_tools else "configured")
+                  else "failed" if name in connect_errors or parked else "lazy" if name in lazy_tools
+                  else "configured")
         entry = {"name": name, "transport": cfg.get("transport", "http") if "url" in cfg else "stdio",
                  "tools": 0, "connected": False, "disabled": status == "disabled", "status": status}
         if live:
@@ -826,10 +875,12 @@ def get_mcp_status(configured: Optional[dict[str, dict]] = None, *, include_runt
                               else len(server._tools))
             if server._sampling:
                 entry["sampling"] = dict(server._sampling.metrics)
-        elif status == "failed":
+        elif status == "failed" and name in connect_errors:
             entry["error"] = connect_errors[name]
         elif status == "lazy":
             entry["tools"] = lazy_tools[name]
+        # Parked on a rejected OAuth credential: the one failure only the user can fix (sign in again).
+        entry["needs_auth"] = bool(server is not None and not live and server._auth_park is not None)
         result.append(entry)
     return result
 

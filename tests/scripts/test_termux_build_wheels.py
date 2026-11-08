@@ -11,6 +11,38 @@ import pytest
 
 from scripts.termux import build_wheels as builder
 
+# A PEP 517 backend that lives in the fixture's own source tree: the wheel build needs nothing
+# from an index (the setuptools backend it replaces was fetched from PyPI on every run). It
+# packages ``source_fixture.py`` as checked out, so the pinned commit still decides the content.
+_IN_TREE_BACKEND = '''\
+import base64, hashlib, zipfile
+from pathlib import Path
+
+_DIST, _VERSION = "hermes_source_fixture", "8.0.0"
+
+
+def get_requires_for_build_wheel(config_settings=None):
+    return []
+
+
+def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
+    info = f"{_DIST}-{_VERSION}.dist-info"
+    files = {
+        "source_fixture.py": Path("source_fixture.py").read_bytes(),
+        f"{info}/METADATA": b"Metadata-Version: 2.1\\nName: hermes-source-fixture\\nVersion: 8.0.0\\n",
+        f"{info}/WHEEL": b"Wheel-Version: 1.0\\nGenerator: fixture\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n",
+    }
+    record = "".join(
+        f"{name},sha256={base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b'=').decode()},{len(data)}\\n"
+        for name, data in files.items()) + f"{info}/RECORD,,\\n"
+    files[f"{info}/RECORD"] = record.encode()
+    name = f"{_DIST}-{_VERSION}-py3-none-any.whl"
+    with zipfile.ZipFile(Path(wheel_directory) / name, "w") as archive:
+        for path, data in files.items():
+            archive.writestr(path, data)
+    return name
+'''
+
 
 @pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"])
 def test_requirement_readers_preserve_pins_and_reject_malformed_rows(tmp_path, bom):
@@ -29,13 +61,13 @@ def test_requirement_readers_preserve_pins_and_reject_malformed_rows(tmp_path, b
         builder.load_entries(resolved)
 
 
-def test_source_pin_survives_resolution_build_and_offline_install(tmp_path):
+def test_source_pin_survives_resolution_build_and_offline_install(tmp_path, monkeypatch):
     repo = tmp_path / "source"
     repo.mkdir()
     (repo / "pyproject.toml").write_text(
-        '[build-system]\nrequires = ["setuptools>=75.3.4"]\n'
-        'build-backend = "setuptools.build_meta"\n'
+        '[build-system]\nrequires = []\nbuild-backend = "backend"\nbackend-path = ["."]\n'
         '[project]\nname = "hermes-source-fixture"\nversion = "8.0.0"\n', encoding="utf-8")
+    (repo / "backend.py").write_text(_IN_TREE_BACKEND, encoding="utf-8")
     (repo / "source_fixture.py").write_text('VALUE = "from pinned source"\n', encoding="utf-8")
     subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
@@ -71,8 +103,9 @@ def test_source_pin_survives_resolution_build_and_offline_install(tmp_path):
     build_env = tmp_path / "build-env"
     venv.EnvBuilder(with_pip=True).create(build_env)
     python = build_env / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    subprocess.run([str(python), "-m", "pip", "install", "pip==26.2.1"],
-                   check=True, capture_output=True)
+    # The interpreter's bundled pip builds the wheel; no index is consulted at any step, so the
+    # build proves the git pin alone produces the wheel.
+    monkeypatch.setenv("PIP_NO_INDEX", "1")
     builder.build_wheels(list(specs), specs, wheels, python=str(python))
     assert len(list(wheels.glob("hermes_source_fixture-8.0.0-*.whl"))) == 1
     # Remove the original source URL to rule out a Git fallback.

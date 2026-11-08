@@ -72,6 +72,20 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_update.add_argument(
         "--yes", "-y", action="store_true",
         help="With no name: update everything listed without the confirmation question (required without a terminal)")
+    plugins_update.add_argument(
+        "--force", "-f", action="store_true",
+        help="Apply the update even when the security scan returns a caution verdict (a dangerous verdict "
+             "still blocks). Without it, a terminal asks first")
+
+    plugins_auto = plugins_subparsers.add_parser(
+        "auto-update", aliases=["autoupdate"],
+        help="Show or set unattended plugin updates (plugins.auto_apply)",
+        description=(
+            "With auto-update on, the gateway's update check (every plugins.auto_update_check_hours) "
+            "applies the catalog and tracked Git updates `hermes plugins update` would apply, through the "
+            "same security scan. Updated code loads in new sessions; a widened catalog pin or new "
+            "capabilities are never accepted unattended. Off by default."))
+    plugins_auto.add_argument("state", nargs="?", choices=["on", "off"], help="Omit to show the current setting")
 
     plugins_adopt = plugins_subparsers.add_parser(
         "adopt",

@@ -4,6 +4,7 @@ prompts) and scoped controls; no agent-loop state is changed. Process rows come 
 from __future__ import annotations
 
 import json
+import logging
 import time
 
 from prompt_toolkit.utils import get_cwidth
@@ -11,6 +12,8 @@ from prompt_toolkit.utils import get_cwidth
 from agent.i18n import t
 from hermes_cli import cli_process_dock as procs
 from hermes_cli import cli_session_dock as session_rows
+
+logger = logging.getLogger(__name__)
 
 
 def _clip(value, width):
@@ -86,6 +89,7 @@ class SubagentMonitor:
             row['key'] = row['subagent_id']
             row.pop('running_seconds', None)
         processes = procs.process_rows(now)
+        session_rows.sync_automation(self.cli)
         goal = session_rows.goal_line(self.cli)
         loop_badge, loop, loop_prompt = session_rows.loop_row(self.cli, now)
         queued = session_rows.queued_prompts(self.cli)
@@ -123,8 +127,13 @@ class SubagentMonitor:
         if now - self._last_poll < 1:
             return
         self._last_poll = now
-        changed = self.refresh()
-        if self._poll_tail() or changed:
+        try:
+            changed = self.refresh()
+            changed = self._poll_tail() or changed
+        except Exception:  # health: allow BLE001 -- the spinner thread runs this tick; one raise would end that thread for the session
+            logger.debug("subagent monitor tick failed", exc_info=True)
+            return
+        if changed:
             if self.app is not None:
                 self.invalidate()
             else:

@@ -212,6 +212,29 @@ def test_main_writes_catalog_and_meta(mod, tmp_path):
     assert live["removed"] == [{"name": "gone"}]
 
 
+def test_curated_featured_ranks_are_stamped_from_the_curation_file(mod, tmp_path, monkeypatch):
+    catalog = tmp_path / "plugin-catalog"
+    catalog.mkdir()
+    for name in ("alpha", "beta", "gamma"):
+        _write_entry(catalog, name)
+    curation = tmp_path / "apps" / "shared" / "src" / "catalog-curation.json"
+    curation.parent.mkdir(parents=True)
+    curation.write_text(json.dumps({"featured": {"plugins": ["gamma", "missing", "alpha"]}}), encoding="utf-8")
+    monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
+
+    assert mod.main(catalog_dir=catalog, output_dir=tmp_path / "api") == 0
+
+    plugins = {p["name"]: p for p in json.loads((tmp_path / "api" / "plugins.json").read_text(encoding="utf-8"))}
+    # Rank is the position in the curated list, so a pick missing from the catalog keeps its slot.
+    assert plugins["gamma"]["featured"] == 1
+    assert plugins["alpha"]["featured"] == 3
+    assert "featured" not in plugins["beta"]
+
+
+def test_missing_curation_file_features_nothing(mod, tmp_path):
+    assert mod.load_featured(tmp_path / "absent.json") == []
+
+
 def test_missing_catalog_dir_degrades_to_empty_outputs_exit_zero(mod, tmp_path):
     out_dir = tmp_path / "api"
 

@@ -19,6 +19,10 @@ LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choi
 
 
 DEFAULT_CONFIG = {
+    "telegram_room_relay": {
+        "enabled": False, "profile": "default", "room_id": "",
+        "allowed_senders": [], "members": [],
+    },
     "model": "",
     "providers": {},
     "fallback_providers": [],

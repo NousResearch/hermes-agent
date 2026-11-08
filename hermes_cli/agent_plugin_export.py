@@ -21,6 +21,7 @@ from hermes_cli.agent_plugins import (
     MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1, _HERMES_EXTENSION, _PLUGIN_NAME_RE, _SKILL_NAME_RE,
     _parse_skill_frontmatter, load_agent_plugin)
 
+_PLUGIN_PLACEHOLDER_RE = re.compile(r"\$\{PLUGIN_(?:ROOT|DATA)\}")
 _ENV_TEMPLATE_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
 _SECRET_NAME_RE = re.compile(r"(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|COOKIE|SESSION)",
                              re.IGNORECASE)
@@ -72,7 +73,8 @@ def _stdio_entry(server: str, cfg: Mapping[str, Any], notes: list[str]) -> dict[
     # The MCP launch-card masker knows which argv positions hold secrets (``--api-key X``, ``-H
     # 'Authorization: …'``, ``KEY=VALUE``) and which only look like it (``--auth-type``, ``--max-tokens``).
     from tools.connectors.mcp_launch import _mask_flag_values
-    if any("${" in arg for arg in args) or _mask_flag_values(command, args) != args:
+    templated = [_PLUGIN_PLACEHOLDER_RE.sub("", arg) for arg in args]  # ${PLUGIN_ROOT}/${PLUGIN_DATA} are portable
+    if any("${" in arg for arg in templated) or _mask_flag_values(command, args) != args:
         raise ExportError(f"mcp:{server}: args carry a credential or ${{VAR}} template; pass it through "
                           "env instead so the package ships only the variable name")
     entry: dict[str, Any] = {"type": "stdio", "command": command, "args": args}

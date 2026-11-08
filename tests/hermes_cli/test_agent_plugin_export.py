@@ -19,7 +19,7 @@ def _profile(home: Path) -> None:
         encoding="utf-8")
     (home / "config.yaml").write_text(
         "mcp_servers:\n"
-        "  fs:\n    command: npx\n    args: [server-fs, --auth-type=oauth, --max-tokens=100]\n"
+        "  fs:\n    command: npx\n    args: [server-fs, --auth-type=oauth, --max-tokens=100, '${PLUGIN_DATA}/cache']\n"
         f"    env: {{GITHUB_TOKEN: {_TOKEN}, LOG_LEVEL: info}}\n    trust: untrusted\n"
         "  remote:\n    url: https://mcp.example.com/mcp\n"
         "    headers: {Authorization: 'Bearer ${MY_TOKEN}', X-Tenant: public}\n    auth: oauth\n"

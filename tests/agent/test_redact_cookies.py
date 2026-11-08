@@ -25,6 +25,7 @@ class TestCookieCredentials:
             ('INFO upstream Cookie: sid="opaqueSessionValue1234567890"', "opaqueSessionValue"),
             ("INFO upstream x-api-key: $opaqueSessionValue1234567890", "opaqueSessionValue"),
             ("INFO upstream x-api-key: &opaqueSessionValue1234567890", "opaqueSessionValue"),
+            ("INFO upstream x-api-key: prefix|opaqueSessionValue1234567890", "opaqueSessionValue"),
             ("INFO upstream x-api-key : opaqueSessionValue1234567890", "opaqueSessionValue"),
             ("INFO upstream Cookie: sid=pre'opaqueSessionValue1234567890", "opaqueSessionValue"),
             ("export SESSION_COOKIE='sid='\"opaqueSessionValue1234567890\"", "opaqueSessionValue"),

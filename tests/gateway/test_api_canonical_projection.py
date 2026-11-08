@@ -116,6 +116,39 @@ async def test_run_sse_carries_controls_tool_payloads_and_authoritative_cancella
     assert 'run.cancelled' in names and 'run.completed' not in names
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('want_interim', [True, False])
+async def test_run_projects_canonical_interim_commentary(api, owner, want_interim):
+    from gateway.session_api_turn import wire_api_observers
+    from gateway.session_results import execution_result
+
+    admitted = admit_api_turn(api, session_id='commentary', user_message='hello', conversation_history=[])
+    _, ref, _ = admitted
+    launch, queue = _launch(api, admitted)
+
+    async def handle(event):
+        agent = SimpleNamespace(status_callback=None, interim_assistant_callback=None,
+                                tool_progress_callback=None)
+        wire_api_observers(agent, _turn_runner(owner, ref)._approval_owner, want_interim)
+        if agent.interim_assistant_callback is not None:
+            agent.interim_assistant_callback('Checking the docs.', already_streamed=False)
+            agent.interim_assistant_callback('Applying the fix.', already_streamed=True)
+            agent.interim_assistant_callback('  ')
+            agent.interim_assistant_callback('')
+        execution_result.get()['result'] = {'final_response': 'Done.'}
+        return 'Done.'
+
+    owner.runner._handle_message = handle
+    await _execute_run(api, launch, _api_server=_api_server)
+    await asyncio.sleep(0)  # Flush the thread-safe commentary and terminal projections.
+    events = _events(queue)
+    interim = [(e['text'], e['already_streamed']) for e in events if e['event'] == 'message.interim']
+    assert interim == ([('Checking the docs.', False), ('Applying the fix.', True)] if want_interim else [])
+    assert [e['event'] for e in events] == (['message.interim', 'message.interim'] if want_interim else []) + [
+        'run.completed']
+    assert events[-1]['output'] == 'Done.'
+
+
 def _wrap(api, run_id, loop, sink):
     from gateway.platforms.api_server_runs import _make_run_event_callback
     inner = _make_run_event_callback(api, run_id, loop, _api_server=_api_server)

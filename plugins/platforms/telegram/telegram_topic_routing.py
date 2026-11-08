@@ -123,8 +123,9 @@ class TelegramTopicRoutingMixin:
         for entry, kind in rows:
             chat_id = entry.get("chat_id") if isinstance(entry, dict) else None
             for topic in (entry.get("topics") or []) if chat_id is not None else ():
-                if isinstance(topic, dict) and topic.get("thread_id") and topic.get("name"):
-                    found.append((str(chat_id), str(topic["thread_id"]), str(topic["name"]), kind))
+                if isinstance(topic, dict) and topic.get("thread_id"):  # group-topic ``name`` is optional
+                    tid = str(topic["thread_id"])
+                    found.append((str(chat_id), tid, str(topic.get("name") or f"{chat_id} / topic {tid}"), kind))
 
         def _match_key(name: str) -> str:  # resolve_channel_name's normalisation: a "#x" label resolves as "x"
             return name.lstrip("#").strip().lower()

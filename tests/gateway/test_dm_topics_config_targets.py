@@ -66,3 +66,16 @@ def test_topic_names_differing_only_by_hash_are_qualified(tmp_path):
         directory = asyncio.run(build_channel_directory({Platform.TELEGRAM: adapter}))
         for entry in directory["platforms"]["telegram"]:
             assert resolve_channel_name("telegram", entry["name"]) == entry["id"]
+
+
+def test_unnamed_group_topic_is_listed(tmp_path):
+    from gateway.channel_directory import build_channel_directory, resolve_channel_name
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra={
+        "group_topics": [{"chat_id": -1001, "topics": [{"thread_id": 5, "skill": "arxiv"}]}]}))
+    with patch("gateway.channel_directory.DIRECTORY_PATH", tmp_path / "channel_directory.json"), \
+         patch("gateway.channel_directory._build_from_sessions", return_value=[]):
+        directory = asyncio.run(build_channel_directory({Platform.TELEGRAM: adapter}))
+        (entry,) = directory["platforms"]["telegram"]
+        assert entry["id"] == "-1001:5"
+        assert resolve_channel_name("telegram", entry["name"]) == "-1001:5"

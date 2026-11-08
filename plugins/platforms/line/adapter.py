@@ -885,7 +885,7 @@ class LineAdapter(BasePlatformAdapter):
             try:
                 await self._client.push(chat_id, batches[i])
             except Exception as exc:
-                shown = describe_proxy_error(exc, env_proxy_for_redaction(LINE_PUSH_URL)) or str(exc)  # the text may echo the proxy URL
+                shown = describe_proxy_error(exc, env_proxy_for_redaction(LINE_PUSH_URL, trust_env=gateway_trust_env())) or str(exc)  # the text may echo the proxy URL
                 if i > 0 or text:
                     logger.log(logging.WARNING if i > 0 else logging.ERROR, "LINE: push %s failed: %s", "for follow-up batch" if i > 0 else "send", shown)
                 return SendResult(success=False, error=shown)
@@ -947,7 +947,7 @@ async def _standalone_send(
         await _LineClient(token).push(chat_id, messages)
         return {"success": True, "message_id": None}
     except Exception as exc:  # the text may echo the proxy URL: it reaches the model
-        return send_error(describe_proxy_error(exc, env_proxy_for_redaction(LINE_PUSH_URL)) or str(exc))
+        return send_error(describe_proxy_error(exc, env_proxy_for_redaction(LINE_PUSH_URL, trust_env=gateway_trust_env())) or str(exc))
 
 
 _SETUP_PROMPTS = (  # (env var, prompt, masked)

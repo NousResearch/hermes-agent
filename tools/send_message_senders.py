@@ -119,8 +119,7 @@ def _telegram_bot(token):
         logger.info("send_message: standalone Telegram send routed through proxy %s", safe_proxy_url_for_log(proxy))
         return Bot(token=token, request=HTTPXRequest(proxy=proxy), get_updates_request=HTTPXRequest(proxy=proxy))
     except Exception as proxy_err:
-        logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection",
-                       describe_proxy_error(proxy_err, proxy) or proxy_err)
+        logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", describe_proxy_error(proxy_err, proxy) or proxy_err)
     return Bot(token=token)
 
 

@@ -99,7 +99,7 @@ def describe_proxy_error(exc: BaseException, proxy_url: str | None) -> str | Non
 _ENV_PROXY_KEYS = frozenset(f"{scheme}_proxy" for scheme in ("https", "http", "all", "wss", "ws", "socks", "grpc"))
 
 
-def env_proxy_for_redaction(*target_urls: str | None) -> str | None:
+def env_proxy_for_redaction(*target_urls: str | None, trust_env: bool = True) -> str | None:
     """The proxy-environment value to pass to :func:`describe_proxy_error` for an error raised by a
     library that reads the proxy environment itself, or None when NO_PROXY bypasses every target
     (that request used no proxy, so its error text cannot echo one and is kept in full).
@@ -109,7 +109,10 @@ def env_proxy_for_redaction(*target_urls: str | None) -> str | None:
     any value, of any case or scheme, that rendering cannot show in full is returned first, and the
     first secret-free value only when every value is one. A secret-free ``ALL_PROXY`` beside a secret
     ``http_proxy`` therefore still redacts, and an ``ALL_PROXY``-only secret redacts an error from a
-    library that ignores ``ALL_PROXY``: leak-safety over that edge."""
+    library that ignores ``ALL_PROXY``: leak-safety over that edge. ``trust_env=False`` (an aiohttp
+    session under ``gateway.trust_env: false``) never reads the environment, so nothing is redacted."""
+    if not trust_env:
+        return None
     values = [value.strip() for key, value in os.environ.items() if key.lower() in _ENV_PROXY_KEYS and value.strip()]
     targets = [url for url in target_urls if url]
     if targets and _no_proxy_bypasses_all(values, targets):

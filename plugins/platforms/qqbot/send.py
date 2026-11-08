@@ -10,8 +10,7 @@ import os
 import time
 
 from gateway.platforms.base import describe_proxy_error, env_proxy_for_redaction  # httpx reads HTTPS_PROXY itself
-from tools.send_message_senders import (
-    _AUDIO_EXTS, _IMAGE_EXTS, _VIDEO_EXTS, _VOICE_EXTS, _error, _success)
+from tools.send_message_senders import _AUDIO_EXTS, _IMAGE_EXTS, _VIDEO_EXTS, _VOICE_EXTS, _error, _success
 
 logger = logging.getLogger("tools.send_message_tool")
 

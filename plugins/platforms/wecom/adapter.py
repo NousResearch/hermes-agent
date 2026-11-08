@@ -178,7 +178,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
             self._wire_plugin_handlers(None)  # ctx.register_platform_handler hooks
             return True
         except Exception as exc:  # the raw text may echo an env proxy's secret
-            self._set_fatal_error("wecom_connect_error", f"WeCom startup failed: {(shown := describe_proxy_error(exc, env_proxy_for_redaction(self._ws_url))) or exc}", retryable=True)
+            self._set_fatal_error("wecom_connect_error", f"WeCom startup failed: {(shown := describe_proxy_error(exc, env_proxy_for_redaction(self._ws_url, trust_env=gateway_trust_env()))) or exc}", retryable=True)
             logger.error("[%s] Failed to connect: %s", self.name, shown or exc, exc_info=not shown)
             await self._teardown()
             return False
@@ -710,7 +710,7 @@ async def _send_via(adapter, chat_id, message, *, live: bool):
     try:
         result = await adapter.send(chat_id, message)
     except Exception as e:
-        return send_error(f"WeCom{' live adapter' if live else ''} send failed: {describe_proxy_error(e, env_proxy_for_redaction(adapter._ws_url)) or e}")
+        return send_error(f"WeCom{' live adapter' if live else ''} send failed: {describe_proxy_error(e, env_proxy_for_redaction(adapter._ws_url, trust_env=gateway_trust_env())) or e}")
     if result.success:
         return {"success": True, "platform": "wecom", "chat_id": chat_id, "message_id": result.message_id}
     return send_error(f"WeCom send failed: {result.error}")
@@ -739,7 +739,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         finally:
             await adapter.disconnect()
     except Exception as e:
-        return send_error(f"WeCom send failed: {describe_proxy_error(e, env_proxy_for_redaction(getattr(adapter, '_ws_url', DEFAULT_WS_URL))) or e}")
+        return send_error(f"WeCom send failed: {describe_proxy_error(e, env_proxy_for_redaction(getattr(adapter, '_ws_url', DEFAULT_WS_URL), trust_env=gateway_trust_env())) or e}")
 
 
 _MANUAL_SETUP_STEPS = (

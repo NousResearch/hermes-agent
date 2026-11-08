@@ -242,7 +242,7 @@ async def _standalone_send(
     except asyncio.CancelledError:
         raise
     except Exception as e:
-        logger.debug("Teams standalone send raised", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction(token_url, activities_url))))
+        logger.debug("Teams standalone send raised", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction(token_url, activities_url, trust_env=gateway_trust_env()))))
         return send_error(f"Teams standalone send failed: {shown or e}")  # the text may echo the proxy URL
 
 

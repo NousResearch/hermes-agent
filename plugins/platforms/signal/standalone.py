@@ -102,8 +102,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                                     f"for Signal rate limit, batch {idx + 1}/{n_batches}.)", id_prefix="notice", timeout=30.0)
                 except Exception as _e:
                     logger.warning("Signal: inline notice failed: %s", describe_proxy_error(_e, env_proxy_for_redaction(http_url)) or _e)
-            outcome = await _signal_send_batch(_post, scheduler, rl, idx, n_batches, att_batch,
-                                               plain_text if idx == 0 else "", http_url)
+            outcome = await _signal_send_batch(_post, scheduler, rl, idx, n_batches, att_batch, plain_text if idx == 0 else "", http_url)
             if outcome is False:
                 failed_batches.append(idx + 1)
             elif outcome is not None:

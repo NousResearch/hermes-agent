@@ -86,14 +86,16 @@ def audio_player_fields(path: str) -> dict[str, str]:
 
 
 def _extract_cover_jpeg(path: str) -> Optional[str]:
-    """A temporary 320px JPEG of ``path``'s embedded cover, or None. Every file operation stays
+    """A temporary JPEG of ``path``'s embedded cover fitted inside 320x320 (Telegram's thumbnail
+    limit on both sides, so portrait art is not sent 320 wide and thousands tall), or None. Every file operation stays
     inside the best-effort boundary: a full or unwritable temp dir costs the cover, never the track."""
     out = None
     try:
         fd, out = tempfile.mkstemp(suffix=".jpg", prefix="hermes-tg-cover-")
         os.close(fd)
         ok = subprocess.run(
-            ["ffmpeg", "-y", "-i", path, "-an", "-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "6", out],
+            ["ffmpeg", "-y", "-i", path, "-an", "-frames:v", "1", "-vf", "scale=320:320:force_original_aspect_ratio=decrease",
+             "-q:v", "6", out],
             stdin=subprocess.DEVNULL, capture_output=True, timeout=20, check=False).returncode == 0
         if ok and os.path.getsize(out):
             return out

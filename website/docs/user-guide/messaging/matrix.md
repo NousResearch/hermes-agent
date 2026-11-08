@@ -322,6 +322,21 @@ Only enable notices when a trusted human workflow really sends `m.notice`:
 MATRIX_PROCESS_NOTICES=true
 ```
 
+### Messages sent while the gateway is offline
+
+Startup drops old events by default. Opt in with `config.yaml` (seconds, clamped to 0–86400; default `0`):
+
+```yaml
+platforms:
+  matrix:
+    extra:
+      catch_up_window_seconds: 3600
+```
+
+On restart, a saved per-profile sync cursor makes the newest 20 old messages per room within the window eligible, up to 100 overall; normal room, ignore-pattern, and mention rules still apply. The first start has no saved cursor and does not replay history. Catch-up excludes your account's own messages, events older than the saved checkpoint (with a 5-second tolerance), and rooms whose state or timeline contains your account's join or rejoin at or after that bound. Display-name or avatar changes with a previous membership of `join` do not count; without previous membership, a join is treated as real and the room is skipped (lossy, safe direction).
+
+Limited timelines after long downtime are logged; their gaps are not recovered. The cursor is saved before dispatch: a crash mid-batch loses messages rather than duplicating them. See also Telegram's [drop_pending_on_cold_boot](./telegram.md) and Discord's [missed_message_backfill](./discord.md).
+
 Outbound whole-room notifications are disabled by default. Keep
 `MATRIX_ALLOW_ROOM_MENTIONS=false` unless the bot is explicitly allowed to wake
 the whole room with `@room`.
@@ -577,6 +592,8 @@ such as `!important` remain normal chat messages.
 ### Bot joins rooms but silently drops every message (clock skew)
 
 **Cause**: The host's system clock is set ahead of real time. The Matrix adapter applies a 5-second startup-grace filter (`event_ts < startup_ts - 5`) to ignore events replayed from initial sync. When the wall clock is ahead, every incoming event looks "older than startup" and is dropped before reaching the message handler — the bot appears connected but never replies. See [#12614](https://github.com/NousResearch/hermes-agent/issues/12614).
+
+Offline catch-up only exempts selected startup events; it does not fix clock skew.
 
 **Symptom**: Gateway log shows `Matrix: dropped N live events as 'too old' more than 30s after startup`.
 

@@ -36,7 +36,12 @@ async def localize_inbound_media(event, get_media_client) -> None:
             elif "/relay/media/" not in url:
                 # A public URL still has value as a URL; a dead re-host does not.
                 localized.append((url, mime, name, inlined))
+        legacy_unflagged = not getattr(event, "media_text_inlined", None)
         event.media_urls, event.media_types, event.media_filenames, event.media_text_inlined = (
             [entry[i] for entry in localized] for i in range(4))
+        if legacy_unflagged:
+            # [] and [None, ...] mean the same, but the admission payload stores the list verbatim:
+            # keep [] so a retry of a delivery committed before per-file flags still matches.
+            event.media_text_inlined = []
     except Exception:
         logger.debug("relay inbound media localization failed", exc_info=True)

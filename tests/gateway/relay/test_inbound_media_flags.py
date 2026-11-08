@@ -28,4 +28,4 @@ async def test_localization_filters_flags_with_attachments(download, flags, tmp_
     assert event.media_urls == [local if download else urls[1], urls[2]]
     assert event.media_types == ["text/plain", "text/plain"]
     assert event.media_filenames == ["downloaded.txt" if download else "kept.txt", "public.txt"]
-    assert event.media_text_inlined == (flags[1:] if flags else [None, None])
+    assert event.media_text_inlined == flags[1:]

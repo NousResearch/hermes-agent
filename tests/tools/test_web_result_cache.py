@@ -87,9 +87,9 @@ def test_search_memo_expires_after_ttl(monkeypatch):
     memo = SearchMemo()
     memo.store("firecrawl", "q", 5, _ok_response())
     monkeypatch.setattr(wrc, "ttl_seconds", lambda: 0.0)
-    # store used the old TTL; force expiry by faking monotonic forward
-    real = time.monotonic
-    monkeypatch.setattr(time, "monotonic", lambda: real() + 100 * 3600)
+    # store used the old TTL; force expiry by advancing the expiry clock
+    real = wrc.hermes_time.deadline_clock
+    monkeypatch.setattr(wrc.hermes_time, "deadline_clock", lambda: real() + 100 * 3600)
     assert memo.lookup("firecrawl", "q", 5) is None
 
 

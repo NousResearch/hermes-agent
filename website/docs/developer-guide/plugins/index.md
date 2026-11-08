@@ -993,6 +993,26 @@ Config and state have different owners: settings are user-visible behavior in
 `config.yaml`, while state is plugin-owned runtime data under
 `<HERMES_HOME>/plugin-data/`. Neither API exposes another plugin's namespace.
 
+### Process-local expiry deadlines
+
+Use `hermes_time.deadline_clock()` for temporary token and cache lifetimes that
+must expire while the computer is asleep. It advances through system suspend
+on Linux, macOS and Windows. Where no supported native clock is available, it
+uses Python's monotonic clock. For example:
+
+```python
+from hermes_time import deadline_clock
+
+expires_at = deadline_clock() + ttl_seconds
+# On later cache reads:
+expired = deadline_clock() >= expires_at
+```
+
+Create and check each deadline with this same clock. Its epoch is unspecified:
+do not persist these values in `ctx.state` or compare them with `time.time()`
+or `time.monotonic()`. Existing execution-duration and watchdog clocks keep
+their own semantics.
+
 ### Settings form in the Desktop
 
 Every key you declare in the manifest's `config_schema` renders as a row on the

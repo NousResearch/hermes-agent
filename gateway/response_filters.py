@@ -6,6 +6,7 @@ not what should be persisted in conversation history.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any, Optional
 
@@ -43,9 +44,24 @@ PRODUCER_CARD_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_N
 # Longer than any marker could plausibly be, even with stray punctuation.
 _MARKER_LENGTH_CAP = 64
 
+# Whitespace glued to the inside of a control token's brackets (``[ SILENT ]``, ``[\tSILENT\t]``).
+_BRACKET_EDGE_WHITESPACE_RE = re.compile(r"(?<=\[)\s+|\s+(?=\])")
+
 
 def _canonical_silence_candidate(text: str) -> str:
     return " ".join(text.strip().upper().split())
+
+
+def _tighten_silence_brackets(text: str) -> str:
+    """Pull whitespace off the inside edges of ``[...]`` so ``[ SILENT ]`` reads ``[SILENT]``.
+
+    A lane that copies its own leaked sentinel emits the token padded *inside* the brackets.
+    That whitespace carries no meaning, but :func:`_canonical_silence_candidate` only collapses
+    runs to a single space, so the padded token never equalled the marker: the autonomous lane
+    delivered the control token as content, and ``context_from`` archived that delivery as the
+    job's real previous answer for every following run to copy back.
+    """
+    return _BRACKET_EDGE_WHITESPACE_RE.sub("", text)
 
 
 def _is_edge_punctuation(ch: str) -> bool:
@@ -70,7 +86,11 @@ def _canonical_silence_candidates(text: Any) -> tuple[str, ...]:
         return ()
     depunctuated = _strip_edge_silence_punctuation(stripped)
     forms = (stripped,) if depunctuated == stripped else (stripped, depunctuated)
-    return tuple(_canonical_silence_candidate(f) for f in forms)
+    canonical = [_canonical_silence_candidate(f) for f in forms]
+    # A marker padded inside its brackets is the same control token, so the tightened reading
+    # joins the candidates. It never replaces them: prose keeps every form it was written with.
+    canonical += [_tighten_silence_brackets(form) for form in canonical]
+    return tuple(dict.fromkeys(canonical))
 
 
 def is_intentional_silence_response(response: Any) -> bool:

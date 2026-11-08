@@ -79,8 +79,8 @@ name: vipernet-model-manager
 repo: https://github.com/ptv1p3r/vipernet-model-manager.git
 
 # Commit EXATO do catalogo, 40 hex — resolvido por `git ls-remote` no GitHub,
-# nunca completado de memoria. `main` do GitHub relido a 2026-11-08: 19c75a72.
-sha: "19c75a72cccc056714f2a6f1e8ef1a3bacdde7d2"
+# nunca completado de memoria. `main` do GitHub relido a 2026-11-08: 437304cf.
+sha: "437304cfbc87f03b23f15e5b8b680aa1dfa9819a"
 
 description: >-
   Picks the provider and model for each turn from the profile's own catalog,
@@ -100,9 +100,9 @@ readme: true
 # Galeria de /docs/plugins/vipernet-model-manager. URLs no sha do pin: um bump
 # de pin obriga a re-pinar as imagens (regra 4).
 screenshots:
-  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/19c75a72cccc056714f2a6f1e8ef1a3bacdde7d2/assets/01-visao-geral.png
-  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/19c75a72cccc056714f2a6f1e8ef1a3bacdde7d2/assets/02-configuracao.png
-  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/19c75a72cccc056714f2a6f1e8ef1a3bacdde7d2/assets/03-registo.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/437304cfbc87f03b23f15e5b8b680aa1dfa9819a/assets/01-visao-geral.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/437304cfbc87f03b23f15e5b8b680aa1dfa9819a/assets/02-configuracao.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/437304cfbc87f03b23f15e5b8b680aa1dfa9819a/assets/03-registo.png
 
 # Capacidades = o que o plugin regista de facto em `__init__.py`. O validador
 # confirma-as no pin (`declared hooks/middleware — matches registrations`).

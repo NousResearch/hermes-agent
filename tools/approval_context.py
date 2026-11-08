@@ -291,11 +291,47 @@ def _get_approval_config() -> dict:
         return {}
 
 
+_POWER_KEYS = ("allow_reboot", "allow_shutdown", "reboot_without_approval", "shutdown_without_approval")
+_warned_ignored_power_keys = False
+
+
+def _get_power_approval_config() -> dict:
+    """The ``approvals`` block of the MANAGED config only (``/etc/hermes/config.yaml`` or the
+    ``HERMES_MANAGED_DIR`` the Hermes process started with), never the user's ``config.yaml``.
+
+    The four power keys decide whether host reboot/shutdown leave the hardline floor. The agent's
+    terminal runs as the same user that owns ``~/.hermes/config.yaml``, so any value read from there
+    is one the agent could have written itself (``sed``, ``python``, ``eval``, a variable holding the
+    key name...): no command filter can close that. The managed directory is root-owned, and the
+    approval check runs in the Hermes process, whose environment a terminal child cannot change.
+    Fails closed: any read error, or no managed scope, means every power key is false."""
+    global _warned_ignored_power_keys
+    try:
+        from hermes_cli import managed_scope
+        managed = managed_scope.load_managed_config().get("approvals") or {}
+    except Exception:  # fail-closed boundary: any error -> every power key false
+        logger.warning("Failed to load managed approval config; power opt-ins off", exc_info=True)
+        managed = {}
+    if not isinstance(managed, dict):
+        managed = {}
+    if not _warned_ignored_power_keys:
+        user = _get_approval_config()
+        ignored = [k for k in _POWER_KEYS if k in user and k not in managed and is_truthy_value(user.get(k))]
+        if ignored:
+            _warned_ignored_power_keys = True
+            logger.warning(
+                "approvals.%s in the user config.yaml is ignored: host reboot/shutdown keys are read only "
+                "from the managed config (/etc/hermes/config.yaml; keep it root-owned).",
+                ", approvals.".join(ignored))
+    return managed
+
+
 def _get_hardline_opt_ins() -> frozenset:
-    """Opt-in hardline categories enabled in config: ``"reboot"`` when ``approvals.allow_reboot``
-    and ``"shutdown"`` when ``approvals.allow_shutdown`` is true (both default false). An enabled
-    category leaves the unconditional floor but still needs a live human approval every time."""
-    cfg = _get_approval_config()
+    """Opt-in hardline categories enabled in the MANAGED config: ``"reboot"`` when
+    ``approvals.allow_reboot`` and ``"shutdown"`` when ``approvals.allow_shutdown`` is true (both
+    default false). An enabled category leaves the unconditional floor but still needs a live human
+    approval every time. See :func:`_get_power_approval_config` for why the user config is ignored."""
+    cfg = _get_power_approval_config()
     enabled = set()
     if is_truthy_value(cfg.get("allow_reboot", False)):
         enabled.add("reboot")
@@ -308,8 +344,9 @@ def _get_power_no_approval_categories() -> frozenset:
     """Power categories allowed to run WITHOUT a prompt in interactive sessions: ``"reboot"`` only when
     BOTH ``approvals.allow_reboot`` and ``approvals.reboot_without_approval`` are true, ``"shutdown"``
     only when BOTH ``approvals.allow_shutdown`` and ``approvals.shutdown_without_approval`` are true
-    (all default false). ``<cat>_without_approval`` alone has no effect: the category stays hardline."""
-    cfg = _get_approval_config()
+    (all default false), read from the MANAGED config only. ``<cat>_without_approval`` alone has no
+    effect: the category stays hardline."""
+    cfg = _get_power_approval_config()
     enabled = set()
     for category in ("reboot", "shutdown"):
         if (is_truthy_value(cfg.get(f"allow_{category}", False))

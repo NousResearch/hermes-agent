@@ -1671,7 +1671,7 @@ DEFAULT_CONFIG = {
         # Case-insensitive fnmatch globs on terminal commands; a match blocks even under --yolo / mode=off.
         # Quote in YAML when starting with * or containing {}/!/: e.g. "git push --force*".
         "deny": [],
-        # Opt-in reboot/shutdown off the hardline floor (security.md), operator-only (the agent's terminal cannot set them): allow_<cat> = human approves EVERY time; plus <cat>_without_approval = no prompt in interactive sessions (ignored without allow_<cat>; cron/-q/webhook always deny).
+        # Reboot/shutdown opt-in (security.md): read ONLY from managed /etc/hermes/config.yaml, ignored here (agent-writable). allow_<cat> = human approves EVERY time; + <cat>_without_approval = no prompt when interactive (cron/-q/webhook always deny).
         "allow_reboot": False, "allow_shutdown": False, "reboot_without_approval": False, "shutdown_without_approval": False,
         # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache,
         # so the next message re-sends full input). "Always Approve" → false.

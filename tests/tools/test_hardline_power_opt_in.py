@@ -106,6 +106,7 @@ def test_config_defaults_are_false():
 ])
 def test_opt_ins_read_from_approvals_config(monkeypatch, cfg, expected):
     monkeypatch.setattr(approval_context, "_get_approval_config", lambda: cfg)
+    monkeypatch.setattr(approval_context, "_get_power_approval_config", lambda: cfg)
     assert approval_context._get_hardline_opt_ins() == expected
 
 
@@ -126,6 +127,7 @@ def guard_env(monkeypatch):
 
     def configure(**cfg):
         monkeypatch.setattr(approval_context, "_get_approval_config", lambda: cfg)
+        monkeypatch.setattr(approval_context, "_get_power_approval_config", lambda: cfg)
     try:
         yield configure
     finally:
@@ -428,6 +430,7 @@ def test_approvals_test_reports_human_only(monkeypatch):
     from hermes_cli import approvals_test
     monkeypatch.setattr(approval_context, "_get_approval_config",
                         lambda: {"allow_reboot": True, "mode": "off"})
+    monkeypatch.setattr(approval_context, "_get_power_approval_config", lambda: {"allow_reboot": True})
     monkeypatch.setattr(approval, "load_permanent_allowlist", lambda: set())
     monkeypatch.setattr(approval, "_permanent_set", lambda: {"sync; sudo reboot"})
     verdict = approvals_test.evaluate_command("sync; sudo reboot")
@@ -506,6 +509,7 @@ def test_no_approval_defaults_are_false():
 ])
 def test_no_approval_categories_need_both_keys(monkeypatch, cfg, expected):
     monkeypatch.setattr(approval_context, "_get_approval_config", lambda: cfg)
+    monkeypatch.setattr(approval_context, "_get_power_approval_config", lambda: cfg)
     assert approval_context._get_power_no_approval_categories() == expected
 
 
@@ -675,6 +679,7 @@ def test_yolo_cannot_lift_no_approval_without_allow(guard_env, interactive):
 def _approvals_test(monkeypatch, cfg, cmd):
     from hermes_cli import approvals_test
     monkeypatch.setattr(approval_context, "_get_approval_config", lambda: cfg)
+    monkeypatch.setattr(approval_context, "_get_power_approval_config", lambda: cfg)
     monkeypatch.setattr(approval, "load_permanent_allowlist", lambda: set())
     monkeypatch.setattr(approval, "_permanent_set", lambda: set())
     return approvals_test.evaluate_command(cmd)

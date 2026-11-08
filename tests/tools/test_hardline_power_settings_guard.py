@@ -78,6 +78,7 @@ def guard_env(monkeypatch):
 
     def configure(**cfg):
         monkeypatch.setattr(approval_context, "_get_approval_config", lambda: cfg)
+        monkeypatch.setattr(approval_context, "_get_power_approval_config", lambda: cfg)
     try:
         yield configure
     finally:

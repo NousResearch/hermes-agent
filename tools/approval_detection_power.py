@@ -8,11 +8,16 @@ module; callers import them from here directly. Pure data and regex fragments: n
 # sudo/env/exec/nohup/setsid/time wrappers. Keeps shutdown/reboot rules from firing on "echo reboot" / "grep
 # 'shutdown' log". Real ;/&/| separators are converted to newlines by the quote-aware _mark_command_starts pass;
 # keeping them here mistakes quoted data (grep '(safe|rm -rf /)') for commands.
+#
+# Every quantifier is possessive (``*+`` / ``++`` / ``?+``, Python 3.11+): the pieces are separated by
+# whitespace, so there is only one way to split a prefix and backtracking into it can never produce a
+# new match. Greedy quantifiers here let the engine retry every split of a long whitespace run
+# between the adjacent ``\s`` runs (quadratic: ~10 s per rule set on a 4095-char separator-free input).
 _CMDPOS = (
-    r'(?:^|[\n`]|\$\()' r'\s*'  # start position, optional whitespace
-    r'(?:sudo\s+(?:-[^\s]+\s+)*)?' r'(?:env\s+(?:\w+=\S*\s+)*)?'  # optional sudo with flags, env VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*' r'\s*'  # optional wrapper commands
-    r'(?:command\s+(?:-p\s+)?)?'  # `command [-p] NAME` runs NAME (`command -v NAME` only looks it up)
+    r'(?:^|[\n`]|\$\()' r'\s*+'  # start position, optional whitespace
+    r'(?:sudo\s++(?:-[^\s]++\s++)*+)?+' r'(?:env\s++(?:\w++=\S*+\s++)*+)?+'  # optional sudo + flags, env VAR=VAL
+    r'(?:(?:exec|nohup|setsid|time)\s++)*+'  # optional wrapper commands
+    r'(?:command\s++(?:-p\s++)?+)?+'  # `command [-p] NAME` runs NAME (`command -v NAME` only looks it up)
 )
 
 # Optional directory prefix on a command word: `/sbin/`, `/usr/local/sbin/`, `./`, `../bin/`, `~/bin/`.

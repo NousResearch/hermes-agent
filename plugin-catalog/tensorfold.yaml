@@ -1,6 +1,6 @@
 name: tensorfold
 repo: https://github.com/atakann/hermes-tensorfold
-sha: d916b60a6f4d21195839350fcdd942cc0f52c352
+sha: 2d8bf58b5b7684092b86877271b8ffaba88d0326
 description: >-
   TensorFold's native server (github.com/ashhart/TensorFold) as a Hermes model provider (`--provider
   tensorfold`, or TensorFold in `hermes model`): the served models from its /v1/models and each model's
@@ -24,3 +24,4 @@ capabilities:
   provides_middleware: []
   requires_env:
   - TENSORFOLD_API_KEY
+

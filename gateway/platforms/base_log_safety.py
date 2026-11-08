@@ -1,7 +1,9 @@
 """Log-safe URL rendering for adapter logs (split from :mod:`gateway.platforms.base`)."""
+import re
 from urllib.parse import urlsplit
 
 _UNSAFE_URL_PLACEHOLDER = "<unparseable URL redacted>"
+_FILE_NAME = re.compile(r"[\w-]{1,40}\.[A-Za-z0-9]{1,5}")
 
 
 def _authority_for_log(raw: str, parsed) -> str | None:
@@ -47,6 +49,10 @@ def safe_url_for_log(url: str, max_len: int = 80) -> str:
             return _UNSAFE_URL_PLACEHOLDER[:max_len]
         path = parsed.path or ""
         basename = path.rsplit("/", 1)[-1]
+        # Keep a media file name (``image.png``) for context, never a bare token segment
+        # (``/services/T/B/<secret>``, ``/x/<secret>`` on a proxy URL).
+        if not _FILE_NAME.fullmatch(basename):
+            basename = ""
         tail = "" if path in ("", "/") else f"/.../{basename}" if basename else "/..."
         safe = f"{parsed.scheme}://{authority}{tail}"
     if len(safe) <= max_len:

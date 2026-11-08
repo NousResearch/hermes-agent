@@ -227,6 +227,19 @@ def test_simplex_idna_host_is_never_treated_as_bypassed(monkeypatch, caplog, no_
         assert "qzx" not in text and "qzx" not in unquote(text), text[-2000:]
 
 
+def test_an_oddly_cased_no_proxy_alone_is_not_a_bypass(monkeypatch):
+    # httplib2 reads only ``no_proxy`` / ``NO_PROXY``: a ``No_Proxy`` it ignores cannot prove a direct send.
+    from gateway.platforms.base_log_safety import env_proxy_for_redaction
+
+    for name in (*ENV_PROXY_VARS, "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", _SECRET)
+    monkeypatch.setenv("No_Proxy", "*")
+    assert env_proxy_for_redaction("https://chat.googleapis.com") == _SECRET
+    monkeypatch.setenv("NO_PROXY", "*")
+    assert env_proxy_for_redaction("https://chat.googleapis.com") is None
+
+
 def test_feishu_media_download_failure_log_carries_no_proxy_secret(monkeypatch, caplog):
     from gateway.config import PlatformConfig
     from gateway.platforms.base import SendResult as _SendResult

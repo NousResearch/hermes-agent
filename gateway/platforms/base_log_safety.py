@@ -128,6 +128,8 @@ def _no_proxy_bypasses_all(values: list[str], targets: list[str]) -> bool:
     if any(safe_proxy_url_for_log(v if "://" in v else f"http://{v}") == _UNSAFE_URL_PLACEHOLDER for v in values):
         return False
     no_proxies = [value for key, value in os.environ.items() if key.lower() == "no_proxy"]
+    if not (os.environ.get("no_proxy") or os.environ.get("NO_PROXY")):  # httplib2 reads only these two spellings
+        return False
     try:
         parsed = [urlsplit(str(url)) for url in targets]
         # urllib's opener tests ``host[:port]`` (IPv6 bracketed), requests and httplib2 the hostname.

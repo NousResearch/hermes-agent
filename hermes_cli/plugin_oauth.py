@@ -211,7 +211,8 @@ def oauth_surface(manifest: Mapping[str, Any]) -> set[str]:
 def _declared_env_names(manifest: Mapping[str, Any]) -> set[str]:
     names: set[str] = set()
     for field in ("requires_env", "optional_env"):
-        for entry in manifest.get(field) or []:
+        entries = manifest.get(field)
+        for entry in entries if isinstance(entries, list) else []:
             names.add(str(entry.get("name") if isinstance(entry, dict) else entry))
     return names
 

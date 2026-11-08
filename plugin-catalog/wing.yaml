@@ -29,7 +29,7 @@
 "version": "0.3.0"
 "requires_hermes": ">=0.23.0"
 "screenshots":
-- "https://raw.githubusercontent.com/tarkilhk/wing-hermes-plugin/8423f7f7331ed2eabfb48636ad14d23013a4942c/docs/email-draft-preview.png"
+- "https://raw.githubusercontent.com/tarkilhk/wing-hermes-plugin/a39afe7ae4acc2f2da50d73b6a117a5ce2f61e1a/docs/email-draft-preview.png"
 "capabilities":
   "provides_tools":
   - "wing_email_draft"

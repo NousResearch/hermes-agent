@@ -104,3 +104,26 @@ async def test_topic_setup_does_not_mutate_shared_config_cache(tmp_path, monkeyp
     assert adapter._dm_topics == {"222:WEBSITE": 58890}
     topics = load_config_readonly()["platforms"]["telegram"]["extra"]["dm_topics"][0]["topics"]
     assert "thread_id" not in topics[0]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_after_failed_save_reuses_the_created_topic(tmp_path, monkeypatch):
+    """Reload stays enabled and the thread_id save fails: the reconnect's fresh config copy lacks the
+    id, so setup must reuse the one this adapter created instead of creating a duplicate topic."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "platforms:\n  telegram:\n    extra:\n      dm_topics:\n"
+        "      - chat_id: 222\n        topics:\n        - name: WEBSITE\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra={}))
+    ids = iter((58890, 58891))
+    adapter._bot = AsyncMock()
+    adapter._bot.create_forum_topic.side_effect = lambda **kw: SimpleNamespace(message_thread_id=next(ids))
+    adapter._persist_dm_topic_thread_id = lambda *a, **k: None  # the save fails
+
+    await adapter._setup_dm_topics()
+    await adapter._setup_dm_topics()
+
+    assert adapter._bot.create_forum_topic.await_count == 1
+    assert adapter._dm_topics == {"222:WEBSITE": 58890}

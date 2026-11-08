@@ -1961,7 +1961,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         try:
             image_path = await self._download_remote_image(image_url)
         except Exception as exc:
-            logger.error("[Feishu] Failed to download image %s: %s", image_url, exc, exc_info=True)
+            logger.error("[Feishu] Failed to download image %s: %s", image_url, (shown := describe_proxy_error(exc, env_proxy_for_redaction(image_url))) or exc, exc_info=not shown)
             return await super().send_image(
                 chat_id=chat_id, image_url=image_url, caption=caption, reply_to=reply_to, metadata=metadata,
             )
@@ -1979,7 +1979,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                 animation_url, default_ext=".gif", preferred_name="animation.gif",
             )
         except Exception as exc:
-            logger.error("[Feishu] Failed to download animation %s: %s", animation_url, exc, exc_info=True)
+            logger.error("[Feishu] Failed to download animation %s: %s", animation_url, (shown := describe_proxy_error(exc, env_proxy_for_redaction(animation_url))) or exc, exc_info=not shown)
             return await super().send_animation(
                 chat_id=chat_id, animation_url=animation_url, caption=caption, reply_to=reply_to, metadata=metadata,
             )

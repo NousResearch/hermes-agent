@@ -632,6 +632,8 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", oppure {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Anteprima abbreviata: il comando completo ({total} caratteri) è nel messaggio qui sopra."
+    truncated_deny_only: "Anteprima abbreviata ({total} caratteri) e il comando completo non è stato mostrato qui, quindi è disponibile solo Nega. Controllalo nella CLI o nell'app Desktop."
   notify:
     media_kind:
       audio: "audio"

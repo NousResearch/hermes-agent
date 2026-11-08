@@ -641,6 +641,8 @@ gateway:
       {command}
       ```
       {reason_label}: {reason}
+    truncated_full_above: "Rövidített előnézet: a teljes parancs ({total} karakter) a fenti üzenetben van."
+    truncated_deny_only: "Rövidített előnézet ({total} karakter), és a teljes parancsot nem lehetett itt megjeleníteni, ezért csak az Elutasítás érhető el. Nézd át a CLI-ben vagy az asztali alkalmazásban."
 
   notify:
     media_kind:

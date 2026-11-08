@@ -632,6 +632,8 @@ gateway:
     text_choice_joiner: "، "
     text_choice_last: "، أو {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "المعاينة مختصرة: الأمر الكامل ({total} حرفًا) موجود في الرسالة أعلاه."
+    truncated_deny_only: "المعاينة مختصرة ({total} حرفًا) وتعذّر عرض الأمر الكامل هنا، لذا يتوفر الرفض فقط. راجعه في سطر الأوامر أو تطبيق سطح المكتب."
   notify:
     media_kind:
       audio: "صوت"

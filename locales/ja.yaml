@@ -632,6 +632,8 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", または {choice} と返信してください。\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "プレビューは省略されています: 完全なコマンド({total} 文字)は上のメッセージにあります。"
+    truncated_deny_only: "プレビューは省略されています({total} 文字)。完全なコマンドをここに表示できなかったため、拒否のみ選択できます。CLI またはデスクトップアプリで確認してください。"
   notify:
     media_kind:
       audio: "音声"

@@ -14,6 +14,30 @@ export const normalize = (v: unknown): string => asText(v).trim().toLowerCase()
  *  `s.charAt(0).toUpperCase() + s.slice(1)` idiom (empty-safe). */
 export const capitalize = (v: string): string => (v ? v.charAt(0).toUpperCase() + v.slice(1) : v)
 
+/** A prefix of trim + whitespace collapse, without allocating a normalized
+ * copy of an entire tool result just to show its first line or compare a title. */
+export function inlineTextPrefix(value: string, limit: number): string {
+  let text = ''
+  let previousEnd = 0
+
+  // Bound each token too: a single megabyte of unbroken output must not be
+  // scanned in full. Adjacent chunks remain one word in the result.
+  for (const match of value.matchAll(/\S{1,256}/g)) {
+    if (text && match.index > previousEnd) {
+      text += ' '
+    }
+
+    text += match[0].slice(0, limit - text.length)
+    previousEnd = match.index + match[0].length
+
+    if (text.length >= limit) {
+      break
+    }
+  }
+
+  return text
+}
+
 /** First non-empty string among `keys`, trimmed. For reading tool args and
  *  results, where the key carrying the interesting value varies by tool. */
 export const firstStringField = (record: Record<string, unknown>, keys: readonly string[]): string => {

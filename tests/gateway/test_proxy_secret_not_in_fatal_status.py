@@ -131,3 +131,22 @@ def test_connect_failure_keeps_proxy_secret_out_of_fatal_status_and_retry(
     logs = "\n".join(r.getMessage() for r in caplog.records)
     for where, text in (("fatal", "\n".join(fatal)), ("status", status), ("retry", retry), ("logs", logs)):
         assert not _leaks(text), (where, _leaks(text), text[:600])
+
+
+def test_qq_connect_redacts_the_https_proxy_httpx_parses_beside_a_clean_wss_proxy(monkeypatch, caplog):
+    # The WebSocket dials the clean WSS_PROXY, but the httpx token client is built from HTTPS_PROXY
+    # and fails first with ``Invalid port: '<pw>'``: no SDK mocks, the real client construction.
+    pytest.importorskip("httpx")
+    from plugins.platforms.qqbot.adapter import QQAdapter
+
+    for name in (*ENV_PROXY_VARS, "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("WSS_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("HTTPS_PROXY", f"http://bob:{PASSWORD}#x@127.0.0.1:1")
+    adapter = QQAdapter(PlatformConfig(enabled=True, extra={"app_id": "mixed-proxy", "client_secret": "s"}))
+    with caplog.at_level(logging.DEBUG):
+        assert asyncio.run(adapter.connect()) is False
+    logs = "\n".join(logging.Formatter().format(r) for r in caplog.records)
+    assert adapter.fatal_error_message and " via " in adapter.fatal_error_message
+    for text in (adapter.fatal_error_message, logs):
+        assert not _leaks(text), text[-2000:]

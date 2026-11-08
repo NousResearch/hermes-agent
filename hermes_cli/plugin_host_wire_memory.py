@@ -136,7 +136,7 @@ def _encode_memory_prefetch_result(
         observations = fields.get("observations", ())
     else:
         return None
-    if type(observations) is list:
+    if isinstance(observations, list):
         count = list.__len__(observations)
         get_item = lambda index: list.__getitem__(observations, index)
     elif isinstance(observations, tuple):

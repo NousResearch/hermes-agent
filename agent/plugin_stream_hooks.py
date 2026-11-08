@@ -508,10 +508,10 @@ def _dispatchers_for_scope(
                      and registration.hook_callback is callback),
                     None,
                 ) if _hosted_callables.get(id(callback)) is callback else None
-                # ponytail: two live workers per profile/plugin/hook; use cancellable
-                # hosted observer RPCs if more concurrent blocked generations are needed.
+                # ponytail: stop admission at two stuck retired workers per profile/plugin/hook;
+                # use cancellable hosted RPCs to avoid dropping later generations.
                 if hosted_owner is not None and sum(
-                    candidate.thread is not None and candidate.thread.is_alive()
+                    candidate.retired and candidate.thread is not None and candidate.thread.is_alive()
                     and candidate.hosted_owner == hosted_owner
                     and candidate.hook_name == hook_name
                     and (candidate.profile_key == profile_key if profile_key is not None

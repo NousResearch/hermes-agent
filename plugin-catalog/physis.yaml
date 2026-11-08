@@ -1,6 +1,6 @@
 name: physis
 repo: https://github.com/ilPez00/hermes-physis
-sha: 8602dbbccea9e9a80944ce847b3c2fad0d8b3ec0
+sha: 9f67992dbcd36f4da0379f660baa832609b60699
 version: "1.6.0"
 description: "Evidence-backed execution memory: per-repo graph context, a deterministic verify hook, and verified tool recipes that replay with zero provider calls and refuse when their inputs changed. Sessions that pass their check become approvable workflow candidates. Two bundled offline engines, no API key, no network, no Python dependencies."
 maintainer: ilPez00
@@ -8,7 +8,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/ilPez00/hermes-physis#readme
-image: https://raw.githubusercontent.com/ilPez00/hermes-physis/8602dbbccea9e9a80944ce847b3c2fad0d8b3ec0/assets/banner.png
+image: https://raw.githubusercontent.com/ilPez00/hermes-physis/9f67992dbcd36f4da0379f660baa832609b60699/assets/banner.png
 readme: true
 capabilities:
   provides_tools:

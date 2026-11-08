@@ -34,6 +34,7 @@ from agent.error_classifier import (
     is_reasoning_required_rejection,
 )
 from agent.errors import InvalidProviderResponseError
+from agent.auxiliary_fallback_recovery import reapply_repairs
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
@@ -3613,8 +3614,7 @@ def _prepare_same_provider_retry(
     # retry: dropping them would let a recovery retry silently lose capability gating (#60293).
     if extra_headers:
         retry_kwargs["extra_headers"] = dict(extra_headers)
-    for strip in repairs:
-        retry_kwargs = strip(retry_kwargs) or retry_kwargs
+    retry_kwargs = reapply_repairs(retry_kwargs, repairs)  # a stripped field stays stripped
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
     return retry_client, retry_kwargs
@@ -3956,20 +3956,20 @@ def _fallback_candidate_ladder(fb_client: Any, fb_kwargs: dict[str, Any], destin
     credentials and retry once with a rebuilt client; if that also auth-fails, quarantine the
     provider and return None so the caller moves on. Any other failure another candidate could
     avoid also quarantines and returns None so the ordered chain advances (#106367); other errors raise."""
-    resp, failure, spent = yield _LadderStep("attempt", (fb_client, fb_kwargs, destination))
+    resp, failure, repairs = yield _LadderStep("attempt", (fb_client, fb_kwargs, destination))
     fb_provider, base_url = destination.provider, destination.base_url
     if failure is not None and aux_errors.auth_refresh(failure.verdict):
         fb_provider, retry = _plan_fallback_auth_retry(
             destination, rebuild, async_mode=async_mode, failed_api_key=getattr(fb_client, "api_key", ""))
-        if retry is not None:
-            base_url = retry[2].base_url
-            resp, failure, spent = yield _LadderStep("attempt", retry)
+        if retry is not None:  # re-apply the first attempt's strips; a failure after any strip is after a spent rung
+            resp, failure, more = yield _LadderStep("attempt", (retry[0], reapply_repairs(retry[1], repairs), retry[2]))
+            base_url, repairs = retry[2].base_url, (*repairs, *more)
         if failure is not None and (retry is None or aux_errors.auth_refresh(failure.verdict)):
             _quarantine_fallback_candidate(task, fb_label, fb_provider, failure.error, base_url=base_url, tag=tag)
             return None
     if failure is None:
         return resp
-    reason = aux_errors.fallback_label(failure, rung_spent=spent)
+    reason = aux_errors.fallback_label(failure, rung_spent=bool(repairs))
     if reason is None:
         raise failure.error
     _quarantine_fallback_candidate(

@@ -5,6 +5,7 @@ the owner on its parent's receipt stream (gateway/session_worker_child.py), neve
 """
 import asyncio
 import hmac
+import logging
 import os
 
 from gateway.session_admission import admission_fingerprint
@@ -12,6 +13,8 @@ from hermes_state_runtime import (
     RuntimeStoreError, _secret_digest, adopt_worker_execution,
     mutate_worker_execution, register_worker_execution,
 )
+
+logger = logging.getLogger(__name__)
 
 _SCOPE = {'profile_id', 'session_id', 'execution_id', 'generation', 'pid', 'birth', 'secret'}
 
@@ -31,12 +34,24 @@ def _claim(connection, ref, params):
     try:
         process = psutil.Process(pid)
         from hermes_cli.process_identity import worker_birth
-        if (worker_birth(process) != birth or not process.is_running()
-                or process.status() == psutil.STATUS_ZOMBIE
-                or process.username() != psutil.Process().username()):
-            raise RuntimeStoreError('permission_denied')
+        live = (worker_birth(process) == birth and process.is_running()
+                and process.status() != psutil.STATUS_ZOMBIE
+                and process.username() == psutil.Process().username())
     except psutil.Error as exc:
         raise RuntimeStoreError('worker_not_live') from exc
+    # health: allow BLE001 -- a probe that could not be EVALUATED is no evidence against the caller
+    except Exception as exc:
+        # UNPROVABLE, not disproved. psutil's Windows status probe allocates the process table and
+        # raises MemoryError under host memory pressure (2026-11-06, fleet-wide). Escaping here used
+        # to answer the persist with JSON-RPC -32603 "internal error": the worker's store then
+        # refused every later write, the child exited 1, the owner settled the attempt `unknown`
+        # and the Kanban run died with "execution unknown; retained by owner" after doing its work.
+        # The claim digest below still binds this caller to its stored assignment, so an
+        # unevaluable liveness probe must not fail an authenticated write.
+        logger.warning('worker liveness probe unprovable for pid %s: %r', pid, exc)
+    else:
+        if not live:
+            raise RuntimeStoreError('permission_denied')
     # Reuse the durable adoption digest as the producer claim. Changing any
     # assignment, principal, profile, PID birth or secret cannot adopt it.
     from hermes_state_worker_compression import worker_claim_origin

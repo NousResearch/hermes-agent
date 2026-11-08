@@ -17,8 +17,6 @@ normal message. Every other error keeps raising: a broken answer must stay visib
 import logging
 from typing import Any, Optional
 
-from agent.i18n import t
-
 logger = logging.getLogger(__name__)
 
 # Telegram truncates ``answerCallbackQuery`` text at 200 chars.
@@ -30,11 +28,6 @@ _STALE_QUERY_PHRASES = (
     "query id is invalid",
     "response timeout expired",
 )
-
-
-def toast(key: str, **kwargs: Any) -> str:
-    """``t()`` for ``query.answer(text=...)`` payloads, cut at Telegram's 200-char toast cap."""
-    return t(key, **kwargs)[:TOAST_LIMIT]
 
 
 def is_stale_query_error(exc: BaseException) -> bool:

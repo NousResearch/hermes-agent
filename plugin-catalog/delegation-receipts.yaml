@@ -1,18 +1,20 @@
 name: delegation-receipts
 repo: https://github.com/dacheah/delegation-receipts
-sha: bb78dfd59f6a227ac7c895067bee9ee103a13bf0
+sha: adece708051a885fcbb19261a294bd7c386a7491
 description: >-
   Verify what a subagent says it did before the parent reports the work as done.
   A "receipts" delegation backend asks every child to end its reply with a receipt
   (status, the files it changed, and the one command that proves the work); when a
-  child stops, the plugin checks that each claimed path exists under the workspace
-  and hashes it, refuses a cited command that is off an allow-list or carries shell
-  syntax, corroborates it against the child's redacted tool history, re-runs it
-  argv-style with no shell under a timeout, and appends any rejection to the
-  delegate_task result the parent model reads, with the failing output attached.
-  Every check stays in a local JSONL ledger shown by `hermes receipts`; the verdict,
-  not the child's own account of itself, is what reaches the parent. One command per
-  receipt, one receipt per child. Disclosure — the verified command is written by the
+  child stops, the plugin resolves and hashes each claimed path, matches every claim
+  against the write targets that child's own tool history records so it cannot take
+  credit for a file someone else wrote, refuses a cited command that is off an
+  allow-list, is a path rather than a bare name, launches another program, or carries
+  inline evaluation, then re-runs it argv-style with no shell, in its own process
+  group, with output and time bounded. A rejection is appended to the delegate_task
+  result the parent reads, with the failing output attached; a background child's
+  verdict arrives on the parent's next turn instead. Every check stays in a local
+  JSONL ledger shown by `hermes receipts`. One command per receipt, one receipt per
+  child. Disclosure — the verified command is written by the
   subagent, which is the party being checked, and runs with your privileges in the
   agent's working directory: allow-listed executable, no shell, argv-split, 120 s
   default timeout, filtered environment. The child's reply text and claimed paths are
@@ -24,12 +26,13 @@ maintainer: dacheah
 tier: community
 category: tools
 docs_url: https://github.com/dacheah/delegation-receipts#readme
-version: "0.1.0"
+version: "0.2.0"
 platforms: []
 capabilities:
   provides_tools: []
   provides_hooks:
     - subagent_stop
     - transform_tool_result
+    - pre_llm_call
   provides_middleware: []
   requires_env: []

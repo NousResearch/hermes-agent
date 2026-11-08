@@ -60,7 +60,9 @@ def find_retired_xai_refs(config: dict[str, Any]) -> list[RetirementIssue]:
     """Walk all model slots in a Hermes config and return retirement issues.
 
     Slots scanned: ``principal.model``, ``auxiliary.<any>.model`` (introspective, covers future
-    aux slots), ``delegation.model``, ``tts.xai.model``, ``plugins.image_gen.xai.model``.
+    aux slots), ``delegation.model``, ``tts.xai.model``, ``image_gen.model`` (when the provider is xAI;
+    the ``hermes tools`` picker writes it there), ``image_gen.xai.model`` (the plugin's own key) and the
+    legacy ``plugins.image_gen.xai.model``.
     """
     issues: list[RetirementIssue] = []
     if not isinstance(config, dict):
@@ -95,8 +97,10 @@ def find_retired_xai_refs(config: dict[str, Any]) -> list[RetirementIssue]:
     for slot_name, slot_cfg in (_section("auxiliary") or {}).items():
         if isinstance(slot_cfg, dict):
             _check(f"auxiliary.{slot_name}.model", slot_cfg.get("model"))
-    for path in (("delegation",), ("tts", "xai"), ("plugins", "image_gen", "xai")):
+    for path in (("delegation",), ("tts", "xai"), ("image_gen", "xai"), ("plugins", "image_gen", "xai")):
         _check_section(*path)
+    if (_section("image_gen") or {}).get("provider") == "xai":
+        _check_section("image_gen")
     return issues
 
 

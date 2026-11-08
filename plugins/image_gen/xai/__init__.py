@@ -31,8 +31,8 @@ _MODELS: dict[str, dict[str, Any]] = {
         "strengths": "Typography/layout-aware; legible small text; strongest quality.",
     },
     "grok-imagine-image-quality": {
-        "display": "Grok Imagine Image (Quality)", "speed": "~10-20s",
-        "strengths": "Higher fidelity / detail; slower than the standard model. Retires Nov 2, 2026 (served by 2.0 after).",
+        "display": "Grok Imagine Image (Quality, retired)", "speed": "~10-20s",
+        "strengths": "Retired Nov 2, 2026: xAI now serves it as 2.0 at low quality. Pick 2.0 instead.",
     },
 }
 

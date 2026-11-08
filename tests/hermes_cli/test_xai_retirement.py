@@ -98,6 +98,15 @@ class TestMigrationSemantics:
         assert (pro.retires_on, quality.retires_on) == ("May 15, 2026", "November 2, 2026")
         assert pro.guide_url != quality.guide_url
 
+    def test_image_gen_keys_the_picker_and_plugin_use_are_scanned(self):
+        """``hermes tools`` writes ``image_gen.model``; the plugin also reads ``image_gen.xai.model``."""
+        picked = {"image_gen": {"provider": "xai", "model": "grok-imagine-image-quality"}}
+        nested = {"image_gen": {"provider": "xai", "xai": {"model": "grok-imagine-image-pro"}}}
+        other = {"image_gen": {"provider": "fal", "model": "grok-imagine-image-quality"}}
+        assert [i.config_path for i in find_retired_xai_refs(picked)] == ["image_gen.model"]
+        assert [i.config_path for i in find_retired_xai_refs(nested)] == ["image_gen.xai.model"]
+        assert find_retired_xai_refs(other) == []
+
     def test_all_retired_have_replacement(self):
         for name, entry in _RETIRED_MODELS.items():
             assert entry.get("replacement"), f"{name} has no replacement"

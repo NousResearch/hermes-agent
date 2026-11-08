@@ -763,7 +763,7 @@ class TestBuildCodexClient:
             def current(self):
                 return self.entry
 
-            def peek(self):
+            def peek(self, *, model=None):
                 return self.entry
 
             def select(self, model=None):

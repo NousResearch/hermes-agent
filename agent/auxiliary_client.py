@@ -1049,8 +1049,7 @@ def _peek_pool_entry(provider: str, pool: Any = None, model: Optional[str] = Non
     try:
         peek_fn = getattr(pool, "peek", None)
         if model and callable(peek_fn):  # the pool checks its current entry against the model's cooldowns
-            with contextlib.suppress(TypeError):  # a pool whose peek takes no model: current, then peek
-                return peek_fn(model=_normalize_resolved_model(model, provider))
+            return peek_fn(model=_normalize_resolved_model(model, provider))
         current_fn = getattr(pool, "current", None)
         current = current_fn() if callable(current_fn) else None
         if current is not None:
@@ -3426,14 +3425,14 @@ def _pool_credential_digest(pool: Any, entry: Any = None) -> str:
     return digest.hexdigest()
 
 
-def _pool_cache_hint(provider: str, *, main_runtime: Optional[dict[str, Any]] = None) -> str:
+def _pool_cache_hint(provider: str, *, main_runtime: Optional[dict[str, Any]] = None, model: Optional[str] = None) -> str:
     """Return a cache discriminator that follows the pooled credential, not just its entry id.
 
     ``<provider>:<entry id>:<digest of that entry's key>`` when ``peek()`` names an entry,
     ``<provider>::<digest of every entry's key>`` when every entry is filtered out (cooldown)
-    but keyed entries exist. A token rotated or
-    refreshed by another process yields a new client instead of a 401 round trip on the cached
-    one; the stale entry ages out through the non-closing FIFO cap (#113022).
+    but keyed entries exist. ``model`` is the one the client build peeks with, so a per-model
+    cooldown skipping the current entry moves the hint too. A token rotated or refreshed by another
+    process yields a new client instead of a 401 on the cached one (stale entries age out, #113022).
     """
     normalized = _normalize_aux_provider(provider)
     if normalized == "auto":
@@ -3444,7 +3443,7 @@ def _pool_cache_hint(provider: str, *, main_runtime: Optional[dict[str, Any]] = 
     pool = _load_pool_with_credentials(normalized, " (cache hint)")
     if pool is None:
         return ""
-    entry = _peek_pool_entry(normalized, pool)
+    entry = _peek_pool_entry(normalized, pool, model)
     digest = _pool_credential_digest(pool, entry)
     entry_id = str(getattr(entry, "id", "") or "").strip() if entry is not None else ""
     if not entry_id and not digest:
@@ -5626,7 +5625,8 @@ def _client_cache_key(
     # `auto` resolves through the main runtime and task-specific policy, so both join the key.
     runtime_key = tuple(_runtime_cache_discriminator(f, runtime.get(f, "")) for f in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
     task_key = (task or "", _task_prefers_fast_model(task)) if provider == "auto" else ""
-    pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
+    # The same model the build's pool peek gets (_get_cached_client), not model_key's runtime fallback.
+    pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime, model=model)
     # Model MUST be in the key: concurrent calls to the same endpoint with different models would
     # share an entry, and the second builder's _store_cached_client would close the first's client.
     model_key = model or runtime.get("model", "")

@@ -6,11 +6,15 @@ hides the entry from ``peek()``.
 """
 
 import time
+from dataclasses import replace
+from unittest.mock import patch
 
+import httpx
 import pytest
 
 import agent.anthropic_credentials as anth_cred
 import agent.auxiliary_client as aux
+from agent.credential_pool import CredentialPool, PooledCredential
 from hermes_cli.auth import write_credential_pool
 
 MODEL = "claude-sonnet-4-5"
@@ -89,3 +93,62 @@ def test_sibling_entry_rotation_does_not_churn_selected_entry_key(isolated_home)
     after = aux._pool_cache_hint("anthropic")
     assert after.startswith("anthropic:entry-1:") and after != before
     assert "tok-" not in before + after
+
+
+OR_MODEL = "openai/gpt-target"
+
+
+def _completion(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, request=request, json={
+        "id": "x", "object": "chat.completion", "created": 0, "model": OR_MODEL,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+    })
+
+
+def _two_key_pool_calls(change_k0):
+    """Two ``_get_cached_client`` calls on a real two-key pool; returns (same client?, tokens sent).
+
+    k0 is the pool's current entry and carries an unrelated model's cooldown; ``change_k0`` edits it
+    between the calls the way another process's refresh or a 429 on the requested model would.
+    """
+    keys = [
+        PooledCredential("openrouter", "k0", "k0", "api_key", 0, "manual", "tok-k0",
+                         model_cooldowns={"openai/other": time.time() + 600}),
+        PooledCredential("openrouter", "k1", "k1", "api_key", 1, "manual", "tok-k1"),
+    ]
+    sent: list[str] = []
+
+    def handler(request):
+        sent.append(request.headers["authorization"].removeprefix("Bearer "))
+        return _completion(request)
+
+    # load_pool re-reads the store on every call: a fresh pool over the current rows.
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client, \
+         patch.object(aux, "load_pool", side_effect=lambda _p: CredentialPool("openrouter", [replace(k) for k in keys])), \
+         patch.object(aux, "_openai_http_client_kwargs", return_value={"http_client": http_client}):
+        first, _ = aux._get_cached_client("openrouter", OR_MODEL)
+        assert first is not None
+        first.chat.completions.create(model=OR_MODEL, messages=[{"role": "user", "content": "hi"}])
+        keys[0] = change_k0(keys[0])
+        second, _ = aux._get_cached_client("openrouter", OR_MODEL)
+        assert second is not None
+        second.chat.completions.create(model=OR_MODEL, messages=[{"role": "user", "content": "hi"}])
+    return first is second, sent
+
+
+def test_cached_pool_client_rebuilds_when_its_model_aware_key_is_refreshed(isolated_home):
+    reused, sent = _two_key_pool_calls(lambda k0: replace(k0, access_token="tok-k0-new"))
+    assert not reused
+    assert sent == ["tok-k0", "tok-k0-new"]
+
+
+def test_cached_pool_client_rebuilds_when_its_key_cools_down_for_the_model(isolated_home):
+    reused, sent = _two_key_pool_calls(lambda k0: replace(k0, model_cooldowns={OR_MODEL: time.time() + 600}))
+    assert not reused
+    assert sent == ["tok-k0", "tok-k1"]
+
+
+def test_cached_pool_client_is_reused_while_its_key_is_unchanged(isolated_home):
+    reused, sent = _two_key_pool_calls(lambda k0: k0)
+    assert reused
+    assert sent == ["tok-k0", "tok-k0"]

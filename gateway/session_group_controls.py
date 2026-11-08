@@ -488,6 +488,8 @@ def _profiles(authority, actor, home, params, siblings=()):
     path = home / 'profile.yaml'
     meta = yaml.safe_load(path.read_text(encoding='utf-8-sig')) if path.is_file() else {}
     meta = meta if isinstance(meta, dict) else {}
+    from tui_gateway.group_chat_storage import with_group_chat_state
+    meta = with_group_chat_state(home, meta, strict=False)
     row['ui_meta_revisions'] = _ui_meta_revisions(meta)
     if isinstance(meta.get('ui_meta'), dict):
         row['ui_meta'] = meta['ui_meta']
@@ -510,6 +512,7 @@ def _profiles(authority, actor, home, params, siblings=()):
             entry.update(_sibling_sessions(*reach))
         meta = _discovered_profile_meta(configured, target / 'profile.yaml')
         if isinstance(meta, dict):
+            meta = with_group_chat_state(target, meta, strict=False)
             # The profile's own metadata, not a placeholder: Desktop seeds the Edit profile dialog
             # from these fields and skips the avatar push when ``has_avatar`` is set.
             entry['description'] = str(meta.get('description') or '').strip()

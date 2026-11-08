@@ -1,3 +1,5 @@
+# ABOUTME: Handle profile JSON-RPC requests using the shared profile primitives.
+# ABOUTME: Keep profile configuration separate from group chat runtime history.
 """Profile JSON-RPC handlers — the ws twin of the dashboard's /api/profiles (desktop plugins
 only have the ws door), on the same `hermes_cli.profiles` primitives. Bodies are rebound onto
 server.py's globals (method_ctx.bind_module) and use them bare; module-level names are published
@@ -255,10 +257,11 @@ def _profile_session_fields(row, profile_path):
 
 
 def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
-    """Attach ``ui_meta`` / ``ui_meta_revisions`` / ``has_avatar`` from profile.yaml + assets.
+    """Attach UI metadata, group chat state, revisions and avatar presence.
     ``ui_meta_revisions`` is always present: it feature-detects gateway-owned CAS for a new profile."""
     def _read() -> dict:
-        raw_meta = _read_profile_yaml(profile_dir)
+        from tui_gateway.group_chat_storage import with_group_chat_state
+        raw_meta = with_group_chat_state(profile_dir, _read_profile_yaml(profile_dir), strict=False)
         ui_meta, revisions = raw_meta.get("ui_meta"), raw_meta.get("_ui_meta_revisions")
         # Key order is wire-visible: ui_meta_revisions precedes ui_meta.
         fields = {"ui_meta_revisions":
@@ -270,8 +273,8 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
         return fields
 
     # Second parse of this profile.yaml in the same request (``read_profile_meta`` already read it
-    # for the row's description/display name) — reused while the file has not moved (#117383). The
-    # ui_meta CAS writer below keeps reading it raw and uncached: it writes the document back.
+    # for the row's description/display name) — reused while both metadata and group state have
+    # not moved. The ui_meta CAS writer below keeps reading both files uncached.
     from tui_gateway.profile_roster_cache import cached_ui_meta_fields
 
     row.update(cached_ui_meta_fields(profile_dir, _read))
@@ -602,7 +605,7 @@ def _bots_title(ui_meta: dict):
 
 
 def _configure_ui_meta(profile_dir, params, applied) -> None:
-    """Merge ``params["ui_meta"]`` key-wise into profile.yaml (None deletes). 64KB cap (rides
+    """Merge UI metadata, keeping group history in separate runtime state (None deletes). 64KB cap (rides
     every roster paint). ``ui_meta_expected_revisions``: per-key CAS, any mismatch rejects the
     whole write; revisions survive deletion so a stale client cannot recreate a removed key."""
     applied["ui_meta"] = False
@@ -613,8 +616,11 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
         expected = params.get("ui_meta_expected_revisions")
         if expected is not None and not isinstance(expected, dict):
             raise ValueError("ui_meta_expected_revisions must be an object")
-        with _profile_ui_meta_lock:
-            existing = _read_profile_yaml(profile_dir)
+        from tui_gateway.group_chat_storage import (
+            profile_ui_meta_lock, with_group_chat_state, write_profile_ui_meta,
+        )
+        with _profile_ui_meta_lock, profile_ui_meta_lock(profile_dir):
+            existing = with_group_chat_state(profile_dir, _read_profile_yaml(profile_dir))
             raw_revisions = existing.get("_ui_meta_revisions")
             revisions = _clean_revisions(raw_revisions if isinstance(raw_revisions, dict) else {})
             conflicts = {}
@@ -640,8 +646,7 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
             else:
                 existing.pop("ui_meta", None)
             existing["_ui_meta_revisions"] = revisions
-            from utils import atomic_yaml_write
-            atomic_yaml_write(profile_dir / "profile.yaml", existing, sort_keys=False)
+            write_profile_ui_meta(profile_dir, existing)
             applied["ui_meta"] = True
             applied["ui_meta_revisions"] = {key: revisions[key] for key in incoming}
             if _bots_title(current) != old_title:

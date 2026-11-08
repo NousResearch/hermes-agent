@@ -15,7 +15,7 @@ import shlex
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 from session_rules.media import PRUNED_SUBDIR, SPILLOVER_SUBDIR, archive_refs_in_text
 from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAULT_BUDGET
@@ -522,31 +522,43 @@ def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) 
     return content[:last_nl + 1 if last_nl > max_chars // 2 else max_chars], True
 
 
+class _Pageable(NamedTuple):
+    """A spill file laid out as ``lead + text + trail``; only ``text`` is the result's own text."""
+
+    text: str
+    lead: str = ""
+    trail: str = ""
+
+    @property
+    def content(self) -> str:
+        return f"{self.lead}{self.text}{self.trail}"
+
+
 def _tool_metadata_block(fields: dict) -> str:
     metadata = json.dumps(fields, ensure_ascii=False, indent=1, sort_keys=True, default=str)
     return f"{_TOOL_METADATA_TAG}\n{metadata}\n{_TOOL_METADATA_CLOSING_TAG}"
 
 
-def _pageable_tool_json(content: str, payload: dict) -> str:
+def _pageable_tool_json(content: str, payload: dict) -> _Pageable:
     strings = [(key, value) for key, value in payload.items() if isinstance(value, str)]
     if not strings:
-        return content
+        return _Pageable(content)
     key, text = strings[0]
     for name, value in strings[1:]:
         if len(value) > len(text):
             key, text = name, value
     if "\n" not in text or "\x00" in text or len(text) < len(content) / 2:
-        return content
+        return _Pageable(content)
     header, trailer = {"text_field": key}, {}
     for name, value in payload.items():
         if name != key:
             (trailer if isinstance(value, (dict, list)) else header)[name] = value
-    pageable = f"{_tool_metadata_block(header)}\n\n{text}"
-    return f"{pageable}\n\n{_tool_metadata_block(trailer)}\n" if trailer else pageable
+    trail = f"\n\n{_tool_metadata_block(trailer)}\n" if trailer else ""
+    return _Pageable(text, lead=f"{_tool_metadata_block(header)}\n\n", trail=trail)
 
 
-def _pageable_text(content: str) -> str:
-    """Rewrite a JSON tool result into the text it wraps, else return *content*.
+def _pageable_text(content: str) -> _Pageable:
+    """Split a JSON tool result into the text it wraps and its metadata, else keep *content* whole.
 
     Persisting a JSON result verbatim put the whole document on ONE line with escaped newlines,
     so the ``read_file`` offset/limit pagination the ``<persisted-output>`` block recommends could
@@ -570,22 +582,23 @@ def _pageable_text(content: str) -> str:
     try:
         payload = json.loads(content)
     except (TypeError, ValueError):
-        return content
+        return _Pageable(content)
     if not isinstance(payload, dict) or not payload:
-        return content
+        return _Pageable(content)
     if "result" not in payload or not set(payload) <= _MCP_ENVELOPE_KEYS:
         return _pageable_tool_json(content, payload)
     text = payload.get("result")
     if not isinstance(text, str) or not text:
-        return content
+        return _Pageable(content)
     extras = {key: value for key, value in payload.items() if key != "result"}
     if not extras:
-        return text
+        return _Pageable(text)
     try:
         metadata = json.dumps(extras, ensure_ascii=False, indent=1, sort_keys=True, default=str)
     except (TypeError, ValueError):
-        return text
-    return f"{text}\n\n{_ENVELOPE_METADATA_TAG}\n{metadata}\n{_ENVELOPE_METADATA_CLOSING_TAG}\n"
+        return _Pageable(text)
+    return _Pageable(
+        text, trail=f"\n\n{_ENVELOPE_METADATA_TAG}\n{metadata}\n{_ENVELOPE_METADATA_CLOSING_TAG}\n")
 
 
 _PRUNED_ARCHIVE_RE = re.compile(r"(?:^|[/\\])cache[/\\]pruned[/\\][^/\\]+\.(?:json|txt)$")
@@ -605,7 +618,7 @@ def _json_archive_text(raw: str) -> str:
             payload = None
         if isinstance(payload, list):
             return json.dumps(payload, ensure_ascii=False, indent=2)
-    return _pageable_text(raw)
+    return _pageable_text(raw).content
 
 
 def pageable_archive_text(raw: str, path: str, max_line_length: int) -> tuple[str, bool]:
@@ -708,7 +721,7 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
         return content
     # The size decision above stays on the raw inline result (that is what cost context); the file
     # and the preview carry the pageable text inside an MCP envelope (#90426).
-    persisted_content = _pageable_text(content)
+    persisted_content = _pageable_text(content).content
     filename = _safe_result_filename(tool_use_id)
     preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
 

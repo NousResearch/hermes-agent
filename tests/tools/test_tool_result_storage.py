@@ -636,10 +636,10 @@ class TestPageableText:
     """Only the MCP handler's own envelope shape is unwrapped; every other JSON stays opaque."""
 
     def test_single_result_envelope_is_unwrapped(self):
-        assert _pageable_text(json.dumps({"result": "line one\nline two"})) == "line one\nline two"
+        assert _pageable_text(json.dumps({"result": "line one\nline two"})).content == "line one\nline two"
 
     def test_envelope_metadata_is_kept_after_the_text(self):
-        out = _pageable_text(json.dumps({"result": "text\n", "structuredContent": {"answer": 42}}))
+        out = _pageable_text(json.dumps({"result": "text\n", "structuredContent": {"answer": 42}})).content
         text, marker, tail = out.partition("\n\n<mcp-result-metadata>\n")
         assert text == "text\n"
         assert marker
@@ -659,7 +659,7 @@ class TestPageableText:
         ],
     )
     def test_unrecognized_content_is_verbatim(self, content):
-        assert _pageable_text(content) == content
+        assert _pageable_text(content).content == content
 
 class TestMcpEnvelopeSpillover:
     """An oversized MCP result spills its pageable text, not one escaped JSON line (#90426)."""

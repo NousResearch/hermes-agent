@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 from agent.image_routing import (
     _coerce_capability_bool,
     _coerce_mode,
     _lookup_supports_vision,
+    _probe_model_name,
     _should_probe_ollama_vision,
     _supports_vision_override,
-    _looks_like_vision_model,
     build_native_content_parts,
     decide_image_input_mode,
     extract_image_refs,
@@ -46,24 +48,28 @@ class TestCoerceMode:
 
 
 
-class TestLooksLikeVisionModel:
-    @pytest.mark.parametrize("model", [
-        "mimo-v2-omni",
-        "qwen2.5-vl-72b-instruct",
-        "claude-3-vision-preview",
-        "vendor/model-visual",
-    ])
-    def test_recognises_vision_slugs(self, model):
-        assert _looks_like_vision_model(model) is True
+class TestModelNameVisionProbe:
+    """Open-weight vision ids no catalog lists (local quants, HF repo ids) attach images natively."""
 
-    @pytest.mark.parametrize("model", [
-        "gpt-4o-mini",
-        "claude-3-haiku",
-        "deepseek-chat",
-        "",
+    @pytest.mark.parametrize("model,expected", [
+        ("Qwen/Qwen2.5-VL-72B-Instruct-AWQ", True), ("qwen2.5vl:7b", True), ("qwen3-vl:8b", True),
+        ("Qwen/QVQ-72B-Preview", True), ("meta-llama/Llama-3.2-11B-Vision-Instruct", True),
+        ("llama3.2-vision:11b", True), ("meta-llama/Llama-4-Scout-17B-16E-Instruct", True),
+        ("llama4:16x17b", True), ("llava:13b", True), ("mistralai/Pixtral-12B-2409", True),
+        ("mistral-small3.2:24b", True), ("Qwen/Qwen2.5-Omni-7B", True),
+        ("llama3.2:3b", None), ("meta-llama/Llama-3.1-8B-Instruct", None), ("devstral:24b", None),
+        ("mistralai/Mistral-Small-24B-Instruct-2501", None), ("qwen2.5-coder:32b", None), ("envision-7b", None),
     ])
-    def test_rejects_non_vision_slugs(self, model):
-        assert _looks_like_vision_model(model) is False
+    def test_name_verdict(self, model, expected):
+        assert _probe_model_name("custom", model, {}) is expected
+
+    def test_known_verdicts_win_and_unknown_vision_id_goes_native(self):
+        vl, text = "Qwen/Qwen2.5-VL-7B-Instruct", "meta-llama/Llama-3.1-8B-Instruct"
+        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert decide_image_input_mode("custom", vl, {}) == "native"
+            assert decide_image_input_mode("custom", text, {}) == "text"
+        with patch("agent.models_dev.get_model_capabilities", return_value=MagicMock(supports_vision=False)):
+            assert decide_image_input_mode("custom", vl, {}) == "text"
 
 
 # ─── decide_image_input_mode ─────────────────────────────────────────────────
@@ -283,20 +289,6 @@ def _png_bytes() -> bytes:
     return base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=="
     )
-
-
-    @pytest.mark.parametrize("model", [
-        "mimo-v2-omni",
-        "qwen2.5-vl-72b-instruct",
-        "claude-3-vision-preview",
-    ])
-    def test_auto_with_unknown_vision_shaped_slug_falls_back_to_native(self, model, monkeypatch):
-        monkeypatch.setattr("agent.image_routing._lookup_supports_vision", lambda provider, model, cfg=None: None)
-        assert decide_image_input_mode("custom", model, {}) == "native"
-
-    def test_auto_known_non_vision_still_text_even_if_slug_looks_visiony(self, monkeypatch):
-        monkeypatch.setattr("agent.image_routing._lookup_supports_vision", lambda provider, model, cfg=None: False)
-        assert decide_image_input_mode("custom", "fake-vision-model", {}) == "text"
 
 
 class TestBuildNativeContentParts:

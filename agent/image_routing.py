@@ -318,12 +318,32 @@ def _probe_ollama(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> O
     return query_ollama_supports_vision(model, base_url, api_key=api_key)
 
 
+# Open-weight vision families by name, for ids no catalog lists (local quants, HF repo ids on
+# vLLM/TGI/llama.cpp). Matched on the last path segment with any Ollama ``:tag`` dropped; the
+# capability tokens (``vl``/``vision``/``omni``) must be whole ``-_.`` words so ``devstral``
+# or ``envision-7b`` stay text. Families from QwenLM/qwen-code#16247/#16309/#16311.
+_VISION_NAME_RE = re.compile(
+    r"(?:^|[-_.])(?:vl|vision|omni)(?:$|[-_.])"
+    r"|^qwen\d*(?:\.\d+)?-?vl(?:$|[-_.])|^qvq(?:$|[-_.])"
+    r"|^llama-?4(?:$|[-_.])|^(?:bak)?llava|^pixtral|^mistral-small-?3\.[12](?:$|[-_.])"
+)
+
+
+def _probe_model_name(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> Optional[bool]:
+    """Last resort when no catalog or server knows the model: True for a vision-shaped id, else
+    unknown. Never False, so a known text-only verdict above it always wins; a wrong True is
+    recovered by the image-rejection strip-and-retry path."""
+    tail = (model or "").strip().lower().rsplit("/", 1)[-1].split(":", 1)[0]
+    return True if tail and _VISION_NAME_RE.search(tail) else None
+
+
 # Capability probes after the config override, in priority order; each returns
 # True/False or None (unknown → next probe). Exceptions are logged and treated as None.
 _VISION_PROBES: tuple[tuple[str, Callable[..., Optional[bool]]], ...] = (
     ("managed-runtime caps lookup", _probe_managed_runtime),
     ("caps lookup", _probe_models_dev),
     ("ollama vision probe", _probe_ollama),
+    ("model-name heuristic", _probe_model_name),
 )
 
 
@@ -337,7 +357,7 @@ def _lookup_supports_vision(
     """Return True/False if vision capability can be resolved, None if unknown.
 
     Order: config ``supports_vision`` override → :data:`_VISION_PROBES`
-    (managed local runtime → models.dev catalog → Ollama probe). A plugin's
+    (managed local runtime → models.dev catalog → Ollama probe → model-name heuristic). A plugin's
     per-model ``ProviderProfile.model_capabilities`` reaches this through the
     catalog probe. The provider-wide ``ProviderProfile.supports_vision`` flag is
     deliberately NOT consulted: it declares that tool-result messages may carry
@@ -372,32 +392,6 @@ def _lookup_supports_vision(
     return None
 
 
-_VISION_SLUG_FRAGMENTS = (
-    "vision",
-    "visual",
-    "vl",
-    "omni",
-    "multimodal",
-)
-
-_VISION_SLUG_SUFFIXES = (
-    "-vl",
-    "_vl",
-    ".vl",
-)
-
-
-def _looks_like_vision_model(model: str) -> bool:
-    """Heuristically identify vision-capable models absent from models.dev."""
-    slug = (model or "").strip().lower()
-    if not slug:
-        return False
-    tail = slug.rsplit("/", 1)[-1]
-    if any(fragment in tail for fragment in _VISION_SLUG_FRAGMENTS):
-        return True
-    return tail.endswith(_VISION_SLUG_SUFFIXES)
-
-
 def decide_image_input_mode(
     provider: str,
     model: str,
@@ -414,12 +408,7 @@ def decide_image_input_mode(
         return "text"
     # Keep the three-argument call contract for callers/tests that replace the lookup hook.
     extra = {"requested_provider": requested_provider} if requested_provider else {}
-    supports = _lookup_supports_vision(provider, model, cfg, **extra)
-    if supports is True:
-        return "native"
-    if supports is None and _looks_like_vision_model(model):
-        return "native"
-    return "text"
+    return "native" if _lookup_supports_vision(provider, model, cfg, **extra) is True else "text"
 
 
 # Image size handling is REACTIVE: attach at full size and let

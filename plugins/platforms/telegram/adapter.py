@@ -1112,12 +1112,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         """Send private-topic media, retrying a deleted anchor or a dead topic one step at a time. Serialized per chat with
         ``send()`` so a file upload cannot land between two chunks of the text it accompanies."""
         async with self._media_send_slot(send_kwargs.get("chat_id")):
-            for _attempt in range(3):  # anchor drop / native topic id / chat root: one constraint per step
+            while True:  # anchor drop / native topic id / chat root: each step removes one constraint, so it ends
                 try:
                     return await _await_with_thread_deadline(
                         send_fn(**send_kwargs), timeout=_MEDIA_SEND_DEADLINE, label="telegram-media-send", dump_on_blocked_loop=False)
                 except Exception as send_err:
-                    gone = private_chat(send_kwargs.get("chat_id")) and self._is_thread_not_found_error(send_err) and _attempt < 2
+                    gone = private_chat(send_kwargs.get("chat_id")) and self._is_thread_not_found_error(send_err)
                     if self._should_retry_without_dm_topic_reply_anchor(send_err, metadata, send_kwargs.get("reply_to_message_id")):
                         send_kwargs = {**send_kwargs, "reply_to_message_id": None}  # the topic route stays
                     elif gone and (direct := direct_topic_retry_kwargs(send_kwargs.get("chat_id"), None, metadata, send_kwargs)):
@@ -3392,7 +3392,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         if used_thread_fallback and (thread_kwargs.get("message_thread_id") is not None or private_dm_topic_send):
             thread_kwargs, reply_to_id = {"message_thread_id": None}, (None if private_dm_topic_send else reply_to_id)
         effective_thread_id = thread_kwargs.get("message_thread_id")
-        for _send_attempt in range(3):
+        _send_attempt = 0  # network/flood retries only; route changes each drop a constraint and spend none
+        while True:
             try:
                 send_kwargs = {
                     "chat_id": normalize_telegram_chat_id(chat_id), "reply_to_message_id": reply_to_id, **thread_kwargs,
@@ -3445,6 +3446,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                 logger.warning("[%s] Network error on send (attempt %d/3), retrying in %ds: %s",
                                self.name, _send_attempt + 1, wait, _redact_telegram_error_text(send_err))
                 await asyncio.sleep(wait)
+                _send_attempt += 1
             except Exception as send_err:
                 retry_after = getattr(send_err, "retry_after", None)
                 if retry_after is not None or "retry after" in str(send_err).lower():
@@ -3465,6 +3467,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                             "[%s] Telegram flood control on send (attempt %d/3), retrying in %.1fs: %s", self.name,
                             _send_attempt + 1, wait, safe_send_error)
                         await asyncio.sleep(wait)
+                        _send_attempt += 1
                         continue
                     # Retries exhausted and still flooded. Fail closed the same way a long penalty
                     # does: raising here handed the caller the platform's own wording instead of the

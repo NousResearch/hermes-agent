@@ -813,3 +813,47 @@ async def test_reply_into_dead_private_topic_reaches_chat_root_and_prunes_bindin
     assert routes[-1] == (None, None, None)
     assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is None
     assert db.is_telegram_topic_mode_enabled(chat_id="123", user_id="123") is False
+
+
+def _anchor_and_topic_gone_bot(call_log, method):
+    """Telegram rejects the deleted anchor first, then every route into the dead topic."""
+    async def send(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("reply_to_message_id"):
+            raise FakeBadRequest("Message to be replied not found")
+        if kwargs.get("message_thread_id") or kwargs.get("direct_messages_topic_id"):
+            raise FakeBadRequest("Message thread not found")
+        return SimpleNamespace(message_id=91)
+    return SimpleNamespace(**{method: send})
+
+
+_GONE_META = {"thread_id": "20197", "telegram_dm_topic_reply_fallback": True, "telegram_reply_to_message_id": "462"}
+
+
+@pytest.mark.asyncio
+async def test_deleted_anchor_and_dead_topic_text_reply_still_reaches_chat_root():
+    """Route changes (anchor drop, native id, root) must not spend the network retry budget."""
+    adapter = _make_adapter()
+    call_log = []
+    adapter._bot = _anchor_and_topic_gone_bot(call_log, "send_message")
+
+    result = await adapter.send(chat_id="123", content="the answer", reply_to="462", metadata=dict(_GONE_META))
+
+    assert result.success is True
+    last = call_log[-1]
+    assert (last.get("message_thread_id"), last.get("direct_messages_topic_id"), last.get("reply_to_message_id")) == (None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_deleted_anchor_and_dead_topic_media_reply_still_reaches_chat_root():
+    adapter = _make_adapter()
+    call_log = []
+    adapter._bot = _anchor_and_topic_gone_bot(call_log, "send_animation")
+
+    result = await adapter.send_animation(
+        chat_id="123", animation_url="https://example.com/anim.gif", metadata=dict(_GONE_META))
+
+    assert result.success is True
+    last = call_log[-1]
+    assert (last.get("message_thread_id"), last.get("direct_messages_topic_id"), last.get("reply_to_message_id")) == (None, None, None)
+

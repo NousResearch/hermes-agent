@@ -13,7 +13,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from plugins.web._common import BaseWebSearchProvider, search_fail as _fail, search_ok, setup_schema, title_hit as _row
-from tools.xai_http import has_xai_credentials, hermes_xai_user_agent, resolve_xai_http_credentials
+from tools.xai_http import has_xai_credentials, hermes_xai_user_agent, resolve_xai_http_credentials, xai_answer_messages
 
 logger = logging.getLogger(__name__)
 
@@ -194,11 +194,10 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
     @staticmethod
     def _collect_output_text(response_data: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]]]:
         """(text_blocks, annotations) from ``response.output`` message chunks."""
-        output = response_data.get("output")
         chunks = [
             chunk
-            for item in (output if isinstance(output, list) else [])
-            if isinstance(item, dict) and item.get("type") == "message" and isinstance(item.get("content"), list)
+            for item in xai_answer_messages(response_data.get("output"))
+            if isinstance(item.get("content"), list)
             for chunk in item["content"]
             if isinstance(chunk, dict) and chunk.get("type") == "output_text"
         ]

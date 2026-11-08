@@ -18,6 +18,14 @@ def _dict_get(obj: Any, key: str) -> Any:
     return obj.get(key) if isinstance(obj, dict) else None
 
 
+def xai_answer_messages(output: Any) -> list[dict[str, Any]]:
+    """``message`` items of a Responses ``output`` that carry the answer. xAI also returns the
+    model's ``phase: "commentary"`` narration ("I'll search for that.") as its own message item;
+    joined in, it prefixes the answer. Commentary is kept only when it is all there is."""
+    messages = [i for i in (output if isinstance(output, list) else []) if isinstance(i, dict) and i.get("type") == "message"]
+    return [m for m in messages if m.get("phase") != "commentary"] or messages
+
+
 def has_xai_credentials() -> bool:
     """Cheap probe: True when xAI credentials are *likely* usable.
 

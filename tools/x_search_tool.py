@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from tools.registry import registry, tool_error
-from tools.xai_http import DEFAULT_XAI_BASE_URL, hermes_xai_user_agent, resolve_xai_http_credentials
+from tools.xai_http import DEFAULT_XAI_BASE_URL, hermes_xai_user_agent, resolve_xai_http_credentials, xai_answer_messages
 
 logger = logging.getLogger(__name__)
 
@@ -121,12 +121,13 @@ def _message_contents(payload: dict[str, Any]):
 
 
 def _extract_response_text(payload: dict[str, Any]) -> str:
-    output_text = str(payload.get("output_text") or "").strip()
-    if output_text:
-        return output_text
-    contents = (c for c in _message_contents(payload) if c.get("type") in {"output_text", "text"})
+    # Message items first: the aggregate ``output_text`` some relays add glues commentary in too.
+    contents = (
+        c for item in xai_answer_messages(payload.get("output")) for c in item.get("content", []) or []
+        if c.get("type") in {"output_text", "text"}
+    )
     parts = (str(c.get("text") or "").strip() for c in contents)
-    return "\n\n".join(p for p in parts if p).strip()
+    return "\n\n".join(p for p in parts if p).strip() or str(payload.get("output_text") or "").strip()
 
 
 def _extract_inline_citations(payload: dict[str, Any]) -> list[dict[str, Any]]:

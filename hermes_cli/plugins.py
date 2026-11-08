@@ -204,7 +204,7 @@ VALID_HOOKS: set[str] = {
     "pre_command",
     "post_compaction",  # once per committed compaction on every path; observer (hooks.md, #118382)
     # post_curator_run: after a curator pass wrote logs/curator/<run>/ (run.json + REPORT.md). Kwargs:
-    # run_dir, run_json_path, report_md_path. Observer; returns ignored.
+    # run_dir, run_json_path, report_md_path, dry_run. Observer; returns ignored.
     "post_curator_run",
 }
 
@@ -913,13 +913,14 @@ def start_background_plugin_discovery() -> None:
         _background_discovery_thread.start()
 
 
-def _join_background_discovery(timeout: float = 30.0) -> None:
+def _join_background_discovery(timeout: float = 30.0) -> bool:
     """Wait for an in-flight background discovery (no-op from its own thread or a plugin-load worker it
-    spawned — that worker's parent is blocked waiting on it)."""
+    spawned — that worker's parent is blocked waiting on it). True when the wait timed out."""
     t = _background_discovery_thread
     if t is None or not t.is_alive() or t is threading.current_thread() or in_plugin_load_worker():
-        return
+        return False
     t.join(timeout=timeout)
+    return t.is_alive()
 
 
 def _plugin_toolset_keys_cache_path() -> Path:
@@ -969,14 +970,20 @@ def get_portable_mcp_server_names_nowait() -> set[str]:
     return _nowait_plugin_set("portable_mcp", lambda m: set(m.get_portable_mcp_servers()))
 
 
+_delivery_join_abandoned = False
+
+
 def _delivery_manager() -> PluginManager:
     """Active manager, lazily discovering if it never ran — delivery must not depend on WHICH
     surface imported us (dashboards/TUI/cron never import model_tools: #50776, #64178).
     ``getattr`` default ``True`` leaves test doubles untouched."""
+    global _delivery_join_abandoned
     manager = get_plugin_manager()
     # ``_discovered`` flips when a scan STARTS (re-entrancy guard), so an in-flight background scan
-    # must be joined first or a hook fired during startup sees a half-loaded registry.
-    _join_background_discovery()
+    # must be joined first or a hook fired during startup sees a half-loaded registry. A scan still
+    # running after one full join is hung (a plugin's register() blocked): later hooks stop waiting.
+    if not _delivery_join_abandoned:
+        _delivery_join_abandoned = _join_background_discovery()
     if not getattr(manager, "_discovered", True):
         manager.discover_and_load()
     return manager

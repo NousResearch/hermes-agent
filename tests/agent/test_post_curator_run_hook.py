@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import threading
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 
@@ -109,3 +110,42 @@ def test_a_pass_without_its_own_complete_report_fires_nothing(curator_env, monke
     monkeypatch.setattr(Path, "write_text", _disk_full)
     _run_pass(curator)
     assert received == []
+
+
+def test_dry_run_pass_fires_flagged_with_the_hooks_test_payload_shape(curator_env):
+    """A preview still announces its report, flagged so observers don't act on it; ``hermes hooks
+    test post_curator_run`` sends the same keys a real pass does."""
+    from hermes_cli.hooks import _DEFAULT_PAYLOADS
+    curator = curator_env["curator"]
+    received = []
+    _plugins().get_plugin_manager()._hooks.setdefault("post_curator_run", []).append(
+        lambda **kw: received.append(kw))
+    curator.run_curator_review(synchronous=True, consolidate=False, dry_run=True)
+    _run_pass(curator)
+    assert [kw["dry_run"] for kw in received] == [True, False]
+    assert set(received[0]) - {"telemetry_schema_version"} == set(_DEFAULT_PAYLOADS["post_curator_run"])
+
+
+def test_hook_waits_for_in_flight_discovery_once_not_on_every_call(monkeypatch):
+    """A hook fired mid-discovery sees the plugins it loads; a scan hung in a plugin's register()
+    costs one bounded wait, not one per hook call."""
+    plugins = _plugins()
+    manager = plugins.get_plugin_manager()
+    manager._discovered = True
+    received, joins, release = [], [], threading.Event()
+
+    class _Scan(threading.Thread):
+        def join(self, timeout=None):
+            joins.append(timeout)
+            manager._hooks.setdefault("post_curator_run", []).append(lambda **kw: received.append(kw))
+
+    hung = _Scan(target=release.wait, daemon=True)
+    hung.start()
+    monkeypatch.setattr(plugins, "_background_discovery_thread", hung)
+    monkeypatch.setattr(plugins, "_delivery_join_abandoned", False, raising=False)
+    try:
+        plugins.invoke_hook("post_curator_run", run_dir="d")
+        plugins.invoke_hook("post_curator_run", run_dir="d")
+    finally:
+        release.set()
+    assert (len(joins), len(received)) == (1, 2)

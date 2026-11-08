@@ -455,17 +455,24 @@ def _title_from_reasoning(message: Any) -> str:
 _MOJIBAKE_CODECS = ("cp1252", "cp1250", "latin-1")
 
 
-def _repair_mojibake(text: str) -> str:
+def _repair_mojibake(text: str, typed: Optional[set[str]] = None) -> str:
     """``text`` with UTF-8 restored when it is UTF-8 read through a single-byte code page; unchanged
-    otherwise. Strict both ways, so ordinary accented text never round-trips into something else."""
+    otherwise. Strict both ways, so ordinary accented text never round-trips into something else. With
+    ``typed`` (the non-ASCII characters of the title input), a repair must only produce characters the
+    user typed: clean Romanian ``Ăş`` is also valid cp1250-read UTF-8 for ``ú``."""
     for codec in _MOJIBAKE_CODECS:
         try:
             repaired = text.encode(codec).decode("utf-8")
         except (UnicodeEncodeError, UnicodeDecodeError):
             continue
-        if repaired != text:
+        if repaired != text and (typed is None or all(c in typed for c in repaired if ord(c) > 0x7F)):
             return repaired
     return text
+
+
+def _typed_chars(source: str) -> set[str]:
+    """Non-ASCII characters of the title input, in both cases (a title may capitalize what the user typed)."""
+    return {c for char in source if ord(char) > 0x7F for c in (char, *char.upper(), *char.lower())}
 
 
 def _byte_spellings() -> dict[str, tuple[int, ...]]:
@@ -497,15 +504,14 @@ def _decode_spelled(glyphs: str) -> str:
     return ""
 
 
-def _repair_spelled_chars(text: str, source: str) -> Optional[str]:
+def _repair_spelled_chars(text: str, typed: set[str]) -> Optional[str]:
     """``text`` with each character the user typed restored where the model spelled out its UTF-8 bytes
     (a model can emit that mixed with intact words, so a whole-string round trip cannot undo it, #149025).
 
-    Only characters present in ``source`` count as repairs, so ordinary text whose letters happen to form a
+    Only characters in ``typed`` (``_typed_chars`` of the title input) count as repairs, so ordinary text whose letters happen to form a
     UTF-8 sequence (Turkish ``İş``) stays as is. Once a repair proves the output is byte-damaged, a leftover
     letter or symbol the user never typed is undecodable residue (``μƒ``): None, so the caller keeps the
     title derived from the user's own words."""
-    typed = {c for char in source if ord(char) > 0x7F for c in (char, *char.upper(), *char.lower())}
     out: list[str] = []
     i, repaired = 0, False
     while i < len(text):
@@ -529,8 +535,9 @@ def _repair_spelled_chars(text: str, source: str) -> Optional[str]:
 def _clean_title(text: str, source: str = "") -> Optional[str]:
     """Normalize a model-produced title, or None when nothing usable remains. ``source`` is the text the
     title was generated from; it lets byte-spelled characters the user typed be restored."""
-    text = _repair_mojibake(text or "")
-    if source and (text := _repair_spelled_chars(text, source)) is None:
+    typed = _typed_chars(source) if source else None
+    text = _repair_mojibake(text or "", typed)
+    if typed is not None and (text := _repair_spelled_chars(text, typed)) is None:
         return None
     title = _strip_title_prefix(" ".join((text or "").split()).strip("\"'").strip()).rstrip(".!,;:")
     if len(title) > 80:

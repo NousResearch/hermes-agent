@@ -639,7 +639,7 @@ def _compute_docstring_lines(lines: list) -> set:
             if ((tok.type == tokenize.STRING or tok.type in _FSTRING_BOUNDARY_TYPES)
                     and _TRIPLE_QUOTE_OPEN_RE.match(tok.string)):
                 doc_lines.update(range(tok.start[0], tok.end[0] + 1))
-    except Exception:  # malformed/unparsable input must never silence the pattern passes
+    except (tokenize.TokenError, SyntaxError):  # unparsable input must never silence the pattern passes
         return set()
     return doc_lines
 

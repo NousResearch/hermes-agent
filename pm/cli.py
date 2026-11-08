@@ -857,10 +857,16 @@ def cmd_sync(args) -> int:
     without re-resolving dependencies; the graph-change path stays
     ``hermes pm install``.
     """
+    from hermes_cli.update_owning_install import _pm_environment_owner
     from pm.workspace import sync_sources
 
+    # PM re-execs through its isolated runtime, so sys.prefix is not the app venv.
+    # The workspace path identifies its owning checkout and install key.
+    project_root = repo_root()
+    if project_root.name == "workspace":
+        project_root = _pm_environment_owner(project_root.parent / "venv") or project_root
     try:
-        workspace = sync_sources(repo_root())
+        workspace = sync_sources(project_root)
     except InstallError as exc:
         print(f"\u2717 {exc}")
         return 1

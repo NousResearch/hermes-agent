@@ -341,7 +341,16 @@ function background(source, env, ...args) {
   child.stdout.on('data', data => { output += data })
   child.stderr.on('data', data => { output += data })
   const exit = new Promise(done => child.on('exit', (code, signal) => done({ code, signal, output })))
-  return { exit, kill: () => process.kill(-child.pid, 'SIGKILL') }
+  return {
+    exit,
+    kill: () => process.kill(-child.pid, 'SIGKILL'),
+    // As Ctrl-Z and `fg` do: the whole job.
+    stop: () => process.kill(-child.pid, 'SIGSTOP'),
+    resume: () => process.kill(-child.pid, 'SIGCONT'),
+    signal: (name, group) => process.kill(group ? -child.pid : child.pid, name),
+    // Anything of the job (the run, pnpm) still running.
+    alive: () => { try { process.kill(-child.pid, 0); return true } catch { return false } },
+  }
 }
 
 // New web inputs (as after a pull): web gains extra-only.
@@ -451,7 +460,7 @@ test.skipIf(process.platform === 'win32').each([['failed', 'rc=1'], ['succeeded'
       json(join(dir, name, 'package.json'), { name: 'pnpm', version: execFileSync(pnpmCommand(), ['--version']).toString().trim() })
       return { ...env, PATH: `${join(dir, name)}${delimiter}${env.PATH}` }
     }
-    // A: its install stops the run, then fails or succeeds once resumed.
+    // A: its install stops A's run (the process waiting for pnpm), then fails or succeeds once resumed.
     const ownerEnv = shim('owner', `${install}; echo $PPID > '${dir}/owner.pid'; kill -STOP $PPID; exit $rc`)
     // A's heartbeat worker (it inherits the preload) is slowed past the test, so nothing but the
     // lock file itself can tell A that it lost the lock: after a stop, the beat lags the main thread.
@@ -497,6 +506,75 @@ test.skipIf(process.platform === 'win32').each([['failed', 'rc=1'], ['succeeded'
     expect(readdirSync(join(source, '.cache'))).toEqual([])
     prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env, nativeToolchain: 'second', install: false })
     expect(() => prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env, nativeToolchain: 'third', install: false })).toThrow(/disabled/)
+  }, 60000)
+
+// Ctrl-Z stops the whole job, pnpm with it, and once resumed pnpm went on where it stopped: by
+// then the run that broke the stopped run's lock may have installed and certified its own trees.
+// The lock watcher is not in the job, so it kills the stopped pnpm as soon as the lock is broken.
+test.skipIf(process.platform === 'win32')('an owner stopped during its pnpm install cannot write into the next owner\'s trees', async () => {
+  const { source, env } = fixture()
+  prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env, nativeToolchain: 'first' })
+  const dir = dirname(source)
+  mkdirSync(join(dir, 'owner'))
+  // A's pnpm: stopped (with all of A) in the middle of its work, which goes on into the tree once resumed.
+  writeFileSync(join(dir, 'owner/pnpm'), ['#!/bin/sh', 'if [ "$1" = install ]; then',
+    `  touch '${dir}/owner.started'; sleep 2`,
+    `  echo third > node_modules/.written-by-the-stopped-pnpm; '${pnpmCommand()}' "$@"; exit $?`,
+    'fi', `exec '${pnpmCommand()}' "$@"`, ''].join('\n'))
+  chmodSync(join(dir, 'owner/pnpm'), 0o755)
+  json(join(dir, 'owner/package.json'), { name: 'pnpm', version: execFileSync(pnpmCommand(), ['--version']).toString().trim() })
+  const owner = background(source, { ...env, PATH: `${join(dir, 'owner')}${delimiter}${env.PATH}` },
+    '--workspace', 'web', '--reuse', '--native-toolchain', 'third')
+  await until(() => existsSync(join(dir, 'owner.started')))
+  owner.stop()
+  const timing = { ...lockTiming }
+  Object.assign(lockTiming, { stale: 1_500 })
+  try {
+    prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env, nativeToolchain: 'second' })
+  } finally {
+    Object.assign(lockTiming, timing)
+  }
+  const built = readFileSync(join(webOnly(source), 'built'), 'utf8')
+  owner.resume()
+  const { code, output } = await owner.exit
+  // Long enough for the stopped pnpm to have finished, had it survived.
+  await new Promise(done => setTimeout(done, 3_000))
+  expect(code).not.toBe(0)
+  expect(output).toMatch(/this run lost the checkout lock/)
+  expect(existsSync(join(source, 'node_modules/.written-by-the-stopped-pnpm'))).toBe(false)
+  // The tree is the one the receipt certifies.
+  expect(readFileSync(join(webOnly(source), 'built'), 'utf8')).toBe(built)
+  expect(readFileSync(join(source, 'node_modules/.hermes-node-deps.native-toolchain'), 'utf8')).toMatch(/"second"\n$/)
+  expect(readdirSync(join(source, '.cache'))).toEqual([])
+  prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env, nativeToolchain: 'second', install: false })
+}, 60000)
+
+// The watcher leaves the job, pnpm does not: the terminal's Ctrl-C (SIGINT to the job's process
+// group) still reaches pnpm, and so does a SIGTERM aimed at the run alone, which pnpm never got.
+test.skipIf(process.platform === 'win32').each([['Ctrl-C reaches the job', 'group', 'SIGINT'], ['a SIGTERM reaches the run alone', 'run', 'SIGTERM']])(
+  'pnpm gets the signal when %s', async (_, target, signal) => {
+    const { source, env } = fixture()
+    prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env })
+    addExtraOnly(source, env)
+    const dir = mkdtempSync(join(tmpdir(), 'signalled pnpm-'))
+    roots.push(dir)
+    writeFileSync(join(dir, 'pnpm'), ['#!/bin/sh', 'if [ "$1" = install ]; then',
+      `  trap 'echo INT >> "${dir}/got"; kill $!; exit 130' INT`, `  trap 'echo TERM >> "${dir}/got"; kill $!; exit 143' TERM`,
+      `  touch '${dir}/started'; sleep 30 & wait $!; exit 1`,
+      'fi', `exec '${pnpmCommand()}' "$@"`, ''].join('\n'))
+    chmodSync(join(dir, 'pnpm'), 0o755)
+    json(join(dir, 'package.json'), { name: 'pnpm', version: execFileSync(pnpmCommand(), ['--version']).toString().trim() })
+    const run = background(source, { ...env, PATH: `${dir}${delimiter}${env.PATH}` }, '--workspace', 'web', '--reuse')
+    await until(() => existsSync(join(dir, 'started')))
+    run.signal(signal, target === 'group')
+    await run.exit
+    await until(() => existsSync(join(dir, 'got')))
+    expect(readFileSync(join(dir, 'got'), 'utf8')).toBe(`${signal.slice(3)}\n`)
+    // Nothing of the run is left, and the next run gets the previous trees back.
+    await until(() => !run.alive())
+    expect(() => prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env, install: false })).toThrow(/disabled/)
+    expect(createRequire(join(source, 'web/package.json'))('web-only')).toBe('web-only')
+    expect(readdirSync(join(source, '.cache'))).toEqual([])
   }, 60000)
 
 // A heartbeat that fails once (an antivirus or indexer handle on Windows, ESTALE on NFS, EMFILE)

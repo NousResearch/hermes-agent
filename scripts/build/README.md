@@ -83,11 +83,22 @@ pnpm runs. A tree that cannot be moved (a mount point, or a `.cache` on another
 filesystem) is deleted in place as before and cannot be restored. Runs in one checkout
 are serialised by `.cache/node-deps.lock`. Its owner refreshes the lock's mtime every
 second (a failed refresh is retried on the next beat), and a lock that nobody has
-refreshed for 30 s is broken, whatever pid, host or PID namespace it names. An owner
-stopped for longer (Ctrl-Z) loses the lock: before every move, restore, delete, receipt
-write and pnpm start it re-reads the lock, and once the lock is no longer its own it exits
-without touching the trees. A live owner is waited for at most 10 minutes; then the run
-fails. Downloads retry with pnpm's defaults, except for a source launch (`hermes --tui`,
+refreshed for 30 s is broken, whatever pid, host or PID namespace it names; the run that
+breaks it replaces it in one rename and waits 2 s before touching the trees. An owner
+stopped for longer (Ctrl-Z) loses the lock. pnpm and Electron's installer run under a
+watcher outside the job (a session of its own; on Windows, `taskkill /T /F`) that re-reads
+the lock every 250 ms and kills the child's process tree once the lock is no longer its
+run's, so a stopped pnpm is killed while still stopped and never resumes into the new
+owner's trees; pnpm itself stays in the job, so Ctrl-C and Ctrl-Z reach it as before, and
+a SIGTERM aimed at node-deps alone is passed on to it. Between those children, the run
+re-reads the lock before every move, restore, delete and receipt write and exits without
+touching the trees once it is no longer its own. What is left: a run stopped (or a
+container frozen, watcher included) between one of those checks and the step after it can,
+once resumed, do that one step in the new owner's trees; a freeze that also stops the
+watcher lets the resumed pnpm write for up to one poll (250 ms) before it is killed; and a
+process pnpm started that left its tree (daemonized) is not killed. `hermes update`, or
+deleting `node_modules`, repairs a tree left that way. A live owner is waited for at most
+10 minutes; then the run fails. Downloads retry with pnpm's defaults, except for a source launch (`hermes --tui`,
 the dashboard), which retries once unless the user set a count (`pnpm_config_fetch_retries`,
 `fetch-retries` in the user npmrc, or `fetchRetries` in pnpm's config.yaml or
 `pnpm-workspace.yaml`), so an unreachable registry fails it in about 10 s instead of 70 s.

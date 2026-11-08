@@ -101,8 +101,11 @@ function completedInstallMatches({ source, receipt, installedLock, key, nativeKe
 // hosts or PID namespaces: a lock a waiter has seen unchanged (content and mtime) for `stale` ms
 // of its own monotonic clock is dead and broken; no clock is compared across machines. A live
 // owner is waited for at most `wait` ms; then the run fails, and a launch can fall back to its
-// previous build. Exported for tests only.
-export const lockTiming = { beat: 1_000, stale: 30_000, wait: 10 * 60_000 }
+// previous build. The children that write the trees (pnpm, Electron's installer) run under a
+// watcher that re-reads the lock every `watch` ms and kills them once it is no longer this run's;
+// a run that broke a lock waits `grace` ms (longer than `watch`) before it touches the trees, so
+// the watcher of the run it broke kills that run's pnpm first. Exported for tests only.
+export const lockTiming = { beat: 1_000, stale: 30_000, wait: 10 * 60_000, watch: 250, grace: 2_000 }
 const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 
 function readText(path) {
@@ -216,33 +219,57 @@ class LockLost extends Error {
   }
 }
 
-function takeLock(lock, token) {
+// `replacing`: over a dead lock (breakLock), by rename.
+function takeLock(lock, token, replacing = false) {
   const flags = new Int32Array(new SharedArrayBuffer(4))
-  const fd = openSync(lock, 'wx')
-  try {
-    writeSync(fd, JSON.stringify({ token, pid: process.pid, host: hostname() }))
-  } catch (error) {
-    rmSync(lock, { force: true })
-    throw error
-  } finally {
-    closeSync(fd)
+  const content = JSON.stringify({ token, pid: process.pid, host: hostname() })
+  if (replacing) {
+    const temp = `${lock}.${token}`
+    writeFileSync(temp, content)
+    try {
+      renameSync(temp, lock)
+    } catch (error) {
+      rmSync(temp, { force: true })
+      throw error
+    }
+  } else {
+    const fd = openSync(lock, 'wx')
+    try {
+      writeSync(fd, content)
+    } catch (error) {
+      rmSync(lock, { force: true })
+      throw error
+    } finally {
+      closeSync(fd)
+    }
   }
   const worker = new Worker(HEARTBEAT, { eval: true, workerData: { lock, token, state: flags.buffer, beat: lockTiming.beat } })
   worker.unref()
-  return {
-    check: () => {
-      // A transient read error is retried; one that persists means ownership is unknown, so the
-      // run touches nothing.
-      for (let tries = 1; ; tries++) {
-        try {
-          if (readText(lock)?.includes(token)) return
-          break
-        } catch (error) {
-          if (tries === 3) throw new LockLost(lock, error)
-          sleep(50)
-        }
+  const check = () => {
+    // A transient read error is retried; one that persists means ownership is unknown, so the
+    // run touches nothing.
+    for (let tries = 1; ; tries++) {
+      try {
+        if (readText(lock)?.includes(token)) return
+        break
+      } catch (error) {
+        if (tries === 3) throw new LockLost(lock, error)
+        sleep(50)
       }
-      throw new LockLost(lock)
+    }
+    throw new LockLost(lock)
+  }
+  return {
+    check,
+    // Runs a child that writes the trees, killed once this run loses the lock.
+    run: (file, args, options) => {
+      try {
+        runWatched({ lock, token }, file, args, options)
+      } catch (error) {
+        check()
+        throw error
+      }
+      check()
     },
     release: () => {
       Atomics.store(flags, 0, 1)
@@ -264,7 +291,9 @@ function lockCheckout(source) {
       return takeLock(lock, token)
     } catch (error) {
       // No run can write a checkout this process cannot write, so a reader needs no lock.
-      if (['EACCES', 'EPERM', 'EROFS'].includes(error.code)) return { check: () => {}, release: () => {} }
+      if (['EACCES', 'EPERM', 'EROFS'].includes(error.code)) {
+        return { check: () => {}, run: (file, args, options) => execFileSync(file, args, { ...options, stdio: 'inherit' }), release: () => {} }
+      }
       if (error.code !== 'EEXIST') throw error
     }
     const text = readText(lock)
@@ -274,8 +303,14 @@ function lockCheckout(source) {
     if (seen?.text !== text || seen.mtime !== mtime) {
       seen = { text, mtime, since: now }
     } else if (now - seen.since > lockTiming.stale) {
-      removeIf(lock, current => current === text && mtimeOf(lock) === mtime)
-      seen = undefined
+      const held = breakLock(lock, token, text, mtime)
+      if (held) {
+        // The run that held it may have been resumed a moment ago, its pnpm with it: its watcher
+        // kills that pnpm within lockTiming.watch of seeing the lock gone.
+        sleep(lockTiming.grace)
+        return held
+      }
+      if (held === undefined) seen = undefined
       continue
     }
     // What matters comes first: a progress line cut to the terminal width still says it.
@@ -286,6 +321,109 @@ function lockCheckout(source) {
     if (!announced) console.log(`node-deps: waiting up to ${limit} for another install in this checkout (${describeOwner(text)})`)
     announced = true
     sleep(500)
+  }
+}
+
+// Replaces the dead lock (still `text` and `mtime`) with this run's, in one rename: the lock never
+// disappears, so no third run can take it in between and skip the grace. undefined: it changed
+// meanwhile; false: the rename failed (an open handle on Windows), so the next poll tries again.
+function breakLock(lock, token, text, mtime) {
+  try {
+    return underGuard(lock, () => (readText(lock) === text && mtimeOf(lock) === mtime ? takeLock(lock, token, true) : undefined))
+  } catch (error) {
+    if (!['EPERM', 'EBUSY', 'EACCES'].includes(error.code)) throw error
+    return false
+  }
+}
+
+// A child that writes the trees (pnpm, Electron's installer) runs under a watcher that kills it,
+// with everything it started, once the lock is no longer `token`'s: a run stopped past
+// lockTiming.stale while pnpm runs (Ctrl-Z), then resumed, must not let that pnpm go on writing
+// into the trees of the run that took over. The child stays in the caller's process group, so the
+// terminal's Ctrl-C and Ctrl-Z reach it and its scripts as they always did. The watcher does not:
+// on POSIX it runs in a session of its own, so the Ctrl-Z that stops the run leaves it watching,
+// and it kills the stopped tree as soon as the lock is broken, before the job can be resumed.
+// The tree is the child's descendants: stopped first, so none forks while it is read, then
+// killed. A process that left the tree (daemonized, so re-parented away) is out of reach.
+// Windows has no job control; the watcher ends the tree with taskkill /T /F.
+// A relay starts both, since this thread blocks, and the watcher ends with the relay. A signal to
+// the caller's group (Ctrl-C, a caller's killpg) reaches the child itself, so the relay only
+// waits; a signal aimed at this process alone kills it, and the relay, unsignalled and orphaned,
+// passes SIGTERM on to the child, which used to be left running.
+const WATCHER = `
+const { execFileSync, spawnSync } = require('node:child_process');
+const { readFileSync, readdirSync } = require('node:fs');
+const [lock, token, every, root] = process.argv.slice(1);
+const lost = () => { try { return !readFileSync(lock, 'utf8').includes(token) } catch (error) { return error.code === 'ENOENT' } };
+function parents() {
+  const table = new Map();
+  if (process.platform === 'linux') {
+    for (const pid of readdirSync('/proc')) {
+      if (!/^[0-9]+$/.test(pid)) continue;
+      try {
+        const stat = readFileSync('/proc/' + pid + '/stat', 'utf8');
+        table.set(Number(pid), Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]));
+      } catch {}
+    }
+  } else {
+    for (const line of execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8' }).split('\\n')) {
+      const [pid, ppid] = line.trim().split(/\\s+/).map(Number);
+      if (pid) table.set(pid, ppid);
+    }
+  }
+  return table;
+}
+function tree() {
+  let table;
+  try { table = parents() } catch { return new Set([Number(root)]) }
+  const found = new Set([Number(root)]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [pid, ppid] of table) if (found.has(ppid) && !found.has(pid)) { found.add(pid); grew = true }
+  }
+  return found;
+}
+const signal = (pid, name) => { try { process.kill(pid, name) } catch {} };
+function end() {
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/pid', root, '/T', '/F'], { stdio: 'ignore' });
+  } else {
+    const seen = new Set();
+    for (let fresh = [Number(root)]; fresh.length; fresh = [...tree()].filter(pid => !seen.has(pid))) {
+      for (const pid of fresh) { seen.add(pid); signal(pid, 'SIGSTOP') }
+    }
+    for (const pid of seen) signal(pid, 'SIGKILL');
+  }
+  process.exit(0);
+}
+const tick = () => { if (lost()) end() };
+tick();
+setInterval(tick, Number(every));
+process.stdin.on('end', () => process.exit(0)).resume();
+`
+const RELAY = `
+const { spawn } = require('node:child_process');
+const { constants } = require('node:os');
+const [watcher, lock, token, every, file, ...args] = process.argv.slice(1);
+let signalled = false;
+for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(name, () => { signalled = true });
+const parent = process.ppid;
+const child = spawn(file, args, { stdio: 'inherit' });
+setInterval(() => { if (!signalled && process.ppid !== parent) { signalled = true; child.kill('SIGTERM') } }, 200);
+child.on('error', error => { console.error(error.message); process.exit(127) });
+if (child.pid) {
+  spawn(process.execPath, ['-e', watcher, '--', lock, token, every, String(child.pid)],
+    { stdio: ['pipe', 'ignore', 'inherit'], detached: process.platform !== 'win32', windowsHide: true });
+}
+child.on('exit', (code, signal) => process.exit(code ?? 128 + (constants.signals[signal] ?? 0)));
+`
+
+function runWatched({ lock, token }, file, args, { cwd, env }) {
+  const child = spawnSync(process.execPath, ['-e', RELAY, '--', WATCHER, lock, token, String(lockTiming.watch), file, ...args],
+    { cwd, env, stdio: 'inherit' })
+  if (child.error) throw child.error
+  if (child.status !== 0) {
+    throw Object.assign(new Error(`Command failed: ${file} ${args.join(' ')}`), { status: child.status, signal: child.signal })
   }
 }
 
@@ -460,7 +598,7 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
     previous.recover()
     if (reuse && completedInstallMatches({ source, receipt, installedLock, key, nativeKey })) {
       lock.check()
-      if (prepareElectron) prepareElectronRuntime({ source, install, env })
+      if (prepareElectron) prepareElectronRuntime({ source, install, env, run: lock.run })
       console.log(`node-deps: reusing completed install (${selected.join(', ')})`)
       return { source, workspaces: selected }
     }
@@ -470,12 +608,12 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
     try {
       console.log(`node-deps: installing workspace dependencies with pnpm (${selected.join(', ')})...`)
       lock.check()
-      execFileSync(pnpm, args, { cwd: source, env, stdio: 'inherit' })
+      lock.run(pnpm, args, { cwd: source, env })
       if (!installedLockMatches(lockText, installedLock, selected)) {
         throw new Error(`pnpm did not record the locked install of ${selected.join(', ')} in ${installedLock}`)
       }
       lock.check()
-      if (prepareElectron) prepareElectronRuntime({ source, install, env })
+      if (prepareElectron) prepareElectronRuntime({ source, install, env, run: lock.run })
     } catch (error) {
       // A run that lost the lock leaves the trees, and the set aside, to the run that holds it.
       if (error.code === 'ENODEPSLOCK') throw error

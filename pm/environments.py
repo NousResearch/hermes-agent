@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shlex
+import sys
 from pathlib import Path
 
 from hermes_constants import get_default_hermes_root, project_venv_dir
@@ -260,7 +261,7 @@ def _unstamped_store(project_root: Path) -> Path:
     return (owning_home_root(project_root) or get_default_hermes_root()) / "tools"
 
 
-def flush_before_selecting() -> None:
+def flush_before_selecting(generation: str | Path) -> None:
     """Make a finished generation tree durable before a selection record names it.
 
     The selection record (the install's facts.json, a side environment's
@@ -268,8 +269,9 @@ def flush_before_selecting() -> None:
     generation's completion marker -- but only if every file it vouches for
     reached the disk first. Otherwise a power loss can persist the record while
     the tree's data is still in the page cache, selecting a half-written venv.
-    One filesystem-wide sync instead of an fsync per file: a venv holds tens of
-    thousands of files, and per-file flushes cost minutes on slow disks.
+    A venv holds tens of thousands of files, and per-file flushes cost minutes
+    on slow disks. On macOS wait for the generation's volume only, so an
+    unrelated mounted filesystem cannot stall publication.
 
     Windows has no whole-filesystem flush reachable from Python (os.sync does
     not exist there), and FlushFileBuffers per file is the slow path rejected
@@ -277,6 +279,17 @@ def flush_before_selecting() -> None:
     torn, but NTFS journals metadata, not file contents, so power loss right
     after a publish can still leave the selected tree with incomplete files.
     """
+    if sys.platform == "darwin":
+        import ctypes
+
+        sync_volume = ctypes.CDLL(None).sync_volume_np
+        sync_volume.argtypes = (ctypes.c_char_p, ctypes.c_int)
+        sync_volume.restype = ctypes.c_int
+        fullsync, wait = 0x01, 0x02  # SYNC_VOLUME_FULLSYNC | SYNC_VOLUME_WAIT (unistd.h)
+        error = sync_volume(os.fsencode(generation), fullsync | wait)
+        if error:
+            raise OSError(error, os.strerror(error), os.fspath(generation))
+        return
     sync = getattr(os, "sync", None)
     if sync is not None:
         sync()

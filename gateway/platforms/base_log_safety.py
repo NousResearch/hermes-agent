@@ -2,7 +2,7 @@
 import os
 import re
 from urllib.parse import urlsplit
-from urllib.request import getproxies_environment
+from urllib.request import getproxies_environment, proxy_bypass_environment
 
 _UNSAFE_URL_PLACEHOLDER = "<unparseable URL redacted>"
 _FILE_NAME = re.compile(r"[\w-]{1,40}\.[A-Za-z0-9]{1,5}")
@@ -111,34 +111,43 @@ def env_proxy_for_redaction(*target_urls: str | None) -> str | None:
     ``http_proxy`` therefore still redacts, and an ``ALL_PROXY``-only secret redacts an error from a
     library that ignores ``ALL_PROXY``: leak-safety over that edge."""
     values = [value.strip() for key, value in os.environ.items() if key.lower() in _ENV_PROXY_KEYS and value.strip()]
-    # httpx builds a transport for every proxy variable (``http://`` prefixed when scheme-less) when
-    # the client is created, so an unparseable one raises, echoing it, before NO_PROXY is consulted
-    # unless NO_PROXY is ``*``.
-    star_only = any(safe_proxy_url_for_log(v if "://" in v else f"http://{v}") == _UNSAFE_URL_PLACEHOLDER
-                    for v in values)
     targets = [url for url in target_urls if url]
-    if targets and all(_bypassed(url, star_only=star_only) for url in targets):
+    if targets and _no_proxy_bypasses_all(values, targets):
         return None
     return next((v for v in values if not _shown_in_full(v)), values[0] if values else None)
 
 
-def _bypassed(url: str, *, star_only: bool) -> bool:
-    """NO_PROXY (``no_proxy`` first, as urllib reads it) bypasses ``url`` in every library here:
-    ``*`` alone, or (unless ``star_only``) an entry equal to the host or a ``.suffix`` entry the
-    host is a subdomain of. That is the part of urllib's ``proxy_bypass_environment`` rule httplib2
-    (bare entries match only exactly) and httpx (``.suffix`` skips the apex) share; ``host:port``,
-    CIDR and other forms some libraries ignore are not counted, so a request they proxied keeps
-    its redaction."""
+def _no_proxy_bypasses_all(values: list[str], targets: list[str]) -> bool:
+    """Keeping the real error text is only for readability, so it is taken only when no library
+    could have used a proxy. Never with an unparseable secret-bearing value: httpx and httplib2
+    parse every proxy URL, echoing it, before they read NO_PROXY, even ``*``. Otherwise every
+    ``no_proxy`` variable (any case; urllib, requests and httplib2 pick different ones) must be
+    exactly ``*``, or bypass each target under urllib's ``proxy_bypass_environment`` on the raw
+    value through an entry every library reads the same way. Other layouts stay redacted:
+    over-redaction is the accepted cost."""
+    if any(safe_proxy_url_for_log(v if "://" in v else f"http://{v}") == _UNSAFE_URL_PLACEHOLDER for v in values):
+        return False
+    no_proxies = [value for key, value in os.environ.items() if key.lower() == "no_proxy"]
     try:
-        host = (urlsplit(str(url)).hostname or "").rstrip(".")
+        parsed = [urlsplit(str(url)) for url in targets]
+        # urllib's opener tests ``host[:port]`` (IPv6 bracketed), requests and httplib2 the hostname.
+        hosts = [(p.hostname, p.netloc.rpartition("@")[2]) for p in parsed]
     except ValueError:
         return False
-    no_proxy = getproxies_environment().get("no", "").strip().lower()
-    if no_proxy == "*" or star_only:
-        return bool(host) and no_proxy == "*"
-    entries = [entry.strip() for entry in no_proxy.split(",")]
-    return any(host and entry and (host.endswith(entry) if entry.startswith(".") else host == entry)
-               for entry in entries)
+    return bool(no_proxies) and all(_bypasses(no_proxy, name, netloc) for no_proxy in no_proxies for name, netloc in hosts)
+
+
+def _bypasses(no_proxy: str, host: str | None, netloc: str) -> bool:
+    if no_proxy == "*":
+        return True
+    if not host or "*" in no_proxy:
+        return False
+    proxies = {"no": no_proxy}
+    if not (proxy_bypass_environment(host, proxies) and proxy_bypass_environment(netloc, proxies)):
+        return False
+    # httplib2 compares entries unstripped and case-sensitively; httpx's ``.suffix`` skips the apex.
+    return any(entry == host or (entry.startswith(".") and host.endswith(entry) and host != entry[1:])
+               for entry in no_proxy.split(","))
 
 
 def _shown_in_full(proxy: str) -> bool:

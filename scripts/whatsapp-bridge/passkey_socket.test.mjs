@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
-import { initAuthCreds, proto, Curve } from '@whiskeysockets/baileys';
+import { initAuthCreds, proto, Curve, hkdf, hmacSign } from '@whiskeysockets/baileys';
 import { makeShortcakeFlow } from './passkey_flow.js';
 import { attachPasskeyFlow, loadPasskeySigner } from './passkey_socket.js';
 
@@ -203,6 +203,48 @@ test('a code question that fails with a plain error after supersede is a cancell
   await settle();
   assert.deepEqual(errors, []);
   assert.equal(sent.includes('encrypted_pairing_request'), false);
+  sock.ev.emit('connection.update', { connection: 'close' });
+});
+
+test('Ctrl+C at the code question ends the attempt instead of passing as a supersede', async t => {
+  let interrupt;
+  const confirmCode = () => new Promise((_, reject) => { interrupt = reject; });
+  const { sock, sent } = await driveServerPrologue(t, { signingMs: 6 * 60 * 1000, confirmCode });
+  const errors = [];
+  sock.ev.on('connection.update', update => { if (update.passkeyError) errors.push(update.passkeyError); });
+  // What readline/promises question() rejects with on Ctrl+C: an AbortError the attempt's signal never sent.
+  interrupt(Object.assign(new Error('Aborted with Ctrl+C'), { name: 'AbortError', code: 'ABORT_ERR' }));
+  await settle();
+  assert.equal(errors.length, 1, 'the bridge must report the cancelled prompt and exit');
+  assert.match(errors[0].message, /cancelled.*Ctrl\+C/);
+  assert.equal(sent.includes('encrypted_pairing_request'), false);
+  sock.ev.emit('connection.update', { connection: 'close' });
+});
+
+test('a superseding prologue request proves the handoff with the secret from the scanned QR', async () => {
+  const sock = socket();
+  const qrSecret = sock.authState.creds.advSecretKey;
+  const prologues = [];
+  sock.query = async node => {
+    if (node.content[0].tag === 'passkey_prologue') prologues.push(node.content[0].content);
+    return refReply();
+  };
+  const signals = [];
+  attachPasskeyFlow(sock, { logger, confirmCode: async () => {}, signAssertion: (_bytes, signal) => {
+    signals.push(signal);
+    if (signals.length > 1) return Promise.resolve(assertion);
+    return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+  } });
+  sock.ws.emit('CB:notification', request());
+  await settle();
+  sock.ws.emit('CB:notification', request());
+  await settle();
+  await settle();
+  assert.equal(prologues.length, 1);
+  assert.notEqual(sock.authState.creds.advSecretKey, qrSecret, 'the first request still rotates the ADV secret');
+  const leaf = name => prologues[0].find(child => child.tag === name)?.content;
+  const key = hkdf(Buffer.from(qrSecret, 'base64'), 32, { info: 'shortcake-passkey-handoff-v1' });
+  assert.deepEqual(Buffer.from(leaf('pairing_handoff_proof')), Buffer.from(hmacSign(leaf('prologue_payload'), key)));
   sock.ev.emit('connection.update', { connection: 'close' });
 });
 

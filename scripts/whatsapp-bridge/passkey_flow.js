@@ -52,10 +52,8 @@ export const makeShortcakeFlow = (opts) => {
             const ref = await requestRef();
             signal.throwIfAborted();
             const companion = generateCompanionEphemeralIdentity({ ref, deviceType });
-            const stashedKey = handoffKey;
-            handoffKey = null;
-            const pairingHandoffProof = stashedKey !== null && Date.now() - stashedKey.ts < HANDOFF_KEY_TTL_MS
-                ? hmacSign(companion.prologuePayloadBytes, stashedKey.hmac)
+            const pairingHandoffProof = handoffKey !== null && Date.now() - handoffKey.ts < HANDOFF_KEY_TTL_MS
+                ? hmacSign(companion.prologuePayloadBytes, handoffKey.hmac)
                 : undefined;
             const skipHandoffUx = pairingHandoffProof !== undefined;
             const prologueChildren = [
@@ -87,13 +85,17 @@ export const makeShortcakeFlow = (opts) => {
                 controller.abort();
                 activeController = null;
                 session = null;
-                handoffKey = null;
             }
             throw superseded ? signal.reason : error;
         }
     };
     /** Derive a handoff HMAC key from the ADV secret and rotate it (matching the official clients). */
     const stashHandoffKeyAndRotateAdv = () => {
+        // Once per flow: the phone only knows the secret from the QR it scanned, so a superseding request
+        // keeps that key (expiring at its use-site window) instead of deriving one from the rotated secret.
+        if (handoffKey !== null) {
+            return;
+        }
         const creds = opts.getCreds();
         if (!creds?.advSecretKey) {
             return;
@@ -141,7 +143,10 @@ export const makeShortcakeFlow = (opts) => {
             await continuePairing(current, decodePrimaryEphemeralIdentity(getBinaryNodeChildBuffer(node, 'primary_ephemeral_identity')));
         }
         catch (error) {
-            throw current.signal.aborted ? current.signal.reason : error;
+            if (current.signal.aborted)
+                throw current.signal.reason;
+            // Ctrl+C at the code question rejects with its own AbortError; only this attempt's signal is a supersede.
+            throw error?.name === 'AbortError' ? new Error(`Passkey confirmation cancelled: ${error.message}`) : error;
         }
         return true;
     };
@@ -184,7 +189,6 @@ export const makeShortcakeFlow = (opts) => {
             activeController?.abort();
             activeController = null;
             session = null;
-            handoffKey = null;
         }
     };
 };

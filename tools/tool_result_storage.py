@@ -42,9 +42,6 @@ _MAX_RESULT_FILENAME_STEM = 120
 # rules are incomplete instead of the generic "this result was too large" text (#151283).
 RULE_BEARING_TOOLS: frozenset[str] = frozenset({"skill_view"})
 _SKILL_HEADING_RE = re.compile(r"^##\s+(\S.*?)\s*$")
-_SKILL_FIELD_RE = re.compile(r"^[\"']?(name|description)[\"']?\s*:\s*(.+?)\s*,?$")
-_SKILL_IDENTITY_SCAN_LINES = 40
-_MAX_IDENTITY_DESCRIPTION_CHARS = 120
 _MAX_OUTLINE_SECTIONS = 20
 
 _spillover_prune_lock = threading.Lock()
@@ -397,77 +394,39 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     return False
 
 
-def _skill_identity(text: str) -> str:
-    """``name — description`` for a skill payload, from its metadata block or YAML frontmatter."""
-    fields: dict[str, str] = {}
-    for line in text.splitlines()[:_SKILL_IDENTITY_SCAN_LINES]:
-        match = _SKILL_FIELD_RE.match(line.strip())
-        if match and match.group(1) not in fields:
-            fields[match.group(1)] = match.group(2).strip().strip("\"'")
-    name = fields.get("name", "")
-    if not name:
-        return ""
-    description = fields.get("description", "")
-    if len(description) > _MAX_IDENTITY_DESCRIPTION_CHARS:
-        description = description[:_MAX_IDENTITY_DESCRIPTION_CHARS - 1].rstrip() + "…"
-    return f"{name} — {description}" if description else name
-
-
-def _section_spans(lines: list[str], headings: list[tuple[int, str]], limit: int):
-    """``(title, first_line, last_line, chars)`` for the first *limit* ``##`` sections."""
-    for position, (start, title) in enumerate(headings[:limit]):
-        end = (headings[position + 1][0] if position + 1 < len(headings) else len(lines)) - 1
-        yield title, start, end, sum(len(lines[index]) + 1 for index in range(start, end + 1))
-
-
 def _rule_bearing_outline(text: str, *, max_sections: int = _MAX_OUTLINE_SECTIONS) -> str:
-    """Outline of a rule-bearing payload: its identity plus every ``##`` section with a line range.
-
-    Pointers are LINE ranges, not character offsets: ``read_file`` paginates with ``offset``/
-    ``limit`` counted in lines, so a character offset could not fetch the section it names.
-    """
+    """Every ``##`` section of a rule-bearing payload with its LINE range in the saved file
+    (``read_file`` pages by lines, so a character offset could not fetch the section it names).
+    The skill's name/description need no extra row: the preview's metadata block carries them."""
     lines = text.splitlines()
-    headings = [(index, match.group(1)) for index, line in enumerate(lines)
-                if (match := _SKILL_HEADING_RE.match(line))]
-    rows = [f"  - ## {title} — lines {start + 1}–{end + 1} ({chars:,} chars)"
-            for title, start, end, chars in _section_spans(lines, headings, max_sections)]
-    if not rows:
-        return ""
-    if len(headings) > max_sections:
-        rows.append(f"  … {len(headings) - max_sections} more sections")
-    identity = _skill_identity(text)
-    return "\n".join(([f"Skill: {identity}"] if identity else []) + rows)
-
-
-def _build_rule_bearing_message(preview: str, has_more: bool, original_size: int,
-                                file_path: str, outline: str) -> str:
-    """Spill notice for a tool whose payload is policy: the rules are incomplete, and it says so."""
-    sections = f"Sections (page with read_file offset/limit):\n{outline}\n" if outline else ""
-    return (
-        f"{PERSISTED_OUTPUT_TAG}\n"
-        f"⚠️ SKILL RULES INCOMPLETE — showing {len(preview):,} of {original_size:,} characters.\n"
-        "Do NOT act on write operations from this preview: the binding rules live in the saved file.\n"
-        f"Full output saved to: {file_path}\n"
-        + sections
-        + "Recovery: page the saved file with read_file (offset/limit) and read the section you need "
-          "before acting — do not infer rules from the preview. The archive is kept while this "
-          "session's transcript references it.\n\n"
-        f"Preview (first {len(preview)} chars):\n"
-        + preview + ("\n..." if has_more else "")
-        + f"\n{PERSISTED_OUTPUT_CLOSING_TAG}"
-    )
+    starts = [(i, m.group(1)) for i, line in enumerate(lines) if (m := _SKILL_HEADING_RE.match(line))]
+    rows = []
+    for pos, (start, title) in enumerate(starts[:max_sections]):
+        end = starts[pos + 1][0] if pos + 1 < len(starts) else len(lines)
+        rows.append(f"  - ## {title} — lines {start + 1}–{end}")
+    if len(starts) > max_sections:
+        rows.append(f"  … {len(starts) - max_sections} more sections")
+    return "\n".join(rows)
 
 
 def _build_persisted_message(preview: str, has_more: bool, original_size: int,
                              file_path: str, *, tool_name: str | None = None,
-                             outline: str | None = None) -> str:
-    """Build the <persisted-output> replacement block.
-
-    ``tool_name``/``outline`` let a rule-bearing tool (``RULE_BEARING_TOOLS``) get a notice stating
-    its rules are incomplete; every other tool keeps the generic size notice byte-for-byte.
-    """
+                             outline: str = "") -> str:
+    """Build the <persisted-output> replacement block. A rule-bearing tool (``RULE_BEARING_TOOLS``)
+    gets a notice saying its rules are incomplete; every other tool keeps the generic text."""
     if tool_name in RULE_BEARING_TOOLS:
-        return _build_rule_bearing_message(preview, has_more, original_size, file_path, outline or "")
+        sections = f"Sections (page with read_file offset/limit):\n{outline}\n" if outline else ""
+        return (
+            f"{PERSISTED_OUTPUT_TAG}\n"
+            f"⚠️ SKILL RULES INCOMPLETE — showing {len(preview):,} of {original_size:,} characters.\n"
+            "Do NOT act on this skill from the preview: the binding rules live in the saved file.\n"
+            f"Full output saved to: {file_path}\n"
+            + sections
+            + "Recovery: read the sections you need from the saved file with read_file before acting; "
+              "the archive is kept while this session's transcript references it.\n\n"
+            f"Preview (first {len(preview)} chars):\n"
+            + preview + ("\n..." if has_more else "")
+            + f"\n{PERSISTED_OUTPUT_CLOSING_TAG}")
     size_kb = original_size / 1024
     size_str = f"{size_kb / 1024:.1f} MB" if size_kb >= 1024 else f"{size_kb:.1f} KB"
     return (
@@ -513,7 +472,7 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
     # Rule-bearing payloads get a structural outline built from the UNWRAPPED text, so the notice can
     # name the sections the preview dropped instead of leaving the model to page blindly (#151283).
-    outline = _rule_bearing_outline(persisted_content) if tool_name in RULE_BEARING_TOOLS else None
+    outline = _rule_bearing_outline(persisted_content) if tool_name in RULE_BEARING_TOOLS else ""
 
     def _persisted(path: str, host_suffix: str = "") -> str:
         logger.info("Persisted large tool result: %s (%s, %d chars -> %s%s)",
@@ -590,9 +549,12 @@ def enforce_turn_budget(tool_messages: list[dict], env=None,
                 tool_messages[idx]["content"] = parts
                 logger.info("Budget enforcement: persisted a text part of tool result %s (%d chars)", tool_use_id, saved)
             continue
+        # threshold=0 forces the spill; a rule-bearing tool keeps its own name so the aggregate
+        # layer cannot strip the "rules incomplete" notice the per-result layer would add (#151283).
+        own_name = tool_messages[idx].get("tool_name") or tool_messages[idx].get("name")
         replacement = maybe_persist_tool_result(
-            content=content, tool_name=_BUDGET_TOOL_NAME, tool_use_id=tool_use_id,
-            env=env, config=config, threshold=0)
+            content=content, tool_use_id=tool_use_id, env=env, config=config, threshold=0,
+            tool_name=own_name if own_name in RULE_BEARING_TOOLS else _BUDGET_TOOL_NAME)
         if replacement != content:
             total_size += len(replacement) - size
             tool_messages[idx]["content"] = replacement

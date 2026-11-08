@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 # Kept at module level on purpose: importing this module must fail when the dotenv install is
@@ -767,6 +768,12 @@ def load_hermes_dotenv(
     if load_external_secrets and not _early_recovery._should_skip_external_secret_sources():
         _apply_external_secret_sources(home_path)
     _apply_managed_env(load_pass=load_pass)
+
+    if os.environ.get("TZ") and hasattr(time, "tzset"):
+        try:
+            time.tzset()
+        except Exception:
+            pass
 
     # config.yaml owns terminal.*, but the override=True loads above let a stale TERMINAL_ENV=docker in
     # ~/.hermes/.env win on every reload and flip the backend mid-session in long-lived processes.

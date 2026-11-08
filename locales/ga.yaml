@@ -632,6 +632,8 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", nó {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Réamhamharc giorraithe: tá an t-ordú iomlán ({total} carachtar) sa teachtaireacht thuas."
+    truncated_deny_only: "Réamhamharc giorraithe ({total} carachtar) agus níorbh fhéidir an t-ordú iomlán a thaispeáint anseo, mar sin níl ach Diúltaigh ar fáil. Athbhreithnigh é sa CLI nó san aip Desktop."
   notify:
     media_kind:
       audio: "fuaime"

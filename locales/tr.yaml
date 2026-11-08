@@ -632,6 +632,8 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", veya {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Önizleme kısaltıldı: komutun tamamı ({total} karakter) yukarıdaki mesajda."
+    truncated_deny_only: "Önizleme kısaltıldı ({total} karakter) ve komutun tamamı burada gösterilemedi, bu yüzden yalnızca Reddet sunuluyor. CLI'de veya masaüstü uygulamasında inceleyin."
   notify:
     media_kind:
       audio: "ses"

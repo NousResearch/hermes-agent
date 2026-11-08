@@ -1120,7 +1120,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                     gone = dead_topic_may_reroute(send_kwargs.get("chat_id"), metadata) and self._is_thread_not_found_error(send_err)
                     if self._should_retry_without_dm_topic_reply_anchor(send_err, metadata, send_kwargs.get("reply_to_message_id")):
                         send_kwargs = {**send_kwargs, "reply_to_message_id": None}  # the topic route stays
-                    elif gone and (direct := direct_topic_retry_kwargs(send_kwargs.get("chat_id"), None, metadata, send_kwargs)):
+                    elif gone and send_kwargs.get("message_thread_id") and (direct := direct_topic_retry_kwargs(send_kwargs.get("chat_id"), None, metadata, send_kwargs)):
                         send_kwargs = {**send_kwargs, **direct}  # telegram_dm_topic_send.py: the same topic by its native id
                     elif gone and (send_kwargs.get("message_thread_id") or send_kwargs.get("direct_messages_topic_id")):
                         send_kwargs = dead_topic_retry_kwargs(send_kwargs)  # the topic is gone: chat root, no anchor

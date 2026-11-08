@@ -504,9 +504,12 @@ KANBAN_CREATE_SCHEMA = _schema(
         )),
         "model": _prop("string", (
                 "Pin the dispatched worker to this model instead of "
-                "the assignee profile's configured model. Use the "
-                "exact model name the target provider expects. Omit "
-                "to use the profile default."
+                "the assignee profile's configured model. A palier "
+                "declared in the profile's model.aliases (e.g. 'std') "
+                "is expanded to its wire id; an unknown bare name is "
+                "rejected rather than sent to the provider. Otherwise "
+                "use the exact model name the target provider expects. "
+                "Omit to use the profile default."
         )),
         "provider": _prop("string", (
                 "Provider the 'model' belongs to (e.g. 'openrouter', "

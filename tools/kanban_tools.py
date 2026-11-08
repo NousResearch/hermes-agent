@@ -17,6 +17,7 @@ from typing import Any, Callable, Optional
 
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
+from hermes_cli.kanban_model import resolve_model_override
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
@@ -1110,8 +1111,8 @@ def _handle_create(args: dict, **kw) -> str:
     triage, skills, goal_mode = (
         _parse_bool_arg(args, "triage"), _coerce_str_list(args.get("skills"), "skills", "skill names"),
         _parse_bool_arg(args, "goal_mode"))
-    model_override, provider_override = args.get("model"), args.get("provider")
-    _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
+    model_override, provider_override = resolve_model_override(
+        args.get("model"), args.get("provider"))
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
     with _board(args.get("board")) as (kb, conn):
         from gateway.session_context import get_session_env

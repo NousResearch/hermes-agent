@@ -30,6 +30,10 @@ const MIN_HITS = 5;
 const REQUEST_TIMEOUT_MS = 20_000;
 const PROBE_DEADLINE_MS = 240_000;
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36 hermes-docs-search-monitor';
+// Vercel keeps one cache entry per exact Accept-Encoding string, so a request
+// without Chrome's value reads a different copy of the page than visitors do
+// (after a deploy it got a 404 for a bundle every browser still loaded).
+const ACCEPT_ENCODING = 'gzip, deflate, br, zstd';
 
 const failures = [];
 const fail = (msg) => {
@@ -41,7 +45,7 @@ const ok = (msg) => console.log(`ok   ${msg}`);
 
 async function get(url, headers = {}) {
   const res = await fetch(url, {
-    headers: { 'user-agent': UA, ...headers },
+    headers: { 'user-agent': UA, 'accept-encoding': ACCEPT_ENCODING, ...headers },
     redirect: 'follow',
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
@@ -69,7 +73,16 @@ async function readDeployedConfig() {
     fail('docs page has no main.<hash>.js bundle; cannot read the deployed search config');
     return null;
   }
-  const js = (await get(new URL(bundle, ORIGIN).href)).body;
+  const { res: jsRes, body: js } = await get(new URL(bundle, ORIGIN).href);
+  if (!jsRes.ok) {
+    // The page loads no JS at all, so search and every other client feature
+    // are dead; usually cached HTML naming a bundle a later deploy removed.
+    fail(
+      `docs page (cached ${res.headers.get('age') ?? '?'}s) loads ${bundle}, which returns HTTP ${jsRes.status}; ` +
+        'the page cannot run any JavaScript (a deploy likely dropped an asset that cached pages still reference)',
+    );
+    return null;
+  }
   // Theme code destructures `algolia:{...}` too; take the block that carries
   // all three fields, each read on its own so key order and quoting in the
   // compiled config do not matter.

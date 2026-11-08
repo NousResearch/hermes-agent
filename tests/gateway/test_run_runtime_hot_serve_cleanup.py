@@ -22,6 +22,9 @@ class _Registry:
     def for_home(self, home):
         return None
 
+    def profile_name(self, authority):
+        return "cold"
+
     def remove(self, home):
         self.removed.append(Path(home).resolve())
 

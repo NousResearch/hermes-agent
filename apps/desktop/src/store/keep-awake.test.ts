@@ -40,10 +40,10 @@ describe('keep-awake store', () => {
     expect(setKeepAwakeBridge).toHaveBeenLastCalledWith('off')
   })
 
-  it('defaults to off on a machine with no preference', async () => {
+  it('defaults to while-working on a machine with no preference', async () => {
     const { $keepAwakeMode } = await loadStore()
 
-    expect($keepAwakeMode.get()).toBe('off')
+    expect($keepAwakeMode.get()).toBe('while-working')
   })
 
   it('migrates the pre-mode toggle: on meant always, off meant off', async () => {
@@ -65,9 +65,34 @@ describe('keep-awake store', () => {
     expect((await loadStore()).$keepAwakeMode.get()).toBe('while-working')
   })
 
-  it('ignores an unrecognised saved mode instead of trusting it', async () => {
+  it('ignores an unrecognised saved mode and falls back to the default', async () => {
     writeKey(KEY, 'sometimes')
 
-    expect((await loadStore()).$keepAwakeMode.get()).toBe('off')
+    expect((await loadStore()).$keepAwakeMode.get()).toBe('while-working')
+  })
+  it("shows main's offer, and its button turns on while-working", async () => {
+    let deliverOffer: (() => void) | undefined
+
+    desktopWindow.hermesDesktop = {
+      onKeepAwakeOffer: (callback: () => void) => {
+        deliverOffer = callback
+
+        return () => {}
+      },
+      setKeepAwake: setKeepAwakeBridge
+    } as unknown as Window['hermesDesktop']
+    writeKey(KEY, 'off')
+
+    const { $keepAwakeMode } = await loadStore()
+    const { $notifications, clearNotifications } = await import('./notifications')
+
+    deliverOffer?.()
+    clearNotifications() // sending the next prompt clears turn feedback, not the offer
+    const offer = $notifications.get().find(item => item.id === 'keep-awake-offer')
+
+    expect(offer?.action?.label).toBe('Keep awake while working')
+    offer?.action?.onClick()
+    expect($keepAwakeMode.get()).toBe('while-working')
+    expect(setKeepAwakeBridge).toHaveBeenLastCalledWith('while-working')
   })
 })

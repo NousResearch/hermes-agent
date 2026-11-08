@@ -16,6 +16,9 @@ class _SlowHandler:
         self.delay = delay
         self._result = result if result is not None else {"images": []}
 
+    def iter_events(self, **_):
+        return iter(())
+
     def get(self):
         time.sleep(self.delay)
         return self._result
@@ -43,7 +46,7 @@ def test_wait_fal_result_raises_on_interrupt():
 
 
 def test_wait_fal_result_propagates_handler_error():
-    class _ErrHandler:
+    class _ErrHandler(_SlowHandler):
         def get(self):
             raise ValueError("boom")
 

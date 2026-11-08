@@ -243,10 +243,13 @@ class TestGatewayRunnerInjection:
 
     @pytest.mark.asyncio
     async def test_real_signal_factory_routes_inbound_group_event(self, monkeypatch):
-        """A factory-built (built-in) Signal adapter resolves profile_routes
-        for a real inbound envelope — fails on main where the Signal branch
-        returned a bare ``SignalAdapter(config)`` with no runner."""
+        """A factory-built Signal adapter (bundled plugin, via the registry) resolves
+        profile_routes for a real inbound envelope — the original bug was a bare
+        ``SignalAdapter(config)`` with no runner."""
         from gateway.config import PlatformConfig
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()  # the gateway does this at startup; Signal is a plugin platform now
 
         group_id = "test-signal-route"
         monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", group_id)

@@ -16,7 +16,7 @@ beforeEach(() => {
 })
 
 it.each([
-  ['/config', 'config'],
+  ['/snapshot', 'snapshot'],
   ['/plugins enable foo', 'plugins'],
   ['/pet toggle', 'pet']
 ])('%s refused by the shared gateway names the command', async (cmd, name) => {
@@ -41,4 +41,37 @@ it.each([
   await flush()
 
   expect(sys.mock.calls.map(([line]) => String(line))).toEqual([`/${name} is not available on the shared gateway yet`])
+})
+
+it.each([
+  ['/export', 'export', 'Run `hermes profile export [name] -o <file>` in a terminal.'],
+  ['/worktree new', 'worktree', 'Start in a fresh worktree with `hermes -w`, or use the classic CLI (`hermes --cli`).'],
+  ['/palette', 'palette', 'Type / to search commands (the composer completes and filters them).']
+])('%s names the refusal and what to use instead (T10)', async (cmd, name, hint) => {
+  const request = vi.fn(async (method: string) => {
+    if (method === 'slash.exec') {
+      throw new JsonRpcGatewayError('unsupported_command', {
+        code: 4001,
+        data: { detail: hint, reason: 'unsupported_command' }
+      })
+    }
+
+    return {}
+  })
+
+  const sys = vi.fn()
+
+  createSlashHandler({
+    composer: { enqueue: vi.fn() },
+    gateway: { gw: { isCanonical: true, request }, rpc: request },
+    local: { catalog: { canon: { [`/${name}`]: `/${name}` } }, getHistoryItems: () => [], getLastUserMsg: () => '' },
+    session: {},
+    slashFlightRef: { current: 0 },
+    transcript: { page: vi.fn(), panel: vi.fn(), send: vi.fn(), setHistoryItems: vi.fn(), sys }
+  } as never)(cmd)
+  await flush()
+
+  expect(sys.mock.calls.map(([line]) => String(line))).toEqual([
+    `/${name} is not available on the shared gateway yet\n${hint}`
+  ])
 })

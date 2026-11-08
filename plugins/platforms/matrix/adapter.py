@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- platform-tables refactor: core's PLATFORM_HINTS/_PLATFORM_DEFAULTS rows for this platform moved onto its register() call (hint text lives in adapter_hint.py); the growth is only those kwargs
 """Matrix gateway adapter (any homeserver, via mautrix; optional E2EE with ``mautrix[encryption]``).
 
 Env vars (config.yaml ``matrix:`` keys alias several — env wins):
@@ -73,7 +74,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
-    SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
+    SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, ssrf_redirect_guard,
 )
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -351,6 +352,7 @@ class _MatrixApprovalPrompt:
     resolved: bool = False
     requester_user_id: str | None = None
     expires_at: float | None = None
+    request_id: str | None = None  # the tools.approval request this prompt answers
     bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
 
 
@@ -792,7 +794,7 @@ def ensure_matrix_deps() -> bool:
 
 class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
-
+    serial_receive_loop = True  # _sync_loop reads the next sync only after this sync's handlers return
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
     splits_long_messages = True  # send() chunks via truncate_message(max_message_length)
     typed_command_prefix = "!"  # clients reserve typed "/" for local commands; "!command" always reaches Hermes
@@ -1565,7 +1567,7 @@ class MatrixAdapter(BasePlatformAdapter):
         except ImportError:
             from tools.url_safety import create_ssrf_safe_async_client
             _httpx_kw: dict = {"proxy": self._proxy_url} if self._proxy_url else {}
-            _httpx_kw["event_hooks"] = {"response": [_ssrf_redirect_guard]}
+            _httpx_kw["event_hooks"] = {"response": [ssrf_redirect_guard]}
             async with create_ssrf_safe_async_client(**_httpx_kw) as http:
                 async with http.stream("GET", url, follow_redirects=True, timeout=30) as resp:
                     resp.raise_for_status()
@@ -1696,7 +1698,7 @@ class MatrixAdapter(BasePlatformAdapter):
             self._approval_prompt_by_session[session_key] = message_id
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
-                expires_at=expires_at)
+                expires_at=expires_at, request_id=prompt.request_id)
         return await self._send_reaction_prompt(
             chat_id, text, prompt.metadata, _make, self._approval_prompts_by_event, reactions, "approval")
 
@@ -1716,15 +1718,19 @@ class MatrixAdapter(BasePlatformAdapter):
             provider_label = get_label(current_provider)
         except Exception:
             provider_label = current_provider
+        from hermes_cli.model_picker_usage import picker_row_suffix
+        rows_by_slug = {str(p.get("slug") or ""): p for p in providers or []}
+        plan_lines = [f"⚠️ {p['plan_line']}" for p in providers or [] if p.get("plan_line")]
         unknown = t("platform.shared.unknown")
         lines = [
             t("platform.matrix.picker.title"), t("platform.matrix.picker.current_model", model=current_model or unknown),
-            t("platform.matrix.picker.provider", provider=provider_label or unknown), "",
+            t("platform.matrix.picker.provider", provider=provider_label or unknown), *plan_lines, "",
             t("platform.matrix.picker.react_model")]
         choices: dict[str, tuple[str, str]] = {}
         for emoji, (model_id, provider_slug, provider_name) in zip(_MATRIX_MODEL_PICKER_REACTIONS, flat_choices):
             choices[emoji] = (model_id, provider_slug)
-            lines.append(f"{emoji} `{model_id}` — {provider_name}")
+            suffix = picker_row_suffix(rows_by_slug.get(provider_slug), model_id)
+            lines.append(f"{emoji} `{model_id}` — {provider_name}" + (f" · {suffix}" if suffix else ""))
         return await self._send_picker(
             chat_id, lines, choices, session_key, on_model_selected, metadata, self._model_picker_prompts_by_event,
             "model picker")
@@ -2540,8 +2546,8 @@ class MatrixAdapter(BasePlatformAdapter):
         if choice is None:
             return handled
         try:
-            from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(prompt.session_key, choice)
+            from tools.approval import resolve_gateway_approval_card
+            count = resolve_gateway_approval_card(prompt.session_key, choice, prompt.request_id)
             if count:
                 prompt.resolved = True
                 self._approval_prompts_by_event.pop(reacts_to, None)
@@ -2550,6 +2556,8 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix reaction resolved %d approval(s) for session %s (choice=%s, user=%s)",
                     count, prompt.session_key, choice, sender)
                 await self._redact_bot_approval_reactions(room_id, prompt)
+            else:  # this card's request already timed out or was answered elsewhere
+                await self._expire_matrix_approval_prompt(room_id, reacts_to, prompt)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
         return True
@@ -3243,7 +3251,6 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
     return _apply_yaml_bridge(matrix_cfg, _YAML_BRIDGE)
 
 
-
 def _is_connected(config) -> bool:
     """Connected = homeserver + token (or password). Reads via hermes_cli.gateway.get_env_value so
     setup-status callers that patch it see the same value; PlatformConfig extras are honored."""
@@ -3255,13 +3262,22 @@ def _is_connected(config) -> bool:
     return bool(str(homeserver).strip() and str(token).strip())
 
 
-
 def register(ctx) -> None:
+    from .adapter_hint import PLATFORM_HINT
+    from .send_targets import SEND_ENTRY_KWARGS
+    from .dashboard_card import DASHBOARD_CARD
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
+        **SEND_ENTRY_KWARGS,  # send_message target syntax + routing
         name="matrix", label="Matrix", adapter_factory=MatrixAdapter, check_fn=matrix_deps_present,
+        **DASHBOARD_CARD,
         ensure_deps_fn=ensure_matrix_deps, is_connected=_is_connected,
         required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"], install_hint="pip install 'mautrix[encryption]'",
-        setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="MATRIX_ALLOWED_USERS",
-        allow_all_env="MATRIX_ALLOW_ALL_USERS", cron_deliver_env_var="MATRIX_HOME_ROOM",
+        setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, cron_deliver_env_var="MATRIX_HOME_ROOM",
         standalone_sender_fn=_standalone_send, max_message_length=DEFAULT_MAX_MESSAGE_LENGTH, emoji="🔐",
-        allow_update_command=True)
+        allow_update_command=True,
+        platform_hint=PLATFORM_HINT,
+        display_tier="medium",
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
+    )

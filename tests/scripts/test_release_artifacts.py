@@ -15,15 +15,15 @@ import hermes_yaml
 import pytest
 
 from scripts.bundles.release_artifacts import materialize, record, stamp_matches
-from tests.scripts.test_release_r2 import r2_server
-from tests.scripts.test_stable_release import https_origin
+from tests.scripts.test_release_r2 import r2_server as r2_server  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+from tests.scripts.test_stable_release import https_origin as https_origin  # noqa: PLC0414 -- same self-alias, for the https_origin fixture
 from tests.scripts.test_release_darwin import _inputs
 from scripts.bundles import release_artifacts as artifacts
 from scripts.releases import lanes as lane_set
 
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE_RESULTS = {name: {'result': 'success'} for name in (
-    'smoke-darwin-arm64', 'smoke-darwin-x64', 'smoke-win32-arm64', 'smoke-win32-x64')}
+    'smoke-darwin-arm64', 'smoke-win32-arm64', 'smoke-win32-x64')}
 RELEASE_EPOCH = 1_787_965_323
 WINDOWS_VERSION = '2026.5761.123.0'
 
@@ -75,7 +75,7 @@ def staged_candidate(tmp_path, r2_server, https_origin):
     legs, mac_bytes = _inputs('1.2.3')
     built = tmp_path / 'built'
     built.mkdir()
-    for platform, arches in [('windows', ('x64', 'arm64')), ('macos', ('x64', 'arm64')), ('termux', ('aarch64',))]:
+    for platform, arches in [('windows', ('x64', 'arm64')), ('macos', ('arm64',)), ('termux', ('aarch64',))]:
         for arch in arches:
             row = {
                 # Exactly the keys record() writes: a row is metadata, not a stamp (no baseVersion).
@@ -118,7 +118,7 @@ def staged_candidate(tmp_path, r2_server, https_origin):
     (built / 'Store-Product-win.msixbundle').write_bytes(b'Store bundle transport fixture')
     handoff.stage(attempt, commit, 'windows-universal', built, ['*.msixbundle'])
     fetched = tmp_path / 'fetched'
-    names = ['win32-x64', 'win32-arm64', 'darwin-x64', 'darwin-arm64', 'termux', 'windows-universal']
+    names = ['win32-x64', 'win32-arm64', 'darwin-arm64', 'termux', 'windows-universal']
     handoff.fetch(attempt, commit, names, fetched, ['metadata-*.json', '*.msixbundle'])
     r2_server.requests.clear()
     manifest = assemble(fetched, tag, commit, base, tmp_path / 'release-candidates.json',
@@ -126,7 +126,7 @@ def staged_candidate(tmp_path, r2_server, https_origin):
                         lanes=lane_set.NAMES)
     assert manifest['archive'] == attempt and manifest['tag'] == tag
     assert {row['platform'] + '/' + row['arch'] for row in manifest['packages']} == {
-        'windows/x64', 'windows/arm64', 'macos/x64', 'macos/arm64', 'termux/aarch64'}
+        'windows/x64', 'windows/arm64', 'macos/arm64', 'termux/aarch64'}
     assert all(not file['path'].startswith(('handoff-', 'metadata-')) for file in manifest['files'])
     assert all(file['url'].startswith(f'{base}/releases/tag/{attempt}/') for file in manifest['files'])
     puts = [path for method, path, _ in r2_server.requests if method == 'PUT']
@@ -182,6 +182,30 @@ def test_assemble_rejects_missing_and_changed_receipts(tmp_path, staged_candidat
         assemble(fetched, tag, commit, base, tmp_path / 'changed.json',
                  smoke_results=SMOKE_RESULTS, release_epoch=RELEASE_EPOCH, archive=manifest['archive'],
                  lanes=lane_set.NAMES)
+
+
+def test_publish_rejects_a_universal_bundle_whose_identity_differs_from_its_packages(
+        tmp_path, r2_server, staged_candidate):
+    """Candidate staging binds the bundle by digest only; publish opens it before anything goes live."""
+    manifest, _, base = staged_candidate
+    key = f"releases/tag/{manifest['archive']}/Product-win.msixbundle"
+    forged = tmp_path / 'forged.msixbundle'
+    with zipfile.ZipFile(forged, 'w') as archive:
+        archive.writestr('AppxMetadata/AppxBundleManifest.xml', f'<Bundle><Identity Name="Other" Publisher="CN=Test" Version="{WINDOWS_VERSION}"/><Packages><Package Type="application" Architecture="arm64"/><Package Type="application" Architecture="x64"/></Packages></Bundle>')
+    body = forged.read_bytes()
+    r2_server.store[key] = (body, *r2_server.store[key][1:])
+    tampered = copy.deepcopy(manifest)
+    digest = hashlib.sha256(body).hexdigest()
+    for item in tampered['files']:
+        if item['path'] == 'Product-win.msixbundle':
+            item['sha256'], item['size'] = digest, len(body)
+    for row in tampered['packages']:
+        if row['platform'] == 'windows':
+            row['artifact']['sha256'] = digest
+    r2_server.requests.clear()
+    with pytest.raises(ValueError, match='Universal bundle identity'):
+        artifacts.publish(tampered, tmp_path / 'publish', base)
+    assert not [path for method, path, _ in r2_server.requests if method == 'PUT']
 
 
 def test_candidate_publication_and_store_selection(tmp_path, monkeypatch, r2_server, staged_candidate):
@@ -266,16 +290,13 @@ def test_promote_writes_the_stable_mac_feed_from_the_attempt_archive(tmp_path, m
     urls = [entry['url'] for entry in feed['files']]
     assert urls and all(url.startswith(f"/releases/tag/{manifest['archive']}/") for url in urls)
     assert f"/releases/tag/{manifest['archive']}/HermesBundled-1.2.3-mac-arm64.zip" in urls
-    assert f"/releases/tag/{manifest['archive']}/HermesBundled-1.2.3-mac-x64.zip" in urls
+    assert not any('-mac-x64' in url for url in urls)
 
-    # A release that did not opt into macOS Intel or Termux promotes an
-    # arm64-only Mac feed and leaves the APT channel untouched.
+    # A release that did not opt into Termux promotes the Mac feed and leaves
+    # the APT channel untouched.
     default = copy.deepcopy(manifest)
-    default['packages'] = [row for row in default['packages']
-                           if (row['platform'], row['arch']) not in (('macos', 'x64'), ('termux', 'aarch64'))]
-    default['files'] = [f for f in default['files'] if '-mac-x64' not in f['path']
-                        and not f['path'].startswith('x64-') and not f['path'].startswith(('apt/', 'deb/'))]
-    default['smoke_results'] = {**default['smoke_results'], 'smoke-darwin-x64': {'result': 'skipped'}}
+    default['packages'] = [row for row in default['packages'] if row['platform'] != 'termux']
+    default['files'] = [f for f in default['files'] if not f['path'].startswith(('apt/', 'deb/'))]
     del r2_server.store['releases/darwin/stable/stable-mac.yml']
     r2_server.requests.clear()
     artifacts.promote(default, tmp_path / 'promote-default', base)
@@ -286,15 +307,15 @@ def test_promote_writes_the_stable_mac_feed_from_the_attempt_archive(tmp_path, m
     assert [entry['url'].rsplit('/', 1)[1] for entry in feed['files']] == ['HermesBundled-1.2.3-mac-arm64.zip']
 
 
-def test_promote_refuses_when_one_macos_arch_is_missing(tmp_path, monkeypatch, r2_server, https_origin, staged_candidate):
+def test_promote_refuses_when_the_macos_feed_is_missing(tmp_path, monkeypatch, r2_server, https_origin, staged_candidate):
     import urllib.request
 
     manifest, _, base = staged_candidate
     monkeypatch.setattr(urllib.request, 'urlopen', https_origin.opener)
     broken = copy.deepcopy(manifest)
-    broken['files'] = [f for f in broken['files'] if f['path'] != 'x64-stable-mac.yml']
+    broken['files'] = [f for f in broken['files'] if f['path'] != 'arm64-stable-mac.yml']
     r2_server.requests.clear()
-    with pytest.raises(ValueError, match='one ARM64 and one x64 macOS feed'):
+    with pytest.raises(ValueError, match='one ARM64 macOS feed'):
         artifacts.promote(broken, tmp_path / 'broken-arch', base)
     # The refusal happens before any channel pointer moves.
     assert not [path for method, path, _ in r2_server.requests

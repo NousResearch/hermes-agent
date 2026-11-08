@@ -37,7 +37,8 @@ def _wait_for(predicate, timeout=5.0):
 
 
 def test_sudo_request_reaches_the_viewer_and_its_answer_returns():
-    from gateway.session_sudo_prompt import ask_sudo, is_response_frame, resolve
+    from gateway.session_server_requests import is_response_frame, resolve
+    from gateway.session_sudo_prompt import ask_sudo
     events, peer = _events()
     out = {}
     worker = threading.Thread(target=lambda: out.setdefault('value', ask_sudo(events, 's1', 'sudo true')))
@@ -92,7 +93,7 @@ def test_scope_installs_the_callback_only_for_local_viewer_turns(platform, insta
 
 @pytest.mark.asyncio
 async def test_the_viewer_response_frame_is_routed_by_the_authority_connection(tmp_path, monkeypatch):
-    from gateway import session_sudo_prompt
+    from gateway import session_server_requests
     from gateway.session_controls import AuthorityConnection
     from tests.gateway.test_surface_admission import _authority
 
@@ -100,12 +101,14 @@ async def test_the_viewer_response_frame_is_routed_by_the_authority_connection(t
         return 'ok'
     authority = await _authority(tmp_path, monkeypatch, answer)
     connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
-    pending = session_sudo_prompt._Pending('s')
-    session_sudo_prompt._open['srq-abc'] = pending
+    # Only a viewer attached to the session gets the request frame, and only it may answer.
+    await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
+    pending = session_server_requests._Pending('s', events=authority.sessions['s'].event_stream)
+    session_server_requests._open['srq-abc'] = pending
     try:
         reply = await connection.dispatch({'jsonrpc': '2.0', 'id': 'srq-abc', 'result': {'value': 'pw'}})
         assert reply is None
         assert pending.event.is_set() and pending.value == 'pw'
     finally:
-        session_sudo_prompt._open.pop('srq-abc', None)
+        session_server_requests._open.pop('srq-abc', None)
         await connection.close()

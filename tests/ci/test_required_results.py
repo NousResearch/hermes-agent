@@ -20,14 +20,14 @@ import pytest
 
 
 @pytest.mark.parametrize("release", [False, True])
-@pytest.mark.parametrize("job", ["tests", "osv-scanner", "history-check", "e2e-desktop"])
+@pytest.mark.parametrize("job", ["tests", "osv-scanner", "repo-guards", "e2e-desktop"])
 @pytest.mark.parametrize("result,ordinary,excluded", [
     ("success", True, True), ("skipped", False, True), ("failure", False, False),
     ("cancelled", False, False), ("with-status", False, False),
     ("action_required", False, False), ("unknown", False, False), (None, False, False),
 ])
 def test_status_policy(job, result, ordinary, excluded, release):
-    expected = excluded if job in ("history-check", "e2e-desktop") else ordinary
+    expected = excluded if job == "e2e-desktop" else ordinary
     if result == "skipped" and not release:
         expected = True
     verdict = evaluate_gate({job: {} if result is None else {"result": result}}, release=release)
@@ -42,6 +42,7 @@ def test_status_policy(job, result, ordinary, excluded, release):
     ("desktop_updater", ("tests-os",)),
     ("e2e_desktop_update", ("e2e-desktop-update",)),
     ("remote_backends", ("remote-backends",)),
+    ("catalog", ("catalog-tests",)),
 ])
 @pytest.mark.parametrize("result", ["skipped", "absent", "success"])
 def test_selected_update_consumers_must_succeed(lane, jobs, result):
@@ -58,9 +59,9 @@ def test_selected_update_consumers_must_succeed(lane, jobs, result):
 
 
 def test_release_exclusion_policy():
-    assert required_results.EXCLUDED_JOBS == {
-        "history-check", "lockfile-diff", "prompt-surface-diff", "supply-chain", "e2e-desktop",
-    }
+    # The PR-only checks are steps of repo-guards, which runs on every event: a release run
+    # where it skipped never ran them at all, so only the deferred Desktop E2E may skip.
+    assert required_results.EXCLUDED_JOBS == {"e2e-desktop"}
 
 
 @pytest.mark.parametrize("needs", [{}, None])
@@ -74,8 +75,8 @@ def test_empty_needs_fails_closed(needs, release):
 
 @pytest.mark.parametrize("release,results,code,report", [
     (True, {"detect": "success", "e2e-desktop": "skipped"}, 0, "All checks passed"),
-    (True, {"tests": "skipped", "history-check": "skipped", "lint": "failure"},
-     1, "::error::2 job(s) failed: lint, tests"),
+    (True, {"tests": "skipped", "repo-guards": "skipped", "lint": "failure"},
+     1, "::error::3 job(s) failed: lint, repo-guards, tests"),
     (False, {"tests": "failure"}, 1, "::error::1 job(s) failed: tests"),
 ])
 def test_cli_stdin_exit_codes_and_output(tmp_path, release, results, code, report):

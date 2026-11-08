@@ -550,22 +550,20 @@ def _normalize_phone(phone: str) -> str:
     return re.sub(r"[^\d+]", "", phone or "")
 
 
-def list_users(project_id: str, project_secret: str) -> list[dict[str, Any]]:
+def list_users(project_id: str, project_secret: str, *, timeout: float = 30.0) -> list[dict[str, Any]]:
     """GET Spectrum Cloud ``/projects/{id}/users/`` → ``SpectrumUser[]``."""
     _require_httpx()
     url = f"{_spectrum_host()}/projects/{project_id}/users/"
-    resp = httpx.get(url, headers=_basic(project_id, project_secret), timeout=30.0)
+    resp = httpx.get(url, headers=_basic(project_id, project_secret), timeout=timeout)
     _raise_for_status(resp, "list-users")
     return _unwrap_list(resp.json())
 
 
-def find_user_by_phone(project_id: str, project_secret: str, phone_number: str) -> Optional[dict[str, Any]]:
-    """Existing Spectrum user with the given phone number, or None."""
-    target = _normalize_phone(phone_number)
-    for user in list_users(project_id, project_secret):
-        if _normalize_phone(user.get("phoneNumber") or "") == target:
-            return user
-    return None
+def find_user_by_phone(
+    project_id: str, project_secret: str, phone_number: str, *, timeout: float = 30.0,
+) -> Optional[dict[str, Any]]:
+    """Existing Spectrum user with the given phone number (the routable one), or None."""
+    return find_routable_user(list_users(project_id, project_secret, timeout=timeout), phone_number)
 
 
 def create_user(
@@ -607,6 +605,49 @@ def user_assigned_line(user: Optional[dict[str, Any]]) -> Optional[str]:
     dashboard's "TEXTS ON" column). None when unset (freshly created user)."""
     val = user.get("assignedPhoneNumber") if user else None
     return str(val) if val else None
+
+
+def user_opted_in(user: Optional[dict[str, Any]]) -> bool:
+    """True when the delivery plane routes this user: the row carries ``meta.opt_in``, which
+    the service sets only after the human texts the row's ``assignedPhoneNumber`` once from
+    ``phoneNumber``. Without it sends fail "Target not allowed for this project", and
+    client-supplied meta is ignored on create, so the API cannot produce the flag."""
+    meta = user.get("meta") if user else None
+    return bool(isinstance(meta, dict) and meta.get("opt_in"))
+
+
+def find_routable_user(users: list[dict[str, Any]], phone_number: str) -> Optional[dict[str, Any]]:
+    """The row that decides routing for ``phone_number``: an opted-in duplicate wins over list
+    order (opt-in is scoped to one number/assigned-line pair), else the first match."""
+    target = _normalize_phone(phone_number)
+    matches = [u for u in users if _normalize_phone(u.get("phoneNumber") or "") == target]
+    return next((u for u in matches if user_opted_in(u)), matches[0] if matches else None)
+
+
+def wait_for_opted_in_user(
+    project_id: str, project_secret: str, phone_number: str, *, timeout_s: float = 300.0,
+    interval_s: float = 5.0, on_waiting: Optional[Callable[[int], None]] = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic) -> Optional[dict[str, Any]]:
+    """Poll until ``phone_number``'s row is opted in; the opted-in row, or None at the bound.
+    A failed list call is a missed poll (the wait rides out the operator's manual step). Two
+    bounds: the attempt cap, and a wall-clock deadline so slow list calls (30 s HTTP timeout
+    each) cannot stretch the promised wait far past ``timeout_s``."""
+    deadline = clock() + timeout_s
+    max_attempts = max(1, int(timeout_s / interval_s))
+    for attempt in range(1, max_attempts + 1):
+        try:
+            user = find_user_by_phone(project_id, project_secret, phone_number)
+            if user_opted_in(user):
+                return user
+        except (httpx.HTTPError, RuntimeError, ValueError) as exc:  # transport / HTTP status / bad JSON
+            logger.debug("photon: opt-in poll failed (attempt %d): %s", attempt, exc)
+        if on_waiting is not None:
+            on_waiting(attempt)
+        if attempt == max_attempts or clock() + interval_s > deadline:
+            break
+        sleep_fn(interval_s)
+    return None
 
 
 def load_user_numbers() -> tuple[Optional[str], Optional[str]]:
@@ -711,3 +752,26 @@ def print_credential_summary(emit: Any = print) -> None:
         "  my number           : " + (phone if phone else "✗ missing (run `hermes photon setup --phone ...`)"),
         "  assigned number     : " + (assigned if assigned else "✗ missing (run `hermes photon setup`)")]
     emit("\n".join(rows))
+
+
+_STATUS_TIMEOUT_S = 5.0  # `photon status` stays quick when the API is unreachable
+
+
+def print_routing_status(emit: Any = print) -> None:
+    """Live opt-in row for ``status``: a registered number that never texted its assigned line
+    looks configured everywhere but never routes. Verified against the API, not local markers;
+    lives here (with the credential reads) so the CLI sink only sees display text."""
+    phone, assigned = load_user_numbers()
+    sid, sec = load_project_credentials()
+    if not (phone and sid and sec):
+        return
+    try:
+        user = find_user_by_phone(sid, sec, phone, timeout=_STATUS_TIMEOUT_S)
+    except (httpx.HTTPError, RuntimeError, ValueError) as e:
+        emit(f"  routing             : ? could not verify ({str(e) or type(e).__name__})")
+        return
+    if user_opted_in(user):
+        emit("  routing             : ✓ opted in (verified live)")
+    else:
+        line = user_assigned_line(user) or assigned or "your assigned line"
+        emit(f"  routing             : ✗ not opted in — text {line} once from {phone}, then re-check")

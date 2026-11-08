@@ -23,6 +23,7 @@ import uuid
 from collections import deque
 from contextlib import contextmanager, suppress
 from pathlib import Path
+from hermes_dir_acl import make_user_dir
 
 from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
@@ -50,7 +51,7 @@ from hermes_state_guard import (
 )
 from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for
 from hermes_state_sessions import SessionSessionsMixin
-from hermes_state_fts import SessionFtsSetupMixin, load_fts5_cjk_extension
+from hermes_state_fts import SessionFtsSetupMixin
 from hermes_state_portability import SessionPortabilityMixin
 from hermes_state_telegram import SessionTelegramTopicsMixin
 from hermes_state_profile_repair import SessionProfileRepairMixin
@@ -66,6 +67,8 @@ from hermes_state_dbfile import (
     RetiredGenerationCaptureError, capture_retired_wal_generation, refuse_deleted_wal_generation,
 )
 from hermes_state_messages import SessionMessagesMixin
+from hermes_state_prune_rewrite import SessionPruneRewriteMixin
+from hermes_state_api_content import SessionApiContentMixin
 from hermes_state_coverage import SessionCoverageMixin
 from hermes_state_rewind import SessionRewindMixin
 from hermes_state_wal import (
@@ -73,6 +76,7 @@ from hermes_state_wal import (
 )
 from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
 from hermes_state_titles import SessionTitlesMixin
+from hermes_state_prompt_refresh import SessionPromptRefreshMixin
 from hermes_state_usage import SessionUsageMixin
 from hermes_state_maintenance import SessionMaintenanceMixin
 from hermes_state_gateway import SessionGatewayMixin
@@ -434,7 +438,7 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> Optional[Path]
     if not sid or not messages:
         return None
     sessions_dir = get_hermes_home() / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
+    make_user_dir(sessions_dir, parents=True, exist_ok=True)
     path = sessions_dir / f"{sid}.jsonl"
     with path.open("a", encoding="utf-8") as handle:
         for msg in messages:
@@ -461,7 +465,8 @@ class SessionDB(
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
-    SessionMessagesMixin, SessionCoverageMixin, SessionRewindMixin, SessionProfileRepairMixin,
+    SessionMessagesMixin, SessionPruneRewriteMixin, SessionApiContentMixin, SessionCoverageMixin, SessionRewindMixin, SessionProfileRepairMixin,
+    SessionPromptRefreshMixin,
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
 
@@ -630,9 +635,7 @@ class SessionDB(
         self._db_corrupt, self._db_corrupt_reason = False, ""  # sticky quarantine (StateDbCorruptError)
         self._fts_usermerge_floor_applied = False  # one-shot usermerge-floor write guard
         self._fts_enabled = self._fts_stale = self._trigram_available = False
-        # _fts_cjk_loaded: tokenizer on the writer connection; _fts_cjk_available: messages_fts_cjk
-        # is queryable AND not marked stale.
-        self._fts_cjk_loaded = self._fts_cjk_available = self._fts_unavailable_warned = False
+        self._fts_unavailable_warned = False
         self._conn = None
         # Async token accounting; distinct from self._lock so enqueue/flush never contends with writes.
         self._token_queue: deque = deque()
@@ -679,22 +682,29 @@ class SessionDB(
         # Never materialize a deleted/archived named profile's home: a multiplexer or Desktop backend
         # still holding the profile's route would otherwise re-scaffold it on the next turn (#94590).
         mkdir_under_hermes_home(self.db_path.parent)
-        # Read-only file/sidecar preflight BEFORE the first connection: an actionable message
-        # instead of an opaque "attempt to write a readonly database" from inside _init_schema.
-        preflight_db_writability(self.db_path, db_label="state.db")
         try:
             # Serialize zero-byte check, quarantine, connect and schema commit so concurrent
             # openers don't race the absent-path -> schema-commit window.
             if not self.db_path.exists() or has_invalid_sqlite_header_preopen(self.db_path):
+                # The directory must be writable before the lock file can be created in it; the
+                # directory never vanishes mid-quarantine, so checking it unlocked is race-free.
+                preflight_db_writability(self.db_path, db_label="state.db", directory_only=True)
                 with quarantine_cross_process_lock(self.db_path) as lock_acquired:
                     if not lock_acquired:
                         logger.warning(
                             "startup quarantine lock for %s not acquired within 5s; proceeding",
                             self.db_path,
                         )
+                    # Preflight under the lock: unlocked, it can list state.db just before a
+                    # concurrent opener renames it aside, and os.access on the vanished path
+                    # then reports a writable DB as "read-only for this user".
+                    preflight_db_writability(self.db_path, db_label="state.db")
                     self._handle_quarantine_if_invalid(already_locked=lock_acquired)
                     self._connect_and_init_with_lock_patience()
             else:
+                # Read-only file/sidecar preflight BEFORE the first connection: an actionable message
+                # instead of an opaque "attempt to write a readonly database" from inside _init_schema.
+                preflight_db_writability(self.db_path, db_label="state.db")
                 self._handle_quarantine_if_invalid(already_locked=False)
                 self._connect_and_init_with_lock_patience()
         except sqlite3.DatabaseError as exc:
@@ -785,7 +795,7 @@ class SessionDB(
             raise sqlite3.DatabaseError(msg)
 
     def _open_writer_conn(self) -> sqlite3.Connection:
-        """Connect + WAL/pragma/tokenizer setup for a writer connection (no schema init). Short timeout:
+        """Connect + WAL/pragma setup for a writer connection (no schema init). Short timeout:
         jittered application-level retry handles contention, not SQLite's busy handler;
         isolation_level=None: explicit BEGIN IMMEDIATE."""
         conn = _connect_tracked_db(
@@ -804,7 +814,6 @@ class SessionDB(
             _secure_state_db_files(self.db_path)
             apply_database_pragmas(conn, db_label="state.db")
             conn.execute("PRAGMA foreign_keys=ON")
-            self._fts_cjk_loaded = load_fts5_cjk_extension(conn)
         except BaseException:
             self._close_connection_quietly(conn)
             raise
@@ -873,10 +882,8 @@ class SessionDB(
         try:
             conn = self._connect_read_only(timeout=_READ_BUSY_TIMEOUT_S)
             apply_database_pragmas(conn, db_label="state.db")
-            if self._fts_cjk_loaded:  # registers in the connection, not the file: ro is fine
-                load_fts5_cjk_extension(conn)
         except BaseException as exc:
-            # A half-open connection (open ok, extension load failed) is a live tracked descriptor,
+            # A half-open connection (open ok, pragmas failed) is a live tracked descriptor,
             # the leak shape this pool exists to fix; a stranded permit would shrink the read
             # path by one slot forever. (Not _close_read_conn: callers release their own permit.)
             if conn is not None:
@@ -918,11 +925,19 @@ class SessionDB(
             return self._get_read_conn()
 
     @contextmanager
-    def _read_ctx(self) -> Iterator[sqlite3.Connection]:
+    def _read_ctx(self, *, reopen: bool = True, pooled_only: bool = False) -> Iterator[sqlite3.Connection]:
         """Yield a connection for read-only statements: a pooled read-only
         connection with NO lock under WAL; otherwise (non-WAL, open failure,
         ceiling reached) the writer connection under self._lock — deliberate
-        degradation: slower beats EMFILE, which the supervisor cannot see."""
+        degradation: slower beats EMFILE, which the supervisor cannot see.
+        ``reopen=False``: a read after ``close()`` raises instead of reopening the
+        writer (an optional reader must not hold a home that is being deleted). Inside this thread's
+        ``transcript_read_snapshot``: its connection, so every read there sees one generation.
+        ``pooled_only``: None instead of the writer connection when no pooled reader is available."""
+        pinned = self._pinned_read_conn()
+        if pinned is not None:
+            yield pinned
+            return
         conn = self._checkout_read_conn()
         if conn is not None:
             try:
@@ -941,8 +956,13 @@ class SessionDB(
                     # permits == maxsize, load-bearing if they drift): surplus.
                     self._close_read_conn(conn)
             return
+        if pooled_only:
+            yield None
+            return
         with self._lock:
             if self._conn is None:  # close() raced a still-unwinding reader
+                if not reopen:
+                    raise sqlite3.ProgrammingError(f"SessionDB for {self.db_path} is closed")
                 self._reopen_after_close_locked(context="read")
             conn = cast(sqlite3.Connection, self._conn)
             if self._wal_active or self.read_only:  # WAL: no SHARED-lock wait; ro: opened with the read budget

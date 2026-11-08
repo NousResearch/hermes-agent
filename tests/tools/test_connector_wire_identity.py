@@ -145,7 +145,8 @@ def test_each_connect_path_names_its_initiator(monkeypatch):
 
     for initiator in (managed.AGENT_TOOL, managed.DESKTOP_PAGE):
         operation = ConnectionOperation([Target("gmail", "connector", "connect")])
-        client = managed.managed_client() if initiator == managed.AGENT_TOOL else managed.managed_client(initiator=initiator)
+        client = (managed.managed_client(creates_guest=True) if initiator == managed.AGENT_TOOL
+                  else managed.managed_client(creates_guest=True, initiator=initiator))
         managed.mint(client, operation, ["gmail"], reinitiate=False, actor=Actor.backend_watcher)
 
     operation.transition("gmail", TargetState.failed, Actor.backend_watcher)

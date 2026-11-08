@@ -40,7 +40,7 @@ def _wait_for(predicate, timeout=5.0):
 
 
 def _answer_when_asked(peer, value):
-    from gateway.session_sudo_prompt import resolve
+    from gateway.session_server_requests import resolve
     _wait_for(lambda: any(f.get('method') == 'secret' for f in peer.frames))
     request = next(f for f in peer.frames if f.get('method') == 'secret')
     resolve({'jsonrpc': '2.0', 'id': request['id'], 'result': {'value': value}})

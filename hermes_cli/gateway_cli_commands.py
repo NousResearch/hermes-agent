@@ -46,6 +46,8 @@ def _handoff(cli, connection, cmd):
 
 
 _ROUTES = {"diff": _diff, "reload": _reload, "handoff": _handoff}
+# Named refusals: nothing runs, so the gateway is not told (no ``pre_command``).
+REFUSED = frozenset({"handoff"})
 
 
 def run(cli, canonical, cmd):

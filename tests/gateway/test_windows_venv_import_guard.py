@@ -1,13 +1,19 @@
-"""Gateway Windows venv import guards (#122183, #57467)."""
+"""Gateway Windows venv import guards (#122183, #57467, #139085)."""
 
+import logging
 import os
 import sys
 
 import pytest
 
-pytestmark = pytest.mark.platforms("windows")
+
+def _venv(path, version):
+    (path / "Lib" / "site-packages").mkdir(parents=True)
+    (path / "pyvenv.cfg").write_text(f"home = C:\\Python\nversion_info = {version}\n", encoding="utf-8")
+    return path
 
 
+@pytest.mark.platforms("windows")
 def test_committed_generation_blocks_the_legacy_venv_overlay(tmp_path, monkeypatch):
     """A PM-managed Windows gateway never overlays the leftover pre-PM venv.
 
@@ -39,6 +45,65 @@ def test_committed_generation_blocks_the_legacy_venv_overlay(tmp_path, monkeypat
     assert "PYTHONPATH" not in os.environ
 
 
+_OTHER_MINOR = 11 if sys.version_info.minor != 11 else 12
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("version_line", [
+    pytest.param(f"version_info = {sys.version_info.major}.{_OTHER_MINOR}.9\n", id="foreign-abi"),
+    pytest.param(None, id="no-version-metadata"),
+])
+def test_legacy_venv_of_unknown_or_foreign_abi_is_never_overlaid(tmp_path, monkeypatch, caplog, version_line):
+    """#139085: with nothing committed and VIRTUAL_ENV unset (PM launchers and
+    ``activate_dependencies`` pop it), the overlay fell back to ``<root>/venv`` and
+    ``addsitedir``-ed a cp311 tree into a 3.14 gateway, which then died importing
+    ``pydantic_core`` when the Group Chat worker imported ``tui_gateway.server``.
+    A venv whose Python version can't be read fails closed the same way; both skips are logged."""
+    import gateway.run as gateway_run
+
+    root = tmp_path / "root"
+    (root / "gateway").mkdir(parents=True)
+    legacy = root / "venv"
+    (legacy / "Lib" / "site-packages").mkdir(parents=True)
+    if version_line is not None:
+        (legacy / "pyvenv.cfg").write_text("home = C:\\Python\n" + version_line, encoding="utf-8")
+
+    monkeypatch.setattr("pm.environments.committed_venv", lambda _root: None)
+    monkeypatch.setattr(gateway_run, "__file__", str(root / "gateway" / "run.py"))
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+
+    with caplog.at_level(logging.DEBUG, logger="gateway.run"):
+        gateway_run._ensure_windows_gateway_venv_imports()
+
+    legacy_site = legacy / "Lib" / "site-packages"
+    assert not any(entry and os.path.samefile(entry, legacy_site)
+                   for entry in sys.path if os.path.isdir(entry))
+    assert "VIRTUAL_ENV" not in os.environ
+    assert "Skipping venv overlay" in caplog.text
+
+
+@pytest.mark.platforms("windows")
+def test_same_abi_venv_is_still_overlaid(tmp_path, monkeypatch):
+    """A pre-PM venv built for the running interpreter keeps its overlay."""
+    import gateway.run as gateway_run
+
+    root = tmp_path / "root"
+    (root / "gateway").mkdir(parents=True)
+    venv = _venv(root / "venv", "{}.{}.{}".format(*sys.version_info[:3]))
+
+    monkeypatch.setattr("pm.environments.committed_venv", lambda _root: None)
+    monkeypatch.setattr(gateway_run, "__file__", str(root / "gateway" / "run.py"))
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+
+    gateway_run._ensure_windows_gateway_venv_imports()
+
+    assert str((venv / "Lib" / "site-packages").resolve()) in sys.path
+    assert os.environ["VIRTUAL_ENV"] == str(venv.resolve())
+
+
+@pytest.mark.platforms("windows")
 def test_venv_import_setup_scopes_to_sys_path_not_global_environ(
     tmp_path, monkeypatch
 ):
@@ -53,9 +118,8 @@ def test_venv_import_setup_scopes_to_sys_path_not_global_environ(
 
     root = tmp_path / "root"
     (root / "gateway").mkdir(parents=True)
-    venv = root / "venv"
+    venv = _venv(root / "venv", "{}.{}.{}".format(*sys.version_info[:3]))
     site_packages = venv / "Lib" / "site-packages"
-    site_packages.mkdir(parents=True)
 
     monkeypatch.setattr("pm.environments.committed_venv", lambda _root: None)
     monkeypatch.setattr(gateway_run, "__file__", str(root / "gateway" / "run.py"))

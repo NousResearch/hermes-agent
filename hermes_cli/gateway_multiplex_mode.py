@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 
 SINGLE_PROFILE_REASON = "only one profile exists (nothing to multiplex)"
 STANDALONE_PROFILE_REASON = "this profile is standalone (gateway.standalone: true); it serves only itself"
+#: A single-profile boot that ``gateway.auto_multiplex_migration: false`` keeps standalone once a second
+#: profile appears: the in-place switch is an automatic migration, so the opt-out holds it back.
+AUTO_MIGRATION_OPTED_OUT_REASON = (
+    "gateway.auto_multiplex_migration is false, so this gateway serves only its own profile; "
+    "run `hermes gateway migrate --multiplex` to serve every profile")
 
 #: ``gateway.standalone: true`` is a TEMPORARY backwards-compatibility shim, not a supported topology.
 #: It exists so fleets that lost per-profile gateways in the multiplex-only switch keep working while
@@ -55,12 +60,13 @@ def explicit_multiplex_flag(default_home: Path) -> Optional[bool]:
     ``GATEWAY_MULTIPLEX_PROFILES``, else ``gateway.multiplex_profiles`` (or the top-level alias) as
     written in its config.yaml; ``None`` when neither is set. Raw read on purpose: the callers are
     other processes (``hermes -p X ...`` has X's config loaded) asking about the default's file."""
+    from hermes_cli.config_backend import config_exists
     from gateway.config import _bool_token, _env_multiplex_profiles_override
     env = _env_multiplex_profiles_override()
     if env is not None:
         return env
     cfg_path = Path(default_home) / "config.yaml"
-    if not cfg_path.exists():
+    if not config_exists(cfg_path):
         return None
     from hermes_cli.config import read_user_config_raw
     cfg = read_user_config_raw(cfg_path) or {}
@@ -191,13 +197,14 @@ def persist_resolved_default(decision: MultiplexDecision, default_home: Optional
     is made explicit ("left unset" was read as "off"), a retired ``false`` is rewritten in place and
     leaves a one-time marker for the boxed notice. Comment-preserving writer, once, and NEVER on a guard
     refusal (the file must not say true while the runtime is standalone). Returns True on a write."""
+    from hermes_cli.config_backend import config_exists
     if not decision.enabled or decision.source == "guard":
         return False
     default_home = Path(default_home) if default_home is not None else _default_profile_home()
     cfg_path = default_home / "config.yaml"
     try:
         from hermes_cli.config import read_user_config_raw
-        cfg = read_user_config_raw(cfg_path) or {} if cfg_path.exists() else {}
+        cfg = read_user_config_raw(cfg_path) or {} if config_exists(cfg_path) else {}
         section = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
         in_file = cfg.get("multiplex_profiles", section.get("multiplex_profiles"))
         if in_file is True:
@@ -358,21 +365,30 @@ def standalone_warning_lines(decision: MultiplexDecision, unserved: Optional[lis
     return _box(body)
 
 
-def recorded_standalone_warning_lines() -> list[str]:
-    """Same box, rebuilt from the live gateway's ``gateway_state.json`` for processes that did not
-    make the decision (``hermes update``'s summary, ``hermes gateway status``)."""
+def recorded_standalone_reason(state_path: Path | None = None) -> str | None:
+    """The guard refusal a LIVE standalone gateway published in its ``gateway_state.json`` (this
+    home's, or *state_path*), else ``None``. A stopped, failed or dead record's reason is history."""
     try:
         from gateway.status import read_runtime_status, runtime_status_pid_is_live
-        record = read_runtime_status() or {}
+        record = read_runtime_status(state_path) or {}
         if record.get("gateway_state") in (None, "stopped", "startup_failed"):
-            return []
+            return None
         # Liveness is the state + a live PID, never the heartbeat: a paused or wedged gateway is
         # still the standalone process the box warns about (#120991).
         if not runtime_status_pid_is_live(record):
-            return []
+            return None
         reason = record.get("multiplex_standalone_reason")
-    except Exception:
-        return []
+    # The readers already absorb a missing/garbled file; what is left is a hostile record shape
+    # (a non-object, a PID too large for the OS) or a liveness probe's OS error.
+    except (OSError, ValueError, TypeError, AttributeError, OverflowError):
+        return None
+    return str(reason) if isinstance(reason, str) and reason else None
+
+
+def recorded_standalone_warning_lines() -> list[str]:
+    """Same box, rebuilt from the live gateway's ``gateway_state.json`` for processes that did not
+    make the decision (``hermes update``'s summary, ``hermes gateway status``)."""
+    reason = recorded_standalone_reason()
     if not reason:
         return []
-    return standalone_warning_lines(MultiplexDecision(False, "guard", str(reason)))
+    return standalone_warning_lines(MultiplexDecision(False, "guard", reason))

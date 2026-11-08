@@ -1,11 +1,14 @@
-import {chromium} from 'playwright';
+import {createRequire} from 'node:module';
+// Playwright comes from the desktop workspace that declares it.
+const {chromium}=createRequire(new URL('../../../apps/desktop/package.json', import.meta.url))('@playwright/test');
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 const out=process.env.THREAD_SCROLL_OUTPUT;
 assert.ok(out, 'Set THREAD_SCROLL_OUTPUT to the isolated artifact directory');
 fs.mkdirSync(out,{recursive:true});
 const url=process.env.THREAD_SCROLL_URL ?? 'http://127.0.0.1:18480/scroll-campaign-probe.html?thread';
-const browser=await chromium.launch({channel:'chromium',executablePath:process.env.AGENT_BROWSER_EXECUTABLE_PATH,headless:true,args:['--no-sandbox']});
+// pm's Chromium: PLAYWRIGHT_BROWSERS_PATH (from `hermes pm env`) is where channel 'chromium' finds it.
+const browser=await chromium.launch({channel:'chromium',headless:true,args:['--no-sandbox']});
 try {
 const page=await browser.newPage({viewport:{width:1200,height:800}});
 const errors=[];page.on('pageerror',e=>errors.push(e.message));

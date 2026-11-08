@@ -176,7 +176,8 @@ const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]>
     'use-preview-routing restart',
     'preview.restart',
     { session_id: 's', url: 'http://x' },
-    /preview\.restart is not available/
+    // TUI-12: the owner serves it (gateway/session_tui_side.py), so it travels as itself.
+    ['preview.restart']
   ],
   [
     'projects.ts moveSessionToProject (B21 / C-hx-2)',
@@ -191,10 +192,29 @@ const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]>
     ['session.mutate']
   ],
   [
-    'connector-tool.tsx in-chat connect',
+    "connector-tool.tsx in-chat connect (the card's Try again)",
     'connectors.connect',
-    { connectors: ['gh'], owner: { session_id: 's', type: 'session' } },
-    /connectors\.connect is not available/
+    { connectors: ['gh'], owner: { session_id: 's', type: 'session' }, reconnect: true },
+    // RT-2: the owner serves the card's calls (gateway/session_connections.py), so they travel as themselves.
+    ['connectors.connect']
+  ],
+  [
+    'connection-request.ts card answer',
+    'connection.respond',
+    { op_id: 'op', owner: { session_id: 's', type: 'session' }, result: { targets: [] } },
+    ['connection.respond']
+  ],
+  [
+    'connector-tool.tsx connected-link wake',
+    'connectors.operation.wake',
+    { op_id: 'op', owner: { session_id: 's', type: 'session' } },
+    ['connectors.operation.wake']
+  ],
+  [
+    'session-scoped connector list (no owner handler)',
+    'connectors.list',
+    { owner: { session_id: 's', type: 'session' } },
+    /connectors\.list is not available/
   ],
   [
     'connectors rpc.ts account connect',
@@ -213,6 +233,7 @@ test.each(SITES)('%s: the canonical frame fits the generated contract', async (_
   server.on('connection', (socket: any) => {
     socket.on('message', (bytes: Buffer) => {
       const frame = JSON.parse(bytes.toString())
+      if (frame.method === 'client.capabilities') { socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { server_requests: [] } })); return }
       sent.push(frame)
       const fields = problems(frame.method, frame.params)
       const error = { code: 4001, message: 'invalid_params', data: { reason: 'invalid_params', fields } }

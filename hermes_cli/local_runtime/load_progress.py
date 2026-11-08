@@ -143,11 +143,9 @@ def get_prefill_progress(model: str) -> dict | None:
     if ep is None:
         return None
     try:
-        from urllib.parse import quote
+        from hermes_cli.local_runtime.endpoint import child_query, managed_get_json
 
-        from hermes_cli.local_runtime.endpoint import managed_get_json
-
-        slots = managed_get_json(*ep, f"/slots?model={quote(model)}", timeout_s=2)
+        slots = managed_get_json(*ep, f"/slots?{child_query(model)}", timeout_s=2)
     except Exception:
         return None
     best = 0

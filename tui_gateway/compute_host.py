@@ -24,6 +24,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Collection
 
+from hermes_cli.config_backend import ConfigBackendUnavailable
 from tui_gateway.host_supervisor import MUTATOR_ROUTE_TABLE, _build_sha
 
 
@@ -107,6 +108,9 @@ class ComputeHost:
         with contextlib.suppress(Exception):
             from tools.environments.base import kill_live_foreground_processes
             kill_live_foreground_processes()
+        # ...and the opt-in shared-metrics rows that atexit hook would have written (bounded).
+        from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
+        flush_before_hard_exit()
 
     def shutdown(self, *, reason: str = "shutdown", wait: float = 10.0) -> None:
         """Drain in-flight turns, then finalize every session.
@@ -183,7 +187,7 @@ class ComputeHost:
         try:
             from tui_gateway import server
             body(server, sid, request_id)
-        except Exception as exc:
+        except (Exception, ConfigBackendUnavailable) as exc:  # health: allow BLE001 -- the frame's one reply (the outage is a SystemExit)
             if on_error is not None:
                 on_error(sid)
             self._reply(error_kind, sid, request_id, **error_extra, message=str(exc))
@@ -288,7 +292,7 @@ class ComputeHost:
             self._reply(
                 "turn.end", sid, request_id, **meta, interrupted=interrupted, ended_ns=now_ns(),
                 session_info=session_info, session_info_emitted=True)
-        except Exception as exc:
+        except (Exception, ConfigBackendUnavailable) as exc:  # health: allow BLE001 -- the turn's one reply (the outage is a SystemExit)
             with contextlib.suppress(Exception):
                 from tui_gateway import server
                 session = server._sessions.get(sid)
@@ -325,6 +329,8 @@ class ComputeHost:
             for key in ("cwd", "profile_home"):
                 if frame.get(key):
                     session[key] = str(frame[key])
+            if "explicit_cwd" in frame:
+                session["explicit_cwd"] = bool(frame["explicit_cwd"])
         else:
             session = self._build_server_session(server, frame, sid)
         if isinstance(frame.get("attached_images"), list):
@@ -391,7 +397,7 @@ class ComputeHost:
                 server._init_session(
                     sid, key, agent, list(history), cols=int(frame.get("cols") or 80),
                     cwd=str(frame.get("cwd") or "") or None, session_db=session_db,
-                    source=frame.get("source"))
+                    source=frame.get("source"), explicit_cwd=bool(frame.get("explicit_cwd")))
             finally:
                 reset_transport(token)
         except Exception:
@@ -404,10 +410,11 @@ class ComputeHost:
                 "created_at": time.time(), "last_active": time.time(), "running": False,
                 "attached_images": [], "image_counter": 0,
                 "cwd": str(frame.get("cwd") or os.getcwd()), "cols": int(frame.get("cols") or 80),
+                "explicit_cwd": bool(frame.get("explicit_cwd")),
                 "slash_worker": None, "show_reasoning": server._load_show_reasoning(),
                 "tool_progress_mode": server._load_tool_progress_mode(), "edit_snapshots": {},
                 "tool_started_at": {}, "model_override": frame.get("model_override"),
-                "source": server._sanitize_client_source(frame.get("source")),
+                "source": server._resolve_session_source(frame.get("source")),
                 "transport": self._transport}
         session = server._sessions[sid]
         session["transport"] = self._transport

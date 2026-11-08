@@ -1,0 +1,39 @@
+"name": "wing"
+"title": "Wing"
+"repo": "https://github.com/tarkilhk/wing-hermes-plugin"
+"maintainer": "tarkilhk"
+"tier": "community"
+"category": "general"
+"docs_url": "https://github.com/tarkilhk/wing-hermes-plugin#readme"
+"readme": !!bool "true"
+"description": "Companion backend for Wing Android: structured, immutable email drafts\
+  \ and profile-context live voice. Draft tools save recipient, cc/bcc, subject and\
+  \ body; Wing opens the chosen email app for final edits and sending. No email account\
+  \ access or sending tool. Derived from draft-cards' structured version design (arsiktech,\
+  \ MIT); the voice transport credits hermes-live-voice (Synero, MIT). Disclosure:\
+  \ draft fields persist in the active profile's plugin-data/wing SQLite database.\
+  \ Voice sends SDP, Hermes-built profile context and chat excerpts to OpenAI/ChatGPT\
+  \ through Hermes-owned credentials. Fresh voice context starts a short-lived Python\
+  \ inspection subprocess that initializes configured Hermes memory extensions; it\
+  \ neither runs an agent turn nor saves chat history. Uses Hermes prompt and voice\
+  \ helpers, including undocumented imports disclosed in the README. No telemetry,\
+  \ stored credentials or plugin self-updater."
+"known_issues":
+- "Requires the matching Wing Android client. Email cards need a Wing build with wing-email-draft\
+  \ rendering; other clients see the tool fields/reference as text."
+- "Voice context uses undocumented Hermes prompt-inspection and voice helpers that\
+  \ can change; admission validation reports these imports for reviewer inspection."
+- "Live subscription voice requires a profile sign-in with voice access. API voice\
+  \ requires the profile's OpenAI credentials. Email drafts require neither."
+"sha": "8423f7f7331ed2eabfb48636ad14d23013a4942c"
+"version": "0.3.0"
+"requires_hermes": ">=0.23.0"
+"screenshots":
+- "https://raw.githubusercontent.com/tarkilhk/wing-hermes-plugin/8423f7f7331ed2eabfb48636ad14d23013a4942c/docs/email-draft-preview.png"
+"capabilities":
+  "provides_tools":
+  - "wing_email_draft"
+  - "wing_email_draft_read"
+  "provides_hooks": []
+  "provides_middleware": []
+  "requires_env": []

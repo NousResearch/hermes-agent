@@ -11,8 +11,16 @@ owner settled its admission ``unknown``, and the Kanban run died with
 
 The probe is a secondary PID-recycle fence, not the authentication: the claim digest binds the
 caller to its stored assignment. A probe that could not be EVALUATED is unprovable, never evidence
-against the caller, so the write continues. A probe that evaluated and disagreed still refuses.
+against the caller, so a digest-gated write continues. A probe that evaluated and disagreed still
+refuses.
+
+``register`` is the exception, and the reason this file has a second shape: it CREATES the
+assignment and never runs ``_verify``, so no digest stands behind it and the probe is its only
+evidence the registering pid is live, not a zombie and ours. There an unprovable probe refuses
+cleanly (``worker_not_live``, which the dispatcher retries) instead of parking a ``registered`` row
+nothing ever verified.
 """
+import asyncio
 import contextlib
 import os
 import subprocess
@@ -21,7 +29,7 @@ import sys
 import psutil
 import pytest
 
-from gateway.session_worker import _claim
+from gateway.session_worker import _claim, worker_request
 from hermes_state_runtime import RuntimeStoreError
 
 _PROFILE = 'engineering-lead'
@@ -51,7 +59,16 @@ class _Actor:
 
 class _Authority:
     profile_id = _PROFILE
+    epoch = 1
     db = _Db()
+
+    # The register path's other gates, completed so this file fails on the PROBE it is about and
+    # never on a missing stub (a control that dies on AttributeError discriminates nothing).
+    def _require_admission_open(self):
+        return None
+
+    def authorize(self, _actor, _ref, _capability):
+        return None
 
 
 class _Connection:
@@ -85,7 +102,7 @@ def _params(**overrides):
 
 
 def _install(monkeypatch, process, *, birth=1000.0, factory_error=None):
-    def factory(pid):
+    def factory(pid=None):
         if factory_error is not None:
             raise factory_error
         return process
@@ -105,6 +122,45 @@ def test_an_unevaluable_liveness_probe_does_not_fail_an_authenticated_claim(monk
 def test_an_unevaluable_username_probe_is_unprovable_too(monkeypatch):
     _install(monkeypatch, _Process(username=MemoryError()))
     assert len(_claim(_Connection(), None, _params())) == 64
+
+
+def _register(monkeypatch, marker='registered'):
+    """Stub only what comes AFTER the probe, so a base tree reaches it and book the registration."""
+    monkeypatch.setattr('gateway.session_worker.register_worker_execution',
+                        lambda *_a, **_k: marker)
+
+
+def test_a_register_that_could_not_prove_the_worker_live_is_refused(monkeypatch):
+    """``register`` CREATES the assignment and never runs ``_verify``: the probe is its only gate.
+
+    Continuing there accepts a registration for a pid/birth nothing verified and parks a
+    ``registered`` row that delays the session's next worker until it is reaped.
+    """
+    for probe in (_Process(status=MemoryError()), _Process(username=MemoryError())):
+        _install(monkeypatch, probe)
+        _register(monkeypatch)
+        with pytest.raises(RuntimeStoreError, match='worker_not_live'):
+            asyncio.run(worker_request(_Connection(), None, _params(kind='compute'), operation='register'))
+
+
+def test_a_register_whose_probe_evaluated_live_still_registers(monkeypatch):
+    """The refusal is about an UNPROVABLE probe, not a blanket refusal of the register lane."""
+    _install(monkeypatch, _Process())
+    _register(monkeypatch, marker='admitted')
+    assert asyncio.run(worker_request(_Connection(), None, _params(kind='compute'),
+                                      operation='register')) == 'admitted'
+
+
+def test_the_digest_gated_lanes_continue_on_that_same_probe(monkeypatch):
+    """``adopt``/``persist`` authenticate with ``_verify``'s hmac, so unprovable is no refusal there."""
+    _install(monkeypatch, _Process(status=MemoryError()))
+    assert len(_claim(_Connection(), None, _params())) == 64
+    persist = {'epoch': 1, 'sequence': 1, 'operation': 'turn.lease', 'payload': {}}
+    for operation, extra in (('adopt', {}), ('persist', persist)):
+        # Past the probe: the lane stops at its real gate (no stored row to verify against), never
+        # at 'worker_not_live'. A refusal here would break the write the 2026-11-06 incident was.
+        with pytest.raises(RuntimeStoreError, match='not_found'):
+            asyncio.run(worker_request(_Connection(), None, _params(**extra), operation=operation))
 
 
 def test_a_zombie_worker_is_still_refused(monkeypatch):

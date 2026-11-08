@@ -58,6 +58,25 @@ async def test_a_note_into_the_old_conversation_leaves_the_row_the_chats_new_end
     assert authority.db.get_session(a)['end_reason'] == 'session_reset'
 
 
+@pytest.mark.asyncio
+async def test_a_cron_note_keeps_its_media_lines_and_carries_the_jobs_card(monkeypatch):
+    """#148449: a local cron note is the delivered text verbatim, ``MEDIA:`` lines included, and
+    names the job in a card (``display_text``) the Desktop paints as the row's label."""
+    import json
+    from gateway.session_cron import deliver_to_local_chat
+    _runner, _adapter, authority, _source, _sent, _ran, _gates, _lane, ref_a = await _moved_on(monkeypatch)
+    a = ref_a.session_id
+    text = 'Takes are ready.\nMEDIA:/tmp/News Radar/animation.gif'
+    assert await asyncio.to_thread(deliver_to_local_chat, Path(authority.db.db_path).parent, a, text,
+                                   title="Cron job 'News radar' finished") is None
+    await async_wait_until(lambda: _noted(authority, a, text), timeout=10, what='the note in A')
+    note = next(m for m in authority.db.get_messages(a) if text in str(m.get('content')))
+    assert note['role'] == 'user' and note['display_kind'] == 'internal_notification'
+    metadata = note['display_metadata']
+    metadata = json.loads(metadata) if isinstance(metadata, str) else metadata
+    assert metadata['display_text'] == "Cron job 'News radar' finished"
+
+
 def _chat_started(kind, lane, a):
     """A result of work the chat's own turn on A started before its ``/new``: pinned to A, on the chat's route."""
     if kind == 'delegation':

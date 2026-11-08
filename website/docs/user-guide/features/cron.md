@@ -677,6 +677,11 @@ When scheduling jobs, you specify where the output goes:
 
 The agent's final response is automatically delivered to the configured `deliver:` target — the agent does not send messages itself, so there is nothing to call in the cron prompt.
 
+A job created from a Desktop or Webapp chat delivers `origin` back into that chat as a note: a
+collapsible "Cron job '<name>' finished" row (or "failed") whose report is the response. Files the
+response names with `MEDIA:<path>` render inline in that report, as in an assistant reply; files the
+media path policy rejects are left out and reported as a delivery error.
+
 Delivered output is secret-redacted on the way out, on every lane: the platform message, the
 session mirror (payload and the job name spliced around it), and a `bot-chat` turn. Credential
 shapes (vendor-prefixed API keys, tokens, `KEY=value` assignments) are masked even when

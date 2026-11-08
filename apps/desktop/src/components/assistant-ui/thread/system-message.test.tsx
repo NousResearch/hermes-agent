@@ -76,6 +76,19 @@ describe('background report inline code', () => {
 })
 
 describe('background report disclosure', () => {
+  it('renders MEDIA lines in an opened report as media, not as raw paths (#148449)', () => {
+    const report = '3 takes are ready.\n\nMEDIA:/tmp/News Radar/animation.gif'
+    const { container, getByRole } = render(<Harness asyncResult={report} text="Cron job 'News radar' finished" />)
+
+    fireEvent.click(getByRole('button', { name: "Cron job 'News radar' finished" }))
+    const row = container.querySelector('[data-role="system"]') as HTMLElement
+
+    expect(row.textContent).toContain('3 takes are ready.')
+    expect(row.textContent).not.toContain('MEDIA:')
+    // The inline image previewer, the one an assistant reply's MEDIA image gets.
+    expect(row.querySelector('[data-slot="aui_markdown-image"]')?.textContent).toContain('animation.gif')
+  })
+
   it('keeps result bodies out of the transcript until opened and removes them when collapsed', () => {
     const report = '{"blockers":[{"title":"Local-model readiness uses the wrong endpoint"}]}'
     const { container, getByRole } = render(<Harness asyncResult={report} text="2 background agents finished" />)

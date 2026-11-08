@@ -57,49 +57,32 @@ def _fresh_plugin_manager():
     plugins._plugin_manager = original
 
 
-def _llm_meta():
-    return {
-        "final": "short summary of the pass",
-        "summary": "short summary",
-        "model": "test-model",
-        "provider": "test-provider",
-        "tool_calls": [],
-        "error": None,
-    }
+def _run_pass(curator):
+    """One real prune-only pass (no LLM fork), the path a scheduled tick and `hermes curator run` take."""
+    curator.run_curator_review(synchronous=True, consolidate=False)
+    return curator.load_state().get("last_report_path")
 
 
-def _write_report(curator):
-    return curator._write_run_report(
-        started_at=datetime.now(UTC),
-        elapsed_seconds=1.5,
-        auto_counts={"checked": 2, "marked_stale": 0, "archived": 0, "reactivated": 0},
-        auto_summary="no changes",
-        before_report=[],
-        before_names=set(),
-        after_report=[],
-        llm_meta=_llm_meta(),
-    )
-
-
-def test_hook_fires_once_after_both_report_files_exist(curator_env):
+def test_hook_fires_once_after_the_pass_with_both_report_files(curator_env):
     curator = curator_env["curator"]
     received = []
 
-    def _on(**kw):  # read inside the callback: the files must already be on disk when it fires
+    def _on(**kw):  # read inside the callback: the files and the pass's state are final when it fires
         payload = json.loads(Path(kw["run_json_path"]).read_text(encoding="utf-8"))
-        received.append((kw, "added" in payload, Path(kw["report_md_path"]).is_file()))
+        received.append((kw, "added" in payload, Path(kw["report_md_path"]).is_file(),
+                         "consolidation off" in curator.load_state()["last_run_summary"]))
 
     _plugins().get_plugin_manager()._hooks.setdefault("post_curator_run", []).append(_on)
 
-    run_dir = _write_report(curator)
+    run_dir = Path(_run_pass(curator))
 
-    assert run_dir is not None
-    assert [(kw["run_dir"], kw["run_json_path"], kw["report_md_path"], parsed, md) for kw, parsed, md in received] == [
-        (str(run_dir), str(run_dir / "run.json"), str(run_dir / "REPORT.md"), True, True)]
+    assert [(kw["run_dir"], kw["run_json_path"], kw["report_md_path"], parsed, md, saved)
+            for kw, parsed, md, saved in received] == [
+        (str(run_dir), str(run_dir / "run.json"), str(run_dir / "REPORT.md"), True, True, True)]
 
 
 def test_failed_report_write_fires_nothing(curator_env, monkeypatch):
-    """Observers are promised both files: a run whose run.json could not be written fires no hook."""
+    """Observers are promised both files: a pass whose run.json could not be written fires no hook."""
     curator = curator_env["curator"]
     received = []
     _plugins().get_plugin_manager()._hooks.setdefault("post_curator_run", []).append(
@@ -113,5 +96,5 @@ def test_failed_report_write_fires_nothing(curator_env, monkeypatch):
 
     monkeypatch.setattr(Path, "write_text", _disk_full)
 
-    assert _write_report(curator) is not None
+    _run_pass(curator)
     assert received == []

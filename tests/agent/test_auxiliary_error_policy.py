@@ -872,3 +872,47 @@ def test_a_fallback_candidates_repair_survives_its_credential_refresh(is_async, 
     assert fallbacks == [("sk-old", True), ("sk-old", False), ("sk-fresh", False)] + [("sk-next", True)] * (
         answer == "next")
 
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_a_refreshed_candidate_on_another_model_quarantines_the_model_that_failed(is_async):
+    """candidate old-model temperature 400 -> stripped 401 -> refresh rebuilds on new-model -> 404: new-model is
+    quarantined on that route, old-model stays eligible, and the next candidate answers."""
+    from agent import auxiliary_client as aux
+
+    health, sent = {}, []
+    statuses = {"sk-primary": iter([503] * 2), "sk-old": iter([400, 401]), "sk-fresh": iter([404]), "sk-next": iter([200])}
+
+    def handle(request):
+        key, body = request.headers["authorization"].removeprefix("Bearer "), json.loads(request.content)
+        sent.append((key, body["model"], "temperature" in body))
+        status = next(statuses[key])
+        message = {400: _TEMPERATURE_400, 401: "invalid api key", 404: "model_not_found: The model 'new-model' does not exist",
+                   503: "down"}.get(status)
+        return httpx.Response(status, json={"error": {"message": message}} if message else {
+            "id": "x", "object": "chat.completion", "created": 0, "model": "fb", "choices": [{"index": 0, "message": {
+                "role": "assistant", "content": key.removeprefix("sk-")}, "finish_reason": "stop"}]}, request=request)
+
+    builds = iter([("sk-primary", "fast-1"), ("sk-fresh", "new-model")])  # the primary, then the refreshed rebuild
+    candidates = iter([(_wire(handle, key="sk-old"), "old-model", "openrouter"),
+                       (_wire(handle, key="sk-next", url="https://api.example.com/v1"), "fb", "custom")])
+
+    def build(*_a, **_k):
+        key, model = next(builds)
+        return _wire(handle, key=key, is_async=is_async), model
+
+    with patch.multiple(
+        "agent.auxiliary_client", _resolve_task_provider_model=lambda *_a: ("openrouter", "fast-1", None, None, None),
+        _get_cached_client=build, _transient_retry_count=lambda *_a: 0, _refresh_provider_credentials=lambda *_a, **_k: True,
+        _aux_unhealthy_until=health, _aux_unhealthy_reason={}, _aux_unhealthy_logged_at={},
+        _recoverable_pool_provider=lambda *_a, **_k: None,
+        _try_configured_fallback_chain=lambda *_a, **_k: next(candidates, (None, None, "")),
+        _try_main_agent_model_fallback=lambda *_a, **_k: (None, None, ""),
+        _openai_http_client_kwargs=lambda *_a, **_k: {"http_client": httpx.AsyncClient(
+            transport=httpx.MockTransport(handle))}):
+        call = async_call_llm(task="title_generation", messages=_MESSAGES, temperature=0.3) if is_async else None
+        result = asyncio.run(call) if is_async else call_llm(task="title_generation", messages=_MESSAGES, temperature=0.3)
+        route = "https://openrouter.ai/api/v1"
+        marked = [aux._is_provider_unhealthy("openrouter", route, model) for model in ("new-model", "old-model")]
+    assert result.choices[0].message.content == "next" and marked == [True, False], health
+    assert [request for request in sent if request[0] != "sk-primary"] == [
+        ("sk-old", "old-model", True), ("sk-old", "old-model", False), ("sk-fresh", "new-model", False), ("sk-next", "fb", True)]

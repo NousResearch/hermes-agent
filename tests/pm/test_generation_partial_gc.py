@@ -120,3 +120,116 @@ def test_collectors_reclaim_payload_around_shared_locked_inode(
         release()
     assert collect() == [busy]
     assert selected_payload.is_dir() and legacy_payload.is_dir()
+
+
+@pytest.mark.parametrize("collector", ["dependencies", "pm-runtime"])
+def test_posix_disposition_reclaims_what_the_unlink_refused(tmp_path, monkeypatch, collector):
+    """Windows: a POSIX-semantics disposition (what MSYS ``rm -rf`` uses) strips a name
+    the plain unlink refused while an image mapping persists, so collection reclaims
+    the whole generation; a refused disposition keeps the existing defer behavior."""
+    import sys
+
+    from hermes_cli import runtime_state
+    from hermes_cli.runtime_state import collect_generations, lease_directory
+    from pm.environments import install_state_dir, runtime_facts_path, site_packages
+    from pm.runtime import collect_runtime_generations
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    real_unlink = os.unlink
+
+    def locked_unlink(inode):
+        def refuse(path, *, dir_fd=None):
+            info = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+            if (info.st_dev, info.st_ino) == inode:
+                raise PermissionError("mapped shared image")
+            return real_unlink(path, dir_fd=dir_fd)
+        return refuse
+
+    def build(root_name):
+        repo = tmp_path / root_name / "repo"
+        repo.mkdir(parents=True)
+        root = install_state_dir(repo) if collector == "dependencies" else tmp_path / root_name / "pm-runtime"
+        generations = root / ("environments" if collector == "dependencies" else "generations")
+        shared = tmp_path / root_name / "cached.pyd"
+        shared.write_bytes(b"shared extension")
+        inode = (shared.stat().st_dev, shared.stat().st_ino)
+
+        def make(name):
+            generation = generations / name
+            if collector == "dependencies":
+                venv = generation / "venv"
+                venv.mkdir(parents=True)
+                (venv / "pyvenv.cfg").write_text("version = 3.11")
+                payload = site_packages(venv)
+            else:
+                payload = generation / "site-packages"
+                generation.mkdir(parents=True)
+                (generation / "pm-runtime.json").write_text(json.dumps({"inputs": name}))
+            payload.mkdir(parents=True)
+            os.link(shared, payload / "locked.pyd")
+            (payload / "unique.bin").write_bytes(name.encode() * 1024)
+            (generation / ".lease-managed").touch()
+            return generation, payload
+
+        selected, selected_payload = make("selected")
+        busy, _ = make("busy")
+        old = [make(f"old-{i}") for i in range(2)]
+        if collector == "dependencies":
+            selection = runtime_facts_path(repo)
+            selection.write_text(json.dumps({"packages": {"venv": {"environment": str(selected / "venv")}}}))
+            collect = lambda: collect_generations(repo, min_age_seconds=0)
+        else:
+            selection = root / "selected.json"
+            selection.write_text(json.dumps({"generation": "generations/selected"}))
+            collect = lambda: collect_runtime_generations(root)
+        return shared, inode, busy, collect, selection, selected_payload, old
+
+    if sys.platform != "win32":
+        # Direct, unpatched call: off Windows the helper is inert, never a hidden delete.
+        inert_shared = build("inert")[0]
+        assert runtime_state._unlink_by_posix_disposition(str(inert_shared)) is False
+        assert inert_shared.is_file()
+
+    # A successful disposition reclaims the refused entry and its whole generation.
+    shared, inode, busy, collect, selection, selected_payload, old = build("reclaim")
+    selection_bytes = selection.read_bytes()
+    base_nlink = shared.stat().st_nlink
+    release = lease_directory(busy)
+    try:
+        with monkeypatch.context() as lock:
+            lock.setattr(os, "unlink", locked_unlink(inode))
+
+            def strip_name(path):
+                real_unlink(path)  # emulate the win32 call: the entry leaves the namespace
+                return True
+
+            lock.setattr(runtime_state, "_unlink_by_posix_disposition", strip_name)
+            assert set(collect()) == {generation for generation, _ in old}
+            assert all(not generation.exists() for generation, _ in old)
+            assert shared.stat().st_nlink == base_nlink - len(old)
+    finally:
+        release()
+    assert selection.read_bytes() == selection_bytes
+    assert selected_payload.is_dir()
+
+    # A refused disposition preserves today's defer behavior: shells, markers, leases.
+    shared, inode, busy, collect, selection, selected_payload, old = build("defer")
+    release = lease_directory(busy)
+    try:
+        with monkeypatch.context() as lock:
+            lock.setattr(os, "unlink", locked_unlink(inode))
+            lock.setattr(runtime_state, "_unlink_by_posix_disposition", lambda path: False)
+            assert collect() == []
+            assert all(generation.is_dir() for generation, _ in old)
+            assert all((generation / ".lease-managed").is_file() for generation, _ in old)
+            release_old = lease_directory(old[0][0])
+            try:
+                assert collect() == []  # retained shells still honor real leases
+            finally:
+                release_old()
+        # With the refusal gone the retained shells collapse into complete removals.
+        assert set(collect()) == {generation for generation, _ in old}
+        assert selected_payload.is_dir()
+    finally:
+        release()
+    assert collect() == [busy]

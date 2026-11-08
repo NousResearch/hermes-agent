@@ -311,6 +311,10 @@ def _is_allowed_bridge_path(url: str) -> bool:
     return False
 
 
+# bridge.js exits with this when WhatsApp demands passkey pairing and no signer is available (PASSKEY_REQUIRED_EXIT there).
+PASSKEY_REQUIRED_EXIT = 78
+
+
 def _file_content_hash(path: Path) -> str:
     """First 16 hex chars of SHA-256 of *path* ("" if unreadable); bridge.js reports its own as ``/health`` ``scriptHash``."""
     import hashlib
@@ -601,7 +605,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return bridge_env
 
     def _bridge_died(self, detail: str, code: str = "whatsapp_bridge_exited") -> bool:
-        needs_passkey = self._bridge_process is not None and self._bridge_process.poll() == 78
+        needs_passkey = self._bridge_process is not None and self._bridge_process.poll() == PASSKEY_REQUIRED_EXIT
         if needs_passkey:
             code = "whatsapp_passkey_required"
             detail = "WhatsApp requires passkey verification. Run `hermes whatsapp --passkey-browser EXECUTABLE` in a local interactive terminal, then restart the gateway."

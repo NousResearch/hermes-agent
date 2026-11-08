@@ -591,9 +591,12 @@ class TestNamedConnectFailures:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("returncode,retryable", [(78, False), (1, True)])
+@pytest.mark.parametrize("returncode,retryable", [(78, False), (1, True)])  # 78 = bridge.js PASSKEY_REQUIRED_EXIT
 @pytest.mark.parametrize("startup", [True, False])
 async def test_passkey_required_stops_retries_at_startup_and_during_polling(returncode, retryable, startup):
+    from plugins.platforms.whatsapp.adapter import PASSKEY_REQUIRED_EXIT
+
+    assert PASSKEY_REQUIRED_EXIT == 78
     adapter = _make_adapter()
     adapter._bridge_process = MagicMock(returncode=returncode, **{"poll.return_value": returncode})
     adapter._notify_fatal_error = AsyncMock()

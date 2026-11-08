@@ -1,6 +1,6 @@
 name: buildpilot
 repo: https://github.com/Justnevo/buildpilot
-sha: 59475f671dec5af9b3c1a0198a7bc33cc59118bc
+sha: e125f707678177d580b5b40d0de8450b80bb81c6
 title: BuildPilot
 description: "Project tracking and progress recovery for Hermes Agent. Create projects, manage tasks, save progress checkpoints, and retrieve project context across sessions using local SQLite storage."
 maintainer: Justnevo

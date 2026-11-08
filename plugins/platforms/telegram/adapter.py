@@ -970,13 +970,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             return True
         # Instance-level override only (tests): the class method _is_callback_user_authorized is for
         # inline buttons and must not become a user-id-only shortcut for real messages.
-        if authorized is None:
-            callback_auth = self.__dict__.get("_is_callback_user_authorized")
-            if callable(callback_auth):
-                with contextlib.suppress(Exception):
-                    authorized = bool(callback_auth(
-                        user_id, chat_id=source.chat_id, chat_type=source.chat_type, thread_id=source.thread_id,
-                        user_name=source.user_name))
+        callback_auth = self.__dict__.get("_is_callback_user_authorized")
+        if callable(callback_auth):
+            with contextlib.suppress(Exception):
+                authorized = bool(callback_auth(
+                    user_id, chat_id=source.chat_id, chat_type=source.chat_type, thread_id=source.thread_id,
+                    user_name=source.user_name))
         if authorized is None:
             # Runner's full auth chain; prefer the set_authorization_check callback (survives multiplex
             # handler wrapping, unlike bound-handler __self__).

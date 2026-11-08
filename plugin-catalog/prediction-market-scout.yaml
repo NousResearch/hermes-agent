@@ -1,0 +1,12 @@
+name: prediction-market-scout
+repo: https://github.com/HATWHY4041/prediction-market-scout
+sha: c11bf13fb70c94550669efdd7c9e46c1e8a408af
+description: "Polymarket research for Hermes: search markets or paste a polymarket.com link for live odds, spread, liquidity and 7-day history; ranked 24h movers and attention signals (big moves, volume spikes, wide spreads, odd pricing, undecided markets about to close); a price-alert watchlist that fires once and re-arms; a /pm command; and two one-click scheduled tasks (daily brief, quiet alert check). Read-only, no API key. Disclosure — makes HTTPS GET requests only to gamma-api.polymarket.com and clob.polymarket.com (the client refuses any other host) and caches responses in memory for 30 seconds; reads no credentials or environment variables; cannot trade or sign anything; the watchlist is stored only in the plugin's own Hermes profile state; no background processes, telemetry, self-updating code or binaries. Not financial advice."
+maintainer: HATWHY4041
+tier: community
+category: tools
+docs_url: https://github.com/HATWHY4041/prediction-market-scout#readme
+requires_hermes: ">=0.21.5"
+version: "1.0.0"
+platforms: []
+capabilities: {provides_tools: [polymarket_scan, polymarket_search, polymarket_market, polymarket_signals, polymarket_watch, polymarket_brief], provides_hooks: [], provides_middleware: [], requires_env: []}

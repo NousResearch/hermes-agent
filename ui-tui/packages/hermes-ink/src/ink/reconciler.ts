@@ -39,7 +39,7 @@ but this failed as it was not installed. Debugging with React Devtools requires 
 
 To install use this command:
 
-$ npm install --save-dev react-devtools-core
+$ pnpm add --save-dev react-devtools-core
 				`.trim() + '\n'
       )
     } else {

@@ -34,9 +34,9 @@ def _metadata_records(data: bytes | None) -> dict:
 
 def candidate_members(extra_dirs=(), **selection):
     selected = enabled_plugin_dirs(**selection)
-    for source in selected:
-        validate_manifest(source)
-    members = [source for source in selected if _is_member_candidate(source)]
+    enabled = {path.resolve() for path in (enabled_plugin_dirs() if selection else selected)}
+    members = [source for source in selected
+               if _admitted(source, new=source.resolve() not in enabled) and _is_member_candidate(source)]
     for directory in extra_dirs:
         directory = Path(directory)
         if directory not in members and _is_member_candidate(directory):
@@ -52,12 +52,31 @@ def selection_snapshot() -> dict[Path, bytes | None]:
 
 def validate_manifest(source: Path) -> dict:
     from pm.plugin_declarations import read_python_declaration, manifest_version_error
+    from pm.workspace import core_requirement_error
 
-    manifest = read_python_declaration(source).manifest
-    reason = manifest_version_error(manifest, source.name)
+    declaration = read_python_declaration(source)
+    reason = manifest_version_error(declaration.manifest, source.name)
+    if not reason and (core := core_requirement_error(declaration)):
+        reason = f"Plugin '{source.name}' {core}"
     if reason:
         raise ValueError(reason)
-    return manifest
+    return declaration.manifest
+
+
+def _admitted(source: Path, *, new: bool) -> bool:
+    """Refuse a change that newly enables or stages a plugin which does not fit; one enabled
+    before it whose ``hermes-agent`` requirement misses this Hermes sits out (False), as the
+    build leaves it out, rather than refusing every other plugin's change."""
+    from pm.plugin_declarations import read_python_declaration, manifest_version_error
+    from pm.workspace import core_requirement_error
+
+    if new:
+        validate_manifest(source)
+        return True
+    declaration = read_python_declaration(source)
+    if reason := manifest_version_error(declaration.manifest, source.name):
+        raise ValueError(reason)
+    return not core_requirement_error(declaration)
 
 
 class PluginSelection:
@@ -138,9 +157,8 @@ class StagedPlugin:
         self.members = {}
         if self.active:
             sources[self.target.resolve()] = self.staged
-            for source in sources.values():
-                validate_manifest(source)
-            self.members = {identity: source for identity, source in sources.items() if _is_member_candidate(source)}
+            self.members = {identity: source for identity, source in sources.items()
+                            if _admitted(source, new=source == self.staged) and _is_member_candidate(source)}
 
     def publish(self, project: Path) -> None:
         import os

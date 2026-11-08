@@ -100,12 +100,13 @@ def apply_llm_request_middleware(request: dict[str, Any], **context: Any) -> Req
 
 
 def apply_tool_request_middleware(
-    tool_name: str, args: dict[str, Any], **context: Any
+    tool_name: str, args: dict[str, Any], *, original_args: dict[str, Any] | None = None, **context: Any
 ) -> RequestMiddlewareResult:
     """Apply registered tool request middleware; ``{"args": {...}}`` replaces the effective tool
-    arguments before hooks, guardrails, approvals, and execution see them."""
-    original_args = _safe_copy(args)
-    current_args = _safe_copy(original_args)
+    arguments before hooks, guardrails, approvals, and execution see them. ``original_args`` is the
+    model's pre-Relay call when ``args`` already carries Relay rewrites (defaults to ``args``)."""
+    original_args = _safe_copy(args if original_args is None else original_args)
+    current_args = _safe_copy(args)
     trace: list[dict[str, Any]] = []
 
     session_id = str(context.get("session_id") or "")
@@ -160,6 +161,7 @@ class _DownstreamExecutionError(Exception):
 
 def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwargs: Any) -> Any:
     from hermes_cli.plugins import _delivery_manager
+    from hermes_cli.plugins_dispatch import PluginDispatchMixin
 
     payload_key = "request" if "request" in kwargs else "args"
     manager = _delivery_manager()
@@ -198,7 +200,7 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
         call_kwargs[payload_key] = payload
         call_kwargs["next_call"] = next_call
         try:
-            return callback(**call_kwargs)
+            return callback(**PluginDispatchMixin._hook_callback_kwargs(callback, call_kwargs))  # narrow signatures, as hooks
         except _DownstreamExecutionError as exc:
             raise exc.original
         except Exception as exc:

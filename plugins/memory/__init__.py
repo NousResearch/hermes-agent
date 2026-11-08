@@ -10,6 +10,7 @@ must never shadow a shipped provider. Changing this order is a breaking change.
 from __future__ import annotations
 
 import ast
+import contextlib
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -17,7 +18,7 @@ import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import Callable, Iterator, List, Optional, Tuple, TYPE_CHECKING
 
 from hermes_cli.config import cfg_get
 from plugins import plugin_loader as _loader
@@ -492,6 +493,31 @@ class _ProviderCollector:
             manifest = PluginManifest(name=self.name, key=self.name)
             self._context = PluginContext(manifest, get_plugin_manager())
         return self._context
+
+
+@contextlib.contextmanager
+def provider_registration_scope(name: str) -> Iterator[Callable[[], None]]:
+    """Yield a ``release()`` that disposes every registration provider ``name``'s loads made on the
+    active profile's plugin manager since the block began: hooks, tools, middleware and the rest
+    ``_ProviderCollector`` forwards (all in the manager's ownership ledger). For a one-shot load
+    whose plugin host is about to stop, so nothing is left proxying into a dead host; the
+    provider's next real load registers them again. A real load of the same provider on the same
+    profile inside the block loses its registrations too, until it next loads (they would
+    proxy into the stopped host anyway, unless it loaded in-process)."""
+    from hermes_cli.plugins import get_plugin_manager
+
+    provider_dir = find_provider_dir(name)
+    key = provider_dir.name if provider_dir else name  # the collector's key (_load_provider_from_dir)
+    manager = get_plugin_manager()
+    with manager._discovery_lock:
+        before = {id(r) for r in manager._ownership_ledger.get(key, ())}
+
+    def release() -> None:
+        with manager._discovery_lock:
+            made = [r for r in manager._ownership_ledger.get(key, ()) if id(r) not in before]
+            manager._dispose_registrations(made)
+
+    yield release
 
 
 def _get_active_memory_provider() -> Optional[str]:

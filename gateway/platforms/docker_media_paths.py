@@ -41,23 +41,19 @@ def _docker_sandbox_dir_candidates(session_key: str = "", workspace_key: str = "
     tenv, _persistent = _scope()
     try:
         from tools.environments.path_utils import sanitize_task_id_for_path
+        from tools.terminal_tool_config import home_profile_name, profile_container_key
+        base = profile_container_key(home_profile_name())
     except Exception:  # health: allow BLE001 -- path translation fails closed; a miss is a 404, not a 500
         return ["default"]
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-        profile = get_active_profile_name() or "default"
-    except Exception:  # health: allow BLE001 -- path translation fails closed; a miss is a 404, not a 500
-        profile = "default"
     candidates: list[str] = []
     # Explicit trusted-profiles opt-in: one shared container identity. That
     # key is not a per-workspace container, so a :ws: digest does not apply.
     if shared := tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip():
         candidates.append(sanitize_task_id_for_path(f"shared:{shared}"))
     elif _WORKSPACE_KEY_RE.fullmatch(workspace_key or "") and _cwd_mount_enabled():
-        base = "default" if profile == "default" else f"profile:{profile}"
         candidates.append(sanitize_task_id_for_path(f"{base}:ws:{workspace_key}"))
-    if profile != "default":
-        candidates.append(sanitize_task_id_for_path(f"profile:{profile}"))
+    if base != "default":
+        candidates.append(sanitize_task_id_for_path(base))
     candidates.append("default")
     if session_key:  # bug-window legacy layout: per-session sandboxes
         candidates.append(sanitize_task_id_for_path(f"session:{session_key}"))

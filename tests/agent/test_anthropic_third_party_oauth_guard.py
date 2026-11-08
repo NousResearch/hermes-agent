@@ -205,12 +205,11 @@ class TestOAuthFlagOnRefresh:
                     "anthropic", agent.model, runtime.get("base_url", ""), runtime.get("api_key"), "anthropic_messages",
                 )
             assert seen["api_key"] == new
-            # A scoped runtime rotates in place; the legacy mirrors are never republished by a rotation.
+            # A scoped runtime rotates in place and leaves the outer binding alone.
             with aux.scoped_runtime_main({"provider": "anthropic", "api_key": new, "model": "m"}):
                 rotate_runtime_main_api_key(new, "sk-ant...cccc")
                 assert aux._RUNTIME_MAIN_CONTEXT.get()["api_key"] == "sk-ant...cccc"
-            assert (aux._RUNTIME_MAIN_MODEL, aux._RUNTIME_MAIN_API_KEY) == (agent.model, old)
-            assert aux._compat_runtime_main() is None  # unchanged mirrors never become a runtime input
+            assert aux._normalize_main_runtime(None).get("api_key") == new
         finally:
             aux.clear_runtime_main()
 

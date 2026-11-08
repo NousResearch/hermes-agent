@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import email.message
 import email.utils
+import http.client
 import json
 import logging
 import mimetypes
@@ -34,6 +35,17 @@ logger = logging.getLogger(__name__)
 MEDIA_MAX_BYTES = 25 * 1024 * 1024
 
 _REQUEST_TIMEOUT_S = 30.0
+
+# Upload retry: the delays BEFORE each extra attempt (3 attempts in all). A transient
+# hop failure (an egress proxy's own 403, a reset, a connector store outage) usually
+# clears within seconds, and a dropped attachment is worse than a short wait. Worst
+# case per file is 3 x _REQUEST_TIMEOUT_S + 7s, well inside cron's per-attachment
+# media-send timeout (300s default).
+_UPLOAD_RETRY_DELAYS_S = (2.0, 5.0)
+# Statuses worth another attempt. The connector itself never answers 403 on
+# POST /relay/media (401 bad bearer, 413 too large, 400 client fault, 503 store
+# down), so a 403 is an intermediary refusing on its own. 401/400/413/415 are final.
+_UPLOAD_RETRY_STATUSES = frozenset({403, 408, 429, 500, 502, 503, 504})
 
 # Discord's CDN (and other public hosts) 403 urllib's default UA, which
 # silently killed every CDN pass-through download. Always send a descriptive UA.
@@ -75,41 +87,82 @@ class RelayMediaClient:
         self, file_path: str, *, mime: Optional[str] = None, filename: Optional[str] = None
     ) -> Optional[str]:
         """POST local file bytes to ``/relay/media``; return the reference URL or None on any failure."""
+        return (await self.upload_with_error(file_path, mime=mime, filename=filename))[0]
+
+    async def upload_with_error(
+        self, file_path: str, *, mime: Optional[str] = None, filename: Optional[str] = None
+    ) -> tuple[Optional[str], str]:
+        """``upload`` that also says why it failed: ``(reference, "")`` or ``(None, reason)``.
+
+        Transient failures (transport errors, ``_UPLOAD_RETRY_STATUSES``) are retried
+        after ``_UPLOAD_RETRY_DELAYS_S``; a final relay answer is not.
+        """
         if not self.enabled:
-            return None
+            return None, "relay media client has no credentials"
         path = Path(file_path)
         try:
-            data = path.read_bytes()
+            data = await asyncio.get_running_loop().run_in_executor(None, path.read_bytes)
         except OSError:
             logger.warning("relay media upload: cannot read %s", file_path)
-            return None
+            return None, "attachment file is unreadable"
         if not data or len(data) > MEDIA_MAX_BYTES:
             logger.warning(
                 "relay media upload: %s size %d outside (0, %d]", file_path, len(data), MEDIA_MAX_BYTES
             )
-            return None
+            return None, f"attachment size {len(data)} outside (0, {MEDIA_MAX_BYTES}]"
         content_type = (
             mime or mimetypes.guess_type(filename or path.name)[0] or "application/octet-stream"
         )
-        headers = {
-            "User-Agent": _MEDIA_USER_AGENT,
-            "Authorization": f"Bearer {self._bearer()}",
-            "Content-Type": content_type,
-            "X-Media-Filename": (filename or path.name)[:255],
-        }
+        name = (filename or path.name)[:255]
         url = f"{self._base_url}/relay/media"
 
-        def _post() -> Optional[str]:
+        def _post() -> tuple[Optional[str], str, bool]:
+            """One attempt: ``(reference, failure reason, worth retrying)``."""
+            bearer = self._bearer()  # minted per attempt: never retry with a token that aged during backoff
+            headers = {
+                "User-Agent": _MEDIA_USER_AGENT,
+                "Authorization": f"Bearer {bearer}",
+                "Content-Type": content_type,
+                "X-Media-Filename": name,
+            }
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
             try:
                 with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
                     media_id = json.loads(resp.read().decode("utf-8")).get("id")
-                    return f"{self._base_url}/relay/media/{media_id}" if media_id else None
-            except (urllib.error.URLError, ValueError, OSError) as exc:
-                logger.warning("relay media upload failed: %s", exc)
-                return None
+                    if media_id:
+                        return f"{self._base_url}/relay/media/{media_id}", "", False
+                    return None, "connector answered without a media id", False
+            except urllib.error.HTTPError as exc:
+                from gateway.relay.http_diagnostics import describe_http_error, read_error_body
 
-        return await asyncio.get_running_loop().run_in_executor(None, _post)
+                # The exact bearer and secret are scrubbed even if a hop echoes them bare.
+                described = describe_http_error(exc, read_error_body(exc), secrets=(bearer, self._secret or ""))
+                return None, described, exc.code in _UPLOAD_RETRY_STATUSES
+            except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+                return None, f"transport error: {getattr(exc, 'reason', None) or exc}", True
+            except ValueError as exc:
+                return None, f"unreadable connector response: {exc}", False
+
+        loop = asyncio.get_running_loop()
+        attempts = len(_UPLOAD_RETRY_DELAYS_S) + 1
+        attempt, reason = 0, ""
+        while attempt < attempts:
+            attempt += 1
+            ref, reason, retryable = await loop.run_in_executor(None, _post)
+            if ref:
+                if attempt > 1:
+                    logger.info("relay media upload of %s succeeded on attempt %d", name, attempt)
+                return ref, ""
+            if not retryable or attempt == attempts:
+                break
+            delay = _UPLOAD_RETRY_DELAYS_S[attempt - 1]
+            logger.warning(
+                "relay media upload of %s failed (attempt %d/%d): %s; retrying in %.0fs",
+                name, attempt, attempts, reason, delay,
+            )
+            await asyncio.sleep(delay)
+        logger.warning("relay media upload of %s failed (attempt %d/%d): %s", name, attempt, attempts, reason)
+        return None, reason
 
     async def download(self, url: str, *, suggested_name: Optional[str] = None) -> Optional[str]:
         """GET an attachment to a local temp file; return its path or None on any failure."""

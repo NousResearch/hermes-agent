@@ -460,6 +460,7 @@ class VaultItem(Result):
     identifier: str | None = None
     identifier_type: str | None = None
     has_otp: bool | None = None
+    allowed_origins: list[str] | None = None
     backend: str
 
 
@@ -516,6 +517,27 @@ class VaultUnlockResult(Result):
 
 method("vault.unlock", params=VaultUnlockParams, result=VaultUnlockResult,
        doc="Unlock a password manager for this session with its master password.")
+
+
+class VaultPreviewFillParams(ProfileParams):
+    """``target`` is the opaque binding the renderer minted for one in-app browser tab."""
+
+    handle: str
+    target: str
+
+
+class VaultPreviewFillResult(Result):
+    """Counts and the page origin only: never a secret."""
+
+    success: bool
+    filled_fields: int | None = None
+    origin: str | None = None
+    error: str | None = None
+    error_type: str | None = None
+
+
+method("vault.preview.fill", params=VaultPreviewFillParams, result=VaultPreviewFillResult,
+       doc="Fill a saved login into the in-app browser tab the renderer pinned (never submits).")
 
 
 class VaultLockParams(ProfileParams):
@@ -649,6 +671,8 @@ class SubagentSnapshot(Result):
     tool_count: int | None = None
     last_tool: str | None = None
     accepting_steer: bool | None = None
+    #: The child's own stored session (``session.transcript`` reads it by ``subagent_id``); None until it has one.
+    child_session_id: str | None = None
 
 
 class FailedDelegation(Result):
@@ -672,6 +696,21 @@ class SubagentListResult(Result):
 
 method("subagent.list", params=SessionParams, result=SubagentListResult,
        doc="Live children owned by this session (other sessions' children never leak).")
+
+
+class SubagentRosterEntry(Result):
+    session_id: str
+    subagents: int = 0
+    background: int = 0
+
+
+class SubagentRosterResult(Result):
+    sessions: list[SubagentRosterEntry] = Field(default_factory=list)
+
+
+method("subagent.roster", params=ProfileParams, result=SubagentRosterResult,
+       doc="Per-conversation counts of live delegated children and running background processes, limited to "
+           "conversations stored in the named profile (launch profile when omitted). Needs no attached session.")
 
 
 class SubagentIdParams(SessionParams):

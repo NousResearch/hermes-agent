@@ -66,6 +66,9 @@ gateway:
     usage_switch_model: "`/model <name>` — mudar de modelo"
     usage_switch_provider: "`/model <name> --provider <slug>` — mudar de fornecedor"
     usage_persist: "`/model <name> --global` — guardar permanentemente"
+    usage_reset: "`/model reset` — limpar o override desta sessão"
+    reset_done: "Override de modelo da sessão removido — agora usando `{model}` (o padrão do canal/global). Histórico da conversa mantido."
+    reset_none: "Nenhum override de modelo ativo nesta sessão — já está usando `{model}` (o padrão do canal/global)."
     err_skew: "Este gateway está executando código de {boot_rev}, mas o checkout em disco agora está em {disk_rev}. Trocar de modelo poderia causar uma falha por módulo obsoleto — reinicie o gateway para carregar o novo código: hermes gateway restart"
     err_switch_failed: "Falha ao trocar para o modelo {model} ({error}); permanecendo em {current}."
     err_config_not_updated: "config.yaml não foi atualizado ({error})"
@@ -971,9 +974,6 @@ platform:
     approved: "✅ Aprovado."
     denied: "❌ Negado."
     approval_expired: "⌛ Aprovação expirada — o comando não foi executado (já excedeu o tempo limite ou foi resolvido em outro lugar)."
-  yuanbao:
-    slow_response_notice: "Esta tarefa é um pouco complexa — ainda estou trabalhando nela, aguarde um momento..."
-    owner_command_denied: "⚠️ {command} só está disponível para o criador no modo de chat privado"
   shared:
     truncated_suffix: "\n...(truncado)"
     unknown: "desconhecido"
@@ -1368,6 +1368,12 @@ platform:
       unauthorized: "Somente um usuário autorizado do Matrix pode usar estes controles."
       not_requester: "Somente o usuário que solicitou esta ação pode usar estes controles."
   feishu:
+    clarify:
+      title: "O Hermes precisa da sua resposta"
+      other: "✏️ Outro (digitar resposta)"
+      awaiting_typed: "Aguardando resposta digitada de {user}…"
+    picker:
+      apply_error: "Erro ao aplicar a seleção: {error}"
     approval:
       action_session: "Sessão"
       action_always: "Sempre"
@@ -1471,6 +1477,8 @@ platform:
     prompt_other: "✏️ Outro (digitar resposta)"
     prompt_expired: ⌛ Essa solicitação não está mais aguardando resposta. Envie sua resposta como uma mensagem normal.
 slash:
+  rewind:
+    description: "Retroceder a um prompt anterior para editá-lo e reenviá-lo, ou bifurcar a partir dali (Esc Esc)"
   approve:
     description: "Aprovar um comando perigoso pendente"
   bg:
@@ -1698,6 +1706,20 @@ slash:
   quit:
     description: "Sair da CLI (use --delete para também remover o histórico da sessão)"
 cli:
+  backtrack:
+    title: "↺ Transcrição — escolha um prompt para editar"
+    keys_hint: "Navegando na transcrição · ↑↓/jk rolar · ←→/hl prompts · ↵ editar · f bifurcar · esc voltar"
+    prime_hint: "esc de novo para editar a mensagem anterior"
+    no_previous: "Nenhuma mensagem anterior para editar."
+    editing_hint: "↺ Editando o prompt {number} — Enter retrocede até aqui e envia · Esc Esc cancela"
+    edit_cancelled: "↺ Retrocesso cancelado; nada foi removido."
+    rewound: "↺ Retrocedido ao prompt {number} ({count} mensagem(ns) arquivada(s)); enviando a edição."
+    forked: "⑂ Bifurcado antes do prompt {number}; a sessão original {parent} não foi alterada. Edite o prompt abaixo e pressione Enter para enviar."
+    nothing: "(._.) Não há prompts anteriores para retroceder."
+    target_changed: "(x_x) A sessão mudou desde que você escolheu o prompt {number}; nada foi removido. Sua edição voltou para o editor."
+    invalid: "(._.) Não existe o prompt {value} — escolha de 1 a {total}."
+    usage: "Uso: /rewind [N | fork N]"
+    rewind_failed: "(x_x) Falha ao retroceder; o histórico não foi alterado: {error}"
   modern:
     thought_for: "Pensou por {seconds}s"
     thought: "Pensou"
@@ -2009,6 +2031,8 @@ cli:
     usage_switch_reasoning: "trocar e definir o esforço de raciocínio"
     usage_switch_provider: "trocar fornecedor"
     usage_refresh: "buscar novamente as listas de modelos"
+    reset_none: "Já está no padrão configurado ({model}) — nada para redefinir."
+    reset_no_default: "Nenhum model.default no config.yaml — nada para onde voltar."
     choice_switch_anyway: "Trocar mesmo assim"
     desc_switch_anyway: "Usar este modelo na sessão atual do Hermes."
     choice_cancel: "Cancelar"
@@ -2159,6 +2183,7 @@ cli:
     images_attached_other: "📎 {count} imagens anexadas"
     command_interrupted: "Comando interrompido."
     welcome: "Bem-vindo ao Hermes Agent! Digite sua mensagem ou /help para ver os comandos."
+    vscode_images_hint: "O VS Code pode mostrar imagens em resolução total aqui: ative terminal.integrated.enableImages nas configurações."
     activated_skills_label: "Skills ativadas:"
     redaction_disabled_title: "⚠  A redação de segredos está DESATIVADA"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). Chaves de API e tokens podem aparecer sem máscara na saída do chat, nos JSONs de sessão e nos logs. Defina {setting} em config.yaml para reativar."
@@ -2613,6 +2638,7 @@ cli:
     goal_turns: "⊙ objetivo {used}/{max}"
     goal: "⊙ objetivo"
     ctx_pinned: " fixado"
+    ctx_fallback: " padrão"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Guardados ({count} item)"
@@ -3952,3 +3978,8 @@ plan_usage:
   large_notice_limit: "Modelo grande: o seu limite {name} foi atingido ({resets})."
   large_notice_limit_stops: "Modelo grande: o seu limite {name} foi atingido ({resets}), por isso não funcionará até lá."
   large_notice_percent: "Modelo grande: usa mais do uso do seu plano por mensagem. Limite mensal de modelos grandes: {percent} usado."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Arquivos alterados nos turnos desfeitos: {files}. Execute /rollback para listar os checkpoints e restaurar um."
+    more: "+{count} mais"

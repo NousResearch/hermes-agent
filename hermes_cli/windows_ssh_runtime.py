@@ -380,6 +380,22 @@ def _resolve_direct_command(hermes_path: str) -> list[str]:
     return command
 
 
+def _spawn_env(payload: dict[str, Any]) -> dict[str, str]:
+    """The serve's environment. A Desktop dev build's renderer is an http origin the backend trusts
+    only from the HERMES_DESKTOP_DEV_SERVER it inherits, so the payload's ``devServer`` is handed
+    down exactly as the POSIX spawn command does; without one the variable is not set at all."""
+    dev_server = str(payload.get("devServer") or "")
+    if len(dev_server) > 2048 or any(ch in dev_server for ch in "\x00\r\n"):
+        raise ValueError("invalid devServer")
+    env = dict(os.environ)
+    env.pop("VIRTUAL_ENV", None)
+    env.pop("PYTHONPATH", None)
+    env.pop("HERMES_DESKTOP_DEV_SERVER", None)
+    if dev_server:
+        env["HERMES_DESKTOP_DEV_SERVER"] = dev_server
+    return env
+
+
 def spawn_backend(payload: dict[str, Any]) -> dict[str, Any]:
     ownership_id = _ownership(str(payload["ownershipId"]))
     spawn_nonce = _nonce(str(payload["spawnNonce"]))
@@ -396,9 +412,7 @@ def spawn_backend(payload: dict[str, Any]) -> dict[str, Any]:
         args.extend(["--profile", profile])
     args.extend(["serve", "--isolated", "--host", "127.0.0.1", "--port", "0",
                  "--ssh-session-token-file", token_path, "--ssh-owner-nonce", spawn_nonce])
-    env = dict(os.environ)
-    env.pop("VIRTUAL_ENV", None)
-    env.pop("PYTHONPATH", None)
+    env = _spawn_env(payload)
     _ensure_scope(ownership_id)
     log_path = _log_path(ownership_id, spawn_nonce)
     win32con = _win32().win32con

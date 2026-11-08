@@ -2,7 +2,7 @@ name: receipts
 repo: https://github.com/cirwel/hermes-receipts
 sha: 0dd1a374cc70ce388040f99adc908c7054ed8fa9
 title: "Receipts: tested-tree push gate"
-description: Verification receipts tied to Git content; gates terminal pushes and PR creation on a passing check.
+description: "Verification receipts tied to Git content; gates terminal pushes and PR creation on a passing check. Disclosure — runs read-only local `git` commands (rev-parse, status, ls-files, hash-object without -w) in the agent's repository on terminal tool calls, and blocks `git push` / `gh pr create` there until the user's configured check has passed on that exact content; stores receipts in a local SQLite file under the plugin data dir; no network."
 maintainer: cirwel
 tier: community
 category: tools

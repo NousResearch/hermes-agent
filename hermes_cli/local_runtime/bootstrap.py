@@ -464,9 +464,18 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
             preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini", models_max,
                                             engine_tag=engine.tag)
 
+            raw_idle = section.get("idle_timeout_seconds")
+            if raw_idle is None:
+                raw_idle = section.get("idle_timeout")
+            idle_timeout = None
+            if raw_idle is not None:
+                with suppress(ValueError, TypeError):
+                    idle_timeout = float(raw_idle)
+
             sup = LlamaServerSupervisor(engine.binary, mdir, preset_path=preset_path,
                                         models_max=models_max,
-                                        port=int(section.get("port", 0)) or None)
+                                        port=int(section.get("port", 0)) or None,
+                                        idle_timeout_s=idle_timeout)
             try:
                 sup.start()
             except Exception:
@@ -505,12 +514,12 @@ def serving_engine():
     return _SERVING_ENGINE
 
 
-_SWEEP_EVERY_S = 120
+_SWEEP_EVERY_S = 30
 _REFIT_EVERY_S = 30
 
 
 def _start_idle_sweeper(sup) -> None:
-    """Idle-residency loop: every couple of minutes, unload models idle past the supervisor's
+    """Idle-residency loop: periodically unload models idle past the supervisor's
     threshold; every 30 s with nothing loaded, re-plan launch windows against free GPU memory.
     Daemon thread tied to the supervisor's lifetime — exits when the server stops."""
     import threading
@@ -518,8 +527,14 @@ def _start_idle_sweeper(sup) -> None:
     def _loop():
         last_sweep = time.monotonic()
         while sup.proc is not None and sup.proc.poll() is None:
-            time.sleep(_REFIT_EVERY_S)
-            if time.monotonic() - last_sweep >= _SWEEP_EVERY_S:
+            idle_s = getattr(sup, "idle_timeout_s", 300)
+            if idle_s > 0:
+                sweep_interval = max(5, min(30, int(idle_s // 5)))
+            else:
+                sweep_interval = 60
+            sleep_step = min(sweep_interval, _REFIT_EVERY_S)
+            time.sleep(sleep_step)
+            if time.monotonic() - last_sweep >= sweep_interval:
                 last_sweep = time.monotonic()
                 try:
                     sup.sweep_idle()

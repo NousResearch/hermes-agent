@@ -2699,6 +2699,9 @@ DEFAULT_CONFIG = {
         "port": 0,  # Port for the managed server. 0 = pick a free port at spawn.
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
+        # Idle timeout in seconds before auto-unloading models from VRAM and RAM.
+        # 0 disables auto-unload. Default: 300 (5 minutes).
+        "idle_timeout_seconds": 300,
     },
     "_config_version": 53,  # Config schema version - bump this when adding new required fields
 }

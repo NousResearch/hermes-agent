@@ -1,20 +1,25 @@
 name: calling-mom
 repo: https://github.com/SlyBase/calling-mom
-sha: "e0daf7f1b293cdf41b685f856b02120f82c144d9"
-version: "1.3.2"
+sha: "80085bc76fd7c51820b1870c3d0e6d31b98b212a"
+version: "1.6.1"
 title: Calling mom
-description: "Lets a cheap model run your Kanban board and calls a stronger model only where the board or the tool results show it is needed. Mom (a good, affordable model) answers stuck signals, risky commands and completion checks; olymp (the expensive heavyweight) is asked only when mom escalates a rare high-stakes case, with hard limits per card and per day. Disclosure — once enabled, the plugin observes every kanban worker tool result (hashes and counts only, logged to logs/calling-mom.jsonl). With the advisor enabled AND a board or card opted in, redacted run excerpts go through Hermes's ctx.llm to the mom and olymp models you choose; the answer is appended to the tool result and written to the card with the public kanban_comment tool. A card line verify: <command> runs an allowlisted command (no shell, scrubbed environment) for cards created by trusted creators. hermes calling-mom setup writes the plugin's own config (calling_mom.* and its plugins.entries allowlist) with the values you pick, reads delegation.backends.model_map (read-only, to offer your Advanced Delegation routes) and creates one cron job, 'calling-mom: sweep', unless you pass --no-cron; the sweep reads the kanban databases and may push metrics to Pushgateway URLs you configure (off by default). No telemetry, no credentials stored."
+description: "Lets a cheap model run your Kanban board and calls a stronger model only where the board or the tool results show it is needed. Mom (a good, affordable model) answers stuck signals, risky commands and completion checks; olymp (the expensive heavyweight) is asked only when mom escalates a rare high-stakes case, with hard limits per card and per day. Disclosure — once enabled, the plugin observes every kanban worker tool result (hashes and counts only, logged to logs/calling-mom.jsonl). With the advisor enabled AND a board or card opted in, redacted run excerpts go through Hermes's ctx.llm to the mom and olymp models you choose; the answer is appended to the tool result and written to the card with the public kanban_comment tool. A card line verify: <command> runs an allowlisted command (no shell, scrubbed environment) for cards created by trusted creators. hermes calling-mom setup writes the plugin's own config (calling_mom.* and its plugins.entries allowlist) with the values you pick, reads delegation.backends.model_map (read-only, to offer your Advanced Delegation routes) and creates one cron job, 'calling-mom: sweep', unless you pass --no-cron; the sweep reads the kanban databases and may push metrics to Pushgateway URLs you configure (off by default). No telemetry, no credentials stored. Since 1.4: a Desktop page (Needs you, Active cards, recent activity, status-bar chip) served by the plugin's dashboard route; it reads the log and the opted-in boards, writes only when you press a button (an answer card comment, a card move), and shows each running card's last assistant message read through Hermes' SessionDB (read-only, local, never sent to a model). web_verify (off by default) sends a one-line redacted claim to Hermes' own web_search tool. The sweep and the optional chat-wait count read board events and the human-input hooks (kinds and seconds only, never prompt or answer text). The plugin sends nothing to a server of its own; details in SECURITY.md of the repo."
 maintainer: SlyBase
 tier: community
 category: automation
 requires_hermes: ">=0.22"
-docs_url: https://github.com/SlyBase/calling-mom/blob/e0daf7f1b293cdf41b685f856b02120f82c144d9/README.md
-image: https://raw.githubusercontent.com/SlyBase/calling-mom/e0daf7f1b293cdf41b685f856b02120f82c144d9/assets/calling-mom-banner.jpg
+docs_url: https://github.com/SlyBase/calling-mom/blob/80085bc76fd7c51820b1870c3d0e6d31b98b212a/README.md
+image: https://raw.githubusercontent.com/SlyBase/calling-mom/80085bc76fd7c51820b1870c3d0e6d31b98b212a/assets/calling-mom-banner.jpg
 readme: true
 platforms: [linux, macos]
+screenshots:
+  - https://raw.githubusercontent.com/SlyBase/calling-mom/80085bc76fd7c51820b1870c3d0e6d31b98b212a/assets/screenshots/needs-you.png
+  - https://raw.githubusercontent.com/SlyBase/calling-mom/80085bc76fd7c51820b1870c3d0e6d31b98b212a/assets/screenshots/calling-mom-page.png
+  - https://raw.githubusercontent.com/SlyBase/calling-mom/80085bc76fd7c51820b1870c3d0e6d31b98b212a/assets/screenshots/hold-on-card.png
+  - https://raw.githubusercontent.com/SlyBase/calling-mom/80085bc76fd7c51820b1870c3d0e6d31b98b212a/assets/screenshots/card-badges.png
 capabilities:
   provides_tools: [second_opinion]
-  provides_hooks: [kanban_task_claimed, kanban_task_blocked, on_kanban_worker_exited, transform_tool_result, on_kanban_dispatch_tick, pre_tool_call, post_api_request]
+  provides_hooks: [kanban_task_claimed, kanban_task_blocked, on_kanban_worker_exited, transform_tool_result, on_kanban_dispatch_tick, pre_tool_call, post_api_request, on_human_input_request, on_human_input_resolved, api_request_error]
   provides_middleware: []
   requires_env: []
 known_issues:

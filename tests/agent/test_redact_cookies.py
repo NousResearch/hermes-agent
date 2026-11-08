@@ -43,8 +43,17 @@ class TestCookieCredentials:
             "the Set-Cookie: header sets state",
             "if cookie == expected:",
             "GET https://example.com/cb?cookie=abc123&x=1",
+            # Code and placeholders, the same shapes main leaves alone for ``token``.
+            "cookie = getCookie()",
+            "self.cookie = cookie",
+            "cookie=None",
+            "cookie=$(cat jar)",
+            '{"cookie": "chocolate"}',
+            '{"apikey": "${API_KEY}"}',
+            '{"x-api-key": "${API_KEY}"}',
         ):
             assert redact_sensitive_text(text) == text, text
+            assert redact_sensitive_text(text, force=True) == text, text
         # A masked value never swallows the text around it (JSON neighbours, shell separators).
         out = redact_sensitive_text('{"output": "cookie=\'opaqueSessionValue1234567890\'", "model": "m"}')
         assert out.endswith('\'", "model": "m"}') and "opaqueSessionValue" not in out

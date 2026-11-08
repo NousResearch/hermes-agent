@@ -9,7 +9,7 @@ maintainer: Advertly, Inc.
 tier: community
 category: tools
 docs_url: https://adextract.co/documentation
-requires_hermes: ">=0.21.6"
+requires_hermes: ">=0.22.3"
 readme: true
 platforms: []
 capabilities:

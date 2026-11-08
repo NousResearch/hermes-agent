@@ -1,0 +1,20 @@
+name: starlearner-nexus
+title: "StarLearner-Nexus"
+repo: https://github.com/BigBossRabbit/starlearner-nexus-hermes-skill
+sha: 6f47e1b5101fa65ce1f65fe3f5391dd8559615c4
+description: "Turn the repositories you star on GitHub into a living library of registered Hermes skills. `starlearner_sync` runs the whole pipeline — fetch, map (the LLM curation pass), categorize into a fixed set of domains, two-track assess (integrate-into-your-makeup and business-opportunity), generate, register (`starlearner-nexus:<name>`) — incrementally via a persistent seen-ledger (a repo is never processed twice); `starlearner_status` is read-only state (including token set / not set); `starlearner_review` surfaces everything LLM-shaped item by item for the human. The map / categorize / assess stages optionally run through the host LLM (`ctx.llm`, one registered auxiliary task) with a deterministic rules engine as the bit-for-bit fallback (`enrich: rules` = zero LLM calls); generate is never the LLM. Registration timing: handler-time `register_skill`, accepted and live in the same session (a skill view on a name the sync just returned resolves the same second); a plugin reload re-registers everything generated before it. Disclosure — contacts api.github.com only (GET /user/starred, HTTPS, paginated with a hard page cap), authenticated with your own read-only GitHub token read through Hermes's secret scope and never written to the plugin's files, logs or results; LLM enrichment (on by default; `enrich: rules` turns it off) sends public repo metadata (name, description, topics, language, stars) to your active provider through Hermes (`ctx.llm`, auxiliary task starlearner_enricher); every new starred repo becomes a registered skill whose description and body carry that repo's own third-party description text, so text written by the repo's author appears in your skills index and in skills the agent loads; writes only to its own plugin-data store; no shell commands, no subprocesses, no telemetry; the bundled \"StarLearner-Nexus sync\" automation blueprint runs only if you schedule it. Origin of the reapx lineage (same owner)."
+maintainer: BigBossRabbit
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+version: "1.2.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - starlearner_sync
+    - starlearner_status
+    - starlearner_review
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - STARLEARNER_GITHUB_TOKEN

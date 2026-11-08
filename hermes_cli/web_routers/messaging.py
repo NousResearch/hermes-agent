@@ -1174,7 +1174,7 @@ def _messaging_platform_posture(
     - pairing grants: approved users in the profile's pairing store (the gateway honors
       the store as a UNION with the allowlists)
     - adapter/config-enforced policy (``dm_policy: allowlist`` with an ``allow_from``):
-      the own-policy adapters (WeCom, Weixin, QQBot, WhatsApp, Yuanbao) gate at intake
+      the own-policy adapters (WeCom, Weixin, QQBot, WhatsApp) gate at intake
 
     Everything failing → deny-all: the connection is up but no sender can get through,
     which the Channels "Test" button must not render as a plain green "connected".

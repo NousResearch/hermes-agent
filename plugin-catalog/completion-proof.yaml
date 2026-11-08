@@ -1,0 +1,28 @@
+name: completion-proof
+repo: https://github.com/yuanshen101/completion-proof
+sha: "4876d2b887ab113f6ad9d7c5c410c216beffc611"
+subdir: completion-proof
+description: "Revision-bound receipts for operator-configured checks; changed source, tests or artifacts make earlier passes stale. Disclosure — proof_verify, `/proof verify` and `hermes completion-proof verify` run the check commands the user configures (argv, no shell) in the configured workspace with the user's OS privileges, unsandboxed, with a minimal environment (no credentials); the model can start these runs by check id without an approval prompt but cannot add or change commands; `hermes completion-proof init` writes a starter test command (pytest, npm test or unittest) into the plugin's settings for review; receipts, redacted output excerpts and hashes of tool commands/results are stored in the plugin's own database; once per coding turn the pre_verify hook may ask the model to run the checks; no network or telemetry."
+maintainer: yuanshen101
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+version: "0.1.5"
+platforms: [linux]
+readme: true
+known_issues:
+  - "Native Windows and macOS are untested; Linux validation was performed under WSL2."
+  - "Configured checks run with the user's OS privileges and are not sandboxed."
+  - "The pre_verify reminder is bounded, not a fail-closed completion gate."
+  - "Receipts are local records, not cryptographic attestations."
+capabilities:
+  provides_tools:
+    - proof_list_checks
+    - proof_status
+    - proof_verify
+    - proof_report
+  provides_hooks:
+    - post_tool_call
+    - pre_verify
+  provides_middleware: []
+  requires_env: []

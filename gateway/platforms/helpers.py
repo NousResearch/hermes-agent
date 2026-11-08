@@ -411,7 +411,8 @@ def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None
 
 # ─── Fence-Aware Markdown Chunking ───────────────────────────────────────────
 # Shared core for gateway/stream_consumer.py (``prefer_paragraphs=False, balance_fences=True``),
-# yuanbao (``prefer_paragraphs=True, balance_fences=False``) and weixin (``greedy_pack_blocks``).
+# paragraph mode (``prefer_paragraphs=True, balance_fences=False``, derived from the Yuanbao adapter,
+# now a plugin) and weixin (``greedy_pack_blocks``).
 
 
 def text_has_unclosed_fence(text: str) -> bool:

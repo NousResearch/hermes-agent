@@ -512,7 +512,7 @@ class HostedRoomRuntime:
             # keep executing, and after a restart its process-local task marker is absent.
             return True
         if not _info_is_active_for(info, task["identity"], require_exact=True):
-            return False
+            return self._interrupt_stale_admission(transport, binding, profile, session_id, info)
         result = transport.interrupt(
             **_session_kw(profile, session_id), expected_task_id=task["identity"].task_id)
         return result is not None and (
@@ -537,6 +537,35 @@ class HostedRoomRuntime:
                 and result["execution_generation"] == generation):
             return False
         return discarded_receipt(result, task) or result.get("status") == "cancelled"
+
+    def _interrupt_stale_admission(
+        self, transport: InternalSessionRPC, binding: HostedRoomBinding, profile: str,
+        session_id: str, info: Mapping[str, Any]) -> bool:
+        """Clear a session turn still held by a driver task with no live attempt.
+
+        A member turn can outlive its driver task (a deferred task whose approval never
+        arrived, for example), so ``info`` stays active under that stale identity and
+        every exact-stop retry would refuse to act on it forever. Interrupt that stale
+        turn by its own id — both sides match on the exact task id — and keep this stop
+        pending; the next retry sees the exact identity (or an inactive session) and
+        finishes. Turns of live attempts and unknown identities stay untouched.
+        """
+        stale_task_id = str(info.get("task_id") or "")
+        if not stale_task_id:
+            return False
+        live_ids = {
+            t["identity"].task_id
+            for status in ("running", "indeterminate") for t in self._tasks(binding, status)}
+        if stale_task_id in live_ids:
+            return False
+        stale = next((t for t in self._tasks(binding, None) if t["identity"].task_id == stale_task_id), None)
+        # A peer member's deferred attempt is kept on purpose: its Retry recovers that same run.
+        if stale is None or self._remote(stale):
+            return False
+        with suppress(RuntimeError, OSError, ValueError):
+            transport.interrupt(
+                **_session_kw(profile, session_id), expected_task_id=stale_task_id)
+        return False
 
     def _settle_stopping_completion(
         self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease

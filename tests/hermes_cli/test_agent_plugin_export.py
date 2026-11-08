@@ -27,7 +27,8 @@ def _profile(home: Path) -> None:
         "  local:\n    command: /usr/local/bin/my-server\n"
         "  argkey:\n    command: srv\n    args: [--api-key, private-value]\n"
         "  urlkey:\n    url: https://mcp.example.com/mcp?api_key=private-value\n"
-        "  zero:\n    command: srv\n    timeout: 0\n",
+        "  zero:\n    command: srv\n    timeout: 0\n"
+        "  localarg:\n    command: npx\n    args: [server-fs, /home/user/projects]\n",
         encoding="utf-8")
 
 
@@ -58,6 +59,8 @@ def test_export_round_trips_through_the_importer_without_secrets(tmp_path, monke
     ("zero", None, "does not validate|timeout"),
     (None, "link", "links outside"),
     (None, "name", "not a valid Agent Skills name"),
+    ("localarg", None, "path on this machine"),
+    (None, "inside", "inside the skill"),
 ])
 def test_unportable_input_refuses_and_writes_nothing(tmp_path, monkeypatch, server, skill_edit, match):
     home = tmp_path / "home"
@@ -73,7 +76,7 @@ def test_unportable_input_refuses_and_writes_nothing(tmp_path, monkeypatch, serv
         text = md.read_text(encoding="utf-8-sig").replace("name: paper-notes", "name: ../escaped")
         md.write_text(text, encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
-    out = tmp_path / "pkg"
+    out = skill / "bundle" if skill_edit == "inside" else tmp_path / "pkg"
 
     with pytest.raises(ValueError, match=match):
         export_agent_plugin("x", out, skills=["paper-notes"], servers=[server] if server else [])

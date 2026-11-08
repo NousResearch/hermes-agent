@@ -64,6 +64,11 @@ def _stdio_entry(server: str, cfg: Mapping[str, Any], notes: list[str]) -> dict[
     if not isinstance(args, list):
         raise ExportError(f"mcp:{server}: args must be a list")
     args = [str(a) for a in args]
+    for arg in args:
+        value = arg.split("=", 1)[-1]
+        if value.startswith(("/", "~")) or re.match(r"^[A-Za-z]:[\\/]", value):
+            raise ExportError(f"mcp:{server}: arg {arg!r} is a path on this machine; it will not exist "
+                              "for the people you share with. Use a relative path or ${PLUGIN_DATA}")
     for i, arg in enumerate(args):
         flag = args[i - 1] if i else ""
         if "${" in arg or _looks_secret(arg.split("=", 1)[0], arg) or (
@@ -178,6 +183,17 @@ def _rewrite_frontmatter(skill_md: Path, frontmatter: Mapping[str, Any]) -> None
     skill_md.write_text(f"---\n{head}---\n{body}", encoding="utf-8")
 
 
+def _refuse_output_inside_skill(output: Path, skills: list[str]) -> None:
+    """Writing into a selected skill would copy the package into itself until the disk fills."""
+    from tools.skill_manager_tool import _find_skill
+    target = output.resolve()
+    for name in skills:
+        found = _find_skill(name)
+        if found and target.is_relative_to(Path(found["path"]).resolve()):
+            raise ExportError(f"--output {output} is inside the skill {name!r} being exported; "
+                              "choose a directory outside it")
+
+
 def export_agent_plugin(name: str, output: Path, *, skills: list[str], servers: list[str],
                         version: str = "0.1.0", description: str = "") -> ExportReport:
     """Write an Agent Plugins v1 package to *output* and validate it with the importer."""
@@ -189,6 +205,7 @@ def export_agent_plugin(name: str, output: Path, *, skills: list[str], servers: 
         raise ExportError(f"{output} already exists and is not empty")
     report = ExportReport(root=output)
     mcp_servers, extensions = _mcp_entries(servers, report.notes)  # fail before writing anything
+    _refuse_output_inside_skill(output, skills)
     output.mkdir(parents=True, exist_ok=True)
     try:
         for skill in skills:

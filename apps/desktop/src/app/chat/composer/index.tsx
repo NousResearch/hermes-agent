@@ -1156,6 +1156,7 @@ export function ChatBar({
       hideModelPill={guidedChat}
       minimal={minimal || chatOnboardingSolo}
       onDictate={dictate}
+      onDictateAndSend={dictateAndSend}
       onQueue={() => {
         // Queueing clears the draft too, so the list over it closes with it.
         closeTrigger()

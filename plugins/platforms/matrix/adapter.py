@@ -353,6 +353,7 @@ class _MatrixApprovalPrompt:
     requester_user_id: str | None = None
     expires_at: float | None = None
     request_id: str | None = None  # the tools.approval request this prompt answers
+    offered: tuple[str, ...] = ()  # choices the card seeded; a Deny-only card offers only "deny"
     bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
 
 
@@ -1699,7 +1700,7 @@ class MatrixAdapter(BasePlatformAdapter):
             self._approval_prompt_by_session[session_key] = message_id
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
-                expires_at=expires_at, request_id=prompt.request_id)
+                expires_at=expires_at, request_id=prompt.request_id, offered=tuple(choices))
         return await self._send_reaction_prompt(
             chat_id, text, prompt.metadata, _make, self._approval_prompts_by_event, reactions, "approval")
 
@@ -2546,6 +2547,9 @@ class MatrixAdapter(BasePlatformAdapter):
             choices=self._approval_reaction_map)
         if choice is None:
             return handled
+        if prompt.offered and choice not in prompt.offered:  # a hand-added ✅ on a Deny-only card: keep it live
+            await self._send_invalid_reaction_feedback(room_id, reacts_to, t("platform.matrix.approval.invalid_reaction"))
+            return True
         try:
             from tools.approval import resolve_gateway_approval_card
             count = resolve_gateway_approval_card(prompt.session_key, choice, prompt.request_id)
@@ -2557,13 +2561,8 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix reaction resolved %d approval(s) for session %s (choice=%s, user=%s)",
                     count, prompt.session_key, choice, sender)
                 await self._redact_bot_approval_reactions(room_id, prompt)
-            else:  # refused: still pending means a choice the card never offered (a Deny-only ✅), keep it live
-                from tools.approval import list_gateway_approvals
-                pending = [a.get("request_id") for a in list_gateway_approvals(prompt.session_key)]
-                if pending and (not prompt.request_id or prompt.request_id in pending):
-                    await self._send_invalid_reaction_feedback(room_id, reacts_to, t("platform.matrix.approval.invalid_reaction"))
-                else:  # this card's request already timed out or was answered elsewhere
-                    await self._expire_matrix_approval_prompt(room_id, reacts_to, prompt)
+            else:  # this card's request already timed out or was answered elsewhere
+                await self._expire_matrix_approval_prompt(room_id, reacts_to, prompt)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
         return True

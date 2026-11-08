@@ -286,9 +286,15 @@ def test_opencode_go_upstream_throttle_keeps_the_key_on_an_unnamed_route(monkeyp
 
 
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
-def test_a_custom_zen_endpoint_is_not_classified_as_the_main_runtimes_go(is_async):
+@pytest.mark.parametrize("zen_url,go_url", [
+    ("https://opencode.ai/zen/v1", "https://opencode.ai/zen/go/v1"),  # Zen beside Go
+    ("https://proxy.example:9443/zen/go/v1", "https://proxy.example:8443/zen/go/v1"),  # same path, other port
+    ("http://proxy.example/zen/go/v1", "https://proxy.example/zen/go/v1"),  # same path, other scheme
+], ids=["other-path", "other-port", "other-scheme"])
+def test_a_custom_zen_endpoint_is_not_classified_as_the_main_runtimes_go(is_async, zen_url, go_url):
     """OpenCode Zen and Go share opencode.ai: a custom Zen endpoint with its own key, while the main runtime is Go,
-    is judged as custom, so its upstream 429 gets the same-key retry and the second request answers."""
+    is judged as custom, so its upstream 429 gets the same-key retry and the second request answers. So is
+    an endpoint on Go's path at another origin."""
     import model_tools  # registers the bundled provider profiles
 
     sent, statuses = [], iter([429, 200])
@@ -302,11 +308,11 @@ def test_a_custom_zen_endpoint_is_not_classified_as_the_main_runtimes_go(is_asyn
                                          "choices": [{"index": 0, "finish_reason": "stop", "message": {
                                              "role": "assistant", "content": "ok"}}]}, request=request)
 
-    zen = _wire(handle, key="sk-zen", url="https://opencode.ai/zen/v1", is_async=is_async)
-    runtime = {"provider": "opencode-go", "base_url": "https://opencode.ai/zen/go/v1", "api_key": "sk-go"}
+    zen = _wire(handle, key="sk-zen", url=zen_url, is_async=is_async)
+    runtime = {"provider": "opencode-go", "base_url": go_url, "api_key": "sk-go"}
     with patch("agent.auxiliary_rate_limit_backoff.rate_limit_wait", return_value=0.0):
         assert _routed_call([zen] * 2, provider="custom", is_async=is_async, main_runtime=runtime) == "ok"
-    assert sent == ["/zen/v1/chat/completions"] * 2
+    assert sent == [httpx.URL(zen_url).path + "/chat/completions"] * 2
 
 
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
@@ -865,3 +871,4 @@ def test_a_fallback_candidates_repair_survives_its_credential_refresh(is_async, 
     fallbacks = [request for request in sent if request[0] != "sk-primary"]
     assert fallbacks == [("sk-old", True), ("sk-old", False), ("sk-fresh", False)] + [("sk-next", True)] * (
         answer == "next")
+

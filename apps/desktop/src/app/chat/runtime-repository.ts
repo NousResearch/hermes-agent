@@ -57,19 +57,21 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
         parentId = branchParentByGroup.get(message.branchGroupId) ?? null
       }
 
-      // Guard against two `tool-call` parts of one message sharing a
-      // `toolCallId`: assistant-ui's `useResources` throws on the duplicate key
-      // and crash-loops the renderer (#87857). Same class of defensive dedup as
-      // the repeated-`message.id` skip above, one level down at the parts. Keeps
-      // identity when clean, so the cache below is unaffected in the common case.
-      const deduped = withUniqueToolCallIdsWithinMessage(message)
-
       const cachedMessage = cacheRef.current.get(message)
 
-      const runtimeMessage =
-        cachedMessage ?? fromThreadMessageLike(toRuntimeMessage(deduped), message.id, FALLBACK_STATUS)
+      let runtimeMessage = cachedMessage
 
-      if (!cachedMessage) {
+      if (!runtimeMessage) {
+        // Guard against two `tool-call` parts of one message sharing a
+        // `toolCallId`: assistant-ui's `useResources` throws on the duplicate
+        // key and crash-loops the renderer (#87857). Same class of defensive
+        // dedup as the repeated-`message.id` skip above, one level down at the
+        // parts. Only a cache miss needs it: the cached record is already the
+        // normalized result, and rebuilding the parts array for every settled
+        // row on each streamed delta is pure waste.
+        const deduped = withUniqueToolCallIdsWithinMessage(message)
+
+        runtimeMessage = fromThreadMessageLike(toRuntimeMessage(deduped), message.id, FALLBACK_STATUS)
         cacheRef.current.set(message, runtimeMessage)
       }
 

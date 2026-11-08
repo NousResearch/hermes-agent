@@ -354,7 +354,7 @@ def _static_gate_env_prefixes() -> frozenset:
     try:
         from gateway.config import Platform
         names.update(m.value for m in Platform.__members__.values())
-        bundled, aliases = Platform._scan_bundled_plugin_platforms()
+        bundled, aliases = Platform._cached_bundled_plugin_platforms()
         names.update(bundled)
         names.update(aliases)
     except Exception:

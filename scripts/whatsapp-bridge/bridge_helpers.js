@@ -87,6 +87,20 @@ export function createBoundedMessageStore(limit = 512) {
 }
 
 /**
+ * Reaction payload for POST /react: Baileys reacts with the ORIGINAL message key (a group key
+ * keeps its `participant`), so the target must come from the message store. `emoji: ''` retracts.
+ * Returns `{ content }` for `sendMessage(chatId, content)`, or `{ status, error }`.
+ */
+export function buildReactionSend({ chatId, messageId, emoji, messageStore }) {
+  if (!chatId || !messageId || typeof emoji !== 'string') {
+    return { status: 400, error: 'chatId, messageId, and emoji are required' };
+  }
+  const target = messageStore.get(messageId);
+  if (!target?.key) return { status: 404, error: 'Referenced message not found in bridge cache' };
+  return { content: { react: { text: emoji, key: target.key } } };
+}
+
+/**
  * Bounded cache of the already-downloaded media (and plain text) for
  * recently seen inbound messages, keyed by "chatId:messageId".
  *

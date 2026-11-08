@@ -180,6 +180,8 @@ def _ensure_telegram_mock() -> None:
     mod.constants.ParseMode = _parse_mode
     mod.ChatType = _chat_type
     mod.constants.ChatType = _chat_type
+    # Fallback only: without the SDK the lifecycle emoji are plain strings.
+    mod.ReactionEmoji = mod.constants.ReactionEmoji = ("👀", "👍", "👎")
 
     # Mirror PTB's exception hierarchy: BadRequest is a semantic API error,
     # but inherits from NetworkError in python-telegram-bot 22.x.

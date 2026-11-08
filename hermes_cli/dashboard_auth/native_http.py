@@ -6,6 +6,7 @@ issuer. A browser Origin (including an empty one) always disqualifies this path.
 """
 from __future__ import annotations
 
+import re
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -59,6 +60,9 @@ def _own_profile(value, profile_id, *, current=True):
         raise PermissionError('profile_scope_mismatch')
 
 
+_KANBAN_REASSIGN_RE = re.compile(r'/api/plugins/kanban/tasks/[^/]+/reassign')
+
+
 async def _check_profile_scope(request, profile_id):
     # Existing handlers select body.profile OR query.profile. Check every value,
     # including repeated query keys, rather than normalizing away a disagreement.
@@ -74,7 +78,10 @@ async def _check_profile_scope(request, profile_id):
             body = await request.json()
         except (ValueError, UnicodeError):
             body = None  # Route validation still owns malformed JSON.
-        if isinstance(body, dict) and 'profile' in body:
+        # The Kanban board is shared by every profile, and a reassign's ``profile`` names the task's
+        # new assignee, not a profile scope for this request: checking it refused every assignment
+        # to a profile other than the one the Desktop window is attached to.
+        if isinstance(body, dict) and 'profile' in body and not _KANBAN_REASSIGN_RE.fullmatch(path):
             _own_profile(body['profile'], profile_id, current=current)
     if path.startswith('/api/cron/jobs') and not request.query_params.get('profile'):
         # Job-id discovery and the default list scan other profiles. Require an

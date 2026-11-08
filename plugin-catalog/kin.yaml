@@ -1,16 +1,15 @@
 name: kin
-title: Avatar
 repo: https://github.com/vdimarco/hermes-kin
-sha: b769e108dec299dfec5d8536190c40afcef2ced0
-description: "A 3D avatar for Hermes Desktop that keeps an eye on your work. It tells you when a turn is stuck, done, or waiting on you. Pick one of six original 3D characters, each with a voice of their own. An optional overlay adds a plain-English task drawer, opt-in voice, and screen diagnosis. Your avatar writes drafts and never sends for you."
+sha: 2394ff573f85ab081d9c89fe32e4ff4a4f881647
+description: The companion for Hermes Desktop who actually pays attention — a mood pane that knows when your work is stuck or done, plus a cross-platform overlay HUD with a plain-English task drawer, opt-in voice that drafts instead of sending, and snap/terminal screen diagnosis.
 maintainer: vdimarco
 tier: community
 category: desktop
 requires_hermes: ">=0.22.0"
 version: "0.3.0"
-image: https://raw.githubusercontent.com/vdimarco/hermes-kin/b769e108dec299dfec5d8536190c40afcef2ced0/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/vdimarco/hermes-kin/b769e108dec299dfec5d8536190c40afcef2ced0/docs/cast.png
+  - https://raw.githubusercontent.com/vdimarco/hermes-kin/2394ff573f85ab081d9c89fe32e4ff4a4f881647/docs/overlay-float.png
+  - https://raw.githubusercontent.com/vdimarco/hermes-kin/2394ff573f85ab081d9c89fe32e4ff4a4f881647/docs/overlay-personas.png
 capabilities:
   provides_tools: []
   provides_hooks: [post_tool_call, api_request_error, on_session_start, on_session_end, pre_llm_call]

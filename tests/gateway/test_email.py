@@ -604,6 +604,33 @@ class TestSendMethods(unittest.TestCase):
         finally:
             os.unlink(tmp_path)
 
+    def test_send_voice_attaches_audio_file(self):
+        """Audio MEDIA files arrive as attachments; regression for #24922 (base-class voice stub)."""
+        import asyncio
+        import tempfile
+        adapter = self._make_adapter()
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(b"ID3 fake mp3 payload")
+            tmp_path = f.name
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
+
+                result = asyncio.run(
+                    adapter.send_voice("user@test.com", tmp_path, "Here is the audio", is_voice=True)
+                )
+
+                self.assertTrue(result.success)
+                mock_server.send_message.assert_called_once()
+                sent_msg = mock_server.send_message.call_args[0][0]
+                attached = [
+                    p.get_filename() for p in sent_msg.walk()
+                    if "attachment" in str(p.get("Content-Disposition", ""))
+                ]
+                self.assertEqual(attached, [os.path.basename(tmp_path)])
+        finally:
+            os.unlink(tmp_path)
 
 
 class TestConnectDisconnect(unittest.TestCase):

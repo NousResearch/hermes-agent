@@ -481,10 +481,11 @@ _NOTICE_WAIT_S = 60
 
 
 def _someone_at_the_terminal() -> bool:
-    """stdin and stdout are a terminal, and this process is its foreground job: a launch in the
-    background (`&`) or from a script with a terminal attached is not waited on."""
+    """stdin, stdout and stderr (where the prompt goes) are a terminal, and this process is its
+    foreground job: a launch in the background (`&`), with stderr redirected, or from a script with
+    a terminal attached is not waited on."""
     try:
-        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        if not (sys.stdin.isatty() and sys.stdout.isatty() and sys.stderr.isatty()):
             return False
         if os.name == "nt":
             return True  # a console has no process groups to ask

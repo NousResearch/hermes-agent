@@ -146,7 +146,7 @@ class _Terminal:
     """A pty that is the launch's controlling terminal, with the launch in its foreground process
     group (as a shell runs it) unless *background*."""
 
-    def __init__(self, wait_s: float, *, background: bool = False, query: str = ""):
+    def __init__(self, wait_s: float, *, background: bool = False, query: str = "", stderr=None):
         import pty
         import sys
 
@@ -154,7 +154,7 @@ class _Terminal:
         self.child = subprocess.Popen(
             [sys.executable, "-c", _FALLBACK_LAUNCH, str(wait_s), query, "1" if background else ""],
             stdin=follower, stdout=follower,
-            stderr=follower, close_fds=True, cwd=Path(__file__).resolve().parents[2],
+            stderr=follower if stderr is None else stderr, close_fds=True, cwd=Path(__file__).resolve().parents[2],
             start_new_session=True,
         )
         os.close(follower)
@@ -204,23 +204,30 @@ def test_fallback_notice_survives_the_tui_screen_clear(monkeypatch):
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("case", ["nobody answers", "background job", "query given"])
-def test_fallback_notice_never_holds_an_unwatched_launch(monkeypatch, case):
+@pytest.mark.parametrize("case", ["nobody answers", "background job", "query given", "stderr redirected"])
+def test_fallback_notice_never_holds_an_unwatched_launch(monkeypatch, tmp_path, case):
     """A terminal nobody answers (tmux or expect automation) starts the TUI once the wait ends; a
-    launch in the background, or one that carries its query (-q), starts it at once. The warning
-    still follows the TUI's output."""
+    launch in the background, one that carries its query (-q), or one whose stderr (where the
+    prompt goes) is redirected starts it at once. The warning still follows the TUI's output."""
     import sys
 
     monkeypatch.setenv("HERMES_PYTHON", sys.executable)
-    terminal = _Terminal(1.5 if case == "nobody answers" else 60, background=case == "background job",
-                         query="hello" if case == "query given" else "")
+    log = tmp_path / "stderr.log"
+    with log.open("wb") as stderr:
+        terminal = _Terminal(1.5 if case == "nobody answers" else 60, background=case == "background job",
+                             query="hello" if case == "query given" else "",
+                             stderr=stderr if case == "stderr redirected" else None)
     try:
         waited = terminal.read_until(b"TUI RAN")
         before, _, terminal.seen = terminal.seen.partition(b"TUI RAN")
-        terminal.read_until(b"fallback notice")  # printed again below the TUI's output
+        if case != "stderr redirected":
+            terminal.read_until(b"fallback notice")  # printed again below the TUI's output
         assert terminal.child.wait(timeout=30) == 0
     finally:
         terminal.close()
+    if case == "stderr redirected":
+        before = log.read_bytes()
+        assert before.count(b"fallback notice") == 2  # and printed again once the TUI exits
     if case == "nobody answers":
         assert b"Press Enter" in before and waited >= 1.5
     else:

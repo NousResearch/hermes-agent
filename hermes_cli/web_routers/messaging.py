@@ -22,6 +22,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 
+from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS as _LISTENER_MIRRORS
 from gateway.status import resolve_gateway_liveness, retained_gateway_state
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
@@ -263,11 +264,14 @@ def _messaging_platform_payload(
         })
 
     enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped, source_keys)
-    if gateway_running and runtime_platform.get("mirrored_from"):
+    if gateway_running and runtime_platform.get("mirrored_from") and platform_id in _LISTENER_MIRRORS:
         # Served secondary: the default's shared listener already answers this platform at
         # /p/<profile>/... (enabling it locally 409s), so the secondary's own empty config
-        # must not project Disabled over the live mirror (#121125).
+        # must not project Disabled over the live mirror (#121125). A mirrored Relay keeps the
+        # profile's own verdict: Relay has a per-profile opt-out, and a disabled one stays Disabled.
         enabled, configured = True, True
+    elif runtime_platform.get("mirrored_from") and not (enabled and configured):
+        runtime_platform = {}  # the default's Relay is not this profile's channel: none of its errors either
 
     state = runtime_platform.get("state")
     if not enabled:
@@ -1170,7 +1174,7 @@ def _messaging_platform_posture(
     - pairing grants: approved users in the profile's pairing store (the gateway honors
       the store as a UNION with the allowlists)
     - adapter/config-enforced policy (``dm_policy: allowlist`` with an ``allow_from``):
-      the own-policy adapters (WeCom, Weixin, QQBot, WhatsApp, Yuanbao) gate at intake
+      the own-policy adapters (WeCom, Weixin, QQBot, WhatsApp) gate at intake
 
     Everything failing → deny-all: the connection is up but no sender can get through,
     which the Channels "Test" button must not render as a plain green "connected".

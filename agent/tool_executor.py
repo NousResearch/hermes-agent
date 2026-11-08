@@ -37,6 +37,7 @@ from agent.onboarding import observe_tool_result as observe_onboarding_result
 from agent import plugin_live_notes
 from agent.lsp import deferred as lsp_deferred
 from agent.prompt_cache_scope import conversation_id
+from agent.tool_blocked_row import blocked_row_open as _blocked_row_open
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
@@ -645,18 +646,17 @@ _PRUNED_TOOL_ARGUMENTS_MESSAGE = (
 )
 
 
-def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_body: dict[str, Any] | None, block_error_type: str, guardrail_decision) -> str:
-    """Synthesize the result for a call blocked by scope/plugin/pruned-args (``block_body``, the
-    JSON the model sees) or by guardrail policy (``guardrail_decision``) and emit its terminal post_tool_call."""
-    if block_body is not None:
-        result = json.dumps(block_body, ensure_ascii=False)
-        error_type, error_message = block_error_type, block_body.get("message") or block_body["error"]
-    else:
-        result = agent._guardrail_block_result(guardrail_decision)
-        error_type = "guardrail_block"
-        error_message = getattr(guardrail_decision, "message", None) or "Tool blocked by guardrail policy"
-    ref.emit_post(agent, result, status="blocked", error_type=error_type, error_message=error_message)
-    return result
+def _blocked_tool_result(
+    agent, ref: _ToolCallRef, *, block_body: dict[str, Any] | None, block_error_type: str,
+    guardrail_decision,
+) -> str:
+    """Synthesize a blocked call's result, its visible row and its terminal post_tool_call;
+    the row/result policy lives in ``agent.tool_blocked_row`` (sibling keeps this file under cap)."""
+    from agent.tool_blocked_row import blocked_tool_result
+
+    return blocked_tool_result(
+        agent, ref, block_body=block_body, block_error_type=block_error_type, guardrail_decision=guardrail_decision,
+    )
 
 
 def _pre_tool_block(agent, ref: _ToolCallRef):
@@ -1046,14 +1046,19 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
 
 
 def _emit_tool_complete_and_risk(agent, ref: _ToolCallRef, result, risk_metadata, blocked: bool) -> None:
-    """Fire ``tool_complete_callback`` (unless blocked) then the ``tool.output_risk`` projection."""
-    if not blocked and agent.tool_complete_callback:
+    """Fire ``tool_complete_callback`` then the ``tool.output_risk`` projection.
+
+    A blocked call closes the row only when it announced one (``blocked_row_open``), so the
+    guardrail/scope contract that a never-run call emits no signals is unchanged (#151276)."""
+    if agent.tool_complete_callback and (not blocked or _blocked_row_open(agent, ref.call_id)):
         try:
             display_args = _redact_tool_args_for_display(ref.name, ref.args) or ref.args
         except Exception as cb_err:
             logging.debug("Tool complete callback error: %s", cb_err)
         else:
             _safe_callback(agent.tool_complete_callback, "Tool complete", ref.call_id, ref.name, display_args, result)
+    if blocked:
+        getattr(agent, "_visible_blocked_tool_calls", set()).discard(ref.call_id)
     if risk_metadata is not None and risk_metadata.get("risk") != "low":
         _safe_callback(
             agent.tool_progress_callback, "Tool output risk",
@@ -1165,9 +1170,10 @@ def _commit_tool_result(
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None
 
-    if not blocked:
-        # ``tool.completed`` projects AFTER the canonical append + flush so resume can
-        # reconstruct the result even if the UI bridge dies mid-projection.
+    # ``tool.completed`` projects AFTER the canonical append + flush so resume can reconstruct the
+    # result even if the UI bridge dies mid-projection. A hook-blocked call that announced a row
+    # closes it here; a guardrail/scope block announces none and stays silent by contract (#151276).
+    if not blocked or _blocked_row_open(agent, tool_call_id):
         _safe_callback(
             agent.tool_progress_callback, "Tool progress",
             "tool.completed", function_name, None, None, duration=tool_duration, is_error=is_error, result=function_result,
@@ -1230,13 +1236,15 @@ def _preview(text: str, limit: int) -> str:
     return text[:limit] + "..." if len(text) > limit else text
 
 
-def _print_tool_completed(agent, index: int, tool_duration: float, result) -> None:
-    """Non-quiet ``✅ Tool N completed`` line (full result under verbose logging)."""
+def _print_tool_completed(agent, index: int, tool_duration: float, result, blocked: bool = False) -> None:
+    """Non-quiet tool result line (full result under verbose logging); a blocked call reports the
+    block instead of a ✅ completion, which claimed success for a call that never ran."""
+    mark, status = ("⛔", "blocked") if blocked else ("✅", "completed")
     if agent.verbose_logging:
-        print(f"  ✅ Tool {index} completed in {tool_duration:.2f}s")
+        print(f"  {mark} Tool {index} {status} in {tool_duration:.2f}s")
         print(agent._wrap_verbose("Result: ", result))
     else:
-        print(f"  ✅ Tool {index} completed in {tool_duration:.2f}s - {_preview(result if isinstance(result, str) else str(result), agent.log_prefix_chars)}")
+        print(f"  {mark} Tool {index} {status} in {tool_duration:.2f}s - {_preview(result if isinstance(result, str) else str(result), agent.log_prefix_chars)}")
 
 
 # ── Concurrent batch machinery ──────────────────────────────────────────────
@@ -1569,7 +1577,7 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
             cute_msg = _get_cute_tool_message_impl(ref.name, ref.args, tool_duration, result=display_function_result)
             agent._safe_print(f"  {cute_msg}")
         elif _tool_progress_enabled(agent):
-            _print_tool_completed(agent, i + 1, tool_duration, _multimodal_text_summary(display_function_result))
+            _print_tool_completed(agent, i + 1, tool_duration, _multimodal_text_summary(display_function_result), blocked)
 
         _emit_tool_complete_and_risk(agent, ref, display_function_result, risk_metadata, blocked)
     return True
@@ -1852,7 +1860,7 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
 
     _emit_tool_complete_and_risk(agent, ref, display_function_result, risk_metadata, managed.blocked)
     if _tool_progress_enabled(agent):
-        _print_tool_completed(agent, index, tool_duration, function_result)
+        _print_tool_completed(agent, index, tool_duration, function_result, managed.blocked)
     return True
 
 

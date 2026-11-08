@@ -7,7 +7,11 @@ import { createBrowserConnectionBridge } from '@/lib/browser-connection'
 import { createBrowserDesktopPluginsBridge } from '@/lib/browser-desktop-plugins'
 import { createBrowserFilesBridge } from '@/lib/browser-files'
 import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
-import { onBrowserFocusSession, showBrowserNotification } from '@/lib/browser-notifications'
+import {
+  dismissBrowserNotifications,
+  onBrowserFocusSession,
+  showBrowserNotification
+} from '@/lib/browser-notifications'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
 import { type BrowserSavedConnections, createBrowserSavedConnections } from '@/lib/browser-saved-connections'
 import { browserFolderBasePath, createBrowserSettings } from '@/lib/browser-settings'
@@ -170,6 +174,7 @@ export function installBrowserDesktopBridge(): boolean {
       return { count: query && find?.call(window, query) ? 1 : 0 }
     },
     notify: async payload => showBrowserNotification(payload),
+    dismissNotifications: dismissBrowserNotifications,
     onFocusSession: onBrowserFocusSession,
     openExternal,
     openPreviewInBrowser: async url => {

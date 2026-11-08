@@ -72,6 +72,15 @@ export function showBrowserNotification(payload: BrowserNotifyPayload): boolean 
     tag: `hermes:${payload.kind ?? ''}:${focusSessionId ?? payload.tag ?? ''}`
   })
 
+  const sessionId = payload.sessionId
+
+  if (sessionId) {
+    const shown = shownBySession.get(sessionId) ?? new Set<Notification>()
+    shown.add(notification)
+    shownBySession.set(sessionId, shown)
+    notification.onclose = () => forget(sessionId, notification)
+  }
+
   notification.onclick = () => {
     // A click on our own notification is the user's request to come back.
     window.focus()
@@ -83,4 +92,29 @@ export function showBrowserNotification(payload: BrowserNotifyPayload): boolean 
   }
 
   return true
+}
+
+const shownBySession = new Map<string, Set<Notification>>()
+
+function forget(sessionId: string, notification: Notification): void {
+  const shown = shownBySession.get(sessionId)
+  shown?.delete(notification)
+
+  if (shown && !shown.size) {
+    shownBySession.delete(sessionId)
+  }
+}
+
+/** Same contract as Electron's `dismissNotifications`: close what this tab showed for the session. */
+export async function dismissBrowserNotifications(payload: { sessionId: string; kinds?: string[] }): Promise<number> {
+  const shown = [...(shownBySession.get(payload.sessionId) ?? [])].filter(
+    notification => !payload.kinds || payload.kinds.some(kind => notification.tag.startsWith(`hermes:${kind}:`))
+  )
+
+  for (const notification of shown) {
+    notification.close()
+    forget(payload.sessionId, notification)
+  }
+
+  return shown.length
 }

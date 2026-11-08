@@ -131,3 +131,22 @@ def test_matrix_socks_session_warning_logs_proxy_without_credentials(monkeypatch
     with caplog.at_level(logging.WARNING):
         matrix_adapter._create_matrix_session(SOCKS_PROXY)
     _assert_socks_warning_without_secret(caplog)
+
+
+@pytest.mark.parametrize("proxy", [
+    "http://alice:S3cretPass@[::1",  # unparseable (unclosed IPv6 bracket)
+    "alice:S3cretPass@127.0.0.1:3128",  # no scheme
+    "http:/alice:S3cretPass@127.0.0.1:3128",  # no authority
+])
+def test_malformed_proxy_url_never_echoes_credentials(monkeypatch, caplog, proxy):
+    """A mistyped proxy URL reaches the connect log before anything validates it."""
+    from plugins.platforms.matrix import adapter as matrix_adapter
+
+    monkeypatch.setenv("MATRIX_PROXY", proxy)
+    with caplog.at_level(logging.INFO):
+        matrix_adapter.MatrixAdapter(PlatformConfig(
+            enabled=True, token="syt_test_token",
+            extra={"homeserver": "https://matrix.example.org", "user_id": "@bot:example.org"}))
+    lines = _proxy_lines(caplog)
+    assert lines, "the adapter must still announce that a proxy is in use"
+    assert all(SECRET not in line and "alice" not in line for line in lines), lines

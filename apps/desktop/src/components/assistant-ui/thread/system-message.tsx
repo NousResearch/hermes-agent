@@ -91,6 +91,7 @@ export const SystemMessage: FC = () => {
   const text = useAuiState(s => messageContentText(s.message.content))
   const asyncResult = useAuiState(s => s.message.metadata.custom?.asyncResult)
   const processResult = useAuiState(s => s.message.metadata.custom?.asyncResultKind === 'process')
+  const cronReport = useAuiState(s => s.message.metadata.custom?.cronReport === true)
 
   const contentRefused = useAuiState(
     s => s.message.metadata.custom?.contentRefused as undefined | { notice?: string }
@@ -104,6 +105,20 @@ export const SystemMessage: FC = () => {
 
   if (!text) {
     return null
+  }
+
+  // Local cron results are the deliverable itself: no follow-up turn will render a reply.
+  if (cronReport) {
+    return (
+      <MessagePrimitive.Root
+        className="flex w-full min-w-0 max-w-full flex-col self-start gap-1 pb-(--conversation-turn-gap) pl-(--message-text-indent)"
+        data-role="system"
+        data-slot="aui_cron-report"
+      >
+        <MarkdownTextContent disableArtifacts isRunning={false} text={text} />
+        <MessageTimelineTimestamp />
+      </MessagePrimitive.Root>
+    )
   }
 
   if (processResult || (typeof asyncResult === 'string' && asyncResult)) {

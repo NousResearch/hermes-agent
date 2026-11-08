@@ -39,6 +39,8 @@ export type ChatMessage = {
   /** Result body only; the system text remains the compact completion label. */
   asyncResult?: string
   asyncResultKind?: 'process'
+  /** Finished local cron output, shown in full rather than as a prompt or a compact wake. */
+  cronReport?: boolean
   timestamp?: number
   completedAt?: number
   pending?: boolean

@@ -56,8 +56,18 @@ _NAMED_FUNCTION_BLOCK_PATTERN = re.compile(
     r'<function\b[^>]*\bname\s*=[^>]*>'
     r'(?:(?:(?!</function>).)*)</function>', re.DOTALL | re.IGNORECASE,
 )
+# A degenerate open tag may glue its payload straight to the tag name with no `>` of its own
+# (`<thinkingBackup done. ...`, #136557): \b alone rejects that (both sides are word chars), so
+# an ASCII glued token followed by whitespace also opens the block — the first later `>` (a
+# tool-call tail, say) closes the opener and the rest goes as reasoning. The trailing-whitespace
+# demand is what separates a glued opener from a legitimate element whose name merely starts
+# with a tag name (`<thoughts>`, `<reasoningEffort>`, `<thinkpad-model>`: glued token then
+# `>` or `-`, never whitespace). Still boundary-gated (line start) and still no bare substring
+# match; CJK tag names stay on the strict \b because a glued CJK continuation (e.g. prose
+# starting with `<思考的`) is indistinguishable from a word.
 _UNTERMINATED_REASONING_BLOCK_PATTERN = re.compile(
-    rf'(?:^|\n)[ \t]*<(?:{"|".join(THINK_TAG_NAMES)})\b[^>]*>.*$', re.DOTALL | re.IGNORECASE
+    rf'(?:^|\n)[ \t]*<(?:{"|".join(THINK_TAG_NAMES)})(?:\b|(?=[A-Za-z0-9]+\s))[^>]*>.*$',
+    re.DOTALL | re.IGNORECASE,
 )
 _ORPHAN_REASONING_TAG_PATTERN = re.compile(
     rf'</?(?:{"|".join(THINK_TAG_NAMES)})>\s*', re.IGNORECASE

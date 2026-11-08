@@ -1,6 +1,6 @@
 name: postkitty
 repo: https://github.com/mertkayacs/postkitty
-sha: 4452de55d700e84d42e4ac758217f6b5e1617d51
+sha: 465746a45be4b28c1cf7ed65e2ddf24d3bd0e154
 title: postkitty
 description: 'One post in, every platform out. Turns a draft, photos and landscape video into checked, ready-to-post
   files for Instagram, TikTok, YouTube Shorts, X, LinkedIn, Threads, Bluesky and Facebook: face-aware crops,
@@ -13,10 +13,10 @@ category: tools
 version: "0.1.0"
 requires_hermes: ">=0.22.7"
 docs_url: https://postkitty.mertkayacs.com
-image: https://raw.githubusercontent.com/mertkayacs/postkitty/4452de55d700e84d42e4ac758217f6b5e1617d51/docs/banner.png
+image: https://raw.githubusercontent.com/mertkayacs/postkitty/465746a45be4b28c1cf7ed65e2ddf24d3bd0e154/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/mertkayacs/postkitty/4452de55d700e84d42e4ac758217f6b5e1617d51/docs/board.png
-  - https://raw.githubusercontent.com/mertkayacs/postkitty/4452de55d700e84d42e4ac758217f6b5e1617d51/docs/before-after.jpg
+  - https://raw.githubusercontent.com/mertkayacs/postkitty/465746a45be4b28c1cf7ed65e2ddf24d3bd0e154/docs/board.png
+  - https://raw.githubusercontent.com/mertkayacs/postkitty/465746a45be4b28c1cf7ed65e2ddf24d3bd0e154/docs/before-after.jpg
 known_issues:
   - Needs ffmpeg and ffprobe on PATH for video.
 capabilities:

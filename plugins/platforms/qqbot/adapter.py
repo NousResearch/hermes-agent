@@ -700,8 +700,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     self._log_tag, session_key, event.operator_openid)
                 return
             try:
-                from tools.approval import resolve_gateway_approval  # lazy: keep adapter light
-                count = resolve_gateway_approval(session_key, choice)
+                from tools.approval import resolve_gateway_approval_card  # lazy: keep adapter light
+                count = resolve_gateway_approval_card(session_key, choice, None)  # refuses approve on Deny-only
                 logger.info(
                     "[%s] Button resolved %d approval(s) for session %s (choice=%s, operator=%s)",
                     self._log_tag, count, session_key, choice, event.operator_openid)
@@ -1477,22 +1477,17 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     # Cross-adapter gateway contract: gateway/run.py detects send_exec_approval /
     # send_update_prompt on the adapter class for button-based approval/update UX.
 
-    _APPROVAL_TIMEOUT_SECONDS = 300  # matches gateway's default gateway_timeout
-
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Keyboard-card approval (called while the agent blocks on approval); clicks resolve via
-        _default_interaction_dispatch. QQ's 3-button keyboard has no session tier and no thread /
-        DM targeting, so only the ``always`` choice and the raw command/reason are used."""
-        description = prompt.description
-        if prompt.smart_denied:
-            description += " Owner override applies to this one operation only."
-        req = ApprovalRequest(
-            session_key=prompt.session_key, title="Execute this command?", description=description,
-            command_preview=prompt.command, timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
-            allow_permanent="always" in prompt.choices)
+        _default_interaction_dispatch. The body is the shared prompt text, so the preview QQ shows is the
+        one the shortened-preview check measured; the keyboard offers only ``prompt.choices`` (QQ's three
+        buttons fold the session tier into ``always``)."""
+        choices = prompt.choices
+        keyboard = build_approval_keyboard(
+            prompt.session_key, allow_permanent="always" in choices, allow_once="once" in choices)
         # QQ requires a msg_id for passive replies; the last inbound id is the natural one.
-        return await self.send_approval_request(
-            prompt.chat_id, req, reply_to=self._last_msg_id.get(prompt.chat_id))
+        return await self.send_with_keyboard(
+            prompt.chat_id, prompt.text, keyboard, reply_to=self._last_msg_id.get(prompt.chat_id))
 
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "",

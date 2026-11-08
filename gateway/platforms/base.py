@@ -2791,6 +2791,8 @@ class BasePlatformAdapter(ABC):
         if truncated and not await send_full_command(self, chat_id, command, metadata):
             text = render_exec_approval(self, command, description, smart_denied, False)[0]
             actions = [row for row in actions if row[1] == "deny"]
+            from tools.approval import restrict_gateway_approval_card_to_deny
+            restrict_gateway_approval_card_to_deny(session_key, request_id)  # a forged approve tap resolves nothing
         return await self._send_exec_approval_prompt(ExecApprovalPrompt(
             chat_id=chat_id, session_key=session_key, metadata=metadata, command=command, description=description,
             smart_denied=smart_denied, request_id=request_id, text=text, actions=actions))

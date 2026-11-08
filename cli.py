@@ -398,6 +398,12 @@ def get_tool_definitions(*args, **kwargs):
     from model_tools import get_tool_definitions as _get_tool_definitions
 
     wait_for_mcp_discovery()
+    try:
+        from hermes_cli.utcp_startup import wait_for_utcp_discovery
+
+        wait_for_utcp_discovery()
+    except Exception:
+        pass
     return _get_tool_definitions(*args, **kwargs)
 
 

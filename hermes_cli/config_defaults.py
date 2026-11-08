@@ -523,6 +523,38 @@ DEFAULT_CONFIG = {
     # the larger bound lets slow cold-start servers (npx, uvx, remote HTTP) land. Reachable servers
     # still only wait their real handshake time.
     "mcp_single_query_discovery_timeout": 15.0,
+    # ── Native UTCP (Universal Tool Calling Protocol) providers ──────────────
+    # A UTCP provider publishes a manual (tool list + transport + auth) that Hermes consumes
+    # directly — no MCP server in between. Disabled by default: users who configure no provider
+    # import nothing and pay no startup cost. Requires the optional extra (`hermes pm install
+    # --extra utcp`). Tools appear as `utcp__<provider>__<tool>`; each provider gets its own
+    # client, credential scope, and failure domain. Example:
+    #
+    #   utcp:
+    #     enabled: true
+    #     providers:
+    #       - name: weather
+    #         call_template_type: http
+    #         url: https://weather.example.com/.well-known/utcp
+    #         variables:
+    #           API_KEY: env:WEATHER_UTCP_API_KEY   # secret lives in .env
+    #         headers:
+    #           Authorization: "Bearer ${API_KEY}"
+    "utcp": {
+        "enabled": False,
+        # Transports Hermes will accept. The HTTP family cannot execute local commands or read
+        # local files; CLI/file/socket/MCP transports are excluded by design so a provider config
+        # can never run code on the host.
+        "allowed_transports": ["http", "sse", "streamable_http"],
+        # Bounded join at agent build (mirrors mcp_discovery_timeout).
+        "discovery_timeout": 1.5,
+        "single_query_discovery_timeout": 15.0,
+        # Per-provider defaults; overridable per provider entry.
+        "max_concurrent_calls": 4,
+        "max_result_chars": 200_000,
+        "max_arg_bytes": 262_144,
+        "providers": [],
+    },
     "mcp": {  # MCP runtime behavior (distinct from mcp_servers: definitions and auxiliary.mcp).
         # Auto-reload MCP connections when config.yaml's mcp_servers changes (CLI watcher). Every
         # reload rebuilds the tool surface and INVALIDATES the provider prompt cache (next message

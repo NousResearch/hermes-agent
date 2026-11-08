@@ -1892,10 +1892,17 @@ async def _discover_gateway_mcp_tools(config: object) -> None:
     """
     from tools.mcp_oauth import suppress_interactive_oauth
     from tools.mcp_tool_discovery import discover_mcp_tools
+    from tools.utcp_tool import discover_utcp_tools
     loop = asyncio.get_running_loop()
     with suppress_interactive_oauth():
         if not getattr(config, "multiplex_profiles", False):
             await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
+            # Native UTCP providers: same executor + context shape, so a slow
+            # provider cannot stall platform heartbeats.
+            try:
+                await loop.run_in_executor(None, copy_context().run, discover_utcp_tools)
+            except Exception:
+                logger.debug("UTCP tool discovery failed", exc_info=True)
             return
         for profile_name, profile_home in _multiplex_profile_homes(config):
             try:
@@ -1903,6 +1910,11 @@ async def _discover_gateway_mcp_tools(config: object) -> None:
                     await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
             except Exception:
                 logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
+            try:
+                with _profile_runtime_scope(Path(profile_home)):
+                    await loop.run_in_executor(None, copy_context().run, discover_utcp_tools)
+            except Exception:
+                logger.warning("UTCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
 
 
 def _platform_has_bot_credential(platform: "Platform", platform_config: "PlatformConfig") -> bool:
@@ -4615,6 +4627,14 @@ async def _shutdown_mcp_servers_nonblocking(timeout: float = 5.0, config: Any = 
                 shutdown_mcp_servers(timeout=pass_timeout)
         except Exception:
             logger.debug("MCP shutdown raised", exc_info=True)
+        # UTCP clients are process-global (one per provider name) with a shared
+        # background loop: close them once, after the per-profile MCP passes.
+        try:
+            from tools.utcp_tool import shutdown_utcp_providers
+
+            shutdown_utcp_providers()
+        except Exception:
+            logger.debug("UTCP shutdown raised", exc_info=True)
 
     thread = threading.Thread(target=Context().run, args=(_do,), name="mcp-shutdown", daemon=True)
     thread.start()

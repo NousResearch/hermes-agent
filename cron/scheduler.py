@@ -444,8 +444,9 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     if "no_mcp" in per_job:
         return result
     # lazy: avoid heavy hermes_cli import at module load; shares MCP-membership with gateway/CLI
-    from hermes_cli.tools_config import enabled_mcp_server_names
+    from hermes_cli.tools_config import enabled_mcp_server_names, enabled_utcp_provider_names
     enabled_mcp = enabled_mcp_server_names(cfg)
+    enabled_utcp = enabled_utcp_provider_names(cfg)
     # A job names an MCP server by its TOOLSET name (``mcp-<server>``) or by the bare alias the
     # registry registers for it; compare against BOTH, or a job that named one server never matched
     # and the fallback below unioned EVERY enabled server into its allowlist (#141468).
@@ -454,9 +455,18 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     # interactive resolver follows (hermes_cli.tools_config._merge_mcp_servers).
     configured = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
     known = enabled_mcp | {str(name) for name in configured}
-    if set(result) & (known | {f"mcp-{name}" for name in known}):
+    # UTCP providers follow the same rule: listed by toolset name
+    # (``utcp-<provider>``) or by the bare provider alias.
+    utcp_section = cfg.get("utcp") if isinstance(cfg.get("utcp"), dict) else {}
+    utcp_providers = utcp_section.get("providers") if isinstance(utcp_section.get("providers"), (list, tuple)) else []
+    utcp_known = enabled_utcp | {
+        str(entry.get("name")) for entry in utcp_providers
+        if isinstance(entry, dict) and entry.get("name")
+    }
+    if set(result) & (known | {f"mcp-{name}" for name in known}
+                      | utcp_known | {f"utcp-{name}" for name in utcp_known}):
         return result
-    for name in sorted(enabled_mcp):
+    for name in sorted(enabled_mcp | enabled_utcp):
         if name not in result:
             result.append(name)
     return result

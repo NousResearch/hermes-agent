@@ -302,6 +302,7 @@ from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
+from hermes_cli.subcommands.utcp import build_utcp_parser
 from hermes_cli.subcommands.connectors import build_connectors_parser
 from hermes_cli.subcommands.vault import build_vault_parser
 from hermes_cli.subcommands.moa import build_moa_parser
@@ -1761,6 +1762,7 @@ cmd_prompt_size = _forward_command("cmd_prompt_size", "hermes_cli.prompt_size", 
 cmd_pairing = _forward_command("cmd_pairing", "hermes_cli.pairing", "pairing_command")
 cmd_plugins = _forward_command("cmd_plugins", "hermes_cli.plugins_cmd", "plugins_command")
 cmd_mcp = _forward_command("cmd_mcp", "hermes_cli.mcp_config", "mcp_command", forward_return=True)
+cmd_utcp = _forward_command("cmd_utcp", "hermes_cli.utcp_config", "utcp_command", forward_return=True)
 
 
 def cmd_model(args):
@@ -2805,6 +2807,12 @@ def _prepare_agent_startup(args) -> None:
         set_mcp_server_filter(getattr(args, "toolsets", None))
     except Exception:
         logger.debug("MCP server filter setup failed", exc_info=True)
+    try:
+        from hermes_cli.utcp_startup import set_utcp_provider_filter
+
+        set_utcp_provider_filter(getattr(args, "toolsets", None))
+    except Exception:
+        logger.debug("UTCP provider filter setup failed", exc_info=True)
 
     # TUI launches background MCP discovery with a bounded join; acp/gateway/cron do their own.
     if _chat_runs_at_gateway(args):  # chat turns run in the gateway: it owns MCP, hooks, webhooks
@@ -2822,6 +2830,20 @@ def _prepare_agent_startup(args) -> None:
         except Exception:
             logger.debug(
                 "Background MCP tool discovery failed at CLI startup",
+                exc_info=True,
+            )
+        # Native UTCP providers follow the same lifecycle: config-gated before
+        # any SDK import, joined (bounded) before the agent snapshots tools.
+        try:
+            from hermes_cli.utcp_startup import start_background_utcp_discovery
+
+            start_background_utcp_discovery(
+                logger=logger,
+                thread_name="cli-utcp-discovery",
+            )
+        except Exception:
+            logger.debug(
+                "Background UTCP tool discovery failed at CLI startup",
                 exc_info=True,
             )
     try:
@@ -3266,6 +3288,7 @@ def _build_cli_parser():
     build_tools_parser(subparsers, cmd_tools=cmd_tools)
     build_computer_use_parser(subparsers)
     build_mcp_parser(subparsers, cmd_mcp=cmd_mcp)
+    build_utcp_parser(subparsers, cmd_utcp=cmd_utcp)
     build_connectors_parser(subparsers)
     build_sessions_parser(subparsers, cmd_sessions=cmd_sessions_lazy)
     build_insights_parser(subparsers, cmd_insights=cmd_insights)

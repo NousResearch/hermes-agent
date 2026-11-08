@@ -262,6 +262,11 @@ def _start_agent_build(sid: str, session: dict) -> None:
             except Exception:
                 logger.warning("MCP discovery startup failed", exc_info=True)
             try:
+                from tui_gateway.entry import ensure_utcp_discovery_started
+                ensure_utcp_discovery_started()
+            except Exception:
+                logger.warning("UTCP discovery startup failed", exc_info=True)
+            try:
                 agent = _make_agent(sid, key, **_deferred_build_agent_kwargs(current, session_db))
             finally:
                 _clear_session_context(tokens)

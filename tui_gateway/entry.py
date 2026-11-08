@@ -294,6 +294,23 @@ def ensure_mcp_discovery_started() -> None:
     _spawn_discovery(("warning", "Background MCP tool discovery failed to start"))
 
 
+def ensure_utcp_discovery_started() -> None:
+    """Start background UTCP discovery for the current profile context.
+
+    Independent of the MCP gate: a profile can configure UTCP providers and no
+    MCP servers. ``hermes_cli.utcp_startup`` keys its discovery slot by profile
+    home, so a shared desktop/dashboard backend discovers each profile's own
+    ``utcp:`` providers.
+    """
+    try:
+        from hermes_cli import utcp_startup
+
+        utcp_startup.start_background_utcp_discovery(
+            logger=logger, thread_name="tui-utcp-discovery")
+    except Exception:
+        logger.warning("Background UTCP tool discovery failed to start", exc_info=True)
+
+
 def _write_or_exit(payload: dict, reason: str) -> None:
     if not write_json(payload):
         _log_exit(reason)

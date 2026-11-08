@@ -628,6 +628,13 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
     # Explicit non-configurable entries (custom toolsets, MCP server names) pass through.
     explicit_passthrough = {ts for ts in toolset_names if ts not in explicit_known_keys and ts not in platform_default_keys}
     enabled_toolsets |= _merge_mcp_servers(config, toolset_names, explicit_passthrough, include_default_mcp_servers)
+    # UTCP providers ride the same contract as MCP servers. Only touch the set
+    # when UTCP is configured: known provider names are removed first so a
+    # provider that is configured-but-disabled (and merely listed in
+    # platform_toolsets) cannot sneak back in as a passthrough entry.
+    if isinstance(config.get("utcp"), dict):
+        enabled_toolsets -= _configured_utcp_names(config)
+        enabled_toolsets |= _merge_utcp_providers(config, toolset_names, explicit_passthrough, True)
 
     # Legacy profile opt-in is a fallback only. A saved platform list (even
     # empty) is authoritative, so a later disable cannot silently re-enable it.
@@ -729,6 +736,73 @@ def _recover_platform_native_toolsets(enabled_toolsets: set[str], platform: str,
         if not ts_tools <= claimed:
             enabled_toolsets.add(ts_key)
             claimed.update(ts_tools)
+
+
+def enabled_utcp_provider_names(config: dict) -> set[str]:
+    """UTCP providers enabled in config.yaml (shared by platform + cron resolvers).
+
+    Mirrors :func:`enabled_mcp_server_names`: the ``utcp:`` section must be
+    enabled and each provider is on unless its entry sets an explicitly falsey
+    ``enabled``. Each name resolves to the ``utcp-<name>`` toolset (with the
+    bare provider name as an alias), exactly as an MCP server name resolves to
+    ``mcp-<name>``.
+    """
+    section = (config or {}).get("utcp") or {}
+    if not isinstance(section, dict) or not _parse_enabled_flag(section.get("enabled", False), default=False):
+        return set()
+    providers = section.get("providers")
+    if not isinstance(providers, (list, tuple)):
+        return set()
+    return {
+        str(entry["name"]).strip()
+        for entry in providers
+        if isinstance(entry, dict)
+        and isinstance(entry.get("name"), str)
+        and entry["name"].strip()
+        and _parse_enabled_flag(entry.get("enabled", True), default=True)
+    }
+
+
+def _configured_utcp_names(config: dict) -> set[str]:
+    """Every provider name in ``utcp.providers`` (enabled or not)."""
+    section = (config or {}).get("utcp")
+    if not isinstance(section, dict):
+        return set()
+    providers = section.get("providers")
+    if not isinstance(providers, (list, tuple)):
+        return set()
+    return {
+        str(entry["name"]).strip()
+        for entry in providers
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str) and entry["name"].strip()
+    }
+
+
+def _merge_utcp_providers(
+    config: dict, toolset_names: list[str], explicit_passthrough: set[str], include_default_utcp_providers: bool
+) -> set[str]:
+    """This platform's UTCP providers — provider names only.
+
+    Same contract as :func:`_merge_mcp_servers` for the providers themselves:
+    listed provider names form an allowlist, otherwise every enabled provider is
+    available; the ``no_utcp`` sentinel disables all of them for the platform.
+    Entries that are not a configured provider are deliberately NOT returned:
+    MCP servers and custom toolsets are :func:`_merge_mcp_servers`' business, and
+    re-adding them here would resurrect a server that resolver just excluded.
+    """
+    enabled_utcp_providers = enabled_utcp_provider_names(config)
+    known = enabled_utcp_providers | _configured_utcp_names(config)
+    # ``utcp-<provider>`` is the same provider as its bare alias.
+    explicit = {
+        ts[5:] if ts.startswith("utcp-") and ts not in known and ts[5:] in known else ts
+        for ts in explicit_passthrough
+    }
+    if "no_utcp" in toolset_names:
+        return set()
+    explicit_utcp_providers = explicit & enabled_utcp_providers
+    if include_default_utcp_providers and not explicit & known:
+        return set(enabled_utcp_providers)
+    return explicit_utcp_providers
 
 
 def _merge_mcp_servers(

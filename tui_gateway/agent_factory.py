@@ -643,6 +643,8 @@ def _make_agent(
     for _mod in ("hermes_cli.mcp_startup", "tui_gateway.entry"):
         with contextlib.suppress(Exception):
             importlib.import_module(_mod).wait_for_mcp_discovery()
+    with contextlib.suppress(Exception):
+        importlib.import_module("hermes_cli.utcp_startup").wait_for_utcp_discovery()
     cfg = _load_cfg()
     # Load hooks alongside the same profile config used to construct this agent.
     from agent.shell_hooks import register_from_config

@@ -63,6 +63,8 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "documents-pdf": ("pdfplumber", "pypdfium2"),
     "computer-use": "mcp",
     "trace-upload": "huggingface_hub",
+    # UTCP tool providers — anchors are the core client and the HTTP transport plugin.
+    "utcp": ("utcp", "utcp_http"),
     # Pillow resize recovery for vision tools (the `vision` extra is a no-op
     # back-compat alias — Pillow is core — but ensure_import("vision") must
     # still resolve an anchor so availability checks work).

@@ -584,6 +584,13 @@ class SessionManager:
             logger.debug("ACP: bounded MCP discovery wait failed", exc_info=True)
 
         try:
+            from hermes_cli.utcp_startup import ensure_utcp_discovery_before_agent_build
+
+            ensure_utcp_discovery_before_agent_build(logger=logger, thread_name="acp-utcp-discovery")
+        except Exception:
+            logger.debug("ACP: bounded UTCP discovery wait failed", exc_info=True)
+
+        try:
             agent = AIAgent(**kwargs)
         except Exception as exc:
             # The bare-AIAgent fallback dies with "No LLM provider configured. Run `hermes setup`" on a

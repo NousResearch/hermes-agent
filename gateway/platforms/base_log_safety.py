@@ -37,8 +37,11 @@ def safe_url_for_log(url: str, max_len: int = 80) -> str:
     # ``u:p@proxy:8080``, ``http:/u:p@proxy``): never echo text that may still hold credentials.
     if parsed is None or not (parsed.scheme and parsed.netloc) and "@" in raw:
         return _UNSAFE_URL_PLACEHOLDER[:max_len]
-    safe = raw
-    if parsed.scheme and parsed.netloc:
+    if not (parsed.scheme and parsed.netloc):
+        # No authority to rebuild from (``proxy:8080?auth=…``, a bare path): still drop the
+        # query and fragment the docstring promises are never logged.
+        safe = raw.split("?", 1)[0].split("#", 1)[0]
+    else:
         authority = _authority_for_log(raw, parsed)
         if authority is None:
             return _UNSAFE_URL_PLACEHOLDER[:max_len]

@@ -1,9 +1,9 @@
 name: rariflat
 title: Rariflat
-description: "Shows a character reaction for every tool call, tracks tool reliability, suggests observed tools for a task, and offers an opt-in guard. Local-only statistics are stored under $HERMES_HOME/plugin-data/rariflat/; no network calls, credentials, or subprocesses. The guard is off by default and blocks only tools explicitly listed by the user."
+description: "Shows live character reactions for tool calls, tracks local tool reliability, recommends previously observed tools for a task, and provides an opt-in failure-streak / repeated-call guard. Statistics stay local under $HERMES_HOME/plugin-data/rariflat/; no network calls, credential access, or subprocess execution."
 repo: https://github.com/wadezigh96/rariflat-hermes
-sha: 5672b7086fa6bf886f568bfb37b13738435afec7
-version: "1.2.0"
+sha: cf782d17563ed27e6c6a42f5a19db744e375b608
+version: "2.0.0"
 maintainer: wadezigh96
 tier: community
 category: desktop

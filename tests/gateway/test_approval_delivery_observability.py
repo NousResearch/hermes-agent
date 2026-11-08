@@ -93,7 +93,9 @@ def test_acknowledged_card_leaves_a_delivery_record(tmp_path, monkeypatch, caplo
     assert len(delivered) == 1
     assert "message_id=card-1" in delivered[0] and "request_id=req-1" in delivered[0]
     assert f"session={SESSION}" in delivered[0]
-    assert "chat=C1" in delivered[0] and "thread=77" in delivered[0]  # which lane the acked card landed in
+    # Labelled as the REQUESTED lane: a stale-thread fallback can deliver elsewhere, so "thread=" would lie.
+    assert "requested_chat=C1" in delivered[0] and "requested_thread=77" in delivered[0]
+    assert " chat=" not in delivered[0] and " thread=" not in delivered[0]
     assert "rm -rf" not in delivered[0]
 
 

@@ -281,6 +281,11 @@ def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) 
     return content[:last_nl + 1 if last_nl > max_chars // 2 else max_chars], True
 
 
+def _tool_metadata_block(fields: dict) -> str:
+    metadata = json.dumps(fields, ensure_ascii=False, indent=1, sort_keys=True, default=str)
+    return f"{_TOOL_METADATA_TAG}\n{metadata}\n{_TOOL_METADATA_CLOSING_TAG}"
+
+
 def _pageable_tool_json(content: str, payload: dict) -> str:
     strings = [(key, value) for key, value in payload.items() if isinstance(value, str)]
     if not strings:
@@ -291,10 +296,12 @@ def _pageable_tool_json(content: str, payload: dict) -> str:
             key, text = name, value
     if "\n" not in text or "\x00" in text or len(text) < len(content) / 2:
         return content
-    extras = {name: value for name, value in payload.items() if name != key}
-    extras["text_field"] = key
-    metadata = json.dumps(extras, ensure_ascii=False, indent=1, sort_keys=True, default=str)
-    return f"{_TOOL_METADATA_TAG}\n{metadata}\n{_TOOL_METADATA_CLOSING_TAG}\n\n{text}"
+    header, trailer = {"text_field": key}, {}
+    for name, value in payload.items():
+        if name != key:
+            (trailer if isinstance(value, (dict, list)) else header)[name] = value
+    pageable = f"{_tool_metadata_block(header)}\n\n{text}"
+    return f"{pageable}\n\n{_tool_metadata_block(trailer)}\n" if trailer else pageable
 
 
 def _pageable_text(content: str) -> str:
@@ -312,9 +319,12 @@ def _pageable_text(content: str) -> str:
     payloads ``_render_call_tool_result`` deliberately keeps for the model (#115430). Any other
     JSON object unwraps its longest string only when that string is multi-line, NUL-free (a NUL
     makes ``read_file`` treat the file as binary) and at least half the payload, so small or
-    opaque JSON stays verbatim. Its other keys go in a metadata block BEFORE the text, so
-    ``status``/``exit_code`` stay in the inline preview. Either way nothing is dropped: the spill
-    file is the only copy left once the result is replaced by the preview.
+    opaque JSON stays verbatim. Its scalar keys (``status``, ``exit_code``, ``error``, notes,
+    paths) go in a metadata block BEFORE the text, so they stay in the inline preview; its lists
+    and dicts go in a second block AFTER it, so they cannot push the text out of the preview (a
+    ``skill_view`` result's ``linked_files`` and ``metadata`` filled all of it). Either way
+    nothing is dropped: the spill file is the only copy left once the result is replaced by the
+    preview.
     """
     try:
         payload = json.loads(content)

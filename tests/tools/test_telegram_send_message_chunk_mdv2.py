@@ -64,7 +64,7 @@ def _long_markdown_message(repeats: int = 250) -> str:
 
 def test_chunk_indicators_have_escaped_parens(monkeypatch: pytest.MonkeyPatch) -> None:
     """Multi-chunk MarkdownV2 messages must escape () in the (N/M) indicator."""
-    from tools.send_message_tool import _send_telegram
+    from plugins.platforms.telegram.standalone import _send_telegram
 
     _no_proxy(monkeypatch)
     bot = _make_bot()
@@ -101,7 +101,7 @@ def test_chunked_code_fence_indicator_separated(monkeypatch: pytest.MonkeyPatch)
     limit -- worst case: 100+ chunks, each hard-split inside the fence.
     """
     from gateway.platforms.base import utf16_len
-    from tools.send_message_tool import _send_telegram
+    from plugins.platforms.telegram.standalone import _send_telegram
 
     _no_proxy(monkeypatch)
     bot = _make_bot()

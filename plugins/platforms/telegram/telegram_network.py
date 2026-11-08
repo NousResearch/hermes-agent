@@ -85,10 +85,11 @@ def ptb_request_kwargs() -> dict:
     }
 
 
-def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optional[str], verify) -> tuple:
+def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optional[str], verify=None) -> tuple:
     """The (general, getUpdates) ``request_cls`` (PTB ``HTTPXRequest``) pair the gateway adapter and
     the standalone sender both use: the fallback-IP transport when ``fallback_ips`` and no proxy,
-    else the explicit proxy, else direct DNS; every client verifies with ``verify``.
+    else the explicit proxy, else direct DNS; every client verifies with ``verify`` (default: the
+    cached ``platform_ssl_context()``).
 
     CLOSE_WAIT fd leak (#31599, #18451): PTB builds its httpx client with only
     ``max_connections`` and httpx's default 5s keepalive, so behind an HTTP proxy a peer FIN can
@@ -97,6 +98,7 @@ def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optio
     socket (``max_keepalive_connections=0``). httpx ignores client ``limits`` when a custom
     ``transport`` is supplied (#58790), so the fallback branch hands them to the transport."""
     from gateway.platforms._http_client_limits import platform_httpx_limits
+    verify = platform_ssl_context() if verify is None else verify
     kwargs = ptb_request_kwargs()
     base = platform_httpx_limits()
     pool = updates = None

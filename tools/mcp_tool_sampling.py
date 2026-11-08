@@ -9,7 +9,7 @@ import time
 from contextvars import Context
 from typing import TYPE_CHECKING, Callable, List, Optional
 from utils import is_truthy_value
-from tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, mcp_field, _core
+from tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, exact_mcp_identifier, mcp_field, _core
 from tools.mcp_tool_schema import _normalize_mcp_input_schema, strip_schema_annotations
 from tools.ansi_strip import strip_tool_metadata_text, strip_unicode_tags, strip_unicode_tags_deep
 
@@ -45,10 +45,12 @@ def _content_part(block) -> Optional[dict]:
 
 def _tool_call_dict(tu, index: int) -> dict:
     args = tu.input
-    # Same conversion as the matching tool result's ``tool_call_id``, so the pair still matches.
+    # Same conversion as the matching tool result's ``tool_call_id``, so the pair still matches. The
+    # name and arguments are what the tool was really called with: they stay exact, like the tool's
+    # schema names and enums, so the history matches the advertised contract.
     return {"id": strip_unicode_tags(str(getattr(tu, "id", f"call_{index}"))), "type": "function", "function": {
-        "name": strip_unicode_tags(str(tu.name)),
-        "arguments": json.dumps(strip_unicode_tags_deep(args), ensure_ascii=False) if isinstance(args, dict) else strip_unicode_tags(str(args))}}
+        "name": exact_mcp_identifier(str(tu.name), "sampling tool name"),
+        "arguments": json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)}}
 
 
 def _convert_sampling_message(msg) -> list[dict]:
@@ -210,7 +212,7 @@ class SamplingHandler:
         max_tokens = min(mcp_field(params, "max_tokens", "maxTokens", self.max_tokens_cap), self.max_tokens_cap)
         server_tools = getattr(params, "tools", None)
         tools = [{"type": "function", "function": {
-            "name": strip_unicode_tags(str(getattr(t, "name", ""))),
+            "name": exact_mcp_identifier(str(getattr(t, "name", "")), "sampling tool name"),  # tool_calls echo it
             "description": strip_tool_metadata_text(str(getattr(t, "description", "") or "")),
             "parameters": strip_schema_annotations(
                 _normalize_mcp_input_schema(mcp_field(t, "input_schema", "inputSchema")), getattr(t, "name", ""))}}

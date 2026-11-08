@@ -88,6 +88,16 @@ def _sanitize_error(text: str) -> str:
     return strip_unicode_tags(_CREDENTIAL_PATTERN.sub("[REDACTED]", text))
 
 
+def exact_mcp_identifier(value, what: str):
+    """*value* unchanged: a name/uri the server matches a later request against must round-trip
+    byte-exact, so a hidden TAG/bidi char in it is logged rather than stripped (stripping would make
+    the prompt, resource or tool uncallable)."""
+    from tools.ansi_strip import strip_tool_metadata_text
+    if isinstance(value, str) and strip_tool_metadata_text(value) != value:
+        logger.warning("MCP %s %r carries invisible characters; kept as-is (the server matches it)", what, value)
+    return value
+
+
 def _exc_str(exc: BaseException) -> str:
     """Non-empty string for *exc*: some exceptions (``anyio.ClosedResourceError``) carry no
     message, so fall back to ``repr`` to keep diagnostics."""

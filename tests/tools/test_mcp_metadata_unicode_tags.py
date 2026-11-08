@@ -42,18 +42,19 @@ class TestDroppedBlockNotice:
         from tools.mcp_tool_content import _render_mcp_dropped_block_notice
 
         block = SimpleNamespace(
-            type=TAGGED, mimeType=TAGGED, uri=TAGGED, name=TAGGED, size=42)
+            type=TAGGED, mimeType=TAGGED, uri="x://y", name=TAGGED, size=42)
         out = _render_mcp_dropped_block_notice(block, TAGGED)
         assert "unsupported block" in out
         _assert_no_tags(out)
         assert "evil" in out
         assert "size=42" in out
 
-    def test_nested_resource_uri_stripped(self):
+    def test_uri_kept_exact(self):
+        """The notice hands the model a uri to fetch with read_resource: it must round-trip."""
         from tools.mcp_tool_content import _render_mcp_dropped_block_notice
 
         block = SimpleNamespace(type=None, resource=SimpleNamespace(uri=TAGGED))
-        _assert_no_tags(_render_mcp_dropped_block_notice(block, "weird"))
+        assert f"uri={TAGGED}" in _render_mcp_dropped_block_notice(block, "weird")
 
 
 class TestResourceLinkAndEmbeddedMetadata:
@@ -61,7 +62,7 @@ class TestResourceLinkAndEmbeddedMetadata:
         from tools.mcp_tool_content import _render_mcp_resource_block
 
         block = SimpleNamespace(
-            type="resource_link", uri=TAGGED, name=TAGGED, mimeType=TAGGED)
+            type="resource_link", uri="x://y", name=TAGGED, mimeType=TAGGED)
         out = _render_mcp_resource_block(block, "srv")
         assert "resource link" in out
         _assert_no_tags(out)
@@ -98,19 +99,22 @@ class TestUtilityRenderers:
         from tools.mcp_tool_handlers import _render_resource_list
 
         r = SimpleNamespace(uri=TAGGED, name=TAGGED, description=TAGGED, mimeType=TAGGED)
-        out = _render_resource_list([r], "srv")
-        _assert_no_tags(out)
-        assert out["resources"][0]["name"] == "evil"
+        entry = _render_resource_list([r], "srv")["resources"][0]
+        assert entry["uri"] == TAGGED  # read_resource sends it back verbatim
+        _assert_no_tags({k: v for k, v in entry.items() if k != "uri"})
+        assert entry["name"] == "evil"
 
-    def test_prompt_list_fields_stripped(self):
+    def test_prompt_list_strips_prose_but_keeps_callable_names(self):
+        """get_prompt sends the listed prompt/argument names back to the server: they must round-trip."""
         from tools.mcp_tool_handlers import _render_prompt_list
 
         p = SimpleNamespace(
             name=TAGGED, description=TAGGED,
             arguments=[SimpleNamespace(name=TAGGED, description=TAGGED, required=True)])
-        out = _render_prompt_list([p], "srv")
-        _assert_no_tags(out)
-        assert out["prompts"][0]["arguments"][0]["required"] is True
+        entry = _render_prompt_list([p], "srv")["prompts"][0]
+        assert entry["name"] == TAGGED and entry["arguments"][0]["name"] == TAGGED
+        assert entry["description"] == "evil" and entry["arguments"][0]["description"] == "evil"
+        assert entry["arguments"][0]["required"] is True
 
     def test_get_prompt_role_and_description_stripped(self):
         from tools.mcp_tool_handlers import _render_get_prompt
@@ -145,7 +149,7 @@ class TestCallToolResultArms:
         _assert_no_tags(self._render(res))
 
     def test_unsupported_block_notice_via_call_tool_result(self):
-        block = SimpleNamespace(type=TAGGED, mimeType=TAGGED, uri=TAGGED, name=TAGGED)
+        block = SimpleNamespace(type=TAGGED, mimeType=TAGGED, uri="x://y", name=TAGGED)
         res = SimpleNamespace(content=[block], isError=False, structuredContent=None, meta=None)
         _assert_no_tags(self._render(res))
 
@@ -182,14 +186,15 @@ class TestSamplingPath:
             role="assistant", content=[SimpleNamespace(name="t", input={}, id=TAGGED)]))
         assert call[0]["tool_calls"][0]["id"] == out[0]["tool_call_id"]
 
-    def test_sampling_tool_use_name_and_args_stripped(self):
+    def test_sampling_tool_use_name_and_args_kept_exact(self):
+        """A historical tool call is execution data matched against the tool's exact schema names/enums."""
         from tools.mcp_tool_sampling import _convert_sampling_message
 
         tu = SimpleNamespace(name=TAGGED, input={TAGGED: TAGGED}, id="c1")
         msg = SimpleNamespace(role="assistant", content=[tu])
-        out = _convert_sampling_message(msg)
-        _assert_no_tags(out)
-        assert json.loads(out[0]["tool_calls"][0]["function"]["arguments"]) == {"evil": "evil"}
+        call = _convert_sampling_message(msg)[0]["tool_calls"][0]["function"]
+        assert call["name"] == TAGGED
+        assert json.loads(call["arguments"]) == {TAGGED: TAGGED}
 
     def test_sampling_system_prompt_and_tools_stripped(self):
         from tools.mcp_tool_sampling import SamplingHandler
@@ -211,7 +216,9 @@ class TestSamplingPath:
         finally:
             aux.call_llm = orig
         _assert_no_tags(captured["messages"])
-        _assert_no_tags(captured["tools"])
+        tool = captured["tools"][0]["function"]
+        assert tool["name"] == TAGGED  # the model's tool_calls echo it back to the server
+        _assert_no_tags({k: v for k, v in tool.items() if k != "name"})
         assert captured["messages"][0] == {"role": "system", "content": "evil"}
 
     def test_elicitation_summary_fields_stripped(self):

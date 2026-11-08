@@ -8,7 +8,7 @@ import logging
 import mimetypes
 from typing import Any, Dict, List, Optional, Tuple
 from tools.ansi_strip import strip_unicode_tags
-from tools.mcp_tool_common import mcp_field
+from tools.mcp_tool_common import exact_mcp_identifier, mcp_field
 from tools.mcp_tool_schema import mcp_prefixed_tool_name
 from tools.tool_output_truncate import truncate_head_tail
 
@@ -278,7 +278,7 @@ def _render_mcp_dropped_block_notice(block, block_type: str) -> str:
         details.append(f"mimeType={strip_unicode_tags(str(mime))}")
     uri = getattr(block, "uri", None) or getattr(getattr(block, "resource", None), "uri", None)
     if uri:
-        details.append(f"uri={strip_unicode_tags(str(uri))}")
+        details.append(f"uri={exact_mcp_identifier(str(uri), 'resource uri')}")
     for size_attr in ("size", "sizeInBytes"):
         size = getattr(block, size_attr, None)
         if isinstance(size, int):
@@ -303,7 +303,8 @@ def _render_mcp_resource_block(block, server_name: str = "") -> str:
             return ""
         name = strip_unicode_tags(str(getattr(block, "name", "") or ""))
         mime = strip_unicode_tags(str(mcp_field(block, "mime_type", "mimeType", "") or ""))
-        details = f"uri={strip_unicode_tags(str(uri))}" + (f", name={name}" if name else "") + (f", mimeType={mime}" if mime else "")
+        # The model is told to fetch this uri with read_resource, so it must stay exact.
+        details = f"uri={exact_mcp_identifier(str(uri), 'resource uri')}" + (f", name={name}" if name else "") + (f", mimeType={mime}" if mime else "")
         reader = mcp_prefixed_tool_name(server_name, "read_resource") if server_name else "the MCP server's read_resource tool"
         return f"[MCP resource link: {details} — fetch it with {reader}]"
     resource = getattr(block, "resource", None)

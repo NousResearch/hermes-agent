@@ -540,7 +540,7 @@ class GatewaySlashCommandsMixin(
         self._resume_paused_platform(platform)
         return t("gateway.platform.resumed", name=name)
 
-    async def _handle_restart_command(self, event: MessageEvent) -> str | EphemeralReply:
+    async def _handle_restart_command(self, event: MessageEvent) -> str | EphemeralReply | None:
         """Handle /restart command - drain active work, then restart the gateway."""
         from gateway.run import _hermes_home
         # Idempotency check: if the previous gateway process recorded this same /restart (platform +
@@ -587,18 +587,18 @@ class GatewaySlashCommandsMixin(
         # so a delayed Telegram redelivery is still detectable. Overwritten on every /restart.
         await _write_marker(".restart_last_processed.json", _dedup_payload, "dedup marker")
         active_agents = self._running_agent_count()
+        # Idle: teardown is immediate and a RETURNED ack raced the adapter disconnect (lost on a real
+        # Bot API round trip, #65057), so deliver it first. Draining: the drain waits, the reply lands.
+        from gateway.restart_ack import send_restart_ack
+        ack = t("gateway.draining", count=active_agents) if active_agents else EphemeralReply(t("gateway.restart.restarting"))
+        sent = not active_agents and await send_restart_ack(self._delivery_adapter_for(event.source), event, ack)
         # Under a service manager (systemd/launchd) or Docker/Podman, exit 75 so the supervisor /
         # restart policy restarts us — detached setsid+bash fails there (systemd KillMode=mixed kills
         # the cgroup; tini exits with the gateway). The explicit marker covers ``sudo env -i`` wrappers.
         from gateway.restart import is_container_restart_context, is_gateway_supervisor_process
         via_service = is_gateway_supervisor_process() or is_container_restart_context()
         self.request_restart(detached=not via_service, via_service=via_service)
-        # Track sessions that were active at shutdown for stuck-loop detection (#7536). On each restart, the
-        # counter increments for sessions that were running. If a session hits the threshold (3 consecutive
-        # restarts while active), the next startup auto-suspends it — breaking the loop.
-        if active_agents:
-            return t("gateway.draining", count=active_agents)
-        return EphemeralReply(t("gateway.restart.restarting"))
+        return None if sent else ack
 
     async def _handle_autoprune_command(self, event: MessageEvent) -> str:
         """Handle /autoprune — the low-disk auto-prune decision (same text as the CLI)."""

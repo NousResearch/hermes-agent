@@ -118,6 +118,7 @@ def _whatsapp_bridge_dependencies_current(bridge_dir) -> bool:
 def _whatsapp_install_bridge(bridge_dir) -> bool:
     """Step 4 of ``hermes whatsapp``: ``npm install`` the bridge when needed. False = stop."""
     from hermes_constants import find_node_executable, with_hermes_node_path
+    from utils import env_int
     if _whatsapp_bridge_dependencies_current(bridge_dir):
         print("✓ Bridge dependencies already installed")
         return True
@@ -135,7 +136,8 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
             npm = str(installed.binary)
         result = subprocess.run(
             [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
-            cwd=str(bridge_dir), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=300,
+            cwd=str(bridge_dir), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+            timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
             encoding="utf-8", errors="replace", env=env, check=False)
     except (pm.InstallError, OSError, subprocess.TimeoutExpired) as exc:
         print(f"  ✗ Bridge dependency preparation failed: {exc}")
@@ -234,12 +236,12 @@ def cmd_whatsapp(args):
             print(f"  ✗ Node.js preparation failed: {exc}")
             return
     pair_command = [node, str(bridge_script), "--pair-only", "--session", str(session_dir)]
-    if isinstance(getattr(args, "passkey_browser", None), str) and args.passkey_browser:
+    if getattr(args, "passkey_browser", None):
         pair_command.extend(["--passkey-browser", args.passkey_browser])
     pair_result = None
-    with contextlib.suppress(KeyboardInterrupt, subprocess.TimeoutExpired):
-        pair_result = subprocess.run(
-            pair_command, cwd=str(bridge_dir), env=with_hermes_node_path(), check=False, timeout=900)
+    with contextlib.suppress(KeyboardInterrupt):
+        # health: allow HX006 -- interactive child: ends on success, failure or Ctrl+C; a fixed bound kills it mid-prompt
+        pair_result = subprocess.run(pair_command, cwd=str(bridge_dir), env=with_hermes_node_path(), check=False)
 
     print()
     if pair_result is None or pair_result.returncode != 0 or not _whatsapp_has_paired_identity(session_dir):

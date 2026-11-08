@@ -37,6 +37,12 @@ def xiaomi_profile():
         ({"enabled": False}, {"thinking": {"type": "disabled"}}, {}),
         ({"enabled": True, "effort": "none"}, {"thinking": {"type": "disabled"}}, {}),
         ({"enabled": True, "effort": "disabled"}, {"thinking": {"type": "disabled"}}, {}),
+        # Bare effort-field forms with no ``enabled`` key at all (same #107238 family).
+        ({"effort": "none"}, {"thinking": {"type": "disabled"}}, {}),
+        ({"effort": "false"}, {"thinking": {"type": "disabled"}}, {}),
+        ({"effort": "disabled"}, {"thinking": {"type": "disabled"}}, {}),
+        # Thinking off wins over any effort level riding along.
+        ({"enabled": False, "effort": "high"}, {"thinking": {"type": "disabled"}}, {}),
         # No expressible effort: the shared toggle pins the documented default (thinking on)
         # instead of leaving the wire silent; unknown levels likewise never reach the wire.
         (None, {"thinking": {"type": "enabled"}}, {}),
@@ -85,6 +91,24 @@ def test_transport_main_turn_carries_reasoning_without_capability_gate(xiaomi_pr
     assert "thinking" not in (on.get("extra_body") or {})
     assert off.get("extra_body", {}).get("thinking") == {"type": "disabled"}
     assert "reasoning_effort" not in off
+
+
+def test_reasoning_effort_none_from_config_reaches_wire(xiaomi_profile):
+    """``agent.reasoning_effort: none`` through ``parse_reasoning_effort`` and the bare
+    UI effort-field spelling both land disabled on the wire (the #27363 review ask)."""
+    from agent.transports.chat_completions import ChatCompletionsTransport
+    from hermes_constants import parse_reasoning_effort
+
+    build = ChatCompletionsTransport().build_kwargs
+    assert parse_reasoning_effort("none") == {"enabled": False}
+    for rc in (parse_reasoning_effort("none"), {"effort": "none"}):
+        kw = build(
+            model="mimo-v2.6-pro", messages=[{"role": "user", "content": "ping"}], tools=None,
+            provider_profile=xiaomi_profile, provider_name="xiaomi",
+            reasoning_config=rc, supports_reasoning=False,
+        )
+        assert kw.get("extra_body", {}).get("thinking") == {"type": "disabled"}
+        assert "reasoning_effort" not in kw
 
 
 def test_setup_picker_offers_only_mimos_three_levels(xiaomi_profile):

@@ -1,0 +1,35 @@
+name: physis
+repo: https://github.com/ilPez00/hermes-physis
+sha: 44e97f838919d1497f0433c71a5e85534801ac25
+description: Offline evidence-backed code context, adaptive semiotic classification, and verified tool replay for Hermes Agent.
+maintainer: ilPez00
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "1.4.0"
+platforms: [linux]
+readme: true
+capabilities:
+  provides_tools:
+    - physis_engine_status
+    - physis_observe
+    - physis_snapshot
+    - physis_context
+    - physis_query
+    - physis_why
+    - physis_diff
+    - physis_classify
+    - physis_chain
+    - physis_grid
+    - physis_ingest
+    - physis_observed
+    - physis_command
+    - replant_run
+    - replant_record
+    - replant_stats
+    - replant_demo
+    - replant_show
+  provides_hooks:
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

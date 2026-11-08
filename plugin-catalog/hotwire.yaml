@@ -1,7 +1,7 @@
 name: hotwire
 repo: https://github.com/RohanGlitched/hotwire
-sha: 571c3bd3b5829cabc3cd980b157dcd94a19d0672
-version: "1.0.0"
+sha: c66a0dd354a034da1bad4fe56bd4945f1e5c8e24
+version: "1.0.1"
 title: Hotwire
 description: >-
   Analog circuit design bench: Hermes writes a SPICE netlist from plain English,
@@ -24,14 +24,14 @@ tier: community
 category: tools
 docs_url: https://github.com/RohanGlitched/hotwire#readme
 readme: true
-image: https://raw.githubusercontent.com/RohanGlitched/hotwire/571c3bd3b5829cabc3cd980b157dcd94a19d0672/docs/cover.png
+image: https://raw.githubusercontent.com/RohanGlitched/hotwire/c66a0dd354a034da1bad4fe56bd4945f1e5c8e24/docs/cover.png
 screenshots:
-  - https://raw.githubusercontent.com/RohanGlitched/hotwire/571c3bd3b5829cabc3cd980b157dcd94a19d0672/docs/desktop/bench-light.png
-  - https://raw.githubusercontent.com/RohanGlitched/hotwire/571c3bd3b5829cabc3cd980b157dcd94a19d0672/docs/desktop/listen-light.png
-  - https://raw.githubusercontent.com/RohanGlitched/hotwire/571c3bd3b5829cabc3cd980b157dcd94a19d0672/docs/desktop/live-light.png
-  - https://raw.githubusercontent.com/RohanGlitched/hotwire/571c3bd3b5829cabc3cd980b157dcd94a19d0672/docs/desktop/board-light.png
-  - https://raw.githubusercontent.com/RohanGlitched/hotwire/571c3bd3b5829cabc3cd980b157dcd94a19d0672/docs/desktop/chat-light.png
-  - https://raw.githubusercontent.com/RohanGlitched/hotwire/571c3bd3b5829cabc3cd980b157dcd94a19d0672/docs/desktop/bench-dark.png
+  - https://raw.githubusercontent.com/RohanGlitched/hotwire/c66a0dd354a034da1bad4fe56bd4945f1e5c8e24/docs/desktop/bench-light.png
+  - https://raw.githubusercontent.com/RohanGlitched/hotwire/c66a0dd354a034da1bad4fe56bd4945f1e5c8e24/docs/desktop/listen-light.png
+  - https://raw.githubusercontent.com/RohanGlitched/hotwire/c66a0dd354a034da1bad4fe56bd4945f1e5c8e24/docs/desktop/live-light.png
+  - https://raw.githubusercontent.com/RohanGlitched/hotwire/c66a0dd354a034da1bad4fe56bd4945f1e5c8e24/docs/desktop/board-light.png
+  - https://raw.githubusercontent.com/RohanGlitched/hotwire/c66a0dd354a034da1bad4fe56bd4945f1e5c8e24/docs/desktop/chat-light.png
+  - https://raw.githubusercontent.com/RohanGlitched/hotwire/c66a0dd354a034da1bad4fe56bd4945f1e5c8e24/docs/desktop/bench-dark.png
 requires_hermes: ">=0.23.0"
 capabilities:
   provides_tools:

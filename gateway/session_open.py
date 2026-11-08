@@ -6,6 +6,7 @@ attached to: once per open, never for a snapshot poll on an attachment it alread
 reconnect. The open is registered before the attach yields and delivered on a thread of its own under
 the owning profile's scope (that profile's plugin manager), so the reply never waits on a plugin; the
 session's next claimed turn waits for it (``settled``), so plugins see the open before the model does.
+A profile whose loaded plugins hold no consumer starts no thread.
 ``on_session_start`` stays the first-turn hook.
 """
 import asyncio
@@ -14,8 +15,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# (profile id, session id) -> the open still pending or running for it. In-flight work only: an
-# entry leaves when its delivery ends, so this never dedupes and holds one open per opening session.
+# (profile id, session id) -> its latest open delivery still queued or running. In-flight work only:
+# an entry leaves when its delivery ends, so this never dedupes and holds one per opening session.
 _PENDING = {}
 
 # Longest a turn waits on an open when ``plugins.hook_callback_timeout`` is 0 (callbacks never
@@ -35,37 +36,43 @@ def _reason(db, session_id):
 
 
 class _Open:
-    """One pending open: registered before the attach, then ``fire``d with the session's policy, or
-    ``release``d (not a local session, a failed attach) so no turn waits on it."""
+    """One session's open delivery, standing for every open that joined it while it queued.
 
-    def __init__(self, authority, ref):
-        self.ref, self.db = ref, authority.db
-        key = (ref.profile_id, ref.session_id)
+    Each open holds a gate (``open_local``) its attach ``fire``s with the session's policy, or
+    ``release``s (not a local session, a failed attach) so no turn waits on it. Bounded: at most
+    one delivery runs per (profile, session) and one queues behind it; opens arriving while that
+    one still queues join it, so a hung callback (``hook_callback_timeout: 0``) holds two tasks and
+    one thread however often the session is opened meanwhile. An open is setup, so the joined opens
+    fire once, after the running one, with the latest gate's payload."""
+
+    def __init__(self, ref, db, ahead):
+        self.ref, self.db, self.ahead = ref, db, ahead
         # The profile's ``plugins.hook_callback_timeout``, read by the delivery (off-loop, in that
         # profile's scope, only for a session that loads plugins); 0 until then.
         self.callback_timeout = 0.0
-        self.gate = asyncio.get_running_loop().create_future()
-        previous = _live(key)
-        self.task = asyncio.ensure_future(self._run(previous and previous.task))
-        _PENDING[key] = self
-        self.task.add_done_callback(lambda _done: _PENDING.pop(key) if _PENDING.get(key) is self else None)
+        self.started = self.coalesced = False
+        self.unsettled, self.opened = set(), None  # gates not yet fired or released; latest payload
+        self.task = asyncio.ensure_future(self._run())
 
-    def fire(self, policy, route):
-        # A bypass launch (``--safe-mode`` / ``--ignore-user-config``) loads no plugin: nothing fires.
-        if not self.gate.done():
-            self.gate.set_result(None if policy is None or policy.ignore_user_config else (policy, route))
+    def joinable(self):
+        return not self.started and self.ahead is not None and not self.ahead.task.done()
 
-    def release(self):
-        if not self.gate.done():
-            self.gate.set_result(None)
-
-    async def _run(self, previous):
-        opened = await self.gate
-        if previous is not None:  # two viewers opening at once: one session's opens fire in order
-            await asyncio.wait({previous})
-        if opened is not None:
+    async def _run(self):
+        if self.ahead is not None:  # two viewers opening at once: one session's opens fire in order
+            await asyncio.wait({self.ahead.task})
+        self.started = True
+        while self.unsettled:
+            await asyncio.wait(set(self.unsettled))
+        from hermes_cli.lifecycle import hook_known_unused
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        token = set_hermes_home_override(self.ref.profile_id)
+        try:  # the owning profile's loaded plugins, read without discovery or config: no consumer, no thread
+            unused = hook_known_unused('on_session_open')
+        finally:
+            reset_hermes_home_override(token)
+        if self.opened is not None and not unused:
             from gateway.session_commands import _on_own_thread
-            await _on_own_thread(lambda: self._deliver(*opened))
+            await _on_own_thread(lambda: self._deliver(*self.opened))
 
     def _deliver(self, policy, route):
         from gateway.run import _profile_runtime_scope
@@ -76,7 +83,7 @@ class _Open:
         sid = self.ref.session_id
         try:
             with _profile_runtime_scope(Path(self.ref.profile_id)), scoped_session_key(route):
-                if has_hook('on_session_open'):  # no consumer in this profile: no read, no call
+                if has_hook('on_session_open'):  # plugins not loaded until now: none of them consumes it
                     self.callback_timeout = _resolve_hook_callback_timeout()
                     invoke_hook('on_session_open', session_id=sid, platform=SURFACES.get(policy.source, policy.source),
                                 reason=_reason(self.db, sid))
@@ -84,9 +91,39 @@ class _Open:
             logger.warning('on_session_open delivery failed for %s', sid, exc_info=True)
 
 
+class _Gate:
+    """One open's hold on its delivery: the delivery waits until every gate is fired or released."""
+
+    def __init__(self, delivery):
+        self.delivery, self.future = delivery, asyncio.get_running_loop().create_future()
+        delivery.unsettled.add(self.future)
+
+    def fire(self, policy, route):
+        # A bypass launch (``--safe-mode`` / ``--ignore-user-config``) loads no plugin: nothing fires.
+        if not self.future.done() and policy is not None and not policy.ignore_user_config:
+            self.delivery.opened = (policy, route)
+        self.release()
+
+    def release(self):
+        if not self.future.done():
+            self.future.set_result(None)
+        self.delivery.unsettled.discard(self.future)
+
+
 def open_local(authority, ref):
-    """Register *ref*'s open before anything can start its next turn; the caller fires or releases it."""
-    return _Open(authority, ref)
+    """Register *ref*'s open before anything can start its next turn; the caller fires or releases
+    the returned gate."""
+    key = (ref.profile_id, ref.session_id)
+    delivery = _live(key)
+    if delivery is None or not delivery.joinable():
+        delivery = _PENDING[key] = _Open(ref, authority.db, delivery)
+        delivery.task.add_done_callback(lambda _done, mine=delivery: _PENDING.pop(key)
+                                        if _PENDING.get(key) is mine else None)
+    elif not delivery.coalesced:
+        delivery.coalesced = True
+        logger.warning('on_session_open for %s: an earlier delivery is still running; the opens meanwhile '
+                       'fire once, after it', ref.session_id)
+    return _Gate(delivery)
 
 
 def _live(key):

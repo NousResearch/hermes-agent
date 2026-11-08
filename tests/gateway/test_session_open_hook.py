@@ -150,13 +150,16 @@ async def _hung_open(monkeypatch, sid, release):
     from gateway.session_contract import SessionRef
     monkeypatch.setattr(session_open, '_UNBOUNDED_TURN_WAIT_S', 0.5, raising=False)
     entered = threading.Event()
-    monkeypatch.setattr(session_open._Open, '_deliver', lambda self, *a: (entered.set(), release.wait(20)))
+    delivered = []
+    monkeypatch.setattr(session_open._Open, '_deliver',
+                        lambda self, *a: (delivered.append(a), entered.set(), release.wait(20)))
     ref = SessionRef('p', sid)
-    opening = session_open.open_local(SimpleNamespace(db=None), ref)
-    opening.fire(SimpleNamespace(ignore_user_config=False), 'route')
+    gate = session_open.open_local(SimpleNamespace(db=None), ref)
+    gate.fire(SimpleNamespace(ignore_user_config=False), 'route')
+    opening = gate.delivery
     import asyncio
     assert await asyncio.to_thread(entered.wait, 10), 'the open delivery never started'
-    return ref, opening
+    return ref, opening, delivered
 
 
 @pytest.mark.asyncio
@@ -178,7 +181,7 @@ async def test_a_hung_open_never_wedges_the_turn_or_its_executing_stamp(monkeypa
         return 'ok'
     monkeypatch.setattr(session_finite, 'execute_finite_admission', turn)
     try:
-        ref, opening = await _hung_open(monkeypatch, 'hung-open', release)
+        ref, opening, _delivered = await _hung_open(monkeypatch, 'hung-open', release)
         live = LiveSession(SimpleNamespace(chat_id=ref.session_id), 'route')
         owner = SimpleNamespace(executing={ref.session_id: 7})  # as _stamp_claim left it
         task = asyncio.ensure_future(SessionAuthority._execute_claimed(owner, ref, live, {'admission_id': 'a'}))
@@ -194,3 +197,59 @@ async def test_a_hung_open_never_wedges_the_turn_or_its_executing_stamp(monkeypa
     assert ref.session_id not in owner.executing, owner.executing
     assert task.cancelled() if cancel else (task.result() == ('ok', 'completed') and ran == ['a'])
     await asyncio.wait({opening.task}, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_opens_behind_a_hung_open_stay_bounded_and_fire_once_after_it(monkeypatch):
+    """With callbacks never abandoned, a session reopened 40 times behind a hung ``on_session_open``
+    holds one queued delivery, not 40; once the hang ends the opens meanwhile fire once, after it."""
+    import asyncio
+    import threading
+    from types import SimpleNamespace
+    from gateway import session_open
+    release = threading.Event()
+    try:
+        ref, first, delivered = await _hung_open(monkeypatch, 'reopened', release)
+        before = len(asyncio.all_tasks())
+        for n in range(40):
+            gate = session_open.open_local(SimpleNamespace(db=None), ref)
+            gate.fire(SimpleNamespace(ignore_user_config=False), f'route-{n}')
+        for _ in range(20):  # yields only: each queued delivery reaches its wait on the hung one
+            await asyncio.sleep(0)
+        held = len(asyncio.all_tasks()) - before
+    finally:
+        release.set()
+    queued = session_open._PENDING[(ref.profile_id, ref.session_id)]
+    await asyncio.wait({first.task, queued.task}, timeout=10)
+    assert held == 1, f'{held} deliveries queued behind the hung one'
+    assert [route for _policy, route in delivered] == ['route', 'route-39'], delivered
+
+
+@pytest.mark.asyncio
+async def test_a_profile_with_no_consumer_starts_no_delivery_thread(monkeypatch, tmp_path):
+    """A profile whose plugins are loaded with no ``on_session_open`` callback spends no thread on an
+    open, and one that registers a callback does."""
+    import asyncio
+    from types import SimpleNamespace
+    from gateway import session_commands, session_open
+    from gateway.session_contract import SessionRef
+    from hermes_cli import plugins
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    threads = []
+
+    async def own_thread(fn):
+        threads.append(fn)
+    monkeypatch.setattr(session_commands, '_on_own_thread', own_thread)
+    token = set_hermes_home_override(str(tmp_path))
+    try:
+        manager = plugins.get_plugin_manager()
+    finally:
+        reset_hermes_home_override(token)
+    manager._discovered = True
+    for consumer in (False, True):
+        if consumer:
+            manager._hooks['on_session_open'] = [lambda **kw: None]
+        gate = session_open.open_local(SimpleNamespace(db=None), SessionRef(str(tmp_path), f's-{consumer}'))
+        gate.fire(SimpleNamespace(ignore_user_config=False), 'route')
+        await asyncio.wait({gate.delivery.task}, timeout=5)
+        assert len(threads) == consumer, (consumer, threads)

@@ -1035,6 +1035,13 @@ def has_hook(hook_name: str) -> bool:
     return _delivery_manager().has_hook(hook_name)
 
 
+def hook_unused_nowait(hook_name: str) -> bool:
+    """True when this home's plugins are loaded and none handles *hook_name*. Never discovers (an
+    unloaded home answers False), so it is safe on an event loop."""
+    manager = get_plugin_manager()
+    return manager._discovered and not manager.has_hook(hook_name)
+
+
 def iter_hook_callbacks(hook_name: str) -> tuple[Callable, ...]:
     """Return a stable snapshot of callbacks registered for a hook."""
     return get_plugin_manager().iter_hook_callbacks(hook_name)

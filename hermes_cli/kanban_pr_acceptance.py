@@ -45,7 +45,8 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         # code + endpoint, never gh's stderr (credentials/host details).
         denied = re.search(r"HTTP (40[134])", exc.stderr or "")
         if denied:
-            raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
+            raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}",
+                                 http_status=int(denied[1])) from None
         if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
             raise _GateAuthError(f"gh has no login for {endpoint.split('?')[0]}") from None
         raise
@@ -59,6 +60,10 @@ class _GateAuthError(RuntimeError):
     """gh was refused at HTTP 401/403/404 (or GraphQL returned no repository):
     this profile's login cannot see the repo — an identity problem to fix, not
     an infrastructure blip to retry."""
+
+    def __init__(self, detail: str, *, http_status: int | None = None):
+        super().__init__(detail)
+        self.http_status = http_status
 
 
 def _gh_env(profile_home: str | None) -> dict[str, str] | None:
@@ -110,6 +115,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
                "pr_url": published_pr, "checks": [],
                "recovery": "Fix required failures, rerun infrastructure checks or wait, then retry completion. "
                            "Use kanban_block if human input is needed; receipts remain on the task event log."}
+    stage = "assignee_profile"
     try:
         profile_home = _assignee_profile_home(assignee)
         declared = _PR.fullmatch(contract)
@@ -122,6 +128,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
         receipt["pr_url"] = url
         owner, name = repo.split("/")
         query = f'{{repository(owner:{json.dumps(owner)},name:{json.dumps(name)}){{pullRequest(number:{number:d}){{headRefOid baseRefName state\n            baseRef{{branchProtectionRule{{requiredStatusChecks{{context app{{databaseId}}}}}}}}}}}}}}'
+        stage = "pr_policy"
         repository = _api("graphql", query=query, profile_home=profile_home)["data"]["repository"]
         if repository is None:
             # A private repo the login cannot read resolves to null, not an error.
@@ -133,6 +140,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
+        stage = "branch_rules"
         rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
                      paginate=True, profile_home=profile_home)
         for page in rules:
@@ -144,11 +152,13 @@ def collect_acceptance(contract: str, published_pr: str | None,
         if not required:
             receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
             return receipt
+        stage = "check_runs"
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
                      paginate=True, profile_home=profile_home)
         runs = [run for page in pages for run in page["check_runs"]]
         if len({r["id"] for r in runs}) != pages[0]["total_count"]:
             raise ValueError("Incomplete check-run pagination")
+        stage = "commit_statuses"
         statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100",
                                                        paginate=True, profile_home=profile_home) for s in page]
         outcomes = []
@@ -171,6 +181,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
                     "head_sha": check.get("head_sha", check.get("sha")),
                     "classification": classification, "conclusion": outcome})
         # Re-read after all pages: old-head successes are never transferable.
+        stage = "head_recheck"
         current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home)
         if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
             receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
@@ -181,6 +192,10 @@ def collect_acceptance(contract: str, published_pr: str | None,
     except _GateAuthError as exc:
         login = f"assignee profile {assignee!r}'s gh login" if assignee else "the ambient gh login"
         receipt.update(classification="auth",
+                       failure_provenance={"stage": stage, "http_status": exc.http_status,
+                                           "credential_scope": "assignee_profile" if assignee else "ambient"},
+                       recovery="Reconcile the owning GitHub identity's read access to the refused evidence "
+                                "before retrying completion; unreadable required policy cannot be replaced by green checks.",
                        detail=f"GitHub refused the acceptance read ({exc}) as {login}; "
                               "fix that profile's GitHub credentials/access to the repository, then retry completion.")
         return receipt

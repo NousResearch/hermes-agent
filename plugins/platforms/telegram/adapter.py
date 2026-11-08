@@ -5783,13 +5783,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
     @staticmethod
     def _entity_sources(message: Message):
         """``(text, entities)`` pairs for the message text and caption; a text-less ``rich_message``
-        contributes its flattened text with no entities, so the raw @handle fallback still sees it."""
+        contributes its text minus code spans (as a code entity hides a handle) for the raw @handle fallback."""
         text = getattr(message, "text", None) or ""
         caption = getattr(message, "caption", None) or ""
         yield text, getattr(message, "entities", None) or []
         yield caption, getattr(message, "caption_entities", None) or []
         if not text and not caption:
-            yield rich_message_text(message), []
+            yield rich_message_text(message, skip_code=True), []
 
     @staticmethod
     def _entity_type(entity) -> str:

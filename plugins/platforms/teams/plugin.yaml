@@ -35,7 +35,7 @@ optional_env:
     prompt: "Webhook host"
     password: false
   - name: TEAMS_ALLOWED_USERS
-    description: "Comma-separated Teams user IDs / UPNs allowed to talk to the bot"
+    description: "Comma-separated AAD object IDs allowed to talk to the bot (not UPNs)"
     prompt: "Allowed users (comma-separated)"
     password: false
   - name: TEAMS_ALLOW_ALL_USERS

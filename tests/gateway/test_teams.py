@@ -1189,3 +1189,22 @@ async def test_long_non_ascii_command_keeps_button_data_small():
         await adapter.send_exec_approval(chat_id="c1", command=command, session_key="s1", description="flagged")
     assert len(buttons) == 4
     assert sum(len(json.dumps(b["data"], ensure_ascii=False).encode()) for b in buttons) < 1024
+
+
+# ---------------------------------------------------------------------------
+# Tests: request bodies that are not a JSON object
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("raw", [b"not json", b"[1, 2]", b'"text"', b"null"])
+async def test_non_object_body_is_a_400_before_the_sdk(raw):
+    pytest.importorskip("aiohttp")
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    app = web.Application()
+    handler = AsyncMock(return_value={"status": 200})
+    _teams_mod._AiohttpBridgeAdapter(app).register_route("POST", "/api/messages", handler)
+    async with TestClient(TestServer(app, host="127.0.0.1")) as client:
+        resp = await client.post("/api/messages", data=raw, headers={"Content-Type": "application/json"})
+        assert resp.status == 400
+    handler.assert_not_awaited()

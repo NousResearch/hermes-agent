@@ -73,7 +73,11 @@ def safe_url_for_log(url: str, max_len: int = 80) -> str:
 
 def safe_proxy_url_for_log(url: str, max_len: int = 80) -> str:
     """``scheme://host[:port]`` of a proxy URL, or the placeholder: a proxy URL's path has no
-    routing meaning, so none of it is logged (``/<token>.json`` passes the media file-name rule)."""
+    routing meaning, so none of it is logged (``/<token>.json`` passes the media file-name rule).
+    A ``file:`` URL has no authority to show, and the media-path rule that keeps it whole would
+    print its path (``file:///<token>``), so it renders as the placeholder."""
+    if str(url or "").lstrip().lower().startswith("file:"):
+        return _UNSAFE_URL_PLACEHOLDER[:max_len]
     safe = safe_url_for_log(url, max_len=len(str(url or "")) + 64)
     if safe == _UNSAFE_URL_PLACEHOLDER:
         return safe[:max_len]

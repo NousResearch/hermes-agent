@@ -1413,10 +1413,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         try:
             if not self._acquire_platform_lock('discord-bot-token', self.config.token, 'Discord bot token'):
                 return False
-            # Snapshot gate env inside the owning profile's scope (immune to the first-writer-wins bridge).
-            # Snapshot this profile's gate env vars (issue #72348): connect() runs inside the owning
-            # profile's runtime scope under multiplex, so the snapshot holds THIS adapter's values, immune
-            # to the first-writer-wins process-global env bridge.
+            # Snapshot this profile's gate env vars inside its runtime scope (#72348): immune to the
+            # first-writer-wins process-global env bridge under multiplex.
             self._snapshot_gate_env()
             self._allowed_user_ids = self._get_allowed_users()
             # DISCORD_ALLOWED_ROLES: comma-separated role IDs; ANY match grants access.
@@ -1437,9 +1435,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             if proxy_url:
                 logger.info("[%s] Using proxy for Discord: %s", self.name, safe_proxy_url_for_log(proxy_url))
             # proxy= for HTTP, connector= for SOCKS; allowed_mentions per _build_allowed_mentions.
-            # Close any existing client first: a zombie client also fires on_message -> double responses.
-            # Without this, the old client remains connected to Discord gateway and both fire on_message,
-            # causing double responses. See #18187.
+            # Close any existing client first: a zombie client stays connected to the Discord gateway and
+            # also fires on_message -> double responses (#18187).
             if self._client is not None:
                 try:
                     if not self._client.is_closed():
@@ -1585,7 +1582,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             )
             return False
         except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
+            from gateway.platforms.base import describe_proxy_error, resolve_proxy_url as _proxy
+            proxy_error = describe_proxy_error(e, _proxy(platform_env_var="DISCORD_PROXY"))
+            logger.error("[%s] Failed to connect to Discord: %s", self.name, proxy_error or e, exc_info=not proxy_error)
             # Same zombie-client hazard: client.start() may already run when a later step raises.
             await self._cancel_bot_task()
             self._release_platform_lock()

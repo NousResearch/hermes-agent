@@ -75,24 +75,16 @@ def safe_proxy_url_for_log(url: str, max_len: int = 80) -> str:
     return _fit(safe.split("/...", 1)[0], max_len) if max_len > 0 else ""
 
 
-_SCHEME_WORDS = frozenset({"http", "https", "socks", "socks4", "socks4a", "socks5", "socks5h"})
+def describe_proxy_error(exc: BaseException, proxy_url: str | None) -> str | None:
+    """``<ExceptionType> via <scheme://host:port>`` for an error raised through a proxy URL holding
+    anything that rendering leaves out (userinfo, path, query, a malformed authority), else None:
+    the caller keeps the full error text, which then cannot repeat a part of the URL not shown.
 
-
-def redact_proxy_in_text(text, proxy_url: str | None) -> str:
-    """*text* (an exception or its message) with *proxy_url* and each 4+ char piece of it that
-    the log-safe rendering does not show replaced by ``***``.
-
-    A malformed proxy URL comes back verbatim in transport errors: aiohttp's
-    ``InvalidUrlClientError`` / ``NonHttpUrlClientError`` text is the whole request URL, httpx's
-    ``Invalid port: '<pw>'`` a bare password fragment. Cutting out the URL alone misses the
-    fragment, so every userinfo/path piece goes too."""
-    text = "" if text is None else str(text)
+    Transport libraries echo a proxy URL into their error text percent-encoded, split or
+    reformatted (yarl/httpx re-quote the password, httpx's ``Invalid port: '<pw>'`` is a bare
+    fragment), so no substring redaction of that text is complete: none of it is shown."""
     proxy = str(proxy_url or "")
-    if not proxy or not text:
-        return text
     shown = safe_proxy_url_for_log(proxy, max_len=len(proxy) + 64)
-    pieces = {proxy, *(p for p in re.split(r"[:/@?#;\[\]\s]+", proxy)
-                       if len(p) >= 4 and p.lower() not in _SCHEME_WORDS and p not in shown)}
-    for piece in sorted(pieces, key=len, reverse=True):
-        text = text.replace(piece, "***")
-    return text
+    if not proxy or shown == proxy.rstrip("/"):
+        return None
+    return f"{type(exc).__name__} via {shown}"

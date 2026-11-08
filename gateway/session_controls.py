@@ -524,7 +524,8 @@ class AuthorityConnection:
             ref = stage_local_session(self.authority, self.actor, params, skills_prompt=skills_prompt,
                                       client_local=self.native_owner,
                                       desktop_local=getattr(self.transport, 'desktop_local', False))
-            if isinstance(ref, dict):
+            receipt_committed = isinstance(ref, dict)
+            if receipt_committed:
                 # The creation commit runs off the owner loop: a held writer must not freeze
                 # every session behind one new chat (N50).
                 receipt = ref
@@ -541,6 +542,7 @@ class AuthorityConnection:
                 await tracked_write(self.authority, partial(title_new_session, self.authority, ref, title))
             if hidden:
                 await tracked_write(self.authority, partial(self.authority.db.set_session_hidden, ref.session_id, True))
+            return await self.resume(ref, {}, opened='create' if receipt_committed else 'resume')
         return await self.resume(ref, {})
 
     async def ping(self, ref, params):
@@ -625,7 +627,7 @@ class AuthorityConnection:
         return {'sessions': await asyncio.to_thread(live_picker_page, self.authority, sessions, limit, workspace, picker),
                 'scope': 'live'}
 
-    async def resume(self, ref, params):
+    async def resume(self, ref, params, *, opened='resume'):
         from gateway.session_local_inventory import snapshot_info
         replay_from = self.replay_cursors.pop(ref.session_id, None)
         requested = ref.session_id
@@ -688,8 +690,10 @@ class AuthorityConnection:
         # ``omit_messages``: the client pages the transcript itself (Desktop over REST), so the attach reads no
         # compression lineage (a whole-lineage read here made every open of a long chat cost seconds).
         omit = params.get('omit_messages') is True
-        snapshot = await self.authority.attach(
-            self.actor, ref, history=not omit, replay_from=replay_from if ref.session_id == requested else None)
+        replay_from = replay_from if ref.session_id == requested else None
+        # A client opening the session (not a poll on its attachment, not a reconnect's replay).
+        opening = ref.session_id not in self.subscriptions and replay_from is None
+        snapshot = await self.authority.attach(self.actor, ref, history=not omit, replay_from=replay_from)
         self.subscriptions[ref.session_id] = snapshot.subscription_id
         self.handed_back.discard(ref.session_id)
         self._spawn_notice(ref)
@@ -699,7 +703,12 @@ class AuthorityConnection:
         source = self.authority.sessions[snapshot.handle.ref.session_id].source
         if source is not None and source.platform == Platform.LOCAL:
             from gateway.session_policy import policy_for_source, refresh_profile_hooks
-            await asyncio.to_thread(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
+            policy = policy_for_source(self.authority.runner, source)
+            await asyncio.to_thread(refresh_profile_hooks, policy)
+            if opening:
+                from gateway.session_open import fire
+                fire(self.authority, snapshot.handle.ref, self.authority.sessions[snapshot.handle.ref.session_id].route,
+                     policy, opened)
             info = await snapshot_info(self.authority, snapshot.handle.ref)
         from gateway.session_connections import pending_connection
         from gateway.session_server_requests import open_requests
@@ -871,7 +880,7 @@ class AuthorityConnection:
         # here (create parity) so the first submit is not refused as a stranger.
         child = result.get('branched_session_id') if isinstance(result, dict) else None
         if child and child not in self.subscriptions:
-            await self.resume(SessionRef(ref.profile_id, child), {})
+            await self.resume(SessionRef(ref.profile_id, child), {}, opened='create')
         return result
 
     async def receipt(self, ref, params):

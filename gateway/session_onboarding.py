@@ -87,7 +87,7 @@ async def start(connection, ref, params):
             await asyncio.to_thread(free_tier_bootstrap.refresh_record)
         _withdraw_setup_cards(authority, [sid for sid in plan['replaced'] if sid not in deleted])
         chat = SessionRef(authority.profile_id, stored)
-        await connection.resume(chat, {})
+        await connection.resume(chat, {}, opened='resume' if plan['stored'] else 'create')
         opening = plan['opening'] if plan['stored'] else await asyncio.to_thread(_opening_for, authority, stored)
         if opening is not None:
             run_id = await asyncio.to_thread(_run_id, authority, stored)

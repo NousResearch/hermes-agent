@@ -133,6 +133,8 @@ VALID_HOOKS: set[str] = {
     # error_body may be unredacted.
     "transform_api_error_classification", "on_session_start", "on_session_end",
     "on_session_finalize", "on_session_reset", "on_session_delete",
+    # on_session_open: local session created/opened, before its first turn. Kwargs: session_id, platform, reason.
+    "on_session_open",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE

@@ -1281,6 +1281,8 @@ class SessionAuthority:
             # before the turn (its bounded wait runs off-loop).
             from agent.background_review import cancel_background_review_for_live_turn
             await asyncio.to_thread(cancel_background_review_for_live_turn, live.review)
+        from gateway.session_open import settled
+        await settled(self, ref.session_id)  # plugins see a session's open before its first turn
         try:
             try:
                 return await execute_finite_admission(self, ref, row), 'completed'

@@ -120,6 +120,7 @@ _DEFAULT_PAYLOADS = {
         "changed_paths": ["src/app.tsx"],
     },
     "on_session_start": {"session_id": "test-session"},
+    "on_session_open": {"session_id": "test-session", "platform": "cli", "reason": "create"},
     "on_session_end": {
         "session_id": "test-session", "task_id": "test-task", "turn_id": "test-turn",
         "completed": True, "failed": False, "interrupted": False,

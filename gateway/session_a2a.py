@@ -112,7 +112,7 @@ async def forward(connection, params):
         receipt = local_receipt(authority.db, sid)
         if json.loads(receipt['policy']['request_json']).get('a2a_identity') != identity:
             raise RuntimeStoreError('admission_conflict')
-        ref = restore_local_session(authority, sid)
+        ref, opened = restore_local_session(authority, sid), 'resume'
     else:
         # Historical `a2a-{agent}-{slug}` titles discarded peer/tenant identity and collapsed
         # context characters, and those `hermes chat --source a2a` rows stored no origin, so a
@@ -133,8 +133,9 @@ async def forward(connection, params):
         if isinstance(ref, dict):  # the creation commit runs off the owner loop (N90); a duplicate converges
             await tracked_write(authority, partial(commit_local_session, authority.db, epoch=authority.epoch, receipt=ref))
             ref = restore_local_session(authority, ref['session_id'])
+        opened = 'create'
     if ref.session_id not in connection.subscriptions:
-        await connection.resume(ref, {})
+        await connection.resume(ref, {}, opened=opened)
     receipt = await authority.submit(actor, Submission(params['input_id'], ref, {'text': params['text']}, 'queue'))
     from gateway.session_results import admission_result
     saved = admission_result(authority.db, receipt.admission_id)

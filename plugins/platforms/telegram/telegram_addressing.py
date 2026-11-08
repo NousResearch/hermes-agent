@@ -3,7 +3,7 @@
 ``exclusive_bot_mentions`` drops a group message addressed to another bot. Only a LEADING run of
 handles (``@BotA @BotB: do this``, ``/status@OtherBot``) addresses anyone: a foreign handle later
 in the text talks about that bot and must not silence this one (#136236). Our own handle anywhere
-still wins.
+still wins, unless the opening command explicitly targets another bot.
 
 ``/cmd@ourbot args`` is how Telegram's group command menu sends a command; stripping our handle
 must keep the separator before the arguments (#56337), while prose cleanup stays as it was.
@@ -83,12 +83,43 @@ def leading_bot_handles(message: Any, is_bot_handle: Callable[[str], bool]) -> s
     return found
 
 
+def _command_after_address(text: str, bot_username: str, *, has_entities: bool = False) -> Optional[re.Match[str]]:
+    return re.match(rf"(?i)\s*(?:@{re.escape(bot_username)}\b[,:-]*\s*)*"
+                    r"(/[A-Za-z0-9_-]++)(?:@([A-Za-z0-9_]{1,32}))?"
+                    + (r"(?![/\\])" if has_entities else r"(?=$|[\s,:;-])"), text)
+
+
+def foreign_command_target(message: Any, bot_username: str) -> Optional[str]:
+    """Only an opening command, optionally after our address, can override our later mention."""
+    for field in ("text", "caption"):
+        text = getattr(message, field, None) or ""
+        entities = getattr(message, "entities" if field == "text" else "caption_entities", None) or []
+        command = _command_after_address(text, bot_username, has_entities=bool(entities))
+        if not command or not command.group(2) or command.group(2).lower() == bot_username.lower():
+            continue
+        offset = len(text[:command.start(1)].encode("utf-16-le")) // 2
+        if not entities or any(_entity_type(e) == "bot_command" and e.offset == offset
+                               and (e.length == command.end() - command.start(1)
+                                    or command.group(1)[e.length:e.length + 1] == "-") for e in entities):
+            return command.group(2).lower()
+    return None
+
+
 def clean_bot_trigger_text(text: Optional[str], bot_username: str) -> Optional[str]:
     """Drop our ``@handle`` from trigger text. A leading ``/cmd@ourbot`` keeps one space before its
     arguments (``/reasoning@Bot medium`` -> ``/reasoning medium``), never gluing them to the command."""
     if not text or not bot_username:
         return text
     handle = re.escape(bot_username)
+    command = _command_after_address(text, bot_username)
+    if command and (not command.group(2) or command.group(2).lower() == bot_username.lower()):
+        rest = text[command.end():]
+        if command.group(2):
+            rest = " " + re.sub(r"^[,:-]*\s*", "", rest)
+        rest = re.sub(rf"(?i)^(\s*)(?:@{handle}\b[,:-]*\s*)+", r"\1", rest)
+        rest = re.sub(rf"(?i)(?:@{handle}\b[,:-]*\s*+)+(?=$|[-–—]++\w)", "", rest)
+        return (command.group(1) + rest).strip()
+    # Preserve the legacy cleanup for paths and all other non-command text.
     command = re.match(rf"(?i)\s*(/[A-Za-z0-9_]+)@{handle}\b[,:\-]*\s*", text)
     if command:
         rest = re.sub(rf"(?i)@{handle}\b[,:\-]*\s*", "", text[command.end():]).strip()

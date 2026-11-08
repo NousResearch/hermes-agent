@@ -15,6 +15,7 @@ import pytest
 from tests.gateway.test_telegram_group_gating import (
     _group_message, _make_adapter, _mention_entities,
 )
+from tests.gateway.test_telegram_command_botname import _dispatch, _telegram_entities
 
 
 def _bot_command_entity(text, command):
@@ -158,3 +159,46 @@ def test_passing_mention_reaches_the_trigger_gate():
 
     assert adapter._should_process_message(passing) is True
     assert adapter._should_process_message(addressed) is False
+
+
+@pytest.mark.parametrize("text", [
+    "/model@OtherBot gpt-5 @hermes_bot",
+    "/model@jarvis gpt-5 @hermes_bot",
+    "@hermes_bot /queue@OtherBot ask @hermes_bot",
+    "@hermes_bot- /model@jarvis gpt-5",
+    "/model@" + "a" * 32 + " gpt-5 @hermes_bot",
+    "/set-home@OtherBot @hermes_bot",
+])
+@pytest.mark.parametrize("with_entities", [True, False])
+def test_foreign_command_target_wins_over_our_mention(text, with_entities, caplog):
+    adapter = _make_adapter(require_mention=False, exclusive_bot_mentions=True)
+    rechecks = []
+    adapter._schedule_bot_identity_recheck = lambda: rechecks.append(1)
+    entities = _telegram_entities(text) if with_entities else []
+    with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
+        assert _dispatch(text, adapter=adapter, entities=entities) == []
+    assert rechecks == [1]
+    assert any("Skipping message 42 in chat -100: addressed to other bot(s)" in r.message for r in caplog.records)
+    adapter.config.extra["exclusive_bot_mentions"] = False
+    assert len(_dispatch(text, adapter=adapter, entities=entities)) == 1
+
+
+@pytest.mark.parametrize("text", [
+    "/model@OtherBot! gpt-5",
+    "@hermes_bot /model@OtherBot! gpt-5",
+    "/help@OtherBot! @hermes_bot",
+    "@hermes_bot /help@OtherBot! @hermes_bot",
+    "@hermes_bot /help@OtherBot.",
+])
+def test_foreign_command_entity_ends_before_punctuation(text, caplog):
+    test_foreign_command_target_wins_over_our_mention(text, True, caplog)
+
+
+@pytest.mark.parametrize("text", [
+    "/model@OtherBot gpt-5 @hermes_bot",
+    "@hermes_bot /model@OtherBot gpt-5",
+])
+def test_code_span_command_target_addresses_no_one(text):
+    entities = _telegram_entities(text)
+    next(e for e in entities if e.type == "bot_command").type = "code"
+    assert len(_dispatch(text, adapter=_adapter(), entities=entities)) == 1

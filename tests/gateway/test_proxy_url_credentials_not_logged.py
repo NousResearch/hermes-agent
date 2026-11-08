@@ -150,3 +150,49 @@ def test_malformed_proxy_url_never_echoes_credentials(monkeypatch, caplog, proxy
     lines = _proxy_lines(caplog)
     assert lines, "the adapter must still announce that a proxy is in use"
     assert all(SECRET not in line and "alice" not in line for line in lines), lines
+
+
+TOKEN = "Zq9xK7tWv3"
+# Every shape a credential can take in a proxy URL; ``{T}`` is where the secret goes.
+SECRET_SHAPES = [
+    "http://bob:{T}@proxy:8080",
+    "http://{T}@proxy:8080",  # token as the username
+    "http://bob:{T}ab/cd@proxy:8080",  # unencoded '/' in the password
+    "http://bob:ab/{T}@proxy:8080",
+    "socks5://bob:SEK?{T}@proxy:1080",  # unencoded '?'
+    "socks5://bob:{T}?x@proxy:1080",
+    "http://bob:ab#{T}@proxy:8080",  # unencoded '#'
+    "http://bob:{T}#x@proxy:8080",
+    "http://bob:a@b:{T}@proxy:8080",  # several '@'
+    "http://bob:{T}@[::1]:3128",
+    "http://bob:{T}@[::1",
+    "bob:{T}@proxy:8080",
+    "http:/bob:{T}@proxy:8080",
+    "http://bob:{T}@proxy:8080/x?y#z",
+    "http://bob:" + "p" * 70 + "{T}@" + "h" * 60 + ".example:8080",  # past the 80-char cut
+    "http://bob:" + "p" * 70 + "{T}/x@proxy:8080",  # token straddles the cut
+]
+
+
+def _assert_token_absent(text):
+    # No 4+ char prefix either, so a token cut in half by truncation cannot leak.
+    assert all(TOKEN[:n] not in text for n in range(4, len(TOKEN) + 1)), text
+
+
+@pytest.mark.parametrize("shape", SECRET_SHAPES)
+def test_proxy_secret_never_logged_in_any_shape(monkeypatch, caplog, shape):
+    import sys
+
+    from gateway.platforms import base as gw_base
+    from plugins.platforms.matrix import adapter as matrix_adapter
+
+    proxy = shape.format(T=TOKEN)
+    monkeypatch.setenv("MATRIX_PROXY", proxy)
+    monkeypatch.setitem(sys.modules, "aiohttp_socks", None)
+    with caplog.at_level(logging.INFO):
+        matrix_adapter.MatrixAdapter(PlatformConfig(
+            enabled=True, token="syt_test_token",
+            extra={"homeserver": "https://matrix.example.org", "user_id": "@bot:example.org"}))
+        gw_base._aiohttp_socks_connector("socks5://" + proxy.split("://", 1)[-1])
+    assert _proxy_lines(caplog), "the adapter must still announce that a proxy is in use"
+    _assert_token_absent("\n".join(r.getMessage() for r in caplog.records))

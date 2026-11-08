@@ -4,6 +4,21 @@ from urllib.parse import urlsplit
 _UNSAFE_URL_PLACEHOLDER = "<unparseable URL redacted>"
 
 
+def _authority_for_log(raw: str, parsed) -> str | None:
+    """``host[:port]`` rebuilt from the parsed fields (never the userinfo), or None when unclean.
+
+    An ``@`` outside the parsed netloc means an unencoded ``/``, ``?`` or ``#`` in the password
+    ended the authority early (``http://u:ab/cd@host`` parses as host ``u`` with path
+    ``/cd@host``): the "host" is the username and the password sits in the path or query.
+    """
+    if raw.count("@") != parsed.netloc.count("@") or not parsed.hostname:
+        return None
+    host = parsed.hostname
+    host = f"[{host}]" if ":" in host else host
+    port = parsed.netloc.rsplit("@", 1)[-1].rpartition("]")[2].partition(":")[2]
+    return f"{host}:{port}" if port else host
+
+
 def safe_url_for_log(url: str, max_len: int = 80) -> str:
     """Return a URL string safe for logs (no query/fragment/userinfo)."""
     raw = str(url) if max_len > 0 and url is not None else ""
@@ -19,11 +34,13 @@ def safe_url_for_log(url: str, max_len: int = 80) -> str:
         return _UNSAFE_URL_PLACEHOLDER[:max_len]
     safe = raw
     if parsed.scheme and parsed.netloc:
-        # Strip potential embedded credentials (user:pass@host).
+        authority = _authority_for_log(raw, parsed)
+        if authority is None:
+            return _UNSAFE_URL_PLACEHOLDER[:max_len]
         path = parsed.path or ""
         basename = path.rsplit("/", 1)[-1]
         tail = "" if path in ("", "/") else f"/.../{basename}" if basename else "/..."
-        safe = f"{parsed.scheme}://{parsed.netloc.rsplit('@', 1)[-1]}{tail}"
+        safe = f"{parsed.scheme}://{authority}{tail}"
     if len(safe) <= max_len:
         return safe
     return "." * max_len if max_len <= 3 else f"{safe[:max_len - 3]}..."

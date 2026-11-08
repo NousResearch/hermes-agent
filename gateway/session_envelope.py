@@ -146,10 +146,25 @@ def _event_clause(runner, event, provenance, fresh_roles):
     return None
 
 
+def _native_sender(event):
+    """Attribution only, not routing or delegated trust. None differs from an id-less sender."""
+    sender = event.envelope_sender
+    if sender is None:
+        return None
+    if (not isinstance(sender, SessionSource) or sender.platform != event.source.platform
+            or any(value is not None and type(value) not in (str, int)
+                   for value in (sender.user_id, sender.user_id_alt))
+            or sender.user_name is not None and not isinstance(sender.user_name, str)
+            or type(sender.is_bot) is not bool):
+        _refuse(event, 'invalid_params', 'envelope_sender')
+    return {name: getattr(sender, name) for name in ('user_id', 'user_name', 'user_id_alt', 'is_bot')}
+
+
 def _validate_native(runner, event, provenance=None, fresh_roles=False):
     source = event.source
     if (clause := _event_clause(runner, event, provenance, fresh_roles)) is not None:
         _refuse(event, 'invalid_params', clause)
+    _native_sender(event)
     if provenance is not None:
         from gateway.session_ingress_context import restore_provenance
         restore_provenance(runner, source, provenance)
@@ -199,7 +214,7 @@ async def prepare_native(runner, event):
     # Freeze caller-owned identity and content before the first network yield.
     # Preserve dynamic trust fields too: validation must reject forged ones,
     # not silently discard them while freezing the caller's source identity.
-    frozen = _adapter_event(event, source=copy(event.source))
+    frozen = _adapter_event(event, source=copy(event.source), envelope_sender=copy(event.envelope_sender))
     fresh_roles = await reauthorize_roles(runner, frozen.source, provenance)
     encoded_source = _validate_native(runner, frozen, provenance, fresh_roles)
     # Copy + SHA-256 + fsyncs of up to max_inbound_media_bytes stay off the owner loop; the
@@ -254,6 +269,8 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
     # its fingerprint. Explicit context (including an empty skill list) is exact.
     envelope['event'].update({name: deepcopy(getattr(event, name)) for name in _CONTEXT_FIELDS
                               if getattr(event, name) is not None})
+    if (sender := _native_sender(event)) is not None:
+        envelope['event']['envelope_sender'] = sender
     if event.inherit_channel_pin is True:  # synthetic goal/resume turn reuses the session's pins (#126109)
         envelope['event']['inherit_channel_pin'] = True
     if metadata := _native_metadata(event):
@@ -310,10 +327,17 @@ def restore_native(payload, runner=None):
         # Epoch 0 pins the retry fingerprint of producers with no provider time (relay, webhook,
         # automation); the turn records local time, as main's arrival-stamped event did.
         timestamp = datetime.now()
+    fields = deepcopy(envelope['event'])
+    sender = fields.pop('envelope_sender', None)
+    if sender is not None:
+        if not isinstance(sender, dict) or set(sender) != {'user_id', 'user_name', 'user_id_alt', 'is_bot'}:
+            raise RuntimeStoreError('invalid_params', field='envelope_sender')
+        fields['envelope_sender'] = replace(source, **sender)
     event = MessageEvent(text=payload['text'], source=source, timestamp=timestamp,
                         message_type=MessageType(envelope.get('message_type', 'text')),
                         media_urls=restore_native_media(envelope.get('media', [])),
-                        **deepcopy(envelope['event']))
+                        **fields)
+    _native_sender(event)
     if 'automation' in envelope:
         event.internal = True
         if envelope['automation'].get('heartbeat'):

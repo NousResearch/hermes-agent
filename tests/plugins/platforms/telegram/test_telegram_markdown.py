@@ -58,6 +58,23 @@ def test_rich_payload_escapes_currency_but_keeps_math_and_code(adapter, markdown
 @pytest.mark.parametrize(
     ("markdown", "expected"),
     [
+        ("$$x=1$$ so $2 + 2$", "$$x=1$$ so $2 + 2$"),
+        ("$$x=1$$ so $2\\pi r$", "$$x=1$$ so $2\\pi r$"),
+        ("$$x=1$$ so $2x + 1$", "$$x=1$$ so $2x + 1$"),
+        ("$$x=1$$ so $2\\,x$", "$$x=1$$ so $2\\,x$"),
+        ("$5 - $3 = $2", "\\$5 - \\$3 = \\$2"),
+        ("$1,000-$2,000", "\\$1,000-\\$2,000"),
+        ("$2\\frac{1}{2}$ and $3", "$2\\frac{1}{2}$ and \\$3"),
+    ],
+)
+def test_rich_payload_keeps_spaced_numeric_math_whole(adapter, markdown, expected):
+    """Digit-led math with spaces or TeX commands is one formula; amounts around operators stay escaped."""
+    assert adapter._rich_message_payload(markdown)["markdown"] == expected
+
+
+@pytest.mark.parametrize(
+    ("markdown", "expected"),
+    [
         ("***bold* rest**", "*_bold_ rest*"),
         ("***bold** rest*", "_*bold* rest_"),
         ("**a *b***", "*a _b_*"),

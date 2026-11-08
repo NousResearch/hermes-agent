@@ -215,10 +215,8 @@ def _flood_cap_result(wait: float) -> SendResult:
     return SendResult(success=False, error=f"flood_control:{wait}", retry_after=float(wait))
 
 
-_TELEGRAM_IMAGE_MIME_TO_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/webp": ".webp", "image/gif": ".gif",
-                               "image/heic": ".heic", "image/heif": ".heif", "image/avif": ".avif"}
-_TELEGRAM_IMAGE_EXT_TO_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif",
-                               ".heic": "image/heic", ".heif": "image/heif", ".avif": "image/avif"}
+_TELEGRAM_IMAGE_EXT_TO_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".heic": "image/heic", ".heif": "image/heif", ".avif": "image/avif"}
+_TELEGRAM_IMAGE_MIME_TO_EXT = {"image/jpg": ".jpg", **{m: e for e, m in _TELEGRAM_IMAGE_EXT_TO_MIME.items() if e != ".jpeg"}}
 
 
 def _probe_video_geometry(path: str) -> dict[str, int]:

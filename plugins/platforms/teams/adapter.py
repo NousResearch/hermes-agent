@@ -705,6 +705,9 @@ class TeamsAdapter(BasePlatformAdapter):
                 title=label, verb="hermes_approve",
                 data={**btn_data_base, "hermes_action": self._EA_CARD_ACTIONS[choice]}, **kw))
         body = _approval_body(cmd, prompt.description, always=True)
+        if cmd != prompt.command:  # the shared shortened-preview notice: where the rest is, or why Deny only
+            body.append(TextBlock(wrap=True, text=t("gateway.exec_approval.truncated_" + (
+                "full_above" if "once" in prompt.choices else "deny_only"), total=len(prompt.command))))
         body.append(TextBlock(text=format_approval_deadline_line(approval_timeout_seconds()), wrap=True))
         if prompt.smart_denied:
             body.append(TextBlock(text=self._EA_SMART_DENY_LINE.strip(), wrap=True))

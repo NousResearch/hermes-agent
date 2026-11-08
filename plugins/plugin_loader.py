@@ -6,6 +6,7 @@ or an ABC-subclass fallback."""
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.machinery
 import importlib.util
 import logging
@@ -70,12 +71,36 @@ def _module_load_lock(module_name: str) -> threading.RLock:
 
 
 def register_synthetic_package(name: str, search_locations: list[str]) -> None:
-    """Register an empty package shell so ``<name>.<child>`` relative imports resolve."""
+    """Register an empty package shell so ``<name>.<child>`` relative imports resolve. A dotted
+    *name* registers each missing ancestor first (as an empty shell)."""
     if name in sys.modules:
         return
+    parent = name.rpartition(".")[0]
+    if parent:
+        register_synthetic_package(parent, [])
     spec = importlib.machinery.ModuleSpec(name, None, is_package=True)
     spec.submodule_search_locations = search_locations
     sys.modules[name] = importlib.util.module_from_spec(spec)
+
+
+def user_namespace(namespace: str, plugin_dir: Path) -> str:
+    """The synthetic package a user plugin at *plugin_dir* loads under: one per canonical (resolved)
+    directory. One process serves many profiles, so two profiles' same-named user plugins must be
+    different modules; an alias of the same directory resolves to the same one."""
+    digest = hashlib.sha256(str(Path(plugin_dir).resolve()).encode("utf-8", "surrogatepass")).hexdigest()[:16]
+    return f"{namespace}.p{digest}"
+
+
+def user_module_name(namespace: str, plugin_dir: Path) -> str:
+    """``<namespace>.p<digest>.<dir name>``: the module name for a user plugin (see ``user_namespace``)."""
+    return f"{user_namespace(namespace, plugin_dir)}.{Path(plugin_dir).name}"
+
+
+def _same_file(mod: Any, init_file: Path) -> bool:
+    try:
+        return Path(mod.__file__).resolve() == init_file.resolve()
+    except (OSError, TypeError, ValueError):
+        return False
 
 
 def user_plugins_dir() -> Optional[Path]:
@@ -192,10 +217,16 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: tuple[str
 def _load_plugin_module_locked(module_name: str, plugin_dir: Path, init_file: Path,
                                parents: tuple[str, ...], logger: logging.Logger,
                                synthetic_namespace: Optional[str]) -> Optional[Any]:
-    # A synthetic package shell has no __file__; only reuse modules loaded from disk.
+    # A synthetic package shell has no __file__; only reuse modules loaded from disk, and only when
+    # they came from this plugin's file (a cached module of the same name from another directory
+    # is another plugin's code and import-time state).
     cached = sys.modules.get(module_name)
     if cached is not None and getattr(cached, "__file__", None):
-        return cached
+        if _same_file(cached, init_file):
+            return cached
+        logger.warning("Module %s is already loaded from %s; not reusing it for %s",
+                       module_name, cached.__file__, init_file)
+        return None
     for parent in parents:
         parent_path = _PLUGINS_ROOT.joinpath(*parent.split(".")[1:])
         if parent not in sys.modules and (parent_path / "__init__.py").exists():

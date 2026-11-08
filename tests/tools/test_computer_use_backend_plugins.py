@@ -55,6 +55,12 @@ def _home(home: Path, plugins: tuple, backend: str | None) -> Path:
     return home
 
 
+def _user_module(plugin: str):
+    """The loaded user module for *plugin* (named ``_hermes_user_computer_use.p<digest>.<plugin>``), or None."""
+    return next((m for n, m in sys.modules.items()
+                 if n.startswith("_hermes_user_computer_use.") and n.endswith(f".{plugin}")), None)
+
+
 def _list_apps(session_id: str = "s1") -> list:
     from tools.computer_use.tool import handle_computer_use
     out = json.loads(handle_computer_use({"action": "list_apps"}, session_id=session_id))
@@ -80,12 +86,12 @@ def test_selected_plugin_receives_tool_calls_and_unselected_stays_dormant(tmp_pa
         assert check_computer_use_requirements() is True
         assert _list_apps()[0]["backend"] == "cu-beta"
         assert json.loads(handle_computer_use({"action": "click", "element": 3}, session_id="s1"))["ok"] is True
-        calls = sys.modules["_hermes_user_computer_use.cu-beta"].CALLS
+        calls = _user_module("cu-beta").CALLS
         assert ("start", "standard") in calls and ("click", 3) in calls
-        assert "_hermes_user_computer_use.cu-alpha" not in sys.modules  # installed, not selected: never imported
+        assert _user_module("cu-alpha") is None  # installed, not selected: never imported
         from hermes_cli.tools_config_providers import _computer_use_provider_rows  # `hermes tools` / Desktop rows
         assert [r["computer_use_backend"] for r in _computer_use_provider_rows()] == ["cu-alpha", "cu-beta"]
-        assert "_hermes_user_computer_use.cu-alpha" not in sys.modules  # listing does not import either
+        assert _user_module("cu-alpha") is None  # listing does not import either
     finally:
         reset_hermes_home_override(tok)
 
@@ -113,7 +119,7 @@ def test_builtin_cua_is_default_and_plugin_never_self_activates(tmp_path, backen
         from tools.computer_use.tool import _new_backend
         assert get_active_provider().name == "cua"
         assert isinstance(_new_backend("standard"), CuaDriverBackend)
-        assert "_hermes_user_computer_use.cu-alpha" not in sys.modules
+        assert _user_module("cu-alpha") is None
     finally:
         reset_hermes_home_override(tok)
 

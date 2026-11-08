@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BACKEND = "cua"
 _CU_PLUGINS_DIR = Path(__file__).parent
-# Synthetic parent package for user-installed providers (keeps them out of the bundled namespace).
+# Synthetic parent package for user-installed providers (keeps them out of the bundled namespace);
+# each user provider dir gets its own subpackage, so profiles' same-named providers never share a module.
 _USER_NAMESPACE = "_hermes_user_computer_use"
 
 
@@ -67,11 +68,10 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional[ComputerUseProvider]
     # code under ``plugins.isolation: host`` (warning + None), which surfaces as "could not be loaded".
     from tools.computer_use.backend import ComputerUseProvider
     name = provider_dir.name
-    is_bundled = provider_dir.parent == _CU_PLUGINS_DIR
+    namespace = None if provider_dir.parent == _CU_PLUGINS_DIR else _loader.user_namespace(_USER_NAMESPACE, provider_dir)
     mod = _loader.load_plugin_module(
-        f"plugins.computer_use.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}", provider_dir,
-        parents=("plugins", "plugins.computer_use"), logger=logger,
-        synthetic_namespace=None if is_bundled else _USER_NAMESPACE)
+        f"plugins.computer_use.{name}" if namespace is None else f"{namespace}.{name}", provider_dir,
+        parents=("plugins", "plugins.computer_use"), logger=logger, synthetic_namespace=namespace)
     return mod and _loader.instance_from_module(
         mod, collector=_ProviderCollector(), collected_attr="provider", base_cls=ComputerUseProvider,
         name=name, logger=logger)

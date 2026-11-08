@@ -859,6 +859,28 @@ async def test_deleted_anchor_and_dead_topic_media_reply_still_reaches_chat_root
 
 
 @pytest.mark.asyncio
+async def test_named_topic_media_to_dead_topic_fails_closed_instead_of_landing_in_root():
+    """A named-topic attachment follows the text rule: no root fallback, so DeliveryRouter can recreate the topic."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def _topic_gone(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("message_thread_id") or kwargs.get("direct_messages_topic_id"):
+            raise FakeBadRequest("Message thread not found")
+        return SimpleNamespace(message_id=99)
+
+    adapter._bot = SimpleNamespace(send_animation=_topic_gone, send_photo=_topic_gone, send_message=_topic_gone)
+
+    result = await adapter.send_animation(
+        chat_id="123", animation_url="https://example.com/anim.gif",
+        metadata={"thread_id": "4242", "telegram_dm_topic_created_for_send": True})
+
+    assert result.success is False
+    assert call_log and all(c.get("message_thread_id") or c.get("direct_messages_topic_id") for c in call_log), call_log
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("native_err", [FakeTimedOut("Timed out"), FakeRetryAfter(3)])
 async def test_control_message_native_topic_unconfirmed_failure_keeps_binding_and_skips_root(tmp_path, native_err):
     """A native-topic attempt that may have delivered (timeout) or was refused for load (flood) is not a

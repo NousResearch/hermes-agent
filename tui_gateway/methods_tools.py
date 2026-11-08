@@ -1759,10 +1759,13 @@ def _plugins_toggle(rid, params):
         "name": key, "plugin": row}, key))
 
 
-def _source_moved_data(result: dict) -> dict | None:
-    """The structured marker of an install refused because the source left the reviewed commit: the
-    client re-inspects on ``reason``, never on the message, which echoes text a git server controls."""
-    return {"reason": "source_moved"} if result.get("source_moved") else None
+def _refusal_data(result: dict) -> dict | None:
+    """The structured marker of an install refused because the source left the reviewed commit (the
+    client re-inspects) or because a plugin of that name is installed (the client offers Force): the
+    client acts on ``reason``, never on the message, which echoes text a git server controls."""
+    if result.get("source_moved"):
+        return {"reason": "source_moved"}
+    return {"reason": "exists"} if result.get("exists") else None
 
 
 def _plugins_install(rid, params):
@@ -1778,7 +1781,7 @@ def _plugins_install(rid, params):
         ref=str(params.get("ref") or "").strip() or None,
         inspected_sha=str(params.get("inspected_sha") or "").strip() or None)
     if not result.get("ok"):
-        return _err(rid, 5026, result.get("error") or "install failed", data=_source_moved_data(result))
+        return _err(rid, 5026, result.get("error") or "install failed", data=_refusal_data(result))
     return _ok(rid, _with_activation(result, str(result.get("plugin_name") or "")) if result.get("enabled") else result)
 
 
@@ -1804,7 +1807,7 @@ def _plugins_install_desktop(rid, params):
     result = _tools_mod("hermes_cli.desktop_plugin_install").install_desktop_plugin(
         ident, ref=params.get("ref"), catalog_name=catalog_name or None, force=bool(params.get("force")))
     if not result.get("ok"):
-        return _err(rid, 5026, result.get("error") or "desktop install failed", data=_source_moved_data(result))
+        return _err(rid, 5026, result.get("error") or "desktop install failed", data=_refusal_data(result))
     return _ok(rid, result)
 
 

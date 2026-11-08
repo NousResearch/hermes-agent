@@ -1086,12 +1086,12 @@ ctx.inject_message(
 
 **Signature:** `ctx.inject_message(content: str, role: str = "user", *, session_key: str | None = None, origin: Mapping[str, Any] | None = None) -> bool`
 
-When the classic CLI runs plugins in its own process (no gateway session):
+Plugins run in the gateway on every local surface (classic CLI, TUI and Desktop), so an injected message never cancels work in progress:
 
-- If the agent is **idle** (waiting for user input), the message is queued as the next input and starts a new turn.
-- If the agent is **mid-turn** (actively running), the message interrupts the current operation — the same as a user typing a new message and pressing Enter.
+- If the target session is **idle**, the message starts a new turn.
+- If it is **mid-turn**, the message waits in that session's queue and runs as the next turn after the current one finishes; the running tool is not interrupted.
 - For non-`"user"` roles, the content is prefixed with `[role]` (e.g. `[system] ...`).
-- Returns `True` if the message was queued successfully.
+- Returns `True` when a host accepted the message (see the per-host rules below).
 
 Without a session key (`session_key` and `origin` both omitted), when the plugin runs in the gateway (or its plugin host) — which is where plugins run for classic CLI, TUI and Desktop sessions — the gateway picks the chat:
 

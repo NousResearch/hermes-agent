@@ -1,5 +1,7 @@
 """MarkdownV2 / rich-markdown conversion contracts, judged by the Bot API stand-in's parser."""
 
+import time
+
 import pytest
 
 from gateway.config import PlatformConfig
@@ -107,3 +109,22 @@ def test_double_backticks_inside_code_stay_code_content(adapter, markdown, expec
 def test_emphasis_and_links_never_cross_a_quote_line_edge(adapter, markdown):
     """Telegram ends a blockquote at a newline, so an entity left open across it is rejected."""
     assert mdv2_error(adapter.format_message(markdown)) is None
+
+
+@pytest.mark.parametrize(
+    "markdown",
+    [
+        # Unclosed spaced formula (a streaming draft frame): each \cmd could also be \c plus a one-letter variable.
+        "so $2 \\cdot " + "\\alpha\\beta " * 12 + "and more",
+        # Closed tight formula with a character the operator branch doesn't take (|).
+        "$2" + "\\alpha" * 12 + "\\left|x\\right|$",
+        # One long TeX command that never closes: the mandatory command must not retry every length.
+        "$1\\" + "a" * 40000 + "!",
+    ],
+    ids=["unclosed-spaced", "tight-with-pipe", "long-command"],
+)
+def test_rich_currency_escape_does_not_backtrack_on_tex_commands(adapter, markdown):
+    """A digit-led span that isn't math fails in linear time (each row takes 10 s or more under backtracking)."""
+    started = time.perf_counter()
+    adapter._rich_message_payload(markdown)
+    assert time.perf_counter() - started < 2.0

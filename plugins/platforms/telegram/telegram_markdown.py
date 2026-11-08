@@ -298,6 +298,9 @@ def _escape_bare_bracket(m, seg: str) -> str:
     return '\\' + ch
 
 
+# The formula bodies are possessive: none can consume $, so a match ends a body at the first
+# character it can't take, and a failed span must not retry every split of a TeX command (the
+# escape runs on the gateway event loop for every streamed draft frame).
 # Regions the rich-message dollar escape leaves verbatim (fenced code, inline code delimited by
 # matching backtick-run widths, $$ display math, $x$ inline math, digit-led formulas such as $2+2$
 # that carry an operator or close tight like $4$ (an amount is never closed by a $ that no digit or
@@ -309,10 +312,10 @@ def _escape_bare_bracket(m, seg: str) -> str:
 _RICH_DOLLAR_RE = re.compile(
     r'(?P<keep>```[\s\S]*?```|(?P<ticks>`+)[^\n]*?(?<!`)(?P=ticks)(?!`)|\\\$|\$\$[\s\S]*?\$\$'
     r'|(?<![\w$])\$(?![\d\s$])(?:\\.|[^\\\n$])+?(?<!\s)\$(?![\d$])'
-    r'|(?<![\w$\\])\$\d[\w.,]*(?:[-+*/^=<>]|\\[a-zA-Z]+)(?:[\w.,(){}^_+*/=<>-]|\\[a-zA-Z]+)*(?<![-+*/^=<>])\$(?![\w$])'
+    r'|(?<![\w$\\])\$\d[\w.,]*(?:[-+*/^=<>]|\\[a-zA-Z]++)(?:[\w.,(){}^_+*/=<>-]|\\[a-zA-Z]+)*+(?<![-+*/^=<>])\$(?![\w$])'
     r'|(?<![\w$\\])\$\d[\w.,]*(?<![.,])\$(?![\w$])'
     r'|(?<![\w$\\])\$\d(?=[^$\n]*?(?:[-+*/^=<>]|\\))'
-    r'(?:[\d.,(){}^_+*/=<> -]|\\[a-zA-Z]+|\\[^a-zA-Z\s$]|[a-zA-Z](?![a-zA-Z]))*(?<![-+*/^=<>\s])\$(?![\w$]|\s?\d))'
+    r'(?:[\d.,(){}^_+*/=<> -]|\\[a-zA-Z]+|\\[^a-zA-Z\s$]|[a-zA-Z](?![a-zA-Z]))*+(?<![-+*/^=<>\s])\$(?![\w$]|\s?\d))'
     r'|(?P<currency>(?<![\\$])\$(?!\$)(?=\d)|(?<=[A-Z])\$(?=\s?\d))'
 )
 

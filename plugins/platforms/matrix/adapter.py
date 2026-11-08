@@ -2382,8 +2382,12 @@ class MatrixAdapter(BasePlatformAdapter):
         """
         room_id = str(room_id or "")
         if not room_id or self._client is None or room_id in self._joined_rooms:
+            logger.debug(
+                "Matrix: not declining invite %s (no room id, no client, or already joined)", room_id
+            )
             return
         if room_id in self._declined_invites or room_id in self._invite_decline_tasks:
+            logger.debug("Matrix: invite %s already declined or decline in flight", room_id)
             return
 
         async def _decline_invite() -> None:
@@ -2391,6 +2395,11 @@ class MatrixAdapter(BasePlatformAdapter):
                 await asyncio.wait_for(
                     self._client.leave_room(RoomID(room_id)), timeout=30.0
                 )
+            except asyncio.CancelledError:
+                # Shutdown or reconnect cancelled the leave before it landed; the
+                # invite is still pending, so the next sync retries.
+                logger.warning("Matrix: decline of invite %s cancelled", room_id)
+                raise
             except TimeoutError:
                 logger.warning("Matrix: timed out declining invite %s", room_id)
             except Exception:
@@ -2404,6 +2413,9 @@ class MatrixAdapter(BasePlatformAdapter):
             finally:
                 self._invite_decline_tasks.pop(room_id, None)
 
+        # Info, not debug: this line and the matching "declined"/failure line are how a
+        # leave that never completes is told apart from one that was never attempted.
+        logger.info("Matrix: declining invite to %s from unauthorized user %s", room_id, inviter)
         self._invite_decline_tasks[room_id] = asyncio.create_task(_decline_invite())
 
     def _schedule_pending_invite_joins(self, sync_data: dict[str, Any]) -> None:

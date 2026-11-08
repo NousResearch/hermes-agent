@@ -8,6 +8,7 @@ room instead. A failed leave stays retryable; a successful one is remembered so
 the room is not left repeatedly.
 """
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -134,6 +135,18 @@ class TestInviteDecline:
 
         assert adapter._client.leave_room.await_count == 2
         assert "!spam:evil.example" in adapter._declined_invites
+
+    @pytest.mark.asyncio
+    async def test_cancelled_decline_is_not_remembered(self):
+        """A leave cancelled by shutdown/reconnect must stay retryable next sync."""
+        adapter = _make_adapter()
+        adapter._client.leave_room = AsyncMock(side_effect=asyncio.CancelledError())
+
+        adapter._schedule_pending_invite_joins(_invite_sync_data())
+        with pytest.raises(asyncio.CancelledError):
+            await _drain(adapter)
+
+        assert "!spam:evil.example" not in adapter._declined_invites
 
     @pytest.mark.asyncio
     async def test_decline_is_a_noop_without_a_client(self):

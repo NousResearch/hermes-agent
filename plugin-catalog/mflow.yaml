@@ -1,7 +1,7 @@
 name: mflow
 title: mFlow
 repo: https://github.com/vladyslavpatrick/mflow-hermes
-sha: 767d46b9cec8b8e898d46f179e9a27798dfb0f1f
+sha: 9e6428e78413a0fd7b3afdbb29d5001378acad24
 description: >-
   Manage mFlow (m-flow.io) from Hermes: boards and tasks, Knowledge Base/ADRs, and
   coding-agent delegation. Portable Agent Plugins v1 package (mcp.json + skills/) with

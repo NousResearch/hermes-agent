@@ -37,10 +37,10 @@ def mdv2_error(text: str) -> str | None:
     """The Bot API's ``can't parse entities`` reason for ``text`` in MarkdownV2, or None if it parses.
 
     A faithful subset of the server's parser: escapes, code/pre spans, links, the paired style
-    markers (``*`` ``_`` ``__`` ``~`` ``||``) and line-leading ``>`` quotes. Any other reserved
+    markers (``*`` ``_`` ``__`` ``~`` ``||``) and line-leading ``>`` and ``**>`` (expandable, closed by ``||`` ending its last line) quotes. Any other reserved
     character must carry a preceding backslash.
     """
-    i, n, open_marks = 0, len(text), []
+    i, n, open_marks, expandable = 0, len(text), [], False
     while i < n:
         ch = text[i]
         if ch == "\\":
@@ -53,8 +53,10 @@ def mdv2_error(text: str) -> str | None:
             i = end + 3
             continue
         if ch == "`":
-            end = text.find("`", i + 1)
-            if end < 0:
+            end = i + 1
+            while end < n and text[end] != "`":
+                end += 2 if text[end] == "\\" else 1  # \` and \\ are escapes inside code too
+            if end >= n:
                 return f"Can't find end of Code entity at byte offset {i:d}"
             i = end + 1
             continue
@@ -64,9 +66,18 @@ def mdv2_error(text: str) -> str | None:
                 return "Character '[' is reserved and must be escaped with the preceding '\\'"
             i = m.end()
             continue
-        if ch == ">" and (i == 0 or text[i - 1] == "\n"):
+        line_start = i == 0 or text[i - 1] == "\n"
+        if line_start and text.startswith("**>", i):  # expandable blockquote opener
+            expandable, i = True, i + 3
+            continue
+        if ch == ">" and line_start:
             i += 1
             continue
+        if expandable and text.startswith("||", i) and text[i + 2 : i + 3] in ("", "\n"):
+            # The expandable quote's closer: valid only on the block's last line.
+            if text[i + 3 : i + 4] != ">":
+                expandable, i = False, i + 2
+                continue
         mark = next((mk for mk in ("||", "__", "*", "_", "~") if text.startswith(mk, i)), None)
         if mark is not None:
             if open_marks and open_marks[-1] == mark:

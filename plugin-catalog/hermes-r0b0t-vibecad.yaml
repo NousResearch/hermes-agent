@@ -1,7 +1,7 @@
 name: hermes-r0b0t-vibecad
 title: vibeCAD
 repo: https://github.com/r0b0tlab/hermes-r0b0t-vibeCAD
-sha: "aad9fe6c19d93cb1408aeec87b5d9c17230191f0"
+sha: "4b708401a3f056d2d1ea55b53089c677b36836f4"
 description: >
   Profile-driven FDM CAD: executes a trusted build123d model in the configured
   workspace, refuses parts that miss the selected bed, renders depth-tested
@@ -9,14 +9,15 @@ description: >
   adapters cover the X2D dual-tool common envelope and the P2S AMS Combo
   (256 mm cube, one 0.4 mm nozzle, slots 1-4 unless ams_slot_capacity is set,
   max 20). Desktop labels those drawings inline when the Desktop half is
-  enabled. Disclosure: local subprocess execution and workspace file writes
-  only. No network, no credentials, no telemetry, no print dispatch, no live
-  AMS binding, no native Bambu process project.
+  enabled. CAD dependencies require a separately bootstrapped Python 3.12/3.13
+  environment. Disclosure: executes trusted workspace Python in a local
+  subprocess and reads/writes that workspace. No runtime network, credentials,
+  telemetry, print dispatch, live AMS binding, or native Bambu process project.
 maintainer: am423
 tier: community
 category: tools
 requires_hermes: ">=0.21.0"
-version: "0.3.0"
+version: "0.4.0"
 capabilities:
   provides_tools:
     - vibecad_list_printer_profiles

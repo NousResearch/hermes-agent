@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import urlsplit
 
 from hermes_cli.agent_plugins import (
     MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1, _HERMES_EXTENSION, _PLUGIN_NAME_RE, _SKILL_NAME_RE,
@@ -69,12 +69,12 @@ def _stdio_entry(server: str, cfg: Mapping[str, Any], notes: list[str]) -> dict[
         if value.startswith(("/", "~")) or re.match(r"^[A-Za-z]:[\\/]", value):
             raise ExportError(f"mcp:{server}: arg {arg!r} is a path on this machine; it will not exist "
                               "for the people you share with. Use a relative path or ${PLUGIN_DATA}")
-    for i, arg in enumerate(args):
-        flag = args[i - 1] if i else ""
-        if "${" in arg or _looks_secret(arg.split("=", 1)[0], arg) or (
-                flag.startswith("-") and _SECRET_NAME_RE.search(flag)):
-            raise ExportError(f"mcp:{server}: args carry a credential or ${{VAR}} template ({arg[:12]}…); "
-                              "pass it through env instead so the package ships only the variable name")
+    # The MCP launch-card masker knows which argv positions hold secrets (``--api-key X``, ``-H
+    # 'Authorization: …'``, ``KEY=VALUE``) and which only look like it (``--auth-type``, ``--max-tokens``).
+    from tools.connectors.mcp_launch import _mask_flag_values
+    if any("${" in arg for arg in args) or _mask_flag_values(command, args) != args:
+        raise ExportError(f"mcp:{server}: args carry a credential or ${{VAR}} template; pass it through "
+                          "env instead so the package ships only the variable name")
     entry: dict[str, Any] = {"type": "stdio", "command": command, "args": args}
     if isinstance(cfg.get("env"), Mapping) and cfg["env"]:
         entry["env"] = _portable_env(server, cfg["env"], notes)
@@ -87,9 +87,8 @@ def _remote_entry(server: str, cfg: Mapping[str, Any], notes: list[str]) -> dict
     url = str(cfg["url"])
     if "${" in url:
         raise ExportError(f"mcp:{server}: url uses a ${{VAR}} template; portable URLs are literal")
-    parts = urlsplit(url)
-    if parts.username or parts.password or any(
-            _looks_secret(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)):
+    from tools.connectors.mcp_launch import scrub
+    if urlsplit(url).username or scrub(url) != url:
         raise ExportError(f"mcp:{server}: url carries a credential; v1 remote URLs and headers are "
                           "visible package data")
     entry: dict[str, Any] = {"type": "sse" if cfg.get("transport") == "sse" else "streamable-http", "url": url}
@@ -135,7 +134,10 @@ def _mcp_entries(names: list[str], notes: list[str]) -> tuple[dict[str, Any], di
             servers[name] = _remote_entry(name, cfg, notes)
         else:
             raise ExportError(f"mcp:{name}: neither command nor url is set")
-        if ext := _hermes_server_extension(cfg):
+        if (ext := _hermes_server_extension(cfg)) and servers[name]["type"] == "sse":
+            notes.append(f"mcp:{name}: Hermes trust/timeout/cost settings not exported for a legacy sse "
+                         "server (Hermes' importer skips sse, so they would have no server to attach to)")
+        elif ext:
             extensions[name] = ext
     return servers, extensions
 

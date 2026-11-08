@@ -1,7 +1,6 @@
 """``hermes plugins export`` writes a package the importer loads, with no credential values in it."""
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -20,7 +19,7 @@ def _profile(home: Path) -> None:
         encoding="utf-8")
     (home / "config.yaml").write_text(
         "mcp_servers:\n"
-        "  fs:\n    command: npx\n    args: [server-fs]\n"
+        "  fs:\n    command: npx\n    args: [server-fs, --auth-type=oauth, --max-tokens=100]\n"
         f"    env: {{GITHUB_TOKEN: {_TOKEN}, LOG_LEVEL: info}}\n    trust: untrusted\n"
         "  remote:\n    url: https://mcp.example.com/mcp\n"
         "    headers: {Authorization: 'Bearer ${MY_TOKEN}', X-Tenant: public}\n    auth: oauth\n"
@@ -57,7 +56,6 @@ def test_export_round_trips_through_the_importer_without_secrets(tmp_path, monke
     ("argkey", None, "credential"),
     ("urlkey", None, "credential"),
     ("zero", None, "does not validate|timeout"),
-    (None, "link", "links outside"),
     (None, "name", "not a valid Agent Skills name"),
     ("localarg", None, "path on this machine"),
     (None, "inside", "inside the skill"),
@@ -66,11 +64,6 @@ def test_unportable_input_refuses_and_writes_nothing(tmp_path, monkeypatch, serv
     home = tmp_path / "home"
     _profile(home)
     skill = home / "skills" / "research" / "paper-notes"
-    if skill_edit == "link":
-        if os.name == "nt":
-            pytest.skip("creating a symlink needs Developer Mode on Windows")
-        (home / ".env").write_text(f"GITHUB_TOKEN={_TOKEN}\n", encoding="utf-8")
-        (skill / "env-copy").symlink_to(home / ".env")
     if skill_edit == "name":
         md = skill / "SKILL.md"
         text = md.read_text(encoding="utf-8-sig").replace("name: paper-notes", "name: ../escaped")
@@ -83,3 +76,17 @@ def test_unportable_input_refuses_and_writes_nothing(tmp_path, monkeypatch, serv
 
     assert not out.exists()
     assert not (tmp_path / "escaped").exists()
+
+
+@pytest.mark.platforms("posix")  # creating a symlink needs Developer Mode on Windows
+def test_skill_link_to_a_private_file_refuses(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    _profile(home)
+    (home / ".env").write_text(f"GITHUB_TOKEN={_TOKEN}\n", encoding="utf-8")
+    (home / "skills" / "research" / "paper-notes" / "env-copy").symlink_to(home / ".env")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    with pytest.raises(ValueError, match="links outside"):
+        export_agent_plugin("x", tmp_path / "pkg", skills=["paper-notes"], servers=[])
+
+    assert not (tmp_path / "pkg").exists()

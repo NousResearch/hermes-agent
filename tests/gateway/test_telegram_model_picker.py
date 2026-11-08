@@ -163,6 +163,41 @@ async def test_tapping_a_provider_shows_distinguishable_model_buttons(plain_keyb
     assert "46 more available" in edit["text"] and "\\_46" not in edit["text"]
 
 
+async def _model_labels_for(provider: dict) -> list[str]:
+    adapter = _make_adapter()
+    adapter._model_picker_state["12345"] = {
+        "providers": [provider], "current_model": "m", "current_provider": provider["slug"],
+        "session_key": "s", "on_model_selected": AsyncMock(), "msg_id": 42,
+    }
+    query = AsyncMock()
+    query.message = MagicMock()
+    query.message.chat_id = 12345
+    query.from_user = MagicMock()
+    await adapter._handle_model_picker_callback(query, f"mp:{provider['slug']}", "12345")
+    rows = query.edit_message_text.call_args[1]["reply_markup"].inline_keyboard
+    return [row[0].text for row in rows if row[0].callback_data.startswith("mm:")]
+
+
+@pytest.mark.asyncio
+async def test_model_buttons_still_over_budget_keep_head_and_tail_with_plan_word(plain_keyboards):
+    """Ids still too long after the shared namespace goes lose their MIDDLE, so the family head and the
+    distinguishing tail stay visible next to the ``Large`` plan word; a short catalog keeps full names."""
+    from plugins.platforms.telegram.telegram_picker_labels import MODEL_LABEL_BUDGET
+
+    ns = "ri.language-model-service..language-model."
+    ids = [ns + "claude-4-5-sonnet-extended-thinking-20250929", ns + "claude-4-5-opus-extended-thinking-20251101"]
+    labels = await _model_labels_for({"slug": "palantir", "name": "P", "models": ids, "total_models": 2,
+                                      "model_labels": {ids[0]: "Large"}})
+    assert len(labels) == 2 and len(set(labels)) == 2
+    assert all(len(lbl) <= MODEL_LABEL_BUDGET for lbl in labels)
+    assert labels[0].startswith("claude-4-5-s") and labels[0].endswith("-20250929 · Large")
+    assert labels[1].startswith("claude-4-5-o") and labels[1].endswith("-20251101")
+    assert "…" in labels[0] and ns not in labels[0]
+
+    short = await _model_labels_for({"slug": "openai", "name": "O", "models": ["gpt-5.1", "gpt-5.2"], "total_models": 2})
+    assert short == ["gpt-5.1", "gpt-5.2"]
+
+
 def _gateway_wired_adapter():
     """Real adapter with the real gateway auth callback, as ``GatewayRunner`` wires it."""
     from gateway.config import GatewayConfig, Platform

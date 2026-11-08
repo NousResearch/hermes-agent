@@ -974,9 +974,6 @@ platform:
     approved: "✅ 已批准。"
     denied: "❌ 已拒绝。"
     approval_expired: "⌛ 审批已过期——命令未执行（已超时或已在别处处理）。"
-  yuanbao:
-    slow_response_notice: "任务有点复杂，正在努力处理中，请耐心等待..."
-    owner_command_denied: "⚠️ {command} 仅在私聊模式下对创建者可用"
   shared:
     truncated_suffix: "\n...（已截断）"
     unknown: "未知"

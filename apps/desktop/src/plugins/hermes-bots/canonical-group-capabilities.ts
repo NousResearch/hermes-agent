@@ -1,7 +1,9 @@
 import { gatewayActivationEpoch, host, useGatewayActivationEpoch, useValue } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 
+import { peerRoute, peerTargetKey, type PeerTargetState, readPeerTargets } from './canonical-group-peers'
 import { canonicalGroupRequest } from './canonical-groups'
+import type { GroupEngine } from './group-engine'
 import { resolveBotConnectionRoute } from './routing'
 import type { RosterRow } from './types'
 
@@ -118,6 +120,7 @@ export function groupCreationSource(route: { connectionId: string; profile: stri
 
 export interface GroupCapabilityState {
   activationEpoch: number
+  snapshot: unknown
   mode: GroupExecutionMode
   seatable: null | Set<string>
   source: string
@@ -125,7 +128,7 @@ export interface GroupCapabilityState {
 
 /** `groups.capabilities` for the active source while `active`, keyed by that
  *  source so an answer from a source the window has left is never used. */
-export function useGroupCapability(active: boolean) {
+export function useGroupCapability(active: boolean, attempt = 0) {
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
   const gateway = useValue(host.state.gateway)
@@ -148,6 +151,7 @@ export function useGroupCapability(active: boolean) {
       if (!cancelled && sourceCurrent()) {
         setCapability({
           activationEpoch,
+          snapshot: result,
           mode: failed ? 'unavailable' : groupExecutionMode(result),
           seatable: failed ? null : groupSeatableProfiles(result),
           source
@@ -161,14 +165,14 @@ export function useGroupCapability(active: boolean) {
     )
 
     return () => { cancelled = true }
-  }, [activationEpoch, active, connectionId, gateway, profile, source])
+  }, [activationEpoch, active, attempt, connectionId, gateway, profile, source])
 
   const current = capability?.source === source ? capability : null
 
   return {
     capability,
     connectionId,
-    mode: current ? current.mode : ('checking' as const),
+    mode: !connectionId || gateway !== 'open' ? 'unavailable' as const : current ? current.mode : ('checking' as const),
     observedRoute: connectionId ? { connectionId, profile } : null,
     seatable: current ? current.seatable : null,
     source
@@ -190,9 +194,9 @@ export function botOnConnection(bot: RosterRow, connectionId: null | string): bo
   return bot.connectionId ? bot.connectionId === connection && routeAgrees : !bot.remoteSource && routeAgrees
 }
 
-/** A bot on another connection the Desktop can carry a room turn to: a live row
- *  whose route resolves to the same connection the row names. */
-function courierReachable(bot: RosterRow): boolean {
+/** A bot on another connection whose own gateway this Desktop reaches: a live row whose route
+ *  resolves to the same connection the row names. */
+function peerReachable(bot: RosterRow): boolean {
   if (bot.sourceMissing || bot.sourceReachable === false) {
     return false
   }
@@ -206,42 +210,120 @@ function memberConnection(bot: RosterRow, connectionId: null | string): string {
   return String(bot.connectionId || bot.route?.connectionId || connectionId || '').trim()
 }
 
-/** True when `members` live on two or more connections. No single gateway can
- *  own such a room, so it runs on this Desktop, which carries each member's turn
- *  to its own gateway. A member with no recorded connection counts as being on
- *  `connectionId`. */
-export function groupNeedsDesktopCourier(members: RosterRow[], connectionId: null | string): boolean {
-  return new Set(members.map(bot => memberConnection(bot, connectionId))).size > 1
+const spansConnections = (members: RosterRow[], connectionId: null | string) =>
+  new Set(members.map(bot => memberConnection(bot, connectionId))).size > 1
+
+/** A name this Desktop has a room record for: one that seated members, kept messages or holds a
+ *  room id. Bots' own memberships write none, a disband leaves only a tombstone, and a layout write
+ *  (section, order, pin) on a membership-only name leaves an empty one, so such a name is still a
+ *  new group chat. */
+export function groupRoomRecorded(room: { tombstone?: boolean; members?: unknown[]; log?: unknown[]; roomId?: null | string } | undefined): boolean {
+  return Boolean(room && !room.tombstone && (room.members?.length || room.log?.length || room.roomId))
 }
 
-/** True when this Desktop drives the room recorded as `room`: the engine it
- *  was created with, else (older records) whether `members` span connections. */
-export function groupDrivenByDesktop(room: { engine?: 'desktop' } | undefined, members: RosterRow[], connectionId: null | string): boolean {
-  return room?.engine === 'desktop' || groupNeedsDesktopCourier(members, connectionId)
+/** True when this Desktop drives the room recorded as `room`. No new group chat is ever made this
+ *  way: only one saved as `engine: 'desktop'` by an older build, or an unmarked older record whose
+ *  members span connections, keeps its history and composer in the Desktop-driven view. A name
+ *  with no record is a new group chat, which a gateway runs. */
+export function groupDrivenByDesktop(room: { engine?: GroupEngine; tombstone?: boolean; members?: unknown[]; log?: unknown[]; roomId?: null | string } | undefined,
+  members: RosterRow[], connectionId: null | string): boolean {
+  return room?.engine ? room.engine === 'desktop' : groupRoomRecorded(room) && spansConnections(members, connectionId)
 }
 
-/** True when every bot in `selection` lives on ONE connection other than
- *  `connectionId`. The gateway here cannot own that room and no Desktop courier
- *  is needed between machines, so creation from here is refused: the user adds a
- *  bot from this connection or switches to that one. */
+/** True when every bot in `selection` lives on ONE connection other than `connectionId`: that
+ *  connection's gateway, not this one, should own the group chat, so creation from here is refused
+ *  and the person adds a bot from this connection or switches to that one. */
 export function groupSelectionElsewhere(selection: RosterRow[], connectionId: null | string): boolean {
-  return selection.length > 0 && !groupNeedsDesktopCourier(selection, connectionId) &&
+  return selection.length > 0 && !spansConnections(selection, connectionId) &&
     !botOnConnection(selection[0], connectionId)
 }
 
-export type GroupCreationEngine = 'desktop' | 'elsewhere' | 'gateway'
+/** Every new group chat is run by a gateway (`gateway`: bots on this connection only; `gateway-peer`:
+ *  bots on other computers too, seated through their own gateways). `unavailable` names what is
+ *  missing (`reason`) and on which connection, so the dialog can say so and offer Retry. */
+export type GroupCreationEngine = 'elsewhere' | 'gateway' | 'gateway-peer' | 'checking' | 'unavailable'
+export interface GroupCreationPlan {
+  engine: GroupCreationEngine
+  reason?: string
+  connection?: string
+  connectionId?: string
+}
 
-/** Who runs a room seating `selection` when created under `mode` from
- *  `connectionId`: the gateway here (canonical mode, every bot on this
- *  connection), this Desktop (a legacy gateway, or bots on two or more
- *  connections), or nobody reachable from here (every bot on ONE other
- *  connection, see groupSelectionElsewhere). */
-export function groupCreationEngine(mode: GroupExecutionMode, selection: RosterRow[], connectionId: null | string): GroupCreationEngine {
-  if (mode !== 'canonical' || groupNeedsDesktopCourier(selection, connectionId)) {
-    return 'desktop'
+/** Owning peers does not require the owner to lend its own Bot through RoomLink. */
+export function groupSeatsPeers(value: unknown): boolean {
+  const answer = value as { driver?: boolean; persistent_process?: boolean; methods?: string[] } | null
+
+  return answer?.driver === true && answer.persistent_process === true && Array.isArray(answer.methods) && answer.methods.includes('groups.peer.register')
+}
+
+/** The one decision point for creating a group chat: always on a gateway, never Desktop-driven. */
+export function groupCreationEngine(mode: GroupExecutionMode | 'checking', selection: RosterRow[], connectionId: null | string,
+  snapshot?: unknown, targets: ReadonlyMap<string, PeerTargetState> = new Map()): GroupCreationPlan {
+  if (mode === 'checking') {return { engine: 'checking', reason: 'capabilities_pending' }}
+
+  if (!connectionId || mode === 'unavailable') {return { engine: 'unavailable', reason: 'owner_unavailable' }}
+
+  // A gateway too old to run group chats cannot own one: the person updates Hermes there.
+  if (mode === 'legacy') {return { engine: 'unavailable', reason: 'owner_update_required' }}
+
+  if (selection.some(bot => !botOnConnection(bot, connectionId) && !peerReachable(bot))) {return { engine: 'unavailable', reason: 'route_unavailable' }}
+
+  if (groupSelectionElsewhere(selection, connectionId)) {return { engine: 'elsewhere', reason: 'other_connection' }}
+  const seatable = groupSeatableProfiles(snapshot)
+
+  if (selection.some(bot => botOnConnection(bot, connectionId) && seatable && !seatable.has(bot.route?.targetProfile ?? bot.targetProfile ?? bot.name))) {
+    return { engine: 'unavailable', reason: 'profile_unseatable' }
   }
 
-  return groupSelectionElsewhere(selection, connectionId) ? 'elsewhere' : 'gateway'
+  if (!spansConnections(selection, connectionId)) {return { engine: 'gateway' }}
+
+  if (!groupSeatsPeers(snapshot)) {return { engine: 'unavailable', reason: 'peer_owner_unavailable' }}
+
+  const plans = selection.filter(member => !botOnConnection(member, connectionId))
+    .map(bot => peerCreationPlan(bot, connectionId, targets))
+
+  // Finish every lender read first, then name the first one that is missing something.
+  return plans.find(plan => plan.engine === 'checking') ?? plans.find(plan => plan.engine === 'unavailable') ??
+    { engine: 'gateway-peer' }
+}
+
+function peerCreationPlan(bot: RosterRow, connectionId: string, targets: ReadonlyMap<string, PeerTargetState>): GroupCreationPlan {
+  const route = peerRoute(bot, connectionId)
+  const connection = connectionName(bot)
+  const location = { connection, connectionId: route?.connectionId ?? bot.connectionId }
+
+  if (!route) {return { engine: 'unavailable', reason: 'route_unavailable', ...location }}
+  const target = targets.get(peerTargetKey(route))
+
+  if (!target) {return { engine: 'checking', reason: 'capabilities_pending', ...location }}
+
+  if (!target.ready) {return { engine: 'unavailable', reason: target.reason, ...location }}
+
+  if (bot.installId && !samePeerInstallation(bot.installId, target.installationId)) {return { engine: 'unavailable', reason: 'peer_gateway_changed', ...location }}
+
+  return { engine: 'gateway-peer' }
+}
+
+/** Roster installId is get_install_id()'s raw id; RoomLink uses install:<id>. */
+function samePeerInstallation(installId: string, authorityId: string): boolean {
+  return `install:${installId}` === authorityId
+}
+
+/** Re-read the complete plan before the first write; callers refresh a rejected plan for another deliberate Create. */
+export async function revalidateGroupCreation(route: { connectionId: string; profile: string }, capability: GroupCapabilityState | null,
+  source: string, selection: RosterRow[], expected: GroupCreationEngine, unavailable: string) {
+  const sourceCurrent = groupCreationSource(route, capability?.activationEpoch ?? -1)
+
+  if (!capability || capability.source !== source || !sourceCurrent()) {throw new Error(unavailable)}
+  const snapshot = await canonicalGroupRequest<unknown>(route, 'groups.capabilities')
+
+  if (groupExecutionMode(snapshot) !== capability.mode) {throw new Error(unavailable)}
+  const targets = groupSeatsPeers(snapshot) ? await readPeerTargets(selection, route.connectionId) : new Map<string, PeerTargetState>()
+  const plan = groupCreationEngine(groupExecutionMode(snapshot), selection, route.connectionId, snapshot, targets)
+
+  if (!sourceCurrent() || plan.engine !== expected || !['gateway', 'gateway-peer'].includes(plan.engine)) {throw new Error(unavailable)}
+
+  return { plan, targets, sourceCurrent }
 }
 
 /** The name a person knows a bot's connection by. */
@@ -252,8 +334,8 @@ export function connectionName(bot: RosterRow | undefined): string {
 /** The roster rows New Group Chat may seat: never an outage placeholder. Bots on
  *  the current connection must be ones the authority's seatable roster names
  *  (#141178); bots on another connection are offered when the Desktop can reach
- *  them, and a selection spanning connections becomes a Desktop-driven room. The
- *  ONE predicate behind both the dialog's picker and the menu item that opens it. */
+ *  them, and their own gateway seats them in the group chat. The ONE predicate
+ *  behind both the dialog's picker and the menu item that opens it. */
 export function seatableGroupBots(
   roster: RosterRow[],
   { connectionId, mode, seatable }: { connectionId: null | string; mode: GroupExecutionMode | 'checking'; seatable: null | Set<string> }
@@ -268,7 +350,7 @@ export function seatableGroupBots(
     }
 
     if (!botOnConnection(bot, connectionId)) {
-      return courierReachable(bot)
+      return peerReachable(bot)
     }
 
     // The profile is the one createCanonicalGroup will send.

@@ -974,9 +974,6 @@ platform:
     approved: "✅ Goedgekeur."
     denied: "❌ Geweier."
     approval_expired: "⌛ Goedkeuring het verval — die opdrag is nie uitgevoer nie (reeds uitgetel of elders afgehandel)."
-  yuanbao:
-    slow_response_notice: "Hierdie taak is 'n bietjie omvattend — ek werk nog daaraan, hou asseblief aan..."
-    owner_command_denied: "⚠️ {command} is slegs vir die skepper beskikbaar in privaatgesprek-modus"
   shared:
     truncated_suffix: "\n...(afgekap)"
     unknown: "onbekend"

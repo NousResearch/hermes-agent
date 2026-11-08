@@ -26,6 +26,7 @@ if _repo not in sys.path:
 # test_telegram_approval_buttons.py)
 # ---------------------------------------------------------------------------
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram import adapter as _telegram_adapter_module
 from gateway.config import PlatformConfig
 
 
@@ -111,6 +112,43 @@ class TestTelegramSendClarify:
         # Must NOT contain raw <script> — html.escape should have neutralized
         assert "<script>" not in kwargs["text"]
         assert "&lt;script&gt;" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_inline_layout_puts_numeric_buttons_in_one_row(self):
+        """extra.clarify_layout="inline" — all numeric buttons share a single row."""
+        adapter = _make_adapter(extra={"clarify_layout": "inline"})
+        mock_msg = MagicMock()
+        mock_msg.message_id = 101
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        await adapter.send_clarify(
+            chat_id="12345", question="Pick:", choices=["alpha", "beta", "gamma"],
+            clarify_id="cid2", session_key="sk2",
+        )
+        # Mocked PTB: InlineKeyboardMarkup received the real rows list positionally.
+        rows = _telegram_adapter_module.InlineKeyboardMarkup.call_args[0][0]
+        assert len(rows) == 2          # one numeric row + "Other"
+        assert len(rows[0]) == 3       # all three digits in a single row
+        assert len(rows[1]) == 1       # "Other" alone
+
+    @pytest.mark.asyncio
+    async def test_other_button_can_be_disabled(self):
+        """extra.clarify_other_button=False — no "Other" row; digits keep one-per-row."""
+        adapter = _make_adapter(extra={"clarify_other_button": False})
+        mock_msg = MagicMock()
+        mock_msg.message_id = 102
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        await adapter.send_clarify(
+            chat_id="12345", question="Pick:", choices=["alpha", "beta", "gamma"],
+            clarify_id="cid3", session_key="sk3",
+        )
+        rows = _telegram_adapter_module.InlineKeyboardMarkup.call_args[0][0]
+        assert len(rows) == 3                      # numeric rows only
+        assert all(len(row) == 1 for row in rows)  # default one-per-row layout kept
+        # Shared mock: last InlineKeyboardButton call is the final digit, not "other".
+        assert _telegram_adapter_module.InlineKeyboardButton.call_args[1][
+            "callback_data"] == "cl:cid3:2"
 
 
 # ===========================================================================

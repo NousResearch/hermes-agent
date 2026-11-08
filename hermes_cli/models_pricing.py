@@ -589,11 +589,10 @@ def resolve_pricing_provider(provider: str, *, base_url: str = "") -> str:
     except Exception:
         return ""
     # Pricing is a trust boundary: beyond ``_infer_provider_from_url``'s host-or-subdomain match,
-    # require a host-specific table entry (a "-" suffix key does not count). A profile's claimed
-    # hosts count only when named exactly.
+    # require a host-specific table entry. A profile's claimed hosts count only when named exactly.
     claimed = (*profile.hostnames, *profile.metadata_hostnames) if profile is not None else ()
     if not inferred or not (base_url_hostname(base_url) in claimed or any(
-        provider == inferred and not host.startswith("-") and base_url_host_matches(base_url, host)
+        provider == inferred and base_url_host_matches(base_url, host)
         for host, provider in _URL_TO_PROVIDER.items()
     )):
         return ""

@@ -10,6 +10,7 @@ siblings, bounded by ``MEDIA_GROUP_MAX_WAIT_SECONDS`` so one stuck download cann
 
 import asyncio
 import contextlib
+import functools
 from typing import Any, Iterator
 
 from gateway.platforms.event import MessageEvent
@@ -41,6 +42,15 @@ def tracking_album_item(adapter: Any, msg: Any) -> Iterator[None]:
             counts[key] = left
         else:
             counts.pop(key, None)
+
+
+def tracking_album_items(handler):
+    """Decorate the media handler: its album item is in flight from arrival until the handler returns."""
+    @functools.wraps(handler)
+    async def wrapper(adapter, update, context):
+        with tracking_album_item(adapter, adapter._effective_update_message(update)):
+            return await handler(adapter, update, context)
+    return wrapper
 
 
 def media_group_wait_seconds(adapter: Any) -> float:

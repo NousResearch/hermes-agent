@@ -35,10 +35,34 @@ def test_multi_file_keeps_separate_body():
 
 
 def test_unknown_extension_keeps_separate_body():
-    # A non-captionable kind (e.g. an audio note that isn't flagged voice)
-    text = "some audio"
+    # A non-captionable kind (e.g. a file type no sender captions)
+    text = "some archive"
     caption, body = _media_caption_split(
-        text, [("/tmp/song.mp3", False)], max_caption_len=_DEFAULT_CAPTION_LIMIT
+        text, [("/tmp/blob.xyz", False)], max_caption_len=_DEFAULT_CAPTION_LIMIT
+    )
+    assert caption is None
+    assert body == text
+
+
+def test_single_audio_file_short_text_becomes_caption():
+    # A plain audio attachment (not voice-flagged) is captionable: the standalones put
+    # the text on the media message itself (Discord multipart payload_json, Telegram
+    # sendAudio caption, Slack initial_comment, WhatsApp bridge caption) instead of
+    # splitting one captionless attachment message off from its body text.
+    caption, body = _media_caption_split(
+        "2026-11-02 — Stops and Currents", [("/tmp/day.mp3", False)],
+        max_caption_len=_DEFAULT_CAPTION_LIMIT
+    )
+    assert caption == "2026-11-02 — Stops and Currents"
+    assert body == ""
+
+
+def test_voice_flagged_audio_keeps_separate_body():
+    # A voice-flagged note still keeps its text separate: a caption on a voice bubble
+    # reads as a separate label, and the client-side caption never renders on it.
+    text = "listen to this"
+    caption, body = _media_caption_split(
+        text, [("/tmp/note.ogg", True)], max_caption_len=_DEFAULT_CAPTION_LIMIT
     )
     assert caption is None
     assert body == text

@@ -77,8 +77,10 @@ import {
   fetchBoard,
   fetchBoards,
   fetchProfiles,
+  fetchProjects,
   patchTask,
   profilesKey,
+  projectsKey,
   taskKey,
   useKanbanScope
 } from './api'
@@ -569,6 +571,11 @@ function NewTaskDialog({
   // (ultimately the active profile), applied at create time. Never silently
   // unassigned — parking a card is the explicit choice, not the default.
   const resolvedDefault = useOrchestration()?.resolved_default_assignee || 'default'
+  // First-class projects. A card's project is what hands its worker the root,
+  // the context and the memory term it searches before starting and saves
+  // under when it finishes, so allocation belongs on the create form.
+  const { data: projectData } = useQuery({ queryKey: projectsKey(scope), queryFn: fetchProjects, staleTime: 60_000 })
+  const projects = projectData?.projects ?? []
 
   // Board-level workspace default: a task inherits the current board's
   // configured project dir (scratch when unset, worktree in a git repo, else
@@ -586,6 +593,8 @@ function NewTaskDialog({
   const [assignee, setAssignee] = useState('')
   const [priority, setPriority] = useState('0')
   const [skills, setSkills] = useState('')
+  // '' means inherit the board's project binding.
+  const [projectId, setProjectId] = useState('')
   const [workspaceKind, setWorkspaceKind] = useState<string>(boardDefaultKind)
   // Empty = inherit the board's default project dir (backend resolves it);
   // a path here overrides just this task. Only meaningful for dir/worktree.
@@ -621,6 +630,7 @@ function NewTaskDialog({
       setAssignee('')
       setPriority('0')
       setSkills('')
+      setProjectId('')
       setWorkspaceKind(boardDefaultKind)
       setWorkspacePath('')
       setParent('')
@@ -658,6 +668,7 @@ function NewTaskDialog({
         priority: Number(priority) || 0,
         skills: skillList.length ? skillList : undefined,
         title: trimmed,
+        project_id: projectId || undefined,
         triage: isTriage,
         workspace_kind: workspaceKind,
         ...overrideCreateFields(modelOverride),
@@ -772,6 +783,24 @@ function NewTaskDialog({
 
           <Field label={k.skills}>
             <Input onChange={event => setSkills(event.target.value)} placeholder={k.skillsPlaceholder} value={skills} />
+          </Field>
+
+          {/* Allocation: the project is what the worker reads for its root, its
+              context and the memory term it searches and saves under. */}
+          <Field label={k.project}>
+            <Select onValueChange={setProjectId} value={projectId || NO_PARENT}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_PARENT}>{k.projectInherit}</SelectItem>
+                {projects.map(project => (
+                  <SelectItem key={project.id} value={project.id}>
+                    {project.name || project.slug || project.id}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </Field>
 
           <Field label={k.model}>

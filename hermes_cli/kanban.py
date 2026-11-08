@@ -952,20 +952,36 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     title = getattr(args, "title", None)
     body = getattr(args, "body", None)
     priority = getattr(args, "priority", None)
+    project = getattr(args, "project", None)
     if result is None and (summary is not None or raw_metadata is not None):
         return _err("kanban edit: --summary and --metadata require --result", 2)
-    if all(value is None for value in (title, body, priority, result)):
-        return _err("kanban edit: provide --title, --body, --priority, or --result", 2)
+    if all(value is None for value in (title, body, priority, result, project)):
+        return _err(
+            "kanban edit: provide --title, --body, --priority, --project, or --result", 2)
     metadata, rc = _parse_metadata_flag(raw_metadata)
     if rc:
         return rc
-    with kbc.connect_closing() as conn:
-        ok = kb.edit_task(
-            conn, args.task_id, title=title, body=body, priority=priority,
-            result=result, summary=summary, metadata=metadata,
-        )
+    edited = False
+    if any(value is not None for value in (title, body, priority, result)):
+        with kbc.connect_closing() as conn:
+            edited = kb.edit_task(
+                conn, args.task_id, title=title, body=body, priority=priority,
+                result=result, summary=summary, metadata=metadata,
+            )
+    if project is not None:
+        # "" is an explicit "no project"; None means the flag was absent.
+        try:
+            with kbc.connect_closing() as conn:
+                linked = kb.set_task_project(conn, args.task_id, project)
+        except ValueError as exc:
+            return _err(f"kanban edit: {exc}", 2)
+        edited = edited or linked
+        if linked:
+            print(f"Linked {args.task_id} to project {project or '(none)'}")
+            if not title and not body and priority is None and result is None:
+                return 0
     return _ok_or_err(
-        ok,
+        edited,
         f"cannot edit {args.task_id} (unknown id, or --result used on a task that is not done)",
         f"Edited {args.task_id}",
     )

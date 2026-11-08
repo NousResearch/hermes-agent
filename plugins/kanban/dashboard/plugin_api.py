@@ -549,6 +549,11 @@ class UpdateTaskBody(BaseModel):
     clear_model_override: bool = False
     reasoning_effort: Optional[str] = None
     clear_reasoning_effort: bool = False
+    # Project link: an id or slug, or clear_project to detach. Unlike creation
+    # this can be set at any status, so a card allocated to the wrong product is
+    # recoverable without recreating it.
+    project_id: Optional[str] = None
+    clear_project: bool = False
 
 
 class BulkTaskBody(BaseModel):
@@ -708,6 +713,10 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 _require_ok(ok)
         if payload.priority is not None:
             _set_priority(conn, task_id, payload.priority, board)
+        if payload.project_id is not None or payload.clear_project:
+            with _map_errors(400, ValueError):
+                _require_ok(kanban_db.set_task_project(
+                    conn, task_id, None if payload.clear_project else payload.project_id))
         if payload.title is not None or payload.body is not None:
             _patch_title_body(conn, task_id, payload, board)
         updated = kanban_db.get_task(conn, task_id)

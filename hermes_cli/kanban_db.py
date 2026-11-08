@@ -1508,6 +1508,36 @@ def list_tasks(
     return [Task.from_row(r) for r in rows]
 
 
+def set_task_project(conn: sqlite3.Connection, task_id: str, project_id: Optional[str]) -> bool:
+    """Point a card at a project, or at none; raises ValueError for an unknown project.
+
+    The link is what a worker's context reads: root, what the project is, and the
+    memory term it searches before starting and saves under when it finishes. It
+    is deliberately changeable at any status, because getting the context right
+    late still beats never.
+    """
+    project_id = (str(project_id).strip() or None) if project_id is not None else None
+    if project_id is not None:
+        from hermes_cli import projects_db as _pdb
+
+        with _pdb.connect_closing() as pconn:
+            project = _pdb.get_project(pconn, project_id)
+        if project is None:
+            raise ValueError(f"project {project_id!r} does not exist")
+        project_id = project.id
+    with write_txn(conn):
+        row = conn.execute("SELECT project_id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if not row:
+            return False
+        previous = row["project_id"] or None
+        if previous == project_id:
+            return True
+        conn.execute("UPDATE tasks SET project_id = ? WHERE id = ?", (project_id, task_id))
+        _append_event(conn, task_id, "project_set", {"project_id": project_id, "from": previous})
+    notify_task_updated(conn, task_id, ("project_id",))
+    return True
+
+
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
     """Assign/reassign; raises RuntimeError while the task is running under a claim."""
     profile = _canonical_assignee(profile)

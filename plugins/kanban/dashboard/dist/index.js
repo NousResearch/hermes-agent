@@ -3294,6 +3294,11 @@
     const [priority, setPriority] = useState(0);
     const [parent, setParent] = useState("");
     const [skills, setSkills] = useState("");
+    // Project this card belongs to. The board's own binding still applies when
+    // this is left blank; choosing one here overrides it for this card, which
+    // is the only per-card allocation point the UI has.
+    const projects = useBoardProjects();
+    const [projectId, setProjectId] = useState("");
     // A board with a configured workdir defaults to a persistent workspace:
     // worktree for git repositories, dir for ordinary directories. Boards
     // without one keep scratch for disposable research and ops tasks.
@@ -3327,6 +3332,9 @@
         .map(function (s) { return s.trim(); })
         .filter(function (s) { return s.length > 0; });
       if (skillList.length > 0) body.skills = skillList;
+      // A per-card project. Left unset, the backend inherits the board's
+      // binding, so an untouched dialog behaves exactly as before.
+      if (projectId) body.project_id = projectId;
       // Only send workspace_kind when it's non-default. Keeps the request
       // shape small and interoperable with older dispatcher versions.
       if (workspaceKind && workspaceKind !== "scratch") {
@@ -3342,7 +3350,7 @@
         if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
       }
       props.onSubmit(body);
-      setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
+      setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills(""); setProjectId("");
       setWorkspaceKind(defaultWorkspaceKind); setWorkspacePath(defaultWorkspacePath);
       setGoalMode(false); setGoalMaxTurns("");
     };
@@ -3421,6 +3429,24 @@
               }),
             ),
           ),
+          projects.length ? h("div", { className: "flex flex-col gap-1" },
+            fieldLabel(tx(t, "taskProject", "Project"),
+              tx(t, "taskProjectHint", "(the work this belongs to)")),
+            h(Select, Object.assign({
+              value: projectId,
+              className: "h-8 text-sm",
+              title: "The project this card belongs to. Its worker gets the project's root, "
+                + "what it is, and the memory term to search before starting and save under "
+                + "when it finishes. Blank inherits the board's project.",
+            }, selectChangeHandler(setProjectId)),
+              h(SelectOption, { value: "" },
+                tx(t, "taskProjectInherit", "Inherit from board")),
+              projects.map(function (p) {
+                return h(SelectOption, { key: p.id, value: p.id },
+                  p.name || p.slug || p.id);
+              }),
+            ),
+          ) : null,
           h("div", { className: "flex flex-col gap-1" },
             fieldLabel(tx(t, "skillsLabel", "Skills"),
               tx(t, "skillsLabelHint", "(optional, comma-separated)")),

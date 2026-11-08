@@ -202,6 +202,45 @@ async def test_conflict_recovery_downtime_does_not_count_as_quiet_period(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_network_recovery_downtime_does_not_count_as_conflict_quiet_period(monkeypatch):
+    """A network recovery inside a conflict episode restarts the quiet window: its failing poll,
+    backoff, stop, drain and start are not healthy polling, so the replacement generation's first
+    success must not end the episode (a following 409 would restart the ladder at 1/5)."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.set_fatal_error_handler(AsyncMock())
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(tg_adapter.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    async def slow_bounded_step(*_a, **_k):
+        clock["now"] += 14  # each stop/drain/start stays under its own deadline
+
+    adapter._drain_polling_connections = slow_bounded_step
+    updater = SimpleNamespace(start_polling=slow_bounded_step, stop=slow_bounded_step, running=True)
+    adapter._app = SimpleNamespace(updater=updater)
+    conflict = type("Conflict", (Exception,), {})("Conflict: terminated by other getUpdates request")
+
+    try:
+        await adapter._handle_polling_conflict(conflict)
+        adapter._record_polling_progress(adapter._polling_generation)
+        clock["now"] += 90  # the long poll that ends in a transport error
+        await adapter._handle_polling_network_error(OSError("network interruption"))
+        clock["now"] += 9
+        adapter._record_polling_progress(adapter._polling_generation)
+        assert adapter._polling_conflict_count == 1
+
+        # Sustained healthy polling in the replacement generation still ends the episode.
+        clock["now"] += tg_adapter._POLLING_CONFLICT_QUIET_PERIOD
+        adapter._record_polling_progress(adapter._polling_generation)
+        assert adapter._polling_conflict_count == 0
+    finally:
+        verifier = adapter._polling_progress_verifier_task
+        if verifier is not None:
+            verifier.cancel()
+            await asyncio.gather(verifier, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_conflict_retry_progress_does_not_reset_retry_ladder(monkeypatch):
     """First getUpdates progress after a conflict retry is not durable recovery.
 

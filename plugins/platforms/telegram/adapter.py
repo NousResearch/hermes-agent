@@ -1627,10 +1627,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         self._polling_progress_event = asyncio.Event()
         self._polling_progress_accepting = True
         self._send_path_degraded = True
-        # Reset stall-watchdog timestamps: no proven progress yet, age measured from here.
-        # See #92991.
+        # No proven progress yet: stall-watchdog age (#92991) and the conflict quiet window restart
+        # here, so a network recovery's downtime never counts as sustained healthy polling.
         self._polling_generation_started_monotonic = time.monotonic()
-        self._polling_last_progress_monotonic = None
+        self._polling_last_progress_monotonic = self._polling_conflict_quiet_since = None
         # Re-base the backlog per generation. On an in-place updater restart PTB keeps the old
         # update_queue, so old dispatches can briefly exceed received; the check treats that as no backlog.
         self._updates_received_total = self._updates_dispatched_total = 0

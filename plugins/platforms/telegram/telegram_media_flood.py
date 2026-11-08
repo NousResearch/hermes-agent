@@ -68,6 +68,22 @@ def _keep_private_copy(path: str) -> Optional[str]:
         return None
 
 
+async def _owned_private_copy(source: str) -> Optional[str]:
+    """``_keep_private_copy`` on a worker thread that cancellation cannot orphan: cancelling the
+    awaiting send does not stop the thread, so the copy it still finishes is removed when it lands."""
+    copying = asyncio.ensure_future(asyncio.to_thread(_keep_private_copy, source))
+    try:
+        return await asyncio.shield(copying)
+    except asyncio.CancelledError:
+        copying.add_done_callback(_discard_finished_copy)
+        raise
+
+
+def _discard_finished_copy(copying: "asyncio.Future[Optional[str]]") -> None:
+    if not copying.cancelled() and copying.exception() is None and (kept := copying.result()):
+        shutil.rmtree(os.path.dirname(kept), ignore_errors=True)
+
+
 class _KnownFloodWindow(Exception):
     """A media request refused locally because the chat's flood window is still open (no API call)."""
 
@@ -165,7 +181,7 @@ class TelegramMediaFloodMixin:
         """Schedule ``redo()`` after the flood window (tracked, so shutdown cancels it) on a private copy
         of ``source``; returns ``refused`` flagged so the dispatcher leaves the failure notice to it."""
         logger.warning("[%s] Telegram flood control on %s; re-uploading natively in %.0fs", self.name, what, wait)
-        kept = await asyncio.to_thread(_keep_private_copy, source) if source else None
+        kept = await _owned_private_copy(source) if source else None
 
         async def _later() -> None:
             try:

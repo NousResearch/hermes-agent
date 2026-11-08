@@ -274,3 +274,42 @@ async def test_short_flood_wait_keeps_sibling_uploads_out_of_the_window(flooded,
     await async_wait_until(lambda: len(calls) == 3, timeout=10, what="retry and sibling re-upload")
     assert all(at - calls[0] >= 0.29 for at in calls[1:]), calls
     adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_the_private_copy_leaves_no_orphaned_attachment(flooded, tmp_path, monkeypatch):
+    """Shutdown cancelling the send while its private copy is still being written: the copy thread
+    finishes anyway, and the copy it produced is removed instead of left on disk with no owner."""
+    import shutil
+    import threading
+
+    from plugins.platforms.telegram import telegram_media_flood as flood
+
+    adapter, doc = flooded
+    monkeypatch.setattr(flood.tempfile, "tempdir", str(tmp_path))
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    real_copy = shutil.copy2
+
+    def gated_copy(src, dst):
+        entered.set()
+        release.wait(10)
+        try:
+            return real_copy(src, dst)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(flood.shutil, "copy2", gated_copy)
+    adapter._bot.send_document = AsyncMock(side_effect=RetryAfter(30))
+    sending = asyncio.create_task(adapter.send_document("12345", str(doc)))
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        sending.cancel()
+        await asyncio.gather(sending, return_exceptions=True)
+        release.set()
+        assert await asyncio.to_thread(finished.wait, 10)
+        await async_wait_until(lambda: not list(tmp_path.glob("hermes-tg-flood-*")), timeout=5,
+                               what="the finished copy removed")
+        assert not adapter._background_tasks  # no upload was scheduled for the cancelled send
+    finally:
+        release.set()
+        await adapter.cancel_background_tasks()

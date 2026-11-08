@@ -78,7 +78,7 @@ def audio_player_fields(path: str) -> dict[str, str]:
         if tags.get(tag):
             fields[field] = tags[tag][:256]
     has_cover = any(s.get("codec_type") == "video" for s in blob.get("streams") or [])
-    if has_cover and shutil.which("ffmpeg"):
+    if has_cover:
         cover = _extract_cover_jpeg(path)
         if cover:
             fields["thumbnail_path"] = cover
@@ -86,21 +86,32 @@ def audio_player_fields(path: str) -> dict[str, str]:
 
 
 def _extract_cover_jpeg(path: str) -> Optional[str]:
-    """A temporary JPEG of ``path``'s embedded cover fitted inside 320x320 (Telegram's thumbnail
-    limit on both sides, so portrait art is not sent 320 wide and thousands tall), or None. Every file operation stays
-    inside the best-effort boundary: a full or unwritable temp dir costs the cover, never the track."""
+    """A temporary JPEG of ``path``'s embedded cover art (see :func:`fit_thumbnail_jpeg`), or None."""
+    return fit_thumbnail_jpeg(path, prefix="hermes-tg-cover-")
+
+
+def fit_thumbnail_jpeg(path: str, *, seek: Optional[int] = None, prefix: str = "hermes-tg-thumb-",
+                       timeout: int = 20) -> Optional[str]:
+    """A temporary JPEG of one frame of ``path`` (at ``seek`` seconds) fitted inside 320x320, or None.
+
+    Telegram limits a ``thumbnail`` to 320px on BOTH sides, so ``scale=320:-2`` would send portrait
+    art 320 wide and thousands tall. Every file operation stays inside the best-effort boundary: a
+    full or unwritable temp dir costs the thumbnail, never the send. The caller deletes the file."""
+    if not shutil.which("ffmpeg"):
+        return None
     out = None
     try:
-        fd, out = tempfile.mkstemp(suffix=".jpg", prefix="hermes-tg-cover-")
+        fd, out = tempfile.mkstemp(suffix=".jpg", prefix=prefix)
         os.close(fd)
+        seek_args = ["-ss", str(seek)] if seek is not None else []
         ok = subprocess.run(
-            ["ffmpeg", "-y", "-i", path, "-an", "-frames:v", "1", "-vf", "scale=320:320:force_original_aspect_ratio=decrease",
-             "-q:v", "6", out],
-            stdin=subprocess.DEVNULL, capture_output=True, timeout=20, check=False).returncode == 0
+            ["ffmpeg", "-y", *seek_args, "-i", path, "-an", "-frames:v", "1",
+             "-vf", "scale=320:320:force_original_aspect_ratio=decrease", "-q:v", "6", out],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout, check=False).returncode == 0
         if ok and os.path.getsize(out):
             return out
     except (OSError, subprocess.SubprocessError):
-        logger.debug("[Telegram] cover extraction failed for %s", path, exc_info=True)
+        logger.debug("[Telegram] thumbnail extraction failed for %s", path, exc_info=True)
     if out:
         with contextlib.suppress(OSError):
             os.remove(out)

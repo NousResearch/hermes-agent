@@ -1,6 +1,8 @@
 import type { MenuItemConstructorOptions } from 'electron'
 
-export const APPLICATION_MENU_LOCALES = ['en', 'zh', 'zh-hant', 'ja', 'ar', 'ru'] as const
+import { windowMenuTemplate } from './window-menu'
+
+export const APPLICATION_MENU_LOCALES = ['en', 'zh', 'zh-hant', 'ja', 'ar', 'ru', 'fr', 'de', 'es'] as const
 
 export type ApplicationMenuLocale = (typeof APPLICATION_MENU_LOCALES)[number]
 
@@ -30,6 +32,9 @@ interface ApplicationMenuLabels {
   selectAll: string
   services: string
   showAll: string
+  showSubstitutions: string
+  substitutions: string
+  textReplacement: string
   toggleDevTools: string
   toggleFullScreen: string
   undo: string
@@ -67,6 +72,9 @@ const APPLICATION_MENU_LABELS: Record<ApplicationMenuLocale, ApplicationMenuLabe
     selectAll: 'Select All',
     services: 'Services',
     showAll: 'Show All',
+    showSubstitutions: 'Show Substitutions',
+    substitutions: 'Substitutions',
+    textReplacement: 'Text Replacement',
     toggleDevTools: 'Toggle Developer Tools',
     toggleFullScreen: 'Toggle Full Screen',
     undo: 'Undo',
@@ -102,6 +110,9 @@ const APPLICATION_MENU_LABELS: Record<ApplicationMenuLocale, ApplicationMenuLabe
     selectAll: '全选',
     services: '服务',
     showAll: '全部显示',
+    showSubstitutions: '显示替换',
+    substitutions: '替换',
+    textReplacement: '文本替换',
     toggleDevTools: '切换开发者工具',
     toggleFullScreen: '切换全屏幕',
     undo: '撤销',
@@ -137,6 +148,9 @@ const APPLICATION_MENU_LABELS: Record<ApplicationMenuLocale, ApplicationMenuLabe
     selectAll: '全選',
     services: '服務',
     showAll: '全部顯示',
+    showSubstitutions: '顯示替代視窗',
+    substitutions: '替代',
+    textReplacement: '替代文字',
     toggleDevTools: '切換開發者工具',
     toggleFullScreen: '切換全螢幕',
     undo: '還原',
@@ -147,37 +161,40 @@ const APPLICATION_MENU_LABELS: Record<ApplicationMenuLocale, ApplicationMenuLabe
     zoomOut: '縮小'
   },
   ja: {
-    about: appName => `${appName} について`,
+    about: appName => `${appName}について`,
     actualSize: '実際のサイズ',
     bringAllToFront: 'すべてを手前に移動',
     checkForUpdates: 'アップデートを確認…',
     close: '閉じる',
     copy: 'コピー',
-    cut: '切り取り',
+    cut: 'カット',
     delete: '削除',
     edit: '編集',
     file: 'ファイル',
     forceReload: '強制再読み込み',
     help: 'ヘルプ',
-    hide: appName => `${appName} を隠す`,
-    hideOthers: 'ほかを隠す',
+    hide: appName => `${appName}を非表示`,
+    hideOthers: 'ほかを非表示',
     minimize: 'しまう',
     newWindow: '新規ウインドウ',
     openFolder: 'フォルダを開く…',
     paste: 'ペースト',
     pasteAndMatchStyle: 'ペーストしてスタイルを合わせる',
-    quit: appName => `${appName} を終了`,
+    quit: appName => `${appName}を終了`,
     redo: 'やり直す',
     reload: '再読み込み',
     selectAll: 'すべてを選択',
     services: 'サービス',
     showAll: 'すべてを表示',
+    showSubstitutions: '自動置換を表示',
+    substitutions: '自動置換',
+    textReplacement: 'テキストの置換',
     toggleDevTools: 'デベロッパーツールを切り替える',
     toggleFullScreen: 'フルスクリーンにする',
     undo: '取り消す',
     view: '表示',
     window: 'ウインドウ',
-    zoom: '拡大／縮小',
+    zoom: '拡大/縮小',
     zoomIn: '拡大',
     zoomOut: '縮小'
   },
@@ -207,6 +224,9 @@ const APPLICATION_MENU_LABELS: Record<ApplicationMenuLocale, ApplicationMenuLabe
     selectAll: 'تحديد الكل',
     services: 'الخدمات',
     showAll: 'إظهار الكل',
+    showSubstitutions: 'إظهار البدائل',
+    substitutions: 'بدائل',
+    textReplacement: 'استبدال النص',
     toggleDevTools: 'تبديل أدوات المطور',
     toggleFullScreen: 'تبديل ملء الشاشة',
     undo: 'تراجع',
@@ -242,6 +262,9 @@ const APPLICATION_MENU_LABELS: Record<ApplicationMenuLocale, ApplicationMenuLabe
     selectAll: 'Выбрать все',
     services: 'Службы',
     showAll: 'Показать все',
+    showSubstitutions: 'Показать замены',
+    substitutions: 'Замены',
+    textReplacement: 'Замена текста',
     toggleDevTools: 'Переключить инструменты разработчика',
     toggleFullScreen: 'Переключить полноэкранный режим',
     undo: 'Отменить',
@@ -250,6 +273,120 @@ const APPLICATION_MENU_LABELS: Record<ApplicationMenuLocale, ApplicationMenuLabe
     zoom: 'Масштаб',
     zoomIn: 'Увеличить',
     zoomOut: 'Уменьшить'
+  },
+  fr: {
+    about: appName => `À propos de ${appName}`,
+    actualSize: 'Taille réelle',
+    bringAllToFront: 'Tout ramener au premier plan',
+    checkForUpdates: 'Rechercher des mises à jour…',
+    close: 'Fermer',
+    copy: 'Copier',
+    cut: 'Couper',
+    delete: 'Supprimer',
+    edit: 'Édition',
+    file: 'Fichier',
+    forceReload: 'Forcer le rechargement',
+    help: 'Aide',
+    hide: appName => `Masquer ${appName}`,
+    hideOthers: 'Masquer les autres',
+    minimize: 'Minimiser',
+    newWindow: 'Nouvelle fenêtre',
+    openFolder: 'Ouvrir un dossier…',
+    paste: 'Coller',
+    pasteAndMatchStyle: 'Coller et adapter le style',
+    quit: appName => `Quitter ${appName}`,
+    redo: 'Rétablir',
+    reload: 'Recharger',
+    selectAll: 'Tout sélectionner',
+    services: 'Services',
+    showAll: 'Tout afficher',
+    showSubstitutions: 'Afficher les substitutions',
+    substitutions: 'Substitutions',
+    textReplacement: 'Remplacement de texte',
+    toggleDevTools: 'Afficher/masquer les outils de développement',
+    toggleFullScreen: 'Activer le mode plein écran',
+    undo: 'Annuler',
+    view: 'Présentation',
+    window: 'Fenêtre',
+    zoom: 'Réduire/agrandir',
+    zoomIn: 'Zoom avant',
+    zoomOut: 'Zoom arrière'
+  },
+  de: {
+    about: appName => `Über ${appName}`,
+    actualSize: 'Originalgröße',
+    bringAllToFront: 'Alle nach vorne bringen',
+    checkForUpdates: 'Nach Updates suchen …',
+    close: 'Schließen',
+    copy: 'Kopieren',
+    cut: 'Ausschneiden',
+    delete: 'Löschen',
+    edit: 'Bearbeiten',
+    file: 'Ablage',
+    forceReload: 'Neu laden erzwingen',
+    help: 'Hilfe',
+    hide: appName => `${appName} ausblenden`,
+    hideOthers: 'Andere ausblenden',
+    minimize: 'Im Dock ablegen',
+    newWindow: 'Neues Fenster',
+    openFolder: 'Ordner öffnen …',
+    paste: 'Einsetzen',
+    pasteAndMatchStyle: 'Einsetzen und Stil anpassen',
+    quit: appName => `${appName} beenden`,
+    redo: 'Wiederholen',
+    reload: 'Neu laden',
+    selectAll: 'Alles auswählen',
+    services: 'Dienste',
+    showAll: 'Alle einblenden',
+    showSubstitutions: 'Ersetzungen einblenden',
+    substitutions: 'Ersetzungen',
+    textReplacement: 'Text ersetzen',
+    toggleDevTools: 'Entwicklerwerkzeuge ein-/ausblenden',
+    toggleFullScreen: 'Vollbildmodus',
+    undo: 'Widerrufen',
+    view: 'Darstellung',
+    window: 'Fenster',
+    zoom: 'Zoomen',
+    zoomIn: 'Vergrößern',
+    zoomOut: 'Verkleinern'
+  },
+  es: {
+    about: appName => `Acerca de ${appName}`,
+    actualSize: 'Tamaño real',
+    bringAllToFront: 'Traer todo al frente',
+    checkForUpdates: 'Buscar actualizaciones…',
+    close: 'Cerrar',
+    copy: 'Copiar',
+    cut: 'Cortar',
+    delete: 'Eliminar',
+    edit: 'Edición',
+    file: 'Archivo',
+    forceReload: 'Forzar recarga',
+    help: 'Ayuda',
+    hide: appName => `Ocultar ${appName}`,
+    hideOthers: 'Ocultar otros',
+    minimize: 'Minimizar',
+    newWindow: 'Nueva ventana',
+    openFolder: 'Abrir carpeta…',
+    paste: 'Pegar',
+    pasteAndMatchStyle: 'Pegar con el mismo estilo',
+    quit: appName => `Salir de ${appName}`,
+    redo: 'Rehacer',
+    reload: 'Recargar',
+    selectAll: 'Seleccionar todo',
+    services: 'Servicios',
+    showAll: 'Mostrar todo',
+    showSubstitutions: 'Mostrar sustituciones',
+    substitutions: 'Sustituciones',
+    textReplacement: 'Reemplazar texto',
+    toggleDevTools: 'Mostrar/ocultar herramientas de desarrollo',
+    toggleFullScreen: 'Usar pantalla completa',
+    undo: 'Deshacer',
+    view: 'Visualización',
+    window: 'Ventana',
+    zoom: 'Zoom',
+    zoomIn: 'Aumentar zoom',
+    zoomOut: 'Reducir zoom'
   }
 }
 
@@ -329,7 +466,20 @@ export function buildApplicationMenuTemplate({
       { label: labels.paste, role: 'paste' },
       { label: labels.pasteAndMatchStyle, role: 'pasteAndMatchStyle' },
       { label: labels.delete, role: 'delete' },
-      { label: labels.selectAll, role: 'selectAll' }
+      { label: labels.selectAll, role: 'selectAll' },
+      ...(isMac
+        ? ([
+            { type: 'separator' },
+            {
+              label: labels.substitutions,
+              submenu: [
+                { label: labels.showSubstitutions, role: 'showSubstitutions' },
+                { type: 'separator' },
+                { label: labels.textReplacement, role: 'toggleTextReplacement' }
+              ]
+            }
+          ] satisfies MenuItemConstructorOptions[])
+        : [])
     ]
   })
   template.push({
@@ -362,16 +512,7 @@ export function buildApplicationMenuTemplate({
       { label: labels.toggleFullScreen, role: 'togglefullscreen' }
     ]
   })
-  template.push({
-    label: labels.window,
-    submenu: isMac
-      ? [
-          { label: labels.minimize, role: 'minimize' },
-          { label: labels.zoom, role: 'zoom' },
-          { label: labels.bringAllToFront, role: 'front' }
-        ]
-      : [{ label: labels.minimize, role: 'minimize' }, { role: 'close' }]
-  })
+  template.push(windowMenuTemplate(isMac, labels))
   template.push({
     label: labels.help,
     role: 'help',

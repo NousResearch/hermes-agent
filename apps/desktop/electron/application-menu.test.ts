@@ -43,11 +43,11 @@ function menuShape(value: unknown): unknown {
 
 describe('application menu locale validation', () => {
   test('accepts only canonical Hermes display locales', () => {
-    for (const locale of ['en', 'zh', 'zh-hant', 'ja', 'ar', 'ru']) {
+    for (const locale of ['en', 'zh', 'zh-hant', 'ja', 'ar', 'ru', 'fr', 'de', 'es']) {
       assert.equal(isApplicationMenuLocale(locale), true)
     }
 
-    for (const locale of ['zh-TW', 'zh_Hant', 'en-US', 'de', '', null, 1, {}]) {
+    for (const locale of ['zh-TW', 'zh_Hant', 'en-US', 'de-DE', 'pt', '', null, 1, {}]) {
       assert.equal(isApplicationMenuLocale(locale), false)
     }
   })
@@ -69,43 +69,45 @@ describe('buildApplicationMenuTemplate', () => {
     const windowMenu = template[4].submenu as Electron.MenuItemConstructorOptions[]
     const helpMenu = template[5].submenu as Electron.MenuItemConstructorOptions[]
 
-    assert.deepEqual(appMenu.map(item => item.label), [
-      '關於 Hermes',
-      '檢查更新…',
-      undefined,
-      '服務',
-      undefined,
-      '隱藏 Hermes',
-      '隱藏其他',
-      '全部顯示',
-      undefined,
-      '結束 Hermes'
-    ])
-    assert.deepEqual(fileMenu.map(item => item.label), ['新增視窗', '開啟資料夾…', undefined, '關閉'])
-    assert.deepEqual(editMenu.map(item => item.label), [
-      '還原',
-      '重做',
-      undefined,
-      '剪下',
-      '拷貝',
-      '貼上',
-      '貼上並符合樣式',
-      '刪除',
-      '全選'
-    ])
-    assert.deepEqual(viewMenu.map(item => item.label), [
-      '重新載入',
-      '強制重新載入',
-      '切換開發者工具',
-      undefined,
-      '實際大小',
-      '放大',
-      '縮小',
-      undefined,
-      '切換全螢幕'
-    ])
-    assert.deepEqual(windowMenu.map(item => item.label), ['最小化', '縮放', '全部移到最前面'])
-    assert.deepEqual(helpMenu.map(item => item.label), ['檢查更新…'])
+    assert.deepEqual(
+      appMenu.map(item => item.label),
+      [
+        '關於 Hermes',
+        '檢查更新…',
+        undefined,
+        '服務',
+        undefined,
+        '隱藏 Hermes',
+        '隱藏其他',
+        '全部顯示',
+        undefined,
+        '結束 Hermes'
+      ]
+    )
+    assert.deepEqual(
+      fileMenu.map(item => item.label),
+      ['新增視窗', '開啟資料夾…', undefined, '關閉']
+    )
+    assert.deepEqual(
+      editMenu.map(item => item.label),
+      ['還原', '重做', undefined, '剪下', '拷貝', '貼上', '貼上並符合樣式', '刪除', '全選', undefined, '替代']
+    )
+    assert.deepEqual(
+      (editMenu[10].submenu as Electron.MenuItemConstructorOptions[]).map(item => item.label),
+      ['顯示替代視窗', undefined, '替代文字']
+    )
+    assert.deepEqual(
+      viewMenu.map(item => item.label),
+      ['重新載入', '強制重新載入', '切換開發者工具', undefined, '實際大小', '放大', '縮小', undefined, '切換全螢幕']
+    )
+    assert.deepEqual(
+      windowMenu.map(item => item.label),
+      ['最小化', '縮放', '全部移到最前面']
+    )
+    assert.deepEqual(
+      helpMenu.map(item => item.label),
+      ['檢查更新…']
+    )
   })
 
   test('changes labels without changing roles, accelerators, separators, or callbacks', () => {
@@ -136,10 +138,50 @@ describe('buildApplicationMenuTemplate', () => {
     }
   })
 
+  test('keeps the native macOS Window menu role while localizing it', () => {
+    const template = buildApplicationMenuTemplate({ actions, appName: 'Hermes', isMac: true, locale: 'ja' })
+    const windowMenu = template[4]
+
+    assert.equal(windowMenu.role, 'windowMenu')
+    assert.equal(windowMenu.label, 'ウインドウ')
+    assert.deepEqual(
+      (windowMenu.submenu as Electron.MenuItemConstructorOptions[]).map(item => [item.role, item.label]),
+      [
+        ['minimize', 'しまう'],
+        ['zoom', '拡大/縮小'],
+        ['front', 'すべてを手前に移動']
+      ]
+    )
+  })
+
+  test('writes Japanese app-name items without a space, as macOS does', () => {
+    const template = buildApplicationMenuTemplate({ actions, appName: 'Hermes', isMac: true, locale: 'ja' })
+    const appMenu = template[0].submenu as Electron.MenuItemConstructorOptions[]
+
+    assert.equal(appMenu[0].label, 'Hermesについて')
+    assert.equal(appMenu[5].label, 'Hermesを非表示')
+    assert.equal(appMenu[9].label, 'Hermesを終了')
+  })
+
   test('keeps the previous non-mac menu shape', () => {
     const template = buildApplicationMenuTemplate({ actions, appName: 'Hermes', isMac: false, locale: 'en' })
 
-    assert.deepEqual(template.map(item => item.label), ['File', 'Edit', 'View', 'Window', 'Help'])
+    assert.deepEqual(
+      template.map(item => item.label),
+      ['File', 'Edit', 'View', 'Window', 'Help']
+    )
     assert.equal((template[0].submenu as Electron.MenuItemConstructorOptions[])[3].role, 'quit')
+
+    const windowMenu = template[3].submenu as Electron.MenuItemConstructorOptions[]
+
+    assert.deepEqual(
+      windowMenu.map(item => item.role),
+      ['minimize', undefined]
+    )
+    assert.equal(windowMenu[1].registerAccelerator, false)
+    assert.equal(
+      (template[1].submenu as Electron.MenuItemConstructorOptions[]).some(item => item.label === 'Substitutions'),
+      false
+    )
   })
 })

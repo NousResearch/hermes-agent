@@ -30,13 +30,13 @@ describe('application menu IPC', () => {
 
     registerApplicationMenuIpc(setLocale)
 
-    for (const locale of ['en', 'zh', 'zh-hant', 'ja', 'ar', 'ru']) {
+    for (const locale of ['en', 'zh', 'zh-hant', 'ja', 'ar', 'ru', 'fr', 'de', 'es']) {
       assert.deepEqual(await invoke('hermes:application-menu:set-locale', locale), { locale, ok: true })
     }
 
     assert.deepEqual(
       setLocale.mock.calls.map(call => call[0]),
-      ['en', 'zh', 'zh-hant', 'ja', 'ar', 'ru']
+      ['en', 'zh', 'zh-hant', 'ja', 'ar', 'ru', 'fr', 'de', 'es']
     )
   })
 
@@ -45,7 +45,7 @@ describe('application menu IPC', () => {
 
     registerApplicationMenuIpc(setLocale)
 
-    for (const locale of ['zh-TW', 'en-US', 'de', '', null, 42, {}]) {
+    for (const locale of ['zh-TW', 'en-US', 'de-DE', 'pt', '', null, 42, {}]) {
       await assert.rejects(
         Promise.resolve().then(() => invoke('hermes:application-menu:set-locale', locale)),
         /Invalid application menu locale/

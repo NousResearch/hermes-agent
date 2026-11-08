@@ -66,6 +66,15 @@ def safe_url_for_log(url: str, max_len: int = 80) -> str:
     return _fit(f"{parsed.scheme}://{authority}{tail}", max_len)
 
 
+def safe_proxy_url_for_log(url: str, max_len: int = 80) -> str:
+    """``scheme://host[:port]`` of a proxy URL, or the placeholder: a proxy URL's path has no
+    routing meaning, so none of it is logged (``/<token>.json`` passes the media file-name rule)."""
+    safe = safe_url_for_log(url, max_len=len(str(url or "")) + 64)
+    if safe == _UNSAFE_URL_PLACEHOLDER:
+        return safe[:max_len]
+    return _fit(safe.split("/...", 1)[0], max_len) if max_len > 0 else ""
+
+
 _SCHEME_WORDS = frozenset({"http", "https", "socks", "socks4", "socks4a", "socks5", "socks5h"})
 
 
@@ -81,7 +90,7 @@ def redact_proxy_in_text(text, proxy_url: str | None) -> str:
     proxy = str(proxy_url or "")
     if not proxy or not text:
         return text
-    shown = safe_url_for_log(proxy, max_len=len(proxy) + 64)
+    shown = safe_proxy_url_for_log(proxy, max_len=len(proxy) + 64)
     pieces = {proxy, *(p for p in re.split(r"[:/@?#;\[\]\s]+", proxy)
                        if len(p) >= 4 and p.lower() not in _SCHEME_WORDS and p not in shown)}
     for piece in sorted(pieces, key=len, reverse=True):

@@ -179,6 +179,7 @@ SECRET_SHAPES = [
     "proxy:8080/{T}",
     "proxy:8080;{T}",
     "http://proxy:8080/x/{T}",  # secret as the last path segment
+    "http://proxy:8080/{T}.json",  # secret shaped like a media file name
     "http://bob:" + "p" * 70 + "{T}@" + "h" * 60 + ".example:8080",  # past the 80-char cut
     "http://bob:" + "p" * 70 + "{T}/x@proxy:8080",  # token straddles the cut
 ]

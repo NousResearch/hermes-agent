@@ -98,9 +98,11 @@ def install_desktop_plugin(identifier: str, *, ref: Optional[str], catalog_name:
     name with the package marker Electron writes, so the Plugins page pairs the two rows; a desktop-only
     repository keeps its Git-derived folder name and carries no marker.
     """
-    from hermes_cli.plugins_cmd_inspect import _desktop_folder_name, detect_components
+    from hermes_cli.plugins_cmd_inspect import _desktop_folder_name, detect_components, forget_inspection
 
     pc = _pc()
+    # The dialog's inspection is spent either way; re-opening it must read the source again.
+    forget_inspection(identifier, catalog_name=catalog_name)
     sha = (ref or "").strip().lower()
     try:
         if not _COMMIT.fullmatch(sha):
@@ -111,7 +113,16 @@ def install_desktop_plugin(identifier: str, *, ref: Optional[str], catalog_name:
             clone = Path(tmp) / "plugin"
             # A catalog entry is fetched at its own pin, as the agent installer fetches it: an
             # annotated-tag pin names the tag object, and only its peeled commit is what the dialog read.
-            head = pc._clone_plugin_repo(clone, git_url, catalog_sha or sha, subdir)
+            try:
+                head = pc._clone_plugin_repo(clone, git_url, catalog_sha or sha, subdir)
+            except pc.PluginOperationError as exc:
+                # The repository cloned but holds no reviewed commit any more (force-pushed away): only a
+                # fresh review can fix that, as Electron's twin answers.
+                if catalog_sha or not (clone / ".git").is_dir():
+                    raise
+                raise pc.PluginSourceMoved(
+                    f"The commit you reviewed ({sha[:12]}) could not be checked out; the source may have changed "
+                    f"since you reviewed it. Re-open the install dialog to review it again. {exc}") from exc
             if head != sha:
                 raise pc.PluginSourceMoved(
                     "The catalog's reviewed commit changed since the dialog read it; inspect it again.")

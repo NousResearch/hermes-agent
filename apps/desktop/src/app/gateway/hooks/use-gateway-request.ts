@@ -1,7 +1,9 @@
-import { isGatewayReauthRequired } from '@hermes/shared'
+import { isGatewayReauthRequired, JsonRpcGatewayError } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef } from 'react'
 
+import { GATEWAY_NOT_CONNECTED_MESSAGE } from '@/api/client'
+import { markResentAfterPossibleDelivery } from '@/api/gateway-delivery'
 import type { HermesGateway } from '@/hermes'
 import { resolveDesktopGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
@@ -207,7 +209,20 @@ export function useGatewayRequest() {
           throw error
         }
 
-        return recovered.request<T>(method, params, timeoutMs, signal)
+        // Only a missing socket fails before anything is sent; any other drop may follow a first attempt the
+        // backend already ran, so the resend's error is marked as possibly answering a repeat.
+        const message = error instanceof Error ? error.message : String(error)
+        const mayHaveSent = message !== GATEWAY_NOT_CONNECTED_MESSAGE
+
+        try {
+          return await recovered.request<T>(method, params, timeoutMs, signal)
+        } catch (resendError) {
+          if (mayHaveSent) {
+            markResentAfterPossibleDelivery(resendError)
+          }
+
+          throw resendError
+        }
       }
     },
     [ensureGatewayOpen]
@@ -240,6 +255,11 @@ function errorCode(value: unknown): string | null {
 }
 
 function isGatewayTransportError(error: unknown): boolean {
+  // The backend answered: never a transport failure, whatever its message says (a clone's "Connection reset").
+  if (error instanceof JsonRpcGatewayError) {
+    return false
+  }
+
   const message = error instanceof Error ? error.message : String(error)
 
   if (/not connected|connection closed|connection reset|ECONNRESET/i.test(message)) {

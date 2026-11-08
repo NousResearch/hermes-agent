@@ -1,10 +1,26 @@
 """Publish plugin code and its dependency selection through one recoverable handoff."""
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 import shutil
+
+_publications: ContextVar[list | None] = ContextVar("plugin_publications", default=None)
+
+
+@contextmanager
+def watch_publication() -> Iterator[list]:
+    """A list that turns non-empty once a publication inside the block hands its tree to PM. While it is
+    empty, a failure placed nothing; after that, PM may have published the tree whatever the error says."""
+    started: list = []
+    token = _publications.set(started)
+    try:
+        yield started
+    finally:
+        _publications.reset(token)
 
 
 def recover_plugin_publication(project: Path, row: dict, journal: Path) -> None:
@@ -42,6 +58,8 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
                 raise plugins_cmd.PluginOperationError(
                     outcome.format(reason), failure_class=tagged_failure_class(reason) or "other")
 
+    if (started := _publications.get()) is not None:
+        started.append(target)
     sync_venv(explicit=True, plugins=StagedUpdate({
         "staged": str(staged.resolve()), "target": str(target.absolute()),
         "old_metadata": old_metadata, "new_metadata": new_metadata,

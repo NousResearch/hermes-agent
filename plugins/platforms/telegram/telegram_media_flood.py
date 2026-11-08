@@ -123,6 +123,8 @@ class TelegramMediaFloodMixin:
             return await self._defer_media_upload(redo, source, wait, _flood_cap_result(wait), what)
         if stage == 0 and wait <= _FLOOD_INLINE_WAIT_CAP_SECS:
             logger.warning("[%s] Telegram flood control on %s, retrying in %.1fs", self.name, what, wait)
+            if wait > 0:  # siblings queued on the chat lock must not fire into the window this one waits out
+                self._record_send_flood_cooldown(chat_id, wait)
             await asyncio.sleep(wait)
             token = _FLOOD_STAGE.set(1)
             try:

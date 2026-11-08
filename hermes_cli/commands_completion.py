@@ -481,9 +481,12 @@ class SlashCommandAutoSuggest(AutoSuggest):
 
     def __init__(
         self, history_suggest: AutoSuggest | None = None,
-        completer: SlashCommandCompleter | None = None) -> None:
+        completer: SlashCommandCompleter | None = None,
+        next_prompt_source: Callable[[], str | None] | None = None) -> None:
         self._history = history_suggest
         self._completer = completer  # Reuse its model cache
+        # Model-guessed next prompt; rides on the completer because that is what the TUI builder hands us.
+        self._next_prompt = next_prompt_source or getattr(completer, "next_prompt_source", None)
 
     def _allowed(self, cmd: str) -> bool:
         return self._completer is None or self._completer._command_allowed(cmd)
@@ -491,8 +494,17 @@ class SlashCommandAutoSuggest(AutoSuggest):
     def _history_suggestion(self, buffer, document):
         return self._history.get_suggestion(buffer, document) if self._history else None
 
+    def _next_prompt_suggestion(self, text: str):
+        pending = self._next_prompt() if self._next_prompt else None
+        if pending and len(text) < len(pending) and pending.startswith(text):
+            return Suggestion(pending[len(text):])
+        return None
+
     def get_suggestion(self, buffer, document):
         text = document.text_before_cursor
+        suggested = self._next_prompt_suggestion(text)
+        if suggested:
+            return suggested
         if not text.startswith("/"):
             return self._history_suggestion(buffer, document)
         parts = text.split(maxsplit=1)
@@ -528,7 +540,9 @@ def cli_slash_completer(cli):
     """The classic CLI prompt's slash completer; on a gateway session its skills and plugin commands are
     the gateway's (``commands.catalog``), so completing loads no plugin in the CLI process."""
     from cli import _session_skill_commands, get_skill_bundles
-    from hermes_cli import gateway_plugin_commands
-    return SlashCommandCompleter(
+    from hermes_cli import gateway_plugin_commands, next_prompt_suggestions
+    completer = SlashCommandCompleter(
         skill_commands_provider=lambda: _session_skill_commands(cli), command_filter=cli._command_available,
         skill_bundles_provider=lambda: get_skill_bundles(), plugin_commands_provider=lambda: gateway_plugin_commands.names(cli))
+    completer.next_prompt_source = lambda: next_prompt_suggestions.pending_suggestion(cli)
+    return completer

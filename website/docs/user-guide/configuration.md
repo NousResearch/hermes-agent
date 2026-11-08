@@ -1569,6 +1569,16 @@ The main model and conversation history still retain the full skill content.
 Attachment-only turns retain the existing enriched-message title fallback.
 This affects new title generation; it does not repair previously named sessions.
 
+### Next-prompt suggestions (classic CLI)
+
+Set `display.next_prompt_suggestions: true` and, after each finished turn, a small auxiliary model
+guesses your most likely next prompt and shows it as gray ghost text in the empty input. Press
+Tab to accept it as editable text; typing a prefix of it keeps showing the remainder, and typing
+anything else hides it (deleting back to a prefix brings it back) until you submit. It is off by default because it costs one small auxiliary
+call per turn. The call never enters the conversation, so it cannot affect prompt caching, and a
+slow or failed call just shows nothing. Route it with `auxiliary.next_prompt.*` (provider `auto`
+follows your session's live model; timeout defaults to 15s).
+
 ### Stream-only endpoints
 
 Some OpenAI-compatible endpoints reject non-streaming chat requests outright (e.g. Tencent Copilot returns HTTP 400 `"Non-stream chat request is currently not supported"`). Interactive chat already streams, but auxiliary tasks (title generation, compression, vision) use non-streaming calls and would fail on every attempt. Hermes always treats `copilot.tencent.com` as stream-only; for any other such endpoint, list a URL substring under `auxiliary.stream_only_base_urls`:

@@ -4,7 +4,7 @@ Pure-data leaf module — must not import from hermes_cli.config. Comments are t
 docs of config.yaml.
 """
 
-from hermes_cli.config_defaults_auxiliary import _aux
+from hermes_cli.config_defaults_auxiliary import _aux, title_generation_defaults
 
 #: Image every container terminal backend (docker/modal/daytona, the singularity plugin) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -756,21 +756,9 @@ DEFAULT_CONFIG = {
         "review": {"provider": "auto", "model": "", "base_url": "", "api_key": "", "api_mode": ""},
         "mcp": _aux(30),
         # prefer_fast_model opts in to the provider fast tier; auto otherwise = main model.
-        "title_generation": {
-            "enabled": True,
-            "model_upgrade_enabled": True,  # False = keep the instant derived title, never call a model
-            # session_search no longer uses an aux LLM (#27590); leftover auxiliary.session_search is ignored.
-            "provider": "auto",
-            "model": "",
-            "prefer_fast_model": False,
-            "base_url": "",
-            "api_key": "",
-            "timeout": 30,
-            "extra_body": {},
-            "reasoning_effort": "",
-            "language": "",
-        },
+        "title_generation": title_generation_defaults(),
         "memory_query_rewrite": _aux(8, reasoning_effort=False),
+        "next_prompt": _aux(15),   # display.next_prompt_suggestions: ghost-text guess of the user's next prompt
         "tts_audio_tags": _aux(30),
         "voice_chat": {**_aux(120), "reasoning_effort": "none"},  # agent/voice_turn_route.py; off = lowest valid
         # Kanban: triage_specifier expands a Triage one-liner into a spec; kanban_decomposer a JSON graph.
@@ -812,6 +800,7 @@ DEFAULT_CONFIG = {
         # Skip tool-call-only assistant entries in the recap so it isn't dominated by `[2 tool
         # calls: ...]` lines; False shows them inline.
         "resume_skip_tool_only": True,
+        "next_prompt_suggestions": False,  # classic CLI: one aux call per settled turn, Tab accepts the ghost text
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
         # steer mode: false hides only the "Steered into current run" bubble; steering itself still
         # happens.

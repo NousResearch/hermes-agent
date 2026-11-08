@@ -1224,6 +1224,34 @@ def _(rid, params: dict) -> dict:
         rid, session, task_id, parent, "btw.complete", body, extra={"question": text})
 
 
+@method("prompt.next_prompt")
+def _(rid, params: dict) -> dict:
+    """Guess the user's next prompt from the session's last exchange (``display.next_prompt_suggestions``).
+    One auxiliary call on the live route; history, system prompt and toolsets stay untouched.
+    Answer: ``next_prompt.complete`` (empty text: no suggestion)."""
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    from hermes_cli.config import load_config_readonly
+    if not ((load_config_readonly() or {}).get("display") or {}).get("next_prompt_suggestions"):
+        return _err(rid, 4012, "next_prompt_suggestions is disabled")
+    agent = session.get("agent")
+    snapshot = list(getattr(agent, "_session_messages", None) or session.get("history") or [])
+    main_runtime = {
+        k: getattr(agent, k, None)
+        for k in ("model", "provider", "base_url", "api_key", "api_mode", "session_id")}
+
+    def body():
+        from agent.aux_accounting import set_accounting_context
+        from agent.next_prompt_suggester import generate_next_prompt, last_exchange
+        user, assistant = last_exchange(snapshot)
+        set_accounting_context(getattr(agent, "_session_db", None), main_runtime["session_id"])
+        return generate_next_prompt(user, assistant, main_runtime=main_runtime) or ""
+
+    return _spawn_side_agent(
+        rid, session, f"np_{uuid.uuid4().hex[:6]}", params.get("session_id", ""), "next_prompt.complete", body)
+
+
 @method("preview.restart")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)

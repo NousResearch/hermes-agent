@@ -249,6 +249,9 @@ method("prompt.background", params=SideAgentParams, result=TaskIdResult,
        doc="Run a task on a fresh agent in the background; the answer arrives as background.complete.")
 method("prompt.btw", params=SideAgentParams, result=TaskIdResult,
        doc="Side question over a snapshot of the live conversation; the answer arrives as btw.complete.")
+method("prompt.next_prompt", params=SessionParams, result=TaskIdResult,
+       doc="Guess the user's next prompt from the last exchange (display.next_prompt_suggestions); "
+           "the guess arrives as next_prompt.complete, empty text meaning none.")
 
 
 class PreviewRestartParams(SessionParams):

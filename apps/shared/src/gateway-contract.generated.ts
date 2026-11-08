@@ -6483,6 +6483,8 @@ export interface RpcMethods {
   'prompt.background': { params: SideAgentParams; result: TaskIdResult }
   /** Side question over a snapshot of the live conversation; the answer arrives as btw.complete. */
   'prompt.btw': { params: SideAgentParams; result: TaskIdResult }
+  /** Guess the user's next prompt from the last exchange (display.next_prompt_suggestions); the guess arrives as next_prompt.complete, empty text meaning none. */
+  'prompt.next_prompt': { params: SessionParams; result: TaskIdResult }
   /** Send a user turn to a live session; busy sessions queue / steer / redirect instead of refusing. */
   'prompt.submit': { params: PromptSubmitParams; result: PromptSubmitResult }
   /** Re-read ~/.hermes/.env (CLI /reload parity); built agents keep their pool until /new. */
@@ -6840,6 +6842,7 @@ export const RPC_METHODS = [
   'projects.update',
   'prompt.background',
   'prompt.btw',
+  'prompt.next_prompt',
   'prompt.submit',
   'reload.env',
   'reload.mcp',
@@ -7181,6 +7184,8 @@ export interface BackendGatewayEventMap {
   'moa.progress': MoaProgressPayload
   /** One MoA reference model's output. */
   'moa.reference': MoaReferencePayload
+  /** The guessed next prompt (empty text: none). */
+  'next_prompt.complete': SideAgentCompletePayload
   /** Informational one-liner for the session (capabilities refreshed). */
   notice: NoticePayload
   /** Withdraw the notice with this key. */
@@ -7313,6 +7318,7 @@ export const GATEWAY_EVENT_TYPES = [
   'moa.phase',
   'moa.progress',
   'moa.reference',
+  'next_prompt.complete',
   'notice',
   'notification.clear',
   'notification.show',

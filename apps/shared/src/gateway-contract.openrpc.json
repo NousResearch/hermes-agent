@@ -3031,6 +3031,24 @@
       }
     },
     {
+      "name": "prompt.next_prompt",
+      "summary": "Guess the user's next prompt from the last exchange (display.next_prompt_suggestions); the guess arrives as next_prompt.complete, empty text meaning none.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/TaskIdResult"
+        }
+      }
+    },
+    {
       "name": "prompt.submit",
       "summary": "Send a user turn to a live session; busy sessions queue / steer / redirect instead of refusing.",
       "params": [
@@ -50136,6 +50154,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/MoaReferencePayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "next_prompt.complete",
+      "summary": "The guessed next prompt (empty text: none).",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/SideAgentCompletePayload"
           }
         }
       ]

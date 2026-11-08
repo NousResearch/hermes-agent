@@ -103,6 +103,8 @@ class CLITuiRuntimeMixin:
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
         if not user_input:
             return
+        from hermes_cli.next_prompt_suggestions import clear_suggestion
+        clear_suggestion(self)
         notification_preview = user_input if isinstance(user_input, TimelineNotification) else None
         self._status_bar_suppressed_after_resize = False  # input ends post-resize suppression
 
@@ -233,6 +235,9 @@ class CLITuiRuntimeMixin:
 
         with suppress(Exception):
             self._drain_process_notifications("cli-post-turn")
+
+        from hermes_cli.next_prompt_suggestions import maybe_suggest_next_prompt
+        maybe_suggest_next_prompt(self)
 
     def _tui_signal_handler(self, signum, frame):
         """SIGHUP/SIGTERM -> graceful shutdown.

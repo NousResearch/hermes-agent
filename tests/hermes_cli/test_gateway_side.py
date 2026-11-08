@@ -57,3 +57,21 @@ def test_a_failed_side_task_raises_the_gateways_error():
             wait()
     finally:
         conn.close()
+
+
+def test_next_prompt_verb_takes_no_text_and_its_answer_is_routed_by_task_id():
+    class Client(_Client):
+        async def rpc(self, method, *, _timeout=None, **params):
+            self.calls.append((method, params))
+            await self.events.put({"jsonrpc": "2.0", "method": "event", "params": {
+                "type": "next_prompt.complete", "session_id": SID, "payload": {"task_id": "np_1", "text": self.text}}})
+            return {"task_id": "np_1"}
+
+    client = Client("commit that")
+    conn = _connection(client)
+    try:
+        _task_id, wait = gateway_side.start(conn, SID, "next_prompt")
+        assert wait() == "commit that"
+        assert client.calls == [("prompt.next_prompt", {"session_id": SID})]
+    finally:
+        conn.close()

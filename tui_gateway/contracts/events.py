@@ -607,6 +607,7 @@ class SideAgentCompletePayload(Payload):
 
 event("background.complete", SideAgentCompletePayload, doc="A /background side agent finished.")
 event("btw.complete", SideAgentCompletePayload, doc="A /btw side question was answered.")
+event("next_prompt.complete", SideAgentCompletePayload, doc="The guessed next prompt (empty text: none).")
 event("preview.restart.complete", SideAgentCompletePayload, doc="The hidden preview-restart agent finished.")
 
 

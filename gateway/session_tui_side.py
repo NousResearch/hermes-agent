@@ -26,14 +26,17 @@ _RUNTIME_KEYS = ('api_key', 'base_url', 'provider', 'requested_provider', 'api_m
 
 def handlers(connection):
     return {'prompt.background': partial(background, connection), 'prompt.btw': partial(btw, connection),
+            'prompt.next_prompt': partial(next_prompt, connection),
             'preview.restart': partial(preview_restart, connection)}
 
 
 def _admit(connection, ref, params, prefix, required='text', optional=()):
-    """Shared admission: ``(live, policy, text, task_id)`` or a refusal before any work starts."""
-    text = params.get(required)
-    if (set(params) - {'session_id', 'profile', required, *optional} or not isinstance(ref.session_id, str)
-            or not ref.session_id or not isinstance(text, str) or not text.strip()
+    """Shared admission: ``(live, policy, text, task_id)`` or a refusal before any work starts.
+    ``required=None`` is a verb that takes no text (``text`` comes back empty)."""
+    text = params.get(required) if required else ''
+    if (set(params) - {'session_id', 'profile', *([required] if required else []), *optional}
+            or not isinstance(ref.session_id, str)
+            or not ref.session_id or not isinstance(text, str) or (required and not text.strip())
             or any(params.get(key) is not None and not isinstance(params[key], str) for key in optional)):
         raise RuntimeStoreError('invalid_params')
     authority = connection.authority
@@ -220,6 +223,56 @@ async def btw(connection, ref, params):
                                         on_fork=handle.set_fork, should_stop=handle.stopped.is_set) or ''
 
     return _spawn(authority, ref, task_id, 'btw.complete', body, extra={'question': text}, holder=[handle])
+
+
+def suggest_next_prompt(authority, ref, history, main_runtime):
+    """The guessed next prompt for ``history`` (``''`` for none), billed to the owning session.
+
+    A side thread starts outside any turn, so the session's accounting handles are published here;
+    the aux call then records ``task=next_prompt`` usage through the owner's real store."""
+    from agent.aux_accounting import set_accounting_context
+    from agent.next_prompt_suggester import generate_next_prompt, last_exchange
+    user, assistant = last_exchange(history)
+    set_accounting_context(authority.db, ref.session_id)
+    suggestion = generate_next_prompt(user, assistant, main_runtime=main_runtime)
+    if not suggestion:
+        logger.debug('No next-prompt suggestion for %s', ref.session_id)
+    return suggestion or ''
+
+
+def _suggestions_enabled(authority, policy):
+    """``display.next_prompt_suggestions`` from the owning profile's CURRENT config.yaml: a presentation
+    toggle must not stay frozen at what it was when the conversation was created (it is in neither the
+    followed sections nor the refresh). The path comes from the authority's own store, so no ambient
+    profile is read. A bypass session never reads the profile: its own saved section decides."""
+    from gateway.session_policy import profile_config
+    config = policy.config(authority) if policy.ignore_user_config else profile_config(authority)
+    return bool((config.get('display') or {}).get('next_prompt_suggestions'))
+
+
+async def next_prompt(connection, ref, params):
+    """``display.next_prompt_suggestions``: one auxiliary call guessing the user's next prompt from the
+    session's last exchange. Detached like ``/btw``: never an admission, a FIFO turn, a row in the
+    transcript, or a change to the system prompt or toolsets (the prompt cache stays valid). The guess
+    arrives as ``next_prompt.complete`` ``{task_id, text}``; ``text`` is empty when there is none."""
+    _live, policy, _text, task_id = _admit(connection, ref, params, 'np', required=None)
+    authority = connection.authority
+    if not _suggestions_enabled(authority, policy):
+        raise RuntimeStoreError('permission_denied')
+    agent = authority.agent(ref)
+    snapshot = list(getattr(agent, '_session_messages', None) or [])
+    from gateway.session_local_recovery import transcript_target
+    target = None if snapshot else transcript_target(authority, ref)
+
+    def body():
+        history = snapshot or (authority.db.get_messages_as_conversation(target) if target else [])
+        with _side_scope(authority, policy, task_id):
+            model, runtime = _resolve_runtime(authority, policy)
+            main_runtime = {'model': model, 'session_id': ref.session_id,
+                            **{key: runtime.get(key) for key in ('provider', 'base_url', 'api_key', 'api_mode')}}
+            return suggest_next_prompt(authority, ref, history, main_runtime)
+
+    return _spawn(authority, ref, task_id, 'next_prompt.complete', body)
 
 
 class _SideQuestionStop:

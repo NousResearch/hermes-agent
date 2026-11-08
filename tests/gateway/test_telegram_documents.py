@@ -313,11 +313,15 @@ class TestVideoDownloadBlock:
             def __invert__(self):
                 return self
 
+        class _Filter(_Names):  # base of the adapter's own filters (rich_message)
+            def __init__(self, name):
+                super().__init__(name)
+
         fake_filters = SimpleNamespace(
             **{name: _Names(name) for name in ("TEXT", "COMMAND", "LOCATION", "VENUE", "PHOTO", "VIDEO",
                                                 "VIDEO_NOTE", "AUDIO", "VOICE")},
             Document=SimpleNamespace(ALL=_Names("DOCUMENT")), Sticker=SimpleNamespace(ALL=_Names("STICKER")),
-            StatusUpdate=None)
+            StatusUpdate=None, MessageFilter=_Filter)
         registered = {}
         with patch.multiple("plugins.platforms.telegram.adapter", filters=fake_filters,
                             TelegramMessageHandler=lambda flt, callback: registered.setdefault(callback, flt)):

@@ -1,12 +1,62 @@
-"""Telegram ``text_link`` expansion, kept out of the adapter facade.
+"""Inbound message text the adapter facade reads: ``text_link`` expansion and ``rich_message`` blocks.
 
 A rich-text hyperlink arrives as visible anchor text plus a ``text_link`` entity carrying the
-URL; the model only ever sees the anchor unless the URL is inlined (#31071).
+URL; the model only ever sees the anchor unless the URL is inlined (#31071). Long multi-paragraph
+messages can instead arrive with an empty ``text`` and their content in ``rich_message.blocks``.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
+
+
+def _rich_inline(value: Any) -> str:
+    """Plain text of a rich ``text`` value: a string, a list of runs, or a span dict (bold, link…)."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_rich_inline(part) for part in value)
+    if isinstance(value, Mapping):
+        return _rich_inline(value.get("text") if value.get("text") is not None else value.get("url") or "")
+    return ""
+
+
+def _rich_lines(blocks: Any, prefix: str = "") -> list[str]:
+    """One line per paragraph-like block; a list item's ``label`` (bullet/number) prefixes its first line."""
+    lines: list[str] = []
+    for block in blocks if isinstance(blocks, list) else []:
+        if not isinstance(block, Mapping):
+            continue
+        if "text" in block:
+            lines.append(prefix + _rich_inline(block["text"]))
+            prefix = ""
+        for item in block.get("items") or []:
+            if isinstance(item, Mapping):
+                label = str(item.get("label") or "-")
+                lines += _rich_lines(item.get("blocks") or [item], f"{label} ")
+        if block.get("blocks"):
+            lines += _rich_lines(block["blocks"], prefix)
+    return lines
+
+
+def rich_message_text(message: Any) -> str:
+    """Flattened text of a ``rich_message`` payload ("" when there is none). PTB keeps the Bot API
+    field in ``api_kwargs``, a ``mappingproxy`` (not a ``dict``), when it has no attribute for it."""
+    rich = getattr(message, "rich_message", None)
+    if rich is None and isinstance(kwargs := getattr(message, "api_kwargs", None), Mapping):
+        rich = kwargs.get("rich_message")
+    if not isinstance(rich, Mapping):
+        return ""
+    return "\n".join(_rich_lines(rich.get("blocks"))).strip()
+
+
+def rich_message_filter(filters: Any) -> Any:
+    """A PTB message filter matching a text-less message that carries ``rich_message`` content."""
+    class _RichMessage(filters.MessageFilter):
+        def filter(self, message: Any) -> bool:
+            return not getattr(message, "text", None) and bool(rich_message_text(message))
+    return _RichMessage(name="rich_message")
 
 
 def _utf16_length(text: str) -> int:
@@ -34,7 +84,9 @@ def expand_link_entities(message: Any) -> str:
     else:
         text = getattr(message, "caption", None) or ""
         entities = getattr(message, "caption_entities", None) or []
-    if not text or not entities:
+    if not text:
+        return rich_message_text(message)
+    if not entities:
         return text
 
     utf16_length = _utf16_length(text)

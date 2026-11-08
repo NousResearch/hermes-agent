@@ -25,7 +25,7 @@ class FakeTty extends EventEmitter {
 // Drive the real render pipeline (Text → render-node-to-output → Output →
 // screen.softWrap) and copy from the painted front frame, the same buffer a
 // fullscreen mouse drag + right-click copies from (#118395).
-const dragCopy = (node: React.ReactElement): string => {
+const dragCopy = (node: React.ReactElement, from: [number, number] = [0, 0], to?: [number, number]): string => {
   const stdout = new FakeTty()
   const stdin = new FakeTty()
   const stderr = new FakeTty()
@@ -41,8 +41,8 @@ const dragCopy = (node: React.ReactElement): string => {
   ink.setAltScreenActive(true)
   ink.render(node)
   ink.onRender()
-  startSelection(ink.selection, 0, 0)
-  updateSelection(ink.selection, stdout.columns - 1, stdout.rows - 1)
+  startSelection(ink.selection, from[0], from[1])
+  updateSelection(ink.selection, ...(to ?? [stdout.columns - 1, stdout.rows - 1]))
   const copied = ink.getTextSelectionText()
   ink.unmount()
 
@@ -77,6 +77,11 @@ describe('drag-copy across wrap-trim soft-wrap boundaries', () => {
 
   it('preserves the extra space when only one of several boundary spaces was trimmed', () => {
     expect(dragCopy(paragraph('wrap-trim', 'lorem ipsum  dolor'))).toBe('lorem ipsum  dolor')
+  })
+
+  it('adds no leading space when the drag starts in the padding after a wrapped row', () => {
+    // Width 12 paints 'lorem ipsum' / 'dolor'; start in the cell past 'ipsum'.
+    expect(dragCopy(paragraph('wrap-trim', 'lorem ipsum dolor'), [11, 0], [4, 1])).toBe('dolor')
   })
 
   it('keeps hard mid-word splits glued', () => {

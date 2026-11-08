@@ -935,10 +935,15 @@ function extractRowText(screen: Screen, row: number, colStart: number, colEnd: n
  *  only when sw=0 (i.e. the row starts a new logical line). Rows with
  *  nonzero sw are concatenated onto the previous row; a negative sw
  *  (wrap-trim dropped the boundary space, see Screen.softWrap) gets
- *  exactly one space re-inserted — hard mid-word splits stay glued. */
+ *  exactly one space re-inserted when content sits on both sides of the
+ *  boundary — hard mid-word splits stay glued. */
 function joinRows(lines: string[], text: string, sw: number | undefined): void {
   if (sw && lines.length > 0) {
-    lines[lines.length - 1] += (sw < 0 && text ? ' ' : '') + text
+    const prev = lines[lines.length - 1]!
+    // Only restore the separator between selected content: a drag that
+    // starts in the padding past a wrapped row's end has nothing before
+    // the boundary, so a space there would be a spurious leading space.
+    lines[lines.length - 1] = prev + (sw < 0 && prev && text ? ' ' : '') + text
   } else {
     lines.push(text)
   }

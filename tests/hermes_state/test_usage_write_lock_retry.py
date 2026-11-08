@@ -131,6 +131,147 @@ def test_begin_immediate_lock_timeout_requeues_unapplied_accounting(database, mo
 
 
 
+def test_two_begin_ioerrs_before_callback_requeue_without_uncertainty(database, monkeypatch):
+    db = database
+    expected = {"one": 3, "two": 7}
+    for session_id in expected:
+        db.create_session(session_id, "cli")
+
+    monkeypatch.setattr(db, "_token_writer_loop", lambda: None)
+    for session_id, tokens in expected.items():
+        db.queue_token_counts(session_id, input_tokens=tokens, api_call_count=1)
+        db._token_writer_thread.join(5)
+
+    inner = db._conn
+    begin_errors, callbacks = [], []
+
+    class BeginFault:
+        def __getattr__(self, name):
+            return getattr(inner, name)
+
+        def execute(self, sql, *args, **kwargs):
+            if sql == "BEGIN IMMEDIATE" and len(begin_errors) < 2:
+                error = sqlite3.OperationalError("disk I/O error before callback")
+                error.sqlite_errorcode = sqlite3.SQLITE_IOERR
+                begin_errors.append(error.sqlite_errorcode)
+                raise error
+            return inner.execute(sql, *args, **kwargs)
+
+    db._conn = BeginFault()
+    original_execute_write = db._execute_write
+
+    def observe_callback(callback, *args, **kwargs):
+        def observed(conn):
+            callbacks.append(True)
+            return callback(conn)
+        return original_execute_write(observed, *args, **kwargs)
+
+    monkeypatch.setattr(db, "_execute_write", observe_callback)
+    first_flush = db.flush_token_counts()
+    first_state = {
+        "callbacks": len(callbacks),
+        "begin_errors": list(begin_errors),
+        "rows": {sid: inner.execute(
+            "SELECT input_tokens FROM sessions WHERE id=?", (sid,)
+        ).fetchone()[0] for sid in expected},
+        "transaction_open": inner.in_transaction,
+        "uncertain": [sid for sid, _ in db._token_writer_uncertain],
+        "queued": [sid for sid, _ in db._token_queue],
+    }
+
+    db._conn = inner
+    second_flush = db.flush_token_counts()
+    rows = {sid: inner.execute(
+        "SELECT input_tokens FROM sessions WHERE id=?", (sid,)
+    ).fetchone()[0] for sid in expected}
+    usage_rows = [tuple(row) for row in db._read_all(
+        "SELECT session_id, input_tokens, api_call_count FROM session_model_usage ORDER BY session_id"
+    )]
+
+    assert first_flush is False
+    assert first_state == {
+        "callbacks": 0,
+        "begin_errors": [sqlite3.SQLITE_IOERR, sqlite3.SQLITE_IOERR],
+        "rows": {"one": 0, "two": 0},
+        "transaction_open": False,
+        "uncertain": [],
+        "queued": ["one", "two"],
+    }
+    assert second_flush is True
+    assert callbacks == [True, True]
+    assert rows == expected
+    assert usage_rows == [("one", 3, 1), ("two", 7, 1)]
+    assert not db._token_queue and not db._token_writer_uncertain
+    assert not db.has_pending_token_counts()
+
+
+@pytest.mark.parametrize("state_mode", ["probe-error", "active"])
+def test_begin_ioerr_with_unknown_transaction_state_is_not_retried(
+    database, monkeypatch, state_mode,
+):
+    db = database
+    session_id = "unknown-begin"
+    db.create_session(session_id, "cli")
+    monkeypatch.setattr(db, "_token_writer_loop", lambda: None)
+    db.queue_token_counts(session_id, input_tokens=3)
+    db._token_writer_thread.join(5)
+
+    inner = db._conn
+    begin_attempts, callback_calls = [], []
+
+    class UnknownBeginState:
+        def __getattr__(self, name):
+            return getattr(inner, name)
+
+        @property
+        def in_transaction(self):
+            if begin_attempts and state_mode == "probe-error":
+                raise RuntimeError("injected transaction state probe failure")
+            if begin_attempts and state_mode == "active":
+                return True
+            return inner.in_transaction
+
+        def execute(self, sql, *args, **kwargs):
+            if sql == "BEGIN IMMEDIATE":
+                begin_attempts.append(sql)
+                if len(begin_attempts) == 1:
+                    error = sqlite3.OperationalError("disk I/O error at BEGIN")
+                    error.sqlite_errorcode = sqlite3.SQLITE_IOERR
+                    raise error
+            return inner.execute(sql, *args, **kwargs)
+
+    db._conn = UnknownBeginState()
+    original_execute_write = db._execute_write
+
+    def observe_callback(callback, *args, **kwargs):
+        def observed(conn):
+            callback_calls.append(True)
+            return callback(conn)
+        return original_execute_write(observed, *args, **kwargs)
+
+    monkeypatch.setattr(db, "_execute_write", observe_callback)
+    first_flush = db.flush_token_counts()
+    db._conn = inner
+    row_after_first = inner.execute(
+        "SELECT input_tokens FROM sessions WHERE id=?", (session_id,)
+    ).fetchone()[0]
+    first_uncertain = [sid for sid, _ in db._token_writer_uncertain]
+    first_queued = [sid for sid, _ in db._token_queue]
+    second_flush = db.flush_token_counts()
+    row_after_second = inner.execute(
+        "SELECT input_tokens FROM sessions WHERE id=?", (session_id,)
+    ).fetchone()[0]
+
+    assert first_flush is False
+    assert len(begin_attempts) == 1
+    assert callback_calls == []
+    assert row_after_first == row_after_second == 0
+    assert first_uncertain == [session_id]
+    assert first_queued == []
+    assert second_flush is False
+    assert [sid for sid, _ in db._token_writer_uncertain] == [session_id]
+
+
 def test_commit_lock_timeout_retries_only_after_real_rollback(delete_database, monkeypatch):
     db = delete_database
     db._conn.execute("PRAGMA busy_timeout=0")

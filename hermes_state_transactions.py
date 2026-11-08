@@ -26,10 +26,12 @@ class WriteAttempt:
                 and (code & 0xFF) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED))
 
     def retry_safe(self, error):
-        return (not self.commit_completed
-                and (not self.fn_started or (
-                    self.rollback_succeeded and self.active_before_rollback
-                    and (not self.commit_attempted or self._commit_rollback_proven(error)))))
+        if self.commit_completed:
+            return False
+        if not self.fn_started:
+            return self.receipt is None or self.receipt.proves_unapplied(error)
+        return (self.rollback_succeeded and self.active_before_rollback
+                and (not self.commit_attempted or self._commit_rollback_proven(error)))
 
     def _rollback(self, conn, error):
         try:
@@ -50,7 +52,18 @@ class WriteAttempt:
                 commit_rollback_proven=self._commit_rollback_proven(error))
 
     def execute(self, conn, fn):
-        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+        except BaseException as error:
+            if self.receipt is not None:
+                try:
+                    transaction_active = bool(conn.in_transaction)
+                except Exception:
+                    transaction_active = True
+                not_started = getattr(self.receipt, "transaction_not_started", None)
+                if not_started is not None:
+                    not_started(error, transaction_active=transaction_active)
+            raise
         try:
             self.fn_started = True
             if self.receipt is not None:

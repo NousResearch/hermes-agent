@@ -69,7 +69,9 @@ def stored_session_route(session_meta, *, current_model, current_provider,
     base_url = runtime.get("base_url") or None
     api_mode = runtime.get("api_mode") or None
     stored_provider = runtime.get("provider") or None
-    provider = _heal_bare_custom_provider(stored_provider, base_url=base_url, model=stored_model)
+    provider = _heal_bare_custom_provider(
+        stored_provider, base_url=base_url, model=stored_model,
+        allow_unmatched_endpoint=snapshot is not None)
     if provider != stored_provider:
         # A healed entry resolves its own current endpoint. A route that didn't heal is gone with its
         # endpoint and wire, which must not ride on the ambient provider.
@@ -100,10 +102,11 @@ def stored_session_route(session_meta, *, current_model, current_provider,
     return stored_model, provider, base_url, api_mode, provider_changed
 
 
-def _heal_bare_custom_provider(provider, *, base_url, model):
-    """Bare ``custom`` is a billing class, not a routable identity: persisting/restoring it makes a
-    later resume hard-fail once the config default leaves the custom endpoint. Recover the durable
-    ``custom:<name>`` menu key from the endpoint, else drop the provider (None)."""
+def _heal_bare_custom_provider(provider, *, base_url, model, allow_unmatched_endpoint=False):
+    """Resolve named custom routes; keep bare custom only for a fresh explicit route.
+
+    Legacy billing-only rows with no complete saved route still drop to ambient.
+    """
     if str(provider or "").strip().lower() != "custom":
         return provider
     try:
@@ -111,9 +114,13 @@ def _heal_bare_custom_provider(provider, *, base_url, model):
         # a routable identity. (Stricter than the TUI gateway's recovery, which keeps bare "custom" when a
         # base_url exists — the CLI's resolve path would hard-fail on it, #14676.)
         from hermes_cli.runtime_provider import canonical_custom_identity
-        return canonical_custom_identity(base_url=base_url or None, model=model or None) or None
+        identity = canonical_custom_identity(base_url=base_url or None, model=model or None)
     except Exception:
-        return None
+        identity = None
+    if identity:
+        return identity
+    return ("custom" if allow_unmatched_endpoint and isinstance(base_url, str)
+            and base_url.strip() else None)
 
 
 def _merge_preflight_warning(cli, result, custom_providers) -> None:
@@ -455,10 +462,10 @@ def _restore_session_credentials(cli, *, managed, provider_changed, endpoint_cha
                 "%s failed",
                 stored_provider)
     elif provider_changed or endpoint_changed:
-        if endpoint_changed:
-            # Credentials from the ambient endpoint must not follow a restored endpoint.
-            cli.api_key = None
-            cli._credential_pool = None
+        # Credentials and pools belong to the prior provider/endpoint. A provider
+        # swap invalidates them even when both providers happen to use the same URL.
+        cli.api_key = None
+        cli._credential_pool = None
         # Launch-time explicit overrides belong to the AMBIENT provider and would poison
         # _ensure_runtime_credentials for the restored one. api_key is never persisted to
         # the session DB — runtime provider resolution owns credentials.
@@ -467,11 +474,18 @@ def _restore_session_credentials(cli, *, managed, provider_changed, endpoint_cha
         try:
             from hermes_cli.runtime_provider import resolve_runtime_provider
             resolved = resolve_runtime_provider(requested=stored_provider, target_model=cli.model or None)
-            if resolved.get("api_key"):
+            resolved_base_url = resolved.get("base_url")
+            endpoint_matches = not stored_base_url or resolved_base_url == stored_base_url
+            if stored_base_url and not endpoint_matches:
+                # The resolver's key belongs to another URL. Do not carry either
+                # that key or any ambient key to the saved endpoint.
+                cli.api_key = None
+                cli._credential_pool = None
+            if resolved.get("api_key") and endpoint_matches:
                 cli.api_key = resolved["api_key"]
                 cli._credential_pool = resolved.get("credential_pool")
-            if not stored_base_url and resolved.get("base_url"):
-                cli.base_url = resolved["base_url"]
+            if not stored_base_url and resolved_base_url:
+                cli.base_url = resolved_base_url
             if not stored_api_mode and resolved.get("api_mode"):
                 cli.api_mode = resolved["api_mode"]
         except Exception:
@@ -599,10 +613,14 @@ class CLIModelSwitchMixin:
             return
         provider = _heal_bare_custom_provider(
             result.target_provider, base_url=result.base_url, model=result.new_model,
-        ) or ""
+            allow_unmatched_endpoint=True,
+        )
         try:
-            db.update_session_model(sid, result.new_model, provider=provider,
-                                    base_url=result.base_url or None, api_mode=result.api_mode or None)
+            if provider is None:
+                db.update_session_model(sid, result.new_model)
+            else:
+                db.update_session_model(sid, result.new_model, provider=provider,
+                                        base_url=result.base_url or None, api_mode=result.api_mode or None)
         except Exception:
             logger.debug("Failed to persist model switch to session DB", exc_info=True)
 

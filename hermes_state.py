@@ -1097,7 +1097,8 @@ class SessionDB(
                                               token_batch_receipt, log_write_lock_holders):
                             continue
                     if (
-                        _DISK_IO_ERROR_MARKER in err_msg and not attempt.fn_started and not ioerr_begin_retried
+                        _DISK_IO_ERROR_MARKER in err_msg and not attempt.fn_started
+                        and transaction_retry_safe and not ioerr_begin_retried
                         and self._sleep_before_write_retry(deadline, patience_s)
                     ):
                         # Retry on the SAME connection: close()+reopen would cancel this process's

@@ -161,6 +161,15 @@ class _TokenBatchWriteReceipt:
     def transaction_started(self):
         self._retryable_error = None
 
+    def transaction_not_started(self, error, *, transaction_active):
+        """Bind retry proof to this error only when BEGIN never opened a transaction."""
+        self._retryable_error = None
+        if (self._committed or self._unknown or transaction_active
+                or not isinstance(error, sqlite3.Error)):
+            self._unknown = True
+            return
+        self._retryable_error = error
+
     def transaction_committed(self):
         self._committed = True
         self._retryable_error = None

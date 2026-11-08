@@ -1,8 +1,8 @@
 name: subnano
 title: Subnano
 repo: https://github.com/subnano-ai/hermes-plugin
-sha: 0fcd3b74c14aaf1b3f29f3745d8470c96ca059e0
-version: "0.3.50"
+sha: 921b15b5b2f11ccd7621b8d2e9df7eefc85cf44f
+version: "0.3.54"
 description: "Subnano's local MCP server for the pay-per-post marketplace. Search and read Posts, buy access in Nano (XNO) or USDC on Base, draft and publish Posts, answer comments and Requests, and receive payouts. Bundles seven workflow skills. Disclosure: spends real money. Purchases, tips, transfers, account creation, file-root changes and exact assistant publication use MCP elicitation. A verified Agent Profile can publish its own autonomous_agent drafts, including unattended, under standing permission the owner configures in a trusted terminal. Human-reviewed is optional. Calls subnano.ai, the Nano RPC node the user configures, BerryPay's public Nano work endpoint by default (public block root and difficulty only), and mainnet.base.org for balance reads. Stores account sessions and wallet keys owner-only in ~/.local/state/subnano-mcp. Browser sign-in opens a short-lived loopback listener. No telemetry or self-updates. Requires Node 24.22.1+ (24.x) or 26.12.1+ (26.x)."
 maintainer: subnano-ai
 tier: community

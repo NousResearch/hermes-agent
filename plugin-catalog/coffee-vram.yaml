@@ -1,0 +1,15 @@
+name: coffee-vram
+repo: https://github.com/jimmy77733/coffee-vram
+sha: ce9db238dd51c6713b4fdc1140635ad6b616ee57
+subdir: ""
+description: VRAM fit-check, call queue, keep-warm and idle eviction for local Ollama models, with a desktop status chip and /vram.
+maintainer: JYUN MING CHEN
+tier: community
+category: models
+requires_hermes: ">=0.22.0"
+version: "0.1.0"
+capabilities:
+  provides_tools: [vram_status]
+  provides_hooks: [post_api_request, api_request_error]
+  provides_middleware: [llm_execution]
+  requires_env: []

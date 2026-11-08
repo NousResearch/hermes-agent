@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $pluginRecords } from '@/contrib/plugins-store'
 import { lookupPluginCatalogEntry, PLUGIN_CATALOG_URL, type PluginCatalogLookup } from '@/lib/plugin-catalog'
 
 import { $agentPlugins } from './agent-plugins'
@@ -128,5 +129,24 @@ describe('openCatalogPluginInstall', () => {
     })
 
     expect($pluginInstallRequest.get()).toMatchObject({ catalogName: 'weather', stayAfterInstall: true })
+  })
+
+  it('knows a desktop-only entry is installed from the plugin on disk (it has no agent row)', () => {
+    $agentPlugins.set([])
+    $pluginRecords.set({
+      accent: {
+        id: 'accent',
+        kind: 'disk',
+        name: 'Accent Picker',
+        packageOrigin: { catalogName: 'accent-picker', repo: 'https://github.com/x/y', sha: 'a'.repeat(40) },
+        status: 'loaded'
+      }
+    })
+
+    openCatalogPluginInstall({ name: 'accent-picker', repo: 'https://github.com/x/y' }, null)
+
+    expect($pluginInstallRequest.get()).toBeNull()
+    expect($notifications.get()[0]).toMatchObject({ kind: 'success' })
+    $pluginRecords.set({})
   })
 })

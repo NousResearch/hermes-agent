@@ -118,6 +118,7 @@ export {
   usageLevel,
   usageTag
 } from './plan-usage'
+export { PLUGIN_CATALOG_NAME_RE } from './plugin-catalog-name'
 export {
   DEFAULT_REASONING_EFFORT,
   isReasoningEffort,

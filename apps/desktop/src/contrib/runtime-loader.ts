@@ -592,50 +592,86 @@ async function diskRoots(): Promise<DiskRoot[]> {
  *  the record carries the package name so the Plugins page pairs it with the
  *  agent row. */
 const PACKAGE_MARKER = '.hermes-package.json'
+/** Written by the installer into a STANDALONE plugin installed from the catalog
+ *  (`electron/desktop-plugins-root.ts` `INSTALL_ORIGIN`): its catalog entry, so
+ *  the card shows it installed. No package, so the folder stays standalone. */
+const INSTALL_ORIGIN = '.hermes-origin.json'
+
+type PackageOrigin = { catalogName?: string; repo?: string; sha?: string }
 
 interface PackageMarker {
   /** The package is a symlinked dev checkout; `source` is its `desktop/` dir. */
   linkedSource?: string
-  origin?: { catalogName?: string; repo?: string; sha?: string }
+  origin?: PackageOrigin
   package: string
 }
 
-async function readPackageMarker(desktop: Window['hermesDesktop'], folder: string): Promise<null | PackageMarker> {
+/** One of the installer-written JSON files in a plugin folder, parsed; `null` when absent or unreadable. */
+async function readFolderJson(
+  desktop: Window['hermesDesktop'],
+  folder: string,
+  name: string
+): Promise<null | Record<string, unknown>> {
   try {
     const { entries } = await desktop.readDir(folder)
-    const marker = entries.find(entry => entry.name === PACKAGE_MARKER && !entry.isDirectory)
+    const file = entries.find(entry => entry.name === name && !entry.isDirectory)
 
-    if (!marker) {
+    if (!file) {
       return null
     }
 
-    const read = await desktop.readFileText(marker.path)
+    const read = await desktop.readFileText(file.path)
 
     if (isReadFileErrorResult(read)) {
       return null
     }
 
-    const parsed = JSON.parse(read.text) as {
-      catalogName?: string
-      linked?: boolean
-      package?: string
-      repo?: string
-      sha?: string
-      source?: string
-    }
+    const parsed: unknown = JSON.parse(read.text)
 
-    if (!parsed.package) {
-      return null
-    }
-
-    return {
-      linkedSource: parsed.linked && parsed.source ? parsed.source : undefined,
-      origin: parsed.repo ? { catalogName: parsed.catalogName, repo: parsed.repo, sha: parsed.sha } : undefined,
-      package: parsed.package
-    }
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
   } catch {
     return null
   }
+}
+
+const nonEmpty = (value: unknown) => (typeof value === 'string' && value ? value : undefined)
+
+function packageOrigin(parsed: Record<string, unknown>): PackageOrigin | undefined {
+  const repo = nonEmpty(parsed.repo)
+
+  return repo ? { catalogName: nonEmpty(parsed.catalogName), repo, sha: nonEmpty(parsed.sha) } : undefined
+}
+
+async function readPackageMarker(desktop: Window['hermesDesktop'], folder: string): Promise<null | PackageMarker> {
+  const parsed = await readFolderJson(desktop, folder, PACKAGE_MARKER)
+  const pkg = nonEmpty(parsed?.package)
+
+  if (!parsed || !pkg) {
+    return null
+  }
+
+  return {
+    linkedSource: parsed.linked && nonEmpty(parsed.source) ? nonEmpty(parsed.source) : undefined,
+    origin: packageOrigin(parsed),
+    package: pkg
+  }
+}
+
+/** Where a plugin folder came from: a package half's marker says; a standalone plugin carries the catalog
+ *  entry its installer recorded, if any. */
+async function readFolderOrigin(
+  desktop: Window['hermesDesktop'],
+  folder: string,
+  marker: null | PackageMarker
+): Promise<PackageOrigin | undefined> {
+  if (marker) {
+    return marker.origin
+  }
+
+  const parsed = await readFolderJson(desktop, folder, INSTALL_ORIGIN)
+  const origin = parsed ? packageOrigin(parsed) : undefined
+
+  return origin?.catalogName ? origin : undefined
 }
 
 interface DiskPlugin {
@@ -660,7 +696,8 @@ interface DiskPlugin {
  *  (folder names alone can collide between them). */
 const disk = new Map<string, DiskPlugin>()
 let watching = false
-let scanning = false
+/** The scan in flight, if any. */
+let scanInFlight: null | Promise<void> = null
 
 /** Drop a folder-named error record — unless that name is the live plugin id
  *  of ANOTHER disk entry (two roots can carry same-named folders; a broken one
@@ -869,14 +906,29 @@ async function resyncLinkedDiskPlugins(): Promise<void> {
 async function scanDiskPlugins(reloadKnown = false): Promise<void> {
   const desktop = window.hermesDesktop
 
-  // Re-entrancy guard: the 5s poll must not overlap a slow in-flight scan
-  // (reads/loads can exceed the interval).
-  if (!desktop || scanning) {
+  if (!desktop) {
     return
   }
 
-  scanning = true
+  // Scans never overlap. A background tick (the 5s poll, a watch event) is dropped while one runs: the
+  // running scan covers it. A reload is waited for instead: its caller (an install that just landed or
+  // adopted a folder) reads the inventory straight after, which the running scan may have read too early.
+  while (scanInFlight) {
+    if (!reloadKnown) {
+      return
+    }
 
+    await scanInFlight
+  }
+
+  scanInFlight = scanOnce(desktop, reloadKnown).finally(() => {
+    scanInFlight = null
+  })
+
+  return scanInFlight
+}
+
+async function scanOnce(desktop: NonNullable<Window['hermesDesktop']>, reloadKnown: boolean): Promise<void> {
   try {
     const roots = await diskRoots()
 
@@ -917,8 +969,15 @@ async function scanDiskPlugins(reloadKnown = false): Promise<void> {
         const known = disk.get(file)
 
         if (known) {
-          if (reloadKnown && (await loadDiskPlugin(known))) {
-            await watchDiskPluginFile(desktop, known)
+          if (reloadKnown) {
+            // An install can record where a loaded folder came from after it loaded (a catalog install
+            // adopting a copy an older build left, a Force reinstall): re-read it, or the card keeps
+            // offering Install until restart.
+            known.packageOrigin = await readFolderOrigin(desktop, dir.path, await readPackageMarker(desktop, dir.path))
+
+            if (await loadDiskPlugin(known)) {
+              await watchDiskPluginFile(desktop, known)
+            }
           }
 
           continue
@@ -933,7 +992,7 @@ async function scanDiskPlugins(reloadKnown = false): Promise<void> {
           id: null,
           origin: dir.name,
           packageName: marker?.package,
-          packageOrigin: marker?.origin,
+          packageOrigin: await readFolderOrigin(desktop, dir.path, marker),
           sourceFile: marker?.linkedSource ? `${marker.linkedSource}/plugin.js` : undefined,
           sourceWatchId: null,
           watchId: null
@@ -962,8 +1021,6 @@ async function scanDiskPlugins(reloadKnown = false): Promise<void> {
     }
   } catch {
     // No plugin roots (or no gateway yet) — nothing to reconcile.
-  } finally {
-    scanning = false
   }
 }
 

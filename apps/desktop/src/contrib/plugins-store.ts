@@ -119,10 +119,31 @@ export function dropPlugin(id: string): void {
  *  half on too instead of leaving a second switch to find. *keepUserChoice*
  *  leaves a half the user explicitly switched off alone. */
 export async function enablePackageDesktopHalf(packageName: string, { keepUserChoice = false } = {}): Promise<void> {
+  await enableDesktopPlugins(record => record.packageName === packageName, keepUserChoice)
+}
+
+/** The catalog names the desktop plugins on disk were installed from. A desktop-only entry has no agent
+ *  row to carry its `catalog_name`, so a surface asking "is this entry installed?" reads these too. */
+export function installedDesktopCatalogNames(records: Record<string, PluginRecord>): Set<string> {
+  return new Set(
+    Object.values(records).flatMap(record =>
+      record.packageOrigin?.catalogName ? [record.packageOrigin.catalogName] : []
+    )
+  )
+}
+
+/** Turn on the standalone desktop plugin installed from catalog entry *catalogName*. A plugin can
+ *  ship off by default (`defaultEnabled: false`); a dialog that said "turns on right away" must not
+ *  leave it off for the user to find. Ticking that is the user's choice, so an older "off" yields. */
+export async function enableCatalogDesktopPlugin(catalogName: string): Promise<void> {
+  await enableDesktopPlugins(record => !record.packageName && record.packageOrigin?.catalogName === catalogName, false)
+}
+
+async function enableDesktopPlugins(matches: (record: PluginRecord) => boolean, keepUserChoice: boolean) {
   const decisions = $pluginDecisions.get()
 
   for (const record of Object.values($pluginRecords.get())) {
-    if (record.packageName !== packageName || record.status !== 'disabled') {
+    if (!matches(record) || record.status !== 'disabled') {
       continue
     }
 

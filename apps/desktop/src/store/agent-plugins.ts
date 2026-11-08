@@ -327,10 +327,12 @@ function backendPredatesInspectedSha(params: Record<string, unknown>, error: unk
 
 /** The backend refused because the source is no longer at the commit the dialog reviewed
  *  (`tui_gateway/methods_tools.py::_source_moved_data`): read it again, never resend that commit. */
-export function isSourceMovedRefusal(error: unknown): boolean {
-  const data = error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined) : undefined
+function refusalReason(error: unknown): unknown {
+  return error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : undefined
+}
 
-  return data?.reason === 'source_moved'
+export function isSourceMovedRefusal(error: unknown): boolean {
+  return refusalReason(error) === 'source_moved'
 }
 
 export async function installAgentPlugin(
@@ -501,6 +503,8 @@ export async function installDesktopPluginHalf(
   unsupported?: boolean
   /** Refused: the source moved off the reviewed commit (`isSourceMovedRefusal`). */
   sourceMoved?: boolean
+  /** Refused: a plugin of that name is installed there. Force replaces it. */
+  exists?: boolean
   warnings: string[]
   error?: string
 }> {
@@ -541,6 +545,7 @@ export async function installDesktopPluginHalf(
       ok: false,
       unsupported: e instanceof JsonRpcGatewayError && INSTALL_DESKTOP_UNSUPPORTED_CODES.has(e.code ?? 0),
       sourceMoved: isSourceMovedRefusal(e),
+      exists: refusalReason(e) === 'exists',
       warnings: [],
       error: e instanceof Error ? e.message : String(e)
     }

@@ -14,11 +14,14 @@ import { parse as parseYaml } from 'yaml'
 
 import {
   desktopHalfSource,
+  type InstallOrigin,
+  isAdoptableStandalone,
   PACKAGE_MARKER,
   publishDesktopTree,
   rootLayoutFilter,
   withDesktopPluginsRoot,
-  writeDesktopHalfMarker
+  writeDesktopHalfMarker,
+  writeInstallOrigin
 } from './desktop-plugins-root'
 import { execGit, hiddenGitSpawnSpec } from './no-console-git'
 import { stripLikePython, WIN_RESERVED_RE } from './plugin-files-guards'
@@ -58,6 +61,8 @@ export interface DesktopPluginInstallResult {
   error?: string
   /** Refused: the reviewed commit is no longer in the source. The dialog reads the source again. */
   sourceMoved?: boolean
+  /** Refused: a plugin of that name is installed. Force replaces it. */
+  exists?: boolean
 }
 
 /** `checkoutReviewedCommit`'s refusal, told apart by class rather than by its message. */
@@ -519,14 +524,21 @@ export async function probePluginRepo(gitBin: string, identifier: string): Promi
   }
 }
 
+export interface DesktopPluginInstallOptions {
+  force?: boolean
+  /** The commit the install dialog reviewed (`probePluginRepo`'s `sha`): the half is installed from
+   *  exactly that tree or refused. */
+  sha?: string
+  /** The catalog entry the dialog installs (its card): a standalone plugin records it so the card
+   *  shows it installed. */
+  catalogName?: string
+}
+
 export async function installDesktopPluginFromGit(
   gitBin: string,
   identifier: string,
   desktopPluginsRoot: string,
-  force = false,
-  /** The commit the install dialog reviewed (`probePluginRepo`'s `sha`): the half is installed from
-   *  exactly that tree or refused. */
-  sha?: string
+  { force = false, sha, catalogName }: DesktopPluginInstallOptions = {}
 ): Promise<DesktopPluginInstallResult> {
   try {
     const { gitUrl, subdir } = resolvePluginGitUrl(identifier)
@@ -557,14 +569,29 @@ export async function installDesktopPluginFromGit(
       const targetDir = path.join(desktopPluginsRoot, pluginName)
       const targetPlugin = path.join(targetDir, 'plugin.js')
 
+      // A standalone plugin installed from a catalog entry records that entry, at the commit checked out
+      // (a tag pin is peeled), so the card shows it installed.
+      const origin: InstallOrigin | null =
+        catalogName && !packageName ? { catalogName, repo: gitUrl, sha: await headSha(gitBin, cloneRoot) } : null
+
       // Under the root's writer lock: the exists check and the publish must not
       // interleave with a reconcile pass copying the same package folder.
       return await withDesktopPluginsRoot<DesktopPluginInstallResult>(desktopPluginsRoot, async () => {
+        // A standalone plugin already installed from this very tree (a card that never showed it
+        // installed sent the user back to Install) is adopted: its origin is recorded and nothing
+        // is replaced. Any other folder is the user's, and still needs Force.
+        if (origin && !force && (await isAdoptableStandalone(targetDir, sourceDir))) {
+          await writeInstallOrigin(targetDir, origin)
+
+          return { ok: true, pluginName, path: targetDir }
+        }
+
         // Force replaces the folder only once the new tree has passed its checks and been staged
         // (publishDesktopTree): a refused reinstall keeps the working copy.
         if (!force && ((await pathIsDirectory(targetDir)) || (await pathIsFile(targetPlugin)))) {
           return {
             ok: false,
+            exists: true,
             error: `Desktop plugin '${pluginName}' already exists. Enable force reinstall to replace it.`
           }
         }
@@ -584,7 +611,10 @@ export async function installDesktopPluginFromGit(
               // ships would name another package's agent half as its own (pairing
               // it on the Plugins page and letting it render that package's tool
               // media), so only this installer or the reconcile pass writes one.
+              // The same goes for its install origin, which this install writes
+              // only for the catalog entry the dialog installed.
               await fsp.rm(path.join(staged, PACKAGE_MARKER), { force: true })
+              await writeInstallOrigin(staged, origin)
 
               return
             }

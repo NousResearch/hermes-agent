@@ -106,7 +106,7 @@ def _whatsapp_bridge_dependencies_current(bridge_dir) -> bool:
             key = "node_modules/" + name
             expected = packages[key]
             present = actual.get(key, {})
-            if any(present.get(field) != expected.get(field) for field in ("version", "resolved", "integrity")):
+            if any(present.get(field) != expected.get(field) for field in ("version", "integrity")):
                 return False
             if not (bridge_dir / key / "package.json").is_file():
                 return False

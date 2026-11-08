@@ -3,7 +3,23 @@ import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
 import { initAuthCreds, proto, Curve } from '@whiskeysockets/baileys';
 import { makeShortcakeFlow } from './passkey_flow.js';
-import { attachPasskeyFlow } from './passkey_socket.js';
+import { attachPasskeyFlow, loadPasskeySigner } from './passkey_socket.js';
+
+test('invalid pairing modes reject before loading the browser dependency', async () => {
+  const load = () => assert.fail('invalid mode must not import Playwright');
+  for (const mode of [
+    { pairOnly: false, pairJson: false, isTTY: true },
+    { pairOnly: true, pairJson: true, isTTY: true },
+    { pairOnly: true, pairJson: false, isTTY: false },
+  ]) {
+    await assert.rejects(loadPasskeySigner('browser', mode, load), /requires interactive --pair-only/);
+  }
+  assert.equal(await loadPasskeySigner('', {}, load), undefined);
+  const signer = () => {};
+  assert.equal(await loadPasskeySigner('browser', { pairOnly: true, pairJson: false, isTTY: true }, async () => ({
+    createBrowserPasskeySigner: executable => { assert.equal(executable, 'browser'); return signer; },
+  })), signer);
+});
 
 const logger = { debug() {}, warn() {} };
 const assertion = { credentialId: Buffer.from('test-id'), webauthnAssertion: Buffer.from('{}') };

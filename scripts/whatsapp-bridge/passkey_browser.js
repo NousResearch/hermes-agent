@@ -64,19 +64,27 @@ export async function signPasskeyInPage(page, optionsBytes, signal) {
 
 export function createBrowserPasskeySigner(executablePath) {
   return async (optionsBytes, socketSignal) => {
-    const signal = AbortSignal.any([socketSignal, AbortSignal.timeout(MAX_PROMPT_MS)]);
-    signal.throwIfAborted();
-    const browser = await chromium.launch({ executablePath, headless: false });
+    socketSignal.throwIfAborted();
+    const controller = new AbortController();
+    const { signal } = controller;
+    const abort = () => controller.abort(socketSignal.reason);
+    socketSignal.addEventListener('abort', abort, { once: true });
+    const timeout = setTimeout(() => controller.abort(new DOMException('Passkey verification timed out', 'TimeoutError')), MAX_PROMPT_MS);
+    timeout.unref();
+    let browser;
     const closeOnAbort = () => { void browser.close(); };
-    signal.addEventListener('abort', closeOnAbort, { once: true });
     try {
+      browser = await chromium.launch({ executablePath, headless: false });
+      signal.addEventListener('abort', closeOnAbort, { once: true });
       signal.throwIfAborted();
       const page = await browser.newPage();
       await page.goto(ORIGIN, { waitUntil: 'domcontentloaded', timeout: 60_000 });
       return await signPasskeyInPage(page, optionsBytes, signal);
     } finally {
+      clearTimeout(timeout);
+      socketSignal.removeEventListener('abort', abort);
       signal.removeEventListener('abort', closeOnAbort);
-      await browser.close();
+      if (browser) await browser.close();
     }
   };
 }

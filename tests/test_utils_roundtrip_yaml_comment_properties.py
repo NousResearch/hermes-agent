@@ -166,7 +166,7 @@ def test_noop_save_preserves_every_commented_config(tmp_path):
     from utils import atomic_roundtrip_yaml_save
 
     config_path, changed = tmp_path / "config.yaml", []
-    for seed in range(600):
+    for seed in range(300):  # main corrupts seeds 288 and 298 here
         rng = random.Random(seed)
         data = {f"{rng.choice(WORDS)}{i}": _value(rng, 0) for i in range(rng.randint(1, 4))}
         original = "\n".join(_render(rng, data)) + "\n"

@@ -621,6 +621,7 @@ def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) ->
     mkdir_under_hermes_home(path.parent)
     yaml_rt, config = _roundtrip_load(path)
     current = config
+    parent = parent_key = None
     keys = _split_key_path(key_path)
     i = 0
     while True:
@@ -629,6 +630,10 @@ def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) ->
         if i + consumed == len(keys):
             if value is None:
                 current.pop(seg, None)
+                if not current and parent is not None:
+                    # Removing the last child empties the parent in place, which dumps as
+                    # ``key:  # note`` / ``{}`` at column 0 (#148524); a fresh node keeps it valid.
+                    _rt_assign(parent, parent_key, CommentedMap())
             else:
                 _rt_assign(current, seg, value)
             break
@@ -638,6 +643,7 @@ def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) ->
                 return  # nothing to remove under a missing/scalar parent
             next_value = CommentedMap()
             current[seg] = next_value
+        parent, parent_key = current, seg
         current = next_value
         i += consumed
     _roundtrip_dump(path, yaml_rt, config)

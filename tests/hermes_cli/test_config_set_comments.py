@@ -65,3 +65,43 @@ def test_setting_one_key_leaves_a_commented_list_of_mappings_intact(home):
     saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert saved["mcp_servers"]["local"]["env"] == [{}, "DEBUG", "TRACE"]
     assert saved["agent"]["max_turns"] == 90
+
+
+def test_emptying_a_commented_mapping_keeps_the_file_valid(home):
+    """The mapping twin of #148524: ``config set --force display '{}'`` left ``display:  # note``
+    followed by ``{}`` at column 0. Mapping case reported in #148569 and #148572."""
+    config_path = home / "config.yaml"
+    config_path.write_text(
+        "display:   # display stuff\n"
+        "  skin: default\n"
+        "agent:\n"
+        "  max_turns: 60\n",
+        encoding="utf-8",
+    )
+
+    set_config_value("display", "{}", force=True)
+
+    text = config_path.read_text(encoding="utf-8")
+    assert yaml.safe_load(text) == {"display": {}, "agent": {"max_turns": 60}}
+    assert "# display stuff" in text
+
+
+def test_unsetting_the_last_child_of_a_commented_key_keeps_the_file_valid(home):
+    """``config unset`` of a commented mapping's only child emptied the parent in place, which
+    dumped the same ``{}``-at-column-0 shape as #148524."""
+    from utils import atomic_roundtrip_yaml_update
+
+    config_path = home / "config.yaml"
+    config_path.write_text(
+        "display:   # display stuff\n"
+        "  skin: default\n"
+        "agent:\n"
+        "  max_turns: 60\n",
+        encoding="utf-8",
+    )
+
+    atomic_roundtrip_yaml_update(config_path, "display.skin", None)
+
+    text = config_path.read_text(encoding="utf-8")
+    assert yaml.safe_load(text) == {"display": {}, "agent": {"max_turns": 60}}
+    assert "# display stuff" in text

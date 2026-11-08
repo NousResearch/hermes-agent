@@ -140,6 +140,9 @@ class MessageEvent:
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
+    # ``pre_gateway_dispatch`` was already offered this message. Sticky so the lanes an event can
+    # pass through (the adapter's busy path, then its queued turn's dispatch) offer it exactly once.
+    _pre_dispatch_hook_done: bool = field(default=False, init=False, repr=False, compare=False)
     # Set when ``admit_internal_event`` hands its producer a receipt before any drain began. The
     # producer will not retry, so a restart drain runs this event instead of refusing it at the
     # drain gate or discarding it as a queued follow-up (#138123).

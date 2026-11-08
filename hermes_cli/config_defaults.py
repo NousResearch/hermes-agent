@@ -1208,6 +1208,11 @@ DEFAULT_CONFIG = {
             # Extra sentences appended to the live model's conversation persona (tone, pacing, language).
             "instructions": "",
             # optional "api_key" / "base_url" keys override the OpenAI audio credentials for this mode only
+            # Azure OpenAI / Foundry: point "base_url" at your resource
+            # (https://<resource>.openai.azure.com or https://<resource>.cognitiveservices.azure.com)
+            # and gpt-live switches from the OpenAI WebRTC path (POST /v1/live/sessions) to the Azure
+            # Realtime API over WebSocket (wss://<resource>.openai.azure.com/openai/realtime).
+            # In Azure mode "model" is the DEPLOYMENT name and "api_key" the Azure resource key.
         },
         "record_key": "ctrl+b",
         "submit_mode": "direct",  # TUI: direct submits immediately; draft = editable transcript

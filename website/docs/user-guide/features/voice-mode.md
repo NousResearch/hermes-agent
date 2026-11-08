@@ -241,6 +241,21 @@ How it works: pressing the voice button opens a WebRTC session from the desktop 
 
 Not supported in this mode: the Nous-managed audio proxy (direct key only), the CLI/TUI (`/voice` keeps the chained loop), and the `tts` tool (it keeps using `tts.provider`).
 
+#### Azure Foundry / Azure OpenAI realtime
+
+Point `voice.gpt_live.base_url` at your Azure OpenAI resource and the same `gpt-live` mode switches to the **Azure Realtime API** (WebSocket) instead of the OpenAI WebRTC path:
+
+```yaml
+voice:
+  voice_chat_mode: gpt-live
+  gpt_live:
+    base_url: https://<resource>.openai.azure.com        # or https://<resource>.cognitiveservices.azure.com
+    model: my-gpt-realtime-deployment                     # the Azure DEPLOYMENT name, not an OpenAI model id
+    api_key: <azure-resource-key>                         # optional; falls back to the usual key chain
+```
+
+Azure mode is detected from the `base_url` host (`*.openai.azure.com` / `*.cognitiveservices.azure.com`); any other URL keeps the default OpenAI behavior. In Azure mode the session runs over `wss://<resource>.openai.azure.com/openai/realtime?api-version=...&deployment=<model>` authenticated with the `api-key` header, so `model` must be the deployment name and the key the Azure resource key (set `voice.gpt_live.api_key`, or `AZURE_FOUNDRY_API_KEY`-style env resolution applies per the key chain). Delegation to Hermes works exactly as in the OpenAI path.
+
 ### Voice chat model
 
 Spoken turns can run on a different (usually faster) model than the one you type to. Set the `voice_chat` auxiliary slot, in Settings → Models → Auxiliary models on Desktop, in `hermes model` → Auxiliary models, or in config.yaml:

@@ -102,7 +102,7 @@ async def test_qq_card_shows_the_measured_preview_and_only_offered_buttons(pendi
     await adapter.send_exec_approval(chat_id="u1", command=medium, session_key="sk")
     assert "TAIL" in cards[-1][0] and cards[-1][1][0].endswith(":allow-once")
     await adapter.send_exec_approval(chat_id="u1", command=FENCED, session_key="sk", request_id="r1")
-    assert [d.rsplit(":", 1)[1] for d in cards[-1][1]] == ["deny"]
+    assert cards[-1][1] == ["approve:sk:deny:r1"]  # Deny only, bound to its own request
 
 
 @pytest.mark.asyncio
@@ -187,8 +187,8 @@ async def test_qq_forged_allow_once_tap_on_a_deny_only_card_resolves_nothing(pen
 
 @pytest.mark.asyncio
 async def test_qq_tap_whose_checked_request_expires_mid_resolve_never_approves_the_next_deny_only_one(monkeypatch):
-    """QQ taps carry no request id (FIFO). When the head request A times out after it was checked, the tap
-    must settle nothing, never fall through to the next request B whose card offered Deny only."""
+    """An id-less QQ tap may answer only a sole pending request. When that request A times out after it
+    was checked and a Deny-only request B is queued meanwhile, the tap settles nothing, never B."""
     from plugins.platforms.qqbot.adapter import QQAdapter
     from plugins.platforms.qqbot.keyboards import parse_interaction_event
     from tools import approval
@@ -196,13 +196,13 @@ async def test_qq_tap_whose_checked_request_expires_mid_resolve_never_approves_t
 
     sk = "agent:main:qqbot:dm:u-42"
     head, deny_only = _ApprovalEntry({"request_id": "a"}), _ApprovalEntry({"request_id": "b", "card_deny_only": True})
-    monkeypatch.setitem(approval._gateway_queues, sk, [head, deny_only])
+    monkeypatch.setitem(approval._gateway_queues, sk, [head])
     select = approval._card_target
 
-    def select_then_expire(session_key, request_id):  # A's waiter drops it right after it is selected
+    def select_then_expire(session_key, request_id):  # A's waiter drops it right after it is selected; B arrives
         entry = select(session_key, request_id)
         if entry is head and head in approval._gateway_queues.get(session_key, []):
-            approval._gateway_queues[session_key].remove(head)
+            approval._gateway_queues[session_key][:] = [deny_only]
         return entry
 
     monkeypatch.setattr(approval, "_card_target", select_then_expire)

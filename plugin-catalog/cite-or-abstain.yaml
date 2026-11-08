@@ -1,6 +1,6 @@
 name: cite-or-abstain
 repo: https://github.com/zvporter-ops/cite-or-abstain
-sha: "e0cd23b95df349927a8ffd6b1cd6732f1d0eac18"
+sha: "730a44d1be754008513d4160efb35839247b0ebc"
 title: Cite or Abstain
 description: >-
   Evidence-gated answering with a provenance hierarchy, for any local AI deployment.

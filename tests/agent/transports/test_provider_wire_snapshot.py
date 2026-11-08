@@ -59,7 +59,7 @@ MODELS = {
     "minimax-oauth": "MiniMax-M3", "minimax-cn": "MiniMax-M3", "anthropic": "claude-opus-5.5",
     "alibaba": "qwen3.5-plus", "alibaba-coding-plan": "qwen3-coder-plus", "xai": "grok-4",
     "ai-gateway": "anthropic/claude-opus-5.5", "opencode-zen": "claude-opus-5.5", "opencode-go": "kimi-k2.5",
-    "kilocode": "anthropic/claude-opus-5.5", "xiaomi": "mimo-v2-pro", "tencent-tokenhub": "hunyuan-t1",
+    "kilocode": "anthropic/claude-opus-5.5", "xiaomi": "mimo-v2.6-pro", "tencent-tokenhub": "hunyuan-t1",
     "tencent-tokenplan": "hunyuan-t1", "ollama-cloud": "gpt-oss:120b",
     "bedrock": "us.anthropic.claude-opus-5-5-v1:0", "vertex": "gemini-3-pro", "azure-foundry": "gpt-5.5",
     "alibaba-cn": "qwen3.5-plus", "alibaba-token-plan": "qwen3.5-plus", "alibaba-token-plan-cn": "qwen3.5-plus",

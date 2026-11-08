@@ -2011,6 +2011,13 @@ Codex models). The effort pickers and `/reasoning` status show this as
 `ultra (sends max on this route)` so the level you see is the level that is sent.
 :::
 
+:::note Xiaomi MiMo accepts only low / medium / high
+MiMo's chat-completions endpoint validates `reasoning_effort` against exactly
+`none`/`low`/`medium`/`high` — any other level 400s. Hermes clamps the ladder onto
+those three (`minimal` becomes `low`, `xhigh`/`max`/`ultra` become `high`) and sends
+`none` as the `thinking` on/off toggle the MiMo API documents for v2.6 models.
+:::
+
 You can also change the reasoning effort at runtime with the `/reasoning` command:
 
 ```

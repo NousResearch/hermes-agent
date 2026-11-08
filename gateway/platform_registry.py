@@ -106,7 +106,7 @@ class PlatformEntry:
     send_message_handler: Optional[Callable[[dict, str, str, Any], Any]] = None
     # Out-of-process sender for cron without a co-resident gateway:
     # ``async (pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False)
-    # -> {"success": True, "message_id": ...} | {"error": str}``.
+    # -> {"success": True, "message_id": ...} | {"error": str}``; ``notify`` only if declared/**kwargs.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
     # Every inbound event is produced by the service the adapter authenticated to with its own
     # credential (an event bus, not a person), so user allowlists and pairing do not apply. Never

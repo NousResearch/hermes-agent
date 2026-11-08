@@ -1,0 +1,17 @@
+name: superlist
+title: Superlist
+repo: https://github.com/superlistapp/superlist-mcp
+sha: b555808475735979de0aac72766ba64c10ee4d71
+version: "1.0.0"
+description: "Tasks and lists in Superlist through Superlist's official hosted MCP server (Streamable HTTP at https://app.superlist.com/mcp, OAuth 2.0 sign-in with the user's Superlist account, no keys in config): capture tasks with due dates, reminders, priorities, labels and repetition, plan projects as lists, read the Today and Inbox views, search, update, move, assign, complete, share lists, and read or reply to task messages. Bundles one workflow skill. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Add the server with auth: oauth, then hermes mcp login superlist. Disclosure: hosted-only connector with no local code; every tool call goes to app.superlist.com and acts with the signed-in user's own permissions. Tools can delete and restore tasks and lists and change list sharing; the skill tells the model to confirm before deleting or sharing, but Hermes does not block those calls. OAuth tokens are stored by Hermes, not by the plugin. No telemetry. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Superlist
+tier: community
+category: tools
+docs_url: https://github.com/superlistapp/superlist-mcp#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

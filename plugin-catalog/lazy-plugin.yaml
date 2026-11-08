@@ -1,23 +1,25 @@
 name: lazy-plugin
 repo: https://github.com/RegeneratusLabs/lazy-plugin
-sha: 995be2672527b526eef6eb52e7e6e29b5048ba6f
-version: "0.9.6"
+sha: a06ca3dded9b8ce5e9b20b8f5765a6264882fe01
+version: "0.9.7"
 title: "Lazy Plugin"
 description: >-
   A dashboard page in Hermes Desktop where you describe a plugin and watch it get built. Say
   what you want — or start from a skill the agent wrote, or a job that runs on a schedule —
   and your own agent drafts the plan in a chat turn you can read, the code comes from four
   fixed templates, and the page shows a receipt: plan, files, validator result, and a real
-  try-out of every tool (purrs, needs a key, blocked upstream, half-built, broken — with the
-  exact failing line). Nothing installs itself, and publishing is a SHA-pinned catalog PR you
-  send. Also callable as lazyplugin_create from any conversation.
+  try-out of every tool (purrs, needs a key, blocked upstream, held back, half-built, broken —
+  with the exact failing line). The build never runs what it wrote: the try-out is your click,
+  a key only travels to a public https host, and a file tool stays inside its own data dir.
+  Nothing installs itself, and publishing is a SHA-pinned catalog PR you send. Also callable as
+  lazyplugin_create from any conversation.
 maintainer: RegeneratusLabs
 tier: community
 category: tools
 docs_url: https://github.com/RegeneratusLabs/lazy-plugin#readme
-image: https://raw.githubusercontent.com/RegeneratusLabs/lazy-plugin/995be2672527b526eef6eb52e7e6e29b5048ba6f/assets/banner.png
+image: https://raw.githubusercontent.com/RegeneratusLabs/lazy-plugin/a06ca3dded9b8ce5e9b20b8f5765a6264882fe01/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/RegeneratusLabs/lazy-plugin/995be2672527b526eef6eb52e7e6e29b5048ba6f/assets/preview.png
+  - https://raw.githubusercontent.com/RegeneratusLabs/lazy-plugin/a06ca3dded9b8ce5e9b20b8f5765a6264882fe01/assets/preview.png
 readme: true
 requires_hermes: ">=0.23.0"
 capabilities:

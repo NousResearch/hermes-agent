@@ -1,0 +1,17 @@
+name: belive-aihub
+repo: https://github.com/belivetech/hermes-belive-aihub
+sha: 5d022b5a7190c673162965f4593b5a86f14e2c84
+description: BeLive AI Hub inference provider with live tool-capable chat model discovery.
+maintainer: belivetech
+tier: community
+category: models
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/belivetech/hermes-belive-aihub#readme
+version: "0.1.0"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - BELIVE_TOKENHUB_API_KEY

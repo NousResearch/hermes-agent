@@ -143,6 +143,35 @@ class GatewayBusySessionMixin:
         # else: no adapter — leave the head in place so we don't silently drop it.
         return pending_event
 
+    def _requeue_at_depth_cap(
+        self, session_key: Optional[str], source: SessionSource, pending_event: Optional[MessageEvent],
+        pending: Optional[str],
+    ) -> None:
+        """Hand the follow-up the recursion cap refused back to the adapter FIFO, at its head."""
+        adapter = self._delivery_adapter_for(source)
+        if not (adapter and session_key and (pending_event or pending)):
+            return
+        if pending_event is None:
+            # An eventless follow-up (leftover /steer, interrupt text) has no slot entry of its
+            # own; give it one so it survives like any queued turn.
+            prompt, pinned_source = self._pinned_channel_inputs(session_key, None, source, internal=True)
+            pending_event = MessageEvent(text=pending or "", source=pinned_source, channel_prompt=prompt)
+        self._requeue_event_at_front(session_key, pending_event, adapter)
+
+    def _requeue_event_at_front(self, session_key: str, event: MessageEvent, adapter: Any) -> None:
+        """Restore *event* at the FIFO head without dropping a staged next turn.
+
+        The recursion cap can fire after the drain consumed the current head and
+        ``_promote_queued_event`` staged the next item in the adapter slot. Replacing that slot
+        would lose it, so move it back to the front of overflow first.
+        """
+        pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
+        if pending_slot is None:
+            return
+        staged = pending_slot.get(session_key)
+        if staged is not None:
+            self._session_state(session_key).conversation.queued_events.insert(0, staged)
+        pending_slot[session_key] = event
     def _take_wake_admitted_before_drain(self, session_key: str, adapter: Any) -> Optional[MessageEvent]:
         """Pop the first wake admitted before the drain began from the pending slot, else from the
         overflow FIFO, keeping the slot filled while overflow remains; every other event stays
@@ -587,7 +616,12 @@ class GatewayBusySessionMixin:
         return None if getattr(event, "internal", False) else event.message_id
 
     async def _send_busy_reply(self, event: MessageEvent, adapter, content: str, *, plain_anchor: bool = False) -> None:
-        """Send a busy-path reply anchored to the event (thread metadata included)."""
+        """Send a busy-path reply anchored to the event (thread metadata included). Never to a bot:
+        an ack, redirect or drain notice is a new inbound message for its turn loop (#137027)."""
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        if not automatic_notices_allowed(event.source):
+            logger.debug("Busy-path notice suppressed for bot-authored message in %s", event.source.chat_id)
+            return
         reply_anchor = self._reply_anchor_for_event(event)
         await adapter._send_with_retry(
             chat_id=event.source.chat_id, content=content,
@@ -921,7 +955,7 @@ class GatewayBusySessionMixin:
             )
             return True  # handled (silently dropped); do not fall through
         # A steered or queued follow-up never reaches _hm_admit_event, so the budget is charged here.
-        if not self._admit_bot_message_for_source(event.source):
+        if not (self._admit_bot_message_for_source(event.source) and self._admit_bot_chain(event)):
             return True
         event._bot_loop_admitted = True
 
@@ -1044,8 +1078,9 @@ class GatewayBusySessionMixin:
         if (sink := active_sink()) is not None:
             sink.notices.append(text)  # a local slash.exec: the ack rides the client's directive
             return
+        from gateway.bot_peer_notices import automatic_notices_allowed
         try:
-            adapter = self._delivery_adapter_for(source)
+            adapter = self._delivery_adapter_for(source) if automatic_notices_allowed(source) else None
             if adapter:
                 await adapter.send(
                     str(source.chat_id), text, metadata=self._thread_metadata_for_source(source)
@@ -1175,6 +1210,7 @@ class GatewayBusySessionMixin:
                 media_urls=list(getattr(event, "media_urls", []) or []),
                 media_types=list(getattr(event, "media_types", []) or []),
                 media_text_inlined=list(getattr(event, "media_text_inlined", []) or []),
+                media_filenames=list(getattr(event, "media_filenames", []) or []),
                 reply_to_message_id=event.reply_to_message_id, reply_to_text=event.reply_to_text,
                 reply_to_author_id=event.reply_to_author_id,
                 reply_to_author_name=event.reply_to_author_name,
@@ -1221,6 +1257,10 @@ class GatewayBusySessionMixin:
         if not accepted:
             return t("gateway.steer.rejected_empty")
         self._fold_into_running_turn(running_agent, quick_key, event)
+        # A pending clarify owns the turn: the agent is parked inside that tool, so no iteration
+        # prep runs and the accepted steer cannot arrive until the prompt times out (#145161).
+        # Released only once the steer is queued: the woken agent must find it at its next prep.
+        await self._release_clarify_owning_turn(quick_key, source)
         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
         target = (t("gateway.steer.target_subagents") if self._agent_has_active_subagents(running_agent)
                   else t("gateway.steer.target_run"))

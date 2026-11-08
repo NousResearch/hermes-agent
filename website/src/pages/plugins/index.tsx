@@ -2,6 +2,7 @@ import React, { useState, useMemo, useCallback, useRef, useEffect } from "react"
 import Layout from "@theme/Layout";
 import Link from "@docusaurus/Link";
 import { useHistory } from "@docusaurus/router";
+import RouteLink, { useKnownRoute } from "../../components/RouteLink";
 import useBaseUrl from "@docusaurus/useBaseUrl";
 import styles from "./styles.module.css";
 
@@ -96,12 +97,15 @@ function PluginCard({
   const pagePath = pluginPagePath(plugin.name);
   const history = useHistory();
   const pageHref = useBaseUrl(pagePath); // <Link> adds baseUrl itself; history.push does not
+  const routed = useKnownRoute(pagePath);
   // A card IS the link to the plugin's own page: nothing expands or collapses in place. Inside
   // the Desktop picker iframe an in-frame navigation would leave the host's embed, so the page
   // opens in a new tab there instead.
   const onCardClick = onPick
     ? () => window.open(new URL(pageHref, window.location.href).toString(), "_blank", "noopener,noreferrer")
-    : () => history.push(pageHref);
+    : routed
+      ? () => history.push(pageHref)
+      : () => window.location.assign(pageHref);
 
   return (
     <div
@@ -141,9 +145,9 @@ function PluginCard({
           <span className={styles.cardIcon} title={category.label}>{category.icon}</span>
           <div className={styles.cardTitleGroup}>
             <h3 className={styles.cardTitle} title={plugin.name}>
-              <Link className={styles.cardTitleLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
+              <RouteLink className={styles.cardTitleLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
                 {highlightMatch(plugin.name, query)}
-              </Link>
+              </RouteLink>
             </h3>
             {typeof plugin.stars === "number" && (
               <a
@@ -313,9 +317,9 @@ function PluginCard({
               <CopyButton text={plugin.installCommand} />
             </div>
             <div className={styles.cardLinks}>
-              <Link className={styles.docsLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
+              <RouteLink className={styles.docsLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
                 Plugin page →
-              </Link>
+              </RouteLink>
               <a
                 className={styles.docsLink}
                 href={plugin.repo}

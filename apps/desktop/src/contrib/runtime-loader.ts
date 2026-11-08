@@ -27,11 +27,15 @@
  * and for catalog installs the trust comes from admission (human review of
  * an exact pinned SHA + the static lint in hermes_cli/plugin_validate_desktop.py),
  * not from this loader. The import allowlist below is the one runtime tripwire:
- * a plugin cannot pull a second stage from a URL. A remote source (https +
+ * a plugin cannot pull a second stage from a URL. The Webapp's HTTP door
+ * (`/api/desktop-plugins/*`, browser-desktop-plugins.ts) counts as local: it is
+ * same-origin, reads the serving host's own disk, and runs in a tab that holds no
+ * more authority than that host already grants it. A remote source (https +
  * allowlist) must NOT reuse this pipeline as-is: it needs a real boundary
  * (iframe/worker + CSP + capability gating) before it can land.
  */
 
+import { INSTALL_ORIGIN, PACKAGE_MARKER } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { isReadFileErrorResult } from '@/lib/desktop-fs'
@@ -41,7 +45,14 @@ import { forgetPluginPreviewAccess } from '@/store/plugin-preview-grants'
 
 import { trackGatewayEventDisposers } from './events'
 import { createPluginContext, declaredCapabilities, type HermesPlugin } from './plugin'
-import { $pluginRecords, dropPlugin, pluginActive, type PluginKind, publishPlugin } from './plugins-store'
+import {
+  $pluginRecords,
+  dropPlugin,
+  type PackageOrigin,
+  pluginActive,
+  type PluginKind,
+  publishPlugin
+} from './plugins-store'
 
 interface LoadOptions {
   /** Root-level default-enable CAP: `false` ships the plugin opt-in (inventory
@@ -55,7 +66,7 @@ interface LoadOptions {
   kind?: PluginKind
   /** Agent package whose desktop half this is (unified packages). */
   packageName?: string
-  packageOrigin?: PackageMarker['origin']
+  packageOrigin?: PackageOrigin
 }
 
 /** Live runtime plugins: id -> disposers (unload/reload support). */
@@ -583,55 +594,90 @@ async function diskRoots(): Promise<DiskRoot[]> {
   return root ? [{ dir: root, entrySegments: ['plugin.js'] }] : []
 }
 
-/** Marker Electron writes beside a materialized unified-package half. Its
- *  presence means: opt-in posture (the Python half is installed-but-inert
- *  until allowlisted — GHSA-mcfc-hp25-cjv7 — so the desktop half matches), and
- *  the record carries the package name so the Plugins page pairs it with the
- *  agent row. */
-const PACKAGE_MARKER = '.hermes-package.json'
-
+/** Marker Electron writes beside a materialized unified-package half (`PACKAGE_MARKER`). Its presence
+ *  means: opt-in posture (the Python half is installed-but-inert until allowlisted — GHSA-mcfc-hp25-cjv7 —
+ *  so the desktop half matches), and the record carries the package name so the Plugins page pairs it with
+ *  the agent row. A STANDALONE plugin installed from the catalog carries `INSTALL_ORIGIN` instead: its
+ *  catalog entry, so the card shows it installed, and no package, so the folder stays standalone. */
 interface PackageMarker {
   /** The package is a symlinked dev checkout; `source` is its `desktop/` dir. */
   linkedSource?: string
-  origin?: { catalogName?: string; repo?: string; sha?: string }
+  origin?: PackageOrigin
   package: string
 }
 
-async function readPackageMarker(desktop: Window['hermesDesktop'], folder: string): Promise<null | PackageMarker> {
+/** The installer-written JSON files in a plugin folder, parsed (`null` when absent or unreadable), from one
+ *  listing of the folder. */
+async function readFolderJson(
+  desktop: Window['hermesDesktop'],
+  folder: string,
+  names: readonly string[]
+): Promise<(null | Record<string, unknown>)[]> {
+  let entries: Awaited<ReturnType<Window['hermesDesktop']['readDir']>>['entries']
+
   try {
-    const { entries } = await desktop.readDir(folder)
-    const marker = entries.find(entry => entry.name === PACKAGE_MARKER && !entry.isDirectory)
-
-    if (!marker) {
-      return null
-    }
-
-    const read = await desktop.readFileText(marker.path)
-
-    if (isReadFileErrorResult(read)) {
-      return null
-    }
-
-    const parsed = JSON.parse(read.text) as {
-      catalogName?: string
-      linked?: boolean
-      package?: string
-      repo?: string
-      sha?: string
-      source?: string
-    }
-
-    if (!parsed.package) {
-      return null
-    }
-
-    return {
-      linkedSource: parsed.linked && parsed.source ? parsed.source : undefined,
-      origin: parsed.repo ? { catalogName: parsed.catalogName, repo: parsed.repo, sha: parsed.sha } : undefined,
-      package: parsed.package
-    }
+    ;({ entries } = await desktop.readDir(folder))
   } catch {
-    return null
+    return names.map(() => null)
+  }
+
+  return Promise.all(
+    names.map(async name => {
+      const file = entries.find(entry => entry.name === name && !entry.isDirectory)
+
+      try {
+        const read = file ? await desktop.readFileText(file.path) : null
+
+        if (!read || isReadFileErrorResult(read)) {
+          return null
+        }
+
+        const parsed: unknown = JSON.parse(read.text)
+
+        return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
+      } catch {
+        return null
+      }
+    })
+  )
+}
+
+const nonEmpty = (value: unknown) => (typeof value === 'string' && value ? value : undefined)
+
+function packageOrigin(parsed: Record<string, unknown>): PackageOrigin | undefined {
+  const repo = nonEmpty(parsed.repo)
+  const pin = nonEmpty(parsed.pin)
+
+  return repo
+    ? { catalogName: nonEmpty(parsed.catalogName), repo, sha: nonEmpty(parsed.sha), ...(pin ? { pin } : {}) }
+    : undefined
+}
+
+function packageMarker(parsed: null | Record<string, unknown>): null | PackageMarker {
+  const pkg = nonEmpty(parsed?.package)
+
+  return parsed && pkg
+    ? { linkedSource: parsed.linked ? nonEmpty(parsed.source) : undefined, origin: packageOrigin(parsed), package: pkg }
+    : null
+}
+
+/** What a plugin folder is, from the files its installer wrote: a package's desktop half (the marker), or a
+ *  standalone plugin, which carries the catalog entry it was installed from, if any. A scan reads this for a
+ *  new folder and, on a reload, again for a known one: an install can change what a loaded folder is. */
+async function readFolderIdentity(
+  desktop: Window['hermesDesktop'],
+  folder: string
+): Promise<Pick<DiskPlugin, 'defaultEnabled' | 'packageName' | 'packageOrigin' | 'sourceFile'>> {
+  const [markerJson, originJson] = await readFolderJson(desktop, folder, [PACKAGE_MARKER, INSTALL_ORIGIN])
+  const marker = packageMarker(markerJson)
+  const standalone = !marker && originJson ? packageOrigin(originJson) : undefined
+
+  return {
+    // A unified package's desktop half ships opt-in, like its agent half.
+    defaultEnabled: marker ? false : undefined,
+    packageName: marker?.package,
+    packageOrigin: marker ? marker.origin : standalone?.catalogName ? standalone : undefined,
+    sourceFile: marker?.linkedSource ? `${marker.linkedSource}/plugin.js` : undefined
   }
 }
 
@@ -641,7 +687,7 @@ interface DiskPlugin {
   file: string
   /** Agent package this folder is the desktop half of (unified packages). */
   packageName?: string
-  packageOrigin?: PackageMarker['origin']
+  packageOrigin?: PackageOrigin
   /** Loaded plugin id (null while broken — kept so a fixing save reloads). */
   id: null | string
   /** Origin label (folder name) — the toast/inventory name for load errors. */
@@ -657,7 +703,8 @@ interface DiskPlugin {
  *  (folder names alone can collide between them). */
 const disk = new Map<string, DiskPlugin>()
 let watching = false
-let scanning = false
+/** The scan in flight, if any. */
+let scanInFlight: null | Promise<void> = null
 
 /** Drop a folder-named error record — unless that name is the live plugin id
  *  of ANOTHER disk entry (two roots can carry same-named folders; a broken one
@@ -866,14 +913,29 @@ async function resyncLinkedDiskPlugins(): Promise<void> {
 async function scanDiskPlugins(reloadKnown = false): Promise<void> {
   const desktop = window.hermesDesktop
 
-  // Re-entrancy guard: the 5s poll must not overlap a slow in-flight scan
-  // (reads/loads can exceed the interval).
-  if (!desktop || scanning) {
+  if (!desktop) {
     return
   }
 
-  scanning = true
+  // Scans never overlap. A background tick (the 5s poll, a watch event) is dropped while one runs: the
+  // running scan covers it. A reload is waited for instead: its caller (an install that just landed or
+  // adopted a folder) reads the inventory straight after, which the running scan may have read too early.
+  while (scanInFlight) {
+    if (!reloadKnown) {
+      return
+    }
 
+    await scanInFlight
+  }
+
+  scanInFlight = scanOnce(desktop, reloadKnown).finally(() => {
+    scanInFlight = null
+  })
+
+  return scanInFlight
+}
+
+async function scanOnce(desktop: NonNullable<Window['hermesDesktop']>, reloadKnown: boolean): Promise<void> {
   try {
     const roots = await diskRoots()
 
@@ -914,24 +976,26 @@ async function scanDiskPlugins(reloadKnown = false): Promise<void> {
         const known = disk.get(file)
 
         if (known) {
-          if (reloadKnown && (await loadDiskPlugin(known))) {
-            await watchDiskPluginFile(desktop, known)
+          if (reloadKnown) {
+            // An install can change what a loaded folder is after it loaded (a catalog install adopting a
+            // copy an older build left, a Force reinstall that makes it a package's half or a standalone
+            // plugin): re-read it, or the card keeps offering Install until restart.
+            Object.assign(known, await readFolderIdentity(desktop, dir.path))
+
+            if (await loadDiskPlugin(known)) {
+              await watchDiskPluginFile(desktop, known)
+              await watchDiskPluginSource(desktop, known)
+            }
           }
 
           continue
         }
 
-        const marker = await readPackageMarker(desktop, dir.path)
-
         const record: DiskPlugin = {
-          // A unified package's desktop half ships opt-in, like its agent half.
-          defaultEnabled: marker ? false : undefined,
           file,
           id: null,
           origin: dir.name,
-          packageName: marker?.package,
-          packageOrigin: marker?.origin,
-          sourceFile: marker?.linkedSource ? `${marker.linkedSource}/plugin.js` : undefined,
+          ...(await readFolderIdentity(desktop, dir.path)),
           sourceWatchId: null,
           watchId: null
         }
@@ -959,8 +1023,6 @@ async function scanDiskPlugins(reloadKnown = false): Promise<void> {
     }
   } catch {
     // No plugin roots (or no gateway yet) — nothing to reconcile.
-  } finally {
-    scanning = false
   }
 }
 
@@ -992,7 +1054,12 @@ function retireDiskPlugin(file: string, record: DiskPlugin): void {
  *  entry is retired here so the pane/commands vanish without waiting for the
  *  next scan. Unified-package halves are not addressable this way — the agent
  *  uninstall prunes them. Resolves with the failure reason instead of throwing. */
-export async function uninstallDiskPlugin(pluginId: string): Promise<{ ok: boolean; error?: string }> {
+export async function uninstallDiskPlugin(
+  pluginId: string,
+  /** How the folder goes away. Native Desktop deletes it in Electron; a browser-hosted tab has no disk
+   *  of its own and passes the backend that serves it (`plugins.manage remove_desktop`). */
+  removeDesktop?: (payload: { name: string }) => Promise<{ ok: boolean; error?: string }>
+): Promise<{ ok: boolean; error?: string }> {
   const found = [...disk.entries()].find(([, record]) => record.id === pluginId || record.origin === pluginId)
 
   if (!found) {
@@ -1000,7 +1067,7 @@ export async function uninstallDiskPlugin(pluginId: string): Promise<{ ok: boole
   }
 
   const [file, record] = found
-  const remove = window.hermesDesktop?.removeDesktopPlugin
+  const remove = removeDesktop ?? window.hermesDesktop?.removeDesktopPlugin
 
   if (!remove) {
     return { ok: false, error: 'this Hermes Desktop build cannot remove desktop plugins — delete the folder by hand' }

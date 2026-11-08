@@ -38,6 +38,8 @@ export interface CatalogEntry {
   imageUrl: string | null
   screenshots?: string[]
   addedAt?: string
+  /** Installed skill the user locked against agent edits. */
+  locked?: boolean
   updatedAt?: string
   stars: number | null
   /** 1-based curated hero rank from the catalog feed (`catalog-curation.json`). */

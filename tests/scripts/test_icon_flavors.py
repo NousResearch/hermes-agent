@@ -18,6 +18,9 @@ ROOT = Path(__file__).resolve().parents[2]
 LAYERED_ICON = "icon.icon"  # apps/desktop/assets/icon.icon: the macOS 26 Icon Composer package
 DMG_VOLUME = Path("apps/desktop/packaging/dmg-volume.icns")  # hand-made drive artwork, not a tile
 
+# ``generate`` builds a fresh PM runtime environment, which provisions the locked toolchain.
+pytestmark = pytest.mark.allow_network
+
 
 @pytest.fixture(scope="module")
 def generate(tmp_path_factory):

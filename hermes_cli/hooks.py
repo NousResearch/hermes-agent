@@ -166,6 +166,12 @@ _DEFAULT_PAYLOADS = {
         "response_model": "claude-haiku-4-5", "usage": {"input_tokens": 256, "output_tokens": 12},
         "assistant_content_chars": 40, "assistant_tool_call_count": 0, "error": None, "error_type": None,
     },
+    "post_curator_run": {
+        "run_dir": "/home/user/.hermes/logs/curator/20260101-000000",
+        "run_json_path": "/home/user/.hermes/logs/curator/20260101-000000/run.json",
+        "report_md_path": "/home/user/.hermes/logs/curator/20260101-000000/REPORT.md",
+        "dry_run": False,
+    },
     "subagent_stop": {
         "parent_session_id": "parent-sess", "child_role": None,
         "child_summary": "Synthetic summary for hooks test", "child_status": "completed",

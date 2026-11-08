@@ -33,7 +33,6 @@
   uv2nix,
   pyproject-nix,
   pyproject-build-systems,
-  npm-lockfile-fix,
   # nix/pm-packages.nix output: every pm/lock.json pin as a derivation.
   pmPackages,
   # Locked git revision of the flake source — embedded so banner.py can
@@ -117,7 +116,7 @@ let
   };
 
   hermesNpmLib = callPackage ./lib.nix {
-    inherit npm-lockfile-fix pmPackages;
+    inherit pmPackages;
   };
 
   hermesTui = callPackage ./tui.nix {
@@ -126,6 +125,11 @@ let
 
   hermesWeb = callPackage ./web.nix {
     inherit hermesNpmLib generatedIcons;
+  };
+
+  # The store is read-only, so the Webapp is built here and never by `hermes webapp`.
+  hermesWebapp = callPackage ./webapp.nix {
+    inherit hermesNpmLib;
   };
 
   bundledSkills = lib.cleanSourceWith {
@@ -225,6 +229,7 @@ let
       frontends = {
         tui = "${hermesTui}/lib/hermes-tui";
         web = toString hermesWeb;
+        webapp = toString hermesWebapp;
       };
       ref = if dirty then null else rev;
       stamp = toString installStampFile;
@@ -387,6 +392,7 @@ stdenv.mkDerivation (finalAttrs: {
       inherit
         hermesTui
         hermesWeb
+        hermesWebapp
         hermesNpmLib
         hermesVenv
         agentBuilderSrc
@@ -426,6 +432,8 @@ stdenv.mkDerivation (finalAttrs: {
       devDeps =
         runtimeDeps
         ++ [
+          # The pnpm the builds install with: the pm/lock.json pin.
+          hermesNpmLib.pnpm
           pmPackages.uv
           devVenv
           pm

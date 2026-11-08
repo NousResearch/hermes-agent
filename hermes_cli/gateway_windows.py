@@ -25,6 +25,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
+from agent.deadline import poll_until
 from hermes_cli._subprocess_compat import (
     _WINDOWS_GATEWAY_BREAKAWAY_ENV,
     windows_detach_flags,
@@ -466,19 +467,40 @@ def _build_startup_launcher(script_path: Path) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
-def _write_task_script() -> Path:
-    """Generate the gateway.cmd wrapper (kept as a compatibility artifact) and the console-less .vbs
-    launcher used by the Scheduled Task and Startup fallback. Return the .cmd path."""
-    _assert_windows()
+def _launcher_scripts() -> list[tuple[Path, str, str]]:
+    """``(path, content, encoding)`` for the gateway.cmd wrapper and the console-less .vbs launcher.
+
+    The .vbs is what the Scheduled Task and the Startup-folder fallback run through wscript.exe
+    (issue #45599 fix A); the .cmd stays as a generated helper/compatibility artifact.
+    """
     settings = _launcher_settings()
     script_path = get_task_script_path()
-    _atomic_write(script_path, _build_gateway_cmd_script(*settings), script_path.with_suffix(".tmp"))
-    # Also render the console-less .vbs launcher used by Scheduled Task and the Startup-folder fallback via
-    # wscript.exe (issue #45599 fix A). The .cmd wrapper stays as a generated helper/compatibility artifact.
-    vbs_path = script_path.with_suffix(".vbs")
-    _atomic_write(vbs_path, _build_gateway_vbs_script(*settings), vbs_path.with_name(vbs_path.name + ".tmp"),
-                  encoding="utf-16")
-    return script_path
+    return [(script_path, _build_gateway_cmd_script(*settings), "utf-8"),
+            (script_path.with_suffix(".vbs"), _build_gateway_vbs_script(*settings), "utf-16")]
+
+
+def _write_task_script() -> Path:
+    """Generate the launcher scripts (``_launcher_scripts``); return the .cmd path."""
+    _assert_windows()
+    scripts = _launcher_scripts()
+    for path, content, encoding in scripts:
+        tmp = path.with_suffix(".tmp") if encoding == "utf-8" else path.with_name(path.name + ".tmp")
+        _atomic_write(path, content, tmp, encoding=encoding)
+    return scripts[0][0]
+
+
+def launcher_script_drift() -> list[str]:
+    """Names of the launcher scripts whose bytes differ from what this install generates."""
+    _assert_windows()
+    drift = []
+    for path, content, encoding in _launcher_scripts():
+        try:
+            current = path.read_bytes() == content.encode(encoding)
+        except OSError:
+            current = False
+        if not current:
+            drift.append(path.name)
+    return drift
 
 
 def _atomic_write(path: Path, content: str, tmp: Path, *, encoding: str = "utf-8") -> None:
@@ -1747,12 +1769,7 @@ def _drain_gateway_pid(pid: int, drain_timeout: float) -> bool:
     except Exception:
         pass   # best-effort; caller escalates to a hard kill
 
-    deadline = time.monotonic() + max(drain_timeout, 1.0)
-    while time.monotonic() < deadline:
-        if not _pid_exists(pid):
-            return True
-        time.sleep(0.5)
-    return False
+    return poll_until(lambda: not _pid_exists(pid), max(drain_timeout, 1.0), 0.5)
 
 
 def _windows_stop_drain_timeout() -> float:
@@ -1865,12 +1882,7 @@ def _wait_for_gateway_absent(timeout_s: float = 30.0, interval_s: float = 0.5) -
     def _absent() -> bool:
         return get_running_pid() is None and not _gateway_pids()
 
-    deadline = time.monotonic() + max(timeout_s, interval_s)
-    while time.monotonic() < deadline:
-        if _absent():
-            return True
-        time.sleep(interval_s)
-    return _absent()
+    return poll_until(_absent, max(timeout_s, interval_s), interval_s)
 
 
 def _mark_planned_restart() -> None:

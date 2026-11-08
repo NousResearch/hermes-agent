@@ -104,6 +104,17 @@ async def test_a_staged_pick_is_copied_into_the_session_cache_without_retransmis
 
 
 @pytest.mark.asyncio
+async def test_a_staged_pick_attaches_while_another_profile_is_starting(owner):
+    """Hot-serve reserves a starting profile's registry slot before its authority exists. A host-scoped
+    pick from a served profile still attaches meanwhile."""
+    starting = owner.home / 'profiles' / 'starting'
+    starting.mkdir()
+    owner.authority.runner.session_authorities.add(starting, None, name='starting')  # as serve_profile_runtime does
+    attached = await owner.attach(owner.upload())
+    assert isinstance(attached, dict) and attached['attached'] is True, attached
+
+
+@pytest.mark.asyncio
 async def test_a_deleted_source_profile_does_not_vouch_for_its_receipt(owner):
     """The rule every named-home write follows (``assert_named_profile_home_live``): a profile whose
     deletion is recorded, or whose home is gone, has no live uploads, even while its files remain."""

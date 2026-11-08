@@ -92,14 +92,18 @@ def _response_status(qid: str, answers: dict, multi: bool) -> tuple:
     return ("skipped" if qid in answers else "unanswered"), None
 
 
-def _result(normalized: list[dict], reply: dict) -> str:
+def _result(normalized: list[dict], reply: dict, shown: list[dict] | None = None) -> str:
     """Result JSON from a callback reply ``{"answers": {qid: raw | None}, "outcome", "notice"?}``:
     every response carries ``status`` and ``user_response`` (null unless answered); ``outcome``
-    says how the wait ended and ``notice`` (surface-supplied) says why."""
+    says how the wait ended and ``notice`` (surface-supplied) says why. A picked display-copy
+    choice (from ``shown``) maps back to the raw choice by position."""
     answers = reply.get("answers") or {}
     responses = []
-    for entry in normalized:
+    for entry, seen in zip(normalized, shown or normalized):
         status, value = _response_status(entry["qid"], answers, entry["multi_select"])
+        back = dict(zip(seen["choices_offered"] or [], entry["choices_offered"] or []))
+        if back and value:
+            value = [back.get(v, v) for v in value] if isinstance(value, list) else back.get(value, value)
         responses.append({"question": entry["question"], "choices_offered": entry["choices_offered"],
                           "status": status, "user_response": value})
     result: dict[str, object] = {"responses": responses, "outcome": reply["outcome"]}
@@ -116,13 +120,32 @@ def clarify_tool(questions, callback: Optional[Callable] = None) -> str:
         return tool_error(error)
     if callback is None:
         return tool_error(_UNAVAILABLE)
+    from agent.redact import redact_approval_display
     from tools.human_input_hooks import human_input_request
+
+    def prose(texts):
+        if not texts:
+            return texts
+        out: list[str] = []
+        for text in (redact_approval_display(t, prose=True) for t in texts):
+            label, n = text, 1
+            while label in out:  # choices that redact alike (two `***` secrets) stay distinct, so a pick maps back to its own raw
+                n += 1
+                label = f"{text} ({n})"
+            out.append(label)
+        return out
+    # Every surface renders the prose display copy of the question and choices; the result echoes the raw text.
+    shown = []
+    for q in normalized:
+        offered = prose(q["choices_offered"])
+        shown.append({**q, "question": prose([q["question"]])[0], "choices_offered": offered,
+                      "choices": mark_recommended(list(offered)) if offered else None})
     # Observers see the questions only; the answers stay in the tool result.
-    with human_input_request("clarify", prompt="\n".join(q["question"] for q in normalized)) as human:
+    with human_input_request("clarify", prompt="\n".join(q["question"] for q in shown)) as human:
         try:
-            reply = callback(normalized)
+            reply = callback(shown)
             human.outcome = str(reply.get("outcome") or "")
-            return _result(normalized, reply)
+            return _result(normalized, reply, shown)
         except Exception as exc:
             human.outcome = "error"
             return tool_error(f"Failed to get user input: {exc}")

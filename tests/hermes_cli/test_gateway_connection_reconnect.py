@@ -10,6 +10,7 @@ import types
 from contextlib import asynccontextmanager
 
 import pytest
+from websockets.protocol import State
 
 from hermes_cli.cli_chat_error_copy import chat_error_response
 from hermes_cli.gateway_agent import GatewayAgent
@@ -266,6 +267,8 @@ def test_close_after_a_failed_resume_is_still_final(gateway, conn):
 
 class _Unanswered:
     """A socket that takes every request and never answers one (a gateway stalled mid-reconnect)."""
+
+    state = State.OPEN  # GatewayClient.rpc reads the socket state before it sends
 
     def __init__(self):
         self.sent = asyncio.Event()

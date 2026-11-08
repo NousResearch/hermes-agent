@@ -107,6 +107,53 @@ def unlock_fd(fd: int) -> None:
             fcntl.flock(fd, fcntl.LOCK_UN)
 
 
+def lock_path(path: Path, *, timeout: float | None, create_dir: bool = False) -> int | None:
+    """Open *path* (created if missing), wait up to ``timeout`` for its byte lock and return the
+    held descriptor; None when the wait expired. The caller closes the descriptor to release.
+
+    A holder that removes the lock file unlinks it while still holding it (the install-state
+    collector), so a waiter that opened the old file gets a lock on an inode no one else can
+    reach while the next opener creates a fresh file: both would hold "the" lock. Once held,
+    the descriptor must still be the file at *path*, else retry on the current one. Windows
+    cannot unlink an open file, so the check is POSIX-only. ``create_dir`` re-creates the
+    parent the remover may have taken with it.
+    """
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        if create_dir:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        except FileNotFoundError:
+            # Only a parent removed between mkdir and open is worth another try; anything else
+            # (a dangling symlink at *path*) fails the same way every time.
+            if not create_dir or path.parent.is_dir():
+                raise
+            if deadline is not None and time.monotonic() >= deadline:
+                return None
+            continue
+        try:
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            if not lock_fd(fd, wait=True, timeout=remaining):
+                os.close(fd)
+                return None
+            if os.name == "nt" or _same_file(fd, path):
+                return fd
+        except BaseException:
+            os.close(fd)
+            raise
+        os.close(fd)
+        if deadline is not None and time.monotonic() >= deadline:
+            return None
+
+
+def _same_file(fd: int, path: Path) -> bool:
+    try:
+        return os.path.samestat(os.fstat(fd), os.stat(path))
+    except FileNotFoundError:
+        return False
+
+
 def read_bytes_or_none(path: Path) -> bytes | None:
     try:
         return path.read_bytes()

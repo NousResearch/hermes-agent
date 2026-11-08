@@ -279,8 +279,7 @@ def test_the_webapp_leaves_cookies_named_for_no_gateway_to_the_dashboard(gated, 
 
 @pytest.fixture
 def clock(monkeypatch):
-    """Moves the password provider's clock forward. It signs each token's expiry in whole seconds, so
-    without this a renewal or a second login in the same second gets byte-identical tokens."""
+    """Moves the password provider's clock forward, as time passes between a login and its renewal."""
     import time
 
     from plugins.dashboard_auth import basic
@@ -449,6 +448,52 @@ def test_only_the_spelling_given_to_a_native_app_works(gated):
     decode base64 leniently); the listener takes only the one it gave out."""
     access, refresh = _native_app_sign_in(gated)
     _refused_alone(gated, f'"{access}"', f'"{refresh}"')
+
+
+def _native_app_password_sign_in(gated):
+    """A whole RFC 8252 sign-in with the password provider on the Webapp's listener: the system
+    browser lands on the sign-in form and the user signs in there. Returns the app's token pair."""
+    import base64
+    import hashlib
+    from urllib.parse import parse_qs, urlsplit
+
+    verifier = "native-app-verifier-" + "v" * 40
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    system_browser = gated.browser()
+    started = system_browser.get("/auth/native/authorize", follow_redirects=False, params={
+        "provider": "basic", "code_challenge": challenge, "code_challenge_method": "S256",
+        "redirect_uri": "http://127.0.0.1:53999/cb", "state": "desk"})
+    assert started.status_code == 302, started.text
+    signed_in = system_browser.post("/auth/password-login",
+                                    json={"provider": "basic", "username": USER, "password": PASSWORD})
+    assert signed_in.status_code == 200, signed_in.text
+    code = parse_qs(urlsplit(signed_in.json()["next"]).query)["code"][0]
+    tokens = gated.browser().post("/auth/native/token", json={"code": code, "code_verifier": verifier})
+    assert tokens.status_code == 200, tokens.text
+    return tokens.json()["access_token"], tokens.json()["refresh_token"]
+
+
+def test_a_login_in_the_second_of_a_native_sign_in_keeps_its_tokens_to_its_cookies(gated, sign_out, monkeypatch):
+    """A browser login and a native app's sign-in with the password provider in one second of its
+    clock. The login's tokens still work only as its cookies, before and after sign-out and across a
+    restart, and the native app stays signed in."""
+    import time
+
+    from plugins.dashboard_auth import basic
+
+    frozen = time.time()
+    monkeypatch.setattr(basic, "time", SimpleNamespace(time=lambda: frozen))
+    browser = gated.browser()
+    _sign_in_with_password(browser)
+    access, refresh = _tokens(browser)
+    native_access, native_refresh = _native_app_password_sign_in(gated)
+    _refused_alone(gated, access, refresh)
+    sign_out()
+    _refused_alone(gated, access, refresh)
+    _restart(gated, monkeypatch)
+    _refused_alone(gated, access, refresh)
+    assert gated.browser().get("/api/auth/me", headers=_bearer(native_access)).status_code == 200
+    assert _renew(gated, native_refresh).status_code == 200
 
 
 def test_off_the_webapp_any_provider_token_works_on_its_own_as_on_main(gated, monkeypatch):

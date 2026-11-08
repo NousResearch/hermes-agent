@@ -19,12 +19,17 @@ import hermes_yaml as yaml
 
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
+from agent.context_default_record import mark_context_defaulted, records_context_defaults
 from agent.model_metadata_llamacpp import llamacpp_context
+from agent.model_metadata_memo_bounds import MEMO_LOCK, bound_codex_caches, remember_endpoint_models as _remember_endpoint_models
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, unpriced_replay_fields, without_persistence_fields
+from agent.model_metadata_token_memo import (  # _MSG_TOKENS_CACHE: tests and benches read it here
+    _MSG_TOKENS_CACHE, MemoPins, lookup_message_tokens, remember_message_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -260,14 +265,12 @@ _FALLBACK_WARNED: set = set()  # the fallback is never cached, so dedupe its war
 def _warn_context_length_fallback(model: str, base_url: str) -> None:
     """Warn once per model+endpoint that detection failed and the hard default is used,
     so small-context models (8K, 32K) don't silently get 256K and fail at the API."""
+    mark_context_defaulted()  # the "fallback" label reads this, not a re-derivation (agent.context_default_record)
     key = (model, base_url or "")
     if key not in _FALLBACK_WARNED:
         _FALLBACK_WARNED.add(key)
-        logger.warning(
-            "Could not determine context length for model %r (base_url=%s) — falling back to %s tokens. "
-            "Set model.context_length in config.yaml to override.",
-            model, base_url or "default", f"{DEFAULT_FALLBACK_CONTEXT:,}",
-        )
+        logger.warning("Could not determine context length for model %r (base_url=%s) — falling back to %s tokens. "
+                       "Set model.context_length in config.yaml to override.", model, base_url or "default", f"{DEFAULT_FALLBACK_CONTEXT:,}")
 
 
 # Sessions, model switches and cron jobs reject models below this (too little working memory).
@@ -300,7 +303,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # its own branch). 5.4-nano/-mini are 400k, not 1.05M; gpt-5.3-codex-spark is
     # Codex-OAuth-only and listed so "gpt-5" (400k) doesn't win.
     "gpt-6-astra": 1050000,  # also matches -pro (verified live on OpenRouter)
-    "gpt-6.1-sol": 1050000,  # -pro too (OpenAI model page + OpenRouter live 2026-09-29)
+    "gpt-6.1-sol": 1050000, "gpt-6.1-terra": 1050000,  # Sol -pro too; both live on OpenRouter (Terra also Nous Portal, 2026-10-26)
     "gpt-6-sol": 1050000, "gpt-6-luna": 1050000,  # -pro too (OpenRouter live 2026-09-22)
     "gpt-5.6-luna": 1050000, "gpt-5.6-terra": 1050000, "gpt-5.6-sol": 1050000, "gpt-5.5": 1050000,
     "gpt-5.4-nano": 400000, "gpt-5.4-mini": 400000, "gpt-5.4": 1050000,
@@ -438,13 +441,14 @@ def _is_custom_endpoint(base_url: str) -> bool:
     return bool(normalized) and not base_url_host_matches(normalized, "openrouter.ai")
 
 
-# Host substring -> provider. Profiles claim further hosts through ``hostnames`` /
-# ``metadata_hostnames`` (``providers.profile_for_host``), resolved per home at lookup time.
+# Hostname -> provider: a key matches that host or a subdomain; regional <region>-aiplatform Vertex follows.
+# Profiles claim more hosts via ``hostnames``/``metadata_hostnames`` (``providers.profile_for_host``), per home.
 _URL_TO_PROVIDER: dict[str, str] = {
     "api.openai.com": "openai", "chatgpt.com": "openai", "api.anthropic.com": "anthropic",
     "api.z.ai": "zai", "open.bigmodel.cn": "zai",
     "api.moonshot.ai": "kimi-coding", "api.moonshot.cn": "kimi-coding-cn", "api.kimi.com": "kimi-coding",
-    "api.stepfun.ai": "stepfun", "api.stepfun.com": "stepfun", "api.arcee.ai": "arcee", "api.minimax": "minimax",
+    "api.stepfun.ai": "stepfun", "api.stepfun.com": "stepfun", "api.arcee.ai": "arcee",
+    "api.minimax.io": "minimax", "api.minimaxi.com": "minimax", "api.minimax.chat": "minimax",
     "dashscope.aliyuncs.com": "alibaba", "dashscope-intl.aliyuncs.com": "alibaba", "portal.qwen.ai": "qwen-oauth",
     "openrouter.ai": "openrouter", "generativelanguage.googleapis.com": "gemini",
     "inference-api.nousresearch.com": "nous", "api.deepseek.com": "deepseek",
@@ -467,17 +471,16 @@ except Exception:
 
 def _infer_provider_from_url(base_url: str) -> Optional[str]:
     """models.dev provider name for a base URL (custom endpoints need no explicit provider)."""
-    parsed = _parse_base_url(base_url, "https")
-    if parsed is None:
+    host = base_url_hostname(base_url)
+    if not host:
         return None
-    host = parsed.netloc.lower() or parsed.path.lower()
     from providers import profile_for_host
-    if (profile := profile_for_host(host, metadata=True)) is not None:  # exact claims beat substring rows
+    if (profile := profile_for_host(base_url, metadata=True)) is not None:  # profile claims beat table rows
         return profile.name
-    for url_part, provider in _URL_TO_PROVIDER.items():
-        if url_part in host:
+    for domain, provider in _URL_TO_PROVIDER.items():
+        if base_url_host_matches(host, domain):
             return provider
-    return None
+    return "vertex" if host.endswith("-aiplatform.googleapis.com") else None
 
 
 def _strip_openrouter_routing_variant(
@@ -1009,12 +1012,6 @@ def _endpoint_memo_key(normalized: str, api_key: object) -> tuple[str, str]:
     from agent.credential_persistence import fingerprint_secret_value
     # Callable (minted) keys are not fingerprinted here: doing so would mint on every cache hit.
     return normalized, (fingerprint_secret_value(api_key) or "") if isinstance(api_key, str) else ""
-
-
-def _remember_endpoint_models(memo_key: tuple[str, str], cache: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    _endpoint_model_metadata_cache[memo_key] = cache
-    _endpoint_model_metadata_cache_time[memo_key] = time.time()
-    return cache
 
 
 def _parse_models_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1828,11 +1825,13 @@ def _remember_no_codex_catalog(cache_key: str) -> None:
     stamped as if cached ``TTL - NEGATIVE_TTL`` ago, so the shared freshness check expires it after
     ``_CODEX_OAUTH_CONTEXT_NEGATIVE_TTL``. A fresh catalog a concurrent probe just stored is kept, and the
     max cache is left alone so an observed cap survives."""
-    now = time.time()
-    current = _codex_oauth_context_cache.get(cache_key)
-    if current is not None and current[0] and now - current[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
-        return
-    _codex_oauth_context_cache[cache_key] = ({}, now - _CODEX_OAUTH_CONTEXT_CACHE_TTL + _CODEX_OAUTH_CONTEXT_NEGATIVE_TTL)
+    with MEMO_LOCK:
+        now = time.time()
+        current = _codex_oauth_context_cache.get(cache_key)
+        if current is not None and current[0] and now - current[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
+            return
+        bound_codex_caches(cache_key)
+        _codex_oauth_context_cache[cache_key] = ({}, now - _CODEX_OAUTH_CONTEXT_CACHE_TTL + _CODEX_OAUTH_CONTEXT_NEGATIVE_TTL)
 
 
 def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: str = "") -> tuple[dict[str, int], bool]:
@@ -1876,8 +1875,10 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
         _remember_no_codex_catalog(cache_key)
         return {}, False
     # Max first: a reader that sees the fresh context entry must also see its cap.
-    _codex_oauth_max_context_cache[cache_key] = max_result
-    _codex_oauth_context_cache[cache_key] = (result, now)
+    with MEMO_LOCK:
+        bound_codex_caches(cache_key)
+        _codex_oauth_max_context_cache[cache_key] = max_result
+        _codex_oauth_context_cache[cache_key] = (result, now)
     return result, True
 
 
@@ -2206,6 +2207,7 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
     return None
 
 
+@records_context_defaults
 def get_model_context_length(
     model: str, base_url: str = "", api_key: str = "", config_context_length: int | None = None,
     provider: str = "", custom_providers: list | None = None,
@@ -2433,9 +2435,7 @@ def _strip_stale_thinking_for_estimate(messages: list[dict[str, Any]]) -> list[d
 # deep-equal messages built from identical immutable leaves ⇒ identical ``str(shadow)`` bytes ⇒ identical
 # estimate. Because the api_messages build shallow-copies history dicts each iteration, the copies share the
 # same content strings — so unchanged history messages hit the memo even though the outer dicts are fresh
-# objects every turn.
-_MSG_TOKENS_CACHE: dict[Any, tuple[list, int, int]] = {}  # pins, text tokens, image count
-_MSG_TOKENS_CACHE_MAX = 4096
+# objects every turn. Storage, LRU + retained-bytes bounds and release live in ``model_metadata_token_memo``.
 
 
 def _msg_fingerprint(value: Any, pins: list) -> Any:
@@ -2460,27 +2460,20 @@ def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
     def _compute() -> tuple[int, int]:
         return _estimate_message_tokens_without_images(msg), _count_image_tokens(msg, 1)
     try:
-        pins: list = []
+        pins = MemoPins()
         # Persistence-only fields (identity, timestamps, display metadata) never reach the estimate: keep them
         # out of the key so stamping them neither costs a walk nor misses the memo.
         key = _msg_fingerprint(
             without_persistence_fields(msg) if type(msg) is dict else msg, pins)
-        hash(key)
+        cached = lookup_message_tokens(key)
     except Exception:
         text, images = _compute()
         return text + images * image_cost
-    cached = _MSG_TOKENS_CACHE.get(key)
     if cached is not None:
         return cached[1] + cached[2] * image_cost
     text, images = _compute()
-    tokens = text + images * image_cost
-    _MSG_TOKENS_CACHE[key] = (pins, text, images)
-    while len(_MSG_TOKENS_CACHE) > _MSG_TOKENS_CACHE_MAX:
-        try:
-            _MSG_TOKENS_CACHE.pop(next(iter(_MSG_TOKENS_CACHE)))
-        except (StopIteration, KeyError, RuntimeError):
-            break
-    return tokens
+    remember_message_tokens(key, (pins, text, images))
+    return text + images * image_cost
 
 
 def _count_parts(parts: Any, types: set) -> int:

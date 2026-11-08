@@ -67,3 +67,19 @@ def test_combined_emphasis_closing_at_different_places_parses(adapter, markdown,
     out = adapter.format_message(markdown)
     assert out == expected
     assert mdv2_error(out) is None
+
+
+@pytest.mark.parametrize(
+    ("markdown", "expected"),
+    [
+        ("`a ``b-c`` d`", "`a \\`\\`b-c\\`\\` d`"),
+        ("` ``x.y`` `", "` \\`\\`x.y\\`\\` `"),
+        ("Use ``value`` now", "Use `value` now"),
+    ],
+)
+def test_double_backticks_inside_code_stay_code_content(adapter, markdown, expected):
+    """Backtick runs inside an open code span are its content, never a nested span closing it."""
+    out = adapter.format_message(markdown)
+    assert out == expected
+    assert mdv2_error(out) is None
+

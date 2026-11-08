@@ -1,5 +1,6 @@
 """Markdown -> Telegram MarkdownV2 conversion (the legacy, non-rich send path)."""
 
+import bisect
 import re
 
 from gateway.platforms.helpers import convert_table_to_bullets as _wrap_markdown_tables
@@ -177,22 +178,8 @@ def to_markdown_v2(content: str) -> str:
         text,
     )
 
-    # 2) Protect inline code (`...`).  Telegram only supports single-
-    #    backtick spans, so collapse GFM's double-backtick form when its
-    #    content does not itself contain backticks.
-    text = re.sub(
-        r'(?<!`)``([^`\r\n]+)``(?!`)',
-        lambda m: _ph(f'`{m.group(1)}`'.replace('\\', '\\\\')),
-        text,
-    )
-    #    Do not start inside a longer backtick run or cross a line boundary.
-    #    This leaves the outer ticks in `` `code` `` as escaped literals
-    #    while preserving the inner span as Telegram inline code.
-    text = re.sub(
-        r'(?<!`)(`[^`\r\n]+`)(?!`)',
-        lambda m: _ph(m.group(0).replace('\\', '\\\\')),
-        text,
-    )
+    # 2) Protect inline code (`...` and GFM's backtick-free ``...``) in one pass.
+    text = _stash_inline_code(text, _ph)
 
     # 3) Convert markdown links – escape the display text; inside the URL
     #    only ')' and '\' need escaping per the MarkdownV2 spec.
@@ -241,6 +228,39 @@ def to_markdown_v2(content: str) -> str:
         else:
             _safe_parts.append(re.sub(r'[(){}]', lambda m, _seg=_seg: _escape_bare_bracket(m, _seg), _seg))
     return ''.join(_safe_parts)
+
+
+def _stash_inline_code(text: str, stash) -> str:
+    """Stash inline code spans: a backtick run opens a span that the next run of the same width on
+    the same line closes (CommonMark), so runs inside an open span are content, not new spans.
+
+    Telegram code spans are single-backtick, so a span keeps its content verbatim with ` and \\
+    escaped. A ``...`` span whose content holds backticks, or a ```...``` run, keeps its outer
+    ticks as literal text and its content is scanned for spans of its own (`` `code` ``)."""
+    runs = list(re.finditer(r'`+', text))
+    breaks = [m.start() for m in re.finditer(r'[\r\n]', text)] + [len(text)]
+    next_same, last = [None] * len(runs), {}
+    for k in range(len(runs) - 1, -1, -1):  # index of the next run of the same width
+        width = len(runs[k].group())
+        next_same[k], last[width] = last.get(width), k
+    literal, out, pos, i = set(), [], 0, 0
+    while i < len(runs):
+        opener, width, close = runs[i], len(runs[i].group()), next_same[i]
+        if close is not None and runs[close].start() > breaks[bisect.bisect_left(breaks, opener.end())]:
+            close = None  # a code span never crosses a line
+        if i in literal or close is None:
+            i += 1
+            continue
+        content = text[opener.end():runs[close].start()]
+        if width > 2 or (width == 2 and '`' in content):
+            literal.add(close)
+            i += 1
+            continue
+        out.append(text[pos:opener.start()])
+        out.append(stash('`' + content.replace('\\', '\\\\').replace('`', '\\`') + '`'))
+        pos, i = runs[close].end(), close + 1
+    out.append(text[pos:])
+    return ''.join(out)
 
 
 def _escape_bare_bracket(m, seg: str) -> str:

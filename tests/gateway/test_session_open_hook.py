@@ -226,6 +226,37 @@ async def test_opens_behind_a_hung_open_stay_bounded_and_fire_once_after_it(monk
 
 
 @pytest.mark.asyncio
+async def test_a_finished_open_is_freed_while_the_next_one_still_runs(monkeypatch):
+    """A session reopened while each delivery runs keeps only live deliveries: a finished one is not
+    held by its successor (it would chain every open since the queue was last idle)."""
+    import asyncio
+    import gc
+    import threading
+    import weakref
+    from types import SimpleNamespace
+    from gateway import session_open
+    release, hold = threading.Event(), threading.Event()
+    try:
+        ref, first, _delivered = await _hung_open(monkeypatch, 'chained', release)
+        gate = session_open.open_local(SimpleNamespace(db=None), ref)
+        gate.fire(SimpleNamespace(ignore_user_config=False), 'again')
+        second, first_ref = gate.delivery, weakref.ref(first)
+        monkeypatch.setattr(session_open._Open, '_deliver', lambda self, *a: hold.wait(20))
+        release.set()
+        await asyncio.wait({first.task}, timeout=5)
+        del first, _delivered
+        for _ in range(20):  # yields only: the second delivery leaves its wait on the first
+            await asyncio.sleep(0)
+        gc.collect()
+        assert not second.task.done()
+        assert first_ref() is None, 'a finished delivery stays reachable from the one after it'
+    finally:
+        release.set()
+        hold.set()
+    await asyncio.wait({second.task}, timeout=5)
+
+
+@pytest.mark.asyncio
 async def test_a_profile_with_no_consumer_starts_no_delivery_thread(monkeypatch, tmp_path):
     """A profile whose plugins are loaded with no ``on_session_open`` callback spends no thread on an
     open, and one that registers a callback does."""

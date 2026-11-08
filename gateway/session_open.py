@@ -60,7 +60,7 @@ class _Open:
     async def _run(self):
         if self.ahead is not None:  # two viewers opening at once: one session's opens fire in order
             await asyncio.wait({self.ahead.task})
-        self.started = True
+        self.started, self.ahead = True, None  # a session reopened nonstop never chains finished deliveries
         while self.unsettled:
             await asyncio.wait(set(self.unsettled))
         from hermes_cli.lifecycle import hook_known_unused

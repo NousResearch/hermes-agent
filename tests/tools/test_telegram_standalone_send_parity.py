@@ -22,7 +22,7 @@ def _install_telegram_mock(monkeypatch: pytest.MonkeyPatch, bot) -> None:
     parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
     constants_mod = SimpleNamespace(ParseMode=parse_mode)
     telegram_mod = SimpleNamespace(Bot=MagicMock(return_value=bot), MessageEntity=lambda **kw: SimpleNamespace(**kw),
-                                   constants=constants_mod)
+                                   InputMediaPhoto=lambda **kw: SimpleNamespace(**kw), constants=constants_mod)
     monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
     monkeypatch.setitem(sys.modules, "telegram.constants", constants_mod)
 
@@ -104,3 +104,27 @@ def test_rejected_html_retries_as_markdown_before_plain_text(standalone) -> None
     modes = [c.kwargs["parse_mode"] for c in standalone.bot.send_message.await_args_list]
     assert modes == ["HTML", "MarkdownV2"]
     assert "*one*" in standalone.bot.send_message.await_args.kwargs["text"]
+
+
+def test_photo_batches_go_as_albums_and_mixed_batches_stay_per_file(standalone) -> None:
+    """Two or more still photos ride ``sendMediaGroup`` (10 per album, in order); a batch with a
+    non-photo keeps one upload per file."""
+    standalone.bot.send_media_group = AsyncMock(return_value=[SimpleNamespace(message_id=11)])
+    standalone.bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=12))
+    photos = []
+    for i in range(12):
+        photo = standalone.home / f"p{i}.png"
+        photo.write_bytes(b"\x89PNG\r\n\x1a\n")
+        photos.append((str(photo), False))
+
+    assert standalone.run("", media_files=photos)["success"] is True
+    albums = [call.kwargs for call in standalone.bot.send_media_group.await_args_list]
+    assert [len(kw["media"]) for kw in albums] == [10, 2]
+    assert all(kw["disable_notification"] is True for kw in albums)
+    standalone.bot.send_photo.assert_not_awaited()
+
+    doc = standalone.home / "notes.txt"
+    doc.write_text("x", encoding="utf-8")
+    assert standalone.run("", media_files=photos[:2] + [(str(doc), False)])["success"] is True
+    assert standalone.bot.send_media_group.await_count == 2
+    assert standalone.bot.send_photo.await_count == 2

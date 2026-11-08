@@ -14,7 +14,7 @@ Event shapes follow the live payloads captured in the issue.
 """
 
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -67,6 +67,7 @@ def _make_adapter():
     adapter.config = PlatformConfig(enabled=True, extra={})
     adapter._bot_user_id = BOT_USER_ID
     adapter._team_bot_user_ids = {}
+    adapter._team_clients = {HOST_TEAM: MagicMock()}
     adapter._dedup = MessageDeduplicator(ttl_seconds=1800)
     return adapter
 
@@ -205,3 +206,164 @@ async def test_connect_channel_message_from_external_user_is_not_dm_gated():
         _connect_message_event(), _connect_message_body())
     assert accepted is not None
     assert accepted[1] == HOST_TEAM
+
+
+# ---------------------------------------------------------------------------
+# Tests: the resolver filters candidates against the authenticated install set
+# (no Slack field is guaranteed to name an installing workspace; a partner team
+# must never scope a session or a dedupe id)
+# ---------------------------------------------------------------------------
+
+
+def test_resolver_ignores_foreign_envelope_with_single_install():
+    """Production shape where the envelope names the partner org: with exactly one
+    authenticated workspace that install wins, so the pair still collapses."""
+    adapter = _make_adapter()
+    event = _connect_message_event()
+    body = {"team_id": EXT_TEAM, "authorizations": [{"team_id": EXT_TEAM}],
+            "is_ext_shared_channel": True}
+    assert adapter._event_team_id(event, body, install_set={HOST_TEAM}) == HOST_TEAM
+
+
+def test_resolver_grid_example_prefers_authorization_install():
+    """Enterprise Grid documented shape: envelope workspace differs from
+    ``authorizations[0].team_id``; the authorization naming an install wins."""
+    adapter = _make_adapter()
+    event = {"type": "message", "team": "T111"}
+    body = {"team_id": "T111", "authorizations": [{"team_id": "T222"}]}
+    assert adapter._event_team_id(event, body, install_set={"T222"}) == "T222"
+
+
+def test_resolver_multi_install_no_match_is_empty():
+    """A foreign team is never adopted when several workspaces are authenticated."""
+    adapter = _make_adapter()
+    event = {"type": "message", "team": EXT_TEAM}
+    body = {"team_id": EXT_TEAM}
+    assert adapter._event_team_id(event, body, install_set={"T_A", "T_B"}) == ""
+
+
+def test_resolver_legacy_call_without_install_set_keeps_envelope_first():
+    """External/Bolt callers without an install set keep the envelope-first order."""
+    adapter = _make_adapter()
+    assert adapter._event_team_id(_connect_message_event(), _connect_message_body()) == HOST_TEAM
+
+
+def test_team_in_install_set_filters_foreign_ids():
+    """Cached/fallback ids only pass through for authenticated workspaces."""
+    adapter = _make_adapter()
+    assert adapter._team_in_install_set(HOST_TEAM) == HOST_TEAM
+    assert adapter._team_in_install_set(EXT_TEAM) == ""
+    assert adapter._team_in_install_set("") == ""
+
+
+def test_assistant_metadata_fallback_does_not_readopt_foreign_team():
+    """Multi-install with no candidate in the set: the cached assistant_thread.team_id
+    must not undo the resolver's empty resolution (#143792)."""
+    adapter = _make_adapter()
+    adapter._team_clients = {"T_A": MagicMock(), "T_B": MagicMock()}
+    meta = adapter._extract_assistant_thread_metadata(
+        {"type": "message", "team": EXT_TEAM},
+        {"assistant_thread": {"channel_id": "D_SHARED", "thread_ts": "171.000",
+                               "user_id": "U_EXT", "team_id": EXT_TEAM}})
+    assert meta["team_id"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Tests: the DM gate only compares ``T…`` workspace ids (user_team can be E…)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dm_with_enterprise_user_team_passes_gate():
+    """``user_team`` can be an enterprise ``E…`` id (Bolt); the gate falls back to the
+    ``T…`` team and must not misread a host user as foreign."""
+    adapter = _make_adapter()
+    dm = _dm_event(HOST_TEAM, "1712345682.000100")
+    dm["user_team"] = "E_GRID_ORG"
+    accepted = await adapter._prefilter_inbound(dm, {"team_id": HOST_TEAM})
+    assert accepted is not None
+
+
+@pytest.mark.asyncio
+async def test_allowlisted_external_user_still_refused(monkeypatch):
+    """The gate sits ahead of the allowlist: an external-org user in
+    SLACK_ALLOWED_USERS must not gain a DM path (#143792)."""
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "U_EXT_USER")
+    adapter = _make_adapter()
+    accepted = await adapter._prefilter_inbound(
+        _dm_event(EXT_TEAM, "1712345683.000100"), {"team_id": HOST_TEAM})
+    assert accepted is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: the file_shared fallback cannot re-enter as a host-team DM
+# (the synthesizer stamps the install team and would slip past the DM gate)
+# ---------------------------------------------------------------------------
+
+
+def _file_share_event(channel: str = "D_INBOX_1"):
+    """Documented ``file_shared`` payload: no sender team on the event at all."""
+    return {
+        "type": "file_shared",
+        "channel_id": channel,
+        "file_id": "F_FILE_1",
+        "user_id": "U_EXT_USER",
+        "event_ts": "1712345684.000100",
+    }
+
+
+def _file_share_client(team_id: str):
+    client = MagicMock()
+    client.files_info = MagicMock(return_value=_async_return({
+        "ok": True, "file": {"id": "F_FILE_1", "mimetype": "video/mp4",
+                             "user": "U_EXT_USER"}}))
+    client.users_info = MagicMock(return_value=_async_return({
+        "ok": True, "user": {"team_id": team_id}}))
+    return client
+
+
+@pytest.mark.asyncio
+async def test_file_share_dm_from_external_org_is_refused(monkeypatch):
+    """The documented payload carries no sender team; the sharer's workspace is
+    resolved from users.info and a foreign-org video DM never re-enters."""
+    adapter = _make_adapter()
+    adapter._team_clients[HOST_TEAM] = _file_share_client(EXT_TEAM)
+    handled = AsyncMock()
+    monkeypatch.setattr(adapter, "_handle_slack_message", handled)
+    await adapter._handle_slack_file_shared(
+        _file_share_event(), {"team_id": HOST_TEAM})
+    assert not handled.called
+
+
+@pytest.mark.asyncio
+async def test_file_share_dm_from_host_org_still_synthesizes(monkeypatch):
+    """A host-org file share in a DM still synthesizes the fallback message."""
+    adapter = _make_adapter()
+    adapter._team_clients[HOST_TEAM] = _file_share_client(HOST_TEAM)
+    monkeypatch.setattr(adapter, "_first_file_share", lambda file_obj, channel_id: {
+        "ts": "1712345685.000100", "thread_ts": ""})
+    handled = AsyncMock()
+    monkeypatch.setattr(adapter, "_handle_slack_message", handled)
+    await adapter._handle_slack_file_shared(
+        _file_share_event(), {"team_id": HOST_TEAM})
+    assert handled.called
+
+
+@pytest.mark.asyncio
+async def test_file_share_dm_with_injected_sender_team_refused(monkeypatch):
+    """Wire shapes that DO carry a T… sender team are refused without any API call."""
+    adapter = _make_adapter()
+    adapter._team_clients[HOST_TEAM] = _file_share_client(EXT_TEAM)
+    handled = AsyncMock()
+    monkeypatch.setattr(adapter, "_handle_slack_message", handled)
+    event = _file_share_event()
+    event["team"] = EXT_TEAM
+    await adapter._handle_slack_file_shared(event, {"team_id": HOST_TEAM})
+    assert not handled.called
+
+
+def _async_return(value):
+    import asyncio
+    future = asyncio.get_event_loop().create_future()
+    future.set_result(value)
+    return future

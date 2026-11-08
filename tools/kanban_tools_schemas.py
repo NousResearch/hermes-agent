@@ -483,10 +483,16 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "Relative paths are rejected at dispatch."
         )),
         "project": _prop("string", (
-                "Optional project id or slug to link the task to. When "
-                "set, the task becomes a git worktree under the project's "
-                "primary repo with a deterministic branch (project slug + "
-                "task id), instead of a random branch."
+                "Project slug this card belongs to, from `hermes project "
+                "list` (e.g. 'nico', 'hottr', 'voiceplatform', 'hermes'). "
+                "Linking it does two things: the task becomes a git worktree "
+                "under the project's primary repo with a deterministic branch "
+                "(project slug + task id) instead of a random one, and the "
+                "worker's context gains the project's root, what it is, and the "
+                "memory term to search before starting and save durable facts "
+                "under when it finishes. A child created from a card that "
+                "already has a project inherits it when this is omitted; omit "
+                "only when the work genuinely belongs to no project."
         )),
         "triage": _prop("boolean", (
                 "If true, task lands in 'triage' instead of 'todo' "

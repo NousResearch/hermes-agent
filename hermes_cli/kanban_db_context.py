@@ -109,6 +109,42 @@ def _ctx_header(lines: list[str], task: Task) -> None:
         lines.append("")
 
 
+def _ctx_project(lines: list[str], task: Task) -> None:
+    """The project this card belongs to: its root, what it is, and its memory key.
+
+    A card with no ``project_id`` renders nothing, which is the honest state: the
+    worker is told its workspace and nothing about which product it is changing.
+    The memory instruction names the slug because that is the one term every
+    MyMateNico read and write can carry without a schema change.
+    """
+    project_id = getattr(task, "project_id", None)
+    if not project_id:
+        return
+    project: Any = None
+    try:
+        from hermes_cli import projects_db as _pdb
+
+        with _pdb.connect_closing() as conn:
+            project = _pdb.get_project(conn, project_id)
+    except Exception:  # a missing projects.db must not blank the whole context
+        project = None
+    if project is None:
+        return
+    lines.append(f"## Project: {project.name} ({project.slug})")
+    lines.append("")
+    if project.primary_path:
+        lines.append(f"Root: {project.primary_path}")
+    if project.description:
+        lines.append(f"What it is: {project.description}")
+    lines.append(
+        f"Memory: before starting, search MyMateNico for '{project.slug}' plus the "
+        f"card title so you inherit what this project already knows. Before you "
+        f"finish, save anything durable you learned with that same term in the "
+        f"context, so the next card on this project starts with it."
+    )
+    lines.append("")
+
+
 def _ctx_attachments(lines: list[str], attachments: list[Attachment]) -> None:
     """Absolute on-disk paths so the worker's file tools read them directly
     (remote terminal backends need the attachments dir mounted)."""

@@ -175,11 +175,13 @@ class _NonStreamRequest:
                 phase = "reconnect"
             elif last_event_ts is not None:
                 phase = "post_event"
+            now = self.call_start + elapsed  # same stretched cutoffs as the kill loop in run()
             watchdog = wn.codex_watchdog_deadline(stale_timeout=wd.stale_timeout,
-                ttfb_enabled=wd.ttfb_enabled, ttfb_timeout=wd.ttfb_timeout,
+                ttfb_enabled=wd.ttfb_enabled, ttfb_timeout=self._stretched(wd.ttfb_timeout, now),
                 last_event_ts=last_event_ts, last_progress_ts=last_progress_ts,
                 retry_started_ts=retry_started_ts,
-                call_start=self.call_start, idle_enabled=wd.idle_enabled, idle_timeout=wd.idle_timeout,
+                call_start=self.call_start, idle_enabled=wd.idle_enabled,
+                idle_timeout=self._stretched(wd.idle_timeout, now),
                 idle_requires_progress=wd.idle_requires_progress, progress_timeout=wd.progress_timeout,
                 elapsed=elapsed)
             # One neutral notice per silence; repeating it every heartbeat made

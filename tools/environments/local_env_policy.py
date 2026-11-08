@@ -397,6 +397,25 @@ def strip_profile_gate_env(env: dict) -> dict:
     return env
 
 
+# Inherited repo-location overrides pin every ``git`` in a child to the LAUNCHER's repository,
+# whatever its cwd: a ``cd repoB && git cherry-pick`` would mutate repo A. Dropped from the
+# inherited base only; a caller's explicit env (backend ``env``, ``env_vars``) still sets them.
+# GIT_EDITOR, GIT_AUTHOR_*, GIT_CONFIG_* and the rest are user preferences and pass through.
+_GIT_REPO_LOCATION_ENV = frozenset({
+    "GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+})
+
+
+def strip_git_repo_location_env(env: dict) -> dict:
+    """Drop :data:`_GIT_REPO_LOCATION_ENV` from *env* in place (case-folded on Windows, whose
+    env block is case-insensitive); returns *env*."""
+    fold = str.upper if os.name == "nt" else (lambda k: k)
+    for key in [k for k in env if fold(k) in _GIT_REPO_LOCATION_ENV]:
+        del env[key]
+    return env
+
+
 def _plugin_terminal_env_strip_keys() -> frozenset:
     """Credential env keys owned by plugin-registered terminal backends (Tier-1:
     stripped from every spawned subprocess). Computed at call time because plugins

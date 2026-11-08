@@ -1,8 +1,8 @@
 name: zotero
 title: Zotero Research
 repo: https://github.com/suhas-svg/hermes_zotero
-sha: 07662f160eeefc25f374707b136da020bcfce90e
-version: "1.0.0"
+sha: ee8a7ad87bcda0f98250eba7e9b0385fd77b3a75
+version: "1.0.1"
 description: "Research with your own Zotero library: search it, read your PDF highlights and full text, cite with Zotero's citation engine (any CSL style, BibTeX/RIS export), add papers by DOI/arXiv with PDFs, and check a draft's citations against the library. Reads Zotero desktop's local API on loopback; zotero_add alone writes to the library and calls Crossref/arXiv. No telemetry, no credentials."
 maintainer: suhas-svg
 tier: community

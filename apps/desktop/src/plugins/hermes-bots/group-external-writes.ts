@@ -71,7 +71,8 @@ export const SYNTHETIC_USER_ROW_PREFIXES = [
   '[Planning state preserved',
   '[ASYNC DELEGATION',
   '[OUT-OF-BAND',
-  'Cronjob Response:'
+  'Cronjob Response:',
+  '[kanban] '
 ]
 
 /** The Hermes-authored assistant row that closes a turn which failed before

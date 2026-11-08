@@ -29,6 +29,9 @@ if TYPE_CHECKING:
         DiscussionMember, DiscussionRoom, DiscussionTaskPlan, EventPlan, _ValidatedEvent)
 
 ASSIGNMENT_EVENT_KIND = "room.assignment"
+# Recovery gave up on a routing turn nothing runs any more: cancelled with this prefix, published with this reason.
+LOST_ROUTING_CANCEL_PREFIX = "lead-routing:"
+LOST_ROUTING_REASON = "lead_answers_itself"
 ASSIGNMENT_FIELDS = frozenset(
     {"discussion_event_id", "thread_id", "task_id", "lead_member_id", "member_ids", "fallback"})
 _ROUTING_INSTRUCTIONS = (

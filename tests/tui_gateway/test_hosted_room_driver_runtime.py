@@ -17,7 +17,7 @@ from tui_gateway.hosted_room_driver import (
     MAX_TERMINAL_TEXT_BYTES,
     ROOM_SESSION_SOURCE,
     HostedRoomBinding,
-    HostedRoomRuntime,
+    HostedRoomRuntime, _RecoveryInspection,
     room_session_title,
 )
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
@@ -931,7 +931,7 @@ def test_peer_recovery_probe_is_bounded_by_attempt_and_stale_age(db: Path):
 
     def inspect(_binding, task):
         probes.append((task["identity"].task_id, now[0]))
-        return SimpleNamespace(terminal=None, active=False, status=None)
+        return _RecoveryInspection(terminal=None, active=False, status=None)
 
     runtime._inspect_recovery_session = inspect
 

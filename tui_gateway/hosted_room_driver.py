@@ -21,6 +21,7 @@ from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
 from tui_gateway.hosted_room_lease_keeper import LeaseKeeper
+from gateway.hosted_room_lead import LOST_ROUTING_CANCEL_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -1195,7 +1196,7 @@ class HostedRoomRuntime:
                         continue
                     self._set_blocked(binding.room_id, True)
                     return True
-            inspection = _NO_INSPECTION
+            inspection, probe_failed = _NO_INSPECTION, False
             # A remote run may finish between probes, so it is observed every cycle (its client
             # owns the HTTP backoff); an in-process session is probed once, then at the deadline.
             if remote or attempt_key not in inspected or self.clock() >= deadline:
@@ -1203,6 +1204,7 @@ class HostedRoomRuntime:
                     if remote or self._transport_for(binding, task) is not self.rpc:
                         inspection = self._inspect_recovery_session(binding, task)
                 except Exception as exc:
+                    probe_failed = True
                     self._record_error(
                         f"task {task['identity'].task_id} recovery probe failed: {exc}")
                 inspected.add(attempt_key)
@@ -1231,12 +1233,34 @@ class HostedRoomRuntime:
                 # deferring it would drop its reply.
                 self._set_blocked(binding.room_id, True)
                 return True
-            deferred = self._fenced(
-                state.defer_indeterminate_task, None, task, lease, reason="member_unavailable")
+            # A failed probe or unread history says nothing about whether the turn is lost.
+            lost_routing = (not probe_failed and inspection.history_error is None
+                            and self._lead_takes_lost_routing(binding, task))
+            lease = self._ensure_lease(binding)  # the confirmation can outlast the lease
+            if lost_routing:
+                given_up = self._fenced(
+                    state.resolve_indeterminate_cancellation, None, task, lease,
+                    cancel_id=f"{LOST_ROUTING_CANCEL_PREFIX}{task['execution_generation']}")
+            else:
+                given_up = self._fenced(
+                    state.defer_indeterminate_task, None, task, lease, reason="member_unavailable")
             inspected.discard(attempt_key)
-            self._publish(binding, deferred)
+            self._publish(binding, given_up)
         self._set_blocked(binding.room_id, False)
         return False
+
+    def _lead_takes_lost_routing(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> bool:
+        """Whether a lead's lost routing turn is given up rather than deferred: only once nothing
+        can still run it, as for Stop of a deferred turn. Its message then goes to the lead alone
+        (``first_round_members``), and no Retry or late answer can route it a second time. While the
+        lead's computer cannot confirm, the turn is deferred and the message waits for its answer."""
+        if task["payload"].get("lead_routing") is not True:
+            return False
+        try:
+            return self.confirm_deferred_stop is None or self.confirm_deferred_stop(binding.room_id, task)
+        except Exception as exc:  # health: allow BLE001 -- unconfirmed: the turn is deferred instead
+            self._record_error(f"task {task['identity'].task_id} routing stop is unconfirmed: {exc}")
+            return False
 
     def _past_execution_deadline(self, task: Mapping[str, Any]) -> bool:
         """Whether the attempt has run past ``turn_timeout_seconds`` since it started. A retried

@@ -150,8 +150,9 @@ def _declared_clients(plugin_dir: Path) -> list[OAuthClient]:
     from pm.plugin_declarations import native_manifest_file, read_native_manifest
 
     manifest_file = native_manifest_file(plugin_dir)
-    clients, problems = parse_oauth_clients(read_native_manifest(manifest_file) if manifest_file else {})
-    problems += _foreign_client_env_problems(clients, plugin_dir)
+    manifest = read_native_manifest(manifest_file) if manifest_file else {}
+    clients, problems = parse_oauth_clients(manifest)
+    problems += _foreign_client_env_problems(clients, plugin_dir, manifest)
     if problems:
         raise ValueError(f"Plugin '{plugin_dir.name}' has an invalid oauth: block in plugin.yaml: " + "; ".join(problems))
     return clients
@@ -198,11 +199,13 @@ def _declared_env_names(manifest: Mapping[str, Any]) -> set[str]:
     return names
 
 
-def _foreign_client_env_problems(clients: list[OAuthClient], plugin_dir: Path) -> list[str]:
+def _foreign_client_env_problems(clients: list[OAuthClient], plugin_dir: Path, manifest: Mapping[str, Any]) -> list[str]:
     """Check every claimant, not discovery winners or the manifest's self-reported name.
 
     Read the bound profile on use: import-time config UI registration may belong to
     another profile, and a second plugin may have been installed since startup.
+    Keep existing non-platform clients' shared declarations working; a platform's
+    newly permitted client variables must belong only to that plugin.
     """
     from hermes_cli.plugins_discovery import collect_directory_manifests
     from pm.plugin_declarations import native_manifest_file, read_native_manifest
@@ -213,7 +216,9 @@ def _foreign_client_env_problems(clients: list[OAuthClient], plugin_dir: Path) -
     problems = []
     for other in collect_directory_manifests():
         directory = Path(other.path)
-        if other.kind != "platform" or directory.resolve() == plugin_dir.resolve():
+        if directory.resolve() == plugin_dir.resolve():
+            continue
+        if other.kind != "platform" and manifest.get("kind") != "platform":
             continue
         path = native_manifest_file(directory)
         if path is not None:
@@ -227,7 +232,7 @@ def oauth_admission_problems(manifest: Mapping[str, Any], plugin_dir: Path) -> l
     from hermes_cli.plugin_provider_requests import _PROVIDERS
 
     clients, problems = parse_oauth_clients(manifest)
-    problems += _foreign_client_env_problems(clients, plugin_dir)
+    problems += _foreign_client_env_problems(clients, plugin_dir, manifest)
     declared = _declared_env_names(manifest)
     for client in clients:
         if client.id in _PROVIDERS:

@@ -19,10 +19,10 @@ pytestmark = pytest.mark.platforms("posix")  # native terminal stdin for auth ad
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _plugin(home, name, entry=None, *, field="optional_env", names=()):
+def _plugin(home, name, entry=None, *, field="optional_env", names=(), kind="platform"):
     directory = home / "plugins" / name
     directory.mkdir(parents=True)
-    manifest = {"name": name, "version": "1.0.0", "description": "OAuth test platform", "kind": "platform",
+    manifest = {"name": name, "version": "1.0.0", "description": "OAuth test platform", "kind": kind,
                 field: list(names)}
     if entry:
         manifest["oauth"] = [entry]
@@ -96,12 +96,15 @@ def test_native_platform_auth_add_stores_grant(tmp_path, field):
         idp.stop()
 
 
-@pytest.mark.parametrize("name", ["OPENAI_API_KEY", "TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN",
-                                  "TEAMS_CLIENT_SECRET", "OTHER_CLIENT_ID"])
+@pytest.mark.parametrize("name,other_kind", [
+    ("OPENAI_API_KEY", "platform"), ("TELEGRAM_BOT_TOKEN", "platform"),
+    ("DISCORD_BOT_TOKEN", "platform"), ("TEAMS_CLIENT_SECRET", "platform"),
+    ("OTHER_CLIENT_ID", "platform"), ("OTHER_CLIENT_ID", "standalone"),
+])
 @pytest.mark.parametrize("field", ["client_id_env", "client_secret_env"])
-def test_native_platform_auth_add_refuses_foreign_variables(tmp_path, name, field):
+def test_native_platform_auth_add_refuses_foreign_variables(tmp_path, name, other_kind, field):
     home = tmp_path / "profile"
-    _plugin(home, "other", names=("OTHER_CLIENT_ID",))
+    _plugin(home, "other", names=("OTHER_CLIENT_ID",), kind=other_kind)
     # Claiming the variable too must not steal its ownership from core or another plugin.
     _plugin(home, "native", _entry("https://login.example.com", **{field: name}),
             names=("NATIVE_CLIENT_ID", "NATIVE_CLIENT_SECRET", name))

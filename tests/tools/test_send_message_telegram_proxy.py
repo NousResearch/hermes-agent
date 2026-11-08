@@ -175,3 +175,28 @@ def test_send_to_platform_honours_configured_base_url(monkeypatch: pytest.Monkey
     # A custom server is reached directly: the api.telegram.org fallback-IP transport stays off.
     assert httpx_request_factory.call_args.kwargs["httpx_kwargs"] is None
     bot.send_message.assert_awaited_once()
+
+
+def test_local_bot_api_server_honours_no_proxy_bypass(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An inherited HTTPS_PROXY with ``NO_PROXY=127.0.0.1`` reaches a local ``telegram-bot-api``
+    (``base_url: http://127.0.0.1:8081/bot``) directly: a remote proxy cannot reach it."""
+    from gateway.config import Platform, PlatformConfig
+    from tools.send_message_tool import _send_to_platform
+
+    monkeypatch.delenv("TELEGRAM_PROXY", raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setattr("gateway.platforms.base.gateway_trust_env", lambda: True)
+    monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+    monkeypatch.setattr("gateway.platforms.base._detect_macos_system_proxy", lambda: None)
+    bot = _make_bot()
+    httpx_request_factory = MagicMock(side_effect=lambda **kw: MagicMock(_kw=kw))
+    _install_telegram_mock_with_request(monkeypatch, MagicMock(return_value=bot), httpx_request_factory)
+    pconfig = PlatformConfig(enabled=True, token="tok", extra={"base_url": "http://127.0.0.1:8081/bot"})
+
+    assert asyncio.run(_send_to_platform(Platform.TELEGRAM, pconfig, "123", "hello"))["success"] is True
+    assert all(call.kwargs.get("proxy") is None for call in httpx_request_factory.call_args_list)
+
+    monkeypatch.setenv("NO_PROXY", "localhost")  # the bypass no longer matches: the proxy is used
+    asyncio.run(_send_to_platform(Platform.TELEGRAM, pconfig, "123", "hello"))
+    assert httpx_request_factory.call_args.kwargs.get("proxy") == "http://proxy.example:3128"

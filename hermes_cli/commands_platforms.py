@@ -268,15 +268,22 @@ def _collect_gateway_skill_entries(
 
     plugin_entries = _entries(_plugin_rows())
     reserved_names.update(n for n, *_rest in plugin_entries)
+
+    from agent.skill_bundles import get_skill_bundles
+    bundle_entries = _entries(
+        (cmd_key.lstrip("/"), info.get("description", ""), cmd_key)
+        for cmd_key, info in sorted(get_skill_bundles().items()))
+    reserved_names.update(n for n, *_rest in bundle_entries)
     skill_entries = _entries(
         (cmd_key.lstrip("/"), info.get("description", ""), cmd_key)
         for cmd_key, info, _rel in _iter_gateway_skills(platform))
 
+    dynamic_entries = bundle_entries + skill_entries
     if max_slots is None:
-        return plugin_entries + skill_entries, 0
+        return plugin_entries + dynamic_entries, 0
     remaining = max(0, max_slots - len(plugin_entries))
-    hidden_count = max(0, len(skill_entries) - remaining)
-    return (plugin_entries + skill_entries[:remaining])[:max_slots], hidden_count
+    hidden_count = max(0, len(dynamic_entries) - remaining)
+    return (plugin_entries + dynamic_entries[:remaining])[:max_slots], hidden_count
 
 
 def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str]], int]:
@@ -328,9 +335,12 @@ def discord_skill_commands_by_category(
     # reserved-command collision from two skills colliding on the clamp (the rename-worthy case).
     names_used: dict[str, str] = dict.fromkeys(reserved_names, "<reserved>")
     hidden = 0
+    from agent.skill_bundles import get_skill_bundles
+    bundle_items = [(cmd_key, info, ()) for cmd_key, info in sorted(get_skill_bundles().items())]
     try:
-        for cmd_key, info, rel_parts in _iter_gateway_skills("discord"):
-            # First (alphabetical) skill wins; the loser is dropped from the picker — warn loudly.
+        for cmd_key, info, rel_parts in (*bundle_items, *_iter_gateway_skills("discord")):
+            # Bundles are listed first because gateway dispatch gives them precedence over skills
+            # with the same slug. The loser is dropped from the picker — warn loudly.
             discord_name = cmd_key.lstrip("/")[:32]
             prior = names_used.get(discord_name)
             if prior == "<reserved>":

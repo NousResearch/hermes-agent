@@ -4,21 +4,7 @@ repo: https://github.com/loop2zero/hermes-ego
 sha: eb78591c94db8d817f27a28ebca9453ef4028633
 subdir: plugins/hermes-ego
 version: "0.1.0"
-description: >-
-  Hermes Ego reads and saves pages in the user's ego(lite) browser through a
-  loopback MCP relay (Streamable HTTP at http://127.0.0.1:8767/mcp). The Mac
-  daemon and the relay are installed separately, the same split as local-mcp;
-  this package does not start, embed, or update them. Agent Plugins v1
-  (plugin.json + mcp.json + skills/). Disclosure: long-running relay on
-  loopback; Mac daemon runs the ego CLI against the user's logged-in ego(lite)
-  browser; ego_save_page_markdown writes markdown under a configured save root
-  (for example an Obsidian vault) and downloads third-party page images, some
-  of which can finish in a background pass; a remote Hermes host needs an SSH
-  local forward to that loopback; the bearer is EGO_RELAY_TOKEN from the
-  Hermes profile environment, not a committed secret. The server is marked
-  untrusted. The relay does not set readOnlyHint, so Hermes asks before every
-  tool on this server, including reads, and refuses them when nobody can
-  answer. Tools are served by the relay at runtime.
+description: "Hermes Ego reads and saves pages in the user's ego(lite) browser through a loopback MCP relay (Streamable HTTP at http://127.0.0.1:8767/mcp). The Mac daemon and the relay are installed separately, the same split as local-mcp; this package does not start, embed, or update them. Agent Plugins v1 (plugin.json + mcp.json + skills/). Disclosure — Derived from hermes-tabs (relay code); talks only to a separately installed loopback MCP relay at http://127.0.0.1:8767/mcp with bearer EGO_RELAY_TOKEN from the Hermes profile (a remote Hermes host needs an SSH local forward); a long-running relay and a Mac daemon, installed separately, run the ego CLI against the user's logged-in ego(lite) browser, so pages that session can open are readable; ego_save_page_markdown writes markdown under the relay's configured save root (for example an Obsidian vault) and downloads third-party page images, some in a background pass after the tool returns; the server is marked untrusted, so Hermes asks before every relay tool, reads included, and refuses them in unattended runs. No telemetry, no self-update."
 maintainer: Shawn Yuan
 tier: community
 category: tools

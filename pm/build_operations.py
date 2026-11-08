@@ -26,13 +26,14 @@ def check_project_lock(
     The error still carries uv's message.
 
     A validation that fails on a *fetch* is retried once with ``--offline``.
-    Validating rewrites nothing, so uv only needs the metadata it has already
-    cached; a GitHub release host returning 504 for an opt-in extra must not
-    fail a test environment whose venv is current. The retry announces itself
-    (stderr, always — a silent downgrade would hide that the check was offline)
-    and a cache that cannot answer either fails naming the network cause, never
-    as a dependency conflict. A real install still descends the dependency:
-    this covers the validation step only.
+    Validating rewrites nothing, and with a current lock the offline check only
+    compares ``uv.lock`` against ``pyproject.toml`` — both local — so a GitHub
+    release host returning 504 for an opt-in extra must not fail a test
+    environment whose venv is current. It compares the lock, it does not re-read
+    the pinned artifacts: a real install still downloads those. The retry
+    announces itself (stderr, always — a silent downgrade would hide that the
+    check was offline) and an offline check that fails too reports the network
+    cause, never a dependency conflict.
     """
     from dataclasses import replace
 
@@ -54,19 +55,23 @@ def check_project_lock(
     except RetrievalFailure as failure:
         if offline:
             raise
-        # Silent and offline: uv reads only what is cached, so this is the same
-        # validation without the network. Its output would read as a second failure.
+        # Offline, validating a current lock needs no fetch: uv compares uv.lock
+        # against pyproject.toml, both local, so the verdict is the same without the
+        # network. That says nothing about the pinned remote artifacts — only a real
+        # install re-downloads those. Output is captured: a second red tail would read
+        # as a second failure.
         try:
             replace(environment, offline=True, output=None).check_lock(source)
         except InstallError as offline_failure:
             raise RetrievalFailure(
                 "venv",
                 f"{failure.cause}\nand the offline retry failed too: {offline_failure.cause}",
-                f"the network fetch failed ({retrieval_reason(failure.cause)}) and uv's cache "
-                f"cannot answer without it; restore network access, then retry.",
+                f"the network fetch failed ({retrieval_reason(failure.cause)}) and the offline "
+                f"check failed too; restore network access, then retry.",
             ) from failure
-        print(f"⚠ lock validation is offline: {retrieval_reason(failure.cause)}; uv.lock and the "
-              f"environment are unchanged — uv's cache proves the lock current without the network",
+        print(f"⚠ lock validation is offline: {retrieval_reason(failure.cause)}; uv.lock matches "
+              f"pyproject.toml — validated without the network; the pinned remote artifacts were "
+              f"not re-downloaded (a real install still does)",
               file=sys.stderr, flush=True)
 
 

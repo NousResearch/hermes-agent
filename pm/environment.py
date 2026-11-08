@@ -73,10 +73,12 @@ UNDATED_INDEX_HINT = ("the package index did not report upload times, which lock
                       "or a mirror that serves upload times (pip.conf index-url / UV_INDEX_URL), then retry.")
 
 # A fetch that never completed says nothing about the requirement set: retrying
-# is the remedy, and a cache-warm validation can still be answered offline.
+# is the remedy, and a current lock can still be validated offline, which only
+# compares uv.lock against pyproject.toml.
 RETRIEVAL_HINT = ("uv could not download a pinned file (index or release host unreachable); "
                   "the lock is unchanged and nothing was resolved. Retry when the network "
-                  "recovers, or validate offline from uv's cache (`--offline`).")
+                  "recovers, or validate offline (`--offline`), which compares uv.lock with "
+                  "pyproject.toml.")
 
 # uv's own English diagnostic. A localized Windows tail (os error 1224) rides
 # along, but the marker that means "packages may be installed, only the

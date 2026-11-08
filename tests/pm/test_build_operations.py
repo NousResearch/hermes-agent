@@ -479,7 +479,7 @@ _failure = _environment.RetrievalFailure(
     "  cause: HTTP status server error (504 Gateway Timeout)",
     _environment.RETRIEVAL_HINT)
 def _check_lock(self, source):
-    # "offline-only": the cache answers, the network does not (a warm cache).
+    # "offline-only": the offline check settles it, the network does not.
     if os.environ.get("PM_TEST_LOCK_BEHAVIOR") == "offline-only" and self.offline:
         return None
     raise _failure
@@ -508,9 +508,9 @@ def _project(tmp_path):
     return source
 
 
-def test_a_fetch_failure_validates_the_lock_offline_from_a_warm_cache(tmp_path, build_tools,
-                                                                     stubbed_lock_validation, monkeypatch, capfd):
-    """A 504 on one pinned wheel must not fail a validation uv can answer from its cache."""
+def test_a_fetch_failure_validates_the_lock_offline(tmp_path, build_tools,
+                                                    stubbed_lock_validation, monkeypatch, capfd):
+    """A 504 on one pinned wheel must not fail a validation the lock can settle."""
     from pm import check_project_lock
 
     monkeypatch.setenv("PM_TEST_LOCK_BEHAVIOR", "offline-only")
@@ -519,12 +519,13 @@ def test_a_fetch_failure_validates_the_lock_offline_from_a_warm_cache(tmp_path, 
     err = capfd.readouterr().err
     assert "⚠ lock validation is offline" in err
     assert "HTTP status server error (504 Gateway Timeout)" in err
-    assert "uv.lock and the environment are unchanged" in err
+    assert "uv.lock matches pyproject.toml" in err
+    assert "the pinned remote artifacts were not re-downloaded" in err
 
 
-def test_a_fetch_failure_with_a_cold_cache_names_the_network(tmp_path, build_tools,
-                                                             stubbed_lock_validation, monkeypatch, capfd):
-    """Nothing cached and nothing reachable: fail on the network cause, never as a conflict."""
+def test_a_fetch_failure_the_offline_check_cannot_settle_names_the_network(
+        tmp_path, build_tools, stubbed_lock_validation, monkeypatch, capfd):
+    """Nothing reachable and the lock itself does not settle: fail on the network cause, never as a conflict."""
     from pm import check_project_lock
 
     monkeypatch.setenv("PM_TEST_LOCK_BEHAVIOR", "always")

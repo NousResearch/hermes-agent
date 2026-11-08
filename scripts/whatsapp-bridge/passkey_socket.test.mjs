@@ -123,3 +123,47 @@ test('pairing payload waits for owner confirmation without trusted handoff', asy
   assert.equal(sent.filter(tag => tag === 'encrypted_pairing_request').length, 1);
   await assert.rejects(flow.confirmVerificationCode(), /no verification code/);
 });
+
+// Production entry point: the server's prologue request goes through CB:notification, which stashes the
+// ADV-derived handoff key first. Pin both outcomes so the confirmation prompt's reachability is explicit.
+async function driveServerPrologue(t, { signingMs }) {
+  const sock = socket();
+  const sent = [];
+  const updates = [];
+  let clock = 1_000_000;
+  t.mock.method(Date, 'now', () => clock);
+  let prologueSent;
+  const prologue = new Promise(resolve => { prologueSent = resolve; });
+  sock.query = async node => {
+    sent.push(node.content[0].tag);
+    if (node.content[0].tag === 'passkey_prologue') setImmediate(prologueSent);
+    return { tag: 'iq', attrs: {}, content: [{ tag: 'ref', attrs: {}, content: Buffer.from('ref') }] };
+  };
+  const flowHandle = attachPasskeyFlow(sock, { logger, signAssertion: async () => { clock += signingMs; return assertion; } });
+  sock.ev.on('connection.update', update => updates.push(update));
+  sock.ws.emit('CB:notification', request());
+  await prologue;
+  sock.ws.emit('CB:notification', { tag: 'notification', attrs: { from: 's.whatsapp.net', type: 'crsc_continuation' }, content: [{
+    tag: 'primary_ephemeral_identity', attrs: {}, content: proto.PrimaryEphemeralIdentity.encode({
+      publicKey: Curve.generateKeyPair().public, nonce: Buffer.alloc(32, 3),
+    }).finish(),
+  }] });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  return { sock, sent, verification: updates.find(update => update.passkeyVerification)?.passkeyVerification, flowHandle };
+}
+
+test('server prologue within the handoff window sends the pairing request without a prompt', async t => {
+  const { sock, sent, verification } = await driveServerPrologue(t, { signingMs: 1000 });
+  assert.equal(verification.skipHandoffUX, true);
+  assert.deepEqual(sent, ['ref', 'passkey_prologue', 'companion_nonce', 'encrypted_pairing_request']);
+  sock.ev.emit('connection.update', { connection: 'close' });
+});
+
+test('server prologue past the handoff window waits for owner confirmation', async t => {
+  const { sock, sent, verification, flowHandle } = await driveServerPrologue(t, { signingMs: 6 * 60 * 1000 });
+  assert.equal(verification.skipHandoffUX, false);
+  assert.equal(sent.includes('encrypted_pairing_request'), false);
+  await flowHandle.confirmVerificationCode();
+  assert.equal(sent.at(-1), 'encrypted_pairing_request');
+  sock.ev.emit('connection.update', { connection: 'close' });
+});

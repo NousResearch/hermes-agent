@@ -100,9 +100,34 @@ def _with_receipt_field(path, value):
     return mutate
 
 
+def _false_legacy_claim(db, sid):
+    """The shape a hand rewrite of the store produces: the receipt's id no longer derives from the
+    profile it is stored under, so the rewrite stamps a self-referencing legacy claim and the
+    binding row that claim implies, and the receipt passes validation as if it were adopted history.
+    """
+    from hermes_state_local import POLICY_PREFIX
+    from hermes_state_local_migration import LEGACY_PREFIX
+    with db._read_ctx() as conn:
+        stored = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + sid,)).fetchone()[0]
+    receipt = json.loads(stored)
+    receipt['request_id'] = 'rewritten-outside-the-store'
+    receipt['legacy_session_id'] = sid
+    binding = {'session_id': sid, 'profile_id': receipt['profile_id'],
+               'principal_id': receipt['principal_id'], 'legacy_session_id': sid}
+
+    def write(conn):
+        conn.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(receipt), POLICY_PREFIX + sid))
+        conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)',
+                     (LEGACY_PREFIX + sid, json.dumps(binding)))
+    db._execute_write(write)
+
+
 _RECEIPT_DAMAGE = {
     'foreign_origin': lambda db, sid: _age_receipt_origins(db, sid, lambda origin: {**origin, 'profile': 'other-profile'}),
     'lineage': lambda db, sid: _store_receipt(db, sid, _with_receipt_field(('lineage',), [sid, 'gone'])),
+    # A gateway-minted id whose receipt only "derives" from a self-referencing legacy claim.
+    # ``bind_legacy_target`` refuses the routed row, so only a hand rewrite produces it (t_988ef254).
+    'self_legacy_claim': _false_legacy_claim,
     # restore_policy wraps this ValueError into a bare storage_unavailable.
     'terminal_policy': lambda db, sid: _store_receipt(db, sid, _with_receipt_field(
         ('policy', 'terminal_json'), json.dumps({'TERMINAL_ENV': 'local', 'TERMINAL_CWD': '/elsewhere'}))),
@@ -115,6 +140,7 @@ _RECEIPT_DAMAGE = {
 @pytest.mark.parametrize('damage, clause', [
     ('foreign_origin', 'entry mismatch'),
     ('lineage', 'validate_local_lineage'),
+    ('self_legacy_claim', 'validate_local_lineage'),
     ('terminal_policy', 'ValueError: terminal policy mismatch'),
     ('malformed', 'JSONDecodeError'),
 ])

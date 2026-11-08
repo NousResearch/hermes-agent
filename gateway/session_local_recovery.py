@@ -115,7 +115,8 @@ def owned_receipt(authority, sid):
     if receipt['profile_id'] != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
     chat_id = (receipt['legacy_session_id'] if 'legacy_session_id' in receipt else
-               local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id']))
+               local_identity(receipt.get('adopted_profile_id') or receipt['profile_id'],
+                              receipt['principal_id'], receipt['request_id']))
     if receipt['session_id'] != sid or sid != chat_id:
         raise ValueError('identity mismatch')
     source = local_source(authority, chat_id, receipt['principal_id'])

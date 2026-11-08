@@ -1,14 +1,14 @@
 name: jw3
 title: JW3.ai trading
 repo: https://github.com/agnostic4321-ops/jw3-hermes-plugin
-sha: f6d3cc2830d85bd6af6d4afa0e3a3a7f7ce8fd28
+sha: 88987e5fe9934060d4571d98e13092c942ea702c
 version: "1.0.0"
 description: "JW3.ai non-custodial trading inside Hermes: 12 market/risk/Diary reads, Diary propose cards, and 4 confirm-gated execution tools — all thin wrappers over the local jw3 CLI, which owns the PAT and enforces server-side scope, kill-switch, fee, and idempotency gates. Bundles the jw3-ops skill and /jw3-status. Disclosure: every tool call shells out to the local `jw3` binary; reads reach Supabase edge functions and exchange APIs; fund-moving tools dry-run (zero bytes sent) unless confirm=true with explicit per-trade approval; the plugin holds no secrets and stores nothing. Requires an authenticated `jw3 auth login`."
 maintainer: agnostic4321-ops
 tier: community
 category: tools
 docs_url: https://github.com/agnostic4321-ops/jw3-hermes-plugin
-image: https://raw.githubusercontent.com/agnostic4321-ops/jw3-hermes-plugin/f6d3cc2830d85bd6af6d4afa0e3a3a7f7ce8fd28/assets/jw3-icon.svg
+image: https://raw.githubusercontent.com/agnostic4321-ops/jw3-hermes-plugin/88987e5fe9934060d4571d98e13092c942ea702c/assets/jw3-icon.svg
 requires_hermes: ">=0.22.5"
 readme: true
 platforms: []

@@ -46,18 +46,38 @@ def notification_kwargs(mode: str, notify: bool | None) -> dict:
     return {} if mode != "important" or notify else {"disable_notification": True}
 
 
-async def send_rich_standalone(bot, extra: dict, chat_id, content: str, *, thread_id=None, notify=None):
-    """The gateway's ``sendRichMessage`` fast-path for an out-of-process send: the same gates
-    (``rich_messages`` opt-in, constructs MarkdownV2 degrades, Desktop crash/garble shapes, size cap,
-    capability latch) and routing, over the caller's ``bot``. ``None`` = not eligible or permanently
-    rejected, so the caller sends legacy MarkdownV2; otherwise the adapter's ``SendResult``. A
-    transient failure is returned, not retried legacy, because the rich request may have landed."""
+def _standalone_adapter(bot, extra: dict):
+    """An unconnected ``TelegramAdapter`` over the standalone ``bot`` (no polling, no lock), so an
+    out-of-process send reuses the gateway's gates, routing and fallbacks verbatim."""
     from gateway.config import PlatformConfig
     from plugins.platforms.telegram.adapter import TelegramAdapter
     adapter = TelegramAdapter(PlatformConfig(enabled=True, extra=dict(extra or {})))
     adapter._bot = bot
     adapter._notifications_mode = resolve_notifications_mode()
+    return adapter
+
+
+def _metadata(thread_id, notify) -> dict:
+    return {**({"thread_id": str(thread_id)} if thread_id is not None else {}), **({"notify": True} if notify else {})}
+
+
+async def send_rich_standalone(bot, extra: dict, chat_id, content: str, *, thread_id=None, notify=None):
+    """The gateway's ``sendRichMessage`` fast-path for an out-of-process send: the same gates
+    (``rich_messages`` opt-in, constructs MarkdownV2 degrades, Desktop crash/garble shapes, size cap,
+    capability latch) and routing. ``None`` = not eligible or permanently rejected, so the caller
+    sends legacy MarkdownV2; otherwise the adapter's ``SendResult``. A transient failure is returned,
+    not resent as legacy, because the rich request may have landed."""
+    adapter = _standalone_adapter(bot, extra)
     if not adapter._should_attempt_rich(content):
         return None
-    metadata = {**({"thread_id": str(thread_id)} if thread_id is not None else {}), **({"notify": True} if notify else {})}
-    return await adapter._try_send_rich(str(chat_id), content, None, metadata)
+    return await adapter._try_send_rich(str(chat_id), content, None, _metadata(thread_id, notify))
+
+
+async def send_album_standalone(bot, extra: dict, chat_id, paths: list[str], *, thread_id=None, notify=None):
+    """Photos as native albums through the adapter's ``send_multiple_images`` (``sendMediaGroup``,
+    10 per chunk, per-photo fallback for a refused chunk)."""
+    from urllib.parse import quote
+    adapter = _standalone_adapter(bot, extra)
+    # The caller hands absolute, existence-checked paths; quote() matches the adapter's unquote().
+    images = [("file://" + quote(p), None) for p in paths]
+    return await adapter.send_multiple_images(str(chat_id), images, _metadata(thread_id, notify))

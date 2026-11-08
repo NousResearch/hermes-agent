@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import time
+from types import SimpleNamespace
 
 from agent.redact import redact_sensitive_text
 
@@ -312,6 +313,16 @@ _TELEGRAM_HTML_TAG_ALT = "|".join(sorted(_TELEGRAM_HTML_TAGS, key=len, reverse=T
 _TELEGRAM_HTML_TAG_RE = re.compile(rf"</?(?:{_TELEGRAM_HTML_TAG_ALT})(?:\s[^>]*)?>", re.IGNORECASE)
 
 
+def _telegram_album_paths(media_files, force_document, caption):
+    """The paths when the batch is two or more existing still photos and nothing else (no caption,
+    voice, GIF or forced document, which keep the per-file path), else ``[]``."""
+    if force_document or caption is not None or len(media_files) < 2:
+        return []
+    ok = all(not voice and os.path.splitext(path)[1].lower() in _IMAGE_EXTS - {".gif"} and os.path.exists(path)
+             for path, voice in media_files)
+    return [os.path.abspath(path) for path, _ in media_files] if ok else []
+
+
 def _telegram_format(message):
     """``(formatted, parse_mode, has_html)``: text already containing a Telegram HTML tag is sent
     as HTML; otherwise Markdown -> MarkdownV2 via the adapter's ``format_message``."""
@@ -347,7 +358,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                       "through a cron job while the gateway is running.")
     try:
         from plugins.platforms.telegram.telegram_outbound import (
-            is_visually_empty, notification_kwargs, resolve_notifications_mode, send_rich_standalone)
+            is_visually_empty, notification_kwargs, resolve_notifications_mode, send_album_standalone,
+            send_rich_standalone)
         if is_visually_empty(message):
             message = ""  # invisible-only text would land as an empty bubble
         formatted, send_parse_mode, _has_html = _telegram_format(message)
@@ -386,6 +398,12 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             ]
         for chunk in chunks:
             last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
+        if album := _telegram_album_paths(media_files, force_document, _tg_caption):
+            result = await send_album_standalone(bot, extra or {}, chat_id, album, thread_id=thread_id, notify=notify)
+            if not result.success:
+                warnings.append(_sanitize_error_text(f"Failed to send Telegram photo album: {result.error}"))
+            media_files = []  # the adapter already fell back photo by photo for a refused chunk
+            last_msg = last_msg or (SimpleNamespace(message_id=None) if result.success else None)
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):
                 warnings.append(f"Media file not found, skipping: {media_path}")
@@ -409,7 +427,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 logger.error(warnings[-1])
         if last_msg is None:
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}
-        return _success("telegram", chat_id, warnings, message_id=str(last_msg.message_id))
+        return _success("telegram", chat_id, warnings, **({"message_id": str(last_msg.message_id)}
+                                                          if last_msg.message_id is not None else {}))
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: "
                 f"{install_hint('telegram')}"}

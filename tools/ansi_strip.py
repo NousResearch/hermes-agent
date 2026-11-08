@@ -83,15 +83,33 @@ def strip_unicode_tags(text: str) -> str:
     return _UNICODE_TAG_SUB_RE.sub(lambda m: m.group(1) or "", text)
 
 
-def strip_unicode_tags_deep(value):
-    """``strip_unicode_tags`` applied to every string in a nested dict/list/tuple structure —
-    server-controlled JSON payloads (MCP structuredContent, _meta) can smuggle invisible TAG
-    chars in nested strings, which a flat strip of the outer text never reaches."""
+# Bidi embedding/override (U+202A-202E) and isolate (U+2066-2069) controls reorder how text renders,
+# so a tool description can read one way to the user and another to the model ("Trojan Source").
+# ZWJ/ZWNJ are deliberately kept: emoji sequences and several scripts need them.
+_BIDI_CONTROL_RE = re.compile(r"[\u202a-\u202e\u2066-\u2069]")
+
+
+def strip_tool_metadata_text(text: str) -> str:
+    """``strip_unicode_tags`` plus bidi override/isolate controls, for MCP tool metadata."""
+    text = strip_unicode_tags(text)
+    if not text or not _BIDI_CONTROL_RE.search(text):
+        return text
+    return _BIDI_CONTROL_RE.sub("", text)
+
+
+def strip_unicode_tags_deep(value, strip=strip_unicode_tags):
+    """``strip`` applied to every string (keys included) in a nested dict/list/tuple. Returns
+    ``value`` itself when nothing changed: tool schemas are frozen wire bytes, so a clean schema
+    must come back as the very same object."""
     if isinstance(value, str):
-        return strip_unicode_tags(value)
+        return strip(value)
     if isinstance(value, dict):
-        return {strip_unicode_tags_deep(k) if isinstance(k, str) else k: strip_unicode_tags_deep(v)
-                for k, v in value.items()}
+        items = [(strip(k) if isinstance(k, str) else k, strip_unicode_tags_deep(v, strip))
+                 for k, v in value.items()]
+        if all(nk is k and nv is v for (nk, nv), (k, v) in zip(items, value.items())):
+            return value
+        return dict(items)
     if isinstance(value, (list, tuple)):
-        return type(value)(strip_unicode_tags_deep(v) for v in value)
+        items = [strip_unicode_tags_deep(v, strip) for v in value]
+        return value if all(n is v for n, v in zip(items, value)) else type(value)(items)
     return value

@@ -7,7 +7,7 @@ import hashlib
 import fnmatch
 import re
 from typing import Any, List
-from tools.ansi_strip import strip_unicode_tags
+from tools.ansi_strip import strip_tool_metadata_text, strip_unicode_tags_deep
 from tools.mcp_tool_common import mcp_field
 
 logger = logging.getLogger("tools.mcp_tool")
@@ -188,8 +188,11 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     ``registry.register(schema=...)`` dict."""
     return {
         "name": mcp_prefixed_tool_name(server_name, mcp_tool.name),
-        "description": strip_unicode_tags(mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"),
-        "parameters": _normalize_mcp_input_schema(mcp_field(mcp_tool, "input_schema", "inputSchema")),
+        "description": strip_tool_metadata_text(mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"),
+        # Parameter descriptions, titles, enums and defaults reach the model on every call too.
+        "parameters": strip_unicode_tags_deep(
+            _normalize_mcp_input_schema(mcp_field(mcp_tool, "input_schema", "inputSchema")),
+            strip_tool_metadata_text),
     }
 
 

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Callable, List, Optional
 from utils import is_truthy_value
 from tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, mcp_field, _core
 from tools.mcp_tool_schema import _normalize_mcp_input_schema
-from tools.ansi_strip import strip_unicode_tags, strip_unicode_tags_deep
+from tools.ansi_strip import strip_tool_metadata_text, strip_unicode_tags, strip_unicode_tags_deep
 
 
 logger = logging.getLogger("tools.mcp_tool")
@@ -210,8 +210,9 @@ class SamplingHandler:
         server_tools = getattr(params, "tools", None)
         tools = [{"type": "function", "function": {
             "name": strip_unicode_tags(str(getattr(t, "name", ""))),
-            "description": strip_unicode_tags(str(getattr(t, "description", "") or "")),
-            "parameters": strip_unicode_tags_deep(_normalize_mcp_input_schema(mcp_field(t, "input_schema", "inputSchema")))}}
+            "description": strip_tool_metadata_text(str(getattr(t, "description", "") or "")),
+            "parameters": strip_unicode_tags_deep(
+                _normalize_mcp_input_schema(mcp_field(t, "input_schema", "inputSchema")), strip_tool_metadata_text)}}
             for t in server_tools] if server_tools else None
         logger.log(self.audit_level, "MCP server '%s' sampling request: model=%s, max_tokens=%d, messages=%d",
                    self.server_name, resolved_model, max_tokens, len(messages))

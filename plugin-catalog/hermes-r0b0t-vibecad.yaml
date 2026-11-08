@@ -1,0 +1,31 @@
+name: hermes-r0b0t-vibecad
+title: vibeCAD
+repo: https://github.com/r0b0tlab/hermes-r0b0t-vibeCAD
+sha: "33e3e57521c3ef3ed7fa8bdf832aa1bd0b39cf97"
+description: >
+  Profile-driven FDM CAD: executes a trusted build123d model in the configured
+  workspace, refuses parts that miss the selected bed, renders preview drawings,
+  and writes a vendor-neutral slicer handoff. Bundled Bambu adapters cover the
+  X2D dual-tool common envelope and the P2S AMS Combo (256 mm cube, one 0.4 mm
+  nozzle, slots 1-4 unless ams_slot_capacity is set, max 20). Desktop shows
+  those previews inline when the Desktop half is enabled. Disclosure: local
+  subprocess execution and workspace file writes only. No network, no
+  credentials, no telemetry, no print dispatch, no live AMS binding, no native
+  Bambu process project.
+maintainer: am423
+tier: community
+category: tools
+requires_hermes: ">=0.21.0"
+version: "0.2.0"
+capabilities:
+  provides_tools:
+    - vibecad_list_printer_profiles
+    - vibecad_execute_and_export
+    - vibecad_inspect_metrics
+    - vibecad_generate_preview_renders
+    - vibecad_modify_parameter
+    - vibecad_stage_for_slicer
+    - vibecad_stage_for_bambu
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

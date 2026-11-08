@@ -172,8 +172,14 @@ def _load_hermes_env() -> None:
         env_path = home / ".env"
         if env_path.exists():
             try:
-                from hermes_cli.env_loader import _load_dotenv_with_fallback
+                from hermes_cli.env_loader import (
+                    _apply_managed_env, _load_dotenv_with_fallback, _restore_secret_source_values)
                 _load_dotenv_with_fallback(env_path, override=True)
+                # Keep load_hermes_dotenv()'s precedence: the raw .env reload must not beat what an
+                # external secret source resolved at startup (a `secrets.command` / Bitwarden value
+                # behind a .env placeholder) or the administrator-managed .env (#151292).
+                _restore_secret_source_values(home)
+                _apply_managed_env()
             except Exception:
                 pass
 

@@ -97,3 +97,24 @@ async def test_backticks_inside_a_short_command_cannot_close_the_card_fence(adap
     fence = "``````"  # one longer than the command's longest run (5)
     assert text.count(fence) == 2
     assert text.index(fence) < text.index(command) < text.rindex(fence)
+
+
+@pytest.mark.parametrize("command", ["echo " + "`" * 900 + " ; rm -rf ~", "`" * 1990, "`" * 5000],
+                         ids=["echo-900-ticks", "1990-ticks", "5000-ticks"])
+def test_a_long_backtick_run_the_preview_drops_cannot_push_the_card_past_the_cap(command):
+    """The fence is sized from the preview actually shown: a backtick run cut off with the tail must not
+    widen the fence past Discord's 2,000-char cap (that card fell back to text and lost its buttons)."""
+    import re
+
+    from gateway.platforms.base_exec_approval import render_exec_approval
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    adapter = DiscordAdapter.__new__(DiscordAdapter)
+    adapter._approval_mention_content = lambda: ""
+    text, truncated = render_exec_approval(adapter, command, "flagged", False, False)
+    assert len(text) <= adapter.MAX_MESSAGE_LENGTH
+    assert truncated and "Preview shortened" in text and "only Deny is offered" in text
+    runs = re.findall(r"^(`{3,})", text, re.MULTILINE)
+    open_fence, close_fence = runs[0], runs[-1]  # the opener line and the closer line
+    shown = text[text.index(open_fence) + len(open_fence):text.rindex(close_fence)].removeprefix("bash")
+    assert open_fence == close_fence and max(map(len, re.findall("`+", shown)), default=0) < len(open_fence)

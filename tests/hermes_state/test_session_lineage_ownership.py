@@ -218,6 +218,7 @@ def test_unreadable_sibling_store_blocks_session_creation(profile_stores):
 def test_sibling_store_without_sessions_schema_blocks_creation(profile_stores):
     root, profile = profile_stores
     default_db = SessionDB(root / "state.db")
+    default_db._TRANSCRIPT_WRITE_PATIENCE_S = 0.0
     incomplete = profile / "state.db"
     with sqlite3.connect(incomplete) as conn:
         conn.execute("CREATE TABLE unrelated (id TEXT)")
@@ -389,3 +390,4 @@ def test_repair_profiles_reports_dual_home_as_nonrepairable(profile_stores, monk
     assert findings[0].repairable is False
     assert "canonical-owner" in findings[0].reason
     assert not [finding for finding in plan.repairable if finding.subject == session_id]
+

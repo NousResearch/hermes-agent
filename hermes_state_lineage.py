@@ -528,6 +528,26 @@ def _store_candidates(root: Path, current_path: Path | None) -> list[tuple[Path,
     return candidates
 
 
+def _inventory_session_columns(execute, path: Path, deadline: float) -> set[str]:
+    """Wait for a sibling's startup DDL without treating an unfinished store as empty."""
+    while True:
+        # Exhaust each probe so no read cursor holds up the sibling's schema commit.
+        table = execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'"
+        ).fetchall()
+        columns = (
+            {row["name"] for row in execute("PRAGMA table_info(sessions)").fetchall()}
+            if table else set()
+        )
+        if {"id", "ended_at"}.issubset(columns):
+            return columns
+        reason = "has incomplete sessions schema" if table else "lacks sessions table"
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SessionLineageInventoryError(f"Session store {reason}: {path}")
+        time.sleep(min(0.05, remaining))
+
+
 def _rows_for_ids(
     path: Path, profile: str, session_ids: tuple[str, ...], timeout_s: float = 2.0, *,
     deadline: float | None = None,
@@ -548,14 +568,7 @@ def _rows_for_ids(
 
         try:
             execute("PRAGMA query_only = ON")
-            table = execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'"
-            ).fetchone()
-            if table is None:
-                raise SessionLineageInventoryError(f"Session store lacks sessions table: {path}")
-            columns = {row["name"] for row in execute("PRAGMA table_info(sessions)")}
-            if not {"id", "ended_at"}.issubset(columns):
-                raise SessionLineageInventoryError(f"Session store has incomplete sessions schema: {path}")
+            columns = _inventory_session_columns(execute, path, deadline)
             def col(name: str, fallback: str = "NULL") -> str:
                 return name if name in columns else fallback
             wanted = ", ".join((
@@ -721,3 +734,4 @@ def session_lineage_rows(conn):
     optional = ("parent_session_id", "end_reason", "profile_name", "session_key", "message_count")
     projection = ", ".join(["id", "ended_at", *(name if name in columns else f"NULL AS {name}" for name in optional)])
     return [dict(row) for row in conn.execute(f"SELECT {projection} FROM sessions").fetchall()]
+

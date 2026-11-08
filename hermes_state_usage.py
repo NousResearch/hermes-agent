@@ -527,6 +527,14 @@ class SessionUsageMixin:
         while True:
             try:
                 with self._token_queue_cond:
+                    # A respawn may overlap a caller draining the previous writer's
+                    # leftovers. Keep one claim authoritative until its receipt settles.
+                    while self._token_writer_busy:
+                        self._token_queue_cond.wait()
+                    if self._token_writer_uncertain:
+                        self._token_writer_thread = None
+                        self._token_queue_cond.notify_all()
+                        return
                     idle_deadline = time.monotonic() + self._TOKEN_WRITER_IDLE_SECONDS
                     while not self._token_queue and not self._token_writer_stop:
                         remaining = idle_deadline - time.monotonic()
@@ -878,3 +886,4 @@ class SessionUsageMixin:
              WHERE {' AND '.join(where)}
             """, params)
         return {"tokens": int(row[0] or 0), "cost_usd": float(row[1] or 0.0)}
+

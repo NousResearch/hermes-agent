@@ -7,7 +7,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/james-see/midi-bridge/blob/9e5893471af435ac3128e58c9c19ae7fab38826b/README.md
-image: https://raw.githubusercontent.com/james-see/midi-bridge/17b5b4889e199c6b06ffe6278a66cff5a817da00/assets/card.png
+image: https://raw.githubusercontent.com/james-see/midi-bridge//assets/card.png
 version: "1.0.0"
 platforms: []
 capabilities:

@@ -13,13 +13,13 @@ import re
 SECRET_HEADER_NAME_LIST = ("x-api-key", "x-goog-api-key", "api-key", "apikey", "x-api-token", "x-auth-token", "x-access-token")
 _SECRET_HEADER_NAMES = rf"(?:{'|'.join(SECRET_HEADER_NAME_LIST)})"
 _SECRET_HEADER_LINE_RE = re.compile(
-    rf"(^[ \t]*(?:[<>][ \t]+)?{_SECRET_HEADER_NAMES}:[ \t]*)([^\r\n]+)",
+    rf"(^[ \t]*(?:[<>][ \t]+)?{_SECRET_HEADER_NAMES}[ \t]*:[ \t]*)([^\r\n]+)",
     re.IGNORECASE | re.MULTILINE,
 )
 _SECRET_HEADER_INLINE_RE = re.compile(
-    # ``$`` stays in the value: a log line's ``x-api-key: $opaque…`` is a credential, and the
-    # quote/backtick/shell-separator exclusions already keep a command's syntax intact.
-    rf"({_SECRET_HEADER_NAMES}:[ \t]*)([^\s\"';&|<>()`\\]+)",
+    # ``$``, ``&`` and ``;`` stay in the value (``x-api-key: &opaque…`` in a log is a credential);
+    # only ``&&`` / ``&`` / ``;`` before whitespace or end of text are a command's separators.
+    rf"({_SECRET_HEADER_NAMES}[ \t]*:[ \t]*)((?:[^\s\"';&|<>()`\\]|&(?![&\s]|$)|;(?!\s|$))+)",
     re.IGNORECASE,
 )
 _SECRET_HEADER_DOUBLE_QUOTED_RE = re.compile(
@@ -128,7 +128,8 @@ _COOKIE_HEADER_JSON_UNTERMINATED_RE = re.compile(
 # A Cookie/Set-Cookie header in the middle of a line (log records, prose dumps) that the
 # line/curl/JSON passes above did not see. Every ``name=value`` pair is masked, not only
 # the first; ``Set-Cookie:`` also masks a bare 16+ char token (``Set-Cookie: header`` is prose).
-_COOKIE_PAIR = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+=(?:\"[^\"\r\n]*\"|[^\s;\\\"'`]*)"
+# An apostrophe is a cookie-octet (``sid=pre'opaque``) unless it closes a shell word.
+_COOKIE_PAIR = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+=(?:\"[^\"\r\n]*\"|(?:[^\s;\\\"'`]|'(?![\s'\"`;&|<>()]|$))*)"
 _COOKIE_HEADER_INLINE_RE = re.compile(
     rf"(\b(?P<set>Set-)?Cookie:[ \t]*)"
     rf"(?:{_COOKIE_PAIR}(?:;[ \t]*{_COOKIE_PAIR})*|(?(set)[^\s\\\"';&|<>()$`*=]{{16,}}+(?![^\s;])|(?!)))",
@@ -206,7 +207,12 @@ def redact_header_credentials(text: str) -> str:
 # ``cookie_policy=x`` and URL query params (``?cookie=``) never match.
 _COOKIE_ASSIGN_RE = re.compile(
     r"(?<![\w?&])((?:[A-Za-z0-9]+_)*+cookie\s*=(?!=)\s*)"
-    r"(?:(?P<q>[\"'])(?P<quoted>(?:(?!(?P=q))[^\\\r\n]|\\.)*)(?P=q)(?P<tail>(?:\\.|'[^'\r\n]*+'|[^\s\"'\\;&|<>(),]++)*+)|(?P<bare>\S+))",
+    # A joined ``"…"`` piece holds no JSON punctuation, so a JSON string's closing quote never
+    # starts one. A bare value ends at its own boundary: quotes, ``,``, whitespace, and a ``;`` /
+    # ``&`` that is not followed by another cookie pair / value character.
+    r"(?:(?P<q>[\"'])(?P<quoted>(?:(?!(?P=q))[^\\\r\n]|\\.)*)(?P=q)"
+    r"(?P<tail>(?:\\.|'[^'\r\n]*+'|\"[^\"\s\\,:{}\[\]]*+\"|[^\s\"'\\;&|<>(),]++)*+)"
+    r"|(?P<bare>(?:[^\s\"'`\\;,&|<>()]|&(?![&\s]|$)|;(?=[!#$%'*+\-.^_|~0-9A-Za-z]+=))+))",
     re.IGNORECASE,
 )
 

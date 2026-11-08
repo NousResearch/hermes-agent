@@ -24,6 +24,10 @@ class TestCookieCredentials:
             ('export SESSION_COOKIE="a=1; sid=opaqueSessionValue1234567890"', "opaqueSessionValue"),
             ('INFO upstream Cookie: sid="opaqueSessionValue1234567890"', "opaqueSessionValue"),
             ("INFO upstream x-api-key: $opaqueSessionValue1234567890", "opaqueSessionValue"),
+            ("INFO upstream x-api-key: &opaqueSessionValue1234567890", "opaqueSessionValue"),
+            ("INFO upstream x-api-key : opaqueSessionValue1234567890", "opaqueSessionValue"),
+            ("INFO upstream Cookie: sid=pre'opaqueSessionValue1234567890", "opaqueSessionValue"),
+            ("export SESSION_COOKIE='sid='\"opaqueSessionValue1234567890\"", "opaqueSessionValue"),
         ):
             assert secret not in redact_sensitive_text(text), text
         # Terminal output scrubs with code_file=True (``curl -i``); the header is still a credential.
@@ -57,5 +61,11 @@ class TestCookieCredentials:
         # A masked value never swallows the text around it (JSON neighbours, shell separators).
         out = redact_sensitive_text('{"output": "cookie=\'opaqueSessionValue1234567890\'", "model": "m"}')
         assert out.endswith('\'", "model": "m"}') and "opaqueSessionValue" not in out
-        out = redact_sensitive_text("SESSION_COOKIE='opaqueSessionValue1234567890';echo done")
-        assert out.endswith("';echo done") and "opaqueSessionValue" not in out
+        for text, tail in (
+            ("SESSION_COOKIE='opaqueSessionValue1234567890';echo done", "';echo done"),
+            ('{"output":"cookie=opaqueSessionValue1234567890","model":"m"}', '","model":"m"}'),
+            ("SESSION_COOKIE=opaqueSessionValue1234567890;echo done", "7890;echo done"),
+            ("INFO x-api-key: opaqueSessionValue1234567890&& echo ok", "***&& echo ok"),
+        ):
+            out = redact_sensitive_text(text)
+            assert out.endswith(tail) and "opaqueSessionValue" not in out, out

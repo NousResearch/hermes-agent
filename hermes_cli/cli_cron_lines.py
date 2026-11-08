@@ -72,7 +72,7 @@ def cron_list_lines(*, include_disabled: bool = False) -> list[str]:
 
 
 # /cron flag tables: flag -> opts key. Order-sensitive in _parse_cron_flags: bool flags never
-# consume a value; --repeat is int-validated separately.
+# consume a value; --repeat is parsed separately and left for normalize_repeat_value to validate.
 _CRON_BOOL_FLAGS = {"--clear-skills": "clear_skills", "--all": "all"}
 _CRON_LIST_FLAGS = {"--skill": "skills", "--add-skill": "add_skills", "--remove-skill": "remove_skills"}
 _CRON_VALUE_FLAGS = {"--name": "name", "--deliver": "deliver", "--prompt": "prompt", "--schedule": "schedule"}
@@ -89,7 +89,7 @@ def _normalize_skills(values) -> list:
 
 
 def _parse_cron_flags(tokens):
-    """Parse /cron flags into an opts dict (None for a bad --repeat)."""
+    """Parse /cron flags into an opts dict."""
     opts = {
         "name": None, "deliver": None, "repeat": None, "prompt": None, "schedule": None,
         "skills": [], "add_skills": [], "remove_skills": [],
@@ -105,10 +105,7 @@ def _parse_cron_flags(tokens):
             opts[_CRON_LIST_FLAGS[token]].append(tokens[i + 1])
             i += 2
         elif token == "--repeat" and has_value:
-            try:
-                opts["repeat"] = int(tokens[i + 1])
-            except ValueError:
-                return None
+            opts["repeat"] = tokens[i + 1]
             i += 2
         elif token in _CRON_VALUE_FLAGS and has_value:
             opts[_CRON_VALUE_FLAGS[token]] = tokens[i + 1]
@@ -214,8 +211,6 @@ def cron_command_lines(arg: str) -> list[str]:
     if not tokens:
         return cron_overview_lines()
     subcommand, opts = tokens[0].lower(), _parse_cron_flags(tokens[1:])
-    if opts is None:
-        return [_t("cron.repeat_must_be_integer")]
     handler = _CRON_SUBCOMMANDS.get(subcommand)
     if handler is None:
         return [_t("cron.unknown_command", subcommand=subcommand), f"  {_t('cron.available')}"]

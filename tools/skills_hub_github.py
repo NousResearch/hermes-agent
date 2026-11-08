@@ -262,7 +262,7 @@ class GitHubSource(SkillSource):
         self._skillsh_groupings: dict[str, Optional[dict[str, str]]] = {}
         self._rate_limited: bool = False
         self._raw_unusable = False  # raw host unreachable here: later files go straight to the API
-        self._listed_dirs: set = set()  # paths the Contents API answered with a directory listing
+        self._listed_dirs: set = set()  # (repo, ref, path) the Contents API answered with a directory listing
 
     @property
     def is_rate_limited(self) -> bool:  # whether the GitHub API rate limit was hit during operations
@@ -322,7 +322,8 @@ class GitHubSource(SkillSource):
                 self._add_support_file(repo, _skill_file_path(skill_dir, rel_path), rel_path, files, rel_path)
             # Without a tree a linked support DIRECTORY can only be fetched as a Contents listing, which
             # _fetch_file_bytes refuses; installing without it would ship a skill missing those files.
-            if any(_skill_file_path(skill_dir, rel_path) in self._listed_dirs for rel_path in referenced):
+            if any((repo, pinned_ref, _skill_file_path(skill_dir, rel_path)) in self._listed_dirs
+                   for rel_path in referenced):
                 logger.warning("Skill links a support directory and the repo tree is unavailable: %s", identifier)
                 return None
             revision = ""
@@ -608,7 +609,7 @@ class GitHubSource(SkillSource):
         # a .json one) comes back as application/vnd.github.v3.raw. Never hand a listing back as bytes.
         content_type = resp.headers.get("content-type")
         if isinstance(content_type, str) and content_type.startswith("application/json"):
-            self._listed_dirs.add(path)
+            self._listed_dirs.add((repo, ref, path))
             return None
         return resp.content
 

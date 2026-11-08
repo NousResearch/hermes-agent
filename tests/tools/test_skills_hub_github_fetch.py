@@ -104,6 +104,12 @@ def test_tree_less_fetch_rejects_a_linked_directory_but_keeps_json_files(monkeyp
         "skills/demo/references/clues": listing, "skills/demo/references/data.json": data_json}))
     assert source.fetch("owner/repo/skills/demo") is None
 
+    # The same source (update checks reuse one) must not carry that verdict to another repo.
+    monkeypatch.setattr(GitHubSource, "_github_get", serve({
+        "skills/demo/references/clues": (200, b"# a file here", raw_ct),
+        "skills/demo/references/data.json": data_json}))
+    assert source.fetch("other/repo/skills/demo") is not None
+
     md_json_only = md.replace("`references/clues/` and ", "")
     source = GitHubSource(auth=MagicMock(spec=GitHubAuth))
     monkeypatch.setattr(source, "_get_repo_tree", lambda _repo: None)

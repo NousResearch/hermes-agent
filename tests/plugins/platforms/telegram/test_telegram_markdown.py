@@ -51,6 +51,7 @@ def test_bold_without_quote_keeps_its_markers(adapter):
         ("$2x$ but $5$6", "$2x$ but \\$5\\$6"),
         ("``price=$5`` costs $5", "``price=$5`` costs \\$5"),
         ("`` a`b $5 `` then $7", "`` a`b $5 `` then \\$7"),
+        ("Price $5 (`$` or `$6`).", "Price \\$5 (`$` or `$6`)."),
     ],
 )
 def test_rich_payload_escapes_currency_but_keeps_math_and_code(adapter, markdown, expected):
@@ -67,6 +68,13 @@ def test_rich_payload_escapes_currency_but_keeps_math_and_code(adapter, markdown
         ("$5 - $3 = $2", "\\$5 - \\$3 = \\$2"),
         ("$1,000-$2,000", "\\$1,000-\\$2,000"),
         ("$2\\frac{1}{2}$ and $3", "$2\\frac{1}{2}$ and \\$3"),
+        ("$$x=1$$ so $2[x+1]$", "$$x=1$$ so $2[x+1]$"),
+        ("$$x=1$$ so $2\\left|x\\right|$", "$$x=1$$ so $2\\left|x\\right|$"),
+        ("$$x=1$$ so $5! = 120$", "$$x=1$$ so $5! = 120$"),
+        ("$$x=1$$ so $2 \\in [0, 1]$", "$$x=1$$ so $2 \\in [0, 1]$"),
+        ("$$x=1$$ so $3'$ and $1:2$", "$$x=1$$ so $3'$ and $1:2$"),
+        # A word of two or more letters is prose, in any script.
+        ("$5 и 10$", "\\$5 и 10$"),
     ],
 )
 def test_rich_payload_keeps_spaced_numeric_math_whole(adapter, markdown, expected):

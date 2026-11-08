@@ -304,8 +304,9 @@ def _escape_bare_bracket(m, seg: str) -> str:
 # Regions the rich-message dollar escape leaves verbatim (fenced code, inline code delimited by
 # matching backtick-run widths, $$ display math, $x$ inline math, digit-led formulas such as $2+2$
 # that carry an operator or close tight like $4$ (an amount is never closed by a $ that no digit or
-# word follows), spaced formulas such as $2x + 1$ or $2\,x$ (an operator or TeX command, letters
-# only as one-letter variables, so "$5 or 10$" and "$5 - $3" stay prose), already-escaped \$),
+# word follows), spaced formulas such as $2x + 1$, $2\,x$ or $5! = 120$ (any symbol but . , and `,
+# or a TeX command; letters only as one-letter variables, so "$5 or 10$" and "$5 - $3" stay prose:
+# the closing $ is never followed by a digit, so an amount's $ cannot close it), already-escaped \$),
 # and the currency $ it escapes: a lone $ before an
 # amount, or after a currency prefix (R$ 1.000, US$ 1,200). Telegram's rich Markdown pairs any two
 # bare $ as inline LaTeX, so "$395k vs $483k" otherwise renders as one garbled math span.
@@ -314,8 +315,8 @@ _RICH_DOLLAR_RE = re.compile(
     r'|(?<![\w$])\$(?![\d\s$])(?:\\.|[^\\\n$])+?(?<!\s)\$(?![\d$])'
     r'|(?<![\w$\\])\$\d[\w.,]*(?:[-+*/^=<>]|\\[a-zA-Z]++)(?:[\w.,(){}^_+*/=<>-]|\\[a-zA-Z]+)*+(?<![-+*/^=<>])\$(?![\w$])'
     r'|(?<![\w$\\])\$\d[\w.,]*(?<![.,])\$(?![\w$])'
-    r'|(?<![\w$\\])\$\d(?=[^$\n]*?(?:[-+*/^=<>]|\\))'
-    r'(?:[\d.,(){}^_+*/=<> -]|\\[a-zA-Z]+|\\[^a-zA-Z\s$]|[a-zA-Z](?![a-zA-Z]))*+(?<![-+*/^=<>\s])\$(?![\w$]|\s?\d))'
+    r'|(?<![\w$\\])\$\d(?=[^$\n]*?(?:[^\w\s$.,`]|\\))'
+    r'(?:\\[a-zA-Z]+|\\[^a-zA-Z\s$]|[^\W\d_](?![^\W\d_])|[^$\n\\\w`]|[\d_])*+(?<![-+*/^=<>\s])\$(?![\w$]|\s?\d))'
     r'|(?P<currency>(?<![\\$])\$(?!\$)(?=\d)|(?<=[A-Z])\$(?=\s?\d))'
 )
 

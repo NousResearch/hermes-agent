@@ -226,7 +226,13 @@ def _enable_plugin_platform(config: GatewayConfig, entry) -> None:
     if seed:  # commit the probe's env-seeded extras (env_enablement_fn is never called twice)
         seed = dict(seed)
         home = seed.pop("home_channel", None)
+        token = seed.pop("token", None)
+        api_key = seed.pop("api_key", None)
         platform_config.extra.update(seed)
+        if token and not platform_config.token:
+            platform_config.token = token
+        if api_key and not platform_config.api_key:
+            platform_config.api_key = api_key
         if isinstance(home, dict) and home.get("chat_id"):
             platform_config.home_channel = HomeChannel(
                 platform=platform, chat_id=str(home["chat_id"]), name=str(home.get("name") or "Home"),

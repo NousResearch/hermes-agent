@@ -216,6 +216,86 @@ def test_checkout_inside_a_guarded_root_is_not_hermes_state():
         guard.check(PROJECT_ROOT.parent / "config.yaml")
 
 
+def test_manifest_probe_beside_checkout_is_not_hermes_state():
+    """PM's payload probes read ``<checkout>/../manifest.json`` to detect a
+    packaged payload. For a checkout that is a child of the home, the candidate
+    IS ``<home>/manifest.json`` — an existence probe of a packaging file, not a
+    read of Hermes state. Siblings stay refused."""
+    from tests.home_io_guard import HomeIOGuard
+
+    guard = HomeIOGuard(lambda: [PROJECT_ROOT.parent])
+    guard.check(PROJECT_ROOT.parent / "manifest.json")
+    guard.check(PROJECT_ROOT.parent / "manifest.json", metadata=True)
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(PROJECT_ROOT.parent / "config.yaml")
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(PROJECT_ROOT.parent / "state.db")
+
+
+def test_manifest_json_in_other_workspace_still_refused():
+    """The exemption is file-precise: a manifest.json that is NOT the checkout's
+    sibling payload probe is still treated as Hermes state and refused."""
+    from tests.home_io_guard import HomeIOGuard
+
+    other_workspace = PROJECT_ROOT.parent / "kanban" / "workspaces" / "t_other"
+    guard = HomeIOGuard(lambda: [PROJECT_ROOT.parent])
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(other_workspace / "manifest.json")
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(other_workspace / "manifest.json", metadata=True)
+
+
+def test_symlinked_venv_path_allowed_before_roots_loop_refuse(tmp_path, monkeypatch):
+    """When ``~/.hermes/installs`` is a symlink and a candidate path is
+    expressed through it (e.g. pytest's co_filename), ``check()`` must
+    allow it because ``realpath`` matches a resolved interpreter prefix.
+    The allowlist check must succeed before the roots-loop refuse fires."""
+    from tests.home_io_guard import HomeIOGuard, _INTERPRETER_PREFIX_STRS, _normcase
+
+    home = tmp_path / "home"
+    installs_real = tmp_path / "real_installs"
+    home.mkdir()
+    installs_real.mkdir()
+    installs_link = home / "installs"
+    try:
+        installs_link.symlink_to(installs_real, target_is_directory=True)
+    except OSError:
+        pytest.skip("Cannot create symlinks on this platform")
+
+    venv = installs_link / "test-environment" / "gen-abc" / "venv"
+    venv.mkdir(parents=True)
+    venv_file = venv / "lib" / "_pytest" / "main.py"
+    venv_file.parent.mkdir(parents=True)
+    venv_file.touch()
+
+    resolved_venv = _normcase(os.fspath(Path(venv).resolve()))
+    monkeypatch.setattr(
+        "tests.home_io_guard._INTERPRETER_PREFIX_STRS",
+        tuple(_INTERPRETER_PREFIX_STRS) + (resolved_venv,),
+    )
+
+    guard = HomeIOGuard(lambda: [home])
+
+    refused = []
+
+    def track_refuse(value):
+        refused.append(value)
+        raise AssertionError("roots-loop refuse")
+
+    original_refuse = guard.refuse
+    guard.refuse = track_refuse
+
+    guard.check(str(venv_file), metadata=True)
+    assert not refused, "allowlist must succeed before any roots-loop refuse fires"
+
+    guard.refuse = original_refuse
+
+    state_file = home / "state.db"
+    state_file.write_text("home state", encoding="utf-8")
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(str(state_file))
+
+
 @pytest.mark.parametrize("kind", ["environments", "test-environment"])
 def test_pm_generation_dir_around_the_running_venv_is_the_interpreter(tmp_path, kind):
     """scripts/run_tests.sh runs ``<home>/installs/<key>/<kind>/<gen>/venv`` with HOME pointed at the

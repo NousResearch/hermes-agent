@@ -104,11 +104,23 @@ class TestModelsDevNames:
     """Built-in providers have no custom endpoint to probe, so models.dev supplies their names."""
 
     def test_names_come_from_the_bundled_catalog(self, monkeypatch):
-        monkeypatch.setattr(
-            "agent.models_dev.fetch_models_dev",
-            lambda *a, **k: {"openrouter": {"models": {
-                "anthropic/claude-opus-5": {"name": "Claude Opus 5"}}}})
+        seen = {}
+
+        def fake(*a, **k):
+            seen.update(k)
+            return {"openrouter": {"models": {
+                "anthropic/claude-opus-5": {"name": "Claude Opus 5"}}}}
+
+        monkeypatch.setattr("agent.models_dev.fetch_models_dev", fake)
         assert m.model_display_names() == {"anthropic/claude-opus-5": "Claude Opus 5"}
+
+    def test_never_touches_the_network(self, monkeypatch):
+        # A picker render must not block on the registry host; cache/disk only.
+        seen = {}
+        monkeypatch.setattr("agent.models_dev.fetch_models_dev",
+                            lambda *a, **k: seen.update(k) or {})
+        m.model_display_names()
+        assert seen.get("allow_network") is False
 
     def test_id_shaped_names_are_skipped(self, monkeypatch):
         monkeypatch.setattr(

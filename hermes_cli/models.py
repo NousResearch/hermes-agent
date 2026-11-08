@@ -2583,15 +2583,16 @@ def model_display_names() -> dict[str, str]:
     """``{model_id: display_name}`` from the bundled models.dev catalog, for every provider.
 
     ``/v1/models`` is not the only source of human names: models.dev ships one per model for
-    the providers it covers, and it is already on disk (no network). Used as the base layer so
-    built-in providers get real labels too; a live ``/models`` response overrides it per id.
+    the providers it covers. Read from cache/disk only (``allow_network=False``) — this feeds a
+    picker render, so it must never block on the registry host; a cold cache simply yields no
+    names and the caller falls back to model ids.
     """
     try:
         from agent.models_dev import fetch_models_dev
     except ImportError:
         return {}
     try:
-        data = fetch_models_dev()
+        data = fetch_models_dev(allow_network=False)
     except Exception:
         return {}
     names: dict[str, str] = {}

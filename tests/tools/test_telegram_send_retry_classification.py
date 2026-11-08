@@ -86,6 +86,27 @@ def test_a_connect_timeout_backs_off_because_nothing_was_sent():
                                                   "are occupied. Request was *not* sent"), 1) == 2.0
 
 
+def _chained(outer, cause):
+    try:
+        try:
+            raise cause
+        except Exception as inner:
+            raise outer from inner
+    except Exception as exc:
+        return exc
+
+
+def test_a_lost_reply_after_the_write_is_final_but_a_refused_connect_retries():
+    """PTB wraps httpx transport errors in NetworkError: a read-side reset may follow a posted
+    message (unknown -> never resent); a connect error proves nothing left (retried)."""
+    import httpx
+    reset = _chained(NetworkError("httpx.ReadError: connection reset by peer"),
+                     httpx.ReadError("connection reset by peer"))
+    assert senders._telegram_retry_delay(reset, 0) is None
+    refused = _chained(NetworkError("httpx.ConnectError: refused"), httpx.ConnectError("refused"))
+    assert senders._telegram_retry_delay(refused, 0) == 1.0
+
+
 def test_a_timeout_is_never_retried():
     """A timeout may already have reached Telegram, so a retry would duplicate the message."""
     assert senders._telegram_retry_delay(TimedOut("Timed out"), 0) is None

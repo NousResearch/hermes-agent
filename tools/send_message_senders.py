@@ -86,8 +86,23 @@ def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
         return backoff
     if TelegramAdapter._is_timed_out(exc) or "timeout" in str(exc).lower():
         return None
-    transient = TelegramAdapter._looks_like_network_error(exc) and not isinstance(exc, OSError)
-    return backoff if transient else None
+    if not TelegramAdapter._looks_like_network_error(exc) or isinstance(exc, OSError):
+        return None
+    # A NetworkError chained to a transport exception failed on the wire: only a connect error proves
+    # the request never left; a reset/read error after the write may have posted it (unknown, final).
+    # An unchained one is Telegram's own 5xx reply, so nothing was posted.
+    causes = [c for c in _exception_chain(exc) if c is not exc]
+    if not causes:
+        return backoff
+    return backoff if any("connecterror" in type(c).__name__.lower() for c in causes) else None
+
+
+def _exception_chain(exc):
+    seen, cur = [], exc
+    while cur is not None and cur not in seen:
+        seen.append(cur)
+        cur = cur.__cause__ or cur.__context__
+    return seen
 
 
 async def _send_telegram_message_with_retry(bot, *, attempts: int = 3, **kwargs):

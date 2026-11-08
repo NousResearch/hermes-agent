@@ -511,6 +511,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         if (!owns() || error instanceof StaleSidebarScopeError) {
           return
         }
+
         if (showLoading) {
           setSessionsLoadError(true)
         }

@@ -4124,12 +4124,15 @@ class BasePlatformAdapter(ABC):
 
     def _wants_auto_tts(self, event: MessageEvent, session_key: str, interrupt_event: asyncio.Event,
                         text_content: str, media_files: list) -> bool:
-        """Auto-TTS on voice input (voice-first), gated by /voice or voice.auto_tts;
-        skipped when streaming TTS already delivered audio this turn."""
+        """Auto-TTS on any inbound message type (text, voice, photo caption, ...), gated by
+        /voice or voice.auto_tts; skipped when streaming TTS already delivered audio this turn,
+        and when the runner's own voice reply (``_send_voice_reply``) already synthesized audio
+        for this turn — exactly one owner per turn, or the chat gets two voice messages."""
         generation = getattr(interrupt_event, "_hermes_run_generation", None)
         return bool(
-            self._should_auto_tts_for_chat(event.source.chat_id)
-            and event.message_type == MessageType.VOICE and text_content and not media_files
+            not getattr(event, "_runner_voice_reply_sent", False)
+            and self._should_auto_tts_for_chat(event.source.chat_id)
+            and text_content and not media_files
             and not self._streaming_tts_turn_completed(session_key, generation, event=event))
 
     async def _play_tts_file(

@@ -29,11 +29,11 @@ def _session(key: str = SESSION_KEY) -> dict:
     return {"session_key": key}
 
 
-def _create_subscribed_task(*, chat_id: str = SESSION_KEY, platform: str = "tui"):
+def _create_subscribed_task(*, chat_id: str = SESSION_KEY, platform: str = "tui", delivery_mode=None):
     conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="notify tui", assignee="worker")
-        kbn.add_notify_sub(conn, task_id=tid, platform=platform, chat_id=chat_id)
+        kbn.add_notify_sub(conn, task_id=tid, platform=platform, chat_id=chat_id, delivery_mode=delivery_mode)
         return tid
     finally:
         conn.close()
@@ -74,9 +74,9 @@ class TestCollectKanbanNotifications:
         first = _collect_kanban_notifications(_session())
 
         assert len(first) == 1
-        assert tid in first[0]
-        assert "done" in first[0]
-        assert "shipped the fix" in first[0]
+        assert tid in first[0][0]
+        assert "done" in first[0][0]
+        assert "shipped the fix" in first[0][0]
         rows = _sub_rows(tid)
         assert len(rows) == 1, "done must retain the originating session"
         first_cursor = rows[0]["last_event_id"]
@@ -98,8 +98,8 @@ class TestCollectKanbanNotifications:
         reopened = _collect_kanban_notifications(_session())
 
         assert len(reopened) == 2
-        assert "ready" in reopened[0]
-        assert "review corrections" in reopened[1]
+        assert "ready" in reopened[0][0]
+        assert "review corrections" in reopened[1][0]
         rows = _sub_rows(tid)
         assert len(rows) == 1
         assert rows[0]["chat_id"] == SESSION_KEY
@@ -130,8 +130,8 @@ class TestCollectKanbanNotifications:
             second = _collect_kanban_notifications(_session())
 
         assert len(first) == 1
-        assert "blocked" in first[0]
-        assert "waiting on review" in first[0]
+        assert "blocked" in first[0][0]
+        assert "waiting on review" in first[0][0]
         assert second == []
         assert spy_connect.called
         # Blocked is not a final status -> subscription stays alive so a
@@ -182,7 +182,7 @@ class TestCollectKanbanNotifications:
             texts = _collect_kanban_notifications(_session())
 
         assert len(texts) == 1
-        assert tid in texts[0]
+        assert tid in texts[0][0]
         spy_connect.assert_called_once()
 
     def test_no_session_key_is_a_noop(self):
@@ -225,8 +225,8 @@ class TestCollectKanbanNotifications:
             reset_hermes_home_override(token)
 
         assert len(texts) == 1
-        assert tid in texts[0]
-        assert "cross-profile delivery" in texts[0]
+        assert tid in texts[0][0]
+        assert "cross-profile delivery" in texts[0][0]
         # Completion is reversible, so the shared-board subscription remains
         # owned by this exact Desktop session until the task is archived.
         rows = _sub_rows(tid)
@@ -304,7 +304,7 @@ class TestNotificationPollerLoopKanbanWiring:
         }
 
     def test_idle_session_gets_status_update_and_agent_turn(self, monkeypatch):
-        tid = _create_subscribed_task()
+        tid = _create_subscribed_task(delivery_mode="notify+wake")
         _complete(tid, summary="poller e2e done")
         session = self._poller_session(running=False)
 
@@ -323,7 +323,7 @@ class TestNotificationPollerLoopKanbanWiring:
         assert not session.get("_kanban_pending")
 
     def test_busy_session_buffers_then_flushes_when_idle(self, monkeypatch):
-        tid = _create_subscribed_task()
+        tid = _create_subscribed_task(delivery_mode="notify+wake")
         _complete(tid, summary="buffered while busy")
         session = self._poller_session(running=True)
 

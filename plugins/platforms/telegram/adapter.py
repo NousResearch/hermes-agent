@@ -2630,13 +2630,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             logger.warning("[%s] Failed to persist thread_id to config: %s", self.name, e, exc_info=True)
 
     async def _setup_dm_topics(self) -> None:
-        """Load or create configured DM topics: ``extra['dm_topics']`` is ``[{"chat_id", "topics": [{"name",
-        "icon_color", "thread_id"?, "skill"?}]}]``; persisted thread_ids are cached without an API call."""
-        # A rebuilt adapter is constructed from the gateway's startup-time platform config snapshot, which
-        # predates any thread_id this process persisted after creating the topics: without a re-read the
-        # rebuild would create a duplicate topic set and orphan it (#132522). config.yaml on disk is the
-        # durable source of truth here, and the load cache is keyed on the file signature, so a config the
-        # user hand-edited since startup is picked up too.
+        """Load or create ``extra['dm_topics']`` (``[{"chat_id", "topics": [{"name", "thread_id"?, ...}]}]``). Re-reads
+        config.yaml first: a rebuilt adapter's boot-time snapshot predates the persisted thread_ids (#132522)."""
         self._reload_dm_topics_from_config()
         for chat_entry in self._dm_topics_config or ():
             chat_id = chat_entry.get("chat_id")
@@ -2659,8 +2654,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                     icon_custom_emoji_id=topic_conf.get("icon_custom_emoji_id"))
                 if not thread_id:
                     continue
-                self._dm_topics[cache_key] = thread_id
-                logger.info("[%s] DM topic cached: %s -> thread_id=%s", self.name, cache_key, thread_id)
+                self._dm_topics[cache_key] = topic_conf["thread_id"] = thread_id  # a same-process reconnect reuses it
                 self._persist_dm_topic_thread_id(int(chat_id), topic_name, thread_id)
                 # Seed message: Telegram's client hides empty topics until they contain one.
                 try:

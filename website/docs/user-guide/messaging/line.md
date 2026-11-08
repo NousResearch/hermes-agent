@@ -80,6 +80,8 @@ gateway:
   platforms:
     line:
       enabled: true
+      # Optional: relay only group/room messages that mention the bot.
+      # require_mention: true
 ```
 
 That's enough — the bundled-plugin scan in `gateway/config.py` automatically picks up `plugins/platforms/line/`. No `Platform.LINE` enum edit, no `_create_adapter` registration.
@@ -184,6 +186,17 @@ Cron jobs with `deliver: line` route to `LINE_HOME_CHANNEL`. The adapter ships a
 **"invalid signature" on webhook verify.** The `Channel secret` was copied wrong, or your tunnel rewrote the request body. Verify with `curl -i https://<tunnel>/line/webhook/health` first — that should return `{"status":"ok","platform":"line"}`.
 
 **Bot receives nothing in groups.** Check `LINE_ALLOWED_GROUPS` includes the `C...` group ID. To find a group ID, send a test message and grep `~/.hermes/logs/gateway.log` for `LINE: rejecting unauthorized source` — the rejected source dict has the IDs.
+
+**Bot replies to every group or room message.** In `~/.hermes/config.yaml`, set:
+
+```yaml
+gateway:
+  platforms:
+    line:
+      require_mention: true
+```
+
+Hermes will then relay only group or room messages whose LINE mention metadata (`message.mention.mentionees[].isSelf`, or the bot user ID) marks the bot as mentioned. Direct messages are unaffected. The bot's own mention is cut from the text before the agent sees it (with or without `require_mention`), so `@Bot /new` runs `/new`. `@All` does not count, and images, stickers and files in a gated group are ignored because LINE only attaches mention metadata to text. Pick the bot from LINE's mention list — hand-typed `@Name` text carries no mention metadata — and note that LINE for iOS/Android can mention a bot from version 14.17.0.
 
 **`send_image` fails with "LINE_PUBLIC_URL must be set".** LINE's Messaging API does not accept binary uploads — images, audio, and video must be reachable HTTPS URLs. Set `LINE_PUBLIC_URL` to the tunnel's public hostname and the adapter will serve files from `/line/media/<token>/<filename>` automatically.
 

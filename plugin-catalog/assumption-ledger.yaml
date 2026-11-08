@@ -1,20 +1,22 @@
 name: assumption-ledger
 title: Assumption Ledger
-version: "0.1.1"
+version: "0.2.0"
 repo: https://github.com/itzebe/hermes-assumption-ledger
-sha: 388cf029ccc5324c3f246423c8d461aa93d60090
+sha: 650533a22434c330e6a0fa8f2ee7bb3147b5c029
 description: >-
-  Persistent operational-assumption ledger. Captures the assumptions an agent makes from its own
-  observable output (explicit markers and anchored patterns), keeps the sentence each came from as
-  provenance, verifies them with deterministic checks, and blocks only the decisions that depend on
-  an assumption evidence has contradicted. Disclosure — all state is local: assumptions, evidence
-  and decisions are stored in a plain SQLite database under HERMES_HOME/plugin-data/assumption-ledger/
-  (created on first use, never pruned by the plugin; delete the directory to clear it). It makes no
-  network request of its own and needs no credentials; the only outbound traffic is the HTTP checks
-  you explicitly record (http_status, http_json_field) against URLs you name. It reads local files,
-  git state, environment variables, SQLite databases and the output of read-only commands you
-  declare, and it injects a short summary of live assumptions into the next turn's context. It
-  exposes no tools that write to external systems.
+  Persistent operational-assumption ledger. Captures the assumptions an agent states in its own
+  messages (never from tool output), keeps the sentence each came from as provenance, verifies them
+  with deterministic checks, and warns in context when work recorded in a session depends on an
+  assumption evidence has contradicted. Disclosure — all state is local: assumptions, evidence and
+  decisions are stored in a plain SQLite database under HERMES_HOME/plugin-data/assumption-ledger/
+  (created on first use, never pruned by the plugin; delete the directory to clear it). It needs no
+  credentials. HTTP checks (http_status, http_json_field) are the only outbound traffic; they accept
+  only http/https and refuse loopback, private, link-local, CGNAT and cloud-metadata destinations
+  unless you set allow_private_urls, and metadata endpoints stay blocked even then. Command checks
+  (command_succeeds) are disabled until you set command_allowlist; only a listed basename runs, with
+  a minimal environment. It reads local files, git state, environment variables and SQLite
+  databases, warns rather than blocking a turn, scopes warnings to the session that recorded the
+  decision, and exposes no tools that write to external systems.
 maintainer: itzebe
 tier: community
 category: memory
@@ -28,6 +30,8 @@ capabilities:
     - assumption_check
     - assumption_status
     - assumption_decide
+    - assumption_resolve
+    - assumption_drop
   provides_hooks:
     - pre_llm_call
     - post_llm_call

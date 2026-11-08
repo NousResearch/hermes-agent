@@ -101,7 +101,7 @@ def _install_plugin_python_deps(
     node_reason = None
     if has_package_json:
         console.print(f"\n[bold]{manifest.get('name', 'this plugin')}[/bold] declares Node dependencies (package.json).")
-        node_ok = sys.stdin.isatty() and sys.stdout.isatty() and _ask_yes_no(
+        node_ok = _pc()._is_tty() and _ask_yes_no(
             ("node", manifest.get("name")), "  Install them into the plugin's own node_modules now? [y/N]: ", console)
         if node_ok:
             from pm.workspace import install_node_sidecar
@@ -142,7 +142,7 @@ def _consent_python_deps(
         return True, None
 
     # A decline or non-interactive invocation leaves the new plugin disabled.
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+    if not _pc()._is_tty():
         console.print(
             "[dim]Non-interactive install — skipping dependency install. "
             "Run `hermes plugins enable` when ready to prepare them.[/dim]\n"

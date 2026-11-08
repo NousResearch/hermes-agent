@@ -208,7 +208,10 @@ def ensure_import(extra: str) -> None:
         from prompt_toolkit.application.current import get_app_or_none
 
         app_running = bool(getattr(get_app_or_none(), "is_running", False))
-    if not app_running and sys.stdin.isatty() and sys.stdout.isatty():
+    # Off the main thread (a ``hermes serve`` request or agent worker) nobody watches the console.
+    import threading
+    on_console = threading.current_thread() is threading.main_thread()
+    if not app_running and on_console and sys.stdin.isatty() and sys.stdout.isatty():
         try:
             answer = input(f"\nThis needs Hermes' optional {extra!r} feature, which isn't installed yet.\n"
                            "Install it now? [Y/n] ").strip().lower()

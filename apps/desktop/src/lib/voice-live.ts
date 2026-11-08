@@ -1,4 +1,4 @@
-import { type OwnerScope, ownerScoped, profileScoped } from '@/api/client'
+import { type OwnerScope, ownerScoped } from '@/api/client'
 import { hermesApi } from '@/hermes'
 
 /**
@@ -21,7 +21,12 @@ import { hermesApi } from '@/hermes'
 
 export type VoiceChatMode = 'chained' | 'gpt-live'
 
+/** Which vendor serves gpt-live: OpenAI over WebRTC (the default, and what older
+ *  backends report implicitly) or Azure Realtime over a gateway WebSocket relay. */
+export type VoiceLiveBackend = 'openai' | 'azure'
+
 export interface VoiceLiveStatus {
+  backend: VoiceLiveBackend
   mode: VoiceChatMode
   available: boolean
   reason: null | string
@@ -70,6 +75,26 @@ export interface VoiceLiveHandlers {
   onSpeakingChange?: (speaking: boolean) => void
 }
 
+/** The transport surface the conversation hook drives, whichever backend serves
+ *  the session: the OpenAI WebRTC `VoiceLiveSession` or the Azure relay
+ *  `VoiceLiveAzureSession`. */
+export interface LiveSession {
+  start: (history: LiveHistoryMessage[]) => Promise<void>
+  /** Quiet progress for the live model ("Hermes is running the tests…"). */
+  think: (delegationId: null | string, content: string) => void
+  /** A result the voice should say aloud (paraphrased). */
+  speak: (delegationId: null | string, content: string) => void
+  /** Steer the live persona mid-conversation (session-wide). */
+  instruct: (content: string) => void
+  setMuted: (muted: boolean) => void
+  /** Graceful close. */
+  close: () => void
+  /** Azure relay only: seal the accumulated commentary for `delegationId` so the
+   *  backend answers the delegation (one function_call_output + response.create).
+   *  Absent on OpenAI, where the vendor owns the delegation natively. */
+  completeCommentary?: (delegationId: string) => void
+}
+
 const CLOSE_TIMEOUT_MS = 15_000
 const ICE_GATHER_TIMEOUT_MS = 10_000
 // Vendor cap: 500 tokens per append. ~4 chars/token, keep headroom.
@@ -78,10 +103,20 @@ const APPEND_CHAR_LIMIT = 1_400
 const CONTEXT_WINDOW_MS = 5 * 60_000
 const CONTEXT_MAX_FRAGMENTS = 80
 
-export async function fetchVoiceLiveStatus(): Promise<null | VoiceLiveStatus> {
+/** The backend a status resolves to; a backend predating the field stays OpenAI. */
+export function voiceLiveBackend(status: null | VoiceLiveStatus): VoiceLiveBackend {
+  return status?.backend === 'azure' ? 'azure' : 'openai'
+}
+
+/**
+ * `voice.voice_chat_mode` readiness as the backend resolves it for `owner`
+ * (a Bot chat reads its OWN profile's status — #117401 class); omitted → the
+ * active scope, exactly the old `profileScoped()` call.
+ */
+export async function fetchVoiceLiveStatus(owner?: null | OwnerScope): Promise<null | VoiceLiveStatus> {
   try {
-    const response = await hermesApi<{ ok: boolean } & VoiceLiveStatus>({
-      ...profileScoped(),
+    const response = await hermesApi<{ ok: boolean } & Omit<VoiceLiveStatus, 'backend'> & { backend?: string }>({
+      ...ownerScoped(owner ?? undefined),
       path: '/api/audio/voice-live/status'
     })
 
@@ -91,6 +126,7 @@ export async function fetchVoiceLiveStatus(): Promise<null | VoiceLiveStatus> {
 
     return {
       available: Boolean(response.available),
+      backend: response.backend === 'azure' ? 'azure' : 'openai',
       mode: response.mode === 'gpt-live' ? 'gpt-live' : 'chained',
       model: response.model,
       reason: response.reason ?? null,
@@ -179,6 +215,20 @@ export function toLiveHistory(
   return out
 }
 
+/** Recent conversation, oldest first, bounded by time and count. Shared by both
+ *  live transports so a delegation's context window is identical either way. */
+export function transcriptContextWindow(transcript: LiveTranscriptFragment[]): LiveTranscriptFragment[] {
+  const last = transcript.at(-1)
+
+  if (!last) {
+    return []
+  }
+
+  const floor = last.endMs - CONTEXT_WINDOW_MS
+
+  return transcript.filter(fragment => fragment.endMs >= floor).slice(-CONTEXT_MAX_FRAGMENTS)
+}
+
 async function waitForIceGathering(connection: RTCPeerConnection): Promise<void> {
   if (connection.iceGatheringState === 'complete') {
     return
@@ -211,7 +261,7 @@ async function waitForIceGathering(connection: RTCPeerConnection): Promise<void>
   })
 }
 
-export class VoiceLiveSession {
+export class VoiceLiveSession implements LiveSession {
   readonly audio: HTMLAudioElement
   /** Whose (connection, profile) this session dials; null → the active scope.
    *  A Bot chat runs its GPT-Live session on the Bot's own profile, so the
@@ -264,15 +314,7 @@ export class VoiceLiveSession {
 
   /** Recent conversation, oldest first, bounded by time and count. */
   contextWindow(): LiveTranscriptFragment[] {
-    const last = this.transcript.at(-1)
-
-    if (!last) {
-      return []
-    }
-
-    const floor = last.endMs - CONTEXT_WINDOW_MS
-
-    return this.transcript.filter(fragment => fragment.endMs >= floor).slice(-CONTEXT_MAX_FRAGMENTS)
+    return transcriptContextWindow(this.transcript)
   }
 
   async start(history: LiveHistoryMessage[]): Promise<void> {

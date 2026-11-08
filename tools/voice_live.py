@@ -25,18 +25,22 @@ Azure Realtime API, which has no ``/live/sessions`` SDP exchange — the session
 a WebSocket (``wss://<resource>.openai.azure.com/openai/realtime?api-version=...&deployment=...``,
 authenticated with the ``api-key`` header) via Azure-flavored ``session.update`` / session
 events. ``voice.gpt_live.model`` is then the Azure *deployment* name and the key is the Azure
-resource key. Default (OpenAI) behavior is unchanged.
+resource key. Default (OpenAI) behavior is unchanged. Browsers cannot hold that URL/key, so
+the dashboard/desktop voice client is served by the authenticated server-side relay
+``/api/audio/voice-live-stream`` (``tools/voice_live_relay.py``), which owns the vendor socket
+and translates delegation events; see ``hermes_cli/web_routers/audio_voice_live.py``.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, Optional
+from typing import Any, Dict, NamedTuple, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +55,9 @@ AZURE_HOST_SUFFIXES = (".openai.azure.com", ".cognitiveservices.azure.com")
 AZURE_REALTIME_API_VERSION = "2025-04-01-preview"
 BACKEND_OPENAI = "openai"
 BACKEND_AZURE = "azure"
+# The function tool the Azure session config exposes so the realtime model can hand a request to
+# Hermes (the desktop answers the call_id as a normal prompt.submit on the voice-live surface).
+DELEGATE_TO_HERMES_TOOL_NAME = "delegate_to_hermes"
 # Voices the vendor lists for gpt-live-1 (live-conversations guide) plus the realtime defaults it
 # accepts; free text stays allowed for custom voices.
 GPT_LIVE_VOICES = (
@@ -110,7 +117,7 @@ def _voice_section() -> dict[str, Any]:
     try:
         from hermes_cli.config import load_config
         voice = load_config().get("voice")
-    except Exception:
+    except Exception:  # health: allow BLE001 -- best-effort read: an unreadable config just means no voice section
         return {}
     return voice if isinstance(voice, dict) else {}
 
@@ -201,12 +208,44 @@ def build_session_config(history: Optional[list] = None) -> dict[str, Any]:
     return config
 
 
+def delegate_to_hermes_tool() -> dict[str, Any]:
+    """The ``delegate_to_hermes`` function tool for the Azure realtime session: the one way the
+    voice model (which has no tools of its own) hands work to Hermes. The tool output it gets
+    back is the backend's final answer as plain text, to paraphrase aloud."""
+    return {
+        "type": "function",
+        "name": DELEGATE_TO_HERMES_TOOL_NAME,
+        "description": (
+            "Hand the user's request to the Hermes backend agent, which has tools (terminal, "
+            "files, web search, memory, scheduling) and answers with plain text. Call this "
+            "whenever the user asks you to do, check, find, make, fix, run or remember something, "
+            "or asks a question that needs facts, current information or careful reasoning — not "
+            "for greetings, small talk or brief clarifications. The tool output is the backend's "
+            "final answer as plain text; paraphrase it aloud in your own words."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "request": {
+                    "type": "string",
+                    "description": (
+                        "What the user wants, in your own words; include the recent spoken "
+                        "context when the words alone are ambiguous ('yes', 'Thursday')."
+                    ),
+                },
+            },
+            "required": ["request"],
+            "additionalProperties": False,
+        },
+    }
+
+
 def build_azure_session_config(history: Optional[list] = None) -> dict[str, Any]:
     """The Azure-flavored ``session`` object for the ``session.update`` event: the deployment
     rides in the WebSocket URL (not in the payload), the voice sits at session top level, and
     PCM is pinned explicitly because there is no WebRTC transport to negotiate it. Azure's
-    realtime API has no ``delegation`` client mode — Hermes turns are driven as ordinary
-    conversation items over the socket instead."""
+    realtime API has no ``delegation`` client mode — Hermes turns are driven by the
+    ``delegate_to_hermes`` function tool instead, answered over the relayed socket."""
     live = _live_section()
     config: dict[str, Any] = {
         "instructions": live_instructions(live),
@@ -214,9 +253,13 @@ def build_azure_session_config(history: Optional[list] = None) -> dict[str, Any]
         "input_audio_format": "pcm16",
         "output_audio_format": "pcm16",
         "turn_detection": {"type": "server_vad"},
+        # Delegation needs the same recent spoken context as OpenAI's client delegation.
+        # Azure disables input transcription by default, so opt in explicitly.
+        "input_audio_transcription": {"model": "whisper-1"},
+        "tools": [delegate_to_hermes_tool()],
     }
-    if history:
-        config["input"] = history
+    # ``input`` belongs to OpenAI's Live session, not Azure Realtime. The open helper seeds
+    # ``history`` with conversation.item.create events after this configuration is acknowledged.
     return config
 
 
@@ -269,22 +312,39 @@ def _azure_ws_connect(url: str, api_key: str, timeout: float):
         )
 
 
-def create_azure_realtime_session(sdp_offer: Optional[str] = None, history: Optional[list] = None,
-                                  timeout: float = 30.0) -> dict[str, Any]:
-    """Azure path for gpt-live session creation: Azure Realtime has no ``/live/sessions`` SDP
-    exchange, so the session is created over a WebSocket — connect to
-    ``wss://<resource>.openai.azure.com/openai/realtime?api-version=...&deployment=<model>``
-    with the ``api-key`` header, read ``session.created``, send ``session.update`` and wait for
-    its ``session.updated`` ack (or an ``error`` event).
+class AzureRealtimeConnection(NamedTuple):
+    """A live, configured Azure realtime WebSocket: the relay's pump owns ``ws`` from here on.
+    ``url``/``api_key`` stay on this host — never serialize them to a client."""
+    ws: Any
+    session_id: str
+    url: str
+    api_key: str
+    deployment: str
 
-    Mirrors the ``create_webrtc_session`` contract as closely as Azure allows: returns
-    ``{"session": {"id": ...}, "transport": {"type": "websocket", "url": ...}}`` (no SDP —
-    negotiation happens over the socket). The ``sdp_offer`` argument is accepted for call-site
-    compatibility and ignored. The API key never leaves this host. Raises ``ValueError`` for a
-    missing key and ``RuntimeError`` (with the vendor error detail) for a rejected session.
+
+def open_azure_realtime_session(history: Optional[list] = None, timeout: float = 30.0,
+                                *, api_key: Optional[str] = None,
+                                base_url: Optional[str] = None) -> AzureRealtimeConnection:
+    """Open and configure an Azure realtime session over a WebSocket and LEAVE IT OPEN.
+
+    Connects to ``wss://<resource>.openai.azure.com/openai/realtime?api-version=...&deployment=...``
+    with the ``api-key`` header, reads ``session.created`` (carries the session id), sends
+    ``session.update`` with :func:`build_azure_session_config` and waits for its
+    ``session.updated`` ack (or an ``error`` event). Returns the live connection; the caller owns
+    closing ``connection.ws``. *api_key*/*base_url* may be passed pre-resolved (e.g. already read
+    under a request's profile scope); otherwise they resolve from config here.
+
+    Raises ``ValueError`` for a missing key and ``RuntimeError`` (with the vendor error detail)
+    for a rejected session — in which case the socket is closed before returning. The API key
+    never leaves this host.
     """
     live = _live_section()
-    api_key, base_url = _resolve_credentials(live)
+    if api_key is None or base_url is None:
+        resolved_key, resolved_base = _resolve_credentials(live)
+        if api_key is None:
+            api_key = resolved_key
+        if base_url is None:
+            base_url = resolved_base
     if not api_key:
         raise ValueError("GPT-Live on an Azure endpoint needs an API key (voice.gpt_live.api_key, VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY)")
     deployment = str(live.get("model") or DEFAULT_LIVE_MODEL)
@@ -324,15 +384,42 @@ def create_azure_realtime_session(sdp_offer: Optional[str] = None, history: Opti
             if kind == "error":
                 err = event.get("error") or {}
                 raise RuntimeError(f"Azure realtime session.update rejected: {err.get('message') or event}")
-    finally:
-        try:
+        for item in history or []:
+            ws.send(json.dumps({"type": "conversation.item.create", "item": item}))
+    except Exception:
+        with contextlib.suppress(Exception):  # closing a half-open vendor socket may itself fail
             ws.close()
-        except Exception:
-            pass
-    return {
-        "session": {"id": session_id, "model": deployment},
-        "transport": {"type": "websocket", "url": ws_url, "api_version": AZURE_REALTIME_API_VERSION},
-    }
+        raise
+    return AzureRealtimeConnection(ws=ws, session_id=str(session_id), url=ws_url,
+                                   api_key=api_key, deployment=deployment)
+
+
+def create_azure_realtime_session(sdp_offer: Optional[str] = None, history: Optional[list] = None,
+                                  timeout: float = 30.0) -> dict[str, Any]:
+    """Azure path for gpt-live session creation: Azure Realtime has no ``/live/sessions`` SDP
+    exchange, so the session is created over a WebSocket — connect to
+    ``wss://<resource>.openai.azure.com/openai/realtime?api-version=...&deployment=<model>``
+    with the ``api-key`` header, read ``session.created``, send ``session.update`` and wait for
+    its ``session.updated`` ack (or an ``error`` event).
+
+    Mirrors the ``create_webrtc_session`` contract as closely as Azure allows: returns
+    ``{"session": {"id": ...}, "transport": {"type": "websocket", "url": ...}}`` (no SDP —
+    negotiation happens over the socket). The ``sdp_offer`` argument is accepted for call-site
+    compatibility and ignored. The API key never leaves this host. Raises ``ValueError`` for a
+    missing key and ``RuntimeError`` (with the vendor error detail) for a rejected session.
+
+    This one-shot helper closes the socket after the handshake; the streaming relay uses
+    :func:`open_azure_realtime_session` and keeps it open.
+    """
+    conn = open_azure_realtime_session(history=history, timeout=timeout)
+    try:
+        return {
+            "session": {"id": conn.session_id, "model": conn.deployment},
+            "transport": {"type": "websocket", "url": conn.url, "api_version": AZURE_REALTIME_API_VERSION},
+        }
+    finally:
+        with contextlib.suppress(Exception):
+            conn.ws.close()
 
 
 def create_webrtc_session(sdp_offer: str, history: Optional[list] = None) -> dict[str, Any]:

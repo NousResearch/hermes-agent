@@ -326,7 +326,7 @@ function dialOf(url: string): { nonce: string; origin: string; pathname: string 
 }
 
 // Voice sockets dial their own fresh `/api/ws` reservation on a sibling path (sibling-ws-url.ts).
-const VOICE_DIAL_PATHS = new Set(['/api/audio/speak-stream', '/api/audio/transcribe-stream'])
+const VOICE_DIAL_PATHS = new Set(['/api/audio/speak-stream', '/api/audio/transcribe-stream', '/api/audio/voice-live-stream'])
 
 // A one-use ticket crosses private IPC, then leaves the URL before dialing.
 // Public descriptors and persisted connection state never contain credentials.

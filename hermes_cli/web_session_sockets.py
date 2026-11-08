@@ -37,7 +37,10 @@ HOST_TERMINAL_SOCKET = "host-terminal"
 #: The voice streams beside ``/api/ws``, each named for its route ``/api/audio/<name>``.
 SPEAK_STREAM_SOCKET = "speak-stream"
 TRANSCRIBE_STREAM_SOCKET = "transcribe-stream"
-AUDIO_SOCKETS = frozenset({SPEAK_STREAM_SOCKET, TRANSCRIBE_STREAM_SOCKET})
+VOICE_LIVE_STREAM_SOCKET = "voice-live-stream"
+AUDIO_SOCKETS = frozenset({SPEAK_STREAM_SOCKET, TRANSCRIBE_STREAM_SOCKET, VOICE_LIVE_STREAM_SOCKET})
+#: The route each audio socket name opens: ``/api/audio/<name>``.
+AUDIO_SOCKET_PATHS = frozenset(f"/api/audio/{name}" for name in AUDIO_SOCKETS)
 #: Sockets that open only with a ticket minted for them, never with a standing credential.
 OWN_TICKET_SOCKETS = frozenset({HOST_TERMINAL_SOCKET})
 #: What a signed-out tab's sockets are closed with: the same code a refused credential gets.

@@ -1198,22 +1198,17 @@ DEFAULT_CONFIG = {
 
     "voice": {
         # How the Desktop voice conversation is wired:
-        #   chained  — STT → Hermes turn → TTS (the stt.* / tts.* providers below)
-        #   gpt-live — one full-duplex voice model (OpenAI GPT-Live) owns the mic and speaker and
-        #              DELEGATES every real request to Hermes (any model / provider you have
-        #              selected); needs an OpenAI API key. $0.05/min voice layer billing.
+        #   chained — STT → Hermes turn → TTS; gpt-live — full-duplex OpenAI/Azure voice that
+        #   delegates real requests to Hermes (OpenAI voice layer billed $0.05/min).
         "voice_chat_mode": "chained",
         "gpt_live": {
             "model": "gpt-live-1",
             "voice": "marin",  # marin | quartz | ripple | vesper | willow | stone | gleam | meridian | ...
             # Extra sentences appended to the live model's conversation persona (tone, pacing, language).
             "instructions": "",
-            # optional "api_key" / "base_url" keys override the OpenAI audio credentials for this mode only
-            # Azure OpenAI / Foundry: point "base_url" at your resource
-            # (https://<resource>.openai.azure.com or https://<resource>.cognitiveservices.azure.com)
-            # and gpt-live switches from the OpenAI WebRTC path (POST /v1/live/sessions) to the Azure
-            # Realtime API over WebSocket (wss://<resource>.openai.azure.com/openai/realtime).
-            # In Azure mode "model" is the DEPLOYMENT name and "api_key" the Azure resource key.
+            # Optional api_key/base_url override. Azure: https://<resource>.openai.azure.com or
+            # https://<resource>.cognitiveservices.azure.com selects a host-side Realtime WS relay;
+            # model = deployment, api_key = resource key. Other URLs keep OpenAI WebRTC.
         },
         "record_key": "ctrl+b",
         "submit_mode": "direct",  # TUI: direct submits immediately; draft = editable transcript

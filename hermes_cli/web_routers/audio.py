@@ -783,3 +783,10 @@ async def speak_stream_ws(ws: WebSocket) -> None:
         pump.cancel()
         with contextlib.suppress(Exception):
             await ws.close()
+
+
+# The Azure realtime voice-live relay socket (/api/audio/voice-live-stream) lives in its own
+# module; web_server mounts this router, so it carries that one along.
+from hermes_cli.web_routers import audio_voice_live as _audio_voice_live_routes
+
+router.include_router(_audio_voice_live_routes.router)

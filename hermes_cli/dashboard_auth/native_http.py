@@ -12,6 +12,8 @@ from pathlib import Path
 from fastapi import HTTPException
 from starlette.responses import JSONResponse
 
+from hermes_cli.web_session_sockets import AUDIO_SOCKET_PATHS as AUDIO_STREAM_PATHS  # /api/audio/<name> per socket
+
 HEADER = 'x-hermes-gateway-ticket'
 
 
@@ -243,9 +245,6 @@ def redeem_native_ws(conn):
     except PermissionError:
         return None
     return grant
-
-
-AUDIO_STREAM_PATHS = frozenset({'/api/audio/speak-stream', '/api/audio/transcribe-stream'})
 
 
 def redeem_audio_ws(ws):

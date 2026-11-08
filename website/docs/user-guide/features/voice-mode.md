@@ -254,7 +254,9 @@ voice:
     api_key: <azure-resource-key>                         # optional; falls back to the usual key chain
 ```
 
-Azure mode is detected from the `base_url` host (`*.openai.azure.com` / `*.cognitiveservices.azure.com`); any other URL keeps the default OpenAI behavior. In Azure mode the session runs over `wss://<resource>.openai.azure.com/openai/realtime?api-version=...&deployment=<model>` authenticated with the `api-key` header, so `model` must be the deployment name and the key the Azure resource key (set `voice.gpt_live.api_key`, or `AZURE_FOUNDRY_API_KEY`-style env resolution applies per the key chain). Delegation to Hermes works exactly as in the OpenAI path.
+Azure mode is detected from the `base_url` host (`*.openai.azure.com` / `*.cognitiveservices.azure.com`); any other URL keeps the default OpenAI behavior. The gateway opens `wss://<resource>.openai.azure.com/openai/realtime?api-version=2025-04-01-preview&deployment=<model>` with the `api-key` header and keeps that session open behind the authenticated `/api/audio/voice-live-stream` relay; the desktop sends and receives PCM audio through the relay and never receives the Azure URL or key. `model` must be the deployment name. Set the resource key in `voice.gpt_live.api_key`, `VOICE_TOOLS_OPENAI_KEY`, or `OPENAI_API_KEY`.
+
+Azure has no OpenAI-style client-delegation event, so the session declares a `delegate_to_hermes` function tool. A call becomes the same normal Hermes turn as in the OpenAI path, using the input-audio transcript for context; when that turn finishes, the relay returns one function-call output and the Azure voice speaks the result.
 
 ### Voice chat model
 

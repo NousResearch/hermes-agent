@@ -96,6 +96,26 @@ describe('browser-hosted Desktop voice streams', () => {
     expect(new Headers(mint.init?.headers).get('X-Hermes-Session-Token')).toBe('served-token')
   })
 
+  it('dials the Azure voice-live relay on a ticket minted for that socket alone', async () => {
+    seedWebappSession('served-token')
+    const fetchMock = serveTickets()
+    expect(installBrowserDesktopBridge()).toBe(true)
+
+    const url = new URL(await resolveSiblingWsUrl({ connectionId: null, profile: 'worker-a' }, '/api/audio/voice-live-stream'))
+
+    expect(url.pathname).toBe('/api/audio/voice-live-stream')
+    expect(url.searchParams.get('ticket')).toBe('voice-live-stream-ticket')
+    expect(url.searchParams.get('profile')).toBe('worker-a')
+    expect(url.toString()).not.toContain('served-token')
+
+    const [mint, ...others] = minted(fetchMock)
+    expect(others).toEqual([])
+    expect(mint.url.pathname).toBe('/api/webapp/socket-ticket')
+    expect(mint.url.searchParams.get('socket')).toBe('voice-live-stream')
+    expect(mint.init?.method).toBe('POST')
+    expect(new Headers(mint.init?.headers).get('X-Hermes-Session-Token')).toBe('served-token')
+  })
+
   it('leaves the gateway socket on its own ticket', async () => {
     const win = mutableWindow()
     win.__HERMES_AUTH_REQUIRED__ = true

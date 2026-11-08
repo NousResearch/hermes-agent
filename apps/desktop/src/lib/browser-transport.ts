@@ -274,12 +274,13 @@ export async function fileEndpointUrl(
 const TICKET_SOCKETS = {
   '/api/audio/speak-stream': 'speak-stream',
   '/api/audio/transcribe-stream': 'transcribe-stream',
+  '/api/audio/voice-live-stream': 'voice-live-stream',
   '/api/host-terminal': 'host-terminal',
   '/api/ws': 'gateway'
 } as const
 
 export type TicketSocketPath = keyof typeof TICKET_SOCKETS
-export type AudioSocketPath = '/api/audio/speak-stream' | '/api/audio/transcribe-stream'
+export type AudioSocketPath = '/api/audio/speak-stream' | '/api/audio/transcribe-stream' | '/api/audio/voice-live-stream'
 
 /**
  * Socket *path*'s URL for one dial, carrying a ticket minted for it alone; a failed mint is the

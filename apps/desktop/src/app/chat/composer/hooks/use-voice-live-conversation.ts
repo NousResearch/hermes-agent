@@ -2,7 +2,16 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { sanitizeTextForSpeech } from '@/lib/speech-text'
-import { type LiveHistoryMessage, type LiveTranscriptFragment, VoiceLiveSession } from '@/lib/voice-live'
+import {
+  fetchVoiceLiveStatus,
+  type LiveHistoryMessage,
+  type LiveSession,
+  type LiveTranscriptFragment,
+  voiceLiveBackend,
+  type VoiceLiveHandlers,
+  VoiceLiveSession
+} from '@/lib/voice-live'
+import { VoiceLiveAzureSession } from '@/lib/voice-live-azure'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -122,7 +131,7 @@ export function useVoiceLiveConversation({
   // Mirrors delegationRef for the reply-drive effect: a new delegation must
   // restart the feed loop, and a ref write alone does not re-render.
   const [activeDelegation, setActiveDelegation] = useState<null | string>(null)
-  const sessionRef = useRef<null | VoiceLiveSession>(null)
+  const sessionRef = useRef<null | LiveSession>(null)
   // The scope's session owner (a Bot's own connection + profile) picks the
   // GPT-Live backend and voice; a ref keeps the long-lived start closures
   // reading the current value.
@@ -246,98 +255,108 @@ export function useVoiceLiveConversation({
       return
     }
 
-    const session = new VoiceLiveSession(
-      {
-        // The voice model answers a bare "stop" itself (it just goes quiet) and
-        // never delegates it, so the spoken stop phrase is judged on the user
-        // transcript once the utterance settles.
-        onTranscript: fragment => {
-          if (fragment.speaker !== 'user') {
-            return
-          }
+    const owner = ownerRef.current
+    // The backend the OWNER's (connection, profile) resolves to picks the
+    // transport: Azure Realtime relays over the gateway WebSocket, OpenAI keeps
+    // the WebRTC + SDP POST path. A status fetch failure (older backend) reads
+    // as OpenAI, so the default engine is unchanged.
+    const status = await fetchVoiceLiveStatus(owner)
 
-          userUtteranceRef.current += fragment.text
+    const handlers: VoiceLiveHandlers = {
+      // The voice model answers a bare "stop" itself (it just goes quiet) and
+      // never delegates it, so the spoken stop phrase is judged on the user
+      // transcript once the utterance settles.
+      onTranscript: fragment => {
+        if (fragment.speaker !== 'user') {
+          return
+        }
 
-          if (utteranceTimerRef.current) {
-            window.clearTimeout(utteranceTimerRef.current)
-          }
+        userUtteranceRef.current += fragment.text
 
-          utteranceTimerRef.current = window.setTimeout(() => {
-            utteranceTimerRef.current = null
-            const utterance = userUtteranceRef.current
-            userUtteranceRef.current = ''
+        if (utteranceTimerRef.current) {
+          window.clearTimeout(utteranceTimerRef.current)
+        }
 
-            if (sessionRef.current === session && isVoiceStopCommand(utterance)) {
-              void end()
-              latest.current.onStopWord?.()
-            }
-          }, UTTERANCE_SETTLE_MS)
-        },
-        onClosed: (reason, usageSeconds) => {
-          if (sessionRef.current !== session) {
-            return
-          }
+        utteranceTimerRef.current = window.setTimeout(() => {
+          utteranceTimerRef.current = null
+          const utterance = userUtteranceRef.current
+          userUtteranceRef.current = ''
 
-          sessionRef.current = null
-          setDelegation(null)
-          setStatus('idle')
-
-          if (reason !== 'close_requested') {
-            notify({
-              kind: 'warning',
-              message: liveEndedMessage(reason, usageSeconds, voiceCopy),
-              title: voiceCopy.liveEnded
-            })
-            latest.current.onFatalError?.()
-          }
-        },
-        onDelegation: (delegationId, context) => {
-          if (sessionRef.current !== session) {
-            return
-          }
-
-          const { context: voiceContext, prompt } = delegationPrompt(context)
-
-          // A spoken stop command ends the conversation instead of becoming a turn.
-          if (prompt && isVoiceStopCommand(prompt)) {
+          if (sessionRef.current === session && isVoiceStopCommand(utterance)) {
             void end()
             latest.current.onStopWord?.()
-
-            return
           }
+        }, UTTERANCE_SETTLE_MS)
+      },
+      onClosed: (reason, usageSeconds) => {
+        if (sessionRef.current !== session) {
+          return
+        }
 
-          // A newer request supersedes an in-flight turn: stop it so the answer
-          // the voice speaks is for what the user asked last.
-          if (busyRef.current) {
-            void latest.current.onInterrupt?.()
-          }
+        sessionRef.current = null
+        setDelegation(null)
+        setStatus('idle')
 
-          setDelegation(delegationId)
-          spokenResponseIdRef.current = null
-          spokenLengthRef.current = 0
-          lastToolLabelRef.current = null
-          turnObservedRef.current = false
-          submittedAtRef.current = Date.now()
-          latest.current.consumePendingResponse()
-          refreshStatus()
-          void Promise.resolve(latest.current.onSubmit(prompt, voiceContext)).catch(error => {
-            notifyError(error, voiceCopy.liveDelegationFailed)
-            session.speak(delegationId, 'Sorry, I could not reach Hermes for that request.')
-            setDelegation(null)
-            refreshStatus()
+        if (reason !== 'close_requested') {
+          notify({
+            kind: 'warning',
+            message: liveEndedMessage(reason, usageSeconds, voiceCopy),
+            title: voiceCopy.liveEnded
           })
-        },
-        onError: (message, fatal) => {
-          notify({ kind: fatal ? 'error' : 'warning', message, title: voiceCopy.liveError })
-        },
-        onSpeakingChange: speaking => {
-          speakingRef.current = speaking
-          setLevel(speaking ? 0.6 : 0)
-          refreshStatus()
+          latest.current.onFatalError?.()
         }
       },
-      ownerRef.current
-    )
+      onDelegation: (delegationId, context) => {
+        if (sessionRef.current !== session) {
+          return
+        }
+
+        const { context: voiceContext, prompt } = delegationPrompt(context)
+
+        // A spoken stop command ends the conversation instead of becoming a turn.
+        if (prompt && isVoiceStopCommand(prompt)) {
+          void end()
+          latest.current.onStopWord?.()
+
+          return
+        }
+
+        // A newer request supersedes an in-flight turn: stop it so the answer
+        // the voice speaks is for what the user asked last.
+        if (busyRef.current) {
+          void latest.current.onInterrupt?.()
+        }
+
+        setDelegation(delegationId)
+        spokenResponseIdRef.current = null
+        spokenLengthRef.current = 0
+        lastToolLabelRef.current = null
+        turnObservedRef.current = false
+        submittedAtRef.current = Date.now()
+        latest.current.consumePendingResponse()
+        refreshStatus()
+        void Promise.resolve(latest.current.onSubmit(prompt, voiceContext)).catch(error => {
+          notifyError(error, voiceCopy.liveDelegationFailed)
+          session.speak(delegationId, 'Sorry, I could not reach Hermes for that request.')
+          session.completeCommentary?.(delegationId)
+          setDelegation(null)
+          refreshStatus()
+        })
+      },
+      onError: (message, fatal) => {
+        notify({ kind: fatal ? 'error' : 'warning', message, title: voiceCopy.liveError })
+      },
+      onSpeakingChange: speaking => {
+        speakingRef.current = speaking
+        setLevel(speaking ? 0.6 : 0)
+        refreshStatus()
+      }
+    }
+
+    const session: LiveSession =
+      voiceLiveBackend(status) === 'azure'
+        ? new VoiceLiveAzureSession(handlers, owner)
+        : new VoiceLiveSession(handlers, owner)
 
     sessionRef.current = session
     startingRef.current = false
@@ -432,6 +451,10 @@ export function useVoiceLiveConversation({
           spokenLengthRef.current = spoken.length
         }
 
+        // Full response spoken: on the Azure relay, seal the accumulated
+        // commentary so the backend answers the delegation (function_call_output
+        // + response.create). A no-op on OpenAI, where the vendor owns it.
+        session.completeCommentary?.(delegationId)
         latest.current.consumePendingResponse()
         setDelegation(null)
         refreshStatus()
@@ -450,6 +473,8 @@ export function useVoiceLiveConversation({
           session.think(delegationId, 'Hermes finished that request without a spoken result.')
         }
 
+        // Even with nothing to say, the Azure relay needs the delegation sealed.
+        session.completeCommentary?.(delegationId)
         setDelegation(null)
         refreshStatus()
       }

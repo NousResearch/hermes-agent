@@ -2,7 +2,9 @@
  * Sibling WebSocket URLs beside `/api/ws` for a (connection, profile) route.
  *
  * Some gateway streams are not JSON-RPC and cannot share the gateway socket:
- * voice PCM (`/api/audio/speak-stream`) and the Bot Screen's raw RFB
+ * voice PCM (`/api/audio/speak-stream`), live dictation
+ * (`/api/audio/transcribe-stream`), the Azure voice-live relay
+ * (`/api/audio/voice-live-stream`) and the Bot Screen's raw RFB
  * (`/api/display/ws`). They ride the SAME authenticated origin the route's
  * `/api/ws` uses — a fresh credential for OAuth remotes, the registry-scoped
  * `*For` bridges for a remote riding over a local install (the bare
@@ -36,10 +38,12 @@ export interface SiblingWsRoute {
   profile?: null | string
 }
 
-type AudioSocketPath = '/api/audio/speak-stream' | '/api/audio/transcribe-stream'
+type AudioSocketPath = '/api/audio/speak-stream' | '/api/audio/transcribe-stream' | '/api/audio/voice-live-stream'
 
 const isAudioSocketPath = (path: string): path is AudioSocketPath =>
-  path === '/api/audio/speak-stream' || path === '/api/audio/transcribe-stream'
+  path === '/api/audio/speak-stream' ||
+  path === '/api/audio/transcribe-stream' ||
+  path === '/api/audio/voice-live-stream'
 
 /**
  * Resolve `ws(s)://<gateway>/<path>` for `route`. `stripGatewayCredential`

@@ -253,6 +253,7 @@ test('a voice socket dialed on its own /api/ws reservation drops Origin; other p
 
   expect(dial('/api/audio/speak-stream')).toEqual({})
   expect(dial('/api/audio/transcribe-stream')).toEqual({})
+  expect(dial('/api/audio/voice-live-stream')).toEqual({})
   expect(dial('/api/pty')).toBeNull()
 })
 

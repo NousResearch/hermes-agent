@@ -27,7 +27,7 @@ round-robin never does — **which models are sick, and why**.
 | Tool | What it gives the agent |
 |---|---|
 | `model_doctor_status` | Full health table for every model seen |
-| `model_doctor_ping` | Same view, re-sorted (no live network call) |
+| `model_doctor_refresh` | Same view, re-sorted (no live network call) |
 
 ## Install
 

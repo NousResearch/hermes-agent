@@ -246,8 +246,8 @@ def tool_status(args: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def tool_ping(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Re-classify the most recent events; no live network call (passive design)."""
+def tool_refresh(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Re-sort the most recent events (passive refresh; no live network call)."""
     return tool_status(args)
 
 
@@ -267,13 +267,13 @@ def register(ctx) -> None:
         handler=tool_status,
     )
     ctx.register_tool(
-        name="model_doctor_ping",
+        name="model_doctor_refresh",
         toolset="model-doctor",
         schema={
             "type": "object",
             "properties": {},
             "additionalProperties": False,
         },
-        handler=tool_ping,
+        handler=tool_refresh,
     )
     logger.info("model-doctor: monitoring %d known model(s)", len(RECORDS))

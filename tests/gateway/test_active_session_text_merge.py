@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import types
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -186,6 +187,37 @@ async def test_rapid_text_followups_accumulate_instead_of_replacing():
     pending = adapter._pending_messages[session_key]
     assert pending.text == "part two\npart three"
     assert not adapter._active_sessions[session_key].is_set()
+
+
+@pytest.mark.asyncio
+async def test_restart_drain_parks_a_requeued_event_without_redispatching_it():
+    """Regression for #139911: a drain reply must not spin the same queued event."""
+    adapter = _make_initialized_adapter()
+    event = _make_event("resume after restart")
+    session_key = build_session_key(event.source)
+    adapter.gateway_runner = SimpleNamespace(_draining=True)
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    async def requeue_same_event(received):
+        adapter._pending_messages[session_key] = received
+        return "Gateway restarting — queued for the next turn"
+
+    adapter._message_handler = requeue_same_event
+    adapter._start_typing_refresh = lambda *_args: None
+    adapter._run_processing_hook = AsyncMock()
+    adapter._release_turn_marker = AsyncMock()
+    adapter._flush_text_debounce_now = AsyncMock()
+    adapter._stop_typing_refresh = AsyncMock()
+    adapter._fire_post_delivery_callback = AsyncMock()
+    adapter._finish_session_task = MagicMock()
+    adapter._send_final_text = AsyncMock()
+    adapter._spawn_drain_task = MagicMock()
+
+    await adapter._process_message_background(event, session_key)
+
+    assert adapter._pending_messages[session_key] is event
+    adapter._send_final_text.assert_awaited_once()
+    adapter._spawn_drain_task.assert_not_called()
 
 
 @pytest.mark.asyncio

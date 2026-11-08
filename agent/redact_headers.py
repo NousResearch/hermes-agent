@@ -17,7 +17,9 @@ _SECRET_HEADER_LINE_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _SECRET_HEADER_INLINE_RE = re.compile(
-    rf"({_SECRET_HEADER_NAMES}:[ \t]*)([^\s\"';&|<>()$`\\]+)",
+    # ``$`` stays in the value: a log line's ``x-api-key: $opaque…`` is a credential, and the
+    # quote/backtick/shell-separator exclusions already keep a command's syntax intact.
+    rf"({_SECRET_HEADER_NAMES}:[ \t]*)([^\s\"';&|<>()`\\]+)",
     re.IGNORECASE,
 )
 _SECRET_HEADER_DOUBLE_QUOTED_RE = re.compile(
@@ -126,7 +128,7 @@ _COOKIE_HEADER_JSON_UNTERMINATED_RE = re.compile(
 # A Cookie/Set-Cookie header in the middle of a line (log records, prose dumps) that the
 # line/curl/JSON passes above did not see. Every ``name=value`` pair is masked, not only
 # the first; ``Set-Cookie:`` also masks a bare 16+ char token (``Set-Cookie: header`` is prose).
-_COOKIE_PAIR = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+=[^\s;\\\"'`]*"
+_COOKIE_PAIR = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+=(?:\"[^\"\r\n]*\"|[^\s;\\\"'`]*)"
 _COOKIE_HEADER_INLINE_RE = re.compile(
     rf"(\b(?P<set>Set-)?Cookie:[ \t]*)"
     rf"(?:{_COOKIE_PAIR}(?:;[ \t]*{_COOKIE_PAIR})*|(?(set)[^\s\\\"';&|<>()$`*=]{{16,}}+(?![^\s;])|(?!)))",

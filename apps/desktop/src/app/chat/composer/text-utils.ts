@@ -153,6 +153,62 @@ export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
   return blobs
 }
 
+/**
+ * Plain text from a paste's DataTransfer, falling back to the flavors WebKit
+ * exposes when the pasteboard carries no plain-text item at all. iOS apps'
+ * "Copy Link" writes a `public.url` pasteboard item, which WebKit surfaces on
+ * the paste event only as `text/uri-list` (and rich-text copies sometimes ship
+ * `text/html` without `text/plain`); `getData('text')` comes back empty for
+ * both. Reading plain text alone called those pastes empty, and the composer's
+ * unconditional preventDefault then swallowed the native insertion that WOULD
+ * have converted them — a silent no-op on iPhone only (Chromium's clipboard
+ * always carries plain text; UIKit converts `public.url` on insert, which is
+ * why the same paste lands fine in Notes). Sibling of #132591's "empty paste
+ * means image" mistake. The winning flavor is reported so the caller can log
+ * which rescue path a paste took.
+ */
+export function extractClipboardText(clipboard: DataTransfer): { flavor: 'html' | 'none' | 'plain' | 'uri', text: string } {
+  const plain = clipboard.getData('text/plain')
+
+  if (plain.trim()) {
+    return { flavor: 'plain', text: plain }
+  }
+
+  const uriList = clipboard.getData('text/uri-list')
+
+  if (uriList.trim()) {
+    // RFC 2483: `#`-comment lines may precede the URI; the first URI wins.
+    const uri = uriList.split(/\r?\n/).find(line => line.trim() && !line.trim().startsWith('#'))
+
+    if (uri?.trim()) {
+      return { flavor: 'uri', text: uri.trim() }
+    }
+  }
+
+  const html = clipboard.getData('text/html')
+
+  if (html.trim()) {
+    try {
+      const doc = new DOMParser().parseFromString(html, 'text/html')
+      const href = doc.querySelector('a[href]')?.getAttribute('href')?.trim()
+
+      if (href) {
+        return { flavor: 'html', text: href }
+      }
+
+      const body = doc.body?.textContent ?? ''
+
+      if (body.trim()) {
+        return { flavor: 'html', text: body }
+      }
+    } catch {
+      // Malformed HTML: treat as no text and let the caller's fallbacks run.
+    }
+  }
+
+  return { flavor: 'none', text: '' }
+}
+
 /** Caret-anchored text before the cursor, or null if the selection isn't a
  *  collapsed caret inside `editor`.
  *

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { blobDedupeKey, detectTrigger, extractClipboardImageBlobs } from './text-utils'
+import { blobDedupeKey, detectTrigger, extractClipboardImageBlobs, extractClipboardText } from './text-utils'
 
 describe('detectTrigger', () => {
   it('detects a bare slash trigger with an empty query', () => {
@@ -260,5 +260,44 @@ describe('blobDedupeKey', () => {
     const file = new File([], 'a.png', { type: 'image/png', lastModified: 42 })
 
     expect(blobDedupeKey(file)).toBe('file:a.png:0:image/png:42')
+  })
+})
+
+describe('extractClipboardText', () => {
+  const dt = (flavors: Record<string, string>) =>
+    ({ getData: (type: string) => flavors[type] ?? '' }) as unknown as DataTransfer
+
+  it('takes plain text when present', () => {
+    const clip = extractClipboardText(dt({ 'text/plain': 'hello', 'text/uri-list': 'https://x.dev' }))
+
+    expect(clip).toEqual({ flavor: 'plain', text: 'hello' })
+  })
+
+  it('rescues a plain-text-less uri-list paste (iOS "Copy Link")', () => {
+    const clip = extractClipboardText(dt({ 'text/uri-list': '# https://github.com/jo-inc/camofox-browser\nhttps://github.com/jo-inc/camofox-browser' }))
+
+    expect(clip).toEqual({ flavor: 'uri', text: 'https://github.com/jo-inc/camofox-browser' })
+  })
+
+  it('rescues an HTML anchor and returns its href', () => {
+    const clip = extractClipboardText(dt({ 'text/html': '<a href="https://x.dev/a?b=1&amp;c=2">Repo</a>' }))
+
+    expect(clip).toEqual({ flavor: 'html', text: 'https://x.dev/a?b=1&c=2' })
+  })
+
+  it('falls back to the HTML body text when no anchor exists', () => {
+    const clip = extractClipboardText(dt({ 'text/html': '<div>plain prose &amp; more</div>' }))
+
+    expect(clip).toEqual({ flavor: 'html', text: 'plain prose & more' })
+  })
+
+  it('reports none for an empty clipboard', () => {
+    expect(extractClipboardText(dt({}))).toEqual({ flavor: 'none', text: '' })
+  })
+
+  it('ignores whitespace-only and comment-only uri-lists', () => {
+    const clip = extractClipboardText(dt({ 'text/uri-list': '#comment\n  \n' }))
+
+    expect(clip).toEqual({ flavor: 'none', text: '' })
   })
 })

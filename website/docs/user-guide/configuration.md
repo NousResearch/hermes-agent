@@ -274,7 +274,7 @@ terminal:
   home_mode: auto   # auto | real | profile — subprocess HOME policy
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   client_env_passthrough: []  # Extra non-secret toolchain names (e.g. GEM_HOME) a local CLI/TUI session's tools take from its launching shell
-  client_env_turn_passthrough: []  # Names a local CLI sends with EACH prompt so that turn's tools inherit them (values that change per turn, e.g. a run identity)
+  client_env_turn_passthrough: []  # Names a local CLI sends with EACH prompt so that turn's tools inherit them (values that change per turn, e.g. a run identity). hermes acp sends them too when the gateway advertises turn-env-v1, including on resumed sessions.
   sync_back_max_bytes: 2147483648  # Remote backends: refuse to extract a state archive larger than this (bytes)
   modal_image: "nousresearch/hermes-sandbox:desktop"                 # Container image for Modal backend
   daytona_image: "nousresearch/hermes-sandbox:desktop"               # Container image for Daytona backend

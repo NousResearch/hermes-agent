@@ -70,6 +70,22 @@ def test_flood_control_still_honours_retry_after():
     assert senders._telegram_retry_delay(exc, 0) == 7.0
 
 
+def test_a_connect_timeout_backs_off_because_nothing_was_sent():
+    """PTB re-raises httpx.ConnectTimeout as a bare TimedOut; the chained cause proves the
+    request never left, so it is retried (#47229) while a read timeout stays final."""
+    import httpx
+    try:
+        try:
+            raise httpx.ConnectTimeout("connect timed out")
+        except httpx.ConnectTimeout as cause:
+            raise TimedOut("Timed out") from cause
+    except TimedOut as exc:
+        connect = exc
+    assert senders._telegram_retry_delay(connect, 0) == 1.0
+    assert senders._telegram_retry_delay(TimedOut("Pool timeout: All connections in the connection pool "
+                                                  "are occupied. Request was *not* sent"), 1) == 2.0
+
+
 def test_a_timeout_is_never_retried():
     """A timeout may already have reached Telegram, so a retry would duplicate the message."""
     assert senders._telegram_retry_delay(TimedOut("Timed out"), 0) is None

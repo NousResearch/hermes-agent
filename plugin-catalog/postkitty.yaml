@@ -1,10 +1,11 @@
 name: postkitty
 repo: https://github.com/mertkayacs/postkitty
-sha: 9464ff3bd2ab726d9476b973c6c001015455794d
+sha: 0f7a9fb0e7fe21bd61c1d5f8a288d66a0b4e5327
 title: postkitty
 description: 'One post in, every platform out. Fixes and rewrites your draft for each platform and counts the
   copy with each platform''s own rule, splitting long posts into threads. Crops photos and reframes landscape video
-  so every face stays in frame, with a split screen for two speakers. Checks every file against the platform''s
+  so every face stays in frame; when two people talk, the choice is a split screen, a cut to whoever is talking or
+  the whole wide shot. Checks every file against the platform''s
   published limits and repairs failures before a file is marked ready. Covers Instagram, TikTok, YouTube Shorts, X,
   LinkedIn, Threads, Bluesky and Facebook. Runs locally with ffmpeg and OpenCV; no API keys.'
 maintainer: mertkayacs
@@ -13,10 +14,10 @@ category: tools
 version: "0.1.0"
 requires_hermes: ">=0.22.7"
 docs_url: https://postkitty.mertkayacs.com
-image: https://raw.githubusercontent.com/mertkayacs/postkitty/9464ff3bd2ab726d9476b973c6c001015455794d/docs/banner.png
+image: https://raw.githubusercontent.com/mertkayacs/postkitty/0f7a9fb0e7fe21bd61c1d5f8a288d66a0b4e5327/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/mertkayacs/postkitty/9464ff3bd2ab726d9476b973c6c001015455794d/docs/board.png
-  - https://raw.githubusercontent.com/mertkayacs/postkitty/9464ff3bd2ab726d9476b973c6c001015455794d/docs/before-after.jpg
+  - https://raw.githubusercontent.com/mertkayacs/postkitty/0f7a9fb0e7fe21bd61c1d5f8a288d66a0b4e5327/docs/board.png
+  - https://raw.githubusercontent.com/mertkayacs/postkitty/0f7a9fb0e7fe21bd61c1d5f8a288d66a0b4e5327/docs/before-after.jpg
 known_issues:
   - Needs ffmpeg and ffprobe on PATH for video.
 capabilities:

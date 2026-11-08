@@ -710,7 +710,7 @@
     },
     {
       "name": "cron.manage",
-      "summary": "List/add/remove/pause/resume cron jobs in the (optionally profile-scoped) cron store.",
+      "summary": "List/add/remove/pause/resume cron jobs, or cancel a job's live run, in the (optionally profile-scoped) cron store.",
       "params": [
         {
           "name": "params",
@@ -15992,7 +15992,8 @@
           "add",
           "remove",
           "pause",
-          "resume"
+          "resume",
+          "cancel"
         ],
         "title": "CronAction",
         "type": "string"
@@ -16425,6 +16426,18 @@
             "default": null,
             "title": "Name"
           },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
           "include_disabled": {
             "anyOf": [
               {
@@ -16524,7 +16537,7 @@
       },
       "CronManageResult": {
         "additionalProperties": true,
-        "description": "Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` \u2192 ``jobs``/``count``\n(+ ``scoped`` when profile-scoped); ``add`` \u2192 the created job's summary + ``job``; ``remove`` \u2192\n``removed_job``; ``pause``/``resume`` \u2192 ``job``. A tool-level failure lands in ``error``.",
+        "description": "Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` \u2192 ``jobs``/``count``\n(+ ``scoped`` when profile-scoped); ``add`` \u2192 the created job's summary + ``job``; ``remove`` \u2192\n``removed_job``; ``pause``/``resume`` \u2192 ``job``; ``cancel`` \u2192 ``job`` plus\n``cron/cancellation.py::cancel_run`` (``cancelled`` is false when no run was in flight).\nA tool-level failure lands in ``error``.",
         "properties": {
           "success": {
             "anyOf": [
@@ -16758,6 +16771,66 @@
               }
             ],
             "default": null
+          },
+          "cancelled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cancelled"
+          },
+          "execution_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Execution Id"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Status"
+          },
+          "pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pid"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
           }
         },
         "title": "CronManageResult",

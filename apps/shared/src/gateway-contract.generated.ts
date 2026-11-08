@@ -4032,6 +4032,7 @@ export interface RollbackDiffResult {
 export interface CronManageParams {
   action?: CronAction
   name?: string | null
+  reason?: string | null
   include_disabled?: boolean | string | null
   schedule?: string | null
   prompt?: string | null
@@ -4040,8 +4041,8 @@ export interface CronManageParams {
   deliver?: string | null
   profile?: string | null
 }
-export type CronAction = 'list' | 'add' | 'remove' | 'pause' | 'resume'
-/** Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count`` (+ ``scoped`` when profile-scoped); ``add`` → the created job's summary + ``job``; ``remove`` → ``removed_job``; ``pause``/``resume`` → ``job``. A tool-level failure lands in ``error``. */
+export type CronAction = 'list' | 'add' | 'remove' | 'pause' | 'resume' | 'cancel'
+/** Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count`` (+ ``scoped`` when profile-scoped); ``add`` → the created job's summary + ``job``; ``remove`` → ``removed_job``; ``pause``/``resume`` → ``job``; ``cancel`` → ``job`` plus ``cron/cancellation.py::cancel_run`` (``cancelled`` is false when no run was in flight). A tool-level failure lands in ``error``. */
 export interface CronManageResult {
   success?: boolean | null
   error?: string | null
@@ -4062,6 +4063,11 @@ export interface CronManageResult {
   message?: string | null
   guidance?: unknown | null
   removed_job?: CronRemovedJob | null
+  cancelled?: boolean | null
+  execution_id?: string | null
+  status?: string | null
+  pid?: number | null
+  detail?: string | null
   [key: string]: unknown
 }
 /** ``tools/cronjob_job_args.py::_format_job``. */
@@ -6349,7 +6355,7 @@ export interface RpcMethods {
   'connectors.policy.set': { params: ConnectorPolicySetParams; result: ConnectorPolicySetResult }
   /** The scoped profile's cached or current tool list for one connector. */
   'connectors.tools': { params: ConnectorToolsParams; result: ConnectorToolsResult }
-  /** List/add/remove/pause/resume cron jobs in the (optionally profile-scoped) cron store. */
+  /** List/add/remove/pause/resume cron jobs, or cancel a job's live run, in the (optionally profile-scoped) cron store. */
   'cron.manage': { params: CronManageParams; result: CronManageResult }
   /** Block/unblock NEW spawns globally (active children keep running); returns the new state. */
   'delegation.pause': { params: DelegationPauseParams; result: DelegationPauseResult }

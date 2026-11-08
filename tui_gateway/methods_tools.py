@@ -1331,6 +1331,10 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, json.loads(raw))
     if action in {"remove", "pause", "resume"}:
         return _ok(rid, json.loads(cronjob(action=action, job_id=jid)))
+    if action == "cancel":
+        # Stops the live run only, like `hermes cron cancel`: the job keeps its schedule.
+        raw = cronjob(action="cancel", job_id=jid, reason=_str_arg(params, "reason") or None)
+        return _ok(rid, json.loads(raw))
     return _err(rid, 4016, f"unknown cron action: {action}")
 
 

@@ -378,9 +378,14 @@ class TestImageDocuments:
         assert "could not be read" not in (event.text or "")
 
     @pytest.mark.asyncio
-    async def test_spoofed_heic_document_is_still_rejected(self, adapter):
+    @pytest.mark.parametrize("payload", [
+        b"<!DOCTYPE html><html>error</html>",
+        b"\x00\x00\x00\x18ftypheic",  # 12-byte stub: the box claims 24 bytes
+        b"abcdftypheic is the HEIC brand, says this text file",  # box size 'abcd' is huge
+    ])
+    async def test_spoofed_heic_document_is_still_rejected(self, adapter, payload):
         doc = _make_document(file_name="photo.heic", mime_type="image/heic", file_size=40,
-                             file_obj=_make_file_obj(b"<!DOCTYPE html><html>error</html>"))
+                             file_obj=_make_file_obj(payload))
         msg = _make_message(document=doc)
 
         await adapter._handle_media_message(_make_update(msg), MagicMock())

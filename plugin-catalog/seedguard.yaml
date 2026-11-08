@@ -1,0 +1,30 @@
+name: seedguard
+title: Seedguard
+description: "Secret firewall: private keys, seed phrases, API keys and 2FA codes become placeholders before they reach the model; armed tools can still use them."
+repo: https://github.com/Investorquab/Seedguard
+sha: "70869f647e344897259a51a0c3eb32f6e0f94e79"
+version: "0.1.0"
+tier: community
+category: general
+maintainer: Investorquab
+requires_hermes: ">=0.19"
+docs_url: https://github.com/Investorquab/Seedguard#readme
+readme: true
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/Investorquab/Seedguard/70869f647e344897259a51a0c3eb32f6e0f94e79/assets/seedguard-redaction.png
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - transform_terminal_output
+    - transform_tool_result
+    - transform_llm_output
+    - pre_gateway_dispatch
+  provides_middleware:
+    - llm_request
+    - llm_execution
+    - tool_request
+  requires_env: []
+known_issues:
+  - "Auxiliary side-model calls (session titles, compression, smart approvals) don't run middleware: secrets typed in the CLI can reach them. Run /seedguard doctor for the config fixes. Chat-app input is cleaned before storage. Confirmed on Hermes 0.23: its new pre_auxiliary_call/post_auxiliary_call events are observer-only (metrics, not request body) and cannot redact the call."

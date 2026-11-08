@@ -112,10 +112,12 @@ def test_owner_cron_run_binds_its_claim_fence(tmp_path, monkeypatch):
     runner.session_authority = authority
     admitted = threading.Event()
     monkeypatch.setattr(authority, '_schedule', lambda ref: admitted.set())
-    seen = []
+    seen, marks = [], []
 
     def run_job(job, *, extra_prompt, execution_id, cancel_event):
+        from hermes_state_fence import store_turn
         seen.append(current_scope())
+        marks.append(store_turn(db))
         return (True, 'doc', 'answer', None)
     monkeypatch.setattr(scheduler, 'run_job', run_job)
 
@@ -145,3 +147,6 @@ def test_owner_cron_run_binds_its_claim_fence(tmp_path, monkeypatch):
     assert isinstance(scope, TurnScope), scope
     assert (scope.session, scope.turn) == (sid, row['admission_id'])
     assert scope.fence == Fence(2, row['generation'])
+    # The run's writes to the session store are fenced by the same claim.
+    [mark] = marks
+    assert mark is not None and (mark.session, mark.fence) == (sid, scope.fence)

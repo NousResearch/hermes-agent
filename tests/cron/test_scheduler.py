@@ -45,10 +45,10 @@ def _run_owned_job(job, tmp_path, db=None):
         sessions={ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))},
         pending_results={},
     )
-    row = {
+    from tests.cron.conftest import claimed_row  # a probe store records writes, not leases
+    row = claimed_row(db, ref.session_id, admission_id, request_id) if owns_db else {
         "admission_id": admission_id, "request_id": request_id,
-        "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": ""},
-    }
+        "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": ""}}
     policy = SimpleNamespace(request_json=json.dumps({
         "cron_job": job, "extra_prompt": None, "request_id": request_id,
     }))

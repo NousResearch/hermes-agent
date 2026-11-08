@@ -25,6 +25,7 @@ def _run_owned_job(job, tmp_path):
     from gateway.session_contract import SessionRef
     from gateway.session_cron import current_execution, execute
     from hermes_state_registry import acquire, release
+    from tests.cron.conftest import claimed_row
 
     ref = SessionRef("test-profile", "cron-owner-session")
     admission_id = "cron-owner-admission"
@@ -36,10 +37,7 @@ def _run_owned_job(job, tmp_path):
         sessions={ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))},
         pending_results={},
     )
-    row = {
-        "admission_id": admission_id, "request_id": request_id,
-        "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": ""},
-    }
+    row = claimed_row(db, ref.session_id, admission_id, request_id)
     policy = SimpleNamespace(request_json=json.dumps({
         "cron_job": job, "extra_prompt": None, "request_id": request_id,
     }))

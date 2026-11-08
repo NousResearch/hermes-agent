@@ -145,7 +145,30 @@ state:
   as routed. It refuses inside a hosted scope.
 - `bind_state(scope, ...)` returns the change's token, for a host that holds it
   across calls (the TUI turn, the managed worker) or deliberately binds less.
-- `bind_turn(session_id, turn_id, fence)` marks a turn inside a bound scope.
+- `bind_turn(session_id, turn_id, fence, store=path)` marks a turn inside a bound scope.
+  It also records the turn (`hermes_scope.current_turn()`) for the body's duration, with the
+  path of the session store that issued the claim, whether or not a scope is bound.
+
+### Fenced turn writes
+
+A claimed turn has one identity: the bound `TurnScope` (session, turn, fence) plus the store
+that issued its claim (`hermes_scope.TurnMark`, recorded by `bind_turn`; a `TurnScope` bound
+without one is fenced on its profile's `state.db`). Every write made in the turn's context to
+that store checks the fence inside the write's own transaction (`hermes_state_fence`, called
+from `SessionDB._execute_write`). If the profile's owner epoch or the session's
+`runtime_generation` has moved since the claim, the write raises `TurnFenceSupersededError` (a
+`SessionTurnLeaseLostError`) and nothing of it lands.
+
+The identity is immutable and never closes. Threads and tasks the turn starts (the title
+upgrade, a late reply) stay the turn's work for their whole lifetime, so after a takeover or the
+session's next claim their writes are refused, while those of a turn still holding its lease land
+as before. A token update queued for the background writer carries the turn it was queued under,
+is applied in that turn's fence, and never coalesces with another claim's. Two exceptions are
+explicit: the owner's own work (the drain that claims and settles turns, which keeps the ledger's
+owner-epoch/generation checks) runs under `agent.runtime_scope.owner_operation()`, and work
+designed to outlive the turn (async delegation, background review) runs under `outlive_turn()`,
+which keeps only the owner-epoch half of the fence. Writes to another profile's store, CLI/TUI
+turns (durable turn lease) and maintenance between turns are not turn writes.
 
 Inside a hosted scope, a bind must keep the tenant, agent, actor, owner and
 administration right; anything else raises `ScopeSwitchRefused`.

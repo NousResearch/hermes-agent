@@ -1,13 +1,13 @@
 name: zkagent-attest
 repo: https://github.com/MCPVOT/hermes-zkagent
-sha: 4aab5d5a568640855c37da08b5024262a3075e40
+sha: 8ccd72dbd1b58b0e6f3811fd06a026da0472d543
 description: "Prove what your agent did without revealing what it did: every tool call is recorded, the session is proved inside a signed cap, and one action can be disclosed on request. Replay protection spans both verification modes, so a receipt and the session that contains it cannot both be accepted."
 maintainer: MCPVOT
 tier: community
 category: tools
 requires_hermes: ">=0.22.5"
-version: "0.5.4"
-image: "https://raw.githubusercontent.com/MCPVOT/hermes-zkagent/4aab5d5a568640855c37da08b5024262a3075e40/docs/assets/banner.png"
+version: "0.5.5"
+image: "https://raw.githubusercontent.com/MCPVOT/hermes-zkagent/8ccd72dbd1b58b0e6f3811fd06a026da0472d543/docs/assets/banner.png"
 known_issues:
   - "8 actions per receipt (the circuit's slot count); longer sessions need several attestations"
   - "single-party trusted setup, development-grade, not a ceremony"

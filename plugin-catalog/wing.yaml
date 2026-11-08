@@ -6,18 +6,20 @@
 "category": "general"
 "docs_url": "https://github.com/tarkilhk/wing-hermes-plugin#readme"
 "readme": !!bool "true"
-"description": "Companion backend for Wing Android: structured, immutable email drafts\
-  \ and profile-context live voice. Draft tools save recipient, cc/bcc, subject and\
-  \ body; Wing opens the chosen email app for final edits and sending. No email account\
-  \ access or sending tool. Derived from draft-cards' structured version design (arsiktech,\
-  \ MIT); the voice transport credits hermes-live-voice (Synero, MIT). Disclosure:\
-  \ draft fields persist in the active profile's plugin-data/wing SQLite database.\
-  \ Voice sends SDP, Hermes-built profile context and chat excerpts to OpenAI/ChatGPT\
-  \ through Hermes-owned credentials. Fresh voice context starts a short-lived Python\
-  \ inspection subprocess that initializes configured Hermes memory extensions; it\
-  \ neither runs an agent turn nor saves chat history. Uses Hermes prompt and voice\
-  \ helpers, including undocumented imports disclosed in the README. No telemetry,\
-  \ stored credentials or plugin self-updater."
+"description": "Extra features for the Wing Android app: GPT Live voice and email\
+  \ draft cards. GPT Live voice uses ChatGPT subscription or OpenAI API access with\
+  \ the selected Hermes profile's context. Email draft cards show recipients, cc/bcc,\
+  \ subject and body, then open the user's chosen email app for final edits and sending.\
+  \ Drafts work independently of voice and need no OpenAI credentials or mail account\
+  \ access. Draft cards adapt arsiktech's hermes-draft-cards design (MIT); the voice\
+  \ integration builds on Synero's hermes-live-voice work (MIT). Disclosure: draft\
+  \ fields persist in the active profile's plugin-data/wing SQLite database. Voice\
+  \ sends SDP, Hermes-built profile context and chat excerpts to OpenAI/ChatGPT through\
+  \ Hermes-owned credentials. Fresh voice context starts a short-lived Python inspection\
+  \ subprocess that initializes configured Hermes memory extensions; it neither runs\
+  \ an agent turn nor saves chat history. Uses Hermes prompt and voice helpers, including\
+  \ undocumented imports disclosed in the README. No telemetry, stored credentials\
+  \ or plugin self-updater."
 "known_issues":
 - "Requires the matching Wing Android client. Email cards need a Wing build with wing-email-draft\
   \ rendering; other clients see the tool fields/reference as text."
@@ -25,8 +27,8 @@
   \ can change; admission validation reports these imports for reviewer inspection."
 - "Live subscription voice requires a profile sign-in with voice access. API voice\
   \ requires the profile's OpenAI credentials. Email drafts require neither."
-"sha": "8423f7f7331ed2eabfb48636ad14d23013a4942c"
-"version": "0.3.0"
+"sha": "a39afe7ae4acc2f2da50d73b6a117a5ce2f61e1a"
+"version": "0.3.1"
 "requires_hermes": ">=0.23.0"
 "screenshots":
 - "https://raw.githubusercontent.com/tarkilhk/wing-hermes-plugin/a39afe7ae4acc2f2da50d73b6a117a5ce2f61e1a/docs/email-draft-preview.png"

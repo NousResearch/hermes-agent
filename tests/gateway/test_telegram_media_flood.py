@@ -313,3 +313,30 @@ async def test_cancel_during_the_private_copy_leaves_no_orphaned_attachment(floo
     finally:
         release.set()
         await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+async def test_failed_private_copy_still_posts_the_promised_notice(flooded, tmp_path, monkeypatch):
+    """The private copy fails (disk full) and the caller deletes its temp file on return: nothing is
+    left to re-upload, so the failure notice the result promised is posted once after the window."""
+    from plugins.platforms.telegram import telegram_media_flood as flood
+
+    adapter, _doc = flooded
+    clip = tmp_path / "reply.ogg"
+    clip.write_bytes(b"OggS-voice")
+
+    def disk_full(*_args, **_kwargs):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(flood.shutil, "copy2", disk_full)
+    adapter._bot.send_voice = AsyncMock(side_effect=RetryAfter(0.2))
+    result = await adapter.send_voice("12345", str(clip), metadata={"thread_id": "7"})
+    clip.unlink()  # what auto-TTS does as soon as send_voice returns
+
+    assert result.raw_response["failure_notice_sent"]
+    await async_wait_until(lambda: adapter.send.await_count, timeout=5, what="post-window failure notice")
+    await async_wait_until(lambda: not adapter._background_tasks, timeout=5, what="deferred task done")
+    adapter.send.assert_awaited_once()
+    assert "Couldn't deliver" in adapter.send.await_args.args[1]
+    assert adapter.send.await_args.kwargs["metadata"] == {"thread_id": "7"}
+    assert adapter._bot.send_voice.await_count == 1  # no upload of a file that no longer exists

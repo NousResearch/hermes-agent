@@ -121,11 +121,11 @@ class TelegramMediaFloodMixin:
                     reset_media=lambda: f.seek(0), **build_kwargs(f))
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:  # health: allow BLE001 -- upload boundary: flood recovery or the caller's on_error (which logs) owns every failure
-            recovered = await self._media_flood_recover(e, chat_id, redo, what, source)
+            recovered = await self._media_flood_recover(e, chat_id, redo, what, source, metadata)
             return recovered if recovered is not None else await on_error(e)
 
     async def _media_flood_recover(
-        self, error: Exception, chat_id, redo: Redo, what: str, source: Optional[str] = None,
+        self, error: Exception, chat_id, redo: Redo, what: str, source: Optional[str] = None, metadata=None,
     ) -> Optional[SendResult]:
         """Recover a media send refused by flood control. ``None``: not a flood, or recovery is
         exhausted (the caller then reports the failure; a deferred re-upload first sleeps out the
@@ -136,7 +136,7 @@ class TelegramMediaFloodMixin:
             return None
         stage = _FLOOD_STAGE.get()
         if isinstance(error, _KnownFloodWindow):  # refused locally: the window is already armed
-            return await self._defer_media_upload(redo, source, wait, _flood_cap_result(wait), what)
+            return await self._defer_media_upload(redo, source, wait, _flood_cap_result(wait), what, (chat_id, metadata))
         if stage == 0 and wait <= _FLOOD_INLINE_WAIT_CAP_SECS:
             logger.warning("[%s] Telegram flood control on %s, retrying in %.1fs", self.name, what, wait)
             if wait > 0:  # siblings queued on the chat lock must not fire into the window this one waits out
@@ -151,7 +151,7 @@ class TelegramMediaFloodMixin:
         if stage >= 2:
             await asyncio.sleep(wait)
             return None
-        return await self._defer_media_upload(redo, source, wait, refused, what)
+        return await self._defer_media_upload(redo, source, wait, refused, what, (chat_id, metadata))
 
     @contextlib.asynccontextmanager
     async def _media_send_slot(self, chat_id):
@@ -176,23 +176,40 @@ class TelegramMediaFloodMixin:
             await asyncio.sleep(wait)
 
     async def _defer_media_upload(
-        self, redo: Redo, source: Optional[str], wait: float, refused: SendResult, what: str,
+        self, redo: Redo, source: Optional[str], wait: float, refused: SendResult, what: str, target: tuple,
     ) -> SendResult:
         """Schedule ``redo()`` after the flood window (tracked, so shutdown cancels it) on a private copy
-        of ``source``; returns ``refused`` flagged so the dispatcher leaves the failure notice to it."""
+        of ``source``; returns ``refused`` flagged so the dispatcher leaves the failure notice to it. The
+        task owns that notice on every path: ``redo``'s own failure handling posts it, and where ``redo``
+        cannot run (the copy failed and the caller deleted its file, or it raised) the task posts it to
+        ``target`` (``(chat_id, metadata)``) itself."""
         logger.warning("[%s] Telegram flood control on %s; re-uploading natively in %.0fs", self.name, what, wait)
         kept = await _owned_private_copy(source) if source else None
 
         async def _later() -> None:
+            await asyncio.sleep(wait)
+            _FLOOD_STAGE.set(2)  # this task's own context
+            upload = kept or source
             try:
-                await asyncio.sleep(wait)
-                _FLOOD_STAGE.set(2)  # this task's own context
-                result = await redo(kept or source)
+                result = await redo(upload)
             except Exception:
                 logger.exception("[%s] Deferred upload of %s failed", self.name, what)
+                result = None
+            if result is not None and result.success:
+                logger.info("[%s] Deferred upload of %s: delivered", self.name, what)
                 return
-            (logger.info if result.success else logger.error)(
-                "[%s] Deferred upload of %s: %s", self.name, what, "delivered" if result.success else result.error)
+            # redo's own failure handling posts the notice once it reached the upload; a file that is
+            # gone (no private copy, and the caller deleted its own) or a raise never got that far.
+            if result is None or (upload and not await asyncio.to_thread(os.path.exists, upload)):
+                chat_id, metadata = target
+                logger.error("[%s] Deferred upload of %s lost: %s", self.name, what,
+                             "file gone" if result is not None else "raised")
+                if (still := self._send_flood_cooldown_remaining(chat_id)) is not None:
+                    await asyncio.sleep(still)  # the window can outlast ``wait`` (1 s floor): land the notice
+                await self._notify_media_delivery_failure(
+                    chat_id, source or "", is_voice=what.startswith("voice "), metadata=metadata)
+            else:
+                logger.error("[%s] Deferred upload of %s: %s", self.name, what, result.error)
 
         task = asyncio.get_running_loop().create_task(_later())
         if kept:  # a done callback also runs when shutdown cancels the task before it started

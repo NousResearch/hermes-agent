@@ -33,6 +33,58 @@ CYAN='\033[0;36m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+# Wire ~/.local/bin into the startup file a *new* shell reads (#149621). The
+# inherited PATH is not evidence: a repair run already carries the previous
+# install's line, while the login shell it reports for may still be broken.
+# A login bash reads only the first of ~/.bash_profile, ~/.bash_login,
+# ~/.profile, so this never creates ~/.bash_profile — it would hide an existing
+# ~/.profile — and it repairs a shadower that already exists.
+wire_shell_path() {
+    local pattern='^[[:space:]]*([^#[:space:]].*)?(PATH=.*\.local/bin|fish_add_path.*\.local/bin)'
+    local posix='case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac'
+    local files=() snippets=() rc
+    case "${SHELL##*/}" in
+        zsh)
+            files=("$HOME/.zshrc")
+            snippets=("$posix")
+            ;;
+        fish)
+            files=("$HOME/.config/fish/config.fish")
+            snippets=('fish_add_path "$HOME/.local/bin"')
+            ;;
+        *)
+            files=("$HOME/.profile" "$HOME/.bashrc")
+            snippets=("$posix" "$posix")
+            for rc in "$HOME/.bash_profile" "$HOME/.bash_login"; do
+                if [ -f "$rc" ]; then
+                    files+=("$rc")
+                    snippets+=("$posix")
+                fi
+            done
+            ;;
+    esac
+    local i
+    for i in "${!files[@]}"; do
+        rc="${files[$i]}"
+        # Existing user PATH setup wins: never append a second line on a repair run.
+        if [ -f "$rc" ] && grep -Eq "$pattern" "$rc" 2>/dev/null; then
+            echo -e "${GREEN}✓${NC} ~/.local/bin already in $rc"
+            continue
+        fi
+        mkdir -p "$(dirname "$rc")" 2>/dev/null || true
+        if printf '\n# Hermes Agent — ensure ~/.local/bin is on PATH\n%s\n' "${snippets[$i]}" >> "$rc" 2>/dev/null; then
+            echo -e "${GREEN}✓${NC} Added ~/.local/bin to PATH in $rc"
+        else
+            echo -e "${RED}✗${NC} Could not add ~/.local/bin to PATH in $rc" >&2
+        fi
+    done
+}
+
+# Sourced (tests): define the functions above and stop before setup runs.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    return 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
@@ -222,53 +274,6 @@ if ! "$boot_py" -I -X utf8 hermes_cli/_launchers.py "$bin_dir"; then
     exit 1
 fi
 echo -e "${GREEN}✓${NC} Published Hermes commands in $bin_dir"
-
-# Wire ~/.local/bin into the startup file a *new* shell reads (#149621). The
-# inherited PATH is not evidence: a repair run already carries the previous
-# install's line, while the login shell it reports for may still be broken.
-# A login bash reads only the first of ~/.bash_profile, ~/.bash_login,
-# ~/.profile, so this never creates ~/.bash_profile — it would hide an existing
-# ~/.profile — and it repairs a shadower that already exists.
-wire_shell_path() {
-    local pattern='^[[:space:]]*([^#[:space:]].*)?(PATH=.*\.local/bin|fish_add_path.*\.local/bin)'
-    local posix='case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac'
-    local files=() snippets=() rc
-    case "${SHELL##*/}" in
-        zsh)
-            files=("$HOME/.zshrc")
-            snippets=("$posix")
-            ;;
-        fish)
-            files=("$HOME/.config/fish/config.fish")
-            snippets=('fish_add_path "$HOME/.local/bin"')
-            ;;
-        *)
-            files=("$HOME/.profile" "$HOME/.bashrc")
-            snippets=("$posix" "$posix")
-            for rc in "$HOME/.bash_profile" "$HOME/.bash_login"; do
-                if [ -f "$rc" ]; then
-                    files+=("$rc")
-                    snippets+=("$posix")
-                fi
-            done
-            ;;
-    esac
-    local i
-    for i in "${!files[@]}"; do
-        rc="${files[$i]}"
-        # Existing user PATH setup wins: never append a second line on a repair run.
-        if [ -f "$rc" ] && grep -Eq "$pattern" "$rc" 2>/dev/null; then
-            echo -e "${GREEN}✓${NC} ~/.local/bin already in $rc"
-            continue
-        fi
-        mkdir -p "$(dirname "$rc")" 2>/dev/null || true
-        if printf '\n# Hermes Agent — ensure ~/.local/bin is on PATH\n%s\n' "${snippets[$i]}" >> "$rc" 2>/dev/null; then
-            echo -e "${GREEN}✓${NC} Added ~/.local/bin to PATH in $rc"
-        else
-            echo -e "${RED}✗${NC} Could not add ~/.local/bin to PATH in $rc" >&2
-        fi
-    done
-}
 
 if [ "$os" != win32 ]; then
     wire_shell_path

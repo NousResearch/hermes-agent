@@ -11,8 +11,8 @@ The assertions therefore run the wiring and then read PATH from the file that
 login sequence actually executes; a passing run must also leave no file that
 shadows ``~/.profile`` and must repair one that already exists.
 """
-import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 
@@ -22,12 +22,6 @@ pytestmark = pytest.mark.platforms("posix")
 
 SETUP = Path(__file__).resolve().parents[3] / "setup-hermes.sh"
 MARKER = "# Hermes Agent — ensure ~/.local/bin is on PATH"
-
-# The fix moved the block into wire_shell_path(); the legacy `if [ "$os" != win32 ]`
-# block is still what upstream main runs, so the sabotage run (source reverted, this
-# test kept) drives the same contract instead of dying on a missing function.
-_FUNCTION = r'/^wire_shell_path\(\) \{/{p=1} p{print} p&&/^\}$/{exit}'
-_LEGACY = r'/^if \[ "\$os" != win32 \]; then$/{p=1} p{print} p&&/^fi$/{exit}'
 
 # Bash's login half ("looks for ~/.bash_profile, ~/.bash_login, and ~/.profile, in that
 # order, and reads and executes commands from the first one that exists"), under
@@ -44,15 +38,6 @@ fi
 """
 
 
-def _wiring() -> str:
-    """The startup-file wiring setup-hermes.sh runs, as a bash snippet."""
-    for pattern, invoker in ((_FUNCTION, "wire_shell_path\n"), (_LEGACY, "")):
-        out = subprocess.run(["awk", pattern, str(SETUP)], capture_output=True, text=True, check=False)
-        if out.stdout.strip():
-            return out.stdout + invoker
-    raise AssertionError(f"setup-hermes.sh carries no shell-startup wiring: {SETUP}")
-
-
 def _home(tmp_path: Path, **files: str) -> Path:
     (tmp_path / ".local" / "bin").mkdir(parents=True)
     for name, text in files.items():
@@ -64,9 +49,9 @@ def _home(tmp_path: Path, **files: str) -> Path:
 
 def _wire(home: Path, path: str, shell: str = "/bin/bash", runs: int = 1) -> str:
     """Run the wiring with an explicit inherited PATH (the installing shell's)."""
-    env = {"HOME": str(home), "SHELL": shell, "PATH": path,
-           "os": "linux", "GREEN": "", "RED": "", "NC": "", "NO_COLOR": "1", "TERM": "dumb"}
-    result = subprocess.run(["bash", "-c", _wiring() * runs], env=env, stdin=subprocess.DEVNULL,
+    env = {"HOME": str(home), "SHELL": shell, "PATH": path, "NO_COLOR": "1", "TERM": "dumb"}
+    script = f"source {shlex.quote(SETUP.as_posix())}\n" + "wire_shell_path\n" * runs
+    result = subprocess.run([shutil.which("bash") or "/bin/bash", "-c", script], env=env, stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     return result.stdout

@@ -1,4 +1,4 @@
-import { cleanup, render, waitFor } from '@testing-library/react'
+import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { afterEach, expect, it } from 'vitest'
 
 import { toChatMessages } from '@/lib/chat-messages'
@@ -46,9 +46,14 @@ it('renders hydrated and newly received cron reports as full Markdown with the e
   expect(notice.querySelector('button, details')).toBeNull()
   expect(notice.querySelector('time')).toBeNull()
 
-  $displayTimestamps.set(true)
+  act(() => $displayTimestamps.set(true))
   await waitFor(() => expect(notice.querySelector('time')?.getAttribute('datetime')).toBe('1970-01-01T00:00:01.000Z'))
-  rerender(harness([row, { ...row, timestamp: 2, row_id: 13 }]))
+  // Leading whitespace is Markdown syntax, not expendable message padding.
+  const indentedReport = '    first line\n    second line'
+  rerender(harness([row, { ...row, content: indentedReport, timestamp: 2, row_id: 13 }]))
   await waitFor(() => expect(container.querySelectorAll('[data-slot="aui_cron-report"]')).toHaveLength(2))
+  const appended = container.querySelectorAll('[data-slot="aui_cron-report"]')[1]
+  await waitFor(() => expect(appended.querySelector('code')?.textContent).toContain('first line'))
+  expect(appended.querySelector('code')?.textContent).toContain('second line')
   expect(container.querySelector('[data-role="user"]')).toBeNull()
 })

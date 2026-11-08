@@ -246,11 +246,12 @@ function messageDisplay(message: SessionMessage) {
       : message.content || message.text || message.context || message.name
 
   const cronReport = isCronReport(message)
+  const contentRole = cronReport ? 'system' : message.role
 
   const rawDisplayContent = transcriptContent(
     message.display_kind,
-    message.role,
-    timelineDisplayContent(message, displayContentForMessage(cronReport ? 'system' : message.role, content))
+    contentRole,
+    timelineDisplayContent(message, displayContentForMessage(contentRole, content))
   )
 
   const displayRole = cronReport || isMachineNotice(message.display_kind) ? 'system' : message.role

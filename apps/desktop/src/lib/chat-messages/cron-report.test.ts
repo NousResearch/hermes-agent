@@ -39,4 +39,11 @@ it('projects only typed local cron completion notes as opaque reports, including
   expect(toChatMessages(nonReports).map(toRuntimeMessage).every(message => !message.metadata.custom?.cronReport)).toBe(true)
   expect(toChatMessages([nonReports[1]])[0].role).toBe('user')
   expect(row).toEqual(original)
+
+  // A typed report is opaque even when it resembles an old user-role heartbeat wake.
+  const heartbeatText = '[Background process report heartbeat #1 ]\n\n**Scheduled output**'
+  const [heartbeatReport] = toChatMessages([{ ...row, content: heartbeatText, display_metadata: metadata }])
+  expect(heartbeatReport?.role).toBe('system')
+  expect(chatMessageText(heartbeatReport)).toBe(heartbeatText)
+  expect(toChatMessages([{ ...row, content: heartbeatText, display_kind: undefined }])).toEqual([])
 })

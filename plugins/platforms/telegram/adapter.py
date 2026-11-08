@@ -182,6 +182,7 @@ from plugins.platforms.telegram.telegram_audio_meta import (
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_polling_probe import TelegramPendingProbeMixin
+from plugins.platforms.telegram.telegram_intake import effective_update_message
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, log_resolved, tap_matches_prompt
@@ -6370,9 +6371,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             except Exception as e:
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, _redact_telegram_error_text(e))
 
-    def _effective_update_message(self, update: Update) -> Optional[Message]:
-        """Message-like payload for normal messages and channel posts (``update.channel_post``)."""
-        return getattr(update, "effective_message", None) or getattr(update, "message", None)
+    _effective_update_message = staticmethod(effective_update_message)
 
     def _log_blocked_user(self, msg, *, level=logging.WARNING, what: str = "unauthorized user") -> None:
         logger.log(

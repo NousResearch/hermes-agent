@@ -1,0 +1,25 @@
+name: openinvest-hosted
+repo: https://github.com/longsizhuo/openinvest-site
+sha: f1f8f850b264d5d55371f551e1823e205010eaf8
+subdir: plugins/openinvest-hosted
+title: openInvest Hosted
+description: >-
+  Hosted portfolio ledger and Agent-run research skills. Derived from openinvest;
+  this package uses the official OAuth Streamable HTTP service instead of a local
+  Python backend. Disclosure: ledger and submitted tool data are stored by the
+  hosted service; de-identified research recording defaults on after the webpage
+  notice and can be disabled in account settings. Client-side telemetry, hooks,
+  local file access and brokerage execution are absent. Configure the MCP
+  connection separately using the client guide. Admission rule 13 compatibility
+  for the server-side research default requires maintainer review.
+maintainer: longsizhuo
+tier: community
+category: tools
+requires_hermes: ">=0.22.1"
+docs_url: https://openinvest.involutionhell.com/docs/hosted-mcp
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

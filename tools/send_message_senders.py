@@ -291,11 +291,21 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
                 os.remove(thumb_path)
 
 
+# The complete set of tags Telegram's HTML parse mode understands; anything else in angle
+# brackets (``<CoT>``, ``List<int>``, ``<name>``) is prose and must take the MarkdownV2 branch.
+_TELEGRAM_HTML_TAGS = ("b", "strong", "i", "em", "u", "ins", "s", "strike", "del", "a",
+                       "code", "pre", "blockquote", "tg-spoiler", "span", "tg-emoji")
+# Opening tag (optionally with attributes) or closing tag. The name must end at ``>`` or
+# whitespace, so ``<b>`` never matches ``<body>``; longest-first keeps the alternation readable.
+_TELEGRAM_HTML_TAG_ALT = "|".join(sorted(_TELEGRAM_HTML_TAGS, key=len, reverse=True))
+_TELEGRAM_HTML_TAG_RE = re.compile(rf"</?(?:{_TELEGRAM_HTML_TAG_ALT})(?:\s[^>]*)?>", re.IGNORECASE)
+
+
 def _telegram_format(message):
-    """``(formatted, parse_mode, has_html)``: text already containing HTML tags is sent as
-    HTML; otherwise Markdown -> MarkdownV2 via the adapter's ``format_message``."""
+    """``(formatted, parse_mode, has_html)``: text already containing a Telegram HTML tag is sent
+    as HTML; otherwise Markdown -> MarkdownV2 via the adapter's ``format_message``."""
     from telegram.constants import ParseMode
-    if re.search(r'<[a-zA-Z/][^>]*>', message):
+    if _TELEGRAM_HTML_TAG_RE.search(message):
         return message, ParseMode.HTML, True
     try:
         from plugins.platforms.telegram.adapter import TelegramAdapter

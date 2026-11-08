@@ -48,6 +48,23 @@ class TestCronCommandLifecycle:
         assert updated["provider"] == "nous"
         assert "Updated job" in capsys.readouterr().out
 
+    def test_cli_repeat_forever_clears_finite_job_budget(self, tmp_cron_dir, capsys):
+        """Regression for #150986: CLI edit must persist an explicit unlimited repeat."""
+        job = create_job(prompt="Daily report", schedule="every 1h", repeat=3)
+        assert get_job(job["id"])["repeat"]["times"] == 3
+
+        parser = argparse.ArgumentParser(prog="hermes")
+        build_cron_parser(parser.add_subparsers(dest="command"), cmd_cron=cron_command)
+
+        args = parser.parse_args(["cron", "edit", job["id"], "--repeat", "forever"])
+        assert cron_command(args) == 0
+        assert get_job(job["id"])["repeat"]["times"] is None
+
+        args = parser.parse_args(["cron", "edit", job["id"], "--repeat", "once"])
+        assert cron_command(args) == 0
+        assert get_job(job["id"])["repeat"]["times"] == 1
+        assert "Updated job" in capsys.readouterr().out
+
     def test_edit_can_replace_and_clear_skills(self, tmp_cron_dir, capsys):
         job = create_job(
             prompt="Combine skill outputs",

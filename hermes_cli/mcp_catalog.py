@@ -489,15 +489,19 @@ def _expand_install_dir(value: str, install_dir: Optional[Path]) -> str:
     return value.replace(_INSTALL_DIR_VAR, str(install_dir))
 
 
-def _interactive_prompt_possible() -> bool:
-    """Whether an interactive prompt can be driven right now.
-
-    The console belongs to the main thread: on a worker thread (e.g. a serve dashboard
+def _on_console_thread() -> bool:
+    """The console belongs to the main thread: on a worker thread (e.g. a serve dashboard
     request routed through ``asyncio.to_thread``) a prompt would block forever on stdin
-    nobody is watching. A non-TTY stdin has the same problem."""
-    import sys as _sys
+    nobody is watching. Redirected stdin on the main thread still answers a line prompt
+    (``printf 'key\\n' | hermes mcp install <name>``)."""
     import threading as _threading
-    return _sys.stdin.isatty() and _threading.current_thread() is _threading.main_thread()
+    return _threading.current_thread() is _threading.main_thread()
+
+
+def _interactive_prompt_possible() -> bool:
+    """Whether the curses checklist can run: the console thread, with a TTY stdin."""
+    import sys as _sys
+    return _sys.stdin.isatty() and _on_console_thread()
 
 
 def _prompt_env_vars(
@@ -522,10 +526,12 @@ def _prompt_env_vars(
             _say(f"  ✓ {spec.name} already set in .env")
             collected[spec.name] = existing
             continue
-        if not (interactive and _interactive_prompt_possible()):
-            # Nobody can answer a prompt here (request handler, worker thread, non-TTY): take the
-            # declared default, else fail fast on a required value instead of blocking on stdin.
+        if not (interactive and _on_console_thread()):
+            # Nobody can answer a prompt here (request handler, worker thread): take the declared
+            # default, else fail fast on a required value instead of blocking on stdin.
             if spec.default:
+                if spec.secret:
+                    save_env_value(spec.name, spec.default)
                 collected[spec.name] = spec.default
             elif spec.required:
                 raise CatalogError(f"{spec.name} is required but was not supplied",

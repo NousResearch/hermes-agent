@@ -629,8 +629,12 @@ class TestInstall:
             }
         )
         _write_manifest(catalog_dir, "demo", body)
+        import sys as _sys
+
         from hermes_cli import mcp_catalog
 
+        # Main thread with a TTY stdin: only the explicit flag stops the prompt.
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(mcp_catalog, "get_env_value", lambda _name: None)
         monkeypatch.setattr(
             mcp_catalog, "_prompt_input", lambda *_args, **_kwargs: pytest.fail("stdin prompt opened")
@@ -649,6 +653,76 @@ class TestInstall:
             "kind": "mcp_server", "source": "catalog", "name": "demo", "outcome": "failed",
             "failure_class": None, "error": exc.value,
         }]
+
+    def test_noninteractive_install_on_a_tty_takes_defaults_without_picker(self, catalog_dir, monkeypatch):
+        """``interactive=False`` alone keeps a main-thread TTY install off the prompt and the
+        checklist: declared defaults and the manifest's ``default_enabled`` apply."""
+        body = _basic_manifest(
+            transport={"type": "stdio", "command": "npx", "args": ["-y", "demo-mcp", "--region", "${DEMO_REGION}"]},
+            auth={"type": "api_key", "env": [
+                {"name": "DEMO_REGION", "prompt": "region", "secret": False, "required": False, "default": "eu"},
+            ]},
+            tools={"default_enabled": ["tool_a"]},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        import sys as _sys
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import load_config
+
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(mcp_catalog, "_probe_tools", lambda _name: [("tool_a", "a"), ("tool_b", "b")])
+        monkeypatch.setattr(
+            mcp_catalog, "_prompt_input", lambda *_args, **_kwargs: pytest.fail("stdin prompt opened")
+        )
+        monkeypatch.setattr(
+            "hermes_cli.curses_ui.curses_checklist", lambda *_a, **_kw: pytest.fail("checklist opened")
+        )
+
+        mcp_catalog.install_entry(_entry("demo"), interactive=False)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["args"][-1] == "eu"
+        assert server["tools"]["include"] == ["tool_a"]
+
+    def test_noninteractive_install_saves_a_secret_default_to_env(self, catalog_dir, monkeypatch):
+        """A secret's declared default is persisted to .env like a typed answer, so the
+        ``${VAR}`` ref in config.yaml resolves when the server connects."""
+        body = _basic_manifest(auth={"type": "api_key", "env": [
+            {"name": "DEMO_SECRET_DEFAULT", "prompt": "key", "secret": True, "default": "sekrit-default"},
+        ]})
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import get_env_value
+
+        monkeypatch.delenv("DEMO_SECRET_DEFAULT", raising=False)
+        monkeypatch.setattr(
+            mcp_catalog, "_prompt_input", lambda *_args, **_kwargs: pytest.fail("stdin prompt opened")
+        )
+
+        mcp_catalog.install_entry(_entry("demo"), interactive=False)
+
+        assert get_env_value("DEMO_SECRET_DEFAULT") == "sekrit-default"
+
+    def test_cli_install_reads_a_piped_credential_on_the_main_thread(self, catalog_dir, monkeypatch):
+        """``printf 'key\\n' | hermes mcp install demo``: redirected stdin on the console thread
+        still answers the credential prompt; only the checklist needs a TTY."""
+        body = _basic_manifest(auth={
+            "type": "api_key", "env": [{"name": "DEMO_PIPED_KEY", "prompt": "key", "secret": True}],
+        })
+        _write_manifest(catalog_dir, "demo", body)
+        import sys as _sys
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import get_env_value
+
+        monkeypatch.delenv("DEMO_PIPED_KEY", raising=False)
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *_args, **_kwargs: "piped-key")
+
+        mcp_catalog.install_entry(_entry("demo"))
+
+        assert get_env_value("DEMO_PIPED_KEY") == "piped-key"
 
     def test_install_http_api_key_writes_bearer_headers(self, catalog_dir, monkeypatch):
         body = _basic_manifest(

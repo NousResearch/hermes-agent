@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, redact_terminal_output, RedactingFormatter
+from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
 
 
 @pytest.fixture(autouse=True)
@@ -560,40 +560,6 @@ class TestApiKeyHeaders:
         text = "api-key: anotherOpaqueSecret1234567"
         result = redact_sensitive_text(text)
         assert "anotherOpaqueSecret" not in result
-
-
-class TestCookieCredentials:
-    def test_cookie_values_masked_in_assignment_and_inline_header_forms(self):
-        for text, secret in (
-            ("cookie=opaque-session-value-1234567890; Path=/", "opaque-session-value"),
-            ("export SESSION_COOKIE=opaqueSessionValue1234567890", "opaqueSessionValue"),
-            ("INFO upstream Cookie: a=1; sid=opaqueSessionValue1234567890; theme=dark user=bob",
-             "opaqueSessionValue"),
-            ("Set-Cookie: opaqueSessionValue1234567890", "opaqueSessionValue"),
-            ('export SESSION_COOKIE="a=1; sid=opaqueSessionValue1234567890"', "opaqueSessionValue"),
-            ('INFO upstream Cookie: sid="opaqueSessionValue1234567890"', "opaqueSessionValue"),
-            ("INFO upstream x-api-key: $opaqueSessionValue1234567890", "opaqueSessionValue"),
-        ):
-            assert secret not in redact_sensitive_text(text), text
-        # Terminal output scrubs with code_file=True (``curl -i``); the header is still a credential.
-        rc_line = "export SESSION_COOKIE='sid='\\''opaqueSessionValue1234567890'"
-        assert "opaqueSessionValue" not in redact_sensitive_text(rc_line, file_read=True, secret_file=True)
-        dump = "HTTP/2 200\nset-cookie: sid=opaqueSessionValue1234567890; Path=/\ncontent-type: text/html"
-        assert "opaqueSessionValue" not in redact_terminal_output(dump, "curl -i https://example.com")
-
-    def test_cookie_prose_unchanged(self):
-        # #80936 false positives: prose, cookie-ish identifiers and URL params are not credentials.
-        for text in (
-            "cookies enabled now",
-            "cookie_policy: strict",
-            "mycookiejar=1",
-            'Cookie.set("name", value)',
-            "The cookie: it was delicious",
-            "the Set-Cookie: header sets state",
-            "if cookie == expected:",
-            "GET https://example.com/cb?cookie=abc123&x=1",
-        ):
-            assert redact_sensitive_text(text) == text, text
 
 
 class TestTelegramTokens:

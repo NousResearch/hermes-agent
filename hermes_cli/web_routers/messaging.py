@@ -510,6 +510,13 @@ def _fail_whatsapp_pairing(pairing_id: str, error: str, *, proc=None, unless=_WH
             record.error = error
 
 
+# Bridge pairing error codes the dashboard can act on; anything else is shown as the bridge sent it.
+_WHATSAPP_PAIRING_ERROR_TEXT = {
+    "passkey_required": "This WhatsApp account requires passkey verification, which dashboard setup cannot do. "
+                        "Run `hermes whatsapp --passkey-browser EXECUTABLE` in a local terminal with Chrome or Edge.",
+}
+
+
 def _apply_pairing_event(record, payload: dict) -> None:
     event = str(payload.get("event") or "").strip()
     if event == "qr":
@@ -529,7 +536,8 @@ def _apply_pairing_event(record, payload: dict) -> None:
         record.error = None
     elif event == "error":
         record.status = "error"
-        record.error = str(payload.get("error") or "WhatsApp pairing failed.")
+        code = str(payload.get("error") or "WhatsApp pairing failed.")
+        record.error = _WHATSAPP_PAIRING_ERROR_TEXT.get(code, code)
     elif event == "disconnected" and record.status == "starting":
         record.status = "waiting"
 
@@ -555,11 +563,11 @@ def _watch_whatsapp_pairing(pairing_id: str, proc: subprocess.Popen) -> None:
     except Exception as exc:
         _fail_whatsapp_pairing(pairing_id, str(exc), proc=proc)
         return
-    # An "error" status from the stream may be overwritten by the exit reason.
+    # An error the bridge streamed names the cause; the exit code only says it stopped.
     _fail_whatsapp_pairing(
         pairing_id, "WhatsApp pairing process exited before pairing completed." if returncode == 0
         else f"WhatsApp pairing process exited with code {returncode}.",
-        proc=proc, unless={"connected", "cancelled", "expired"})
+        proc=proc)
 
 
 def _run_whatsapp_pairing(pairing_id: str, session_path: Path, mode: str) -> None:

@@ -107,13 +107,19 @@ class SessionUsageMixin:
     def queue_token_counts(self, session_id: str, **kwargs) -> None:
         """Enqueue a token/cost delta for the background writer (same kwargs as
         :meth:`update_token_counts`). After close() stopped the writer, falls back to the
-        synchronous path and may raise."""
+        synchronous path and may raise.
+
+        The delta carries the claimed turn it was queued under (``hermes_state_fence``): the
+        writer applies it as that turn's write, in that turn's fence, so a turn that lost its lease
+        accounts nothing, however late its delta lands."""
+        from hermes_state_fence import writing_turn
+        turn = writing_turn()
         with self._token_queue_cond:
             thread = self._token_writer_thread
             writer_alive = thread is not None and thread.is_alive()
             writer_stopped = self._token_writer_stop and not writer_alive
             if not writer_stopped:
-                self._token_queue.append((session_id, kwargs))
+                self._token_queue.append((session_id, kwargs, turn))
                 if not writer_alive:
                     # Daemon so exit never hangs on accounting; the atexit hook drains
                     # leftovers. ``not is_alive()`` respawns a writer that died unexpectedly.
@@ -206,29 +212,33 @@ class SessionUsageMixin:
                 self._token_queue.clear()
             self._apply_claimed_batch(batch)
 
-    def _apply_token_batch(self, batch: list[tuple[str, dict[str, Any]]]) -> None:
-        """Apply queued deltas in order, coalescing where safe. Never raises."""
+    def _apply_token_batch(self, batch: list[tuple[str, dict[str, Any], Any]]) -> None:
+        """Apply queued deltas in order, coalescing where safe, each as the turn that queued it
+        (``hermes_state_fence.writes_as``). Never raises."""
+        from hermes_state_fence import writes_as
         try:
             coalesced = self._coalesce_token_deltas(batch)
         except Exception as exc:
             # Coalescing must never kill the writer; the merge is only an optimization.
             logger.warning("async token accounting: coalesce failed, applying raw batch: %s", exc)
             coalesced = batch
-        for session_id, kwargs in coalesced:
+        for session_id, kwargs, turn in coalesced:
             try:
-                self.update_token_counts(session_id, **kwargs)
+                with writes_as(turn):
+                    self.update_token_counts(session_id, **kwargs)
             except Exception as exc:
                 # Accounting loss is logged, never raised into a turn.
                 logger.warning("async token accounting: apply failed (session=%s): %s", session_id, exc)
 
-    def _coalesce_token_deltas(self, batch: list[tuple[str, dict[str, Any]]]) -> list[tuple[str, dict[str, Any]]]:
-        """Merge adjacent incremental deltas with an identical route, so ordering across
-        sessions and /model switches is preserved exactly. absolute=True never merges."""
-        groups: list[tuple[Optional[tuple], str, dict[str, Any]]] = []
-        for session_id, kwargs in batch:
+    def _coalesce_token_deltas(self, batch: list[tuple[str, dict[str, Any], Any]]) -> list[tuple[str, dict[str, Any], Any]]:
+        """Merge adjacent incremental deltas with an identical route and the same claimed turn, so
+        ordering across sessions and /model switches is preserved exactly and one claim's delta
+        never rides another's fence. absolute=True never merges."""
+        groups: list[tuple[Optional[tuple], str, dict[str, Any], Any]] = []
+        for session_id, kwargs, turn in batch:
             key = None
             if not kwargs.get("absolute"):
-                key = (session_id, *(kwargs.get(f) for f in self._TOKEN_DELTA_ROUTE_FIELDS))
+                key = (session_id, turn, *(kwargs.get(f) for f in self._TOKEN_DELTA_ROUTE_FIELDS))
             if groups and key is not None and groups[-1][0] == key:
                 merged = groups[-1][2]
                 for f in self._TOKEN_DELTA_SUM_FIELDS:
@@ -239,8 +249,8 @@ class SessionUsageMixin:
                         # All-None runs stay None so COALESCE keeps the stored value.
                         merged[f] = (merged.get(f) or 0.0) + value
             else:
-                groups.append((key, session_id, dict(kwargs)))
-        return [(sid, kw) for _, sid, kw in groups]
+                groups.append((key, session_id, dict(kwargs), turn))
+        return [(sid, kw, turn) for _, sid, kw, turn in groups]
 
     def _stop_token_writer(self, join_timeout: float = 10.0) -> None:
         """Stop the writer thread and drain remaining deltas. Never raises."""

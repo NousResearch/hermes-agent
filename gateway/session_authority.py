@@ -486,7 +486,11 @@ class SessionAuthority:
         live = self.sessions[ref.session_id]
         live.rescan = True
         if live.task is None or live.task.done():
-            live.task = asyncio.create_task(self._drain(ref))
+            # The drain is the owner's own work (claims, settlement), never the turn whose context
+            # scheduled it: a follow-up a turn admitted must not run its claim under that turn's fence.
+            from agent.runtime_scope import owner_operation
+            with owner_operation():
+                live.task = asyncio.create_task(self._drain(ref))
             live.task.add_done_callback(_log_drain_failure)
             from gateway.session_runtime_workers import persist_work_count
             live.task.add_done_callback(lambda task: persist_work_count(self, task))

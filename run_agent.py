@@ -809,7 +809,11 @@ class AIAgent(
             )
 
             def _target_with_requeue() -> None:
-                target()
+                # A review reports after its turn, often while the next one runs: it outlives the turn,
+                # so a takeover still fences its writes but the session's next claim does not.
+                from agent.runtime_scope import outlive_turn
+                with outlive_turn():
+                    target()
                 self._maybe_requeue_preempted_review(review_run, dict(
                     messages_snapshot=messages_snapshot, review_memory=review_memory, review_skills=review_skills,
                     focus=focus, task_cfg=task_cfg, _requeue_attempts=_requeue_attempts + 1,

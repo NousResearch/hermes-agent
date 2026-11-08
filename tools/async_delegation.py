@@ -970,7 +970,11 @@ def _dispatch_admitted(
                 # The stall clock starts when the runner starts; a unit queued behind a full pool is not stalled.
                 rec.update(_started=True, _progress_ts=time.time())
         try:
-            result = runner() or {}
+            # Background work designed to outlive the dispatching turn: a takeover still fences its
+            # writes, the parent session's next claim does not (``hermes_state_fence``).
+            from agent.runtime_scope import outlive_turn
+            with outlive_turn():
+                result = runner() or {}
             status = classify(result)
         except Exception as exc:
             logger.exception(f"Async delegation{label} %s crashed", delegation_id)

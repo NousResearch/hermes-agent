@@ -511,6 +511,8 @@ brew install ffmpeg
 
 Without ffmpeg, Edge TTS audio is sent as a regular audio file (still playable, but uses the rectangular player instead of a voice bubble).
 
+MP3 and M4A files go out as Telegram audio tracks. Their captions get the same markdown formatting as voice notes. With ffmpeg installed, the file's own artist and title tags and its embedded cover art also fill in the performer, track name and album art in Telegram's music player.
+
 Configure the TTS provider in your `config.yaml` under the `tts.provider` key.
 
 ## Large Files (>20MB) via Local Bot API Server

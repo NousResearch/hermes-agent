@@ -180,6 +180,8 @@ _MEDIA_KIND_KEYS = {
     "video file": "platform.telegram.media.kind_video", "video note": "platform.telegram.media.kind_video"}
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from plugins.platforms.telegram.telegram_audio_meta import (
+    _coerce_duration_seconds, _probe_voice_duration_seconds, audio_player_fields)
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
@@ -216,50 +218,6 @@ def _flood_cap_result(wait: float) -> SendResult:
 
 _TELEGRAM_IMAGE_MIME_TO_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
 _TELEGRAM_IMAGE_EXT_TO_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
-
-
-def _coerce_duration_seconds(value: Any) -> Optional[int]:
-    """Round a raw length to whole positive seconds, or None if unusable."""
-    try:
-        secs = round(float(value))
-    except (TypeError, ValueError):
-        return None
-    return secs if secs > 0 else None
-
-
-def _probe_voice_duration_seconds(path: str) -> Optional[int]:
-    """Best-effort whole-second audio length (wave → mutagen → ffprobe; None if unreadable).
-
-    Telegram renders long clips as 0:00 without an explicit duration. Blocking: use ``to_thread``."""
-    if os.path.splitext(path)[1].lower() == ".wav":
-        try:
-            import wave
-            with wave.open(path, "rb") as wf:
-                rate = wf.getframerate() or 0
-                secs = _coerce_duration_seconds(wf.getnframes() / float(rate)) if rate else None
-            if secs is not None:
-                return secs
-        except Exception:
-            pass
-    try:
-        import mutagen
-        secs = _coerce_duration_seconds(getattr(getattr(mutagen.File(path), "info", None), "length", None))
-        if secs is not None:
-            return secs
-    except Exception:
-        pass
-    try:
-        import shutil
-        import subprocess
-        if shutil.which("ffprobe"):
-            proc = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path],
-                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, check=False)
-            if proc.returncode == 0:
-                return _coerce_duration_seconds(proc.stdout.strip())
-    except Exception:
-        pass
-    return None
 
 
 def _probe_video_geometry(path: str) -> dict[str, int]:
@@ -5166,9 +5124,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
     def _caption_1024(caption: Optional[str]) -> Optional[str]:
         return caption[:1024] if caption else None
 
-    async def _send_voice_bubble(self, audio_file, chat_id, reply_to, metadata, caption, duration_secs):
-        """sendVoice with caption variants: MarkdownV2 when it fits 1024 chars, plain fallback when the
-        Bot API rejects the entities; anything else is a real error."""
+    async def _send_voice_bubble(self, audio_file, chat_id, reply_to, metadata, caption, duration_secs,
+                                 send_fn=None, media_key="voice", **media_kwargs):
+        """sendVoice (or sendAudio via ``send_fn``/``media_key``) with caption variants: MarkdownV2 when it
+        fits 1024 chars, plain fallback when the Bot API rejects the entities; anything else is a real error."""
         # Render caption markdown (#32029): auto-TTS captions carry the agent's markdown reply, which showed
         # literal *asterisks* and [links](...) without a parse_mode. Format to MarkdownV2 when it fits the
         # 1024-char caption cap; fall back to the raw text (previous behaviour) when formatting would
@@ -5188,8 +5147,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         for _cap_text, _cap_parse_mode in _caption_variants:
             try:
                 return await self._send_media(
-                    self._bot.send_voice, chat_id, reply_to, metadata, "voice", reset_media=lambda: audio_file.seek(0),
-                    voice=audio_file, caption=_cap_text, parse_mode=_cap_parse_mode, duration=duration_secs)
+                    send_fn or self._bot.send_voice, chat_id, reply_to, metadata, media_key,
+                    reset_media=lambda: audio_file.seek(0), **{media_key: audio_file}, caption=_cap_text,
+                    parse_mode=_cap_parse_mode, duration=duration_secs, **media_kwargs)
             except Exception as _cap_error:
                 err = str(_cap_error).lower()
                 if _cap_parse_mode is not None and ("parse" in err or "entit" in err):
@@ -5229,9 +5189,19 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 if ext in {".ogg", ".opus"}:  # round playable voice bubble
                     msg = await self._send_voice_bubble(audio_file, chat_id, reply_to, metadata, caption, _duration_secs)
                 elif ext in {".mp3", ".m4a"}:  # Bot API sendAudio only accepts MP3 / M4A
-                    msg = await self._send_media(
-                        self._bot.send_audio, chat_id, reply_to, metadata, "audio", reset_media=lambda: audio_file.seek(0),
-                        audio=audio_file, caption=self._caption_1024(caption), duration=_duration_secs)
+                    player = await asyncio.to_thread(audio_player_fields, audio_path)
+                    cover_path = player.pop("thumbnail_path", None)
+                    try:
+                        with contextlib.ExitStack() as stack:
+                            if cover_path:
+                                player["thumbnail"] = stack.enter_context(await asyncio.to_thread(open, cover_path, "rb"))
+                            msg = await self._send_voice_bubble(
+                                audio_file, chat_id, reply_to, metadata, caption, _duration_secs,
+                                send_fn=self._bot.send_audio, media_key="audio", **player)
+                    finally:
+                        if cover_path:
+                            with contextlib.suppress(OSError):
+                                os.unlink(cover_path)
                 else:  # formats Telegram can't play natively (.wav, .flac, ...)
                     return await self.send_document(
                         chat_id=chat_id, file_path=audio_path, caption=caption, reply_to=reply_to, metadata=metadata)

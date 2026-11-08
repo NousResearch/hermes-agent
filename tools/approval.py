@@ -179,43 +179,37 @@ def resolve_gateway_approval(session_key: str, choice: str,
 
 
 def _card_target(session_key: str, request_id: Optional[str]):
-    """The entry a card tap resolves: its own request. A tap without an id cannot say which card it came
-    from, so it may only answer a session's sole pending request. Caller holds ``_lock``."""
-    queue = _gateway_queues.get(session_key) or []
+    """The entry a card tap resolves: its own request, never another. Caller holds ``_lock``."""
     if not request_id:
-        return queue[0] if len(queue) == 1 else None
-    return next((e for e in queue if e.data.get("request_id") == request_id), None)
+        return None
+    return next((e for e in _gateway_queues.get(session_key) or [] if e.data.get("request_id") == request_id), None)
 
 
 def restrict_gateway_approval_card_to_deny(session_key: str, request_id: Optional[str], restricted: bool = True) -> None:
     """Mark a pending request whose card could not show the whole command: a card tap may only deny it.
-    ``restricted=False`` lifts the mark once the whole command is proven delivered."""
+    Every request starts marked; ``restricted=False`` lifts the mark once its card shows the whole command."""
     with _lock:
-        entry = _card_target(session_key, request_id) if request_id else None
+        entry = _card_target(session_key, request_id)
         if entry is not None:
-            entry.data["card_deny_only"] = restricted
+            entry.card_deny_only = restricted
 
 
 def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Optional[str]) -> int:
     """Resolve the approval a native button card was rendered for.
 
-    With the card's request id only that request can resolve: a card whose request already
-    settled (timed out, answered by ``/approve``) resolves nothing instead of the next queued
-    approval in the same session. A card sent without an id answers only a session's sole pending
-    request and resolves nothing while two or more are pending. A Deny-only
-    card's request refuses any other choice, so a forged or hand-added approve tap resolves nothing.
-    The check and the settle are one critical section, so no request can expire, be marked Deny-only
-    or join the queue between them."""
+    Only the card's own request can resolve: a card whose request already settled (timed out, answered
+    by ``/approve``) resolves nothing instead of the next queued approval in the same session. A tap
+    without a request id (a card from an older build) cannot say which request it was rendered for, so
+    it resolves nothing; typed ``/approve`` stays the way to answer one. A request stays Deny-only from
+    its creation until its card shows the whole command, so a forged or early approve tap resolves
+    nothing. The check and the settle are one critical section."""
+    if not request_id:
+        return 0
     with _lock:  # re-entrant: the settle below takes it again
         target = _card_target(session_key, request_id)
-        if target is None and not request_id and _gateway_queues.get(session_key):
-            return 0  # an id-less tap with two or more pending cannot say which card it came from
-        if target is not None and choice != "deny" and target.data.get("card_deny_only"):
+        if target is not None and choice != "deny" and target.card_deny_only:
             return 0
-        request_id = target.data.get("request_id") if target is not None else request_id
-        if request_id:
-            return resolve_gateway_approval(session_key, choice, request_id=request_id)
-        return resolve_gateway_approval(session_key, choice)
+        return resolve_gateway_approval(session_key, choice, request_id=request_id)
 
 
 def withdraw_gateway_approval(session_key: str, request_id: str, cause: str) -> bool:

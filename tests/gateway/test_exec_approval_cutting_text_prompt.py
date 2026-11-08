@@ -97,7 +97,7 @@ def test_long_command_keeps_instructions_and_offers_only_deny(make, pending):
     delivered = wire[-1]
     assert "/deny" in delivered and "/approve" not in delivered  # instructions survive; Deny alone
     assert "Preview shortened" in delivered and TAIL not in delivered
-    assert pending.data.get("card_deny_only") is True
+    assert pending.card_deny_only is True
     assert approval.resolve_gateway_approval_card(SESSION, "once", "r1") == 0  # a crafted approve resolves nothing
 
 
@@ -108,7 +108,7 @@ def test_short_command_is_shown_whole_with_every_choice(make, pending):
     _render(adapter, "rm -rf /tmp/x " + TAIL)
     delivered = wire[-1]
     assert TAIL in delivered and "/approve" in delivered and "/deny" in delivered
-    assert not pending.data.get("card_deny_only")
+    assert not pending.card_deny_only
 
 
 @pytest.mark.parametrize("command", ["echo " + "`" * 2100 + " ; rm -rf ~", "`" * 3000, "`" * 5000],
@@ -126,7 +126,7 @@ def test_a_long_backtick_run_never_leaves_the_fence_open_past_the_cut(command, p
     assert delivered.endswith("\n" + fence)  # the closing fence survived the cut
     shown = delivered[delivered.index("\n" + fence + "\n") + len(fence) + 2:-len(fence) - 1]
     assert max(map(len, re.findall("`+", shown)), default=0) < len(fence)  # and nothing shown closes it early
-    assert pending.data.get("card_deny_only") is True
+    assert pending.card_deny_only is True
 
 
 @pytest.mark.parametrize("make", [_photon, _ntfy, _line], ids=["photon", "ntfy", "line"])
@@ -142,4 +142,4 @@ def test_command_that_fits_only_beside_deny_is_shown_whole_and_not_called_shorte
     delivered = wire[-1]
     assert "\n" + command in delivered and "/approve" not in delivered and "/deny" in delivered
     assert "Preview shortened" not in delivered and "only Deny is offered" in delivered
-    assert pending.data.get("card_deny_only") is True
+    assert pending.card_deny_only is True

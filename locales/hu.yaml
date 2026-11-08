@@ -988,9 +988,6 @@ platform:
     approved: "✅ Jóváhagyva."
     denied: "❌ Elutasítva."
     approval_expired: "⌛ A jóváhagyás lejárt — a parancs nem futott le (időtúllépés, vagy máshol már eldőlt)."
-  yuanbao:
-    slow_response_notice: "Ez a feladat kicsit összetettebb — még dolgozom rajta, kis türelmet..."
-    owner_command_denied: "⚠️ A(z) {command} privát csevegés módban csak a létrehozó számára érhető el"
   shared:
     truncated_suffix: "\n...(csonkolva)"
     unknown: "ismeretlen"
@@ -1727,10 +1724,10 @@ slash:
     description: "Kilépés a CLI-ből (a --delete a munkamenet előzményeit is törli)"
 cli:
   backtrack:
-    title: "↺ Visszatekerés — válassz egy korábbi promptot"
-    keys_hint: "↑/↓ választás · Enter szerkesztés és újraküldés · f elágazás innen · Esc bezárás"
-    preview_label: "{number}. prompt / {total}:"
-    more_lines: "… (még {count} sor)"
+    title: "↺ Átirat — válassz egy szerkesztendő promptot"
+    keys_hint: "Átirat böngészése · ↑↓/jk görgetés · ←→/hl promptok · ↵ szerkesztés · f elágazás · esc vissza"
+    prime_hint: "nyomd meg újra az esc-et az előző üzenet szerkesztéséhez"
+    no_previous: "Nincs szerkeszthető előző üzenet."
     editing_hint: "↺ A(z) {number}. prompt szerkesztése — az Enter idáig teker vissza és elküldi · Esc Esc megszakítja"
     edit_cancelled: "↺ Visszatekerés megszakítva; semmi sem lett eltávolítva."
     rewound: "↺ Visszatekerve a(z) {number}. promptig ({count} üzenet archiválva); a szerkesztés elküldése."

@@ -1,11 +1,10 @@
-import { BrowserWindow, ipcMain, session, webContents } from 'electron'
+import { BrowserWindow, ipcMain, webContents } from 'electron'
 
 import { notePreviewGuestHidden } from './preview-guest-offscreen'
 import {
   beginPreviewGuestActivity,
   endPreviewGuestActivity,
-  executePreviewGuestScript,
-  PREVIEW_GUEST_PARTITION
+  executePreviewGuestScript
 } from './preview-guest-throttle'
 
 export function registerPreviewGuestIpc(holdWindow: (owner: BrowserWindow) => () => void): void {
@@ -28,7 +27,6 @@ export function registerPreviewGuestIpc(holdWindow: (owner: BrowserWindow) => ()
     return beginPreviewGuestActivity(
       event.sender,
       webContents.fromId(webContentsId as number) ?? undefined,
-      session.fromPartition(PREVIEW_GUEST_PARTITION),
       () => holdWindow(owner)
     )
   })

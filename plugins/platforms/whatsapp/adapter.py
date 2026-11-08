@@ -311,6 +311,10 @@ def _is_allowed_bridge_path(url: str) -> bool:
     return False
 
 
+# bridge.js exits with this when WhatsApp demands passkey pairing and no signer is available (PASSKEY_REQUIRED_EXIT there).
+PASSKEY_REQUIRED_EXIT = 78
+
+
 def _file_content_hash(path: Path) -> str:
     """First 16 hex chars of SHA-256 of *path* ("" if unreadable); bridge.js reports its own as ``/health`` ``scriptHash``."""
     import hashlib
@@ -601,11 +605,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return bridge_env
 
     def _bridge_died(self, detail: str, code: str = "whatsapp_bridge_exited") -> bool:
+        needs_passkey = self._bridge_process is not None and self._bridge_process.poll() == PASSKEY_REQUIRED_EXIT
+        if needs_passkey:
+            code = "whatsapp_passkey_required"
+            detail = "WhatsApp requires passkey verification. Run `hermes whatsapp --passkey-browser EXECUTABLE` in a local interactive terminal, then restart the gateway."
         print(f"[{self.name}] {detail}")
         print(f"[{self.name}] Check log: {self._bridge_log}")
         self._close_bridge_log()
         # Named so the reconnect status and connect telemetry say why instead of an unclassified failure.
-        self._set_fatal_error(code, f"{detail} (see {self._bridge_log})", retryable=True)
+        self._set_fatal_error(code, f"{detail} (see {self._bridge_log})", retryable=not needs_passkey)
         return False
 
     async def _poll_bridge_health(self, died_msg: str) -> tuple[Optional[bool], bool, dict]:
@@ -836,8 +844,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         message = f"WhatsApp bridge process exited unexpectedly (code {returncode})."
         if not self.has_fatal_error:
             logger.error("[%s] %s", self.name, message)
-            self._set_fatal_error("whatsapp_bridge_exited", message, retryable=True)
-            self._close_bridge_log()
+            self._bridge_died(message)
             await self._notify_fatal_error()
         return self.fatal_error_message or message
 

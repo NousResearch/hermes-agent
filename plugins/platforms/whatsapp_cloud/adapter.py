@@ -495,7 +495,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return f"⚠️ *{ea_header_text()}*\n\n"
 
     _EA_CODE_CLOSE = "\n```\n\n"
-    _EA_CMD_BUDGET = 800  # body caps at 1024; leave room for the framing prose
+    _EA_CARD_CAP = 1024  # interactive.body.text cap; past it _truncate_body would cut the deadline line
 
     def _approval_request_ids(self) -> OrderedDict[str, str]:
         """approval_id → ``tools.approval`` request id; created on first use, like Telegram's

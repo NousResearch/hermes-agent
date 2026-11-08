@@ -4231,18 +4231,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         return "\n\n" + _bold_label_html(t("gateway.exec_approval.smart_deny_line"))
 
     _EA_REASON_BUDGET = 500  # escaped chars; the reason shares the 4096 cap with the command
+    # Telegram rejects the whole card ("Message is too long") and the gateway then falls back to the text
+    # /approve prompt, so the preview is budgeted in UTF-16 units against what the framing leaves of the cap.
+    _EA_CARD_CAP = MAX_MESSAGE_LENGTH
 
     def _ea_escape(self, text: str) -> str:
         return _html.escape(text)
-
-    def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
-        # Telegram rejects the whole card ("Message is too long") and the gateway then falls back to
-        # the text /approve prompt, so budget the preview against what the framing leaves of the cap.
-        fixed = utf16_len(  # UTF-16 units, like the 4096 chunker in send()
-            self._EA_HEADER + self._EA_CODE_OPEN + self._EA_CODE_CLOSE + self._EA_REASON_LABEL
-            + self._ea_escape(description) + "..." + self._ea_deadline_line()
-            + (self._EA_SMART_DENY_LINE if smart_denied else ""))
-        return max(0, self.MAX_MESSAGE_LENGTH - fixed)
 
     @property
     def _EA_ACTION_LABELS(self) -> dict[str, str]:

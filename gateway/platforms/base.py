@@ -435,8 +435,8 @@ from gateway.platforms.helpers import fence_state_after, typing_metadata_for_tur
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
-    ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line, render_exec_approval,
-    send_full_command)
+    ea_reason_label_text, ea_smart_deny_line_text, exec_approval_cmd_budget, format_approval_deadline_line,
+    render_exec_approval, send_full_command)
 from gateway.platforms.base_streaming_tts import (
     AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -2699,6 +2699,7 @@ class BasePlatformAdapter(ABC):
     _EA_CODE_CLOSE: str = "\n```\n"
     _EA_DEADLINE_PREFIX: str = "\n\n"  # separates the deadline line from the reason line
     _EA_CMD_BUDGET: int = 3000
+    _EA_CARD_CAP: int = 0  # >0: the whole card must fit this cap, so the preview gets what the rest leaves
     _EA_REASON_BUDGET: int = 0  # 0 = the reason is never truncated
 
     @property
@@ -2732,8 +2733,8 @@ class BasePlatformAdapter(ABC):
         return fit_prefix(str(text or ""), budget, lambda s: self.message_len_fn(escape(s)), suffix)
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
-        """Chars of command preview that fit; platforms with a hard message cap compute it."""
-        return self._EA_CMD_BUDGET
+        """Chars of command preview that fit; platforms with a hard message cap set ``_EA_CARD_CAP``."""
+        return exec_approval_cmd_budget(self, description, smart_denied)
 
     def _ea_deadline_line(self) -> str:
         """The "doing nothing means it will NOT run" line, with the configured approvals.timeout."""

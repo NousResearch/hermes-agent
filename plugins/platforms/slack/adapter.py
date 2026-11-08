@@ -4946,16 +4946,9 @@ class SlackAdapter(BasePlatformAdapter):
         return "\n" + (f"*{label}{sep}*{rest}" if sep else line)
 
     _EA_REASON_BUDGET = 500
-    _EA_SECTION_CAP = 3000  # a longer section text → invalid_blocks → no buttons at all
+    _EA_CARD_CAP = 3000  # section text cap: a longer one → invalid_blocks → no buttons at all
     _EA_ACTION_IDS = {"once": "hermes_approve_once", "session": "hermes_approve_session",
                       "always": "hermes_approve_always", "deny": "hermes_deny"}
-
-    def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
-        # execute_code approvals embed the whole script, so budget the preview against the cap.
-        fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
-                 + len(self._EA_REASON_LABEL) + len(description) + len("...") + len(self._ea_deadline_line())
-                 + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0))
-        return max(0, self._EA_SECTION_CAP - fixed)
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Block Kit approval prompt; the buttons call ``resolve_gateway_approval()`` to unblock the

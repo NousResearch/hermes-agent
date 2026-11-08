@@ -796,9 +796,10 @@
     "tools/image_generation_managed.py plugins.image_gen.krea": 1,
     "tools/image_generation_tool.py plugins.image_gen.krea": 3,
     "tools/send_message_senders.py plugins.platforms.matrix.adapter": 1,
-    "tools/send_message_senders.py plugins.platforms.telegram.adapter": 6,
+    "tools/send_message_senders.py plugins.platforms.telegram.adapter": 7,
     "tools/send_message_senders.py plugins.platforms.telegram.telegram_ids": 1,
     "tools/send_message_senders.py plugins.platforms.telegram.telegram_network": 1,
+    "tools/send_message_senders.py plugins.platforms.telegram.telegram_outbound": 1,
     "tools/web_tools.py plugins.web.firecrawl.provider": 1,
     "tools/web_tools_rescue.py plugins.web.firecrawl.provider": 1,
     "tools/xai_video_tools.py plugins.video_gen.xai": 1

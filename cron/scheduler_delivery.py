@@ -1573,9 +1573,10 @@ def _standalone_send(
     async def _send():
         # The bound lives inside the coroutine: the running-loop fallback below closes ``coro``
         # unstarted, and a wait_for wrapper created out here would be left never awaited.
+        # notify: the live lane's metadata["notify"] (cron.delivery.notify), so a brief rings either way.
         return await asyncio.wait_for(_send_to_platform(
             t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files), timeout=send_timeout)
+            media_files=media_files, notify=t.notify_delivery), timeout=send_timeout)
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)

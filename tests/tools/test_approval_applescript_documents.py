@@ -119,6 +119,8 @@ def test_unreviewable_program_is_flagged(command):
     # A read-only heredoc whose body merely contains the word in prose, and an explicit AppleScript `-l`.
     "osascript <<'EOF'\nget name of me\nEOF",
     "osascript -l AppleScript -e 'get name of me'",
+    # An ordinary line continuation between arguments is not a script operand.
+    "osascript \\\n  -e 'get name of me'",
 ])
 def test_read_only_and_unrelated_commands_are_unchanged(command):
     assert detect_dangerous_command(command) == (False, None, None), command

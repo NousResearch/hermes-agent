@@ -702,14 +702,14 @@ def _write_file(path: Path, label: str, render: Any) -> bool:
         return False
 
 
-def _notify_post_curator_run(run_dir: Optional[Path]) -> None:
+def _notify_post_curator_run(run_dir: Optional[Path], dry_run: bool) -> None:
     """``post_curator_run`` for a finished pass whose run.json and REPORT.md both exist; fired after the
     pass's state is saved, so a slow plugin load never delays what ``hermes curator status`` reports."""
     if run_dir is None or not ((run_dir / "run.json").is_file() and (run_dir / "REPORT.md").is_file()):
         return
     from hermes_cli.lifecycle import invoke_hook  # observers + plugins; each callback isolated there
     invoke_hook("post_curator_run", run_dir=str(run_dir), run_json_path=str(run_dir / "run.json"),
-                report_md_path=str(run_dir / "REPORT.md"))
+                report_md_path=str(run_dir / "REPORT.md"), dry_run=dry_run)
 
 
 def _write_run_report(
@@ -1000,7 +1000,7 @@ def run_curator_review(
         save_state(state2)
         _record_run_metric(trigger, dry_run, counts, before_report, after_report, llm_meta, hermes_home)
         _notify(on_summary, f"curator: {final_summary}")
-        _notify_post_curator_run(report_path)
+        _notify_post_curator_run(report_path, dry_run)
 
     if synchronous:
         _llm_pass()

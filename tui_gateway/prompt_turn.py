@@ -1111,6 +1111,40 @@ def _reopen_routed_session_row(db, sid: str, session: dict) -> None:
         logger.debug("routing-provenance reopen failed for %s", session_id, exc_info=True)
 
 
+def _admit_prompt_execution(sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata,
+                            *, report_ownership_refusal):
+    admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata,
+                                  report_ownership_refusal=report_ownership_refusal)
+    if admitted is None:
+        return None
+    from agent.execution_admission import acquire_conversation_permit
+    images, agent = admitted
+    root_id = getattr(agent, "_conversation_root_id", lambda: None)() or session.get("session_key") or sid
+    permit, refusal = acquire_conversation_permit(
+        execution_id=root_id, surface=_session_source(session), profile_home=session.get("profile_home"))
+    if refusal is not None:
+        with session["history_lock"]:
+            session["running"] = False
+        _emit_terminal_turn_error(sid, session, str(refusal),
+                                  {"layer": "runtime", "code": refusal.reason, "retryable": True})
+        return None
+    return images, agent, permit
+
+
+def _admitted_prompt_notification_config(session, display_metadata, permit):
+    from agent.execution_admission import release_conversation_permit
+    from agent.notification_presentation import notification_config_snapshot
+    from gateway.warning_notifications import diagnostic_turn_muted
+
+    try:
+        with _session_profile_runtime_scope(session):
+            config = notification_config_snapshot()
+            return config, diagnostic_turn_muted(display_metadata, "tui", config)
+    except BaseException:
+        release_conversation_permit(permit)
+        raise
+
+
 def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
@@ -1125,17 +1159,15 @@ def _run_prompt_submit(
         logger.warning(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
             session.get("session_key") or sid)
-    admitted = _admit_prompt_turn(
+    admitted = _admit_prompt_execution(
         sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata,
         report_ownership_refusal=report_ownership_refusal)
     if admitted is None:
         return False
-    images, agent = admitted
-    from gateway.warning_notifications import diagnostic_turn_muted
-    from agent.notification_presentation import notification_config_snapshot
-    with _session_profile_runtime_scope(session):
-        notification_config = notification_config_snapshot()
-        muted = diagnostic_turn_muted(display_metadata, "tui", notification_config)
+    images, agent, permit = admitted
+    from agent.execution_admission import release_conversation_permit
+    from hermes_cli.execution_budget import bind_execution_permit, reset_execution_permit
+    notification_config, muted = _admitted_prompt_notification_config(session, display_metadata, permit)
     if muted:
         display_kind = "hidden"
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
@@ -1156,6 +1188,7 @@ def _run_prompt_submit(
     # frames are the same here and in a compute-host child; dropped in run_body's finally.
     from tui_gateway.stream_segments import SESSION_KEY, TurnSegments  # bound functions run in server's globals
     session[SESSION_KEY] = segments = TurnSegments()
+    tail_owner = object()
     if not muted:
         _emit("message.start", sid)
 
@@ -1207,6 +1240,7 @@ def _run_prompt_submit(
                 # A stale interim closure must not fire during a later turn.
                 st.agent.interim_assistant_callback = None
                 with session["history_lock"]:
+                    session["_pending_turn_tail"] = tail_owner
                     session["running"] = False
                     session["last_active"] = time.time()
                     session.pop("_turn_user_input", None)  # per turn: never leaks into the next one
@@ -1236,7 +1270,6 @@ def _run_prompt_submit(
                             session.pop("_active_turn_marker_key", None)
                         session.pop("_hosted_room_task", None)
                 session.pop("_auto_continue_scheduled", None)
-                _emit_settled_session_info(sid, session, st.agent)
             finally:
                 _post_turn_housekeeping(sid, session, st)
         return st.result, goal_followup
@@ -1245,27 +1278,53 @@ def _run_prompt_submit(
         # _prepare_turn_input owns profile binding for the worker. The context
         # here only gates presentation; do not introduce a second runtime scope.
         from agent.notification_presentation import notification_policy_snapshot
-        with notification_policy_snapshot(agent, "tui", notification_config), notification_turn(agent, muted=muted, session_id=sid):
-            followup = run_body()
-        if followup is not None:
-            _run_post_turn_followups(rid, sid, session, *followup)
+        permit_token = bind_execution_permit(permit)
+        try:
+            with notification_policy_snapshot(agent, "tui", notification_config), notification_turn(agent, muted=muted, session_id=sid):
+                followup = run_body()
+            if followup is not None:
+                _run_post_turn_followups(rid, sid, session, *followup)
+        finally:
+            reset_execution_permit(permit_token)
+            release_conversation_permit(permit)
+            with session["history_lock"]:
+                own_tail = session.get("_pending_turn_tail") is tail_owner
+                if own_tail:
+                    session.pop("_pending_turn_tail")
+                settled = own_tail and not session.get("running")
+            if settled:
+                # Housekeeping released the worker's profile scopes. Final idle
+                # evidence belongs after locally held followups, in the owner's scope.
+                with _session_profile_runtime_scope(session):
+                    _emit_settled_session_info(sid, session, session.get("agent") or agent)
     # The handle is resolved BEFORE _sessions_lock: a profile session opens its own SessionDB through the
     # state registry, and _sessions_lock gates every create/close/prompt on this backend.
-    with _routing_provenance_db(session) as routing_db, _sessions_lock:
-        registered = _sessions.get(sid)
-        can_start = not session.get("_closing") and (registered is None or registered is session)
-        if can_start:
-            # Only a registered session is proof the conversation is routed here; an unregistered one may
-            # still run its turn, but its stamp stays (#106459).
-            if registered is session:
-                _reopen_routed_session_row(routing_db, sid, session)
-            can_start = _start_session_work(run, name=f"prompt-turn-{sid}", session=session) is not None
+    can_start = _start_admitted_prompt_work(sid, session, run, permit)
     if not can_start:
+        release_conversation_permit(permit)
         with session["history_lock"]:
             session["running"] = False
             if session.get(SESSION_KEY) is segments:
                 session.pop(SESSION_KEY)
     return can_start
+
+
+def _start_admitted_prompt_work(sid, session, run, permit):
+    from agent.execution_admission import release_conversation_permit
+
+    try:
+        with _routing_provenance_db(session) as routing_db, _sessions_lock:
+            registered = _sessions.get(sid)
+            can_start = not session.get("_closing") and (registered is None or registered is session)
+            if not can_start:
+                return False
+            if registered is session:
+                _reopen_routed_session_row(routing_db, sid, session)
+            return _start_session_work(run, name=f"prompt-turn-{sid}", session=session) is not None
+    except BaseException:
+        # No worker took ownership when routing storage or thread start failed.
+        release_conversation_permit(permit)
+        raise
 
 
 def register(server) -> None:

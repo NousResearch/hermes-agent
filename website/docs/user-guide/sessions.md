@@ -10,6 +10,27 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 Hermes Agent automatically saves every conversation as a session. Sessions enable conversation resume, cross-session search, and full conversation history management.
 
+## Preserve and close a conversation
+
+Desktop and messaging `/new` preserve the old conversation through the configured
+archive workflow, archive its history recoverably, then open an independent chat.
+`/archive` uses the same preservation workflow. Exact `archive`, `archive this`,
+and `archive the chat` messages also request closeout; mentioning the word in a
+sentence or quoting it does not. `/reset` keeps its existing reset behavior.
+
+Preservation can reconcile the existing task ledger and capture eligible curated
+memory through the configured provider. Pending or uncertain online delivery is
+reported separately and retained in a durable receipt; it does not prevent a fresh
+chat. A queued memory request is not reported as a confirmed save. Repeated
+closeout requests reuse the old operation rather than repeating uncertain writes.
+
+Archival does not delete messages or pretend unfinished work has stopped. Running
+work keeps its execution reservation until it actually settles. Explicitly restoring
+the old conversation cancels a pending closeout; a later closeout can preserve new
+work. In Desktop Bot Mode, `/new` opens a separate untitled sidechat, while `/reset`
+keeps the existing compaction behavior. Classic CLI reset commands retain their
+own behavior.
+
 ## How Sessions Work
 
 Every conversation — whether from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Teams, or any other messaging platform — is stored as a session with full message history. Sessions are tracked in:

@@ -245,7 +245,9 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | Command | Description |
 |---------|-------------|
 | `/start` | Platform-protocol command. Many chat platforms (Telegram, Discord, …) send `/start` automatically the first time a user opens a bot conversation. Hermes acknowledges the ping silently — no agent reply, no session burn — so first-contact handshakes don't waste a turn. You can also send it explicitly to confirm the gateway is reachable. |
-| `/new [name]` (alias: `/reset`) | Start a new session (fresh session ID + history). Optional `[name]` sets the initial session title. Append `now`, `--yes`, or `-y` to skip the confirmation modal — e.g. `/reset now`, `/new --yes my-experiment`. |
+| `/new [name]` | Preserve and recoverably archive the old conversation, then start an independent fresh chat. Optional `[name]` is applied after creation. Pending online memory/task destinations retain receipts without blocking the fresh chat. See [Conversation closeout](../user-guide/sessions.md#preserve-and-close-a-conversation). |
+| `/archive` | Preserve useful memory and reconcile the configured task ledger, then recoverably archive the current conversation. Exact `archive`, `archive this`, and `archive the chat` messages also request it. Saved history remains available; the next messaging turn uses an independent context. |
+| `/reset` | Keep the existing reset and interruption semantics. This is distinct from preservation-first `/new`; existing confirmation and skip options still apply. |
 | `/status` | Show session info, followed by a local **Session recap** block (recent turn counts, top tools used, files touched, latest prompt + reply). |
 | `/stop` | Kill all running background processes and interrupt the running agent. |
 | `/discard` | Drop a turn Hermes lost in a restart so this chat's queued messages run again. The lost turn is not re-run (only you know whether to send it again); it is recorded as interrupted. Hermes offers this when it pauses a conversation on a lost turn. On Slack use `/hermes discard`. |

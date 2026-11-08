@@ -287,6 +287,16 @@ def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback, ho
     return None if valid else _err(rid, 4120, "invalid hosted room turn proof")
 
 
+def _submit_fence_error(rid, session, params, hosted_task, hosted_terminal_callback, hosted_images, internal_hosted_submit):
+    from hermes_cli.conversation_closeout_fence import legacy_admission_refusal
+
+    if (reason := legacy_admission_refusal(session)) is not None:
+        return _err(rid, 4092, reason, {"reason": "conversation_closing"})
+    return (
+        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback, hosted_images)
+        if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
+
+
 def _legacy_group_fence_error(rid, session, params):
     """Fence direct prompts into a hosted room from older Desktop builds (they know the
     ``Group: <room-id>`` title but not the authority marker; a direct prompt would start a
@@ -812,6 +822,18 @@ def _lock_in_submit_turn(
     return None, fields
 
 
+def _reattach_and_claim_submit_turn(
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind, *, transport):
+    """Keep final reattachment and the history-locked running claim atomic against viewer retirement."""
+    with _session_resume_lock:
+        if (refusal := _reattach_refusal(rid, sid, session)) is not None:
+            return refusal, {}
+        if transport is not None:
+            _rebind_live_transport(sid, session, transport)
+        return _lock_in_submit_turn(
+            rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
+
+
 # Per-turn client surfaces that carry a model-bound note (session_notifications._hud_surface_note);
 # the canonical admission path shares the same set (gateway.session_surface).
 from gateway.session_surface import SURFACES as _CLIENT_SURFACES
@@ -853,9 +875,8 @@ def _(rid, params: dict) -> dict:
     hosted_images = params.get("_hosted_images")
     internal_hosted_submit = (
         hosted_task is not None or hosted_terminal_callback is not None or hosted_images is not None)
-    err = (
-        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback, hosted_images)
-        if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
+    err = _submit_fence_error(
+        rid, session, params, hosted_task, hosted_terminal_callback, hosted_images, internal_hosted_submit)
     if err is not None:
         return err
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
@@ -915,8 +936,8 @@ def _(rid, params: dict) -> dict:
     requested_rebind_ids = (
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
-    err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
+    err, survivor_fields = _reattach_and_claim_submit_turn(
+        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind, transport=t)
     if err is not None:
         return err
     if turn_isolation:

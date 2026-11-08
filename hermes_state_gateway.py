@@ -301,13 +301,14 @@ class SessionGatewayMixin:
                 )
         self._execute_write(_do)
 
-    def save_gateway_routing_entry(self, session_key: str, entry_json: str, *, scope: str = "") -> None:
+    def save_gateway_routing_entry(self, session_key: str, entry_json: str, *, scope: str = "", conn=None) -> None:
         """Upsert one gateway routing entry (session_key -> SessionEntry JSON); ``scope``
         namespaces the index per sessions_dir so two stores never share routing state."""
         if not session_key or not entry_json:
             return
         from hermes_state_mutation_retirement import ROUTE_RETIRED_SQL, route_retired_params
-        self._write_sql(
+        write = conn.execute if conn is not None else self._write_sql
+        write(
             f"""INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at)
                SELECT :scope, :key, :entry, :now WHERE NOT {ROUTE_RETIRED_SQL}
                ON CONFLICT(scope, session_key) DO UPDATE SET

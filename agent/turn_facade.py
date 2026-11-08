@@ -11,6 +11,7 @@ from contextlib import suppress
 from typing import Any, Dict, Generator, List, Optional
 
 from agent.lazy_forward import forward as _forward
+from agent.execution_admission import execution_budgeted
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -19,6 +20,7 @@ logger = logging.getLogger("run_agent")
 class TurnFacadeMixin:
     """run_conversation()/chat() (see module docstring)."""
 
+    @execution_budgeted
     def run_conversation(
         self, user_message: Any, system_message: str | None=None,
         conversation_history: list[dict[str, Any]] | None=None, task_id: str | None=None,
@@ -36,10 +38,6 @@ class TurnFacadeMixin:
         # an admitted request and await its exit before opening live-turn instrumentation.
         # Foreground priority is retained if the review does not acknowledge within the bounded deadline
         # (#84423).
-        from agent.background_review import cancel_background_review_for_live_turn
-
-        cancel_background_review_for_live_turn(self)
-
         from agent import relay_runtime
         from agent.aux_accounting import reset_accounting_context, set_accounting_context
         from agent.auxiliary_client import scoped_runtime_main

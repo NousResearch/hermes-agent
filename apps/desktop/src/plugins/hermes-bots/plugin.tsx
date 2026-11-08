@@ -765,13 +765,9 @@ export default {
         handler: async (draft: ComposerDraftPayload): Promise<ComposerDraftPayload> => {
           const text = draft.text || ''
 
-          // /new inside a bot's canonical forever-chat would fork the
-          // relationship into a scratch session — the one thing Bots mode
-          // promises never happens. Reroute to /compact (same felt effect:
-          // fresh working context, SAME conversation) and say so. Only
-          // guards the canonical chat: Sessions-mode scratchpads on the
-          // same profile keep full /new freedom.
-          const slashNew = /^\/(new|reset)\s*$/.exec(text.trim())
+          // /reset keeps the canonical relationship and compacts its working context.
+          // Explicit /new reaches the host closeout flow and opens an independent side-chat.
+          const slashNew = /^\/reset\s*$/i.exec(text.trim())
 
           if (slashNew) {
             const activeBot = $selectedBot.get()

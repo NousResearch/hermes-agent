@@ -84,6 +84,26 @@ describe('session tile optimistic owner metadata', () => {
 // "sleep/wake session recovery" suite for the same regression on the
 // primary chat's own reloadFromMessage.
 describe('useSessionTileActions sleep/wake session recovery', () => {
+  it.each(['archive', 'archive this', 'archive the chat', '/new'])(
+    'routes %s through the command delegate and preserves a refused submission',
+    async text => {
+      const executeSlash = vi.fn(async () => false)
+      setSessionTileDelegate({ executeSlash } as never)
+      const { result } = renderTileActions()
+      const options = { composerScope: STORED_SESSION_ID, submission_id: 'retry-closeout' }
+      expect(await result.current.submitText(text, options)).toBe(false)
+      expect(executeSlash).toHaveBeenCalledWith(text, RUNTIME_SESSION_ID, expect.objectContaining(options))
+      expect(requestGatewayMock).not.toHaveBeenCalled()
+    }
+  )
+
+  it('does not accept a command before its delegate exists', async () => {
+    setSessionTileDelegate(null as never)
+    const { result } = renderTileActions()
+    expect(await result.current.submitText('/new')).toBe(false)
+    expect(requestGatewayMock).not.toHaveBeenCalled()
+  })
+
   beforeEach(() => {
     $activeSessionId.set('foreground-runtime')
     setSessions([])
@@ -93,7 +113,7 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
       branchSession: vi.fn(async () => undefined),
       branchSessionAtMessage: vi.fn(async () => true),
       deleteSession: vi.fn(async () => undefined),
-      executeSlash: vi.fn(async () => undefined),
+      executeSlash: vi.fn(async () => true),
       interruptSession: vi.fn(async () => undefined),
       resumeTile: vi.fn(async () => RUNTIME_SESSION_ID),
       submitToSession: vi.fn(async () => ({
@@ -272,7 +292,7 @@ describe('useSessionTileActions reloadFromMessage failed-submit rollback (#95745
       branchSession: vi.fn(async () => undefined),
       branchSessionAtMessage: vi.fn(async () => true),
       deleteSession: vi.fn(async () => undefined),
-      executeSlash: vi.fn(async () => undefined),
+      executeSlash: vi.fn(async () => true),
       interruptSession: vi.fn(async () => undefined),
       resumeTile: vi.fn(async () => RUNTIME_SESSION_ID),
       submitToSession: vi.fn(async () => ({
@@ -347,7 +367,7 @@ describe('useSessionTileActions reloadFromMessage failed-submit rollback (#95745
       branchSession: vi.fn(async () => undefined),
       branchSessionAtMessage: vi.fn(async () => true),
       deleteSession: vi.fn(async () => undefined),
-      executeSlash: vi.fn(async () => undefined),
+      executeSlash: vi.fn(async () => true),
       interruptSession: vi.fn(async () => undefined),
       resumeTile,
       submitToSession: vi.fn(async () => ({ runtimeSessionId: RUNTIME_SESSION_ID, storedSessionId: null })),

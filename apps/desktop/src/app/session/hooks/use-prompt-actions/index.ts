@@ -78,6 +78,7 @@ import {
   type SurvivorUserRowIds
 } from './rewind'
 import { useSlashCommand } from './slash'
+import { runCloseoutCommand } from './slash-closeout'
 import { captureSteeringSession } from './steering-session'
 import { captureSubmissionDestination } from './submission-destination'
 import { useSubmitPrompt } from './submit'
@@ -699,6 +700,10 @@ export function usePromptActions({
       const visibleText = sanitizeComposerInput(rawText).trim()
       const attachments = options?.attachments ?? $composerAttachments.get()
 
+      const closeout = await runCloseoutCommand(visibleText, { ...options, attachments }, { activeSessionIdRef, selectedStoredSessionIdRef, getRoutedStoredSessionId, requestGateway, startFreshSessionDraft })
+
+      if (closeout !== undefined) { return closeout }
+
       if (isSlashCommandText(visibleText)) {
         if (attachments.length) {
           notify({
@@ -719,7 +724,7 @@ export function usePromptActions({
 
       return await submitPromptText(rawText, options)
     },
-    [executeSlashCommand, submitPromptText]
+    [activeSessionIdRef, copy.slashCommandIgnoredBody, copy.slashCommandIgnoredTitle, executeSlashCommand, getRoutedStoredSessionId, requestGateway, selectedStoredSessionIdRef, startFreshSessionDraft, submitPromptText]
   )
 
   const transcribeVoiceAudio = useCallback(

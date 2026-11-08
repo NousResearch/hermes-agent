@@ -386,6 +386,19 @@ method("session.cwd.set", params=SessionCwdSetParams, result=SessionCwdSetResult
 # ── live-session lifecycle ────────────────────────────────────────────────────────────────────
 
 
+class LegacySessionDetachParams(SessionParams):
+    pass
+
+
+class LegacySessionDetachResult(Result):
+    detached: bool
+
+
+method("session.detach", params=LegacySessionDetachParams, result=LegacySessionDetachResult,
+       doc="Detach only this transport's viewer; refuse last-viewer retirement while work is unfinished. "
+           "The orphan grace reclaims a settled runtime without ending its stored conversation.")
+
+
 class SessionCloseParams(SessionParams):
     pass
 

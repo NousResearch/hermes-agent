@@ -15,6 +15,7 @@ import sys
 import time
 
 from agent.managed_worker import accept_result, encode_frame, read_frame
+from agent.execution_admission import managed_execution_budgeted
 from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
 from hermes_state_runtime import RuntimeStoreError
 
@@ -80,7 +81,10 @@ def _bootstrap(authority, ref, row, policy, scope, text=None):
     config = _worker_config(authority, policy)
     hydrated = replace(policy, config_json=json.dumps(config), request_json=json.dumps(request),
                        terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)
+    from hermes_cli.execution_budget import current_execution_permit
+    permit = current_execution_permit()
     return {'version': 1, 'home': authority.profile_id, 'scope': scope,
+            **({'execution_permit': permit.vouch()} if permit is not None else {}),
             'policy': asdict(hydrated), 'api_key': route_launch_key(authority, policy, config),
             'text': row['payload']['text'] if text is None else text, 'route': live.route,
             **({'attachments_v1': row['payload']['attachments_v1']} if 'attachments_v1' in row['payload'] else {}),
@@ -628,6 +632,7 @@ async def admit_managed(authority, ref, row, policy):
     return await execute_managed(authority, ref, row, policy)
 
 
+@managed_execution_budgeted
 async def execute_managed(authority, ref, row, policy):
     from gateway.run_turn_progress import publish_worker_tool_event
     # This route never passes the inbound prepare step, so the worker would read ``@`` tokens as typed.

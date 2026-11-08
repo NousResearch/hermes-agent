@@ -222,11 +222,16 @@ describe('Bot Chat reset guard', () => {
     for (const stored of ['bot-root', 'bot-tip']) {
       live.stored = stored
 
-      for (const text of ['/new', '/reset']) {
+      for (const text of ['/reset']) {
         hostMock.notify.mockClear()
         expect(await handler({ text })).toEqual({ text: '/compact' })
         expect(hostMock.notify).toHaveBeenCalledOnce()
       }
+
+      hostMock.notify.mockClear()
+      const fresh = { text: '/new' }
+      expect(await handler(fresh)).toBe(fresh)
+      expect(hostMock.notify).not.toHaveBeenCalled()
     }
 
     for (const stored of ['scratch-chat', 'other-chat', null]) {

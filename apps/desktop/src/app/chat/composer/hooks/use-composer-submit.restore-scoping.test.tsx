@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { act, cleanup, render, waitFor } from '@testing-library/react'
+import { act, cleanup, render, renderHook, waitFor } from '@testing-library/react'
 import { startTransition, Suspense, useLayoutEffect, useRef } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
@@ -8,6 +8,7 @@ import { NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from '@/app/routes'
 import { usePromptActions } from '@/app/session/hooks/use-prompt-actions'
 import { useSessionActions } from '@/app/session/hooks/use-session-actions'
 import { useSessionStateCache } from '@/app/session/hooks/use-session-state-cache'
+import { registry } from '@/contrib/registry'
 import {
   announceNewSessionDraftKey,
   clearSessionDraft,
@@ -30,13 +31,17 @@ import {
   setSessions,
   setYoloActive
 } from '@/store/session'
-import { _resetSessionOwnerHoldsForTests } from '@/store/session-states'
+import { _resetSessionOwnerHoldsForTests, type SessionTileDelegate, setSessionTileDelegate } from '@/store/session-states'
 
+import { useSessionTileActions } from '../../session-tile-actions'
+import { COMPOSER_AREAS } from '../contrib'
 import { composerPlainText } from '../rich-editor'
+import { MAIN_COMPOSER_SCOPE } from '../scope'
 import type { ChatBarProps } from '../types'
 
 import { useComposerDraft } from './use-composer-draft'
 import { useComposerSubmit } from './use-composer-submit'
+import { useMiddlewareSubmit } from './use-middleware-submit'
 
 // Substitute the assistant-ui adapter and transport, not the draft DOM,
 // subscription, persistence, creation, submit actions, cache or dispatcher.
@@ -96,6 +101,8 @@ const busyRef = { current: false }
 const getRouteToken = () => `${route ? sessionRoute(route) : NEW_CHAT_ROUTE}::`
 
 interface HarnessProps {
+  busy?: boolean
+  middleware?: boolean
   pendingScope?: string
   suspend?: Promise<void>
   onSubmit?: ChatBarProps['onSubmit']
@@ -109,7 +116,7 @@ function PendingNavigation({ suspend }: Pick<HarnessProps, 'suspend'>) {
   return null
 }
 
-function Harness({ pendingScope, suspend, onSubmit }: HarnessProps) {
+function Harness({ pendingScope, suspend, onSubmit, middleware: withMiddleware, busy = false }: HarnessProps) {
   const active = useStore($activeSessionId)
   const selected = useStore($selectedStoredSessionId)
   const attachments = useStore(mainComposerScope.$attachments)
@@ -178,11 +185,13 @@ function Harness({ pendingScope, suspend, onSubmit }: HarnessProps) {
     sessionId: active
   })
 
+  const middleware = useMiddlewareSubmit(onSubmit ?? actions.submitText)
+
   const submit = useComposerSubmit({
     ...draft,
     activeQueueSessionKey,
     attachments,
-    busy: false,
+    busy,
     disabled: false,
     inputDisabled: false,
     drainNextQueued: async () => false,
@@ -190,7 +199,7 @@ function Harness({ pendingScope, suspend, onSubmit }: HarnessProps) {
     onCancel: () => {},
     onSteer: actions.redirectPrompt,
     onSteerHidden: actions.injectHiddenPrompt,
-    onSubmit: onSubmit ?? actions.submitText,
+    onSubmit: withMiddleware ? middleware.onSubmit : onSubmit ?? actions.submitText,
     queueCurrentDraft: () => false,
     queueEdit: null,
     queuedPrompts: [],
@@ -260,6 +269,88 @@ function seed(props: HarnessProps = {}, initial: 'B' | null = 'B') {
 
 const editorText = () => composerPlainText(handles.draft.editorRef.current!).trim()
 const flushDraft = () => act(() => window.dispatchEvent(new Event('pagehide')))
+
+it.each(['archive', 'archive this', 'archive the chat'])('dispatches %s from a busy composer through real tile actions', async text => {
+  const executeSlash = vi.fn<SessionTileDelegate['executeSlash']>(async () => true)
+  setSessionTileDelegate({ executeSlash } as never)
+  const request = vi.fn()
+
+  const tile = renderHook(() => useSessionTileActions({
+    requestGateway: request, runtimeId: 'rt-B', storedSessionId: 'stored-B', scope: MAIN_COMPOSER_SCOPE
+  }))
+
+  stashSessionDraft('stored-B', text, [])
+  seed({ onSubmit: tile.result.current.submitText, busy: true })
+  act(() => handles.submit.submitDraft())
+  await waitFor(() => expect(executeSlash).toHaveBeenCalledWith(text, 'rt-B', expect.objectContaining({ composerScope: 'stored-B' })))
+  expect(request).not.toHaveBeenCalled()
+  expect(requestGatewayForProfile).not.toHaveBeenCalled()
+})
+
+it.each([false, true])('restores and retries the original tile command when unavailable=%s', async unavailable => {
+  const executeSlash = vi.fn<SessionTileDelegate['executeSlash']>(async () => false)
+  setSessionTileDelegate(unavailable ? null as never : { executeSlash } as never)
+
+  const tile = renderHook(() => useSessionTileActions({
+    requestGateway: vi.fn(), runtimeId: 'rt-B', storedSessionId: 'stored-B', scope: MAIN_COMPOSER_SCOPE
+  }))
+
+  stashSessionDraft('stored-B', '/new', [])
+  seed({ onSubmit: tile.result.current.submitText })
+  act(() => handles.submit.submitDraft())
+  await waitFor(() => expect(editorText()).toBe('/new'))
+  const refused = executeSlash.mock.calls[0]
+  executeSlash.mockResolvedValue(true)
+  setSessionTileDelegate({ executeSlash } as never)
+  act(() => handles.submit.submitDraft())
+  await waitFor(() => expect(editorText()).toBe(''))
+  expect(executeSlash).toHaveBeenLastCalledWith('/new', 'rt-B', expect.objectContaining({
+    composerScope: 'stored-B', submission_id: expect.any(String)
+  }))
+
+  if (refused) {
+    expect(executeSlash.mock.calls.at(-1)?.[2]).toEqual(refused[2])
+  }
+})
+
+it.each(['stored-A', null])('rejects a delayed middleware closeout after %s moves to B and restores its command', async origin => {
+  let finish!: () => void
+  const archiveSession = vi.fn(async () => undefined)
+  setSessionTileDelegate({ archiveSession } as never)
+
+  const unregister = registry.register({
+    id: 'held-closeout', area: COMPOSER_AREAS.middleware,
+    data: { handler: async (draft: { text: string }) => {
+      await new Promise<void>(resolve => { finish = resolve })
+
+      return draft
+    } }
+  })
+
+  try {
+    stashSessionDraft(origin, '/new', [])
+    stashSessionDraft('stored-B', 'B’s own draft', [])
+    seed({ middleware: true }, origin ? 'B' : null)
+
+    if (origin) {
+      act(() => navigate('A'))
+    }
+
+    act(() => handles.submit.submitDraft())
+    await waitFor(() => expect(finish).toBeTypeOf('function'))
+    act(() => navigate('B'))
+    await act(async () => finish())
+    expect(archiveSession).not.toHaveBeenCalled()
+    expect(requestGatewayForProfile).not.toHaveBeenCalled()
+    expect(requestGatewayForAgent).not.toHaveBeenCalled()
+    expect($selectedStoredSessionId.get()).toBe('stored-B')
+    expect(editorText()).toBe('B’s own draft')
+    flushDraft()
+    expect(takeSessionDraft(origin).text.trim()).toBe('/new')
+  } finally {
+    unregister()
+  }
+})
 
 afterEach(() => {
   cleanup()

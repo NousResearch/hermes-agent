@@ -2733,38 +2733,49 @@ The master `streaming.enabled` switch is `false` by default — nothing streams 
 
 ## Group Chat Session Isolation
 
-Limit how many chat sessions can actively be open across CLI, TUI/dashboard,
-and messaging gateway:
+Limit simultaneously executing conversations across CLI, Desktop/TUI, dashboard
+and messaging on one Hermes root, including its named profiles:
 
 ```yaml
-max_concurrent_sessions: null  # null/0 = unlimited; positive integer = active session cap
+max_concurrent_sessions: null  # null/0 = unlimited; positive integer = execution limit
 ```
 
-A slot is taken when a session runs its **first turn**, not when a chat window
-is opened. Opening, resuming or reconnecting to a chat costs nothing until you
-send a message, so idle desktop tabs (and the background resumes a flaky
-websocket triggers) cannot starve the messaging gateway that shares this cap.
+A slot is held while a conversation executes and its worker and immediate
+followups settle. Idle open tabs retain their separate writer ownership without
+using execution slots. A Desktop window connected to a cloud backend uses that
+backend's budget; local PC execution uses its own root's budget.
 
-When the cap is reached, Hermes returns a direct limit message naming which
-surfaces hold the slots. Existing active sessions keep their normal behavior.
-Run `hermes status --full` to see the current slot usage and every holder.
+When the limit is reached, new work receives a direct limit message. Existing work
+continues. `hermes status --full` shows execution slots separately from idle chat
+ownership. An unreadable execution registry refuses work rather than assuming a
+slot is free. Same-conversation writer exclusion remains enforced independently.
 
-This is the only cap on concurrent gateway turns: the gateway runs each turn body
-on its own thread, so with the default (unset) every accepted turn starts
-immediately instead of queuing behind other running turns.
+This is a conversation work limit, not a total-memory guarantee. Visible idle
+histories may remain resident. Delegated work within one conversation shares its
+reservation and retains its existing child limits. Closing unused tabs releases
+their idle runtime through the normal cleanup path.
 
 The canonical key is top-level `max_concurrent_sessions`. Hermes also accepts
 `gateway.max_concurrent_sessions` as a fallback, but the top-level key wins when
-both are set.
+both are set. The effective root config supplies the shared execution limit;
+a named profile cannot increase that host budget.
 
-The cap is enforced with a local runtime lease file and is best-effort: Hermes
-fails open if the registry cannot be read or locked so users are not stranded.
-It is intended for a single host/profile runtime, not a shared `$HERMES_HOME`
-mounted across multiple machines. A lease whose owning process exists but whose
-liveness cannot be proved (for example an unreadable `/proc` entry inside a
-container after `hermes update` restarts the backend) still counts toward the
-cap and still fences its own session id, but it no longer blocks claiming or
-releasing a different session.
+Execution permits live in the root's `runtime/execution_permits.json`; writer
+leases remain profile-local. A child worker retains its own reference, so a
+parent's release cannot free a slot while that child is still executing. Recycled
+PIDs and uncertain liveness do not authorize extra work. The files coordinate one
+local Hermes root, not a shared `$HERMES_HOME` mounted across multiple machines.
+
+Completed references leave exact retirement receipts before releasing their slot.
+Temporary release failures retry automatically; admission and status also reconcile
+those receipts. To recover only these known-completed references explicitly:
+
+```bash
+python -c "from hermes_cli.execution_budget import reconcile_execution_permits; print(reconcile_execution_permits())"
+```
+
+This never expires live or uncertain work by age. Corrupt or inaccessible storage
+continues to refuse admission until coordination is restored.
 
 Control whether shared chats keep one conversation per room or one conversation per participant:
 

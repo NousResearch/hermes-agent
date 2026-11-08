@@ -3,7 +3,7 @@ import { act, cleanup, render } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 
-import { deleteSession, type SessionInfo, setSessionArchived, setSessionPinnedRemote } from '@/hermes'
+import { deleteSession, type SessionInfo, setSessionPinnedRemote } from '@/hermes'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $sessions, setSessions } from '@/store/session'
 import { resetSessionPinMirror, watchSessionPins } from '@/store/session-pin-sync'
@@ -12,6 +12,13 @@ import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-r
 import type { ClientSessionState } from '../../../types'
 
 import { useSessionActions } from './index'
+
+const { closeoutRequest } = vi.hoisted(() => ({ closeoutRequest: vi.fn() }))
+vi.mock('@/store/gateway', async original => ({ ...await original<object>(), requestGatewayForProfile: closeoutRequest }))
+
+const preserved = () => ({ closeout_id: 'preserved', status: 'preserved', archived: true, settled: true,
+  old: { logical_session_id: 'root', stored_session_id: 'tip', profile: 'work' }, receipt_id: 'receipt',
+  destinations: { memory: 'skipped', tasks: 'reconciled' }, next_create_request_id: 'fresh' })
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -62,6 +69,7 @@ beforeEach(() => {
   $removedSessionIds.set(new Set())
   $sessionMutationsInFlight.set(new Set())
   vi.clearAllMocks()
+  closeoutRequest.mockReset().mockResolvedValue(preserved())
   // Pins use the lineage root while archive/delete targets the current tip.
   setSessions([
     {
@@ -96,8 +104,8 @@ it.each(['archiveSession', 'removeSession'] as const)('%s does not issue a compe
       }}
     />
   )
-  const mutate = action === 'archiveSession' ? vi.mocked(setSessionArchived) : vi.mocked(deleteSession)
-  let resolve!: (value: { ok: boolean }) => void
+  const mutate = action === 'archiveSession' ? closeoutRequest : vi.mocked(deleteSession)
+  let resolve!: (value: unknown) => void
   mutate.mockImplementation(
     () =>
       new Promise(done => {
@@ -108,10 +116,10 @@ it.each(['archiveSession', 'removeSession'] as const)('%s does not issue a compe
   await act(async () => {
     const removal = handle[action]('tip')
     // The row disappears immediately while the single server mutation is pending.
-    expect($sessions.get()).toEqual([])
-    expect($pinnedSessionIds.get()).toEqual([])
+    expect($sessions.get().map(row => row.id)).toEqual(action === 'archiveSession' ? ['tip'] : [])
+    expect($pinnedSessionIds.get()).toEqual(action === 'archiveSession' ? ['root'] : [])
     expect(setSessionPinnedRemote).not.toHaveBeenCalled()
-    resolve({ ok: true })
+    resolve(action === 'archiveSession' ? preserved() : { ok: true })
     await removal
   })
 
@@ -131,10 +139,10 @@ it.each(['archiveSession', 'removeSession'] as const)(
         }}
       />
     )
-    const mutate = action === 'archiveSession' ? vi.mocked(setSessionArchived) : vi.mocked(deleteSession)
+    const mutate = action === 'archiveSession' ? closeoutRequest : vi.mocked(deleteSession)
     mutate.mockRejectedValue(new Error('permission_denied'))
 
-    await act(() => handle[action]('tip'))
+    await act(async () => { await handle[action]('tip') })
 
     expect($sessions.get().map(row => row.id)).toEqual(['tip'])
     expect($pinnedSessionIds.get()).toEqual(['root'])

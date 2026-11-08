@@ -6,6 +6,7 @@ import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
+import { closeoutCommand } from '@/lib/session-closeout-command'
 import { isTouchInteraction } from '@/lib/touch-interaction'
 import type { BusyInputMode } from '@/store/busy-input-mode'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
@@ -329,6 +330,21 @@ export function useComposerSubmit({
     })
   }
 
+  const submitImmediateCommand = (text: string) => {
+    if (attachments.length) {
+      notify({ kind: 'warning', title: copy.slashCommandIgnoredTitle, message: copy.slashCommandIgnoredBody })
+
+      return false
+    }
+
+    const retry = takeDraftRetry?.(text, [])
+    triggerHaptic('submit')
+    clearDraft()
+    dispatchSubmit(text, undefined, undefined, retry && { submission_id: retry.id })
+
+    return true
+  }
+
   // Returns false when the submit was refused and must not refocus the input.
   const submitWhileBusy = (text: string, payloadPresent: boolean, blockingPrompt: boolean) => {
     // Slash commands should execute immediately even while the agent is
@@ -339,25 +355,7 @@ export function useComposerSubmit({
     // /send directives).  Queuing them would make every slash command wait
     // for the current turn to finish, which is how the TUI never behaves.
     if (isSlashCommandText(text)) {
-      if (attachments.length) {
-        // Slash commands cannot ride alongside attachments — warn the user
-        // instead of silently queuing the payload (which would then reach the
-        // idle path and be submitted as plain text with no command execution).
-        notify({
-          kind: 'warning',
-          title: copy.slashCommandIgnoredTitle,
-          message: copy.slashCommandIgnoredBody
-        })
-
-        return false
-      }
-
-      const retry = takeDraftRetry?.(text, [])
-      triggerHaptic('submit')
-      clearDraft()
-      dispatchSubmit(text, undefined, undefined, retry && { submission_id: retry.id })
-
-      return true
+      return submitImmediateCommand(text)
     }
 
     const retry = payloadPresent ? takeDraftRetry?.(text, cloneAttachments(attachments)) : undefined
@@ -505,6 +503,16 @@ export function useComposerSubmit({
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
 
     if (refusedDuringSetup(text)) {
+      return
+    }
+
+    // Explicit preservation owns this send before a parked card or busy-input
+    // policy can interpret its words as an answer, correction or queued turn.
+    if (!queueEdit && closeoutCommand(text)) {
+      if (submitImmediateCommand(text)) {
+        refocusAfterSend(editorHadFocus)
+      }
+
       return
     }
 

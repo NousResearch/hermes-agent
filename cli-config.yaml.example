@@ -1051,13 +1051,13 @@ memory:
 # Conversations persist across inactivity and daily boundaries. Use /new or
 # /reset explicitly; context compression manages long conversations.
 
-# Maximum number of simultaneously active chat sessions across CLI, TUI,
-# dashboard chat, and messaging gateway. Set to null, 0, or omit to allow
-# unlimited concurrent sessions. When the limit is reached, new sessions get a
-# clean error while existing active sessions keep their normal behavior. This
-# top-level key takes precedence over gateway.max_concurrent_sessions. The cap
-# is a best-effort single-host/profile runtime guard; Hermes fails open if the
-# local runtime lease registry cannot be read or locked.
+# Maximum simultaneously executing conversations across CLI, Desktop/TUI,
+# dashboard and messaging on this Hermes root, including its named profiles.
+# Idle open tabs retain writer ownership but consume no execution slots.
+# Put this limit in the root config; profile overrides do not raise it.
+# null/0/unset allows unlimited work. The top-level key wins over gateway.*.
+# Unknown execution coordination refuses work. This bounds work, not total RAM;
+# visible idle histories and per-conversation delegated work can remain resident.
 max_concurrent_sessions: null
 
 # When true, group/channel chats use one session per participant when the platform

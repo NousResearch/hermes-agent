@@ -86,7 +86,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, busy_policy="dispatch", busy_handler="start"),
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
                aliases=("reset",), args_hint="[name]",
-               busy_policy="interrupt_then_dispatch", busy_handler="new"),
+               busy_policy="dispatch", busy_handler="new"),
+    CommandDef("archive", "Preserve and archive the current conversation", "Session",
+               gateway_only=True, busy_policy="dispatch"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
                gateway_only=True, args_hint="[off|help|session-id]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
@@ -486,7 +488,8 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
 def is_interrupt_then_dispatch(command_name: str | None) -> bool:
     """Guard 1 (gateway/platforms/base.py) routes these through the cancel-handoff path."""
     cmd = resolve_command(command_name) if command_name else None
-    return cmd is not None and cmd.busy_policy == "interrupt_then_dispatch"
+    # /reset retains its historical interrupt semantics; /new now preserves unfinished work.
+    return cmd is not None and (command_name == 'reset' or cmd.busy_policy == "interrupt_then_dispatch")
 
 
 def should_bypass_active_session(command_name: str | None) -> bool:

@@ -46,6 +46,7 @@ export { GATEWAY_NOT_CONNECTED_MESSAGE }
 const CANONICAL_PROMPT_EVENTS: Record<string, 'approval' | 'clarify'> = { 'approval.request': 'approval', 'clarify.request': 'clarify' }
 
 const ATTACH_REQUIRED = new Set([
+  'session.closeout',
   'prompt.submit',
   'approval.respond',
   'clarify.respond',
@@ -193,6 +194,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
     this.reconciledEpochs.clear()
     this.parkedFrames.clear()
     this.attached.clear()
+    this.subscriptions.clear()
     super.close()
   }
 
@@ -357,6 +359,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
     this.nativeDial = new URL(wsUrl).searchParams.has('native_dial')
     this.canonical = this.nativeDial
     this.attached.clear()
+    this.subscriptions.clear()
     this.deliveredPrompts.clear()
     this.sessionProfiles.clear()
     this.profileAliases.clear()
@@ -384,6 +387,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
   // transport: when routing moves a session to another socket (a profile split,
   // a redial) the new socket must resume before it may submit or respond.
   private attached = new Set<string>()
+  private subscriptions = new Map<string, { id: string }>()
 
   private routeCanonicalParams(method: string, params: Record<string, unknown>): Record<string, unknown> {
     if (method === 'session.events.since' && params.profile === undefined && typeof params.replay_epoch === 'string') {
@@ -439,6 +443,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
     if (redirected) { return redirected }
     params = this.routeCanonicalParams(method, params)
 
+    const detachedSubscription = this.viewerSubscription(method, params)
+
     await this.attachForRequest(method, params, deadline, signal)
     this.requireConnectionGeneration(generation)
     // The attach may have identified the named launch profile behind an
@@ -455,6 +461,11 @@ export class HermesGateway extends JsonRpcGatewayClient {
     // turn's multi-question clarify as ONE request; undeclared, one card per question. An older
     // owner refuses the unknown key, so it rides only where `client.capabilities` advertised it.
     if (method === 'prompt.submit' && this.backendClarifyBatch) { params = { ...params, clarify_batch: true } }
+
+    const detachment = this.prepareViewerDetach(method, params, detachedSubscription)
+
+    if (!detachment) { return { detached: false } as T }
+    params = detachment
 
     let prepared = this.protocol.prepare(method, params)
     const wireMethod = this.protocol.wire(method, prepared)
@@ -493,6 +504,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
         this.adoptAttachedSnapshot(settled as { session_id?: string; prompts?: Array<Record<string, unknown>> }, prepared.profile)
       }
 
+      this.settleViewerDetach(method, prepared, settled, detachedSubscription)
+
       return settled
     } catch (error) {
       this.protocol.failure(prepared, error)
@@ -523,6 +536,29 @@ export class HermesGateway extends JsonRpcGatewayClient {
     return this.request<T>('clarify.respond', { session_id: promptOwner.sessionId, profile: promptOwner.profile, request_id: params.request_id, answer }, timeoutMs, signal)
   }
 
+  private viewerSubscription(method: string, params: Record<string, unknown>): { id: string } | undefined {
+    return method === 'session.detach' ? this.subscriptions.get(canonicalSessionKey(params.session_id, params.profile)) : undefined
+  }
+
+  private prepareViewerDetach(method: string, params: Record<string, unknown>, subscription?: { id: string }): Record<string, unknown> | undefined {
+    if (method !== 'session.detach') { return params }
+
+    if (!subscription) { throw new Error('Session viewer subscription unavailable; reopen the session before detaching') }
+
+    if (this.subscriptions.get(canonicalSessionKey(params.session_id, params.profile)) !== subscription) { return undefined }
+
+    return { ...params, subscription_id: subscription.id }
+  }
+
+  private settleViewerDetach(method: string, params: Record<string, unknown>, result: unknown, subscription?: { id: string }): void {
+    if (method !== 'session.detach' || (result as { detached?: boolean }).detached !== true) { return }
+    const key = canonicalSessionKey(params.session_id, params.profile)
+
+    if (this.subscriptions.get(key) !== subscription) { return }
+    this.subscriptions.delete(key)
+    this.attached.delete(key)
+  }
+
   private requireConnectionGeneration(generation: number): void {
     if (generation !== this.connectionGeneration) { throw new Error('Hermes gateway connection changed; reopen the session') }
   }
@@ -548,12 +584,14 @@ export class HermesGateway extends JsonRpcGatewayClient {
     }
   }
 
-  private adoptAttachedSnapshot(settled: { session_id?: string; replay_epoch?: string; info?: { profile_name?: string }; prompts?: Array<Record<string, unknown>> }, profile?: unknown): void {
+  private adoptAttachedSnapshot(settled: { subscription_id?: string; session_id?: string; replay_epoch?: string; info?: { profile_name?: string }; prompts?: Array<Record<string, unknown>> }, profile?: unknown): void {
     // Prompts still open on the authority re-deliver like `open_requests` after a reconnect.
     const sid = settled.session_id
 
     if (sid) {
       this.attached.add(canonicalSessionKey(sid, profile))
+
+      if (settled.subscription_id) { this.subscriptions.set(canonicalSessionKey(sid, profile), { id: settled.subscription_id }) }
       this.rememberSessionProfile(sid, profile)
 
       if (settled.info?.profile_name) {

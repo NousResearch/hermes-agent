@@ -2,14 +2,18 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { hermesApi, setApiRequestConnection, setApiRequestProfile } from '@/api/client'
+import { setSessionArchived as restoreThroughApi } from '@/api/sessions'
 import { setSessionArchived } from '@/hermes'
 import { en } from '@/i18n/en'
 import { $messagingSessions, $sessions, setMessagingSessions, setSessions } from '@/store/session'
+import { captureSessionRestoreFence } from '@/store/session-sync'
 import type { SessionInfo } from '@/types/hermes'
 
 import { SessionsSettings } from './sessions-settings'
 
 vi.mock('@/i18n', () => ({ useI18n: () => ({ t: en }) }))
+vi.mock('@/api/client', async original => ({ ...await original<object>(), hermesApi: vi.fn() }))
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -61,6 +65,19 @@ afterEach(() => {
 })
 
 describe('SessionsSettings unarchive', () => {
+  it('uses the shared restore lifecycle to fence an older closeout', async () => {
+    setApiRequestConnection('settings-owner')
+    setApiRequestProfile('default')
+    vi.mocked(hermesApi).mockResolvedValue({ ok: true, exists: true, runtime_revision: 2, runtime_generation: 1 } as never)
+    vi.mocked(setSessionArchived).mockImplementationOnce(restoreThroughApi)
+    const pending = captureSessionRestoreFence('settings-owner', 'default', ['matrix-1'])
+    render(<SessionsSettings />)
+    const button = await screen.findByRole('button', { name: en.settings.sessions.unarchive })
+    await act(async () => fireEvent.click(button))
+    expect(pending.isCurrent()).toBe(false)
+    expect(hermesApi).toHaveBeenCalledWith(expect.objectContaining({ method: 'PATCH', body: expect.objectContaining({ archived: false }) }))
+  })
+
   it('restores a messaging-source session into $messagingSessions, not $sessions', async () => {
     render(<SessionsSettings />)
     const button = await screen.findByRole('button', { name: en.settings.sessions.unarchive })

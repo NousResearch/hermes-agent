@@ -18,6 +18,7 @@ import { useI18n } from '@/i18n'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
+import { closeoutCommand } from '@/lib/session-closeout-command'
 import { clearClarifyRequest } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
@@ -334,7 +335,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
       listTileSession(visibleText)
 
-      if (isSlashCommandText(visibleText)) {
+      if (isSlashCommandText(visibleText) || closeoutCommand(visibleText)) {
         if (attachments.length) {
           notify({
             kind: 'warning',
@@ -346,14 +347,16 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         }
 
         triggerHaptic('selection')
-        await sessionTileDelegate()?.executeSlash(visibleText, runtimeIdRef.current)
 
-        return true
+        return (await sessionTileDelegate()?.executeSlash(visibleText, runtimeIdRef.current, {
+          ...options,
+          storedSessionId
+        })) ?? false
       }
 
       return await submitPromptText(rawText, options)
     },
-    [listTileSession, scope.attachments.$attachments, submitPromptText]
+    [copy.slashCommandIgnoredBody, copy.slashCommandIgnoredTitle, listTileSession, scope.attachments.$attachments, storedSessionId, submitPromptText]
   )
 
   const cancelRun = useCallback(async () => {

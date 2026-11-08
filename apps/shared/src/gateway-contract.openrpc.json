@@ -3283,6 +3283,24 @@
       }
     },
     {
+      "name": "session.closeout",
+      "summary": "Preserve one exact conversation, archive it recoverably, and return a durable receipt. Retries read the same operation; pending online destinations do not imply accepted saves. New-chat creation uses the returned stable request id and never resets the archived root.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionCloseoutParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionCloseoutResult"
+        }
+      }
+    },
+    {
       "name": "session.compress",
       "summary": "Manual /compress of an idle session, optionally focused on a topic.",
       "params": [
@@ -3405,6 +3423,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/SessionDeleteResult"
+        }
+      }
+    },
+    {
+      "name": "session.detach",
+      "summary": "Detach only this transport's viewer; refuse last-viewer retirement while work is unfinished. The orphan grace reclaims a settled runtime without ending its stored conversation.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/LegacySessionDetachParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/LegacySessionDetachResult"
         }
       }
     },
@@ -12015,6 +12051,91 @@
           "session_id"
         ],
         "title": "ClipboardPasteParams",
+        "type": "object"
+      },
+      "CloseoutDestinations": {
+        "additionalProperties": false,
+        "properties": {
+          "memory": {
+            "enum": [
+              "accepted",
+              "skipped",
+              "pending",
+              "unknown"
+            ],
+            "title": "Memory",
+            "type": "string"
+          },
+          "tasks": {
+            "enum": [
+              "reconciled",
+              "pending",
+              "unknown"
+            ],
+            "title": "Tasks",
+            "type": "string"
+          }
+        },
+        "required": [
+          "memory",
+          "tasks"
+        ],
+        "title": "CloseoutDestinations",
+        "type": "object"
+      },
+      "CloseoutError": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "CloseoutError",
+        "type": "object"
+      },
+      "CloseoutOldSession": {
+        "additionalProperties": false,
+        "properties": {
+          "logical_session_id": {
+            "title": "Logical Session Id",
+            "type": "string"
+          },
+          "stored_session_id": {
+            "title": "Stored Session Id",
+            "type": "string"
+          },
+          "runtime_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Runtime Id"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          }
+        },
+        "required": [
+          "logical_session_id",
+          "stored_session_id",
+          "profile"
+        ],
+        "title": "CloseoutOldSession",
         "type": "object"
       },
       "CommandCatalogMeta": {
@@ -22456,6 +22577,46 @@
           "enabled"
         ],
         "title": "LegacyPluginRow",
+        "type": "object"
+      },
+      "LegacySessionDetachParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "LegacySessionDetachParams",
+        "type": "object"
+      },
+      "LegacySessionDetachResult": {
+        "additionalProperties": false,
+        "properties": {
+          "detached": {
+            "title": "Detached",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "detached"
+        ],
+        "title": "LegacySessionDetachResult",
         "type": "object"
       },
       "LiveSessionStatus": {
@@ -36575,6 +36736,226 @@
         "title": "SessionCloseResult",
         "type": "object"
       },
+      "SessionCloseoutParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "request_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "intent": {
+            "enum": [
+              "archive",
+              "new"
+            ],
+            "title": "Intent",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "request_id",
+          "intent"
+        ],
+        "title": "SessionCloseoutParams",
+        "type": "object"
+      },
+      "SessionCloseoutResult": {
+        "additionalProperties": false,
+        "properties": {
+          "closeout_id": {
+            "title": "Closeout Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "reviewing",
+              "preserved",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "settled": {
+            "title": "Settled",
+            "type": "boolean"
+          },
+          "old": {
+            "$ref": "#/components/schemas/CloseoutOldSession"
+          },
+          "receipt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Receipt Id"
+          },
+          "destinations": {
+            "$ref": "#/components/schemas/CloseoutDestinations"
+          },
+          "archived": {
+            "title": "Archived",
+            "type": "boolean"
+          },
+          "next_create_request_id": {
+            "title": "Next Create Request Id",
+            "type": "string"
+          },
+          "memory_source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Source Id"
+          },
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Task Ids",
+            "type": "array"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CloseoutError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "closeout_id",
+          "status",
+          "settled",
+          "old",
+          "destinations",
+          "archived",
+          "next_create_request_id"
+        ],
+        "title": "SessionCloseoutResult",
+        "type": "object"
+      },
+      "SessionCloseoutUpdated": {
+        "additionalProperties": false,
+        "properties": {
+          "closeout_id": {
+            "title": "Closeout Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "reviewing",
+              "preserved",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "settled": {
+            "title": "Settled",
+            "type": "boolean"
+          },
+          "old": {
+            "$ref": "#/components/schemas/CloseoutOldSession"
+          },
+          "receipt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Receipt Id"
+          },
+          "destinations": {
+            "$ref": "#/components/schemas/CloseoutDestinations"
+          },
+          "archived": {
+            "title": "Archived",
+            "type": "boolean"
+          },
+          "next_create_request_id": {
+            "title": "Next Create Request Id",
+            "type": "string"
+          },
+          "memory_source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Source Id"
+          },
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Task Ids",
+            "type": "array"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CloseoutError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "closeout_id",
+          "status",
+          "settled",
+          "old",
+          "destinations",
+          "archived",
+          "next_create_request_id"
+        ],
+        "title": "SessionCloseoutUpdated",
+        "type": "object"
+      },
       "SessionCompressParams": {
         "additionalProperties": false,
         "properties": {
@@ -49219,6 +49600,24 @@
       }
     },
     {
+      "name": "session.closeout",
+      "summary": "Preserve one exact conversation, archive it recoverably, and return a durable receipt. Retries read the same operation; pending online destinations do not imply accepted saves. New-chat creation uses the returned stable request id and never resets the archived root.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionCloseoutParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionCloseoutResult"
+        }
+      }
+    },
+    {
       "name": "session.create",
       "summary": "",
       "params": [
@@ -50376,6 +50775,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ReviewSummaryPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "session.closeout.updated",
+      "summary": "",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/SessionCloseoutUpdated"
           }
         }
       ]

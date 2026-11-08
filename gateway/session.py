@@ -735,7 +735,8 @@ def build_session_key(
 
 
 class _SessionFlight:
-    def __init__(self) -> None:
+    def __init__(self, intent) -> None:
+        self.intent = intent
         self.event = threading.Event()
         self.result: Optional[SessionEntry] = None
         self.error: Optional[BaseException] = None
@@ -907,22 +908,18 @@ class SessionStore(
 
     def get_or_create_session(
         self, source: SessionSource, force_new: bool = False, touch_activity: bool = True,
+        *, create_request_id: str | None = None,
     ) -> SessionEntry:
-        """Single-flight session lookup/create per routing key: overlapping calls for one key (even
-        concurrent ``force_new``) share the owner's result so only one transition and SQLite row is
-        created. ``touch_activity=False`` (internal events) preserves the user-activity clock."""
+        """Equivalent lookup/create requests share one routing transition. Conflicting intents
+        serialize, then re-evaluate the route instead of consuming another request's result.
+        ``touch_activity=False`` (internal events) preserves the user-activity clock."""
         if detached_route_of(source):
             from gateway.session_detached import detached_entry
             return detached_entry(self, source)
         session_key = self._generate_session_key(source)
-        inflight_lock = self._lazy("_inflight_lock", threading.Lock)
-        self._lazy("_inflight_sessions", dict)
-
-        with inflight_lock:
-            slot = self._inflight_sessions.get(session_key)
-            owner = slot is None
-            if owner:
-                slot = self._inflight_sessions[session_key] = _SessionFlight()
+        if create_request_id is not None and (not force_new or not create_request_id):
+            raise ValueError('create_request_id requires force_new')
+        slot, owner = self._claim_session_flight(session_key, (force_new, create_request_id))
 
         if not owner:
             slot.event.wait()
@@ -935,19 +932,36 @@ class SessionStore(
 
         try:
             slot.result = self._get_or_create_session_impl(
-                source, force_new=force_new, touch_activity=touch_activity,
+                source, force_new=force_new, touch_activity=touch_activity, create_request_id=create_request_id,
             )
             return slot.result
         except BaseException as exc:
             slot.error = exc
             raise
         finally:
+            with self._inflight_lock:
+                if self._inflight_sessions.get(session_key) is slot:
+                    self._inflight_sessions.pop(session_key)
             slot.event.set()
+
+    def _claim_session_flight(self, session_key, intent):
+        inflight_lock = self._lazy("_inflight_lock", threading.Lock)
+        self._lazy("_inflight_sessions", dict)
+        while True:
             with inflight_lock:
-                self._inflight_sessions.pop(session_key, None)
+                slot = self._inflight_sessions.get(session_key)
+                if slot is None:
+                    slot = self._inflight_sessions[session_key] = _SessionFlight(intent)
+                    return slot, True
+                if slot.intent == intent:
+                    return slot, False
+            # A forced fresh creation must not inherit an ordinary lookup's old conversation.
+            # Wait outside both locks, then make its own routing decision against current state.
+            slot.event.wait()
 
     def _get_or_create_session_impl(
         self, source: SessionSource, force_new: bool = False, touch_activity: bool = True,
+        *, create_request_id: str | None = None,
     ) -> SessionEntry:
         """One routing transition for the single-flight owner. All blocking I/O (SQLite SELECTs,
         index rewrite + fsync, recovery queries) runs *outside* ``self._lock``, which protects
@@ -982,7 +996,7 @@ class SessionStore(
         create_kwargs = None
         if decision.entry is None:
             create_kwargs = self._route_create(
-                decision, session_key, source, now, force_new, observed
+                decision, session_key, source, now, force_new, observed, create_request_id=create_request_id,
             )
         try:
             if decision.needs_save:
@@ -1074,11 +1088,15 @@ class SessionStore(
 
     def _route_create(
         self, decision: _RouteDecision, session_key: str, source: SessionSource, now: datetime,
-        force_new: bool, observed: Optional[SessionEntry],
+        force_new: bool, observed: Optional[SessionEntry], *, create_request_id: str | None = None,
     ) -> Optional[dict[str, Any]]:
         """Create a candidate outside the lock and publish it only if the key is still vacant;
         returns ``create_session`` kwargs when the candidate won."""
-        session_id = _new_session_id(now)
+        if create_request_id is None:
+            session_id = _new_session_id(now)
+        else:
+            import uuid
+            session_id = 'new-' + uuid.uuid5(uuid.NAMESPACE_URL, session_key + '\n' + create_request_id).hex
         candidate = SessionEntry(
             session_key=session_key, session_id=session_id, created_at=now, updated_at=now,
             origin=source, display_name=source.chat_name, platform=source.platform,

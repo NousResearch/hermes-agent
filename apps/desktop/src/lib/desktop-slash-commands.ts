@@ -72,6 +72,7 @@ export type DesktopActionId =
   | 'history'
   | 'import'
   | 'journey'
+  | 'archive'
   | 'new'
   | 'palette'
   | 'pet'
@@ -201,6 +202,7 @@ const rpc = (
  */
 const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   // Local client actions
+  { name: '/archive', description: 'Preserve and archive this chat', surface: action('archive') },
   { name: '/new', description: 'Start a new desktop chat', aliases: ['/reset', '/clear'], surface: action('new') },
   {
     name: '/stop',

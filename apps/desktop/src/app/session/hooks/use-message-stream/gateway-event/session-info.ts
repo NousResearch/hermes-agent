@@ -32,6 +32,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
+import { noteSessionViewerIdle } from '@/store/session-viewer-lifecycle'
 import { reportInstallMethodWarning } from '@/store/updates'
 
 import {
@@ -153,6 +154,10 @@ function reconcileSessionInfoPendingSubmissions(ctx: GatewayEventContext): void 
   }
 }
 
+function observeIdleSessionInfo({ explicitSid, payload }: GatewayEventContext): void {
+  if (explicitSid && payload?.running === false) { noteSessionViewerIdle(explicitSid) }
+}
+
 /** session.info / session.usage / session.title. */
 export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, explicitSid, isActiveEvent, occurredAt, fromActiveSource } = ctx
@@ -169,6 +174,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   } = deps
 
   if (event.type === 'session.info') {
+    observeIdleSessionInfo(ctx)
     // A rebuilt runtime (mid-conversation model/provider switch) speaks under
     // a NEW session_id. Before scoping anything by isActiveEvent, check
     // whether this event is the rebuilt runtime announcing itself for the

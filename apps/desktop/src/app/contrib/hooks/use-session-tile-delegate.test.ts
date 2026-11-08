@@ -10,7 +10,7 @@ import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/
 import { $notifications } from '@/store/notifications'
 import { $cronRunReadOnlyVerdicts, recordCronRunVerdict } from '@/store/read-only-transcript'
 import { $activeSessionId, setSessionOwnerHint, setSessions } from '@/store/session'
-import { $sessionTiles, sessionTileDelegate } from '@/store/session-states'
+import { $sessionTiles, clearAllSessionStates, closeSessionTile, publishSessionState, sessionTileDelegate } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
@@ -28,11 +28,12 @@ vi.mock('@/store/confirm', () => ({ confirm: vi.fn(async () => false) }))
 vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
   requestGatewayForAgent: vi.fn(),
-  requestGatewayForProfile: vi.fn()
+  requestGatewayForProfile: vi.fn(),
+  gatewayRouteState: vi.fn(() => ({ gateway: null }))
 }))
 
 const { getLatestSessionMessages, getSession, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } = await import('@/hermes')
-const { requestGatewayForAgent, requestGatewayForProfile } = await import('@/store/gateway')
+const { gatewayRouteState, requestGatewayForAgent, requestGatewayForProfile } = await import('@/store/gateway')
 const { confirm } = await import('@/store/confirm')
 
 const row = (over: Partial<SessionInfo>): SessionInfo =>
@@ -57,6 +58,7 @@ function renderTile(
   requestGateway: ReturnType<typeof vi.fn>,
   options: {
     branchLoadedSession?: ReturnType<typeof vi.fn>
+    executeSlashCommand?: ReturnType<typeof vi.fn>
     runtimeIdByStoredSessionIdRef?: { current: Map<string, string> }
     sessionStateByRuntimeIdRef?: { current: Map<string, unknown> }
     updateSessionState?: ReturnType<typeof vi.fn>
@@ -67,7 +69,7 @@ function renderTile(
       archiveSession: vi.fn(async () => undefined),
       branchLoadedSession: (options.branchLoadedSession ?? vi.fn(async () => false)) as never,
       branchStoredSession: vi.fn(async () => undefined),
-      executeSlashCommand: vi.fn(async () => undefined) as never,
+      executeSlashCommand: (options.executeSlashCommand ?? vi.fn(async () => false)) as never,
       removeSession: vi.fn(async () => undefined),
       requestGateway: requestGateway as never,
       runtimeIdByStoredSessionIdRef: (options.runtimeIdByStoredSessionIdRef ?? { current: new Map() }) as never,
@@ -78,6 +80,63 @@ function renderTile(
 }
 
 describe('useSessionTileDelegate resumeTile', () => {
+  it('forwards command scope and retry identity and returns refusal', async () => {
+    const executeSlashCommand = vi.fn(async () => false)
+    renderTile(vi.fn(), { executeSlashCommand })
+    const options = { composerScope: 'stored-A', submission_id: 'retry-A' }
+    expect(await sessionTileDelegate()!.executeSlash('/new', 'runtime-A', options)).toBe(false)
+    expect(executeSlashCommand).toHaveBeenCalledWith('/new', { sessionId: 'runtime-A', ...options })
+  })
+  it('reattaches a warm cached runtime when reopening after detach completed', async () => {
+    clearAllSessionStates()
+    const request = vi.fn(async () => ({ detached: true }))
+    vi.mocked(gatewayRouteState).mockReturnValue({ gateway: { request }, open: true, key: 'warm-source:bot' } as never)
+    const ownerRoute = { connectionId: 'warm-source', profile: 'warm-bot' }
+    const cached = { ...createClientSessionState('stored-warm'), messages: [{ id: 'm', role: 'assistant' as const, parts: [textPart('cached')] }] }
+    $sessionTiles.set([{ storedSessionId: 'stored-warm', runtimeId: 'warm-runtime', ownerRoute }])
+    publishSessionState('warm-runtime', cached)
+    closeSessionTile('stored-warm')
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+    $sessionTiles.set([{ storedSessionId: 'stored-warm', ownerRoute }])
+    publishSessionState('warm-runtime', cached)
+    vi.mocked(requestGatewayForAgent).mockClear().mockResolvedValueOnce({ session_id: 'warm-runtime', running: false, messages: [] } as never)
+    renderTile(vi.fn(), {
+      runtimeIdByStoredSessionIdRef: { current: new Map([['stored-warm', 'warm-runtime']]) },
+      sessionStateByRuntimeIdRef: { current: new Map([['warm-runtime', cached]]) }
+    })
+
+    try {
+      await sessionTileDelegate()!.resumeTile('stored-warm')
+      expect(requestGatewayForAgent).toHaveBeenCalledWith('warm-source', 'warm-bot', 'session.resume', expect.objectContaining({ session_id: 'stored-warm' }))
+    } finally {
+      vi.mocked(gatewayRouteState).mockReturnValue({ gateway: null } as never)
+      clearAllSessionStates()
+      $sessionTiles.set([])
+    }
+  })
+  it('detaches an idle cold resume that finishes after its tab closed', async () => {
+    clearAllSessionStates()
+    const request = vi.fn(async () => ({ detached: true }))
+    vi.mocked(gatewayRouteState).mockReturnValue({ gateway: { request }, open: true, key: 'source:bot' } as never)
+    const ownerRoute = { connectionId: 'cold-source', profile: 'cold-bot' }
+    $sessionTiles.set([{ storedSessionId: 'stored-cold', ownerRoute }])
+    let finish!: (value: unknown) => void
+    vi.mocked(requestGatewayForAgent).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    renderTile(vi.fn())
+
+    try {
+      const resumed = sessionTileDelegate()!.resumeTile('stored-cold', { authoritativeSnapshot: true })
+      await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+      closeSessionTile('stored-cold')
+      finish({ session_id: 'cold-runtime', running: false, messages: [] })
+      await resumed
+      await vi.waitFor(() => expect(request).toHaveBeenCalledWith('session.detach', { session_id: 'cold-runtime', profile: 'cold-bot' }))
+    } finally {
+      vi.mocked(gatewayRouteState).mockReturnValue({ gateway: null } as never)
+      clearAllSessionStates()
+      $sessionTiles.set([])
+    }
+  })
   beforeEach(() => {
     clearSingleFlightSessionResumeState()
     setSessions([])

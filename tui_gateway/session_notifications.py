@@ -329,24 +329,27 @@ def _loop_route_is_gateway_chat(state) -> bool:
     return bool(route.get("platform") and route.get("chat_id"))
 
 
-def _session_owns_live_wakeup_schedule(session: dict) -> bool:
+def _session_owns_live_wakeup_schedule(session: dict, *, strict: bool = False) -> bool:
     """True while THIS process's notification poller is the only driver of an active /loop or /heartbeat for
     ``session`` — the reapers must then keep the detached session (and with it the poller) alive, or the schedule
     freezes until a client reattaches. Gateway-routed schedules are fired by the gateway, so they never pin the
     session here. Bounded: a loop pauses at its tick budget and a stopped/paused schedule releases the session.
-    Fail-open to False: an unreadable store must not make a session unreapable."""
+    Default reaper reads fail open; strict viewer retirement propagates unavailable/corrupt state."""
     if not (sid_key := session.get("session_key") or ""):
         return False
     try:
         from hermes_cli.heartbeat import HeartbeatManager
         from hermes_cli.loops import LoopManager
         with _session_profile_runtime_scope(session, hydrate_secrets=False):
-            loop = LoopManager(session_id=sid_key)
+            strict_read = {"strict": True} if strict else {}
+            loop = LoopManager(session_id=sid_key, **strict_read)
             if loop.is_active() and not _loop_route_is_gateway_chat(loop.state):
                 return True
-            heartbeat = HeartbeatManager(session_id=sid_key)
+            heartbeat = HeartbeatManager(session_id=sid_key, **strict_read)
             return heartbeat.is_active() and not _notif_gateway_owns_heartbeat(session, sid_key)
     except Exception:
+        if strict:
+            raise
         logger.debug("wakeup-schedule check failed for %s", sid_key, exc_info=True)
         return False
 

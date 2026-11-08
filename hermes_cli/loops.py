@@ -274,11 +274,16 @@ def _parse_state(raw: str, session_id: str = "") -> Optional[LoopState]:
         return None
 
 
-def load_loop(session_id: str) -> Optional[LoopState]:
+def load_loop(session_id: str, *, strict: bool = False) -> Optional[LoopState]:
     """Load the loop for a session, or None if none exists."""
     db = _get_session_db() if session_id else None
     if db is None:
+        if strict:
+            raise RuntimeError("Loop state store is unavailable")
         return None
+    if strict:
+        raw = db.get_meta(_meta_key(session_id))
+        return LoopState.from_json(raw) if raw is not None else None
     raw = _db_op("get_meta", lambda: db.get_meta(_meta_key(session_id)))
     return _parse_state(raw, session_id) if raw else None
 
@@ -391,9 +396,9 @@ class LoopManager:
     evaluate the finished turn, and ``status_line()``.
     """
 
-    def __init__(self, session_id: str):
+    def __init__(self, session_id: str, *, strict: bool = False):
         self.session_id = session_id
-        self._state: Optional[LoopState] = load_loop(session_id)
+        self._state: Optional[LoopState] = load_loop(session_id, strict=True) if strict else load_loop(session_id)
 
     @property
     def state(self) -> Optional[LoopState]:

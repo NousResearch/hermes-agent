@@ -485,6 +485,39 @@ export interface ProjectFacts {
   verifyCommands: string[]
   contextFiles: string[]
 }
+export interface SessionCloseoutParams {
+  profile?: string | null
+  session_id: string
+  request_id: string
+  intent: 'archive' | 'new'
+}
+export interface SessionCloseoutResult {
+  closeout_id: string
+  status: 'reviewing' | 'preserved' | 'failed'
+  settled: boolean
+  old: CloseoutOldSession
+  receipt_id?: string | null
+  destinations: CloseoutDestinations
+  archived: boolean
+  next_create_request_id: string
+  memory_source_id?: string | null
+  task_ids?: string[]
+  error?: CloseoutError | null
+}
+export interface CloseoutOldSession {
+  logical_session_id: string
+  stored_session_id: string
+  runtime_id?: string | null
+  profile: string
+}
+export interface CloseoutDestinations {
+  memory: 'accepted' | 'skipped' | 'pending' | 'unknown'
+  tasks: 'reconciled' | 'pending' | 'unknown'
+}
+export interface CloseoutError {
+  code: string
+  message: string
+}
 /** ``key`` selects one getter from ``_CONFIG_GETTERS``; ``cwd`` feeds the ``project`` getter, ``session_id`` lets ``reasoning`` / ``fast`` answer with the session's live pin. */
 export interface ConfigGetParams {
   profile?: string | null
@@ -3478,6 +3511,13 @@ export interface SessionCwdSetResult {
   lazy?: boolean | null
   [key: string]: unknown
 }
+export interface LegacySessionDetachParams {
+  session_id: string
+  profile?: string | null
+}
+export interface LegacySessionDetachResult {
+  detached: boolean
+}
 export interface SessionCloseParams {
   session_id: string
   profile?: string | null
@@ -5647,6 +5687,19 @@ export interface DisplayInstallSudoParams {
   session_id: string
   profile_key: string
 }
+export interface SessionCloseoutUpdated {
+  closeout_id: string
+  status: 'reviewing' | 'preserved' | 'failed'
+  settled: boolean
+  old: CloseoutOldSession
+  receipt_id?: string | null
+  destinations: CloseoutDestinations
+  archived: boolean
+  next_create_request_id: string
+  memory_source_id?: string | null
+  task_ids?: string[]
+  error?: CloseoutError | null
+}
 /** ``methods_connectors._connection_update``: one target transition (``target``/``from``/``to``/ ``actor``) or the settlement (none of those), with the full snapshot. */
 export interface ConnectionUpdatePayload {
   op_id: string
@@ -6511,6 +6564,8 @@ export interface RpcMethods {
   'session.branch_whole': { params: SessionBranchWholeParams; result: SessionBranchWholeResult }
   /** Tear down a live session (its stored row stays resumable). */
   'session.close': { params: SessionCloseParams; result: SessionCloseResult }
+  /** Preserve one exact conversation, archive it recoverably, and return a durable receipt. Retries read the same operation; pending online destinations do not imply accepted saves. New-chat creation uses the returned stable request id and never resets the archived root. */
+  'session.closeout': { params: SessionCloseoutParams; result: SessionCloseoutResult }
   /** Manual /compress of an idle session, optionally focused on a topic. */
   'session.compress': { params: SessionCompressParams; result: SessionCompressResult }
   /** Cursor-style split of the context window by category. */
@@ -6525,6 +6580,8 @@ export interface RpcMethods {
   'session.cwd.set': { params: SessionCwdSetParams; result: SessionCwdSetResult }
   /** Delete a stored session + transcripts; refused while it is live here. */
   'session.delete': { params: SessionDeleteParams; result: SessionDeleteResult }
+  /** Detach only this transport's viewer; refuse last-viewer retirement while work is unfinished. The orphan grace reclaims a settled runtime without ending its stored conversation. */
+  'session.detach': { params: LegacySessionDetachParams; result: LegacySessionDetachResult }
   /** Replay events after a seq watermark on WS reconnect; truncated means refetch state. */
   'session.events.since': { params: SessionEventsSinceParams; result: SessionEventsSinceResult }
   /** Replay-buffer occupancy telemetry (ops/debug). */
@@ -6854,6 +6911,7 @@ export const RPC_METHODS = [
   'session.branch_stored',
   'session.branch_whole',
   'session.close',
+  'session.closeout',
   'session.compress',
   'session.context_breakdown',
   'session.control',
@@ -6861,6 +6919,7 @@ export const RPC_METHODS = [
   'session.create',
   'session.cwd.set',
   'session.delete',
+  'session.detach',
   'session.events.since',
   'session.events.stats',
   'session.foreign.import',
@@ -6989,6 +7048,8 @@ export interface CanonicalRpcMethods {
   'runtime.describe': { params: RuntimeDescribeParams; result: RuntimeDescribeResult }
   /** The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row. */
   'session.automation': { params: SessionAutomationParams; result: SessionAutomationResult }
+  /** Preserve one exact conversation, archive it recoverably, and return a durable receipt. Retries read the same operation; pending online destinations do not imply accepted saves. New-chat creation uses the returned stable request id and never resets the archived root. */
+  'session.closeout': { params: SessionCloseoutParams; result: SessionCloseoutResult }
   'session.create': { params: CanonicalCreateParams; result: CanonicalSnapshot }
   /** Drop this connection's subscription; a stale subscription id answers detached=false. end_reason (snake_case): the viewer is closing the conversation; the last viewer leaving an idle local session ends its row with that reason. */
   'session.detach': { params: SessionDetachParams; result: SessionDetachResult }
@@ -7051,6 +7112,7 @@ export const CANONICAL_RPC_METHODS = [
   'rollback.session_diff',
   'runtime.describe',
   'session.automation',
+  'session.closeout',
   'session.create',
   'session.detach',
   'session.events.since',
@@ -7221,6 +7283,7 @@ export interface BackendGatewayEventMap {
   'request.cancel': RequestCancelPayload
   /** Background review of the last turn finished. */
   'review.summary': ReviewSummaryPayload
+  'session.closeout.updated': SessionCloseoutUpdated
   /** Persisted goal / loop / heartbeat state changed. */
   'session.control.update': SessionControlUpdatePayload
   /** Live session settings snapshot (``server._session_info``); also the ``info`` of create/resume/activate. */
@@ -7333,6 +7396,7 @@ export const GATEWAY_EVENT_TYPES = [
   'reasoning.delta',
   'request.cancel',
   'review.summary',
+  'session.closeout.updated',
   'session.control.update',
   'session.info',
   'session.reclaimed',

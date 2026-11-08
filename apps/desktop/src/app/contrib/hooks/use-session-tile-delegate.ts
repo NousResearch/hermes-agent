@@ -36,6 +36,7 @@ import {
   sessionTileOwnerRoute,
   setSessionTileDelegate
 } from '@/store/session-states'
+import { releaseResumedSessionViewer, sessionViewerNeedsAttach } from '@/store/session-viewer-lifecycle'
 import type { SessionResumeResult } from '@/types/hermes'
 
 import { refreshCronRunWriteGate } from '../../cron/open-cron-run'
@@ -155,7 +156,7 @@ function mergeTileTranscript(
 }
 
 interface SessionTileDelegateParams {
-  archiveSession: (storedSessionId: string) => Promise<unknown>
+  archiveSession: ReturnType<typeof useSessionActions>['archiveSession']
   branchLoadedSession: ReturnType<typeof useSessionActions>['branchLoadedSession']
   branchStoredSession: (storedSessionId: string) => Promise<unknown>
   executeSlashCommand: ReturnType<typeof usePromptActions>['executeSlashCommand']
@@ -238,9 +239,7 @@ export function useSessionTileDelegate({
     }
 
     setSessionTileDelegate({
-      archiveSession: async storedSessionId => {
-        await archiveSession(storedSessionId)
-      },
+      archiveSession: (storedSessionId, options) => archiveSession(storedSessionId, options),
       branchSession: async storedSessionId => {
         await branchStoredSession(storedSessionId)
       },
@@ -267,7 +266,7 @@ export function useSessionTileDelegate({
         await removeSession(storedSessionId)
       },
       executeSlash: async (rawCommand, sessionId, options) => {
-        await executeSlashCommand(rawCommand, { sessionId, ...options })
+        return await executeSlashCommand(rawCommand, { sessionId, ...options })
       },
       // The picker's wire (config.set model), always --session (never the profile default), with a
       // guarded target asked through the ONE shared confirm flow and awaited: true only once the switch
@@ -407,7 +406,7 @@ export function useSessionTileDelegate({
         // warm snapshot is whatever the tile last painted, and cron bot-chat
         // deliveries that landed while the panel's WS was down never arrive
         // as realtime events (#96183).
-        if (existing && isWarmTileState(cached, storedSessionId) && !refreshTranscript && !authoritativeSnapshot) {
+        if (existing && !sessionViewerNeedsAttach(existing) && isWarmTileState(cached, storedSessionId) && !refreshTranscript && !authoritativeSnapshot) {
           publishSessionState(existing, cached)
 
           return existing
@@ -426,7 +425,7 @@ export function useSessionTileDelegate({
           ? Promise.resolve(null)
           : getLatestSessionMessages(storedSessionId, restScope).catch(() => null)
 
-        if (!authoritativeSnapshot && existing && isWarmTileState(cached, storedSessionId)) {
+        if (!authoritativeSnapshot && existing && !sessionViewerNeedsAttach(existing) && isWarmTileState(cached, storedSessionId)) {
           const prefetch = await prefetchPromise
 
           // A long turn can push every rendered row off the newest page; read
@@ -524,6 +523,8 @@ export function useSessionTileDelegate({
         if (!runtimeId) {
           throw new Error('resume returned no session id')
         }
+
+        releaseResumedSessionViewer(resumed, storedSessionId, owner)
 
         const currentBinding = boundTileRuntimeId(runtimeIdByStoredSessionIdRef, storedSessionId)
 

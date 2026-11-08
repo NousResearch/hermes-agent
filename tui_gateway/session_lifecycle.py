@@ -119,10 +119,12 @@ def _install_borrowed_lease(sid: str, session: dict, frame: dict) -> None:
 
 
 def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
-    """Claim this session's cap slot on its first real turn; None when ok. session.create/resume deliberately
-    do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
-    that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible. An
-    inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream."""
+    """Claim this conversation's writer ownership on its first real turn; None when ok.
+
+    Create/resume retain lazy ownership semantics. Idle ownership is independent of
+    the host execution budget acquired by prompt_turn for each actual worker.
+    Borrowed writer tokens are already held upstream.
+    """
     if (canonical := _canonical_ledger_refusal(session)) is not None:
         return canonical
     if session.get("active_session_lease") is not None:

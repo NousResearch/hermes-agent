@@ -1548,12 +1548,6 @@ class _ExtractedResponse:
     pre_extract: str
 
 
-_PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?gateway[.!?\s]*$", re.IGNORECASE),
-    re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?hermes\s+gateway[.!?\s]*$", re.IGNORECASE),
-    re.compile(r"^(?:please\s+)?restart\s+hermes[.!?\s]*$", re.IGNORECASE))
-
-
 def coerce_plaintext_gateway_command(event: MessageEvent) -> None:
     """Rewrite a tiny set of DM plaintext admin phrases (exact matches only) into slash commands so
     ``restart gateway`` never reaches the LLM/tool path (a self-restart from inside the running
@@ -1561,13 +1555,12 @@ def coerce_plaintext_gateway_command(event: MessageEvent) -> None:
     with contextlib.suppress(Exception):
         if event is None or event.message_type != MessageType.TEXT:
             return
-        text = (event.text or "").strip()
-        if not text or text.startswith("/"):
-            return
-        if getattr(getattr(event, "source", None), "chat_type", None) != "dm":
-            return
-        if any(pattern.match(text) for pattern in _PLAINTEXT_GATEWAY_RESTART_PATTERNS):
-            event.text = "/restart"
+        from gateway.platforms.base_commands import plaintext_gateway_command
+        command = plaintext_gateway_command(event.text or '',
+            archive_allowed=event.allow_gateway_control and not event.internal,
+            is_dm=getattr(getattr(event, 'source', None), 'chat_type', None) == 'dm')
+        if command:
+            event.text = command
 
 
 @dataclass

@@ -1,6 +1,7 @@
 import { isMissingRestEndpoint, isUnroutedRestPath } from '@/lib/gateway-rpc'
 import { maybeBackfillLegacySessionOwners } from '@/lib/legacy-session-owner-backfill'
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
+import { broadcastSessionRestored } from '@/store/session-sync'
 import { pageHonorsLatestOrder, recordTranscriptTail } from '@/store/transcript-tail'
 import type {
   PaginatedSessions,
@@ -424,7 +425,21 @@ function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: R
 }
 
 export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return mutateSessionHttp(id, 'PATCH', { archived, ...(archived ? { pinned: false } : {}) }, sessionWriteProfile(profile))
+  const writeProfile = sessionWriteProfile(profile)
+  const connectionId = ambientOwnerConnectionId() ?? null
+  const restored = () => broadcastSessionRestored(id, connectionId, writeProfile || 'default')
+
+  if (!archived) {
+    restored()
+  }
+
+  return mutateSessionHttp<{ ok: boolean }>(id, 'PATCH', { archived, ...(archived ? { pinned: false } : {}) }, writeProfile).then(result => {
+    if (!archived) {
+      restored()
+    }
+
+    return result
+  })
 }
 
 export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: string | null): Promise<{ ok: boolean }> {

@@ -1,16 +1,66 @@
 import { beforeEach, expect, it, vi } from 'vitest'
 
 import type * as ClientApi from './client'
+const closeoutRequest = vi.hoisted(() => vi.fn())
+vi.mock('@/store/gateway', async original => ({
+  ...await original<object>(),
+  requestGatewayForAgent: (_connection: string, _profile: string, method: string, params: object) => closeoutRequest(method, params)
+}))
 
 vi.mock('@/lib/legacy-session-owner-backfill', () => ({ maybeBackfillLegacySessionOwners: vi.fn() }))
 vi.mock('@/store/transcript-tail', () => ({ recordTranscriptTail: vi.fn() }))
 vi.mock('./client', async importOriginal => ({
   ...await importOriginal<typeof ClientApi>(), hermesApi: vi.fn()
 }))
-import { hermesApi, setApiRequestConnection, setApiRequestProfile } from './client'
+import { captureCloseoutTarget, requestSessionCloseout } from '@/store/session-closeout'
+
+import { hermesApi, setApiRequestConnection, setApiRequestLocalMode, setApiRequestProfile } from './client'
 import { deleteSession, renameSession, setSessionArchived, setSessionPinnedRemote, setSessionUnreadRemote } from './sessions'
 
-beforeEach(() => { vi.mocked(hermesApi).mockReset(); setApiRequestConnection('owner'); setApiRequestProfile('work') })
+beforeEach(() => { vi.mocked(hermesApi).mockReset(); setApiRequestConnection('owner'); setApiRequestProfile('work'); setApiRequestLocalMode(false) })
+
+const preserved = (id: string) => ({
+  closeout_id: `close-${id}`, status: 'preserved', settled: false, archived: true,
+  old: { logical_session_id: id, stored_session_id: id, profile: 'work' },
+  receipt_id: 'durable', next_create_request_id: 'next-id', destinations: { memory: 'pending', tasks: 'pending' }
+})
+
+const closeoutTarget = (id: string, request: ReturnType<typeof vi.fn>, connectionId = 'owner') => captureCloseoutTarget(id, request as never, {
+  destination: { owner: { connectionId, profile: 'work' }, scopeKey: `${connectionId}:work`, requestGateway: request as never }
+})
+
+it.each(['owner', 'local'])('a shared restore on %s retires an uncertain committed closeout identity before new work is archived', async connectionId => {
+  setApiRequestConnection(connectionId === 'local' ? null : connectionId)
+  setApiRequestLocalMode(connectionId === 'local')
+  vi.mocked(hermesApi).mockResolvedValue({ ok: true, exists: true, runtime_revision: 2, runtime_generation: 1 } as never)
+  const request = closeoutRequest.mockReset().mockRejectedValueOnce(new Error('committed but response lost')).mockResolvedValue(preserved('restore-lost'))
+  await expect(requestSessionCloseout(closeoutTarget('restore-lost', request, connectionId))).rejects.toThrow('response lost')
+  await setSessionArchived('restore-lost', false, 'work')
+  await requestSessionCloseout(closeoutTarget('restore-lost', request, connectionId))
+  expect(request.mock.calls[1]![1].request_id).not.toBe(request.mock.calls[0]![1].request_id)
+})
+
+it('a shared restore fences a pending closeout response and cannot clear a later explicit request', async () => {
+  vi.mocked(hermesApi).mockResolvedValue({ ok: true, exists: true, runtime_revision: 2, runtime_generation: 1 } as never)
+  let finish!: (value: unknown) => void
+  let finishFresh!: (value: unknown) => void
+
+  const request = closeoutRequest.mockReset()
+    .mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    .mockImplementationOnce(() => new Promise(resolve => { finishFresh = resolve }))
+
+  const old = requestSessionCloseout(closeoutTarget('restore-pending', request))
+  const rejected = expect(old).rejects.toThrow(/restor|reopen/i)
+  await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+  await setSessionArchived('restore-pending', false, 'work')
+  const fresh = requestSessionCloseout(closeoutTarget('restore-pending', request))
+  finish(preserved('restore-pending'))
+  await rejected
+  expect(requestSessionCloseout(closeoutTarget('restore-pending', request))).toBe(fresh)
+  finishFresh(preserved('restore-pending'))
+  await fresh
+  expect(request.mock.calls[1]![1].request_id).not.toBe(request.mock.calls[0]![1].request_id)
+})
 
 it('concurrent equal sidebar edits share the missing-snapshot verdict on older standalone servers', async () => {
   vi.mocked(hermesApi).mockImplementation(async request => {

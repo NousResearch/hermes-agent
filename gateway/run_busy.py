@@ -335,24 +335,12 @@ class GatewayBusySessionMixin:
             logger.debug("goal continuation: active-state recheck failed: %s", exc)
             return False
 
-    def _get_max_concurrent_sessions(self) -> Optional[int]:
-        """Return the configured active chat session cap, if enabled."""
-        try:
-            from hermes_cli.active_sessions import resolve_max_concurrent_sessions
-            return resolve_max_concurrent_sessions(getattr(self, "config", None))
-        except Exception:
+    def _active_session_limit_message(self, session_key: str, *, profile_home=None) -> Optional[str]:
+        """Preflight the shared host execution budget, without reserving a second pool."""
+        if self._is_session_running(session_key):
             return None
-
-    def _active_session_limit_message(self, session_key: str) -> Optional[str]:
-        """Return a user-facing rejection when starting a new session exceeds the cap."""
-        max_sessions = self._get_max_concurrent_sessions()
-        if max_sessions is None or self._is_session_running(session_key):
-            return None
-        active_count = self._running_agent_count()
-        if active_count < max_sessions:
-            return None
-        from hermes_cli.active_sessions import active_session_limit_message
-        return active_session_limit_message(active_count, max_sessions)
+        from hermes_cli.execution_budget import execution_capacity_refusal
+        return execution_capacity_refusal(profile_home=profile_home)
 
     def _claim_active_session_slot(
         self, session_key: str, source: SessionSource
@@ -360,7 +348,8 @@ class GatewayBusySessionMixin:
         """Claim a cross-process active-session slot for a new gateway turn."""
         if self._is_session_running(session_key):
             return None, None
-        limit_message = self._active_session_limit_message(session_key)
+        limit_message = self._active_session_limit_message(
+            session_key, profile_home=self._resolve_profile_home_for_source(source))
         if limit_message is not None:
             return None, limit_message
         try:
@@ -1049,7 +1038,7 @@ class GatewayBusySessionMixin:
     _PLAIN_COMMANDS = (
         "status", "context", "restart", "approve", "deny", "pause", "discard", "agents", "bg", "btw",
         "kanban", "subgoal", "heartbeat", "busy", "yolo", "verbose", "footer", "help",
-        "commands", "profile", "login", "update", "version", "autoprune",
+        "commands", "profile", "login", "update", "version", "autoprune", "archive",
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).
     _IDLE_COMMANDS = (
@@ -1183,6 +1172,10 @@ class GatewayBusySessionMixin:
         return EphemeralReply(t("gateway.stop.stopped"))
 
     async def _busy_new_command(self, event: MessageEvent, quick_key: str, source):
+        if event.get_command() != 'reset':
+            from gateway.session_closeout_native import start_native_closeout
+            await _busy_accepted()
+            return await start_native_closeout(self, event, 'new')
         # /reset and /new bypass the running-agent guard (else they'd queue as user text and replay
         # into the same broken history); clear pending messages so the old text doesn't replay.
         from gateway.run import _INTERRUPT_REASON_RESET
@@ -1193,6 +1186,10 @@ class GatewayBusySessionMixin:
             quick_key, source, interrupt_reason=_INTERRUPT_REASON_RESET, invalidation_reason="new_command",
         )
         return await self._handle_reset_command(event)
+
+    async def _handle_archive_command(self, event):
+        from gateway.session_closeout_native import start_native_closeout
+        return await start_native_closeout(self, event, 'archive')
 
     async def _busy_queue_command(self, event: MessageEvent, quick_key: str, source):
         # Each /queue is its own full agent turn, run FIFO after the current run; never merged.

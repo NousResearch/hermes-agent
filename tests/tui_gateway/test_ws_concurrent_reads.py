@@ -6,11 +6,13 @@ The real ``handle_ws`` dispatcher; only ``_dispatch_request`` is a gated async s
 """
 import asyncio
 import json
+import threading
 
 import pytest
 
 from tui_gateway import server
 from tui_gateway import ws as ws_mod
+from tests.waiting import async_wait_until
 
 
 class Socket:
@@ -152,3 +154,42 @@ async def test_a_failed_read_reply_does_not_cancel_the_running_control(rig):
     await asyncio.wait_for(task, 10)
     assert "cancelled:submit" not in log and "done:submit" in log
     assert log[-1] == "teardown"
+
+
+@pytest.mark.asyncio
+async def test_inline_detach_finishes_before_later_same_socket_resume(monkeypatch):
+    """A reopened tab cannot be detached by its earlier, still-in-flight retirement frame."""
+    sock = Socket()
+    entered, release = threading.Event(), threading.Event()
+    log = []
+
+    def detach(rid, params):
+        log.append("detach-start")
+        entered.set()
+        assert release.wait(10)
+        log.append("detach-end")
+        return server._ok(rid, {"detached": True})
+
+    def resume(rid, params):
+        log.append("resume")
+        return server._ok(rid, {"session_id": "renewed", "messages": [], "message_count": 0, "info": {}})
+
+    monkeypatch.setitem(server._methods, "session.detach", detach)
+    monkeypatch.setitem(server._methods, "session.resume", resume)
+    monkeypatch.setattr(ws_mod, "_start_backend_liveness", lambda: None)
+    monkeypatch.setattr(server, "_ensure_skin_watcher", lambda: None)
+    monkeypatch.setattr(server, "_ensure_lease_watcher", lambda: None)
+    monkeypatch.setattr(server, "_close_sessions_for_transport", lambda *args, **kw: (0, 0))
+    task = asyncio.create_task(ws_mod.handle_ws(sock))
+    sock.inbound.put_nowait({**rpc("detach", "session.detach"), "params": {"session_id": "old"}})
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        sock.inbound.put_nowait({**rpc("resume", "session.resume"), "params": {"session_id": "stored"}})
+        await async_wait_until(lambda: sock.received == 2, what="later resume frame read")
+    finally:
+        release.set()
+    await async_wait_until(lambda: any(frame.get("id") == "resume" for frame in sock.sent),
+                           what="later resume replied")
+    sock.inbound.put_nowait(None)
+    await asyncio.wait_for(task, 10)
+    assert log == ["detach-start", "detach-end", "resume"]

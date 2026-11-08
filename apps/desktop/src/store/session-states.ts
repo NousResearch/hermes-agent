@@ -21,6 +21,7 @@ import { atom, computed } from 'nanostores'
 
 import { setSessionOwnerResolver } from '@/api/client'
 import { routeSessionId } from '@/app/routes'
+import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import {
@@ -83,6 +84,7 @@ import {
   setTileSessionFocusStartedAt,
   setTurnStartedAt
 } from './session'
+import type { SessionCloseoutOptions, SessionCloseoutReceipt } from './session-closeout'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
 import { turnHasReply, withNoReplyNotice } from './session-no-reply'
@@ -96,6 +98,7 @@ import {
 } from './session-request-router'
 import { orderTilesByTree } from './session-tile-order'
 import { ackStoredSessionId, isMessagingCompletion, markSessionUnreadFinished } from './session-unread'
+import { captureSessionViewer, clearSessionViewers, evictable, observeSessionViewer, releaseSessionViewer, runtimeReferenced } from './session-viewer-lifecycle'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
@@ -822,28 +825,6 @@ export function confirmReconnectSettlesExcept(workingStoredIds: ReadonlySet<stri
   }
 }
 
-/** Is any surface on THIS window still holding the runtime — the primary view
- *  or an open tile? (A tile mid-resume references by stored id only; its
- *  runtime binding is patched in after `resumeTile` returns.) */
-function runtimeReferenced(runtimeId: string, storedSessionId: null | string): boolean {
-  if (runtimeId === $activeSessionId.get()) {
-    return true
-  }
-
-  return $sessionTiles
-    .get()
-    .some(t => t.runtimeId === runtimeId || (storedSessionId !== null && t.storedSessionId === storedSessionId))
-}
-
-/** A state no surface needs anymore: its turn is over (not busy, not waiting
- *  on the user) and neither the primary view nor any tile holds the runtime.
- *  `needsInput` states stay — the sidebar's attention dot reads them. */
-function evictable(runtimeId: string, state: ClientSessionState): boolean {
-  return (
-    !state.busy && !state.needsInput && !state.awaitingResponse && !runtimeReferenced(runtimeId, state.storedSessionId)
-  )
-}
-
 /** Publish one session's state. Automatically fires transition side-effects
  *  (watchdog arm/disarm, settle grace, unread marker, compression id rotation)
  *  by diffing previous vs next — callers never need to manually call a
@@ -868,6 +849,7 @@ function evictable(runtimeId: string, state: ClientSessionState): boolean {
 export function publishSessionState(runtimeId: string, state: ClientSessionState) {
   const current = $sessionStates.get()
   const prev = current[runtimeId] ?? null
+  observeSessionViewer(runtimeId, state)
 
   if (prev === state) {
     return
@@ -894,6 +876,7 @@ export function releaseSessionTranscript(runtimeId: string, state?: ClientSessio
   }
 
   const retained = state ?? current[runtimeId]
+  releaseSessionViewer(runtimeId, retained)
 
   // Older persisted snapshots can contain an undefined state or omit the
   // messages field. Treat either shape as already cold instead of throwing
@@ -909,6 +892,7 @@ export function releaseSessionTranscript(runtimeId: string, state?: ClientSessio
 }
 
 export function dropSessionState(runtimeId: string) {
+  releaseSessionViewer(runtimeId)
   // Disarm the watchdog — a dropped runtime must not fire a stale clear later.
   // Settle-grace entries are keyed by stored id and self-expire; leave them so
   // a just-finished session's row survives merge eviction even if its tile or
@@ -938,6 +922,8 @@ export function dropSessionState(runtimeId: string) {
  *  wiped gateway's sessions must not fire stale clears or linger in the
  *  sidebar merge keep-set after the switch. */
 export function clearAllSessionStates() {
+  clearSessionViewers()
+
   for (const timer of sessionWatchdogTimers.values()) {
     clearTimeout(timer)
   }
@@ -2174,7 +2160,7 @@ export function unbindTileRuntime(runtimeId: string) {
 
 export interface SessionTileDelegate {
   /** Archive a stored session (the sidebar's archive, incl. tile cleanup). */
-  archiveSession(storedSessionId: string): Promise<void>
+  archiveSession(storedSessionId: string, options?: SessionCloseoutOptions): Promise<SessionCloseoutReceipt | undefined | void>
   /** Branch a stored session into a new chat (the sidebar's branch). */
   branchSession(storedSessionId: string): Promise<void>
   /** Branch a tile's live transcript through the clicked message. */
@@ -2182,7 +2168,7 @@ export interface SessionTileDelegate {
   /** Delete a stored session (the sidebar's delete, incl. tile cleanup). */
   deleteSession(storedSessionId: string): Promise<void>
   /** Run a slash command against a tile's session (app-level effects, e.g. branch/handoff, act on the main surface). */
-  executeSlash(rawCommand: string, sessionId: string, options?: { typed?: boolean }): Promise<void>
+  executeSlash(rawCommand: string, sessionId: string, options?: SubmitTextOptions & { typed?: boolean }): Promise<boolean>
   /** Interrupt a tile's running turn. */
   interruptSession(runtimeId: string): Promise<void>
   switchSessionModel?(runtimeId: string, model: string, provider: string): Promise<boolean>
@@ -2633,7 +2619,10 @@ export function closeSessionTile(storedSessionId: string) {
     })
   }
 
+  if (tile?.runtimeId) { captureSessionViewer(tile.runtimeId) }
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
+
+  if (tile?.runtimeId) { releaseSessionViewer(tile.runtimeId) }
 
   // A settled session may never publish again, so the publish-time eviction
   // in publishSessionState can't reach it — drop its cached state here. A

@@ -3,7 +3,6 @@ import { mergeUsage, parseCommandDispatch, parseSlashCommand, randomUuid } from 
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { mergeOlderTranscriptPage } from '@/app/chat/transcript-backfill'
-import { prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
@@ -74,6 +73,7 @@ import { remoteBrowserManageRefusal } from './browser-manage-refusal'
 import { adoptPreparedSubmission, preparedSubmissionKey } from './prepared-submissions'
 import { queueKickoffIfSessionBusy } from './queue-if-busy'
 import { resolveTargetSessionId } from './resolve-target-session'
+import { closeoutCommandHandlers } from './slash-closeout'
 import { desktopReadCommandHandlers } from './slash-desktop-commands'
 import { sessionCommandHandlers } from './slash-session-commands'
 import { captureSubmissionDestination } from './submission-destination'
@@ -646,10 +646,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           withSlashOutput
         }),
         ...desktopReadCommandHandlers<SlashActionCtx>({ requestGateway, updateSessionState, withSlashOutput }),
-        new: async () => {
-          prepareDefaultNewSession()
-          startFreshSessionDraft()
-        },
+        ...closeoutCommandHandlers({ activeSessionIdRef, selectedStoredSessionIdRef, getRoutedStoredSessionId, requestGateway, startFreshSessionDraft }, options, () => { submitted = false }),
         branch: async () => {
           await branchCurrentSession()
         },

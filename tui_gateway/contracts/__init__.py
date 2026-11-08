@@ -3,6 +3,7 @@ module is listed here so the generator and the runtime see the same catalog."""
 
 from . import (
     billing_delegation_pets,
+    closeout,
     common,
     config_free_tier_control,
     connectors,

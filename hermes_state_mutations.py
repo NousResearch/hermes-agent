@@ -112,6 +112,9 @@ def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
             stored = (0.0 if value else time.time()) if key == 'unread' else int(value)
             affected.update(db._set_lineage_column_in_transaction(conn, column, session_id, stored))
             result[key] = value
+    if payload.get('archived') is False:
+        from hermes_cli.conversation_closeout_fence import release_fence
+        release_fence(db, session_id, conn=conn)
     return affected, result
 
 

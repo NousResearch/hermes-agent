@@ -97,6 +97,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
+import type { SessionCloseoutOptions } from '@/store/session-closeout'
 import { clearSessionControl } from '@/store/session-control'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
@@ -130,6 +131,7 @@ import {
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
+import { releaseResumedSessionViewer } from '@/store/session-viewer-lifecycle'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos, restoreSessionTodosFromSnapshot } from '@/store/todos'
@@ -154,6 +156,7 @@ import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-r
 
 import { branchThroughRowId } from './branch-boundary'
 import { branchCreateKey } from './branch-create-key'
+import { archiveWithCloseout } from './closeout-archive'
 import type { SessionCreateOverrides } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
 import { captureDisplayHydration } from './display-hydration'
@@ -1496,6 +1499,7 @@ export function useSessionActions({
                 cols: 96,
                 omit_messages: true
               })
+              releaseResumedSessionViewer(activated, storedSessionId, sessionOwner)
             } catch (error) {
               // Compatibility for older backends. Modern backends require
               // session.activate here because it rebinds the live session's
@@ -1982,11 +1986,8 @@ export function useSessionActions({
         let prefetchedTranscriptMessages: ChatMessage[] | null = null
         let prefetchedPage: GraftedTranscriptPage | null = null
 
-        // REST transcript prefetch and the gateway resume RPC are independent
-        // — run them concurrently so a big session's wall time is
-        // max(prefetch, resume) instead of their sum. The prefetch paints the
-        // transcript as soon as it lands; the RPC binds the runtime id.
-        // Watch windows skip the prefetch — lazy resume attaches the live mirror.
+        // Prefetch paints durable history while the independent resume binds its runtime.
+        // Watch windows skip prefetch and attach the live mirror.
         const prefetchPromise =
           watchWindow || options?.authoritativeSnapshot
             ? null
@@ -2004,6 +2005,7 @@ export function useSessionActions({
             ),
           { requiresMessages: options?.authoritativeSnapshot, scope: sessionOwner }
         ).then(resumed => {
+          releaseResumedSessionViewer(resumed, storedSessionId, sessionOwner)
           resumeRuntimeBaselineMessages =
             sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.messages ?? resumeRuntimeBaselineMessages
 
@@ -2033,8 +2035,7 @@ export function useSessionActions({
           prefetchedResult = null
         }
 
-        // A completed read still warms its exact durable scope after navigation.
-        // It must not adopt a runtime or touch the foreground on that path.
+        // A completed read warms its durable scope after navigation without adopting a runtime.
         if (
           prefetchedResult &&
           stored &&
@@ -3237,77 +3238,11 @@ export function useSessionActions({
   )
 
   const archiveSession = useCallback(
-    async (storedSessionId: string) => {
-      clearNotifications()
-
-      const listed = findListedSession(storedSessionId)
-      const archived = listed?.session
-      const stampedProfile = archived?.profile?.trim()
-      const profile = stampedProfile || (await resolveSessionProfile(storedSessionId))
-
-      if (
-        listed &&
-        !stampedProfile &&
-        !profile?.trim() &&
-        $profiles.get().filter(item => item.name.trim()).length > 1
-      ) {
-        notifyError(new Error('Session ownership could not be resolved'), copy.archiveFailed)
-
-        return
-      }
-
-      const wasSelected = selectedStoredSessionIdRef.current === storedSessionId
-      const previousPinned = $pinnedSessionIds.get()
-      // Pins are keyed on the durable lineage-root id; the stored id may be the
-      // live tip after compression. Drop both so the pin can't linger.
-      const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
-      const archivedIds = [storedSessionId, archived?.id, archived?._lineage_root_id]
-
-      // Soft-hide: drop from every sidebar slice immediately, keep the data.
-      dropListedSession(storedSessionId)
-      tombstoneSessions(archivedIds)
-      beginSessionMutation(archivedIds)
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
-
-      if (wasSelected) {
-        startFreshSessionDraft(true)
-      }
-
-      try {
-        await setSessionArchived(storedSessionId, true, profile)
-        // Archived rows never reach the sidebar, so their persisted unread can
-        // only rot. Dropped after the RPC so a failed archive keeps it.
-        forgetSessionUnread(archivedIds, profile)
-        // An archived session is hidden from the sidebar; its tile must go too.
-        const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-        closeSessionTile(storedSessionId)
-
-        if (tiledRuntimeId) {
-          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-          sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
-          dropSessionState(tiledRuntimeId)
-        }
-
-        notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
-      } catch (err) {
-        if (archived) {
-          restoreListedSession(archived, listed?.slice)
-        }
-
-        untombstoneSessions(archivedIds)
-        $pinnedSessionIds.set(previousPinned)
-        notifyError(err, copy.archiveFailed)
-      } finally {
-        endSessionMutation(archivedIds)
-      }
-    },
-    [
-      copy,
-      runtimeIdByStoredSessionIdRef,
-      selectedStoredSessionIdRef,
-      sessionStateByRuntimeIdRef,
-      startFreshSessionDraft
-    ]
+    (storedSessionId: string, options: SessionCloseoutOptions = {}) => archiveWithCloseout(storedSessionId, options, {
+      requestGateway, runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef,
+      selectedStoredSessionIdRef, startFreshSessionDraft, copy
+    }),
+    [copy, requestGateway, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef, sessionStateByRuntimeIdRef, startFreshSessionDraft]
   )
 
   // The Archived view reuses the sidebar row menu; its already-archived rows

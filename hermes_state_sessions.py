@@ -960,6 +960,9 @@ class SessionSessionsMixin:
             row = conn.execute("SELECT archived FROM sessions WHERE id = ?", (session_id,)).fetchone()
             ids = self._set_lineage_column_in_transaction(
                 conn, "archived", session_id, int(archived), extra_set_sql=", auto_archived = 0")
+            if not archived:
+                from hermes_cli.conversation_closeout_fence import release_fence
+                release_fence(self, session_id, conn=conn)
             return ids, bool(archived and ids and row is not None and not row[0])
         ids, newly_archived = self._execute_write(_do)
         if newly_archived and notify:

@@ -32,6 +32,7 @@ import {
   rekeySessionTile,
   releaseSessionTranscript
 } from '@/store/session-states'
+import { releaseSessionViewer } from '@/store/session-viewer-lifecycle'
 
 import type { ClientSessionState } from '../../types'
 import { SessionStateCache } from '../session-state-cache'
@@ -146,6 +147,8 @@ export function useSessionStateCache({
         return Boolean(live && (live.busy || live.awaitingResponse))
       },
       onEvict: (runtimeId, state) => {
+        releaseSessionViewer(runtimeId, state)
+
         // Ownership is removed with the transcript, but only if both sides still
         // describe this exact binding. A recycled runtime must not erase its
         // new owner's reverse entry.
@@ -455,6 +458,7 @@ export function useSessionStateCache({
   )
 
   useEffect(() => {
+    for (const [runtimeId, state] of sessionStateCache) { releaseSessionViewer(runtimeId, state) }
     sessionStateCache.prune()
   }, [activeSessionId, parkedTileStoredIds, selectedStoredSessionId, sessionStateCache, sessionTiles])
 

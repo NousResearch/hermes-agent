@@ -164,6 +164,16 @@ function renderSubmitHook({
 }
 
 describe('useComposerSubmit external request routing', () => {
+  it.each(['archive', 'archive this', 'archive the chat'].flatMap(text =>
+    (['main', 'tile:stored-session'] as const).map(scopeTarget => ({ text, scopeTarget }))
+  ))('dispatches the closeout phrase $text immediately on busy $scopeTarget', async ({ text, scopeTarget }) => {
+    const h = renderSubmitHook({ busy: true, scopeTarget, text })
+    act(() => h.hook.result.current.submitDraft())
+    await waitFor(() => expect(h.onSubmit).toHaveBeenCalledWith(text, expect.objectContaining({ composerScope: 'stored-session' })))
+    expect(h.onSteer).not.toHaveBeenCalled()
+    expect(h.queueCurrentDraft).not.toHaveBeenCalled()
+  })
+
   afterEach(() => {
     cleanup()
     clearQueuedPrompts('stored-session')
@@ -734,6 +744,19 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
 
   // SAFETY: the clarify lock path reads only `request` from the gateway.
   const setGateway = (request: ReturnType<typeof vi.fn>) => $gateway.set({ request } as never)
+
+  it.each(['archive', 'archive this', 'archive the chat', '/new', '/archive'])(
+    'dispatches %s without answering or skipping the parked card', async text => {
+      parkClarify('runtime-session')
+      const { hook, onSubmit, onSteer, queueCurrentDraft } = renderSubmitHook({ busy: true, text })
+      act(() => hook.result.current.submitDraft())
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(text, expect.anything()))
+      expect(onSteer).not.toHaveBeenCalled()
+      expect(queueCurrentDraft).not.toHaveBeenCalled()
+      expect(respond).not.toHaveBeenCalled()
+      expect(hasOpenServerRequest('req-runtime-session')).toBe(true)
+    }
+  )
 
   afterEach(() => {
     cleanup()

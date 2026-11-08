@@ -168,6 +168,8 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
             raise RuntimeStoreError('queue_full')
         if _authorize_write is not None:
             _authorize_write(conn)
+        from hermes_cli.conversation_closeout_fence import require_admission
+        require_admission(db, conn, session_id, request_id=request_id)
         admission_id = uuid.uuid4().hex
         conn.execute('''INSERT INTO session_admissions(admission_id,request_id,principal_id,
             target_session_id,lineage_json,payload_json,payload_digest,intent,status,owner_epoch)

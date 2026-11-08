@@ -104,18 +104,25 @@ _META_PREFIX = "heartbeat:"
 _CLAIM_LOCK = threading.Lock()  # every driver of a session's heartbeat runs in its owning gateway process
 
 
-def load_heartbeat(session_id: str) -> Optional[HeartbeatState]:
+def load_heartbeat(session_id: str, *, strict: bool = False) -> Optional[HeartbeatState]:
     db = _get_session_db() if session_id else None
     if db is None:
+        if strict:
+            raise RuntimeError("Heartbeat state store is unavailable")
         return None
     try:
         raw = db.get_meta(_META_PREFIX + session_id)
     except Exception as exc:
+        if strict:
+            raise
         logger.debug("HeartbeatManager: get_meta failed: %s", exc)
         return None
     try:
-        state = HeartbeatState.from_json(raw) if raw else None
+        present = raw is not None if strict else bool(raw)
+        state = HeartbeatState.from_json(raw) if present else None
     except Exception as exc:
+        if strict:
+            raise
         logger.warning("HeartbeatManager: could not parse stored heartbeat for %s: %s", session_id, exc)
         return None
     return None if state is None or state.status == "cleared" else state
@@ -155,9 +162,9 @@ class HeartbeatManager:
     idle; a non-None return is the user-role message to inject.
     """
 
-    def __init__(self, session_id: str):
+    def __init__(self, session_id: str, *, strict: bool = False):
         self.session_id = session_id
-        self._state: Optional[HeartbeatState] = load_heartbeat(session_id)
+        self._state: Optional[HeartbeatState] = load_heartbeat(session_id, strict=True) if strict else load_heartbeat(session_id)
         self._last_claim: Optional[tuple[float, int]] = None  # (last_fired_at, fire_count) before the last due_prompt
 
     @property

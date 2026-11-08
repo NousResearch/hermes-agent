@@ -173,7 +173,7 @@ def test_send_to_platform_honours_configured_base_url(monkeypatch: pytest.Monkey
     kwargs = bot_factory.call_args.kwargs
     assert (kwargs["base_url"], kwargs["base_file_url"]) == ("https://botapi.example/bot",) * 2
     # A custom server is reached directly: the api.telegram.org fallback-IP transport stays off.
-    assert httpx_request_factory.call_args.kwargs["httpx_kwargs"] is None
+    assert "transport" not in httpx_request_factory.call_args.kwargs["httpx_kwargs"]
     bot.send_message.assert_awaited_once()
 
 
@@ -200,3 +200,31 @@ def test_local_bot_api_server_honours_no_proxy_bypass(monkeypatch: pytest.Monkey
     monkeypatch.setenv("NO_PROXY", "localhost")  # the bypass no longer matches: the proxy is used
     asyncio.run(_send_to_platform(Platform.TELEGRAM, pconfig, "123", "hello"))
     assert httpx_request_factory.call_args.kwargs.get("proxy") == "http://proxy.example:3128"
+
+
+def test_standalone_requests_match_the_gateway_adapter_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The standalone Bot gets the gateway's pool size, keepalive limits and TLS context, not a
+    hand-copied subset (HERMES_TELEGRAM_HTTP_POOL_SIZE, platform keepalive, platform_ssl_context)."""
+    import ssl
+    from tools.send_message_tool import _send_telegram
+
+    for var in ("TELEGRAM_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HERMES_TELEGRAM_HTTP_POOL_SIZE", "64")
+    shared = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    monkeypatch.setattr("agent.ssl_verify.platform_ssl_context", lambda: shared)
+    monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+    monkeypatch.setattr("gateway.platforms.base._detect_macos_system_proxy", lambda: None)
+    bot = _make_bot()
+    bot_factory = MagicMock(return_value=bot)
+    httpx_request_factory = MagicMock(side_effect=lambda **kw: MagicMock(_kw=kw))
+    _install_telegram_mock_with_request(monkeypatch, bot_factory, httpx_request_factory)
+
+    extra = {"base_url": "https://botapi.example/bot"}
+    assert asyncio.run(_send_telegram("tok", "123", "hello", extra=extra))["success"] is True
+
+    general, updates = (call.kwargs for call in httpx_request_factory.call_args_list)
+    assert general["connection_pool_size"] == 64
+    assert general["httpx_kwargs"]["verify"] is shared
+    assert general["httpx_kwargs"]["limits"].max_connections == 64
+    assert updates["httpx_kwargs"]["limits"].max_keepalive_connections == 0

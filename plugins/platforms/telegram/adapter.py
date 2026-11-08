@@ -192,8 +192,8 @@ from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, l
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
 from plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, answer_callback, answer_or_note
 from plugins.platforms.telegram.telegram_network import (
-    SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, proxy_target_hosts,
-    tcp_keepalive_socket_options)
+    SEED_FALLBACK_IPS, TelegramFallbackTransport, build_ptb_requests, discover_fallback_ips, parse_fallback_ip_env,
+    proxy_target_hosts)
 from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
 from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
 from utils import env_float, env_int
@@ -2833,47 +2833,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
     async def _build_ptb_requests(self) -> tuple:
         """Build the (general, getUpdates) HTTPXRequest pair: fallback-IP transport, explicit proxy, or
         direct DNS; the getUpdates request is instrumented for polling-progress tracking."""
-        # PTB's pool_timeout=1s default trips "Pool timeout" on flaky networks; safer defaults + env overrides.
-        request_kwargs = {
-            "connection_pool_size": env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 512),
-            "pool_timeout": env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
-            "connect_timeout": env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
-            "read_timeout": env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
-            "write_timeout": env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
-            # PTB routes file requests to media_write_timeout; httpx budgets it per socket write (stall
-            # tolerance, not bandwidth), so 60s rides out congested-link buffer stalls.
-            "media_write_timeout": 60.0,
-        }
-        # CLOSE_WAIT fd leak: PTB's httpx.AsyncClient has no keepalive tuning; inject platform_httpx_limits()
-        # while preserving PTB's max_connections (httpx_kwargs is spread last, so `limits` here wins).
-        # CLOSE_WAIT fd leak (#31599, same class as #18451): PTB's HTTPXRequest builds the underlying
-        # httpx.AsyncClient with `limits = httpx.Limits(max_connections=connection_pool_size)` and *no*
-        # keepalive tuning, so httpx's default keepalive_expiry=5.0 applies. Behind an HTTP proxy
-        # (Cloudflare Warp etc.) a peer-initiated FIN can sit in CLOSE_WAIT longer than that, leaking fds in
-        # the general request pool (_request[1]) which _drain_polling_connections never resets.
-        from gateway.platforms._http_client_limits import platform_httpx_limits
-        _base_limits = platform_httpx_limits()
-        if _base_limits is not None:
-            import httpx as _httpx
-            _pool_limits = _httpx.Limits(
-                max_connections=request_kwargs["connection_pool_size"],
-                max_keepalive_connections=_base_limits.max_keepalive_connections, keepalive_expiry=_base_limits.keepalive_expiry)
-            # A long-poll is continuously active, so keepalive expiry can't protect it from a server-side
-            # close: never hand getUpdates a pooled socket from a previous poll.
-            _updates_limits = _httpx.Limits(
-                max_connections=request_kwargs["connection_pool_size"], max_keepalive_connections=0,
-                keepalive_expiry=_base_limits.keepalive_expiry)
-        else:  # pragma: no cover — httpx always present alongside PTB
-            _pool_limits = _updates_limits = None
-
-        def _with_limits(httpx_kwargs: Optional[dict] = None) -> dict:
-            """Merge tuned limits into httpx client kwargs (proxy/direct branches only; the fallback-IP
-            branch must pass limits straight into the transport — httpx ignores client `limits` then)."""
-            kwargs = dict(httpx_kwargs or {})
-            if _pool_limits is not None and "limits" not in kwargs:
-                kwargs["limits"] = _pool_limits
-            return kwargs
-
         disable_fallback = os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"}
         fallback_ips = [] if disable_fallback else self._fallback_ips()
         if not fallback_ips and not disable_fallback:
@@ -2893,34 +2852,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             "TELEGRAM_PROXY", target_hosts=proxy_target_hosts(self.config.extra.get("base_url"), fallback_ips),
             configured=self.config.extra.get("proxy_url"))
 
-        def _pair(general_httpx: dict, updates_httpx: dict, **extra) -> tuple:
-            return (HTTPXRequest(**request_kwargs, **extra, httpx_kwargs={"verify": platform_ssl_context(), **general_httpx}),
-                    HTTPXRequest(**request_kwargs, **extra, httpx_kwargs={"verify": platform_ssl_context(), **updates_httpx}))
-
-        if fallback_ips and not proxy_url and not disable_fallback:
+        if fallback_ips and not proxy_url:
             logger.info("[%s] Telegram fallback IPs active: %s", self.name, ", ".join(fallback_ips))
-            _transport_kwargs: dict = {"socket_options": tcp_keepalive_socket_options(), "verify": platform_ssl_context()}
-            # Keep request/update pools separate to reduce contention during polling reconnect + bot API
-            # bootstrap/delete_webhook calls. httpx ignores the client-level `limits` kwarg when a custom
-            # `transport` is supplied (#58790). Unlike the proxy/direct branches (which inject limits at the
-            # client level via `_with_limits`), this branch MUST pass the tuned limits directly into
-            # TelegramFallbackTransport so its inner AsyncHTTPTransport instances honour keepalive_expiry —
-            # do not route this through `_with_limits`, httpx would discard it.
-            if _pool_limits is not None:
-                _transport_kwargs["limits"] = _pool_limits
-            _updates_transport_kwargs = dict(_transport_kwargs)
-            if _updates_limits is not None:
-                _updates_transport_kwargs["limits"] = _updates_limits
-            request, get_updates_request = _pair(
-                {"transport": TelegramFallbackTransport(fallback_ips, **_transport_kwargs)},
-                {"transport": TelegramFallbackTransport(fallback_ips, **_updates_transport_kwargs)})
         elif proxy_url:
             logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, safe_proxy_url_for_log(proxy_url))
-            request, get_updates_request = _pair(_with_limits(), {"limits": _updates_limits}, proxy=proxy_url)
-        else:
-            if disable_fallback:
-                logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
-            request, get_updates_request = _pair(_with_limits(), {"limits": _updates_limits})
+        elif disable_fallback:
+            logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
+        request, get_updates_request = build_ptb_requests(
+            HTTPXRequest, fallback_ips=fallback_ips, proxy_url=proxy_url, verify=platform_ssl_context())
         return request, self._instrument_polling_request(get_updates_request)
 
     async def _initialize_app_with_retries(self, builder) -> None:

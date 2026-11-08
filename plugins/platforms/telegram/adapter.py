@@ -183,7 +183,7 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
-from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
+from plugins.platforms.telegram.telegram_resolved_prompt import answer_refusal, edit_keeping_prompt
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
@@ -4764,7 +4764,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         from gateway.approval_actor import approval_refusal, refusal_text
         request_id = self._approval_request_ids.get(approval_id)
         if requester := approval_refusal(session_key, getattr(query.from_user, "id", ""), extra=self.config.extra, request_id=request_id):
-            return await query.answer(text=refusal_text(requester)[:_TOAST_LIMIT], show_alert=True)
+            return await answer_refusal(query, refusal_text(requester)[:_TOAST_LIMIT])
         if not self._approval_state.pop(approval_id, None):  # a concurrent tap claimed it first
             return await query.answer(text=resolved)
         self._approval_request_ids.pop(approval_id, None)

@@ -14,6 +14,27 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Telegram's wording when ``answerCallbackQuery`` arrives after the query's window closed.
+_EXPIRED_QUERY_PHRASES = ("query is too old", "query id is invalid", "response timeout expired")
+
+
+async def answer_refusal(query: Any, text: str) -> None:
+    """Show the requester-refusal alert. A tap on a card old enough that Telegram refuses the
+    answer is dropped quietly: the approval stays pending for its requester either way, and a
+    raise would only fail the update in PTB. Any other answer failure still raises."""
+    try:
+        await query.answer(text=text, show_alert=True)
+    except Exception as exc:
+        if not any(phrase in str(exc).lower() for phrase in _EXPIRED_QUERY_PHRASES):
+            raise
+        try:
+            from telegram.error import BadRequest
+        except ImportError:
+            BadRequest = None
+        if BadRequest is not None and not isinstance(exc, BadRequest):
+            raise
+        logger.debug("Telegram refusal toast dropped: the callback query expired", exc_info=True)
+
 
 async def edit_keeping_prompt(adapter: Any, query: Any, decision: str) -> None:
     """Append *decision* to the prompt and drop its buttons; the adapter's decision-only edit runs when

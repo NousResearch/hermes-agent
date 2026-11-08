@@ -71,3 +71,26 @@ async def test_idle_restart_ack_carries_the_ordinary_reply_routing(monkeypatch, 
     assert sent[0]["reply_to"] is None
     assert sent[0]["metadata"]["thread_id"] == "42"
     assert sent[0]["metadata"]["notify"] is True
+
+
+@pytest.mark.asyncio
+async def test_local_restart_returns_its_ack(monkeypatch, tmp_path):
+    """A LOCAL session (``hermes chat -q "/restart"``) shows the handler's RETURNED reply; its
+    adapter's send is a no-op, so an early send there would leave the ack nowhere."""
+    from types import SimpleNamespace
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    from gateway.session_local import LocalSessionAdapter
+
+    async def send(chat_id, content, **kwargs):
+        return SendResult(success=True, message_id="ack")
+
+    runner, order = _idle_restart(monkeypatch, tmp_path, send)
+    runner.adapters[Platform.LOCAL] = LocalSessionAdapter(SimpleNamespace(runner=runner, sessions={}))
+    source = SessionSource(platform=Platform.LOCAL, chat_id="local-1", user_id="u1", chat_type="dm")
+    event = MessageEvent(text="/restart", message_type=MessageType.TEXT, source=source, message_id="m1")
+
+    result = await runner._handle_message(event)
+
+    assert order == ["restart"]
+    assert result and "Restarting" in result

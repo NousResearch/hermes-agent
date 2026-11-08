@@ -857,3 +857,35 @@ async def test_deleted_anchor_and_dead_topic_media_reply_still_reaches_chat_root
     last = call_log[-1]
     assert (last.get("message_thread_id"), last.get("direct_messages_topic_id"), last.get("reply_to_message_id")) == (None, None, None)
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_err", [FakeTimedOut("Timed out"), FakeRetryAfter(3)])
+async def test_control_message_native_topic_unconfirmed_failure_keeps_binding_and_skips_root(tmp_path, native_err):
+    """A native-topic attempt that may have delivered (timeout) or was refused for load (flood) is not a
+    dead topic: it reaches the caller, sends nothing to the root, and keeps the binding."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="123", user_id="123")
+    db.create_session(session_id="s1", source="telegram", user_id="123")
+    db.bind_telegram_topic(chat_id="123", thread_id="20197", user_id="123", session_key="k", session_id="s1")
+    adapter = _make_adapter()
+    adapter._session_store = SimpleNamespace(_db=db)
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("message_thread_id"):
+            raise FakeBadRequest("Message thread not found")
+        if kwargs.get("direct_messages_topic_id"):
+            raise native_err
+        return SimpleNamespace(message_id=9)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    with pytest.raises(type(native_err)):
+        await adapter._send_control_message(
+            "123", "control", parse_mode=None, thread_id="20197", metadata=dict(_GONE_META))
+
+    assert len(call_log) == 2
+    assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is not None

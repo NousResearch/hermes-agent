@@ -4033,10 +4033,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             if (message_thread_id is not None and self._is_bad_request_error(send_err) and self._is_thread_not_found_error(send_err)):
                 direct = direct_topic_retry_kwargs(kwargs.get("chat_id"), None, None, kwargs)
                 if direct:
-                    with contextlib.suppress(Exception):
+                    try:
                         return await _await_with_thread_deadline(
                             self._bot.send_message(**{**kwargs, **direct}), timeout=_TEXT_SEND_DEADLINE, label="telegram-send",
                             dump_on_blocked_loop=False)
+                    except Exception as direct_err:
+                        # Only a confirmed missing topic moves on: a timeout may have delivered, a flood is not "gone".
+                        if not (self._is_bad_request_error(direct_err) and self._is_thread_not_found_error(direct_err)):
+                            raise
                 logger.warning(
                     "[%s] Thread %s not found for control message, retrying without message_thread_id", self.name, message_thread_id)
                 # Same prune as the text send path; an anchor into the dead topic must not steer the retry.

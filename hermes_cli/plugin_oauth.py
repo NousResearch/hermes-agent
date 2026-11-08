@@ -82,9 +82,15 @@ def _hermes_owned_env(name: str) -> bool:
     """A variable Hermes itself reads (a provider key, a platform secret): never a plugin's client variable,
     or a manifest could have Hermes POST that secret to the token URL it names."""
     from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.config_env_routing import is_registered_env_name
+    from hermes_cli.config import _EXTRA_ENV_KEYS, _platform_plugin_manifests, core_declared_env_names
+    from hermes_cli.setup_hidden_env import is_setup_hidden_env
 
-    return is_registered_env_name(name) or any(name in p.api_key_env_vars for p in PROVIDER_REGISTRY.values())
+    # OPTIONAL_ENV_VARS also contains user platform declarations for the config UI.
+    # Registration there does not make the plugin's own client credentials core-owned.
+    return (name in core_declared_env_names() or name in _EXTRA_ENV_KEYS or is_setup_hidden_env(name)
+            or any(name in p.api_key_env_vars for p in PROVIDER_REGISTRY.values())
+            or any(name in _declared_env_names(manifest)
+                   for _, manifest in _platform_plugin_manifests(source="bundled", strict=True)))
 
 
 def _entry_problems(entry: dict, where: str) -> list[str]:
@@ -145,6 +151,7 @@ def _declared_clients(plugin_dir: Path) -> list[OAuthClient]:
 
     manifest_file = native_manifest_file(plugin_dir)
     clients, problems = parse_oauth_clients(read_native_manifest(manifest_file) if manifest_file else {})
+    problems += _foreign_client_env_problems(clients, plugin_dir)
     if problems:
         raise ValueError(f"Plugin '{plugin_dir.name}' has an invalid oauth: block in plugin.yaml: " + "; ".join(problems))
     return clients
@@ -191,11 +198,36 @@ def _declared_env_names(manifest: Mapping[str, Any]) -> set[str]:
     return names
 
 
+def _foreign_client_env_problems(clients: list[OAuthClient], plugin_dir: Path) -> list[str]:
+    """Check every claimant, not discovery winners or the manifest's self-reported name.
+
+    Read the bound profile on use: import-time config UI registration may belong to
+    another profile, and a second plugin may have been installed since startup.
+    """
+    from hermes_cli.plugins_discovery import collect_directory_manifests
+    from pm.plugin_declarations import native_manifest_file, read_native_manifest
+
+    names = {name for c in clients for name in (c.client_id_env, c.client_secret_env) if name}
+    if not names:
+        return []
+    problems = []
+    for other in collect_directory_manifests():
+        directory = Path(other.path)
+        if other.kind != "platform" or directory.resolve() == plugin_dir.resolve():
+            continue
+        path = native_manifest_file(directory)
+        if path is not None:
+            for name in sorted(names & _declared_env_names(read_native_manifest(path))):
+                problems.append(f"oauth: {name} is declared by another plugin ({other.key}); declare the plugin's own")
+    return problems
+
+
 def oauth_admission_problems(manifest: Mapping[str, Any], plugin_dir: Path) -> list[str]:
     """Catalog admission on top of the shape: declared variables, no clash with core sign-ins or ``custom:``."""
     from hermes_cli.plugin_provider_requests import _PROVIDERS
 
     clients, problems = parse_oauth_clients(manifest)
+    problems += _foreign_client_env_problems(clients, plugin_dir)
     declared = _declared_env_names(manifest)
     for client in clients:
         if client.id in _PROVIDERS:

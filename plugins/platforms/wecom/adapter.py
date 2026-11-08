@@ -710,7 +710,7 @@ async def _send_via(adapter, chat_id, message, *, live: bool):
     try:
         result = await adapter.send(chat_id, message)
     except Exception as e:
-        return send_error(f"WeCom live adapter send failed: {e}" if live else f"WeCom send failed: {e}")
+        return send_error(f"WeCom{' live adapter' if live else ''} send failed: {describe_proxy_error(e, resolve_proxy_url()) or e}")
     if result.success:
         return {"success": True, "platform": "wecom", "chat_id": chat_id, "message_id": result.message_id}
     return send_error(f"WeCom send failed: {result.error}")
@@ -739,7 +739,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         finally:
             await adapter.disconnect()
     except Exception as e:
-        return send_error(f"WeCom send failed: {e}")
+        return send_error(f"WeCom send failed: {describe_proxy_error(e, resolve_proxy_url()) or e}")
 
 
 _MANUAL_SETUP_STEPS = (

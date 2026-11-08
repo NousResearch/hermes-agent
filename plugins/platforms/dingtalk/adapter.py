@@ -49,7 +49,7 @@ except Exception:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns
 from agent.i18n import t
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult, describe_proxy_error, first_proxy_env_value
 from gateway.platforms.event import MessageEvent
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, decode_json_list_literal as _decode_json_list_literal,
@@ -767,12 +767,12 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         if data.get("errcode", 0) != 0:
             return send_error(f"DingTalk API error: {data.get('errmsg', 'unknown')}")
         return {"success": True, "platform": "dingtalk", "chat_id": chat_id}
-    except Exception as e:
+    except Exception as e:  # httpx reads HTTPS_PROXY itself: the text may echo it
         try:  # send_message_tool._error redacts access_token from webhook URLs (lazy import avoids a circular)
             from tools.send_message_tool import _error as _redact_error
-            return _redact_error(f"DingTalk send failed: {e}")
+            return _redact_error(f"DingTalk send failed: {describe_proxy_error(e, first_proxy_env_value()) or e}")
         except Exception:
-            return send_error(f"DingTalk send failed: {e}")
+            return send_error(f"DingTalk send failed: {describe_proxy_error(e, first_proxy_env_value()) or e}")
 
 
 def interactive_setup() -> None:

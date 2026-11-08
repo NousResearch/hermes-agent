@@ -1,6 +1,6 @@
 name: devsentry
 repo: https://github.com/Archangel20/devsentry
-sha: bd1f225cdd30fc291c37ba164f6c73153eb2b389
+sha: 0475b45a3ac2abe14f54bb841fb44ba7ef230fe1
 subdir: devsentry
 description: Read-only project inventory, traceback leads, and tracked Git diffs.
 maintainer: Archangel20

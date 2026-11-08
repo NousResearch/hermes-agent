@@ -111,6 +111,7 @@ def _marker_adopters(authority):
 
 
 _MARKER_FIELDS = ('_gateway_active_turn_session_key', '_gateway_active_turn_token')
+_ADOPTED_TURN_FIELDS = ('_reply_clock_token', '_turn_reply_delivered')
 
 
 async def _hand_over_turn_marker(authority, admission_id, event):
@@ -123,6 +124,10 @@ async def _hand_over_turn_marker(authority, admission_id, event):
     adopter = _marker_adopters(authority).get(admission_id)
     if adopter is not None:
         _move_marker(event, adopter)
+        for name in _ADOPTED_TURN_FIELDS:
+            if hasattr(event, name):
+                setattr(adopter, name, getattr(event, name))
+                delattr(event, name)
         return
     if admission_id in authority.pending_deliveries:
         # Released by ``deliver_settled``, also when settlement failed and dropped the delivery.

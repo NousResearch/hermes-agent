@@ -1,7 +1,7 @@
 name: taint-sentry
 title: Taint Sentry
 repo: https://github.com/YAN-XBT/hermes-sentry
-sha: 7328bae167099f6f0bab0d893ed534db04433154
+sha: 253b0a341d65a245e9d25e163479428f8408e2e7
 version: "0.1.0"
 description: >-
   Provenance and taint tracking for tool results. Every tool result is stamped with where it came

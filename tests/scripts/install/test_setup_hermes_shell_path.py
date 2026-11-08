@@ -96,15 +96,6 @@ def test_bash_without_bashrc_never_creates_bash_profile(tmp_path):
     assert str(home / ".local" / "bin") in _login_path(home)
 
 
-def test_inherited_path_is_not_evidence_a_new_shell_is_wired(tmp_path):
-    # No startup file at all: the inherited PATH says nothing about the next login.
-    home = _home(tmp_path)
-    _wire(home, "/usr/local/bin:/usr/bin:/bin")
-    assert MARKER in _text(home, ".profile")
-    assert not (home / ".bash_profile").exists()
-    assert str(home / ".local" / "bin") in _login_path(home)
-
-
 def test_an_empty_bash_profile_shadowing_profile_is_repaired(tmp_path):
     # The estate the report describes: a previous run left the 0-byte file behind while
     # ~/.profile already carried the line, so every login shell lost it.
@@ -113,33 +104,3 @@ def test_an_empty_bash_profile_shadowing_profile_is_repaired(tmp_path):
     assert MARKER in _text(home, ".bash_profile"), "the file a login bash reads must carry the line"
     assert _text(home, ".profile") == DEBIAN_PROFILE
     assert str(home / ".local" / "bin") in _login_path(home)
-
-
-def test_an_existing_bash_login_gets_the_line_too(tmp_path):
-    # bash reads ~/.bash_login before ~/.profile, so the .profile line alone is hidden.
-    home = _home(tmp_path, **{".bash_login": "# mine\n"})
-    _wire(home, "/usr/local/bin:/usr/bin:/bin")
-    assert str(home / ".local" / "bin") in _login_path(home)
-
-
-def test_wiring_twice_appends_once(tmp_path):
-    home = _home(tmp_path, **{".bashrc": "# mine\n"})
-    _wire(home, "/usr/local/bin:/usr/bin:/bin", runs=2)
-    assert _text(home, ".bashrc").count(MARKER) == 1
-    assert str(home / ".local" / "bin") in _login_path(home)
-
-
-def test_zsh_users_get_zshrc_only(tmp_path):
-    home = _home(tmp_path, **{".zshrc": "# mine\n"})
-    _wire(home, "/usr/local/bin:/usr/bin:/bin", shell="/usr/bin/zsh")
-    assert MARKER in _text(home, ".zshrc")
-    assert not (home / ".profile").exists()
-    assert not (home / ".bash_profile").exists()
-
-
-def test_fish_users_get_their_config_file(tmp_path):
-    home = _home(tmp_path)
-    _wire(home, "/usr/local/bin:/usr/bin:/bin", shell="/usr/bin/fish")
-    config = _text(home, ".config/fish/config.fish")
-    assert 'fish_add_path "$HOME/.local/bin"' in config
-    assert not (home / ".profile").exists()

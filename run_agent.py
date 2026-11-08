@@ -10,7 +10,7 @@
 try:
     import hermes_bootstrap
 except ModuleNotFoundError as exc:  # partial `hermes update` left the bootstrap unregistered
-    if exc.name != "hermes_bootstrap":
+    if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import sys
@@ -276,7 +276,7 @@ class AIAgent(
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False, requested_provider: str | None = None,
         capabilities: dict[str, bool] | None = None, cwd: str | None = None,
-        side_agent: bool = False, memory_manager=None,
+        side_agent: bool = False, memory_manager=None, memory_agent_context: str | None = None,
         tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""

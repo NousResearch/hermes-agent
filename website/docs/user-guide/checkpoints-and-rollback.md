@@ -224,6 +224,31 @@ If the ledger is empty (a store created before this feature, or Hermes hasn't
 written any files in the project yet), `/rollback` falls back to the full
 restore automatically.
 
+## `/undo` lists the files the undone turns changed
+
+`/undo` only rewinds the conversation; it never touches files. When checkpoints
+are on and the undone turns changed files in the project, `/undo` adds one line
+naming them and pointing at `/rollback`:
+
+```
+/undo
+↶ Files changed in the undone turns: app.js, notes.md. Run /rollback to see checkpoints and restore them.
+```
+
+The line names no checkpoint: run `/rollback` to see the list and pick the one
+to restore (by number or hash). The file list is best effort: it compares the
+project with the checkpoint taken around when the undone turns started, and it
+only says what changed, not what a restore will bring back. The line itself
+writes nothing, and with checkpoints off, or when no undone turn took a
+checkpoint, `/undo` prints exactly what it always did. The editor (ACP) and the
+gateway chat client do not run `/rollback`, so they print no line.
+
+A whole-tree `/rollback` also undoes the newest remaining chat turn (step 4
+above), but only when that turn made the checkpoint or came after it. After
+`/undo`, the turns you kept ended before the checkpoint, so they stay. Each
+checkpoint records its exact time; for a checkpoint made by an older version,
+only the second is known, and a kept turn in that same second is kept too.
+
 ## Single-File Restore
 
 Restore just one file from a checkpoint without affecting the rest of the directory:

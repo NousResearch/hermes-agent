@@ -1,4 +1,5 @@
-import type { SessionSteerResponse } from '../gatewayTypes.js'
+import type { SessionSteerResponse } from '@hermes/shared/gateway-types'
+
 import { t } from '../i18n/runtime.js'
 
 import type { ComposerActions, GatewayRpc } from './interfaces.js'

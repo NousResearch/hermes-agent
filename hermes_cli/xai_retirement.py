@@ -99,7 +99,7 @@ def find_retired_xai_refs(config: dict[str, Any]) -> list[RetirementIssue]:
             _check(f"auxiliary.{slot_name}.model", slot_cfg.get("model"))
     for path in (("delegation",), ("tts", "xai"), ("image_gen", "xai"), ("plugins", "image_gen", "xai")):
         _check_section(*path)
-    if (_section("image_gen") or {}).get("provider") == "xai":
+    if str((_section("image_gen") or {}).get("provider") or "").strip().lower() == "xai":
         _check_section("image_gen")
     return issues
 

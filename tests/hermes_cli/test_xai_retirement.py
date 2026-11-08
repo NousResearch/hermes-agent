@@ -106,6 +106,8 @@ class TestMigrationSemantics:
         assert [i.config_path for i in find_retired_xai_refs(picked)] == ["image_gen.model"]
         assert [i.config_path for i in find_retired_xai_refs(nested)] == ["image_gen.xai.model"]
         assert find_retired_xai_refs(other) == []
+        spaced = {"image_gen": {"provider": " xai ", "model": "grok-imagine-image-quality"}}
+        assert [i.config_path for i in find_retired_xai_refs(spaced)] == ["image_gen.model"]
 
     def test_all_retired_have_replacement(self):
         for name, entry in _RETIRED_MODELS.items():

@@ -743,23 +743,21 @@ _COOKIE_HEADER_JSON_UNTERMINATED_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
-# Cookie credentials are bearer credentials: possession alone can
-# authenticate (a session cookie grants access). They leak verbatim through
-# the assignment and header redactors because ``cookie`` is deliberately NOT
-# in the shared secret-keyword set (_KEY_KEYWORD_RE) — adding it there would
-# misclassify prose (``cookie_policy: strict``, ``mycookiejar=1``,
-# ``cookies enabled``). So cookie credentials get their own narrow patterns,
-# keyed on a word-bounded ``cookie`` marker followed by an ``=`` (assignment)
-# or ``:`` (header). The false-positive prose never matches: ``cookie_policy``
-# and ``cookiejar`` have letters after ``cookie`` (not ``=``/``:``),
-# ``cookies`` is a different word, and ``mycookiejar=1`` has no word boundary
-# before ``cookie``.
+# Cookie credentials are bearer credentials, but ``cookie`` stays out of the shared
+# secret-keyword set (``cookie_policy: strict``, ``cookies enabled`` are prose). The
+# assignment form needs a key that IS ``cookie`` or ends in ``_cookie``; ``mycookiejar=1``,
+# ``cookie_policy=x`` and URL query params (``?cookie=``) never match.
 _COOKIE_ASSIGN_RE = re.compile(
-    r"(\bcookie\s*=\s*)(\S+)",
+    r"(?<![\w?&])((?:[A-Za-z0-9]+_)*+cookie\s*=(?!=)\s*)(\S+)",
     re.IGNORECASE,
 )
-_COOKIE_HEADER_RE = re.compile(
-    r"((?:Set-?Cookie|Cookie)\s*:\s*)(\S+)",
+# A Cookie/Set-Cookie header in the middle of a line (log records, prose dumps) that the
+# line/curl/JSON passes above did not see. Every ``name=value`` pair is masked, not only
+# the first; ``Set-Cookie:`` also masks a bare 16+ char token (``Set-Cookie: header`` is prose).
+_COOKIE_PAIR = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+=[^\s;\\\"'`]*"
+_COOKIE_HEADER_INLINE_RE = re.compile(
+    rf"(\b(?P<set>Set-)?Cookie:[ \t]*)"
+    rf"(?:{_COOKIE_PAIR}(?:;[ \t]*{_COOKIE_PAIR})*|(?(set)[^\s\\\"';&|<>()$`*=]{{16,}}+(?![^\s;])|(?!)))",
     re.IGNORECASE,
 )
 
@@ -1498,6 +1496,9 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     truncated key and could write it back as a dead credential (#35519)."""
     mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
     if "=" in text:
+        text = _COOKIE_ASSIGN_RE.sub(
+            lambda m: m.group(0) if _ENV_LOOKUP_VALUE_RE.match(m.group(2)) or m.group(2).startswith(("***", "«redacted"))
+            else m.group(1) + mask(m.group(2)), text)
         _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)
         if "://" not in text:  # lowercase names would match URL params
@@ -1763,26 +1764,8 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
                 lambda m: m.group(1) + "***",
                 text,
             )
+            text = _COOKIE_HEADER_INLINE_RE.sub(lambda m: m.group(1) + "***", text)
         text = _TELEGRAM_RE.sub(lambda m: f"{m.group(1) or ''}{m.group(2)}:***", text)
-
-    # Cookie credentials — assignment (`cookie=…`) and header
-    # (`Set-Cookie: …` / `Cookie: …`) forms. Cookie values are bearer
-    # credentials, so they must not appear verbatim in logs/tool output.
-    # Run outside the `code_file` guard like the other header patterns: a
-    # real Set-Cookie/assignment in tool output is a credential, not source
-    # (the word-bounded marker + `=`/`:` shapes never match `Cookie.set` or
-    # `cookiejar`). See #80936.
-    if "cookie" in text.lower():
-        if "=" in text:
-            text = _COOKIE_ASSIGN_RE.sub(
-                lambda m: m.group(1) + _mask_token(m.group(2)),
-                text,
-            )
-        if ":" in text:
-            text = _COOKIE_HEADER_RE.sub(
-                lambda m: m.group(1) + _mask_token(m.group(2)),
-                text,
-            )
 
     # Database connection string passwords. With code_file=True, a password group that is a pure ``{...}``
     # brace expression is an f-string template reference (e.g. f"postgresql://{user}:{pass}@{host}"), not a

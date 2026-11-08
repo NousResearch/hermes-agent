@@ -283,6 +283,8 @@ On messaging platforms, the agent sends the dangerous command details to the cha
 - Reply **yes**, **y**, **approve**, **ok**, or **go** to approve
 - Reply **no**, **n**, **deny**, or **cancel** to deny
 
+A messaging approval never asks you to approve a command you cannot read in full. When the command is too long for the approval card, Hermes first sends the whole command as its own message (split across several messages if needed), and the card says the preview was shortened. If the full command cannot be shown (the send fails, or the command itself contains a triple-backtick fence), the card offers **Deny** only. Review such a command in the CLI or the desktop app.
+
 The `HERMES_EXEC_ASK=1` environment variable is automatically set when running the gateway.
 
 ### Permanent Allowlist

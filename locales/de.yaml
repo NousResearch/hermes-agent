@@ -632,6 +632,8 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", oder {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Vorschau gekürzt: Der vollständige Befehl ({total} Zeichen) steht in der Nachricht darüber."
+    truncated_deny_only: "Vorschau gekürzt ({total} Zeichen) und der vollständige Befehl konnte hier nicht angezeigt werden, daher ist nur Ablehnen möglich. Prüfe ihn in der CLI oder der Desktop-App."
   notify:
     media_kind:
       audio: "Audio"

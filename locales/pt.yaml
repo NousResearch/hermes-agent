@@ -632,6 +632,8 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", ou {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Pré-visualização encurtada: o comando completo ({total} caracteres) está na mensagem acima."
+    truncated_deny_only: "Pré-visualização encurtada ({total} caracteres) e não foi possível mostrar o comando completo aqui, por isso só é oferecido Negar. Revê-o na CLI ou na app Desktop."
   notify:
     media_kind:
       audio: "áudio"

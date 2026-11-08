@@ -632,6 +632,8 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", або {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Попередній перегляд скорочено: повна команда ({total} символів) — у повідомленні вище."
+    truncated_deny_only: "Попередній перегляд скорочено ({total} символів), і повну команду не вдалося показати тут, тому доступно лише «Відхилити». Перегляньте її в CLI або в настільному застосунку."
   notify:
     media_kind:
       audio: "аудіо"

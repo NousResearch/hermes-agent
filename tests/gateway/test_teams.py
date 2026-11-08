@@ -1183,6 +1183,7 @@ async def test_long_non_ascii_command_keeps_button_data_small():
     cannot push the card past Teams' ~28 KB limit."""
     adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
     adapter._app, adapter._send_card = object(), AsyncMock()
+    adapter.send = AsyncMock(return_value=MagicMock(success=True))  # the full command, sent before the card
     command = "cat > notes.md <<'EOF'\n" + "这是一个很长的中文文档内容。" * 200 + "\nEOF"
     buttons = []
     with patch.object(sys.modules[TeamsAdapter.__module__], "ExecuteAction", lambda **kw: buttons.append(kw)):

@@ -15,6 +15,8 @@ No imports from ``gateway.platforms.base`` or ``gateway.run`` — both import th
 
 from __future__ import annotations
 
+from typing import Any, Optional
+
 from agent.i18n import t
 
 # Bare strings; adapters add their own bold/HTML around them.
@@ -82,3 +84,35 @@ def format_approval_deadline_line(timeout_s: int) -> str:
 
 def format_approval_timed_out_notice(timeout_s: int) -> str:
     return approval_timed_out_notice(format_approval_window(timeout_s))
+
+
+def render_exec_approval(adapter: Any, command: str, description: str, smart_denied: bool,
+                         full_command_shown: bool) -> tuple[str, bool]:
+    """``(card text, truncated)`` for ``adapter``'s markup. A preview that cannot hold the whole command
+    says so in the card: where the full command was sent just before it (``full_command_shown``), or
+    that only Deny is offered because it could not be (#62359)."""
+    if adapter._EA_REASON_BUDGET:
+        description = adapter._ea_fit(str(description or ""), adapter._EA_REASON_BUDGET)
+    budget = adapter._exec_approval_cmd_budget(description, smart_denied)
+    preview = adapter._ea_fit(command, budget)
+    truncated = preview != command
+    notice = ""
+    if truncated:
+        key = "truncated_full_above" if full_command_shown else "truncated_deny_only"
+        notice = "\n\n" + adapter._ea_escape(t(f"gateway.exec_approval.{key}", total=len(command)))
+        # The notice shares the cap the budget was sized for; a tiny fixed budget keeps half its preview.
+        preview = adapter._ea_fit(command, max(budget - adapter.message_len_fn(notice), budget // 2))
+    text = (f"{adapter._EA_HEADER}"
+            f"{adapter._EA_CODE_OPEN}{adapter._ea_escape(preview)}{adapter._EA_CODE_CLOSE}"
+            f"{adapter._EA_REASON_LABEL}{adapter._ea_escape(description)}{notice}"
+            f"{adapter._ea_deadline_line()}")
+    return (text + adapter._EA_SMART_DENY_LINE if smart_denied else text), truncated
+
+
+async def send_full_command(adapter: Any, chat_id: str, command: str, metadata: Optional[dict]) -> bool:
+    """Send the whole command as a fenced block (the adapter's ``send`` splits it to fit) before a
+    card whose preview is truncated. False when it cannot be shown verbatim or a chunk failed."""
+    if "```" in command:  # it would close the fence early and the rest would render as markdown
+        return False
+    result = await adapter.send(chat_id, f"```\n{command}\n```", metadata=metadata)
+    return bool(getattr(result, "success", False))

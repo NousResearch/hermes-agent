@@ -632,6 +632,8 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", o {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Vista previa acortada: el comando completo ({total} caracteres) está en el mensaje de arriba."
+    truncated_deny_only: "Vista previa acortada ({total} caracteres) y no se pudo mostrar aquí el comando completo, así que solo se ofrece Denegar. Revísalo en la CLI o en la app de escritorio."
   notify:
     media_kind:
       audio: "audio"

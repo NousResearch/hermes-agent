@@ -21,7 +21,7 @@ description: >-
   or .env, only the receipts it wrote and the sizes of the files an rm swap moves; approvals are respected:
   the rewritten command goes through Hermes' normal approval gate, and because a swapped rm -r is a move it
   no longer matches the recursive-delete pattern and does not prompt (the git rewrites keep prompting as
-  before). Targets such as /, ~, $HOME, system directories and anything under /tmp, privilege-elevated
+  before). Targets such as /, ~, $HOME, system directories and anything in the system temp directory, privilege-elevated
   commands, and commands with heredocs, subshells, command substitution or eval/xargs/find -exec are
   deliberately left alone, and the agent is told so. Not covered, by design: mv, cp overwrite, sed -i,
   redirects, write_file/patch, find -delete, git rebase (pair it with undo-effects for those).

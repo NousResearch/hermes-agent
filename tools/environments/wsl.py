@@ -14,6 +14,7 @@ WSL.  Use Linux paths for all tools.  Windows files are accessible via the
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,6 +25,31 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 
 
 logger = logging.getLogger(__name__)
+
+# Passed to ``wsl -d``. A leading ``-`` would be another wsl flag.
+_DISTRO_RE = re.compile(r"^[A-Za-z0-9._-]+\Z")
+
+
+def _validated_distro(distro: str | None) -> str:
+    """Return a distro name safe to pass as ``wsl -d <name>``.
+
+    Empty means "the default distro". Anything else must match
+    ``^[A-Za-z0-9._-]+$`` and must not start with ``-``.
+    """
+    name = str(distro or "").strip()
+    if not name:
+        return ""
+    if name.startswith("-") or _DISTRO_RE.fullmatch(name) is None:
+        raise ValueError(
+            f"Invalid WSL distro name {name!r}. Use letters, digits, '.', '_' or '-'; "
+            "the name must not start with '-'."
+        )
+    return name
+
+
+def _distro_args(distro: str | None) -> list[str]:
+    name = _validated_distro(distro)
+    return ["-d", name] if name else []
 
 
 def _hidden_window_kwargs() -> dict:
@@ -53,11 +79,8 @@ def _find_wsl() -> str:
 
 
 def _probe_wsl_home(wsl_exe: str, distro: str = "") -> str:
+    args = [wsl_exe, *_distro_args(distro), "-e", "bash", "-c", "echo $HOME"]
     try:
-        args = [wsl_exe]
-        if distro:
-            args.extend(["-d", distro])
-        args.extend(["-e", "bash", "-c", "echo $HOME"])
         result = subprocess.run(
             args, capture_output=True, text=True, timeout=5,
             **_hidden_window_kwargs(),
@@ -70,8 +93,8 @@ def _probe_wsl_home(wsl_exe: str, distro: str = "") -> str:
     return "/root"
 
 
-def _ensure_wsl_available() -> None:
-    """Verify wsl.exe is reachable and WSL is installed.
+def _ensure_wsl_available() -> str:
+    """Verify wsl.exe is reachable and return its path.
 
     Raises RuntimeError with actionable messages depending on the failure:
       - wsl.exe not found → install WSL2
@@ -99,6 +122,7 @@ def _ensure_wsl_available() -> None:
             "wsl.exe not found. Install WSL2: "
             "https://learn.microsoft.com/en-us/windows/wsl/install"
         ) from None
+    return wsl_exe
 
 
 class WslEnvironment(BaseEnvironment):
@@ -116,12 +140,14 @@ class WslEnvironment(BaseEnvironment):
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None,
                  distro: str = ""):
-        _ensure_wsl_available()
-        self._wsl = _find_wsl()
         # distro priority (first non-empty wins):
         #   explicit distro param → env dict → process environment
+        # Validate before touching wsl.exe so a bad name fails closed.
         _env = env or {}
-        self._distro = distro or _env.get("TERMINAL_WSL_DISTRO") or os.getenv("TERMINAL_WSL_DISTRO", "")
+        self._distro = _validated_distro(
+            distro or _env.get("TERMINAL_WSL_DISTRO") or os.getenv("TERMINAL_WSL_DISTRO", "")
+        )
+        self._wsl = _ensure_wsl_available()
         if not cwd:
             cwd = _probe_wsl_home(self._wsl, self._distro)
         super().__init__(cwd=cwd, timeout=timeout, env=env)
@@ -146,9 +172,7 @@ class WslEnvironment(BaseEnvironment):
         timeout: int = 120,   # enforced by BaseEnvironment._wait_for_process
         stdin_data: str | None = None,
     ) -> subprocess.Popen:
-        wsl_args = [self._wsl]
-        if self._distro:
-            wsl_args.extend(["-d", self._distro])
+        wsl_args = [self._wsl, *_distro_args(self._distro)]
         if login:
             wsl_args.extend(["-e", "bash", "-l", "-c", cmd_string])
         else:
@@ -179,10 +203,7 @@ class WslEnvironment(BaseEnvironment):
         # Remove them via wsl -e rm instead of os.unlink.  Best-effort: if
         # the distro has already stopped, the files die with its /tmp anyway.
         try:
-            args = [self._wsl]
-            if self._distro:
-                args.extend(["-d", self._distro])
-            args.extend(["-e", "rm", "-f", self._snapshot_path, self._cwd_file])
+            args = [self._wsl, *_distro_args(self._distro), "-e", "rm", "-f", self._snapshot_path, self._cwd_file]
             subprocess.run(
                 args,
                 timeout=5, capture_output=True,

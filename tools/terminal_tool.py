@@ -760,6 +760,8 @@ _AUTO_SAVED_CWDS: set[str] = set()
 
 # Shared TERMINAL_CWD left behind by another backend. WSL keeps Linux homes and
 # drive mounts; local/ssh drop container defaults.
+# Prefixes that end with ``/`` match only that directory's children. ``/tmp`` and
+# ``/opt`` also match the directory itself, but not a longer name (``/tmpfoo``).
 # no-tmp: ok — WSL cwd prefix, a path inside the distro, not a host scratch dir
 _WSL_CWD_KEEP_PREFIXES = ("/home/", "/mnt/", "/root/", "/tmp", "/opt")
 _STALE_SHARED_CWDS = {"/workspace", "/root", "/home"}
@@ -783,11 +785,26 @@ def _backend_default_cwd(env_type: str) -> str:
     return "/root"
 
 
+def _is_kept_wsl_cwd(cwd: str) -> bool:
+    """True when *cwd* is a Linux path the WSL backend should keep.
+
+    ``/tmp`` and ``/opt`` match that directory or a child (``/tmp/x``), not a
+    name that merely starts with those letters (``/tmpfoo``).
+    """
+    for prefix in _WSL_CWD_KEEP_PREFIXES:
+        if prefix.endswith("/"):
+            if cwd.startswith(prefix):
+                return True
+        elif cwd == prefix or cwd.startswith(prefix + "/"):
+            return True
+    return False
+
+
 def _discard_stale_shared_cwd(env_type: str, cwd: str, default_cwd: str) -> str:
     """Drop a shared ``TERMINAL_CWD`` that belongs to a different backend."""
     if not cwd:
         return cwd
-    if env_type == "wsl" and not any(cwd.startswith(prefix) for prefix in _WSL_CWD_KEEP_PREFIXES):
+    if env_type == "wsl" and not _is_kept_wsl_cwd(cwd):
         logger.info("Ignoring TERMINAL_CWD=%r for wsl (not a Linux path). Probing $HOME.", cwd)
         return ""
     if env_type in {"local", "ssh"} and cwd in _STALE_SHARED_CWDS:
@@ -820,20 +837,29 @@ def _convert_cross_backend_cwd(env_type: str, cwd: str, *, system: str | None = 
         match = _MNT_RE.match(cwd)
         if match:
             tail = (match.group(2) or "").replace("/", "\\")
-            converted = f"{match.group(1).upper()}:{tail or '\\'}"
+            # A backslash inside an f-string expression is a SyntaxError on
+            # Python 3.11 (allowed only from 3.12). Keep the separator outside.
+            windows_root = "\\"
+            converted = match.group(1).upper() + ":" + (tail or windows_root)
             logger.info("Converted WSL cwd %r to Windows path %r", cwd, converted)
             return converted
     return cwd
 
 
 def _maybe_persist_backend_cwd(env_type: str, cwd: str, default_cwd: str) -> None:
-    """Remember the cwd this backend actually used, once per process.
+    """Remember a WSL cwd in config.yaml, once per process.
 
-    Writes ``terminal.<backend>_cwd`` in config.yaml only. The next process
-    bridges that key to ``TERMINAL_<BACKEND>_CWD``. The current process is left
-    alone so a save cannot mask ``TERMINAL_CWD`` for later tests or turns.
+    Only ``wsl`` is written. Resolving cwd for local, docker, ssh, and the
+    other backends must not rewrite the user's config — they already take
+    their directory from ``TERMINAL_CWD`` or from an explicit
+    ``terminal.<backend>_cwd`` the user set. Those explicit keys are still
+    bridged for every backend; this function does not create them.
+
+    The write is config.yaml only, not the current process environment, so a
+    save cannot mask ``TERMINAL_CWD`` for later readers in this process. The
+    next launch bridges ``terminal.wsl_cwd`` to ``TERMINAL_WSL_CWD``.
     """
-    if not cwd or cwd == default_cwd or env_type in _AUTO_SAVED_CWDS:
+    if env_type != "wsl" or not cwd or cwd == default_cwd or env_type in _AUTO_SAVED_CWDS:
         return
     _AUTO_SAVED_CWDS.add(env_type)
     key = f"terminal.{env_type}_cwd"
@@ -859,10 +885,10 @@ def _maybe_persist_backend_cwd(env_type: str, cwd: str, default_cwd: str) -> Non
 def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
     """``(cwd, host_cwd)`` for *env_type*.
 
-    ``TERMINAL_<BACKEND>_CWD`` wins over the shared ``TERMINAL_CWD``. The shared
-    value is filtered for leftovers from another backend, then container rules
-    run, then Windows/WSL path conversion. A cwd that came from the shared key
-    is written back as that backend's own key so the next launch restores it.
+    ``TERMINAL_<BACKEND>_CWD``, when set, wins over the shared ``TERMINAL_CWD``.
+    Drive-letter paths are converted before the stale-path filter, then
+    container rules run. Only the WSL backend writes that resolved directory
+    back to ``terminal.wsl_cwd`` (see :func:`_maybe_persist_backend_cwd`).
     """
     default_cwd = _backend_default_cwd(env_type)
     backend_cwd = _tenv(f"TERMINAL_{env_type.upper()}_CWD").strip()

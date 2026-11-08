@@ -48,7 +48,7 @@ def test_find_wsl_system32_first(monkeypatch, tmp_path):
     fake_system32 = tmp_path / "System32"
     fake_system32.mkdir()
     wsl_exe = fake_system32 / "wsl.exe"
-    wsl_exe.write_text("fake")
+    wsl_exe.write_text("fake", encoding="utf-8")
     monkeypatch.setenv("SystemRoot", str(tmp_path))
     monkeypatch.setattr(wsl_env.shutil, "which", lambda _: "/some/other/wsl")
     assert wsl_env._find_wsl() == str(wsl_exe)
@@ -235,6 +235,46 @@ def test_distro_priority_env_over_os_getenv(monkeypatch):
     # _make_env uses os.getenv, so clear _distro to simulate env dict overriding
     env._distro = os.environ.get("TERMINAL_WSL_DISTRO", "")
     assert env._distro == "Ubuntu"
+
+
+def test_distro_name_rejects_flags_and_shell_metacharacters():
+    assert wsl_env._validated_distro("") == ""
+    assert wsl_env._validated_distro("  Debian  ") == "Debian"
+    assert wsl_env._validated_distro("Ubuntu-24.04") == "Ubuntu-24.04"
+    for bad in ("-d", "--user", "Debian;rm", "Ubuntu 24", "a/b", ""):
+        if bad.strip() == "":
+            continue
+        with pytest.raises(ValueError):
+            wsl_env._validated_distro(bad)
+
+
+def test_invalid_distro_fails_before_wsl_lookup(monkeypatch):
+    def explode():
+        raise AssertionError("wsl.exe should not be looked up for a bad distro name")
+
+    monkeypatch.setattr(wsl_env, "_find_wsl", explode)
+    with pytest.raises(ValueError):
+        wsl_env.WslEnvironment(distro="-exec")
+
+
+def test_init_looks_up_wsl_once(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_find():
+        calls["n"] += 1
+        return "/fake/wsl.exe"
+
+    monkeypatch.setattr(wsl_env, "_find_wsl", fake_find)
+    monkeypatch.setattr(
+        wsl_env.subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="/home/me\n", stderr=""),
+    )
+    monkeypatch.setattr(wsl_env.BaseEnvironment, "__init__", lambda self, **kwargs: None)
+    monkeypatch.setattr(wsl_env.WslEnvironment, "init_session", lambda self: None)
+    env = wsl_env.WslEnvironment(cwd="/home/me", distro="Debian")
+    assert calls["n"] == 1
+    assert env._wsl == "/fake/wsl.exe"
+    assert env._distro == "Debian"
 
 
 def test_distro_priority_os_getenv_fallback():

@@ -643,7 +643,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     dockerCwd: 'Working directory inside the Docker container (e.g. /workspace).',
     singularityCwd: 'Working directory inside the Singularity container (e.g. /root).',
     modalCwd: 'Working directory on Modal (e.g. /root).',
-    daytonaCwd: 'Working directory in the Daytona workspace (e.g. /workspace).',
+    daytonaCwd: 'Working directory in the Daytona workspace (e.g. /root).',
+    vercelSandboxCwd: 'Working directory in the Vercel sandbox (e.g. /vercel/sandbox).',
+    managedModalCwd: 'Working directory in the managed Modal sandbox (e.g. /root).',
     sshCwd: 'Working directory on the remote SSH host (e.g. ~).'
   },
   codeExecution: {

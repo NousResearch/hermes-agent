@@ -179,16 +179,32 @@ def test_wsl_cwd_discards_non_linux_shared_path(monkeypatch):
     assert cwd == ""
 
 
+def test_wsl_keeps_tmp_and_opt_directories_not_lookalike_names(monkeypatch):
+    assert _fresh_cwd(monkeypatch, "wsl", shared="/tmp") == "/tmp"
+    assert _fresh_cwd(monkeypatch, "wsl", shared="/tmp/work") == "/tmp/work"
+    assert _fresh_cwd(monkeypatch, "wsl", shared="/opt/app") == "/opt/app"
+    assert _fresh_cwd(monkeypatch, "wsl", shared="/tmpfoo") == ""
+    assert _fresh_cwd(monkeypatch, "wsl", shared="/optfoo") == ""
+
+
 def test_explicit_backend_cwd_wins_over_shared(monkeypatch):
     cwd = _fresh_cwd(monkeypatch, "docker", shared="/tmp/shared", backend="/opt/app")
     assert cwd == "/opt/app"
 
 
-def test_per_backend_cwd_is_remembered_without_touching_environ(monkeypatch):
-    monkeypatch.delenv("TERMINAL_DOCKER_CWD", raising=False)
-    cwd = _fresh_cwd(monkeypatch, "docker", shared="/opt/app")
-    assert cwd == "/opt/app"
-    assert "TERMINAL_DOCKER_CWD" not in __import__("os").environ
+def test_wsl_cwd_is_remembered_without_touching_environ(monkeypatch):
+    monkeypatch.delenv("TERMINAL_WSL_CWD", raising=False)
+    cwd = _fresh_cwd(monkeypatch, "wsl", shared="/home/agents/project")
+    assert cwd == "/home/agents/project"
+    assert "TERMINAL_WSL_CWD" not in __import__("os").environ
     from hermes_cli.config import read_raw_config
 
-    assert read_raw_config().get("terminal", {}).get("docker_cwd") == "/opt/app"
+    assert read_raw_config().get("terminal", {}).get("wsl_cwd") == "/home/agents/project"
+
+
+def test_other_backends_do_not_rewrite_config_on_cwd_resolve(monkeypatch):
+    cwd = _fresh_cwd(monkeypatch, "docker", shared="/opt/app")
+    assert cwd == "/opt/app"
+    from hermes_cli.config import read_raw_config
+
+    assert "docker_cwd" not in (read_raw_config().get("terminal") or {})

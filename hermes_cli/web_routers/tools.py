@@ -123,7 +123,7 @@ def _probe_wsl_backend(_cfg) -> tuple:
     if sys.platform != "win32":
         return ("unavailable", "WSL2 is only available when the backend runs on Windows.")
     try:
-        from tools.environments.wsl import _find_wsl
+        from tools.environments.wsl import _find_wsl, _hidden_window_kwargs
         exe = _find_wsl()
     except Exception as exc:
         return ("needs_setup", str(exc))
@@ -131,6 +131,7 @@ def _probe_wsl_backend(_cfg) -> tuple:
         proc = subprocess.run(
             [exe, "--version"], capture_output=True, text=True, timeout=5,
             stdin=subprocess.DEVNULL, check=False,
+            **_hidden_window_kwargs(),
         )
     except Exception as exc:
         return ("unavailable", f"wsl probe failed: {exc}")

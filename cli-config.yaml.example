@@ -488,8 +488,13 @@ terminal:
 #   backend: "wsl"
 #   # Omit cwd to probe WSL $HOME, or set an absolute Linux path:
 #   # cwd: "/home/agents/project"
+#   # The first Linux directory WSL actually uses is remembered as
+#   # terminal.wsl_cwd. Other backends do not rewrite config.yaml just
+#   # because their cwd was resolved; set terminal.<backend>_cwd yourself
+#   # if you want one of those remembered.
 #   timeout: 180
-#   # Optional: specify a WSL distribution (default: system default)
+#   # Optional: specify a WSL distribution (default: system default).
+#   # Letters, digits, ".", "_" and "-"; must not start with "-".
 #   wsl_distro: "Debian"
 
 # OPTION 3: Docker container

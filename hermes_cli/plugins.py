@@ -133,6 +133,8 @@ VALID_HOOKS: set[str] = {
     # error_body may be unredacted.
     "transform_api_error_classification", "on_session_start", "on_session_end",
     "on_session_finalize", "on_session_reset", "on_session_delete",
+    # on_session_open: local session created/opened, before its first turn. Kwargs: session_id, platform, reason.
+    "on_session_open",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
@@ -1043,6 +1045,21 @@ def has_hook(hook_name: str) -> bool:
     Lazy-discovers first — same gate-before-invoke rationale as :func:`has_middleware` (tracking #64178).
     """
     return _delivery_manager().has_hook(hook_name)
+
+
+def hook_unused_nowait(hook_name: str) -> bool:
+    """True when this home's plugins are loaded and none handles *hook_name*. Never discovers or
+    waits (an unloaded home, or one whose (re)load is still running on another thread, answers False:
+    unknown, not unused), so it is safe on an event loop."""
+    manager = get_plugin_manager()
+    # ``_discovered`` is set before a sweep finishes and a force reload clears ``_hooks`` first, so a
+    # sweep in flight could read as "no consumer": treat a held discovery lock as unknown.
+    if not manager._discovery_lock.acquire(blocking=False):
+        return False
+    try:
+        return manager._discovered and not manager.has_hook(hook_name)
+    finally:
+        manager._discovery_lock.release()
 
 
 def iter_hook_callbacks(hook_name: str) -> tuple[Callable, ...]:

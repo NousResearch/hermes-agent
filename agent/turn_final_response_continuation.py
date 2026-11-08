@@ -18,8 +18,9 @@ def select_continuation(
     promoted: Any, continuations: int,
 ) -> tuple[Optional[str], Optional[str]]:
     """Return ``(kind, nudge)`` for a text-only stop, or ``(None, None)`` when it is final."""
-    from agent.agent_runtime_helpers import (
-        intent_ack_continuation_mode, looks_like_degenerate_final, post_work_narration_intent,
+    from agent.agent_runtime_helpers import intent_ack_continuation_mode
+    from agent.agent_runtime_helpers_final_shape import (
+        looks_like_degenerate_final, looks_like_markdown_stub, post_work_narration_intent,
         promoted_reasoning_announces_action, tool_results_this_turn, trailing_continue_intent,
     )
     from agent.conversation_loop import (
@@ -47,8 +48,12 @@ def select_continuation(
         return "stall", _CODEX_ACK_CONTINUATION_NUDGE
     # Degenerate-final guard (#103483): the turn did real tool work and then stopped on a fragment.
     # The nudge row closes the tool-work window, so a second fragment ends the turn as the answer.
-    if (guards_on and _ack_mode != "off" and tool_rows > 0
-            and looks_like_degenerate_final(text, user_message=user_message)):
+    # The wrong-script fragment shape keeps its Responses-scoped knob; the emoji+Markdown stub
+    # (#118367) has no legitimate reading and is gated on agent.stall_guards alone.
+    if guards_on and tool_rows > 0 and (
+        looks_like_markdown_stub(text)
+        or (_ack_mode != "off" and looks_like_degenerate_final(text, user_message=user_message))
+    ):
         logger.warning(
             "Degenerate final: %d-char fragment %r ended the turn after %d tool result(s) — "
             "re-prompting (%d/2)", len(text), text[:40], tool_rows, continuations + 1,

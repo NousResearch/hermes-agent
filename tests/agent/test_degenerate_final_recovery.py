@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.agent_runtime_helpers import looks_like_degenerate_final
+from agent.agent_runtime_helpers_final_shape import looks_like_degenerate_final, looks_like_markdown_stub
 from agent.conversation_loop import _DEGENERATE_FINAL_NUDGE
 
 
@@ -105,10 +105,30 @@ class TestFragmentAfterToolWork:
         assert result["final_response"] == "пар"
 
 
+@pytest.mark.parametrize("text", ["🔍 **", "📊 ***", "🔍 ** "])
+def test_markdown_stub_is_detected(text):
+    assert looks_like_markdown_stub(text)
+
+
+@pytest.mark.parametrize("text", ["✅", "**Done**", "{}", "N/A", "***", "", "🔍 **Report**"])
+def test_markdown_stub_spares_real_answers(text):
+    assert not looks_like_markdown_stub(text)
+
+
+def test_markdown_stub_reprompted_on_default_chat_config(loop_agent):
+    """#118367: chat_completions leaves intent_ack_continuation off; the stub is still re-prompted."""
+    loop_agent._intent_ack_continuation = "auto"
+    result = _run(loop_agent, [_tool_round("call_1"), _final("🔍 **"), _final("Report: 3 new items.")])
+
+    assert loop_agent.client.chat.completions.create.call_count == 3
+    assert _user_rows_sent(loop_agent, 2)[-1] == _DEGENERATE_FINAL_NUDGE
+    assert result["final_response"] == "Report: 3 new items."
+
+
 class TestLooksLikeDegenerateFinal:
     EN = "Build the workbook and report back."
 
-    @pytest.mark.parametrize("text", ["пар", "?warming up", ",and", "ошибка", "!warming", "🔍 **", "📊 ***"])
+    @pytest.mark.parametrize("text", ["пар", "?warming up", ",and", "ошибка", "!warming"])
     def test_fragments_in_an_english_conversation(self, text):
         assert looks_like_degenerate_final(text, user_message=self.EN)
 

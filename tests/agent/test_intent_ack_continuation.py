@@ -26,8 +26,8 @@ import pytest
 from agent.agent_runtime_helpers import (
     intent_ack_continuation_mode,
     looks_like_codex_intermediate_ack,
-    post_work_narration_intent,
 )
+from agent.agent_runtime_helpers_final_shape import post_work_narration_intent
 from agent.conversation_loop import _NARRATION_FINAL_NUDGE
 from providers.base import ProviderProfile
 
@@ -293,6 +293,8 @@ def test_progress_narration_is_detected(text):
     "I'm currently building on the free tier, so the limits are 100 req/min.",
     "I am now compiling the complete answer. Root cause: a missing index on users.",
     "I am currently writing this from memory: the flag is --force.",
+    # Complete outputs of rewrite/translation tasks: the object is not the reply itself.
+    "I am currently building a house.", "I'm now writing a novel", "I am now preparing dinner.",
     # Future-tense announcements belong to the stall/ack guards, not this one.
     "I'll compile the complete answer.",
     "",

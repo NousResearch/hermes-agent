@@ -22,8 +22,11 @@ _POST_WORK_NARRATION_RE = re.compile(
     r"(?:i(?:['’])?m|i am) (?:now|currently)(?: \w+){0,2}? "
     r"(?:compiling|writing|generating|creating|building|preparing|assembling|putting together"
     r"|finalizing|finalising|summarizing|summarising|drafting|composing)\b"
-    # The rest is a bare noun phrase ("the complete answer"): any clause break, digit or colon
-    # means the message carries content ("... on the free tier, so the limit is 100").
+    # The object must be the reply itself ("the complete answer", "your report"): "I am currently
+    # building a house." is a complete answer to a translation task, not a progress note. No
+    # clause break, digit or colon either, so a note that carries content stays terminal.
+    r"(?=[^.!?\n,;:\d]{0,80}\b(?:answer|response|reply|report|summary|results?|output|findings"
+    r"|analysis|write-?up|deliverable)s?\b)"
     r"[^.!?\n,;:\d]{0,80}[.!\u2026]*\s*\Z",
     re.IGNORECASE,
 )
@@ -72,15 +75,26 @@ def looks_like_degenerate_final(text: str, user_message: Any = None) -> bool:
         return False
     if t[0] in _DEGENERATE_LEADING_PUNCT and len(t) > 1 and t[1].isalpha():
         return True
-    # A presentation symbol plus dangling Markdown emphasis and nothing else ("🔍 **", #118367): the
-    # opening of a report that never came. A bare emoji ("✅") or "**Done**" stays an answer.
-    if "*" in t and not any(ch.isalnum() for ch in t) and any(not ch.isascii() and not ch.isspace() for ch in t):
-        return True
     if not any(ch.isalpha() for ch in t) or any(ch.isascii() and ch.isalnum() for ch in t):
         return False
     from agent.codex_responses_adapter import _summarize_user_message_for_log
     user_text = _summarize_user_message_for_log(user_message) if user_message else ""
     return not any(ch.isalpha() and not ch.isascii() for ch in user_text)
+
+
+def looks_like_markdown_stub(text: str) -> bool:
+    """A presentation symbol plus dangling Markdown emphasis and nothing else ("🔍 **", #118367).
+
+    The opening of a report that never came. A bare emoji ("✅"), "**Done**", "{}" and "N/A" stay
+    answers: the stub has no letter or digit at all, a ``*``, and a non-ASCII symbol.
+    """
+    t = (text or "").strip()
+    return (
+        0 < len(t) <= _DEGENERATE_FINAL_MAX_CHARS
+        and "*" in t
+        and not any(ch.isalnum() for ch in t)
+        and any(not ch.isascii() and not ch.isspace() for ch in t)
+    )
 
 
 def tool_results_this_turn(messages: list[dict[str, Any]]) -> int:

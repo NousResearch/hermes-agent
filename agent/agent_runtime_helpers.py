@@ -35,10 +35,6 @@ from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_messag
 from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
-from agent.agent_runtime_helpers_final_shape import (
-    looks_like_degenerate_final, post_work_narration_intent, promoted_reasoning_announces_action,
-    tool_results_this_turn, trailing_continue_intent,
-)
 from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)

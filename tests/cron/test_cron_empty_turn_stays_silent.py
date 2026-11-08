@@ -62,3 +62,19 @@ def test_short_response_without_stop_metadata_fails_open():
     }
 
     assert _final_response_from_result(result, "job1", "Morning brief", _AIAgent) == "🔍 **"
+
+
+def test_recovery_nudge_row_is_not_judged_as_the_users_script():
+    """A non-Latin answer after a recovery nudge is judged against the job's own prompt."""
+    from agent.conversation_loop import _DEGENERATE_FINAL_NUDGE
+    result = {
+        "final_response": "Готово", "failed": False, "completed": True,
+        "turn_exit_reason": "text_response(finish_reason=stop)",
+        "messages": [
+            {"role": "user", "content": "Собери отчёт и отчитайся"},
+            {"role": "assistant", "content": "пар"},
+            {"role": "user", "content": _DEGENERATE_FINAL_NUDGE},
+        ],
+    }
+
+    assert _final_response_from_result(result, "job1", "Отчёт", _AIAgent) == "Готово"

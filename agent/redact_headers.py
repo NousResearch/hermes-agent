@@ -198,3 +198,31 @@ def redact_header_credentials(text: str) -> str:
     text = _COOKIE_HEADER_UNQUOTED_CURL_RE.sub(lambda m: m.group(1) + "***", text)
     text = _COOKIE_HEADER_INLINE_RE.sub(lambda m: m.group(1) + "***", text)
     return text
+
+
+# Cookie credentials are bearer credentials, but ``cookie`` stays out of the shared
+# secret-keyword set (``cookie_policy: strict``, ``cookies enabled`` are prose). The
+# assignment form needs a key that IS ``cookie`` or ends in ``_cookie``; ``mycookiejar=1``,
+# ``cookie_policy=x`` and URL query params (``?cookie=``) never match.
+_COOKIE_ASSIGN_RE = re.compile(
+    r"(?<![\w?&])((?:[A-Za-z0-9]+_)*+cookie\s*=(?!=)\s*)"
+    r"(?:(?P<q>[\"'])(?P<quoted>(?:(?!(?P=q))[^\\\r\n]|\\.)*)(?P=q)(?P<tail>(?:[^\s\"']++|'[^'\r\n]*+'|\"(?:\\.|[^\"\\\r\n])*+\")*+)|(?P<bare>\S+))",
+    re.IGNORECASE,
+)
+
+
+def _redact_cookie_assignment(m: "re.Match[str]", mask, env_lookup_re: "re.Pattern[str]") -> str:
+    """Mask a ``cookie=`` value; a lone quoted value keeps its quotes, and a shell word joining
+    quoted and bare parts (``'sid='\\''opaque'``) is masked as one word."""
+    joined = m.group("q") is None or m.group("tail")
+    value = m.group(0)[len(m.group(1)):] if joined else m.group("quoted")
+    if env_lookup_re.match(value) or value.startswith(("***", "«redacted")):
+        return m.group(0)
+    q = "" if joined else m.group("q")
+    return f"{m.group(1)}{q}{mask(value)}{q}"
+
+
+def redact_cookie_assignments(text: str, mask, env_lookup_re: "re.Pattern[str]") -> str:
+    """``cookie=`` / ``*_COOKIE=`` assignment values (an ``=`` gated assignment pass in
+    agent/redact.py); ``env_lookup_re`` keeps ``os.getenv(...)`` code references intact."""
+    return _COOKIE_ASSIGN_RE.sub(lambda m: _redact_cookie_assignment(m, mask, env_lookup_re), text)

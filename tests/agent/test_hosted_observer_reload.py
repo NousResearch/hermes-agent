@@ -1,7 +1,7 @@
 import threading
 
 
-def test_multiple_hosted_callbacks_share_worker_cap(monkeypatch, tmp_path):
+def test_multiple_hosted_callbacks_each_receive_events(monkeypatch, tmp_path):
     from agent import plugin_stream_hooks as observers
     from hermes_cli import plugins
     from hermes_cli.plugin_host import PluginHost
@@ -25,9 +25,9 @@ def test_multiple_hosted_callbacks_share_worker_cap(monkeypatch, tmp_path):
         for ref in range(3):
             context.register_hook("memory_prefetch", host._callable_proxy({"__callable__": ref}))
         assert observers.enqueue_plugin_observer_hook("memory_prefetch", event_id=0)
-        assert all(event.wait(timeout=5) for event in started[:2])
+        assert all(event.wait(timeout=5) for event in started)
         manager.unload(manifest)
-        assert sum(d.thread is not None and d.thread.is_alive() for d in observers._dispatchers.values()) == 2
+        assert sum(d.thread is not None and d.thread.is_alive() for d in observers._dispatchers.values()) == 3
     finally:
         release.set()
         manager.unload(manifest)

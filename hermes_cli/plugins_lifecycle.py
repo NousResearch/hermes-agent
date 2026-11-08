@@ -31,7 +31,15 @@ def _dispose_manager(plugins, manager) -> None:
         plugins._clear_plugin_submodules(manager)
     finally:
         try:
-            manager.unload()
+            try:
+                manager.unload()
+            finally:
+                # Unlike a force reload, a retired manager has no later discovery to
+                # reconcile parked process-global registrations.
+                if isinstance(manager, plugins.PluginManager):
+                    pending = manager._persistent_carryover + manager._active_persistent()
+                    manager._dispose_registrations(pending)
+                    manager._persistent_carryover.clear()
         finally:
             if host is not None:
                 host.shutdown()

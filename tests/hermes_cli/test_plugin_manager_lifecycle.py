@@ -650,3 +650,41 @@ def test_retired_manager_cannot_reload_captured_manifest_into_successor(
         assert successor._hooks["memory_prefetch"] == [successor_callback]
     finally:
         plugins._reset_plugin_managers_for_tests()
+
+
+@pytest.mark.parametrize("parked", [False, True])
+def test_retirement_releases_launch_auth_before_absent_rediscovery(profile_env, monkeypatch, parked):
+    from hermes_cli.dashboard_auth import clear_providers, get_provider
+    from hermes_cli.dashboard_auth.base import DashboardAuthProvider
+    from hermes_cli.plugins_lifecycle import unload_plugin_manager_for_home
+
+    class Auth(DashboardAuthProvider):
+        name = "retirement-auth"
+        display_name = "Retirement auth"
+
+        def start_login(self, *, redirect_uri): pass
+        def complete_login(self, *, code, state, code_verifier, redirect_uri): pass
+        def verify_session(self, *, access_token): pass
+        def refresh_session(self, *, refresh_token): pass
+        def revoke_session(self, *, refresh_token): pass
+
+    clear_providers()
+    monkeypatch.setattr(plugins, "get_bundled_plugins_dir", lambda: profile_env / "no-bundled-plugins")
+    manager = plugins.get_plugin_manager()
+    ctx = plugins.PluginContext(plugins.PluginManifest(name="retirement-auth"), manager=manager)
+    provider = Auth()
+    handle = ctx.register_dashboard_auth_provider(provider)
+    assert handle is not None and get_provider(provider.name) is provider
+    if parked:
+        manager.unload()
+        assert get_provider(provider.name) is provider
+    try:
+        assert unload_plugin_manager_for_home(profile_env)
+        after_retirement = get_provider(provider.name)
+        successor = plugins.get_plugin_manager()
+        assert successor is not manager
+        successor.discover_and_load(force=True)
+        assert get_provider(provider.name) is None
+        assert after_retirement is None
+    finally:
+        clear_providers()

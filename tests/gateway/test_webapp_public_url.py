@@ -98,6 +98,24 @@ def test_a_browser_without_fetch_metadata_writes_from_the_webapps_public_origin(
     assert cookie_origin_is_allowed(dashboard) is False
 
 
+def test_a_tls_terminating_proxy_stripping_origin_keeps_the_pages_own_write_allowed(monkeypatch):
+    # The browser computed Sec-Fetch-Site against the URL it actually addressed; a proxy that
+    # strips Origin on the way must not turn the page's own write into a refusal (#149026).
+    from hermes_cli.dashboard_auth.request_utils import cookie_origin_is_allowed
+
+    monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", DASHBOARD_URL)
+    state = SimpleNamespace(listener_public_url=WEBAPP_URL, bound_host="127.0.0.1",
+                            trusted_public_hosts=frozenset({"webapp.example.net"}))
+    stripped_own = _request(state, {"host": "webapp.example.net", "sec-fetch-site": "same-origin"})
+    stripped_foreign = _request(state, {"host": "webapp.example.net", "sec-fetch-site": "cross-site"})
+    assert cookie_origin_is_allowed(stripped_own) is True
+    # Cross-site stays refused even without an Origin, and a foreign Host is still caught by the
+    # Host guard no matter what Fetch Metadata claims.
+    assert cookie_origin_is_allowed(stripped_foreign) is False
+    wrong_host = _request(state, {"host": "evil.example.net", "sec-fetch-site": "same-origin"})
+    assert cookie_origin_is_allowed(wrong_host) is False
+
+
 @pytest.fixture(scope="module")
 def own_url(tmp_path_factory):
     # The "my own URL" shape: a loopback Webapp behind a proxy at webapp.public_url, with sign-in.

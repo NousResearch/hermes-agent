@@ -83,7 +83,11 @@ def cookie_origin_is_allowed(request: Request) -> bool:
     if not origins:
         # Electron's net.request sends Sec-Fetch-Site: none to https and loopback, and no Fetch
         # Metadata to plain http. Pages attach Origin to every non-GET and keep none for typed GETs.
-        return fetch_sites in ([], ["none"])
+        # A TLS-terminating proxy (home router, CDN, ingress) may strip Origin before the backend
+        # sees it; the browser's own Sec-Fetch-Site verdict survives that hop and already decides
+        # the outcome whenever an Origin is present (below), so same-origin admits the write here
+        # too — after the Host guard above, which still bounds which server this is.
+        return fetch_sites in ([], ["none"], ["same-origin"])
     origin = _http_origin(origins[0]) if len(origins) == 1 else None
     if origin is None:
         return False

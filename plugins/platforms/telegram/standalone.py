@@ -14,6 +14,7 @@ import re
 from types import SimpleNamespace
 
 from agent.redact import redact_sensitive_text
+from plugins.platforms.telegram.telegram_send_errors import is_entity_parse_error
 from pm import install_hint
 
 logger = logging.getLogger(__name__)
@@ -61,43 +62,18 @@ def _media_caption_split(text, media_files):
 
 
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
-    """Retry delay in seconds, or None when final. The adapter's classifiers own the answer (PTB keys
-    errors on class — ``BadRequest`` subclasses ``NetworkError`` yet is permanent), so status digits in
-    a message never select a retry. ``retry_after`` wins; a connect or pool timeout backs off (the
-    request never left); any other timeout is final (it may have reached Telegram); a transient
-    transport/5xx failure backs off. A raw socket error is final: it may have failed mid-write."""
-    retry_after = getattr(exc, "retry_after", None)
-    if retry_after is not None:
+    """Retry delay in seconds, or None when final, from ``telegram_send_errors.send_error_kind``:
+    ``retry_after`` wins; a connect or pool failure (the request never left) and Telegram's own 5xx
+    JSON answer back off; a timeout, a 504, a reset after the write or an unreadable 5xx body may
+    have posted the message, and a refusal or a local error will not change, so both are final."""
+    from plugins.platforms.telegram import telegram_send_errors as kinds
+    kind = kinds.send_error_kind(exc)
+    if kind == kinds.FLOOD:
         try:
-            return max(float(retry_after), 0.0)
+            return max(float(exc.retry_after), 0.0)
         except (TypeError, ValueError):
             return 1.0
-    try:
-        from plugins.platforms.telegram.adapter import TelegramAdapter
-    except ImportError:  # adapter unavailable: retry nothing rather than guess from the text
-        return None
-    backoff = float(2 ** attempt)
-    if TelegramAdapter._looks_like_connect_timeout(exc) or TelegramAdapter._looks_like_pool_timeout(exc):
-        return backoff
-    if TelegramAdapter._is_timed_out(exc) or "timeout" in str(exc).lower():
-        return None
-    if not TelegramAdapter._looks_like_network_error(exc) or isinstance(exc, OSError):
-        return None
-    # A NetworkError chained to a transport exception failed on the wire: only a connect error proves
-    # the request never left; a reset/read error after the write may have posted it (unknown, final).
-    # An unchained one is Telegram's own 5xx reply, so nothing was posted.
-    causes = [c for c in _exception_chain(exc) if c is not exc]
-    if not causes:
-        return backoff
-    return backoff if any("connecterror" in type(c).__name__.lower() for c in causes) else None
-
-
-def _exception_chain(exc):
-    seen, cur = [], exc
-    while cur is not None and cur not in seen:
-        seen.append(cur)
-        cur = cur.__cause__ or cur.__context__
-    return seen
+    return float(2 ** attempt) if kind in (kinds.UNSENT, kinds.SERVER_ERROR) else None
 
 
 async def _send_telegram_message_with_retry(bot, *, attempts: int = 3, **kwargs):
@@ -195,8 +171,7 @@ async def _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, *
 
 
 def _is_telegram_parse_error(error) -> bool:
-    err_text = str(error).lower()
-    return "parse" in err_text or "markdown" in err_text or "html" in err_text
+    return is_entity_parse_error(error)
 
 
 async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, text_kwargs):
@@ -263,11 +238,10 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
             try:
                 return await _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **media_kwargs)
             except Exception as media_err:
-                err_text = str(media_err).lower()
                 if _is_telegram_thread_not_found(media_err) and media_kwargs.get("message_thread_id"):
                     logger.warning("Thread %s not found for media send, retrying without message_thread_id",
                                    media_kwargs.pop("message_thread_id"))
-                elif media_kwargs.get("parse_mode") and ("parse" in err_text or "caption" in err_text):
+                elif media_kwargs.get("parse_mode") and is_entity_parse_error(media_err, ("parse", "caption")):
                     logger.warning("Caption parse failed for media send, retrying plain: %s",
                                    _sanitize_error_text(media_err))
                     media_kwargs.pop("parse_mode", None)

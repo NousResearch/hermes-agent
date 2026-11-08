@@ -7,6 +7,7 @@ stay in the expected lane when sends include the private topic
 routing constraint instead of sending the message to a different lane.
 """
 
+import asyncio
 import sys
 import socket
 import types
@@ -515,6 +516,66 @@ async def test_media_group_lost_reply_is_ambiguous_and_never_resent(tmp_path):
 
     assert result.success is True and result.raw_response["ambiguous"] is True
     adapter._bot.send_photo.assert_not_awaited()
+
+
+class NetworkError(FakeNetworkError):
+    """Named as PTB's class: this module's fake ``telegram.error`` lacks Forbidden/RetryAfter, so the
+    adapter's classifier matches a 5xx ``NetworkError`` by class name here."""
+
+
+def _html_5xx(status, phrase, body="<html><h1>{status}</h1></html>"):
+    """PTB's shape for a 5xx whose body is a proxy's HTML page: a NetworkError chained to the parse."""
+    try:
+        try:
+            raise ValueError("Invalid server response")
+        except ValueError as parse_error:
+            raise NetworkError(f"{phrase} ({status}). Parsing the server response "
+                               f"b'{body.format(status=status)}' failed") from parse_error
+    except NetworkError as exc:
+        return exc
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc", [NetworkError("Gateway Timeout (504)"), NetworkError("Bad Gateway"),
+                                 _html_5xx(504, "Gateway Timeout")], ids=["504", "502-json", "504-html"])
+async def test_media_group_5xx_is_ambiguous_and_never_resent(tmp_path, exc):
+    """Any 5xx answer to sendMediaGroup may follow a posted album, like a timeout: no per-photo copy."""
+    adapter = _make_adapter()
+    paths = [tmp_path / f"p{i}.png" for i in range(2)]
+    for path in paths:
+        path.write_bytes(b"png-data")
+    adapter._bot = SimpleNamespace(send_media_group=AsyncMock(side_effect=exc),
+                                   send_photo=AsyncMock(return_value=SimpleNamespace(message_id=1)))
+
+    result = await adapter.send_multiple_images(chat_id="123", images=[(f"file://{p}", None) for p in paths])
+
+    assert result.success is True and result.raw_response["ambiguous"] is True
+    assert adapter._bot.send_media_group.await_count == 1
+    adapter._bot.send_photo.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_html_5xx_page_never_falls_back_to_plain_text(monkeypatch):
+    """A 5xx body is the proxy's text, and it may name parsing or markdown; it is still a lost
+    answer, not an entity-parse refusal: no plain-text copy. A real BadRequest still falls back."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    adapter = _make_adapter()
+    modes = []
+
+    async def send_message(**kwargs):
+        modes.append(kwargs.get("parse_mode"))
+        raise _html_5xx(502, "Bad Gateway", "<html><p>upstream could not parse the markdown request</p></html>")
+    adapter._bot = SimpleNamespace(send_message=AsyncMock(side_effect=send_message))
+
+    result = await adapter.send("123", "hello *world*")
+
+    assert result.success is False
+    assert None not in modes
+
+    adapter._bot = SimpleNamespace(send_message=AsyncMock(side_effect=[
+        FakeBadRequest("Bad Request: can't parse entities"), SimpleNamespace(message_id=9)]))
+    assert (await adapter.send("123", "hello *world*")).success is True
+    assert [c.kwargs.get("parse_mode") for c in adapter._bot.send_message.await_args_list][1] is None
 
 
 @pytest.mark.asyncio

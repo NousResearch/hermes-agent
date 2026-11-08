@@ -276,11 +276,10 @@ def _rewrite_substr(statement: str) -> str:
     return "".join(out)
 
 
-# ``COALESCE(json_extract((CASE WHEN json_valid(X) <> 0 THEN X ELSE 'null' END), '$.model_only'), 0) = 0``
-# -> text test over the extracted scalar (model_only is only ever written as JSON ``true`` or absent).
-_MODEL_ONLY_RE = re.compile(
-    r"COALESCE\(json_extract\(\(CASE WHEN json_valid\(([A-Za-z_][\w.]*)\) <> 0 THEN \1 ELSE 'null' END\), "
-    r"'\$\.model_only'\), 0\) = 0")
+# The model-only display marker no longer has a dedicated converter rule: the shared
+# type-aware expression (hermes_state_common._sql_model_only_truthy) is built from
+# json_type()/json_extract()/json_valid(), which the PG shim registers as-is, so it
+# passes through the converter unchanged.
 # ``COALESCE(json_extract((CASE WHEN json_valid(X) <> 0 THEN X ELSE 'null' END), 'P'), 0) = 1``
 # (the queued-prompt marker): SQLite's json_extract returns JSON true as 1, so the shared SQL
 # tests the boolean marker numerically; the TEXT shim returns 'true'. Test the scalar text
@@ -339,10 +338,6 @@ def _convert_statement(statement: str) -> str:
     # ``_sql_json_extract`` builds ``(CASE WHEN json_valid(X) <> 0 THEN X ELSE 'null' END)``;
     # PostgreSQL's jsonb cast on NULL is a no-op and the boolean shim shadows the native
     # integer-returning json_valid, so both <> 0 tests collapse to the bare predicate.
-    # The one numeric comparison (model_only, written only as JSON true or absent) becomes a
-    # text test over the extracted scalar.
-    out = _MODEL_ONLY_RE.sub(
-        r"COALESCE((\1::jsonb) ->> 'model_only', '0') NOT IN ('1', 'true')", out)
     out = _JSON_BOOL_MARKER_RE.sub(
         r"json_extract((CASE WHEN json_valid(\1) <> 0 THEN \1 ELSE 'null' END), \2) = 'true'", out)
     out = _RETIRED_OWN_CASE_RE.sub(

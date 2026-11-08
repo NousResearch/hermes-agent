@@ -45,6 +45,34 @@ class BitwardenLoginBackend(LoginBackend):
             raise RuntimeError("Bitwarden CLI (bw) not found — install it or set vault.bitwarden.binary_path")
         return Path(found)
 
+    def _session_file(self) -> Path:
+        """Where a standing session token lives, when the operator keeps one.
+
+        ``bw login --raw`` (or ``bw unlock --raw``) writes a token that stays valid
+        across processes; Hermes' own start-up helper reads the same file. Honouring
+        it here means one unlock serves both the CLI and browser fills, instead of
+        the backend reporting ``locked`` while a perfectly good token sits on disk.
+        Absent by default: the backend still requires a prompt when no file exists.
+        """
+        cfg_path = str(self.cfg.get("session_file") or "").strip()
+        if cfg_path:
+            return Path(os.path.expanduser(cfg_path))
+        env_path = os.environ.get("BW_SESSION_FILE")
+        if env_path:
+            return Path(os.path.expanduser(env_path))
+        home = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
+        return home / "secrets" / "bw_session"
+
+    def _file_token(self) -> Optional[str]:
+        try:
+            token = self._session_file().read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        return token or None
+
+    def _token(self) -> Optional[str]:
+        return _unlock.get_session_token(self.name) or self._file_token()
+
     def _env(self, session_token: Optional[str]) -> dict[str, str]:
         env = {k: os.environ[k] for k in _ENV_KEEP if k in os.environ}
         env["NO_COLOR"] = "1"
@@ -53,7 +81,7 @@ class BitwardenLoginBackend(LoginBackend):
         return env
 
     def is_unlocked(self) -> bool:
-        return _unlock.is_unlocked(self.name)
+        return _unlock.is_unlocked(self.name) or self._file_token() is not None
 
     def unlock(self, master_password: str) -> None:
         # bw refuses a piped password ("Master password is required"); its non-interactive contract is
@@ -72,7 +100,7 @@ class BitwardenLoginBackend(LoginBackend):
             raise RuntimeError("Bitwarden was locked while unlocking; try again")
 
     def _run(self, *args: str) -> str:
-        token = _unlock.get_session_token(self.name)
+        token = self._token()
         if not token:
             raise UnlockRequired(self)
         proc = run_cli([str(self._bw()), *args, "--nointeraction"], env=self._env(token), timeout=_TIMEOUT,

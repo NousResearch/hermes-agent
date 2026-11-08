@@ -50,7 +50,7 @@ _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 
 # --- Per-session approval state (thread-safe) -----------------------------------------------------------------------
 
-_lock = threading.Lock()
+_lock = threading.RLock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
@@ -204,18 +204,18 @@ def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Opt
     approval in the same session. A card sent without an id answers only a session's sole pending
     request and resolves nothing while two or more are pending. A Deny-only
     card's request refuses any other choice, so a forged or hand-added approve tap resolves nothing.
-    The settle names the entry that was checked: an id-less tap whose checked request times out before
-    the settle resolves nothing, never a (possibly Deny-only) request queued after it."""
-    with _lock:
+    The check and the settle are one critical section, so no request can expire, be marked Deny-only
+    or join the queue between them."""
+    with _lock:  # re-entrant: the settle below takes it again
         target = _card_target(session_key, request_id)
         if target is None and not request_id and _gateway_queues.get(session_key):
             return 0  # an id-less tap with two or more pending cannot say which card it came from
         if target is not None and choice != "deny" and target.data.get("card_deny_only"):
             return 0
         request_id = target.data.get("request_id") if target is not None else request_id
-    if request_id:
-        return resolve_gateway_approval(session_key, choice, request_id=request_id)
-    return resolve_gateway_approval(session_key, choice)
+        if request_id:
+            return resolve_gateway_approval(session_key, choice, request_id=request_id)
+        return resolve_gateway_approval(session_key, choice)
 
 
 def withdraw_gateway_approval(session_key: str, request_id: str, cause: str) -> bool:

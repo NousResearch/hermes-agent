@@ -115,3 +115,23 @@ async def test_qq_card_approve_and_deny_resolve_their_request(monkeypatch):
     await adapter.send_exec_approval(chat_id="u-42", command="ls", session_key=SK, request_id="c")
     await _tap(adapter, cards[1]["deny"])
     assert denied.result == "deny"
+
+
+def test_a_card_tap_checks_and_settles_in_one_step(monkeypatch):
+    """Nothing can join the queue between a tap's check and its settle: an id-less tap that found no
+    pending request never settles a Deny-only one enqueued right after the check."""
+    from tools import approval
+    from tools.approval_gateway_wait import _ApprovalEntry
+
+    monkeypatch.delitem(approval._gateway_queues, SK, raising=False)
+    late = _ApprovalEntry({"request_id": "b", "card_deny_only": True})
+    select = approval._card_target
+
+    def select_then_enqueue(session_key, request_id):
+        entry = select(session_key, request_id)
+        approval._gateway_queues.setdefault(session_key, []).append(late)
+        return entry
+
+    monkeypatch.setattr(approval, "_card_target", select_then_enqueue)
+    assert approval.resolve_gateway_approval_card(SK, "once", None) == 0
+    assert late.result is None and not late.event.is_set()

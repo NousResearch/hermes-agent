@@ -1087,3 +1087,23 @@ async def test_private_topic_thread_not_found_flake_retries_same_thread_first():
 
     assert result.success is True
     assert [(c.get("message_thread_id"), c.get("direct_messages_topic_id")) for c in call_log] == [(20197, None), (20197, None)]
+
+
+@pytest.mark.asyncio
+async def test_text_reply_with_reply_message_not_found_wording_drops_only_the_anchor():
+    """Telegram's second deleted-anchor wording ("reply message not found") drops the anchor on text too."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("reply_to_message_id"):
+            raise FakeBadRequest("Bad Request: reply message not found")
+        return SimpleNamespace(message_id=10)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="-100123", content="x", reply_to="462", metadata={"thread_id": "77"})
+
+    assert result.success is True
+    assert [(c.get("message_thread_id"), c.get("reply_to_message_id")) for c in call_log] == [(77, 462), (77, None)]

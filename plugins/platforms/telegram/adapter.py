@@ -1103,6 +1103,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         """True when a DM-topic send may drop a deleted reply anchor and keep its route."""
         if not cls._dm_topic_fallback(metadata) or not cls._is_bad_request_error(error) or reply_to_message_id is None:
             return False
+        return cls._is_reply_anchor_missing_error(error)
+
+    @staticmethod
+    def _is_reply_anchor_missing_error(error: Exception) -> bool:
+        """Telegram's two wordings for a deleted reply target; shared by the media, text and overflow ladders."""
         return any(marker in str(error).lower() for marker in ("message to be replied not found", "reply message not found"))
 
     async def _send_with_dm_topic_reply_anchor_retry(
@@ -3423,7 +3428,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                         effective_thread_id = None
                         thread_kwargs = {"message_thread_id": None}
                         continue
-                    if "message to be replied not found" in str(send_err).lower() and reply_to_id is not None:
+                    if self._is_reply_anchor_missing_error(send_err) and reply_to_id is not None:
                         safe_send_error = _redact_telegram_error_text(send_err)
                         # Reply target deleted: drop only the anchor; the topic route stays (#136808).
                         logger.warning("[%s] Reply target deleted, retrying without reply_to: %s", self.name, safe_send_error)
@@ -3879,8 +3884,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                     reply_to_message_id=reply_to_id, **thread_kwargs, **base),
                     timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
             except Exception as send_err:
-                if any(marker in str(send_err).lower() for marker in (
-                    "message to be replied not found", "reply message not found")):
+                if self._is_reply_anchor_missing_error(send_err):
                     retry_thread_kwargs = self._thread_kwargs_for_send(
                         chat_id, thread_id, metadata, reply_to_message_id=None)
                     try:

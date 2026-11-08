@@ -204,3 +204,29 @@ def test_simplex_trailing_dot_host_is_not_bypassed_by_its_bare_name(monkeypatch,
     error = str(result.get("error") or "")
     assert re.search(r"\bInvalidProxy via ", error) and "qzx" not in unquote(error), error
 
+
+def test_feishu_media_download_failure_log_carries_no_proxy_secret(monkeypatch, caplog):
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import SendResult as _SendResult
+    from plugins.platforms.feishu import adapter as fs
+
+    for name in (*ENV_PROXY_VARS, "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://bob:qzxqzxqzx#x@127.0.0.1:1")
+    monkeypatch.setenv("HTTP_PROXY", "http://bob:qzxqzxqzx#x@127.0.0.1:1")
+    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda url: True)
+    adapter = fs.FeishuAdapter(PlatformConfig(enabled=True, extra={"app_id": "cli_x", "app_secret": "s"}))
+
+    async def _send(**_kwargs):
+        return _SendResult(success=True)
+
+    monkeypatch.setattr(adapter, "send", _send)
+    formatter = logging.Formatter("%(levelname)s %(name)s %(message)s")
+    for call in (lambda: adapter.send_image("oc_x", "https://example.com/a.png"),
+                 lambda: adapter.send_animation("oc_x", "https://example.com/a.gif")):
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            asyncio.run(asyncio.wait_for(call(), 60))
+        logs = "\n".join(formatter.format(r) for r in caplog.records if "feishu" in r.name)
+        assert "Failed to download" in logs, logs
+        assert "qzx" not in logs and "qzx" not in unquote(logs), logs[-2000:]

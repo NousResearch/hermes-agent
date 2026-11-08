@@ -24,4 +24,9 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # Chronos managed-cron fire webhook (NAS -> agent). NOT cookie-gated: it
     # carries its own short-lived NAS-minted JWT (purpose=cron_fire), which the
     # handler verifies — the JWT, not this allowlist, is the security boundary.
-    "/api/cron/fire"})
+    "/api/cron/fire",
+    # Loopback-only owner handshake for `hermes --tui --resume` joining a live session this
+    # process owns (web_routers/session_attach.py). The caller is a fresh local process with no
+    # dashboard identity; the handler fences loopback peer + lease identity and 404s everything
+    # else, so a remote curl learns nothing.
+    "/api/session-attach"})

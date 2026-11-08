@@ -114,6 +114,13 @@ jobs:
       - name: Run WhatsApp bridge node tests
         run: node --test scripts/whatsapp-bridge/*.test.mjs
 
+      - name: Install locked Photon sidecar dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: npm ci --ignore-scripts --no-audit --no-fund --prefix plugins/platforms/photon/sidecar
+      - name: Run Photon stream recovery tests
+        run: npm test --prefix plugins/platforms/photon/sidecar
+
       # Every check runs at the same time. The step fails only after all of
       # them finish. There are two reasons this is not ``pnpm -r run check``.
       #

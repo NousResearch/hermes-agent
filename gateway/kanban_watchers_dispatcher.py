@@ -133,6 +133,7 @@ class _KanbanDispatcher:
         self.kb = kb
         self.settings = settings
         self.disabled_corrupt_boards: dict[str, tuple[tuple[str, int | None, int | None], float]] = {}
+        self._pr_maintenance_cursor = 0
 
     def _board_slugs(self) -> list:
         return _board_slugs(self.kb)
@@ -212,6 +213,37 @@ class _KanbanDispatcher:
             if conn is not None:
                 with contextlib.suppress(Exception):
                     conn.close()
+
+    def _reconcile_pr_worktrees_for_board(self, slug: str) -> None:
+        conn = None
+        try:
+            from hermes_cli import kanban_db as _kb
+            from hermes_cli import kanban_db_workspace as _kbw
+
+            with _kb.pin_first_board_resolution():
+                conn = _kbc().connect(board=slug)
+                cleaned = _kbw.reap_merged_pr_worktrees(conn, max_checks=1)
+            if cleaned:
+                logger.info(
+                    "kanban PR maintenance: board %s removed merged-PR worktrees for %s",
+                    slug,
+                    ", ".join(cleaned),
+                )
+        except Exception:  # health: allow BLE001 -- per-board maintenance boundary logs and isolates failures
+            logger.exception("kanban PR maintenance failed on board %s", slug)
+        finally:
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()
+
+    def next_pr_maintenance_board(self) -> Optional[str]:
+        """Round-robin one board; the async watcher runs it off the dispatch path."""
+        slugs = self._board_slugs()
+        if not slugs:
+            return None
+        slug = slugs[self._pr_maintenance_cursor % len(slugs)]
+        self._pr_maintenance_cursor = (self._pr_maintenance_cursor + 1) % len(slugs)
+        return slug
 
     def tick_once(self) -> list[tuple[str, Optional[object]]]:
         """Run one dispatch_once per board. Returns (slug, result) pairs."""

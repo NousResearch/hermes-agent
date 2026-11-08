@@ -163,6 +163,9 @@ class AuthorityConnection:
         self.subscriptions = {}
         # session_id -> (epoch, sequence) the last reconnect replay answered; spent by the next resume.
         self.replay_cursors = {}
+        # Sessions this connection asked to catch up on (``session.events.since``): a reconnect, so its
+        # next ``session.resume`` re-attaches a view the client already had, even when replay needed a snapshot.
+        self.reconnects = set()
         self.handed_back = set()  # sessions this live client detached without closing (the TUI's switcher)
         self._identity, self._operator, self._siblings = identity, operator, {}
         authority.events[self.actor.transport_id] = transport
@@ -628,6 +631,8 @@ class AuthorityConnection:
     async def resume(self, ref, params):
         from gateway.session_local_inventory import snapshot_info
         replay_from = self.replay_cursors.pop(ref.session_id, None)
+        reconnect = ref.session_id in self.reconnects
+        self.reconnects.discard(ref.session_id)
         requested = ref.session_id
         if 'latest' in params:
             # Bare `-c` / `--resume latest`: the most recent session of that surface family the
@@ -689,25 +694,31 @@ class AuthorityConnection:
         # compression lineage (a whole-lineage read here made every open of a long chat cost seconds).
         omit = params.get('omit_messages') is True
         replay_from = replay_from if ref.session_id == requested else None
-        # A client opening the session (not a poll on its attachment, not a reconnect's replay).
-        opening = ref.session_id not in self.subscriptions and replay_from is None
-        snapshot = await self.authority.attach(self.actor, ref, history=not omit, replay_from=replay_from)
-        self.subscriptions[ref.session_id] = snapshot.subscription_id
-        self.handed_back.discard(ref.session_id)
-        self._spawn_notice(ref)
-        # Only local routes have a frozen local launch policy to project; with it, main's banner and
-        # status-bar inventory (tools, skills, MCP, version, branch) for that policy.
-        info = {'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL}
-        source = self.authority.sessions[snapshot.handle.ref.session_id].source
-        if source is not None and source.platform == Platform.LOCAL:
-            from gateway.session_policy import policy_for_source, refresh_profile_hooks
-            policy = policy_for_source(self.authority.runner, source)
-            await asyncio.to_thread(refresh_profile_hooks, policy)
-            if opening:
-                from gateway.session_open import fire
-                fire(snapshot.handle.ref, self.authority.sessions[snapshot.handle.ref.session_id].route, policy,
-                     self.authority.db)
-            info = await snapshot_info(self.authority, snapshot.handle.ref)
+        # A client opening the session (not a poll on its attachment, not a reconnect): the open is queued
+        # before the attach yields, so no turn another viewer submits meanwhile runs ahead of it.
+        opening = None
+        if ref.session_id not in self.subscriptions and not (reconnect and ref.session_id == requested):
+            from gateway.session_open import open_local
+            opening = open_local(self.authority, ref)
+        try:
+            snapshot = await self.authority.attach(self.actor, ref, history=not omit, replay_from=replay_from)
+            self.subscriptions[ref.session_id] = snapshot.subscription_id
+            self.handed_back.discard(ref.session_id)
+            self._spawn_notice(ref)
+            # Only local routes have a frozen local launch policy to project; with it, main's banner and
+            # status-bar inventory (tools, skills, MCP, version, branch) for that policy.
+            info = {'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL}
+            live = self.authority.sessions[snapshot.handle.ref.session_id]
+            if live.source is not None and live.source.platform == Platform.LOCAL:
+                from gateway.session_policy import policy_for_source, refresh_profile_hooks
+                policy = policy_for_source(self.authority.runner, live.source)
+                await asyncio.to_thread(refresh_profile_hooks, policy)
+                if opening is not None:
+                    opening.fire(policy, live.route)
+                info = await snapshot_info(self.authority, snapshot.handle.ref)
+        finally:
+            if opening is not None:  # not fired (a refusal, a messaging lane, a history mount): nothing waits
+                opening.release()
         from gateway.session_connections import pending_connection
         from gateway.session_server_requests import open_requests
         history, display = list(snapshot.history), {}
@@ -771,6 +782,7 @@ class AuthorityConnection:
         from gateway.session_server_requests import open_requests
         stream = self.authority.sessions[ref.session_id].event_stream
         replay = stream.since(epoch, sequence)
+        self.reconnects.add(ref.session_id)
         if not replay['snapshot_required']:
             self.replay_cursors[ref.session_id] = (
                 replay['replay_epoch'], max((frame['seq'] for frame in replay['events']), default=sequence))

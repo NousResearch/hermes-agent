@@ -19,7 +19,6 @@ from tests.waiting import wait_until
 
 _PLUGIN = '''import json
 import os
-import time
 from pathlib import Path
 
 
@@ -30,9 +29,12 @@ def register(ctx):
         gate = log.with_suffix(".gate")
         with open(log, "a") as out:
             out.write(json.dumps(dict(kw, home=str(get_hermes_home()), phase="start")) + "\\n")
-        deadline = time.monotonic() + 5
-        while gate.exists() and not gate.with_suffix(".open").exists() and time.monotonic() < deadline:
-            time.sleep(0.02)
+        if gate.exists():
+            from tests.waiting import wait_until
+            try:
+                wait_until(lambda: gate.with_suffix(".open").exists(), timeout=5, what="the gate")
+            except AssertionError:
+                pass
         with open(log, "a") as out:
             out.write(json.dumps(dict(kw, home=str(get_hermes_home()), phase="done")) + "\\n")
     ctx.register_hook("on_session_open", opened)
@@ -58,7 +60,7 @@ def _wait_done(log, count):
 @pytest.mark.platforms("linux")
 def test_each_open_fires_once_in_the_owning_profile(tmp_path, monkeypatch):
     """A gateway serving two profiles: create and a later reopen of the stored chat each fire once, in
-    the session's own profile (A -> B -> A); a snapshot poll on an attachment already held fires nothing."""
+    the session's own profile (A -> B -> A); a snapshot poll on an attachment already held and a reconnect fire nothing."""
     monkeypatch.setattr(harness, '_PLUGIN', _PLUGIN)
     with _gateway(tmp_path, beta=True) as (_proc, desc, home, work, _env, root_log, _peer):
         beta_home = (home / 'profiles' / 'beta').resolve()
@@ -75,12 +77,22 @@ def test_each_open_fires_once_in_the_owning_profile(tmp_path, monkeypatch):
             again = _Wire(home, desc)  # `hermes --resume`: a new client opens the stored session
             try:
                 again.call('session.resume', session_id=root_sid)
-                root_fired = _wait_done(root_log, 2)
             finally:
                 again.close()
+            # A reconnect (catch-up, then a snapshot re-attach) is no new open; the next real open is the barrier.
+            for reconnect in (True, False):
+                client = _Wire(home, desc)
+                try:
+                    if reconnect:
+                        client.call('session.events.since', session_id=root_sid, last_sequence=0, replay_epoch='gone')
+                    client.call('session.resume', session_id=root_sid)
+                finally:
+                    client.close()
+            root_fired = _wait_done(root_log, 3)
         finally:
             beta.close()
     assert root_fired == [(root_sid, 'cli', 'create', str(home.resolve())),
+                          (root_sid, 'cli', 'resume', str(home.resolve())),
                           (root_sid, 'cli', 'resume', str(home.resolve()))], root_fired
     assert _done(beta_log) == [(beta_sid, 'tui', 'create', str(beta_home))]
 

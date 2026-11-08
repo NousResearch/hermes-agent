@@ -187,6 +187,18 @@ turn-path write: it requires the session's claimed turn to be bound
 the backend checks inside the claim's transaction. `assert_isolating()` is
 abstract: every backend must check that it isolates tenants in storage itself.
 
+A backend proves itself against the conformance suite, which ships in the
+installed package as `hermes_conformance.storage`: a plugin's tests subclass
+`StorageConformance` and supply a `Backend` fixture. Pin refusal is tested for
+every mutating operation of both ports, and stale-fence refusal for every turn
+write (session creation included), both asserting that nothing observable
+changed, auxiliary usage per task included. The admission gate is tested while
+the claim waits for the writer, so a gate asked only before the claim's
+transaction fails. The suite's docstring
+lists the invariants it does not cover yet (participant visibility, actor- and
+owner-level resolution, child inheritance, retention, the hosted isolation
+assertion, transaction-local scope pinning); passing it does not establish them.
+
 ### Fenced turn writes
 
 A claimed turn has one identity: the bound `TurnScope` (session, turn, fence) plus the store

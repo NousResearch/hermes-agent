@@ -149,6 +149,9 @@ class SessionAuthority:
         self.events = {}
         self.native_waiters = set()
         self.pending_results = {}
+        # Admission-local secrets, never part of the ledger/digest. A restarted owner runs
+        # recovered queued inputs without them; an idempotent resend never replenishes them.
+        self.turn_envs = {}
         # Replies of recovered no-waiter turns, sent only once their terminal outcome commits.
         self.pending_deliveries = {}
         # Stops accepted for a running generation whose agent does not exist yet
@@ -725,7 +728,7 @@ class SessionAuthority:
         self._require_admission_open(queue_only=queue_only)
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
                 'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'interrupted',
-                'voice_turn', 'display_kind', 'title_preview', 'turn_author', 'api_text', 'model_override', 'clarify_batch'}
+                'voice_turn', 'display_kind', 'title_preview', 'turn_author', 'api_text', 'model_override', 'clarify_batch', 'turn_env'}
                 or not isinstance(request.payload['text'], str)):
             raise RuntimeStoreError('invalid_params')
         from gateway.session_ingress_media import admit_attachments
@@ -734,6 +737,8 @@ class SessionAuthority:
         from gateway.session_display import admit_display
         from gateway.session_cli_turn import admit_cli_turn
         finite = admit_finite(request.payload)
+        from gateway.session_turn_env import admit_turn_env, remember_turn_env
+        turn_env = admit_turn_env(self, request.payload.get('turn_env'))
         def admitted():
             # The exact durable identity (authenticated principal + target + request id); the
             # attachment fields it yields still pass the full payload-digest comparison below.
@@ -755,8 +760,11 @@ class SessionAuthority:
             payload['local_operator_v1'] = {
                 'profile_id': self.profile_id, 'session_id': request.ref.session_id,
                 'principal_id': actor.subject}
+        new_admission = False
         def admit():
+            nonlocal new_admission
             try:
+                new_admission = admitted() is None
                 return admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
                                            session_id=request.ref.session_id, request_id=request.request_id,
                                            payload=payload, intent=request.intent, _replay_guard=_replay_guard,
@@ -765,7 +773,10 @@ class SessionAuthority:
                 self._release_refused_capture(request, payload)
                 raise
         from gateway.session_runtime_workers import tracked_write
-        return await tracked_write(self, admit, then=partial(self._admitted, request.ref, None), ordered=True,
+        def committed(row):
+            remember_turn_env(self, row, turn_env, new_admission=new_admission)
+            return self._admitted(request.ref, None, row)
+        return await tracked_write(self, admit, then=committed, ordered=True,
                                    after=partial(self._schedule_admitted, request.ref))
 
     def _release_refused_capture(self, request, payload):
@@ -848,6 +859,7 @@ class SessionAuthority:
         return row
 
     def _settle_cancelled(self, ref, admission_id, outcome='cancelled'):
+        self.turn_envs.pop(admission_id, None)
         # The only place a queued row becomes terminal: every observer kind that waits on
         # the admission (native delivery, API/webhook/hosted waiters, ACP and viewer streams)
         # settles here, or a cancelled row that never reaches _drain blocks them forever.
@@ -1372,6 +1384,7 @@ class SessionAuthority:
                 # No settlement follows (a lost managed worker, a cancelled drain): the turn is never
                 # replayed, so its deferred reset is dropped (the next turn re-detects the overflow),
                 # never left to fire after a later settled turn with a stale entry.
+                self.turn_envs.pop(admission_id, None)
                 self.deferred_resets.pop(live.route, None)
                 from gateway.session_ingress import fire_post_delivery
                 await fire_post_delivery(self, admission_id)  # cancelled mid-turn: as an adapter task's finally

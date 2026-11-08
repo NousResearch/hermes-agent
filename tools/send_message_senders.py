@@ -213,10 +213,16 @@ async def _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, *
     return await getattr(bot, f"send_{kind}")(chat_id=chat_id, **{kind: f}, **kwargs)
 
 
+def _is_telegram_parse_error(error) -> bool:
+    err_text = str(error).lower()
+    return "parse" in err_text or "markdown" in err_text or "html" in err_text
+
+
 async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, text_kwargs):
     """One text chunk with adapter-matching fallbacks: thread-not-found -> retry without
     ``message_thread_id`` (dropped from ``text_kwargs`` for later chunks too); parse failure
-    -> plain text."""
+    -> plain text. A rejected HTML chunk (an unsupported tag beside supported ones) first
+    retries as MarkdownV2, so its Markdown still renders."""
     async def send(text, mode):
         return await _send_telegram_message_with_retry(bot, chat_id=chat_id, text=text, parse_mode=mode, **text_kwargs)
     try:
@@ -228,12 +234,17 @@ async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, t
             logger.warning("Thread %s not found in _send_telegram, retrying without message_thread_id",
                            text_kwargs.pop("message_thread_id"))
             return await send(chunk, parse_mode)
-        err_text = str(md_error).lower()
-        if "parse" in err_text or "markdown" in err_text or "html" in err_text:
-            logger.warning("Parse mode %s failed in _send_telegram, falling back to plain text: %s",
-                           parse_mode, _sanitize_error_text(md_error))
-            return await send(chunk if has_html else _strip_mdv2_safe(chunk), None)
-        raise
+        if not _is_telegram_parse_error(md_error):
+            raise
+        logger.warning("Parse mode %s failed in _send_telegram, falling back: %s",
+                       parse_mode, _sanitize_error_text(md_error))
+        if has_html and (mdv2 := _telegram_mdv2(chunk, max_units=4096)) is not None:
+            try:
+                return await send(mdv2, "MarkdownV2")
+            except Exception as mdv2_error:
+                if not _is_telegram_parse_error(mdv2_error):
+                    raise
+        return await send(chunk if has_html else _strip_mdv2_safe(chunk), None)
 
 
 async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, caption, parse_mode, has_html,
@@ -307,16 +318,26 @@ def _telegram_format(message):
     from telegram.constants import ParseMode
     if _TELEGRAM_HTML_TAG_RE.search(message):
         return message, ParseMode.HTML, True
+    mdv2 = _telegram_mdv2(message)
+    return (message if mdv2 is None else mdv2), ParseMode.MARKDOWN_V2, False  # None: send as-is
+
+
+def _telegram_mdv2(text, *, max_units=None):
+    """``text`` as the adapter's MarkdownV2 (``format_message``), or ``None`` when the adapter is
+    unavailable or the escaped text exceeds ``max_units`` UTF-16 units."""
+    from gateway.platforms.base import utf16_len
     try:
         from plugins.platforms.telegram.adapter import TelegramAdapter
-        return TelegramAdapter.__new__(TelegramAdapter).format_message(message), ParseMode.MARKDOWN_V2, False
-    except Exception:
-        return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
+    except ImportError:
+        return None
+    formatted = TelegramAdapter.__new__(TelegramAdapter).format_message(text)
+    return None if max_units is not None and utf16_len(formatted) > max_units else formatted
 
 
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False,
-                         force_document=False, extra=None):
-    """One-shot Telegram Bot API send over the platform's ``extra`` (base_url, proxy, fallback IPs);
+                         force_document=False, extra=None, notify=None):
+    """One-shot Telegram Bot API send over the platform's ``extra`` (base_url, proxy, fallback IPs,
+    ``rich_messages``), under the adapter's push-notification mode (``notify`` rings regardless);
     parse failures fall back to plain text."""
     if str(thread_id or "").strip() and not str(thread_id).strip().lstrip("-").isdigit():
         # ``<chat>:<topic name>`` parses for every caller, but only the live gateway's cron router
@@ -325,6 +346,10 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                       "resolve named topics. Use telegram:<chat_id>:<numeric thread id>, or deliver "
                       "through a cron job while the gateway is running.")
     try:
+        from plugins.platforms.telegram.telegram_outbound import (
+            is_visually_empty, notification_kwargs, resolve_notifications_mode, send_rich_standalone)
+        if is_visually_empty(message):
+            message = ""  # invisible-only text would land as an empty bubble
         formatted, send_parse_mode, _has_html = _telegram_format(message)
         bot = _telegram_bot(token, extra)
         from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
@@ -333,10 +358,17 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         # See #13206.
         int_chat_id = normalize_telegram_chat_id(chat_id)
         media_files = media_files or []
-        thread_kwargs = _telegram_thread_kwargs(thread_id)
+        thread_kwargs = {**_telegram_thread_kwargs(thread_id),
+                         **notification_kwargs(resolve_notifications_mode(), notify)}
         # disable_web_page_preview is only valid for send_message, not media sends.
         text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
         last_msg, warnings, _tg_caption = None, [], None
+        if message and not media_files:
+            rich = await send_rich_standalone(bot, {**(extra or {}), "disable_link_previews": disable_link_previews},
+                                              chat_id, message, thread_id=thread_id, notify=notify)
+            if rich is not None:
+                return (_success("telegram", chat_id, message_id=rich.message_id) if rich.success
+                        else _error(f"Telegram send failed: {rich.error}"))
         # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a
         # raw <1024 string past Telegram's cap, so re-check in UTF-16 units.
         _cap, _ = _media_caption_split(message, media_files, max_caption_len=_TELEGRAM_CAPTION_LIMIT)

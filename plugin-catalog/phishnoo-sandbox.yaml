@@ -1,0 +1,18 @@
+name: phishnoo-sandbox
+title: Phishnoo Sandbox
+repo: https://github.com/PangPang83/phishnoo-skills
+sha: 00eaeeea54cc5c99b72be167ed422329ffb34299
+subdir: hermes
+description: "Explore synthetic security awareness metrics and file example threat reports. Disclosure: tool requests and the operator-issued sandbox key go to the hosted Phishnoo MCP server. Hermes gates write-capable calls for approval."
+maintainer: PangPang83
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.23.0"
+docs_url: https://api.phishnoo.nl/docs
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - PHISHNOO_SANDBOX_KEY

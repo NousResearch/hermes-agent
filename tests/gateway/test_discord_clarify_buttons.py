@@ -324,4 +324,10 @@ async def test_many_long_choices_fit_content_and_render_literally():
         chat_id="9001", question="Rollout?", choices=same_start, clarify_id="cidS", session_key="sk-S")
     content = channel.send.call_args.kwargs["content"]
     assert all(f"ship to {env}" in content for env in ("staging", "canary", "prod", "nowhere"))
+    # ...and options sharing both a long opening and a long ending keep their differing middle.
+    same_ends = [same_start[0] + f" TARGET={env} " + same_start[0] for env in ("staging", "canary", "prod", "sandbox")]
+    await adapter.send_clarify(
+        chat_id="9001", question="Where?", choices=same_ends, clarify_id="cidM", session_key="sk-M")
+    content = channel.send.call_args.kwargs["content"]
+    assert len(content) <= 2000 and all(f"TARGET={env}" in content for env in ("staging", "canary", "prod", "sandbox"))
 

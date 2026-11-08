@@ -1148,11 +1148,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
         clean = [s for s in (str(c).strip() for c in choices) if s]
         # Card buttons clip long labels with no tooltip (#78115): list the full options in the
         # text widget and label the buttons positionally when any option is that wide.
-        # The text widget renders HTML: escaped so an option reads exactly as written.
+        # The text widget renders HTML: escaped so an option reads exactly as written, and appended
+        # after the card build so its Markdown pass (``**bold**`` -> ``*bold*``) never rewrites an option.
         numbered = numbered_clarify_choices(clean, max_label_cols=48, escape=lambda s: html.escape(s, quote=False))
-        body = t("platform.google_chat.clarify.question", question=question)
-        if numbered:
-            body = f"{body}\n\n{numbered}"
         buttons: list[dict[str, Any]] = [
             _button(str(i) if numbered else choice_text, choice_text)
             for i, choice_text in enumerate(clean, start=1)
@@ -1160,8 +1158,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
         buttons.append(_button(t("platform.google_chat.clarify.other_button"), "__other__"))
         card = card_spec_to_cards_v2({
             "card_id": f"clarify-{clarify_id}", "header": {"title": t("platform.google_chat.clarify.header")},
-            "sections": [{"widgets": [{"type": "text", "text": body}, {"type": "buttons", "buttons": buttons}]}],
+            "sections": [{"widgets": [{"type": "text", "text": t("platform.google_chat.clarify.question", question=question)},
+                                      {"type": "buttons", "buttons": buttons}]}],
         })
+        if numbered:
+            card["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"] += f"\n\n{numbered}"
         result = await self.send_card(chat_id, card, metadata=metadata)
         if result.success:
             self._clarify_state[clarify_id] = session_key

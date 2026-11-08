@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -125,7 +126,9 @@ def numbered_clarify_choices(choices, *, max_label_cols: int, escape=None,
     (#78115), and the body is the only place a long option renders in full. Over ``max_chars``
     every line stays (a button whose line was cut is unanswerable): the long options lose their
     middle (start and end kept, so options sharing a long opening still differ) before escaping,
-    so a cut never splits an escape."""
+    so a cut never splits an escape. An option whose first difference from its nearest sibling
+    falls in that cut middle keeps a window around it too, so options sharing both a long
+    opening and a long ending still read differently."""
     texts = [str(c).strip() for c in choices]
     if all(display_width(t) <= max_label_cols for t in texts):
         return None
@@ -134,11 +137,50 @@ def numbered_clarify_choices(choices, *, max_label_cols: int, escape=None,
     def _render(items) -> str:
         return "\n".join(f"{i}. {esc(t)}" for i, t in enumerate(items, start=1))
     out, each = _render(texts), max(map(len, texts))
+    prefix = [[len(os.path.commonprefix([a, b])) for b in texts] for a in texts]
     while max_chars is not None and len_fn(out) > max_chars and each > 1:
         each = min(each - 1, each * 4 // 5) or 1
-        out = _render([t if len(t) <= each else f"{t[:(each + 1) // 2].rstrip()}…{t[len(t) - each // 2:].lstrip()}"
-                       for t in texts])
+        out = _render(_distinct_shortenings(texts, each, prefix))
     return out
+
+
+def _distinct_shortenings(texts: list, each: int, prefix: list) -> list:
+    """Every text shortened to about *each* characters, distinct options kept distinct where the
+    room allows: each first keeps a window around where it differs from its nearest sibling, and
+    options whose windows still read the same (repeated wording shifts them) are re-cut with one
+    shared window around the group's earliest difference until they part."""
+    out = [_shorten_choice(t, each, max((p for j, p in enumerate(prefix[i]) if j != i), default=0))
+           for i, t in enumerate(texts)]
+    for _ in texts:
+        groups: dict = {}
+        for i, line in enumerate(out):
+            groups.setdefault(line, []).append(i)
+        clashes = [g for g in groups.values() if len(g) > 1 and len({texts[i] for i in g}) > 1]
+        if not clashes:
+            break
+        for group in clashes:
+            shared = min(prefix[a][b] for a in group for b in group if texts[a] != texts[b])
+            for i in group:
+                out[i] = _shorten_choice(texts[i], each, shared)
+    return out
+
+
+def _shorten_choice(text: str, each: int, anchor: int) -> str:
+    """*text* in about *each* characters: start and end kept around a ``…``, or, when *anchor*
+    (where it first differs from its nearest sibling) would fall in the cut, start, a window
+    around *anchor* and end."""
+    if len(text) <= each:
+        return text
+    head, tail = (each + 1) // 2, each // 2
+    if anchor < head or anchor >= len(text) - tail:
+        return f"{text[:head].rstrip()}…{text[len(text) - tail:].lstrip()}"
+    head = tail = each // 4
+    width = each - head - tail
+    start = min(max(anchor - width // 2, head + 1), len(text) - tail - width - 1)
+    if start <= head:
+        return f"{text[:(each + 1) // 2].rstrip()}…{text[len(text) - each // 2:].lstrip()}"
+    return (f"{text[:head].rstrip()}…{text[start:start + width].strip()}…"
+            f"{text[len(text) - tail:].lstrip()}")
 
 
 def _clip_text(text: str, limit: int, len_fn=len) -> str:

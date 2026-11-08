@@ -27,9 +27,12 @@ class _Receiver:
 
     def __init__(self):
         self.payload = None
+        self.clarify_waiting_at_steer = None
 
     def steer(self, text):
         self.payload = text
+        # Releasing the clarify wakes the agent; a steer queued after that can miss its next prep.
+        self.clarify_waiting_at_steer = clarify_gateway.get_pending(CLARIFY_ID) is not None
         return True
 
 
@@ -69,6 +72,7 @@ async def test_steer_releases_the_clarify_that_owns_the_turn(tmp_path, monkeypat
     reply = await runner._busy_steer_command(event, SESSION_KEY, event.source)
 
     assert receiver.payload, "the steer itself must still be accepted"
+    assert receiver.clarify_waiting_at_steer, "the steer is queued before the agent is woken"
     assert reply and "second option" in reply
     assert clarify_gateway.wait_for_response(entry.clarify_id, 0.05) == clarify_gateway.CANCELLED
 

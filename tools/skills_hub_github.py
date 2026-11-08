@@ -193,6 +193,17 @@ def _skip_bundle_file(rel_path: str) -> bool:
     return base.startswith(".") or base.endswith(".pyc") or "__pycache__" in rel_path.split("/")
 
 
+def _is_contents_listing(content: Optional[bytes]) -> bool:
+    """True for a GitHub Contents API directory listing (a JSON array of entries with ``type``)."""
+    if not content or not content.lstrip().startswith(b"["):
+        return False
+    try:
+        entries = json.loads(content)
+    except ValueError:
+        return False
+    return isinstance(entries, list) and all(isinstance(e, dict) and "type" in e for e in entries)
+
+
 def _tree_members(entries: list[dict], prefix: str):
     """``(rel_path, item_path, is_regular_blob)`` for every git-tree blob under ``prefix``. Symlinks
     (mode 120000) report ``is_regular_blob=False`` so callers can reject a SKILL.md-linked symlink
@@ -319,6 +330,11 @@ class GitHubSource(SkillSource):
         else:
             for rel_path in referenced:
                 self._add_support_file(repo, _skill_file_path(skill_dir, rel_path), rel_path, files, rel_path)
+            # Without a tree a linked support DIRECTORY comes back as the Contents API's JSON listing,
+            # not file bytes; installing that would ship a malformed skill missing the directory's files.
+            if any(_is_contents_listing(files.get(rel_path)) for rel_path in referenced):
+                logger.warning("Skill links a support directory and the repo tree is unavailable: %s", identifier)
+                return None
             revision = ""
         url = (f"https://github.com/{repo}/tree/{revision}" + (f"/{skill_path}" if skill_path else "")
                if revision else f"https://github.com/{repo}/{skill_path}")

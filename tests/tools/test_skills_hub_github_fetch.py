@@ -77,3 +77,12 @@ def test_fetch_keeps_a_skill_that_links_a_support_directory():
          patch.object(source, "_get_repo_tree", return_value=("main", tree_entries)), \
          patch.object(source, "_fetch_file_bytes", return_value=b"# clues"):
         assert source.fetch("owner/repo/skills/demo") is None
+
+    # No tree (rate-limited / API error): the linked directory comes back as a Contents listing,
+    # which must reject the fetch rather than install the JSON as a file.
+    listing = b'[{"name": "global.md", "path": "skills/demo/references/clues/global.md", "type": "file"}]'
+    with patch.object(source, "_fetch_file_content", return_value=md), \
+         patch.object(source, "_get_repo_tree", return_value=None), \
+         patch.object(source, "_fetch_file_bytes",
+                      side_effect=lambda _r, path, **_k: listing if path.endswith("/clues") else b"# clues"):
+        assert source.fetch("owner/repo/skills/demo") is None

@@ -126,6 +126,22 @@ describe('a standalone plugin installed from the catalog', () => {
     expect($pluginRecords.get().accent.packageOrigin).toEqual(ORIGIN)
   })
 
+  it('a reload reads again what a folder is (a Force reinstall made it a package half)', async () => {
+    const files: Record<string, string> = { 'plugin.js': OFF_BY_DEFAULT, '.hermes-origin.json': JSON.stringify(ORIGIN) }
+    stubDisk([folder('accent-picker', files)])
+    await discoverRuntimePlugins()
+    expect($pluginRecords.get().accent.packageName).toBeUndefined()
+
+    files['.hermes-package.json'] = JSON.stringify({ package: 'accent-pkg', repo: ORIGIN.repo })
+    await discoverRuntimePlugins()
+
+    expect($pluginRecords.get().accent).toMatchObject({
+      packageName: 'accent-pkg',
+      packageOrigin: { repo: ORIGIN.repo }
+    })
+    expect($pluginRecords.get().accent.packageOrigin?.catalogName).toBeUndefined()
+  })
+
   it('a reload asked for during a scan waits for it and then reads the disk again', async () => {
     // An install lands its folder, the root watch starts a scan, then the install asks for a reload and
     // enables what it finds: dropping that reload left a catalog plugin off and its card on Install.

@@ -457,9 +457,9 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
   const [advancedOpen, setAdvancedOpen] = useState(!verified)
   const [force, setForce] = useState(request.force ?? false)
   const [pinRef, setPinRef] = useState('')
-  const [installError, setInstallError] = useState<null | string>(null)
-  // The last install was refused because the plugin is installed: offer Force.
-  const [canForce, setCanForce] = useState(false)
+  // The last install's failure, and whether Force (replacing the installed plugin) answers it.
+  const [installFailure, setInstallFailure] = useState<null | { canForce?: boolean; error: string }>(null)
+  const installError = installFailure?.error ?? null
   const [installUncertain, setInstallUncertain] = useState(false)
   // The source moved past the commit on screen: the dialog read it again and shows the new one for review.
   const [sourceMoved, setSourceMoved] = useState(false)
@@ -492,8 +492,7 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
 
   const install = async (withoutReviewedCommit = false) => {
     onInstallingChange(true)
-    setInstallError(null)
-    setCanForce(false)
+    setInstallFailure(null)
     setSourceMoved(false)
     setConfirmUnreviewed(false)
     // The commit the user clicked on: a lookup finishing after the click never changes it.
@@ -543,8 +542,7 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
         failed: () => {
           const failed = outcome as Extract<InstallOutcome, { status: 'failed' }>
 
-          setInstallError(failed.error)
-          setCanForce(Boolean(failed.canForce))
+          setInstallFailure({ canForce: failed.canForce, error: failed.error })
 
           if (failed.canForce) {
             setAdvancedOpen(true)
@@ -589,7 +587,7 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
             busy={installing}
             copy={m}
             force={force}
-            offerForce={Boolean(partial || canForce)}
+            offerForce={Boolean(partial || installFailure?.canForce)}
             onForceChange={setForce}
             pin={{ value: pinRef, invalid: pinInvalid, onChange: setPinRef }}
             probe={probe}

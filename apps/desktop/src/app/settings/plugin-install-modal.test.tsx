@@ -276,8 +276,9 @@ describe('A reviewed catalog pick', () => {
 
     expect((await within(dialog).findByRole('alert')).textContent).toContain('network unreachable')
     // Advanced stays as it was; opened, it still holds no Force switch.
-    expect(within(dialog).queryByRole('switch')).toBeNull()
+    expect(within(dialog).queryByText('Source code')).toBeNull()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Advanced' }))
+    expect(within(dialog).getByText('Source code')).toBeTruthy()
     expect(within(dialog).queryByRole('switch')).toBeNull()
   })
 })
@@ -434,6 +435,34 @@ describe('Unified package desktop half on a local backend', () => {
 
     expect(installDesktopPlugin).toHaveBeenCalledWith({ identifier: 'https://github.com/example/pkg', force: false })
     expect(reconcileDesktopPlugins).not.toHaveBeenCalled()
+  })
+
+  it('offers no Force for a desktop half refused as installed once the agent half went in', async () => {
+    // Force reinstalls both halves: offered here, it would replace the agent plugin just installed.
+    $connection.set({ mode: 'remote' } as NonNullable<ReturnType<typeof $connection.get>>)
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'pkg', desktop: true, warnings: [] })
+    requestGateway.mockImplementation(async (method, params) =>
+      method === 'plugins.manage' && params?.action === 'install' ? { ok: true, plugin_name: 'pkg' } : { plugins: [] }
+    )
+    installDesktopPlugin.mockResolvedValue({ ok: false, exists: true, error: "Desktop plugin 'pkg' already exists." })
+    vi.stubGlobal('hermesDesktop', { installDesktopPlugin, probePluginRepo, reconcileDesktopPlugins })
+    renderFlow()
+    act(() =>
+      openPluginInstallRequest({ ...BLENDER, catalogName: 'pkg', repo: 'https://github.com/example/pkg', title: 'Pkg' })
+    )
+    const dialog = await screen.findByRole('dialog', { name: 'Pkg' })
+    await waitFor(() => expect(installButton().disabled).toBe(false))
+    fireEvent.click(installButton())
+
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('already exists')
+    expect(installDesktopPlugin).toHaveBeenCalled()
+
+    if (!within(dialog).queryByText('Source code')) {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Advanced' }))
+    }
+
+    expect(within(dialog).getByText('Source code')).toBeTruthy()
+    expect(within(dialog).queryByRole('switch')).toBeNull()
   })
 
   it('turns the desktop half on with the agent half: install means ready for the whole package', async () => {

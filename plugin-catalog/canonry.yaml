@@ -1,7 +1,7 @@
 name: canonry
 title: Canonry
 repo: https://github.com/Canonry/canonry
-sha: 3bd7d9bc47a109ddbcbfa8f2f3d95aa3c80c926e
+sha: d70ff15cc8c2e5dd342cfd1f2d8785a7addb67e0
 subdir: plugins/canonry
 description: >-
   Open-source, agent-first Answer Engine Optimization (AEO) platform. Measure
@@ -16,7 +16,7 @@ maintainer: Canonry
 tier: community
 category: tools
 docs_url: https://canonry.ai
-version: "7.97.1"
+version: "7.97.3"
 known_issues:
   - Install and bootstrap the Canonry runtime first; canonry-mcp must be on PATH and its configured API must be running.
   - MCP access follows the runtime's configured API key. Write-capable keys expose mutations and operations that can consume provider quotas.

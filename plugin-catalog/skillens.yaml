@@ -1,0 +1,17 @@
+name: skillens
+repo: https://github.com/PhucNguyen-Dev/skillens
+sha: fe6ddac5cb2185c24f4a9d48159b326083669079
+description: "Live skill-execution fidelity - watches whether the agent actually performs the steps a loaded skill requires, with a checklist pane, an in-session corrective nudge, and a status-bar fidelity score."
+maintainer: PhucNguyen-Dev
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

@@ -1,6 +1,7 @@
 """``sendAudio`` (.mp3/.m4a) gets the same caption formatting as voice notes, plus the track's own
 performer/title/cover tags, so Telegram's music player shows a named track instead of raw markdown."""
 
+import shutil
 import subprocess
 from unittest.mock import AsyncMock, MagicMock
 
@@ -8,6 +9,12 @@ import pytest
 
 from gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
+
+_needs_ffmpeg = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="ffmpeg/ffprobe not installed (the CI runner ships without them)",
+)
+
 
 def _tagged_mp3(tmp_path):
     cover, mp3 = tmp_path / "cover.png", tmp_path / "song.mp3"
@@ -20,6 +27,7 @@ def _tagged_mp3(tmp_path):
     return mp3
 
 
+@_needs_ffmpeg
 @pytest.mark.asyncio
 async def test_mp3_send_formats_caption_and_forwards_player_tags(tmp_path):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
@@ -40,12 +48,15 @@ async def test_mp3_send_formats_caption_and_forwards_player_tags(tmp_path):
 
 @pytest.mark.asyncio
 async def test_mp3_caption_entity_rejection_retries_plain(tmp_path):
+    """Needs no ffmpeg: an untaggable track still goes out, and the caption retry drops parse_mode."""
+    track = tmp_path / "song.mp3"
+    track.write_bytes(b"not really an mp3")
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
     adapter._bot = MagicMock()
     adapter._bot.send_audio = AsyncMock(
         side_effect=[Exception("Bad Request: can't parse entities"), MagicMock(message_id=7)])
 
-    result = await adapter.send_voice("123", str(_tagged_mp3(tmp_path)), caption="*bold* reply")
+    result = await adapter.send_voice("123", str(track), caption="*bold* reply")
 
     assert result.success is True
     retry = adapter._bot.send_audio.await_args_list[1].kwargs

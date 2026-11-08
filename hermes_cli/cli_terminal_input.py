@@ -513,9 +513,30 @@ def _build_cpr_disabled_output(stdout):
                 pass
             return Size(rows=rows or 24, columns=columns or 80)
 
-        return Vt100_Output(stdout, _get_term_size, enable_cpr=False)
+        return Vt100_Output(
+            stdout, _get_term_size, term=os.environ.get("TERM"),
+            default_color_depth=_classic_cli_color_depth(), enable_cpr=False,
+        )
     except Exception:
         return None
+
+
+def _classic_cli_color_depth():
+    """Color depth for the hand-built output: what ``create_output`` would pick, plus ``COLORTERM``.
+
+    prompt_toolkit's own ``create_output`` honors ``$PROMPT_TOOLKIT_COLOR_DEPTH``; a hand-built
+    ``Vt100_Output`` does not, and its default is 256 colors. Skin hex colors (completion menu,
+    status bar) then snap to the nearest xterm-256 entry — a dark green menu turns gray. Terminals that
+    advertise ``COLORTERM=truecolor``/``24bit`` get exact RGB; None keeps prompt_toolkit's default.
+    """
+    from prompt_toolkit.output import ColorDepth
+
+    explicit = ColorDepth.from_env()
+    if explicit is not None:
+        return explicit
+    if os.environ.get("COLORTERM", "").strip().lower() in ("truecolor", "24bit"):
+        return ColorDepth.DEPTH_24_BIT
+    return None
 
 
 def _select_classic_cli_pt_output(stdout):

@@ -166,7 +166,7 @@ def _redact_header_line_value(m: re.Match) -> str:
     return m.group(1) + "***"
 
 
-def redact_header_credentials(text: str, *, code_file: bool) -> str:
+def redact_header_credentials(text: str) -> str:
     """Mask secret-header and cookie-header values in raw, curl and inline forms; the JSON
     forms run with the assignment passes in agent/redact.py."""
     text = _SECRET_HEADER_LINE_RE.sub(
@@ -187,29 +187,14 @@ def redact_header_credentials(text: str, *, code_file: bool) -> str:
     )
     text = _SECRET_HEADER_INLINE_RE.sub(_redact_inline_secret_header, text)
 
-    # Cookie: / Set-Cookie: header values (session/auth/CSRF tokens). The
-    # whole cookie payload is masked; preserving attribute words like
-    # ``HttpOnly`` is not worth a parser, and a redactor erring toward
-    # over-masking is the safe direction. No casefold-free substring gate:
-    # mixed-case headers (``CoOkie:``) must not bypass a security redactor,
-    # and the IGNORECASE regex is itself the precise filter (the ":" gate
-    # above already scopes the scan).
-    if not code_file:
-        text = _COOKIE_HEADER_LINE_RE.sub(
-            _redact_header_line_value,
-            text,
-        )
-        for pattern in (
-            _COOKIE_HEADER_DOUBLE_QUOTED_RE,
-            _COOKIE_HEADER_SINGLE_QUOTED_RE,
-        ):
-            text = pattern.sub(
-                lambda m: m.group(1) + m.group(2) + "***" + m.group(4),
-                text,
-            )
-        text = _COOKIE_HEADER_UNQUOTED_CURL_RE.sub(
-            lambda m: m.group(1) + "***",
-            text,
-        )
-        text = _COOKIE_HEADER_INLINE_RE.sub(lambda m: m.group(1) + "***", text)
+    # Cookie: / Set-Cookie: header values (session/auth/CSRF tokens), whole payload masked.
+    # Not gated on ``code_file``: terminal output from ``curl -i`` is scrubbed with
+    # code_file=True, and a raw ``Cookie: name=value`` line is a credential wherever it
+    # appears, like the secret headers above. The JSON-fixture exemption lives in the
+    # assignment passes. IGNORECASE is the filter, so ``CoOkie:`` cannot slip past.
+    text = _COOKIE_HEADER_LINE_RE.sub(_redact_header_line_value, text)
+    for pattern in (_COOKIE_HEADER_DOUBLE_QUOTED_RE, _COOKIE_HEADER_SINGLE_QUOTED_RE):
+        text = pattern.sub(lambda m: m.group(1) + m.group(2) + "***" + m.group(4), text)
+    text = _COOKIE_HEADER_UNQUOTED_CURL_RE.sub(lambda m: m.group(1) + "***", text)
+    text = _COOKIE_HEADER_INLINE_RE.sub(lambda m: m.group(1) + "***", text)
     return text

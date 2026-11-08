@@ -1587,7 +1587,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
 
     if ":" in text:
-        text = redact_header_credentials(text, code_file=code_file)
+        text = redact_header_credentials(text)
         text = _TELEGRAM_RE.sub(lambda m: f"{m.group(1) or ''}{m.group(2)}:***", text)
 
     # Database connection string passwords. With code_file=True, a password group that is a pure ``{...}``

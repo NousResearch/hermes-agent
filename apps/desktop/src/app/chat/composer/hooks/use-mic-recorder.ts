@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { hostHas } from '@/lib/host-capabilities'
 import { closeMeterContext, meterContextsClosed } from '@/lib/mic-meter-context'
+import { startVoiceLevelMeter } from '@/lib/voice-level-meter'
 
 type BrowserAudioContext = typeof AudioContext
 
@@ -94,6 +95,38 @@ export function micError(error: unknown, copy: MicRecorderErrorCopy): Error {
   return new Error(copy.microphoneStartFailed)
 }
 
+function createMicRecorder(stream: MediaStream, mimeType: string, copy: MicRecorderErrorCopy) {
+  try {
+    return new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+  } catch (error) {
+    stream.getTracks().forEach(track => track.stop())
+    throw micError(error, copy)
+  }
+}
+
+// ScriptProcessor keeps streaming PCM independent of AudioWorklet support.
+function startPcmTap(audioContext: AudioContext, source: MediaStreamAudioSourceNode, options: MicRecorderOptions) {
+  const tap = audioContext.createScriptProcessor(4096, 1, 1)
+
+  tap.onaudioprocess = event => {
+    const input = event.inputBuffer.getChannelData(0)
+    const pcm = new Int16Array(input.length)
+
+    for (let i = 0; i < input.length; i += 1) {
+      const sample = Math.max(-1, Math.min(1, input[i]))
+      pcm[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff
+    }
+
+    options.onPcm?.(pcm.buffer)
+  }
+
+  // A tap only fires while connected through to the destination; output stays silent.
+  source.connect(tap)
+  tap.connect(audioContext.destination)
+
+  return tap
+}
+
 export function useMicRecorder(copy: MicRecorderErrorCopy): {
   handle: MicRecorderHandle
   level: number
@@ -107,19 +140,19 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
   const chunksRef = useRef<Blob[]>([])
   const audioContextRef = useRef<AudioContext | null>(null)
   const pcmTapRef = useRef<ScriptProcessorNode | null>(null)
-  const animationRef = useRef<number | null>(null)
+  const stopMeterRef = useRef<(() => void) | null>(null)
   const startedAtRef = useRef(0)
   const heardSpeechRef = useRef(false)
   const meterFailedRef = useRef(false)
   const silenceTriggeredRef = useRef(false)
   const silenceStartedAtRef = useRef<number | null>(null)
   const stopResolverRef = useRef<((recording: MicRecording | null) => void) | null>(null)
+  const generationRef = useRef(0)
 
   const cleanup = () => {
-    if (animationRef.current) {
-      window.cancelAnimationFrame(animationRef.current)
-      animationRef.current = null
-    }
+    generationRef.current += 1
+    stopMeterRef.current?.()
+    stopMeterRef.current = null
 
     pcmTapRef.current?.disconnect()
     pcmTapRef.current = null
@@ -138,148 +171,120 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
 
   useEffect(() => () => cleanup(), [])
 
-  const startMeter = (stream: MediaStream, options: MicRecorderOptions) => {
+  const startMeter = async (stream: MediaStream, options: MicRecorderOptions) => {
     const audioWindow = window as Window & { webkitAudioContext?: BrowserAudioContext }
     const AudioContextCtor = window.AudioContext || audioWindow.webkitAudioContext
 
-    if (!AudioContextCtor) {
-      return
-    }
+    const recorder = recorderRef.current
 
     const failMeter = () => {
-      if (meterFailedRef.current || !recorderRef.current) {
+      if (meterFailedRef.current || recorderRef.current !== recorder || !recorder) {
         return
       }
 
       meterFailedRef.current = true
 
-      if (animationRef.current) {
-        window.cancelAnimationFrame(animationRef.current)
-        animationRef.current = null
-      }
+      stopMeterRef.current?.()
+      stopMeterRef.current = null
 
       setLevel(0)
       // Deferred: a meter that fails while start() is still running must not
       // re-enter the caller before start() has resolved.
       window.setTimeout(() => {
-        if (recorderRef.current) {
+        if (recorderRef.current === recorder) {
           options.onMeterFailure?.()
         }
       }, 0)
     }
 
+    if (!AudioContextCtor) {
+      failMeter()
+
+      return
+    }
+
     try {
       const audioContext = new AudioContextCtor()
-      const analyser = audioContext.createAnalyser()
+      let meterStartedAt = audioContext.currentTime * 1_000
       const source = audioContext.createMediaStreamSource(stream)
 
-      analyser.fftSize = 256
-      const data = new Uint8Array(analyser.fftSize)
-
-      source.connect(analyser)
       audioContextRef.current = audioContext
 
-      if (options.onPcm) {
-        startPcmTap(audioContext, source, options)
-      }
-
-      // A device or renderer error kills the context without throwing
-      // anywhere we'd see it; the analyser just goes flat. Watch for it.
+      // Device and renderer failures must not leave continuous voice waiting
+      // forever for a silence notification.
       const failIfCurrent = () => {
         if (audioContextRef.current === audioContext) {
           failMeter()
         }
       }
 
-      audioContext.addEventListener('error', failIfCurrent)
-      audioContext.addEventListener('statechange', () => {
-        if (audioContext.state === 'closed') {
-          failIfCurrent()
-        }
-      })
+      const meter = startVoiceLevelMeter(
+        audioContext,
+        source,
+        (normalized, now, isCurrent) => {
+          if (audioContextRef.current !== audioContext) {
+            return
+          }
 
-      if (audioContext.state === 'suspended') {
-        audioContext.resume().catch(failIfCurrent)
-      }
+          if (document.visibilityState === 'visible') {
+            setLevel(normalized)
+          }
 
-      const tick = () => {
-        analyser.getByteTimeDomainData(data)
+          options.onLevel?.(normalized)
 
-        let sum = 0
+          if (audioContextRef.current !== audioContext) {
+            return
+          }
 
-        for (const value of data) {
-          const centered = value - 128
-          sum += centered * centered
-        }
+          const speechThreshold = options.silenceLevel ?? 0
 
-        const rms = Math.sqrt(sum / data.length)
-        const normalized = Math.min(1, rms / 42)
-        const now = Date.now()
-
-        setLevel(normalized)
-        options.onLevel?.(normalized)
-
-        const speechThreshold = options.silenceLevel ?? 0
-        const silenceMs = options.silenceMs ?? 0
-        const idleSilenceMs = options.idleSilenceMs ?? 0
-
-        if (speechThreshold > 0 && options.onSilence && !silenceTriggeredRef.current) {
-          if (normalized >= speechThreshold) {
-            heardSpeechRef.current = true
-            silenceStartedAtRef.current = null
-          } else if (heardSpeechRef.current && silenceMs > 0) {
-            silenceStartedAtRef.current ??= now
-
-            if (now - silenceStartedAtRef.current >= silenceMs) {
-              silenceTriggeredRef.current = true
-              options.onSilence()
+          if (speechThreshold > 0 && options.onSilence && !silenceTriggeredRef.current) {
+            if (normalized >= speechThreshold) {
+              heardSpeechRef.current = true
+              silenceStartedAtRef.current = null
 
               return
             }
-          } else if (!heardSpeechRef.current && idleSilenceMs > 0 && now - startedAtRef.current >= idleSilenceMs) {
-            silenceTriggeredRef.current = true
-            options.onSilence()
 
-            return
+            silenceStartedAtRef.current ??= now
+            const silenceMs = (heardSpeechRef.current ? options.silenceMs : options.idleSilenceMs) ?? 0
+            const quietSince = heardSpeechRef.current ? silenceStartedAtRef.current : meterStartedAt
+
+            if (isCurrent && silenceMs > 0 && now - quietSince >= silenceMs) {
+              silenceTriggeredRef.current = true
+              stopMeterRef.current?.()
+              stopMeterRef.current = null
+              options.onSilence()
+            }
           }
-        }
+        },
+        failIfCurrent
+      )
 
-        animationRef.current = window.requestAnimationFrame(tick)
+      stopMeterRef.current = meter.stop
+      await meter.ready
+      meterStartedAt = audioContext.currentTime * 1_000
+
+      if (audioContextRef.current === audioContext && options.onPcm) {
+        pcmTapRef.current = startPcmTap(audioContext, source, options)
+        options.onPcmRate?.(audioContext.sampleRate)
       }
-
-      tick()
     } catch {
       failMeter()
     }
   }
 
-  // ScriptProcessor: deprecated but universal, and it needs no worklet module URL in the Electron
-  // renderer. The host resamples, so chunks go out at the context's own rate.
-  const startPcmTap = (audioContext: AudioContext, source: MediaStreamAudioSourceNode, options: MicRecorderOptions) => {
-    const tap = audioContext.createScriptProcessor(4096, 1, 1)
-    pcmTapRef.current = tap
-    options.onPcmRate?.(audioContext.sampleRate)
-
-    tap.onaudioprocess = event => {
-      const input = event.inputBuffer.getChannelData(0)
-      const pcm = new Int16Array(input.length)
-
-      for (let i = 0; i < input.length; i += 1) {
-        const sample = Math.max(-1, Math.min(1, input[i]))
-        pcm[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff
-      }
-
-      options.onPcm?.(pcm.buffer)
-    }
-
-    // A tap only fires while connected through to the destination; its output buffer stays silent.
-    source.connect(tap)
-    tap.connect(audioContext.destination)
-  }
-
   const start: MicRecorderHandle['start'] = async (options = {}) => {
     if (recorderRef.current) {
-      return
+      throw new DOMException('Capture already started', 'AbortError')
+    }
+
+    const generation = ++generationRef.current
+
+    const checkCurrent = () => {
+      if (generationRef.current !== generation) {
+        throw new DOMException('Capture cancelled', 'AbortError')
+      }
     }
 
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
@@ -287,6 +292,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     }
 
     const permitted = await window.hermesDesktop?.requestMicrophoneAccess?.()
+    checkCurrent()
 
     if (permitted === false) {
       throw new Error(copy.microphoneAccessDenied)
@@ -296,6 +302,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     // closing; opening another context on top of it is what trips the
     // AudioContext device error (#75329).
     await meterContextsClosed()
+    checkCurrent()
 
     let stream: MediaStream
 
@@ -304,7 +311,13 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
         audio: { echoCancellation: true, noiseSuppression: true }
       })
     } catch (error) {
+      checkCurrent()
       throw micError(error, copy)
+    }
+
+    if (generationRef.current !== generation) {
+      stream.getTracks().forEach(track => track.stop())
+      checkCurrent()
     }
 
     const mimeType =
@@ -312,14 +325,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
         type => MediaRecorder.isTypeSupported(type)
       ) ?? ''
 
-    let recorder: MediaRecorder
-
-    try {
-      recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
-    } catch (error) {
-      stream.getTracks().forEach(track => track.stop())
-      throw micError(error, copy)
-    }
+    const recorder = createMicRecorder(stream, mimeType, copy)
 
     chunksRef.current = []
     streamRef.current = stream
@@ -328,15 +334,19 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     meterFailedRef.current = false
     silenceTriggeredRef.current = false
     silenceStartedAtRef.current = null
-    startedAtRef.current = Date.now()
+    startedAtRef.current = 0
 
     recorder.ondataavailable = event => {
-      if (event.data.size > 0) {
+      if (recorderRef.current === recorder && event.data.size > 0) {
         chunksRef.current.push(event.data)
       }
     }
 
     recorder.onstop = () => {
+      if (recorderRef.current !== recorder) {
+        return
+      }
+
       const chunks = chunksRef.current
       const recordingType = recorder.mimeType || mimeType || 'audio/webm'
       const durationMs = Date.now() - startedAtRef.current
@@ -364,6 +374,10 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     }
 
     recorder.onerror = event => {
+      if (recorderRef.current !== recorder) {
+        return
+      }
+
       const error = micError((event as Event & { error?: unknown }).error, copy)
       const resolver = stopResolverRef.current
       stopResolverRef.current = null
@@ -372,9 +386,17 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       resolver?.(null)
     }
 
-    recorder.start()
-    setRecording(true)
-    startMeter(stream, options)
+    await startMeter(stream, options)
+    checkCurrent()
+
+    try {
+      recorder.start()
+      startedAtRef.current = Date.now()
+      setRecording(true)
+    } catch (error) {
+      cleanup()
+      throw micError(error, copy)
+    }
   }
 
   const stop: MicRecorderHandle['stop'] = () =>
@@ -397,11 +419,14 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     const resolver = stopResolverRef.current
     stopResolverRef.current = null
 
-    if (recorder && recorder.state !== 'inactive') {
+    if (recorder) {
       recorder.ondataavailable = null
       recorder.onerror = null
       recorder.onstop = null
-      recorder.stop()
+
+      if (recorder.state !== 'inactive') {
+        recorder.stop()
+      }
     }
 
     cleanup()

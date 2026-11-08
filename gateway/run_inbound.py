@@ -245,7 +245,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             return None
         # The busy path charged this event on arrival; a drained follow-up must not pay twice.
-        if not getattr(event, "_bot_loop_admitted", False) and not self._admit_bot_message_for_source(source):
+        if not getattr(event, "_bot_loop_admitted", False) and not (
+                self._admit_bot_message_for_source(source) and self._admit_bot_chain(event)):
             return None
         return event, source, False
 
@@ -425,6 +426,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             # routing. Release this clarify first: redirect() degrades to steer() while tools
             # execute, and that steer cannot drain until the clarify tool returns.
             if _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, _clarify_mod.CANCELLED):
+                # The user moved on: their message takes over the turn whatever busy_input_mode
+                # says (queue or steer would leave the agent carrying on without the answer).
+                # Bound to this turn's run generation: once it ends, the normal policy applies.
+                event._clarify_superseded = self._current_session_run_generation(_quick_key)
                 # Adapters with a persistent native card (Slack Block Kit) retire it now, before the
                 # prose is routed, so its buttons stop advertising a dead answer path. The pop inside
                 # retire_clarify_card runs before its first await, so the agent thread's own expiry
@@ -630,10 +635,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 # The chat's first input, and a command's turn, not committed yet never commit.
                 authority.fence_route(_quick_key)
             return
-        from gateway.session_contract import Principal, SessionRef
+        from gateway.session_contract import SessionActor, SessionRef
         from hermes_state_runtime import RuntimeStoreError, list_session_admissions
         ref = SessionRef(authority.profile_id, sid)
-        actor = Principal('messaging-control', authority.profile_id,
+        actor = SessionActor('messaging-control', authority.profile_id,
                           frozenset({'session:submit', 'session:control'}), 'busy-command')
         rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=sid)
         # A FIFO paused on a lost (``unknown``) turn is the operator's to resume: its pause notice
@@ -725,6 +730,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # — that copy was never consumed and grew unbounded.
         running_agent.interrupt(_interrupt_text)
 
+    def _clarify_takeover(self, event: MessageEvent, _quick_key: str) -> bool:
+        """True while the turn whose clarify this message cancelled still owns the session."""
+        generation = getattr(event, "_clarify_superseded", None)
+        return generation is not None and generation == self._current_session_run_generation(_quick_key)
+
     async def _hm_busy_preempt(self, event: MessageEvent, source: SessionSource, _quick_key: str) -> bool:
         """busy_input_mode for a follow-up the durable FIFO is about to admit, through main's own busy
         resolution (voice transcribed into steer/interrupt, steer folded into the turn, busy ack).
@@ -732,12 +742,13 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         must NOT also be admitted as its own turn; False when the caller should admit it (queue mode,
         a demotion, or an interrupt — the ended turn lets the FIFO run the follow-up next)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
-        mode = self._effective_busy_input_mode(source)
+        superseded = self._clarify_takeover(event, _quick_key)
+        mode = "interrupt" if superseded else self._effective_busy_input_mode(source)
         state = self._peek_session_state(_quick_key)
         running_agent = state.turn.agent if state else None
         adapter = self._delivery_adapter_for(source)
         if (self._draining or adapter is None or running_agent is None or running_agent is _AGENT_PENDING_SENTINEL
-                or (event.message_type == MessageType.TEXT and mode != "steer"
+                or (event.message_type == MessageType.TEXT and mode != "steer" and not superseded
                     and self._effective_busy_text_mode(source) == "queue")):
             return False
         outcome = await self._resolve_busy_steer_or_redirect(event, _quick_key, mode, running_agent)
@@ -762,7 +773,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if _handled:
             return _result
 
-        effective_busy_input_mode = self._effective_busy_input_mode(source)
+        effective_busy_input_mode = ("interrupt" if self._clarify_takeover(event, _quick_key)
+                                     else self._effective_busy_input_mode(source))
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
             return None
 
@@ -1489,7 +1501,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         self, adapter, source: SessionSource, transcripts: list[str], *, metadata=None, log_context: str = "Transcript"
     ) -> None:
         """Send each transcript back as ``🎙️ "…"`` (best-effort; failures are logged, never raised)."""
-        for tx in transcripts:
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        for tx in transcripts if automatic_notices_allowed(source) else ():
             try:
                 await adapter.send(source.chat_id, t("gateway.voice.transcript_echo_short", text=tx), metadata=metadata)
             except Exception as echo_exc:
@@ -1686,7 +1699,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         expanded, refusal = await inbound_references(self, source, session_key, message_text)
         if refusal is None:
             return expanded
-        _adapter = self._delivery_adapter_for(source)
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        _adapter = self._delivery_adapter_for(source) if automatic_notices_allowed(source) else None
         if _adapter:
             await _adapter.send(source.chat_id, refusal)
         return None

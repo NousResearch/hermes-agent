@@ -224,6 +224,31 @@ If the ledger is empty (a store created before this feature, or Hermes hasn't
 written any files in the project yet), `/rollback` falls back to the full
 restore automatically.
 
+## `/undo` lists the files the undone turns changed
+
+`/undo` only rewinds the conversation; it never touches files. When checkpoints
+are on and the undone turns changed files in the project, `/undo` adds one line
+naming them and pointing at `/rollback`:
+
+```
+/undo
+↶ Files changed in the undone turns: app.js, notes.md. Run /rollback to see checkpoints and restore them.
+```
+
+The line names no checkpoint: run `/rollback` to see the list and pick the one
+to restore (by number or hash). The file list is best effort: it compares the
+project with the checkpoint taken around when the undone turns started, and it
+only says what changed, not what a restore will bring back. The line itself
+writes nothing, and with checkpoints off, or when no undone turn took a
+checkpoint, `/undo` prints exactly what it always did. The editor (ACP) and the
+gateway chat client do not run `/rollback`, so they print no line.
+
+A whole-tree `/rollback` also undoes the newest remaining chat turn (step 4
+above), but only when that turn made the checkpoint or came after it. After
+`/undo`, the turns you kept ended before the checkpoint, so they stay. Each
+checkpoint records its exact time; for a checkpoint made by an older version,
+only the second is known, and a kept turn in that same second is kept too.
+
 ## Single-File Restore
 
 Restore just one file from a checkpoint without affecting the rest of the directory:
@@ -256,8 +281,8 @@ from the nested repository's own working directory.
 With a container terminal backend (`docker`, `modal`, `daytona`, `vercel_sandbox`, or a container plugin such as `singularity`), file paths belong to the sandbox rather than the host. Hermes therefore does not take checkpoints or record the agent-write ledger for those paths, and `/rollback` explains the limitation: it still lists existing host checkpoints but refuses diff and restore, on the CLI and in messaging-gateway chats alike; `/diff session` answers with the same reason. The TUI and Desktop behave the same: `/rollback list` still works while `/rollback diff` and `/rollback <N>` are refused with that reason. Local and SSH backends are unaffected. To point `terminal.cwd` at the container-side view of a mounted directory see [`terminal.docker_mount_cwd_to_workspace`](./configuration.md).
 
 - **Git availability** — if `git` is not found on `PATH`, checkpoints are transparently disabled.
-- **Directory scope** — Hermes skips overly broad directories (root `/`, home `$HOME`).
-- **Repository size** — directories with more than 50,000 files are skipped.
+- **Directory scope** — Hermes skips overly broad directories: root `/`, your home `$HOME`, and every directory that contains your home (such as `/home` or `/Users`). It also never snapshots its own checkpoint store, even when the project is `~/.hermes` itself.
+- **Repository size** — directories with more than 50,000 files are skipped. Excluded directories (`node_modules/`, `.venv/`, `build/`, Hermes' own browser profiles and the rest of the exclude list) do not count, so a small project with a large `node_modules` is still checkpointed.
 - **Per-file size cap** — files larger than `max_file_size_mb` (default 10 MB) are excluded from the snapshot. Prevents accidentally swallowing datasets, model weights, or generated media.
 - **Total store size cap** — when the store exceeds `max_total_size_mb` (default 500 MB), the oldest commit per project is dropped round-robin. Each drop is reclaimed before deciding whether another is necessary. Every project keeps at least one snapshot. A failed Git operation stops pruning and is reported; maintenance never discards more history to compensate for failed reclamation.
 - **Real pruning, off the hot path** — `max_snapshots` and the size cap are enforced by rewriting the per-project ref at checkpoint time (cheap); the store is then marked `.gc-pending` and the periodic prune runs `git gc --prune=now` once, so loose objects don't accumulate and a tool call never waits on a full repack.

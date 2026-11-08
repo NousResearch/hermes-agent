@@ -1,9 +1,8 @@
-"""Oneshot (-z) mode: send a prompt, get the final content block, exit.
+"""Output contract shared by the top-level ``hermes -z`` one-shot run.
 
-Toolsets = explicit --toolsets, else the user's "cli" toolsets from `hermes tools`. Rules /
-memory / AGENTS.md / preloaded skills = same as a normal chat turn. Approvals are auto-bypassed
-(HERMES_YOLO_MODE=1). Model/provider mirror `hermes chat`: both optional; only --model → auto-detect
-the provider; only --provider → error (ambiguous).
+The run itself goes through the gateway (``hermes_cli.gateway_chat_startup.launch_gateway_chat``);
+this module keeps the pieces that path and the gateway's CLI turns reuse: the exit-code mapping, the
+``--usage-file`` ledger (with its auxiliary-usage delta) and ``--toolsets`` flag normalization.
 """
 
 from __future__ import annotations
@@ -19,7 +18,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from gateway.session_context import declare_stateless_channel
+# Not used here: re-exported only so ``hermes_cli.oneshot.get_fallback_chain`` stays importable and
+# patchable as on main (external operator scripts set it). The ``-z`` run reads the fallback chain
+# through the gateway from ``hermes_cli.fallback_config``, so patching this name does not change it.
 from hermes_cli.fallback_config import get_fallback_chain
 
 # First-byte window for implicit piped stdin (see _read_stdin_prompt). Files
@@ -201,102 +202,6 @@ def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
     items = toolsets if isinstance(toolsets, (list, tuple)) else [toolsets]
     parts = [str(item).split(",") if isinstance(item, str) else [str(item)] for item in items]
     return [p.strip() for chunk in parts for p in chunk if p.strip()] or None
-
-
-def _normalize_skills(skills: object = None) -> list[str]:
-    """Normalize repeated/comma-separated skill flags and preserve order."""
-    return list(dict.fromkeys(_normalize_toolsets(skills) or []))
-
-
-def _build_preloaded_skills_prompt(skills: object = None) -> str | None:
-    """Load requested skills using the same partial-success contract as CLI chat."""
-    parsed_skills = _normalize_skills(skills)
-    if not parsed_skills:
-        return None
-
-    from agent.skill_commands import build_preloaded_skills_prompt, format_missing_skills
-
-    skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(parsed_skills)
-    if missing_skills:
-        if not loaded_skills:
-            raise ValueError(format_missing_skills(missing_skills))
-        logging.warning(
-            "Skipping %s. Continuing with: %s. List available skills with `hermes skills list`.",
-            format_missing_skills(missing_skills),
-            ", ".join(loaded_skills),
-        )
-    return skills_prompt or None
-
-
-def _configured_mcp_servers() -> tuple[set[str], set[str]]:
-    """``(enabled, disabled)`` MCP server names from config; both empty on any error."""
-    try:
-        from hermes_cli.config import read_raw_config
-        from tools.mcp_tool_common import mcp_server_enabled
-
-        cfg = read_raw_config()
-        mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
-        enabled: set[str] = set()
-        disabled: set[str] = set()
-        for name, server_cfg in mcp_servers.items():
-            if not isinstance(server_cfg, dict):
-                continue
-            target = enabled if mcp_server_enabled(server_cfg) else disabled
-            target.add(str(name))
-        return enabled, disabled
-    except Exception:
-        return set(), set()
-
-
-def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | None, str | None]:
-    normalized = _normalize_toolsets(toolsets)
-    if normalized is None:
-        return None, None
-
-    try:
-        from toolsets import validate_toolset
-    except Exception as exc:
-        return None, f"hermes -z: failed to validate --toolsets: {exc}\n"
-
-    built_in = [name for name in normalized if validate_toolset(name)]
-    unresolved = [name for name in normalized if name not in built_in]
-
-    if unresolved:
-        try:
-            from hermes_cli.plugins import discover_plugins
-
-            discover_plugins()
-            plugin_valid = [name for name in unresolved if validate_toolset(name)]
-        except Exception:
-            plugin_valid = []
-        built_in.extend(plugin_valid)
-        unresolved = [name for name in unresolved if name not in plugin_valid]
-
-    if any(name in _ALL_TOOLSETS for name in built_in):
-        ignored = [name for name in normalized if name not in _ALL_TOOLSETS]
-        if ignored:
-            sys.stderr.write(
-                "hermes -z: --toolsets all enables every toolset; "
-                f"ignoring additional entries: {', '.join(ignored)}\n"
-            )
-        return None, None
-
-    mcp_names, mcp_disabled = _configured_mcp_servers() if unresolved else (set(), set())
-    mcp_valid = [name for name in unresolved if name in mcp_names]
-    disabled = [name for name in unresolved if name in mcp_disabled]
-    unknown = [name for name in unresolved if name not in mcp_names and name not in mcp_disabled]
-    valid = built_in + mcp_valid
-
-    if unknown:
-        sys.stderr.write(f"hermes -z: ignoring unknown --toolsets entries: {', '.join(unknown)}\n")
-    if disabled:
-        sys.stderr.write(
-            "hermes -z: ignoring disabled MCP servers (set enabled: true in config.yaml to use): "
-            f"{', '.join(disabled)}\n"
-        )
-    if not valid:
-        return None, "hermes -z: --toolsets did not contain any valid toolsets.\n"
-    return valid, None
 
 
 def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] = None) -> None:

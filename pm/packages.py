@@ -330,6 +330,19 @@ def _uv_lock_digest(path: Path) -> bytes:
 _uv_lock_digest_cache: dict[Path, tuple] = {}
 
 
+def _layout_digest(root: Path) -> bytes:
+    """sha256 of the packaging files, which decide how the core project installs beyond its lock
+    (uv's default ``cache-keys``). A change that moves packages (a new ``packages.find`` ``where``)
+    and leaves uv.lock alone still gets a new environment."""
+    import hashlib
+
+    h = hashlib.sha256()
+    for name in ("pyproject.toml", "setup.py", "setup.cfg"):
+        path = root / name
+        h.update(name.encode() + b"\0" + (path.read_bytes() if path.is_file() else b"") + b"\0")
+    return h.digest()
+
+
 def _copy_seed_file(src: str | os.PathLike, dst: str | os.PathLike) -> str | os.PathLike:
     """Copy one payload cache file unless an earlier seed already copied it whole.
 
@@ -468,7 +481,7 @@ def uv_cache_dir() -> Path:
 
 @register
 class Venv(StatePackage):
-    """The project venv: pyproject.toml + uv.lock + enabled extras.
+    """The project venv: pyproject.toml + setup.py + uv.lock + enabled extras.
     Made true by `uv sync --frozen`; uv is its internal dependency."""
 
     name = "venv"
@@ -500,13 +513,14 @@ class Venv(StatePackage):
                   [artifact["sha256"] for artifact in lock.artifacts("python", target)])
         h = hashlib.sha256()
         h.update(_uv_lock_digest(self.project_root() / "uv.lock"))
+        h.update(_layout_digest(self.project_root()))
         h.update(",".join(sorted(extras)).encode())
         h.update(json.dumps(python).encode())
         # Plugin members union into the venv — a changed member set must
         # re-sync even when extras and core lock are unchanged.
-        from pm.workspace import enabled_member_dirs, members_stamp
+        from pm.workspace import build_member_dirs, members_stamp
 
-        h.update(members_stamp(enabled_member_dirs() if plugin_dirs is None else plugin_dirs).encode())
+        h.update(members_stamp(build_member_dirs(extras) if plugin_dirs is None else plugin_dirs).encode())
         return h.hexdigest()
 
     def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False, explicit: bool = False,
@@ -521,7 +535,7 @@ class Venv(StatePackage):
         from pm.environment import managed_environment
         from pm.lock import Facts
         from pm.native_build import source_build_environment
-        from pm.workspace import enabled_member_dirs, lock_and_sync
+        from pm.workspace import build_member_dirs, lock_and_sync
 
         project = self.project_root()
         generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
@@ -534,7 +548,8 @@ class Venv(StatePackage):
             # An update does evict them, loudly: it must not fail on another profile's config.
             from pm.plugins_state import enabled_plugins_ordered
             enabled_plugins_ordered(skip_invalid_secondary=skip_invalid_secondary)
-        members = [] if repair else (enabled_member_dirs() if plugin_dirs is None else plugin_dirs)
+        members = [] if repair else (build_member_dirs(extras, environment.python) if plugin_dirs is None
+                                     else plugin_dirs)
         try:
             generation.mkdir(parents=True)
             (generation / ".lease-managed").touch()
@@ -666,6 +681,23 @@ def npm_env(cache_dir: Path, base_env: Optional[dict] = None) -> dict[str, str]:
     return env
 
 
+def pnpm_env(base_env: Optional[dict] = None) -> dict[str, str]:
+    """pnpm's store, metadata cache and state default to the user's XDG dirs. Keep them
+    Hermes-owned beside the uv cache: shared by every profile, gone with the Hermes root."""
+    from hermes_constants import get_default_hermes_root
+
+    env = dict(os.environ if base_env is None else base_env)
+    root = get_default_hermes_root() / "cache" / "pnpm"
+    for name in ("store", "cache", "state"):
+        key = f"pnpm_config_{name}_dir"
+        # Windows env names are case-insensitive and Python upper-cases inherited ones:
+        # a surviving PNPM_CONFIG_* twin would leave the child's pick between the two undefined.
+        for twin in [k for k in env if k.upper() == key.upper() and k != key]:
+            del env[twin]
+        env[key] = str(root / name)
+    return env
+
+
 @register
 class Npm(BinaryPackage):
     name = "npm"
@@ -752,6 +784,48 @@ class Npm(BinaryPackage):
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
         latest = npm_dist_tags("npm").get("latest")
+        return [latest] if latest else []
+
+
+@register
+class Pnpm(BinaryPackage):
+    """pnpm installs the repo's JS workspaces. pnpm 12 is a native executable
+    (@pnpm/exe.<target>); the `pnpm` package of the same version is only the
+    launcher that downloads it, so pm pins both and keeps the launcher's dist/:
+    the bundled node-gyp the executable looks for beside itself to build
+    dependencies that ship a binding.gyp. Without it a host node-gyp on PATH
+    (or none) would build them."""
+
+    name = "pnpm"
+    # Lifecycle scripts and node-gyp run on the node pm installs.
+    deps = ("node",)
+    binary_rel = {"win32": "pnpm.exe", "posix": "pnpm"}
+    flatten = False
+    # pnpm names its Termux build after the OS, not the libc: a bionic-linked executable.
+    exe_platforms = {"linux-arm64-bionic": "android-arm64"}
+
+    def fetch_urls(self, version: str, target: str) -> list[str]:
+        exe = self.exe_platforms.get(target, target)
+        return [
+            f"https://registry.npmjs.org/@pnpm/exe.{exe}/-/exe.{exe}-{version}.tgz",
+            f"https://registry.npmjs.org/pnpm/-/pnpm-{version}.tgz",
+        ]
+
+    def unpack(self, archive: Path, staged: Path, target: str) -> None:
+        from pm.store import extract
+
+        extract(archive, staged)
+        package = staged / "package"
+        dist = package / "dist"
+        if dist.is_dir():
+            dist.rename(staged / "dist")
+        else:
+            for item in package.iterdir():
+                item.rename(staged / item.name)
+        shutil.rmtree(package)
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        latest = npm_dist_tags("pnpm").get("latest")
         return [latest] if latest else []
 
 

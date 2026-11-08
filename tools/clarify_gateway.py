@@ -282,27 +282,22 @@ def clear_session(session_key: str) -> int:
 
 def resolve_clarify_timeout(config: dict) -> int:
     """Clarify timeout (seconds): legacy ``clarify.timeout`` if explicitly set, else
-    ``agent.clarify_timeout``, else 3600 — the single source of truth for every surface
-    (gateway, CLI, TUI). ``<= 0`` is kept verbatim (unlimited); non-numeric -> 3600."""
+    ``agent.clarify_timeout``, else 90 — the single source of truth for every surface
+    (gateway, CLI, TUI). ``<= 0`` is kept verbatim (unlimited); non-numeric -> 90."""
     raw = (config.get("clarify") or {}).get("timeout")
     if raw is None:
-        raw = (config.get("agent") or {}).get("clarify_timeout", 3600)
+        raw = (config.get("agent") or {}).get("clarify_timeout", 90)
     try:
         return int(raw)
     except (TypeError, ValueError):
-        return 3600
+        return 90
 
 
 def get_clarify_timeout() -> int:
-    """Clarify timeout from config.yaml; 0/negative = unlimited. Default 3600: long enough
-    that a user who stepped away still finds a live entry when they tap, short enough that
-    an abandoned prompt eventually unblocks the agent thread instead of pinning the guard.
-
-    The old 600s default evicted the entry mid-think, so a late tap landed on a dead entry and the agent
-    hung on ``running: clarify`` (#32762).
-    """
+    """Clarify timeout from config.yaml; 0/negative = unlimited. Default 90: an unanswered
+    question frees the turn quickly; a reply typed instead of an answer cancels it at once."""
     try:
         from hermes_cli.config import load_config
         return resolve_clarify_timeout(load_config() or {})
     except Exception:
-        return 3600
+        return 90

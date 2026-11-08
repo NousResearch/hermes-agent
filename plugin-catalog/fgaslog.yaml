@@ -1,0 +1,23 @@
+name: fgaslog
+repo: https://github.com/fgaslog/fgaslog-agent-plugin
+sha: "47d90bd890a6d883c286f80c686dec906b37890b"
+title: FGasLog
+description: >-
+  F-gas leak checks under Regulation (EU) 2024/573: one skill (leak check duty, intervals,
+  record items of Art. 7) plus a local stdio MCP server with two tools, co2_equivalent
+  (charge x GWP / 1000) and leak_check_interval (Art. 5(1) and 5(6)). Portable Agent
+  Plugins v1 package (plugin.json + mcp.json + skills/), no plugin code. Disclosure: Hermes starts
+  node src/server.js from the pinned checkout (no runtime dependencies, nothing downloaded);
+  the server makes no network calls, stores no data and sends no telemetry. No credentials needed.
+maintainer: fgaslog
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/fgaslog/fgaslog-agent-plugin#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

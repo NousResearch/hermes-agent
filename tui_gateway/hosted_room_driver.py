@@ -89,6 +89,7 @@ class _RecoveryInspection:
     terminal: _TerminalReceipt | None
     active: bool
     status: str | None
+    history_error: Exception | None = None  # history may hold a reply this probe could not read
 
 
 _NO_INSPECTION = _RecoveryInspection(terminal=None, active=False, status=None)
@@ -302,6 +303,8 @@ class HostedRoomRuntime:
             self._set_blocked(identity.room_id, True)
             raise state.InvalidTaskTransitionError(
                 "cannot retry while the original task attempt is still active")
+        if inspection.history_error is not None:
+            raise inspection.history_error  # running the turn again could answer it twice
         return self._requeue(state.requeue_indeterminate_task, task, lease, identity.room_id)
 
     def _retry_deferred(
@@ -1047,14 +1050,20 @@ class HostedRoomRuntime:
         *, read_history: bool) -> _RecoveryInspection:
         """Probe one resolved session: optional terminal receipt from history, then live info."""
         profile = task["payload"]["target_profile"]
-        receipt = (
-            self._terminal_from_history(transport, profile, session_id, task)
-            if read_history else None)
+        receipt = history_error = None
+        if read_history:
+            try:
+                receipt = self._terminal_from_history(transport, profile, session_id, task)
+            except Exception as exc:  # health: allow BLE001 -- history availability says nothing about the live turn
+                # By type only: exceptions may contain prompt text. A peer repeats this every cycle.
+                logger.debug("task %s recovery history read failed: %s",
+                             task["identity"].task_id, type(exc).__name__)
+                history_error = exc
         info = transport.info(**_session_kw(profile, session_id))
         self._report_pending_action(task, session_id=session_id, info=info)
         return _RecoveryInspection(
             terminal=receipt, active=_info_is_active_for(info, task["identity"]),
-            status=str(info.get("status") or "") or None)
+            status=str(info.get("status") or "") or None, history_error=history_error)
 
     def _inspect_recovery_session(
         self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> _RecoveryInspection:

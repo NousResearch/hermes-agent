@@ -54,6 +54,15 @@ class _ApprovalEntry:
         self.expired = False
 
 
+def _same_answerers(leader: dict, follower: dict) -> bool:
+    """A follower adopts its leader's answer only when the same people may give it: the default
+    (``approvers: ["*"]``, anyone admitted) or the same requester. Otherwise another requester's
+    deny (or grant) would answer this wait without its own requester's say."""
+    if "*" in (follower.get("approvers") or []) and "*" in (leader.get("approvers") or []):
+        return True
+    return leader.get("requester_id") == follower.get("requester_id") and leader.get("approvers") == follower.get("approvers")
+
+
 def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str,
                 timeout_s: int | None = None) -> str:
     """Wait on *event* until it fires, the turn is interrupted, or approvals.timeout
@@ -192,7 +201,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             if not preparing_terminal_approval():
                 leader = next((e for e in _approval._gateway_queues.get(session_key, [])
                                if e.data.get("command") == approval_data.get("command")
-                               and list(e.data.get("pattern_keys") or []) == keys), None)
+                               and list(e.data.get("pattern_keys") or []) == keys
+                               and _same_answerers(e.authority, entry.authority)), None)
             if leader is None:
                 _enqueue()
                 break

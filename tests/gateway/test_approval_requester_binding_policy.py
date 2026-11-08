@@ -95,3 +95,70 @@ async def test_a_telegram_tap_settles_only_what_the_tapper_may_answer(monkeypatc
                       from_user=MagicMock(first_name="Bob", id="bob"))
     await adapter._handle_callback_query(MagicMock(callback_query=query), MagicMock())
     assert alice.result is None and not alice.event.is_set()
+
+
+def _wait_in_thread(user, session_key, notify, outcomes):
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools.approval_gateway_wait import _await_gateway_decision
+
+    tokens = set_session_vars(platform="telegram", user_id=user, user_name=user.title(), session_key=session_key)
+    try:
+        outcomes[user] = _await_gateway_decision(session_key, notify, {"command": "echo same", "pattern_keys": ["k"]})
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_another_requesters_deny_does_not_answer_a_coalesced_wait(monkeypatch):
+    """Identical requests from two requesters do not share one prompt under the opt-in: Bob's deny
+    answers Bob, and Alice gets her own prompt that only she (or an approver) answers."""
+    from tools import approval
+
+    write_approvers([])
+    prompts, outcomes, cond = [], {}, threading.Condition()
+
+    def notify(data):
+        with cond:
+            prompts.append(data["request_id"])
+            cond.notify_all()
+
+    bob = threading.Thread(target=_wait_in_thread, args=("bob", "c", notify, outcomes), daemon=True)
+    bob.start()
+    with cond:
+        assert cond.wait_for(lambda: len(prompts) == 1, 10)
+    alice = threading.Thread(target=_wait_in_thread, args=("alice", "c", notify, outcomes), daemon=True)
+    alice.start()
+    with cond:
+        cond.wait_for(lambda: len(prompts) == 2, 5)
+    approval.resolve_gateway_approval("c", "deny", request_id=prompts[0])
+    bob.join(10)
+    assert outcomes["bob"]["choice"] == "deny"
+    assert len(prompts) == 2 and "alice" not in outcomes, "Alice's wait was answered by Bob's deny"
+    approval.resolve_gateway_approval("c", "once", request_id=prompts[1])
+    alice.join(10)
+    assert outcomes["alice"]["choice"] == "once" and not outcomes["alice"].get("coalesced")
+
+
+def test_same_requester_identical_requests_still_coalesce():
+    from tools import approval
+
+    write_approvers([])
+    prompts, outcomes, cond = [], {}, threading.Condition()
+
+    def notify(data):
+        with cond:
+            prompts.append(data["request_id"])
+            cond.notify_all()
+
+    first = threading.Thread(target=_wait_in_thread, args=("alice", "d", notify, outcomes), daemon=True)
+    first.start()
+    with cond:
+        assert cond.wait_for(lambda: len(prompts) == 1, 10)
+    results = {}
+    second = threading.Thread(target=_wait_in_thread, args=("alice", "d", notify, results), daemon=True)
+    second.start()
+    with cond:
+        cond.wait_for(lambda: len(prompts) == 2, 1)
+    approval.resolve_gateway_approval("d", "deny", request_id=prompts[0])
+    first.join(10)
+    second.join(10)
+    assert len(prompts) == 1 and results["alice"]["coalesced"] is True

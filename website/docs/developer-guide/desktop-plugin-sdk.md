@@ -661,6 +661,107 @@ and its siblings; the pet-wallet row uses the [pet bubble](#pet-bubble) door):
 `sessionId` in the table is the id the plugin's UI is bound to; for a composer
 slot render it is `host.state.focusedSessionId.get()`.
 
+### Composer predictions — preview without changing the draft
+
+`host.composer.setPredictions(payload)` offers complete next-message candidates
+to the **primary composer only**. It does not focus the input, change its draft,
+write chat history, or send a message. The user presses **Tab** to cycle,
+**ArrowRight** to accept into the editable draft, or **Escape** to dismiss.
+Shift+Tab keeps its normal focus behavior; IME and completion menus take priority.
+
+```ts
+interface ComposerPredictionScope {
+  sessionId: string
+  profile: string
+  connectionId: string
+}
+interface ComposerPredictionsPayload extends ComposerPredictionScope {
+  suggestions: string[]
+}
+interface ComposerPredictionHandle {
+  readonly publication: symbol
+}
+
+host.composer.setPredictions(payload: ComposerPredictionsPayload): ComposerPredictionHandle | null
+host.composer.clearPredictions(handle: ComposerPredictionHandle): boolean
+```
+
+These types are exported from `@hermes/plugin-sdk`. Keep the **exact returned
+handle object** in memory. It is an opaque, non-serializable cleanup receipt:
+`clearPredictions(handle)` returns `true` only while that publication is current.
+A stale, copied, or already-cleared handle returns `false` and cannot erase a
+newer publisher's preview. The latest accepted publication replaces the previous
+one; an invalid or rejected publication leaves the current one untouched.
+
+**Scope and acceptance.** All three scope fields are required. Capture them
+before starting asynchronous generation, and discard results from superseded
+requests or after a scope change, disable, or unmount. Do not attach the *new*
+scope to results generated for an *old* scope. The host independently verifies
+the active connection, profile, session, and mounted receiving surface; it cannot
+infer which asynchronous request a caller intended to finish. Runtime and durable
+session IDs resolve through the draft API's existing address resolver. Tiles,
+fresh drafts, missing connection IDs, and navigation-in-progress mismatches return
+`null` rather than falling through to another input.
+
+The receiving composer must be visible, idle, enabled, empty, and free of
+attachments, queue editing, or completion menus. Typing, pasting, dropping,
+starting IME composition, accepting, or dismissing clears the preview and blocks
+late publication for that turn. A new agent turn resets that suppression.
+Changing session, profile, or connection revokes both previews and their old
+receiving bindings. A successful handle acknowledges acceptance, not that the
+user has read or accepted the prediction.
+
+**Bounds.** Scope fields must be nonempty strings without surrounding whitespace,
+at most 512 UTF-16 code units each. A batch must contain 1–8 strings, each at most
+16,384 UTF-16 code units. Malformed or oversized batches return `null`; text is
+never silently truncated. Whitespace-only entries and exact duplicates are
+removed, but every character of accepted nonblank text is preserved. An empty
+result is rejected. Retain the handle and clear it on plugin/component cleanup.
+
+For example, this composer contribution uses static candidates and no model call:
+
+```javascript
+import { createElement, useEffect, useRef } from 'react'
+import { COMPOSER_AREAS, host } from '@hermes/plugin-sdk'
+
+function PredictionDemo() {
+  const handle = useRef(null)
+  useEffect(() => () => {
+    if (handle.current) host.composer.clearPredictions?.(handle.current)
+  }, [])
+
+  return createElement('button', {
+    type: 'button',
+    onClick() {
+      if (!host.composer.setPredictions || !host.composer.clearPredictions) return
+      const sessionId = host.state.activeSessionId.get()
+      const profile = host.state.profile.get()
+      const connectionId = host.state.connectionId.get()
+      if (!sessionId || !profile || !connectionId) return
+      const next = host.composer.setPredictions({
+        sessionId, profile, connectionId,
+        suggestions: ['Explain the trade-offs.', 'Show a small example.']
+      })
+      if (next) handle.current = next
+    }
+  }, 'Preview suggestions')
+}
+
+export default {
+  id: 'prediction-demo',
+  name: 'Prediction demo',
+  register(ctx) {
+    ctx.register({ id: 'preview', area: COMPOSER_AREAS.bottom, render: PredictionDemo })
+  }
+}
+```
+
+This example does not move focus: click back into the empty input to use the
+prediction keys. Feature-detect both methods for hosts without this capability;
+ordinary click-to-fill suggestions can still use `setDraft`. There is no public
+session-string clearing overload; plugins using the unpublished prototype must
+switch to scope fields and handle-based cleanup together.
+
 ### Session rows — decorations + the session list API
 
 `SESSION_ROW_AREAS` (`leading`, `trailing`) let a plugin decorate sidebar

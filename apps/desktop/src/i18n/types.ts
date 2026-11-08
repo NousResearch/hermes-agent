@@ -2922,6 +2922,8 @@ export interface Translations extends NoticeTranslations {
 
   composer: {
     message: string
+    predictionHint: string
+    predictionAnnouncement: (index: number, total: number, text: string) => string
     wakingProfile: (profile: string) => string
     placeholderStarting: string
     placeholderReconnecting: string

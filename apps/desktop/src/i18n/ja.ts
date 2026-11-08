@@ -2295,6 +2295,8 @@ export const jaOverrides = {
 
   composer: {
     message: 'メッセージ',
+    predictionHint: '→ 採用 · Tab 次へ · Esc 閉じる',
+    predictionAnnouncement: (index, total, text) => `予測 ${index} / ${total}：${text}`,
     wakingProfile: profile => `${profile} を起動中…`,
     placeholderStarting: 'Hermes を起動中...',
     placeholderReconnecting: 'Hermes に再接続中…',

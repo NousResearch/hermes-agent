@@ -3747,6 +3747,8 @@ export const esOverrides = {
   },
   composer: {
     message: 'Mensaje',
+    predictionHint: '→ Aceptar · Tab Siguiente · Esc Ocultar',
+    predictionAnnouncement: (index, total, text) => `Sugerencia ${index} de ${total}: ${text}`,
     wakingProfile: profile => `Despertando ${profile}…`,
     placeholderStarting: 'Iniciando Hermes...',
     placeholderReconnecting: 'Reconectando con Hermes…',

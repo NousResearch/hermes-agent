@@ -3316,6 +3316,8 @@ export const en: Translations = {
 
   composer: {
     message: 'Message',
+    predictionHint: '→ Accept · Tab Next · Esc Dismiss',
+    predictionAnnouncement: (index, total, text) => `Prediction ${index} of ${total}: ${text}`,
     wakingProfile: profile => `Waking up ${profile}…`,
     placeholderStarting: 'Starting Hermes...',
     placeholderReconnecting: 'Reconnecting to Hermes…',

@@ -3215,6 +3215,8 @@ export const zhOverrides = {
 
   composer: {
     message: '消息',
+    predictionHint: '→ 接受 · Tab 切换 · Esc 隐藏',
+    predictionAnnouncement: (index, total, text) => `第 ${index} 条预测，共 ${total} 条：${text}`,
     wakingProfile: profile => `正在唤醒 ${profile}…`,
     placeholderStarting: '正在启动 Hermes…',
     placeholderReconnecting: '正在重新连接 Hermes…',

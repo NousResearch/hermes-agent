@@ -3759,6 +3759,8 @@ export const deOverrides = {
   },
   composer: {
     message: 'Nachricht',
+    predictionHint: '→ Übernehmen · Tab Weiter · Esc Ausblenden',
+    predictionAnnouncement: (index, total, text) => `Vorschlag ${index} von ${total}: ${text}`,
     wakingProfile: profile => `Wecke ${profile}…`,
     placeholderStarting: 'Hermes wird gestartet…',
     placeholderReconnecting: 'Verbindung zu Hermes wird wiederhergestellt…',

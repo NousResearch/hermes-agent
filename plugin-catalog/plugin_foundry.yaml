@@ -1,13 +1,13 @@
 name: plugin_foundry
-repo: https://github.com/julian-saint-work/hermes-plugin-foundry
+repo: https://github.com/dolepee/hermes-plugin-foundry
 sha: 0963fbb35b26a9e5c55f998b5448c5a738041acf
 description: 'Turn a narrow plugin request into a native Hermes plugin: manifest, entry point, tool, SQLite state, tests, static scan and catalog draft. Two archetypes (folder watcher and JSON API poller). Writes only under the Foundry data root, runs generated tests in a minimal environment, and needs human approval outside that root; installing is a separate human step and nothing is auto-merged.'
-maintainer: julian-saint-work
+maintainer: dolepee
 tier: community
 category: automation
 requires_hermes: ">=0.21.5"
 version: "0.1.1"
-docs_url: https://github.com/julian-saint-work/hermes-plugin-foundry
+docs_url: https://github.com/dolepee/hermes-plugin-foundry
 platforms: []
 capabilities:
   provides_tools:

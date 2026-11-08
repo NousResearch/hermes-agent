@@ -1,10 +1,10 @@
 name: precedent-log
 repo: https://github.com/quotumorg/precedent-log
 sha: e23d1bd836ff8690ab9b73ac70bec4e3feba5b5e
-description: "Saves a human's answer to a blocked Kanban question as a ruling for later workers. Shows rulings and vetoes in Desktop with confirmed retirement. Disclosure: reads core board/task data and writes local profile/board state; enforce is the default, advisory is configurable. Store writers supply trusted prompt text; write guards are cooperative. Python runtime has no network, shell, background processes, secret reads or stored credentials. Desktop uses host-routed gateway RPC, possibly remote, for bounded reads and confirmed retirement; no independent connection or model calls. Opt-in demo harness only: subprocesses, loopback in fake mode and provider network in real mode."
+description: "Saves a human's answer to a blocked Kanban question as a ruling for later workers. Shows rulings and vetoes in Desktop with confirmed retirement. Disclosure — Saves human rulings under HERMES_HOME/precedent-log/ and injects matching rulings into Kanban worker prompts; in the default enforce mode it vetoes a worker's kanban_block up to twice per task when an active ruling matches, which can leave a no-edit worker's card running (set precedent_log.veto: advisory to only annotate). While enabled it blocks execute_code and process stdin writes in every Kanban worker and delegated subagent, and blocks worker commands that name its store. Reads four private Hermes board/delegation helpers (read-only, no core overrides) that may break on a core update. Desktop reads and retires rulings through host-routed gateway slash RPC, possibly to a remote gateway. No network calls, shell, credentials or telemetry in the plugin runtime; the bundled demo/ harness is opt-in and spawns subprocesses and provider calls when run."
 maintainer: quotumorg
 tier: community
-category: memory
+category: automation
 requires_hermes: ">=0.23.0"
 version: "0.4.1"
 docs_url: https://github.com/quotumorg/precedent-log/blob/e23d1bd836ff8690ab9b73ac70bec4e3feba5b5e/README.md

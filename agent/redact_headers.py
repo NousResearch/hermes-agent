@@ -206,7 +206,7 @@ def redact_header_credentials(text: str) -> str:
 # ``cookie_policy=x`` and URL query params (``?cookie=``) never match.
 _COOKIE_ASSIGN_RE = re.compile(
     r"(?<![\w?&])((?:[A-Za-z0-9]+_)*+cookie\s*=(?!=)\s*)"
-    r"(?:(?P<q>[\"'])(?P<quoted>(?:(?!(?P=q))[^\\\r\n]|\\.)*)(?P=q)(?P<tail>(?:[^\s\"']++|'[^'\r\n]*+'|\"(?:\\.|[^\"\\\r\n])*+\")*+)|(?P<bare>\S+))",
+    r"(?:(?P<q>[\"'])(?P<quoted>(?:(?!(?P=q))[^\\\r\n]|\\.)*)(?P=q)(?P<tail>(?:\\.|'[^'\r\n]*+'|[^\s\"'\\;&|<>(),]++)*+)|(?P<bare>\S+))",
     re.IGNORECASE,
 )
 

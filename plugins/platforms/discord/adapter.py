@@ -1381,11 +1381,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             return
         except Exception as err:  # pragma: no cover - defensive
             exc = err
-        if exc is None:
-            message = "Discord gateway task exited without an exception"
-        else:
-            message = f"Discord gateway task exited: {exc}"
-        logger.error("[%s] %s", self.name, message, exc_info=exc if exc else False)
+        from gateway.platforms.base import describe_proxy_error, resolve_proxy_url as _proxy
+        shown = describe_proxy_error(exc, _proxy("DISCORD_PROXY")) if exc else None  # raw text may echo a proxy secret
+        message = f"Discord gateway task exited: {shown or exc}" if exc else "Discord gateway task exited without an exception"
+        logger.error("[%s] %s", self.name, message, exc_info=exc if exc and not shown else False)
         self._set_fatal_error("discord_gateway_task_exited", message, retryable=True)
 
         async def _notify() -> None:
@@ -1590,13 +1589,13 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             self._release_platform_lock()
             # Classify by exception TYPE: auth/permission failures can't self-heal, so
             # retryable=False drops them from the reconnect queue and surfaces them as fatal.
-            code, message, retryable = self._classify_connect_exception(e)
+            code, message, retryable = self._classify_connect_exception(e, shown=proxy_error)
             self._set_fatal_error(code, message, retryable=retryable)
             return False
 
-    def _classify_connect_exception(self, error: Exception) -> tuple:
-        """Map a startup exception to ``(code, message, retryable)`` by TYPE only (never message
-        text); unknown types stay retryable — a false terminal leaves a recovered platform dead."""
+    def _classify_connect_exception(self, error: Exception, shown: str | None = None) -> tuple:
+        """Map a startup exception to ``(code, message, retryable)`` by TYPE only (never message text;
+        ``shown`` replaces it when it may echo a proxy secret); unknown types stay retryable."""
         def _is(type_name: str) -> bool:
             # Class-name check covers mocked discord.py / failed imports; isinstance adds subclasses.
             if error.__class__.__name__ == type_name:
@@ -1610,7 +1609,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         if _is("LoginFailure"):
             return (
                 "discord_auth_error",
-                f"Discord bot token rejected: {error}. The token is invalid or "
+                f"Discord bot token rejected: {shown or error}. The token is invalid or "
                 "was revoked — regenerate it in the Discord Developer Portal "
                 "and update DISCORD_BOT_TOKEN.",
                 False,
@@ -1625,7 +1624,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 )
             )
             return ("discord_intents_required", guidance, False)
-        return ("discord_connect_error", f"Discord startup failed: {error}", True)
+        return ("discord_connect_error", f"Discord startup failed: {shown or error}", True)
 
     def _discord_message_admission(self, message: Any, *, claim: bool) -> tuple[bool, bool]:
         """Return ``(admitted, role_authorized)`` for one Discord event."""

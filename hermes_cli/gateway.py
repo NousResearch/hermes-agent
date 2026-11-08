@@ -20,13 +20,8 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from hermes_cli import gateway_service_owner, setup_platforms  # resolved lazily by siblings through the facade
-from hermes_cli.gateway_generation_guards import (  # resolved lazily by siblings through the facade
-    _generation_launcher_in_plist,
-    _generation_tree_in_exec_lines,
-    _refuse_generation_launcher_service_write,
-    _service_install_root,
-)
+from hermes_cli import _startup_fast, gateway_service_owner, setup_platforms  # lazily re-exported via siblings
+from hermes_cli.gateway_generation_guards import _refuse_temp_home_or_generation_write, _service_root  # lazily re-exported via siblings
 
 # UV's bundled Python ships a minimal PATH; ensure launchctl/systemctl are discoverable.
 if os.name == "posix":
@@ -36,7 +31,7 @@ if os.name == "posix":
     if _missing:
         os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + os.pathsep.join(sorted(_missing))
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+PROJECT_ROOT = Path(_startup_fast.project_root_str())
 
 from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
 from gateway.status import terminate_pid
@@ -3165,7 +3160,7 @@ def _prepare_service_launcher(*, system: bool = False, run_as_user: str | None =
     from hermes_cli._launchers import ENTRY_POINTS, ensure_install_launchers, resolve_store_python
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
-    root, home = _service_install_root(PROJECT_ROOT), get_hermes_home()
+    root, home = _service_root(PROJECT_ROOT), get_hermes_home()
     owner = None
     if system:
         username, _group, home_dir, uid = _system_service_identity(run_as_user)
@@ -3197,7 +3192,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
 
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
-    project_root = _service_install_root(PROJECT_ROOT)
+    project_root = _service_root(PROJECT_ROOT)
     path_entries = _build_service_path_dirs()
     if not system:
         # System units add managed Node once the TARGET user's home is known (not the sudo caller's).
@@ -3383,10 +3378,7 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
         return False
 
     # Structural variant: refuse ANY temp-dir HERMES_HOME (manual E2E homes lack the pytest markers).
-    if gateway_service_owner.refuse_temp_home_service_write(new_unit, "systemd unit"):
-        return False
-
-    if _refuse_generation_launcher_service_write(new_unit, "systemd unit"):
+    if _refuse_temp_home_or_generation_write(new_unit, "systemd unit"):
         return False
 
     _prepare_service_launcher(system=system, run_as_user=expected_user)
@@ -3613,9 +3605,7 @@ def systemd_install(
 
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     new_unit = generate_systemd_unit(system=system, run_as_user=run_as_user)
-    if gateway_service_owner.refuse_temp_home_service_write(new_unit, "systemd unit"):
-        return
-    if _refuse_generation_launcher_service_write(new_unit, "systemd unit"):
+    if _refuse_temp_home_or_generation_write(new_unit, "systemd unit"):
         return
     print(f"Installing {scope_label} systemd service to: {unit_path}")
     _prepare_service_launcher(system=system, run_as_user=run_as_user)
@@ -4854,7 +4844,7 @@ def _dispatch_via_service_manager_if_s6(action: str, profile: str | None = None)
             getattr(mgr, action)(service)
         except GatewayNotRegisteredError:
             # A profile created from the HOST against a bind-mounted home has a directory but no
-            # slot (`profile create` cannot reach the container's /run/service). Only `start`
+            # slot (`profile create` cannot reach the container's /run/hermes-service). Only `start`
             # repairs that; stop/restart on a missing slot stay an error.
             if action != "start" or not register_unregistered_profile_gateway(mgr, profile):
                 raise
@@ -5677,24 +5667,3 @@ def _gateway_command_inner(args):
     handler = _GATEWAY_SUBCOMMANDS.get(getattr(args, "gateway_command", None))
     if handler is not None:
         handler(args)
-
-
-def _pm_runtime_venv_dir(project_root: Path | None = None) -> Path | None:
-    """The venv pm provisioned for this install, resolved through
-    ``runtime_paths.selected_venv`` — the committed-environment contract —
-    never from interpreter state.
-
-    Under no-boot-through-venv the gateway runs the store python with the
-    venv's site-packages on PYTHONPATH, so ``sys.prefix`` always equals
-    ``sys.base_prefix`` and ``VIRTUAL_ENV`` is unset in bundled installs;
-    prefix/env probing silently degrades. Resolution follows the committed-
-    environment contract: a committed selection is returned as-is, a host
-    with nothing committed yields nothing launchable, and a malformed
-    selection raises — fail closed, never a silently wrong venv.
-    """
-    root = Path(project_root) if project_root is not None else PROJECT_ROOT
-    from pm.environments import selected_venv
-
-    venv = selected_venv(root)  # a malformed committed selection raises: fail closed
-    return venv if venv.is_dir() else None
-

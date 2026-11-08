@@ -18,6 +18,7 @@ from xml.sax.saxutils import escape
 from datetime import UTC
 
 from hermes_cli import gateway_service_owner
+from hermes_cli.gateway_generation_guards import _refuse_generation_write, _service_root
 
 from agent.deadline import poll_until
 
@@ -220,7 +221,7 @@ def _gateway_run_command() -> list[str]:
     selector = shlex.split(_gw()._profile_arg())
     if not selector and _gw().get_hermes_home().resolve() == get_default_hermes_root().resolve():
         selector = ["--profile", "default"]
-    return runtime_command(_gw()._service_install_root(_gw().PROJECT_ROOT),
+    return runtime_command(_service_root(_gw().PROJECT_ROOT),
                            [*selector, "gateway", "run", "--replace"],
                            python=_gw().get_python_path())
 
@@ -276,7 +277,7 @@ def _timestamped_stderr_gateway_command(error_log: Path, *, external_supervisor:
     from hermes_cli._launchers import installation_command, runtime_command
     # Persisted launchd commands bind to the install root, never the
     # generation workspace a venv console script ran from (#131164).
-    root = _gw()._service_install_root(_gw().PROJECT_ROOT)
+    root = _service_root(_gw().PROJECT_ROOT)
     inner = _gw()._gateway_run_command()
     if external_supervisor:
         inner = installation_command(root, [*shlex.split(_gw()._profile_arg()), "gateway", "run"],
@@ -569,9 +570,8 @@ def _bootout_drain_and_rebootstrap(domain, plist_path, label, old_pid, budget: f
         domain, plist_path, label, deadline=time.monotonic() + budget)
 
 
-def refresh_launchd_plist_if_needed() -> bool:
-    """Rewrite the installed plist when the generated one differs, then bootout/bootstrap so launchd
-    re-reads it immediately."""
+def _rewrite_stale_launchd_plist() -> bool:
+    """Write the generated plist over a stale installed one this home owns; True when written."""
     plist_path = _gw().get_launchd_plist_path()
     if not plist_path.exists() or _gw().launchd_plist_is_current():
         return False
@@ -583,11 +583,33 @@ def refresh_launchd_plist_if_needed() -> bool:
     new_plist = _gw().generate_launchd_plist()
     if gateway_service_owner.refuse_temp_home_service_write(new_plist, "launchd plist"):
         return False
-    if _gw()._refuse_generation_launcher_service_write(new_plist, "launchd plist"):
+    if _refuse_generation_write(new_plist, "launchd plist"):
         return False
 
     _gw()._prepare_service_launcher()
     plist_path.write_text(new_plist, encoding="utf-8")
+    return True
+
+
+def refresh_unloaded_launchd_plist() -> bool:
+    """Rewrite a stale plist of a job launchd does not hold; the next bootstrap reads it.
+
+    A loaded job is left to ``refresh_launchd_plist_if_needed`` (its restart path), which must
+    still see the file stale to reload the job."""
+    if _gw()._locate_launchd_gateway_service(_gw().get_launchd_label())[0] is not None:
+        return False
+    if not _rewrite_stale_launchd_plist():
+        return False
+    print(f"  ↻ Updated {_gw().get_launchd_plist_path().name} to match the current Hermes install")
+    return True
+
+
+def refresh_launchd_plist_if_needed() -> bool:
+    """Rewrite the installed plist when the generated one differs, then bootout/bootstrap so launchd
+    re-reads it immediately."""
+    if not _rewrite_stale_launchd_plist():
+        return False
+    plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
     domain = _gw()._launchd_domain()
     target = f"{domain}/{label}"
@@ -670,7 +692,7 @@ def launchd_install(force: bool = False, *, start_now: bool = True, force_unit_p
     new_plist = _gw().generate_launchd_plist()
     if gateway_service_owner.refuse_temp_home_service_write(new_plist, "launchd plist"):
         return
-    if _gw()._refuse_generation_launcher_service_write(new_plist, "launchd plist"):
+    if _refuse_generation_write(new_plist, "launchd plist"):
         return
     print(f"Installing launchd service to: {plist_path}")
     _gw()._prepare_service_launcher()
@@ -744,7 +766,7 @@ def launchd_start():
         new_plist = _gw().generate_launchd_plist()
         if gateway_service_owner.refuse_temp_home_service_write(new_plist, "launchd plist"):
             sys.exit(1)
-        if _gw()._refuse_generation_launcher_service_write(new_plist, "launchd plist"):
+        if _refuse_generation_write(new_plist, "launchd plist"):
             sys.exit(1)
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)

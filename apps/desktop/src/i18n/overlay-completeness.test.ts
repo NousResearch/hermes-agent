@@ -22,7 +22,7 @@ import { zhHantOverrides } from './zh-hant'
 // locale's own overlay. overlay-gaps.json maps each English key to the locales that
 // lacked it when this check landed. It only ratchets: translating a listed key passes
 // untouched, while a key missing from a locale and not listed fails. Prune it with
-// `OVERLAY_GAPS_UPDATE=1 npx vitest run src/i18n/overlay-completeness.test.ts`.
+// `OVERLAY_GAPS_UPDATE=1 pnpm exec vitest run src/i18n/overlay-completeness.test.ts`.
 const OVERLAYS = {
   ar: arOverrides,
   de: deOverrides,

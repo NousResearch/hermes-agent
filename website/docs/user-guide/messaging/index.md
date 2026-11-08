@@ -52,7 +52,7 @@ connected. An enabled platform can correctly show **Messaging gateway stopped**.
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
 | Photon (iMessage) | ✅ | ✅ | ✅ | — | ✅ | ✅ | — |
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
-| Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| Yuanbao (Labs plugin) | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | Microsoft Teams | — | ✅ | — | ✅ | — | ✅ | — |
 | LINE | — | ✅ | ✅ | — | — | ✅ | — |
 | ntfy | — | — | — | — | — | — | — |
@@ -91,7 +91,7 @@ flowchart TB
     wx[Weixin]
     bb[BlueBubbles]
     qq[QQ]
-    yb[Yuanbao]
+    yb["Yuanbao (plugin)"]
     ms[Microsoft Teams]
     api["API Server<br/>(OpenAI-compatible)"]
     wh[Webhooks]
@@ -422,6 +422,17 @@ hermes pairing revoke telegram 123456789  # Remove access
 ```
 
 Pairing codes expire after 1 hour, are rate-limited, and use cryptographic randomness.
+
+### Other bots in a chat
+
+Hermes treats a sender as a bot when the platform says so (Discord, Slack, Telegram, Feishu, QQ guild, Mattermost bot accounts). On a platform whose events carry no bot flag (Matrix, Signal, IRC, Mattermost personal-access-token bots, …), list the peer's user ids under that platform's `bot_users` in `config.yaml`:
+
+```yaml
+mattermost:
+  bot_users: ["peer_bot_user_id"]
+```
+
+A bot sender is admitted only through that platform's `*_ALLOW_BOTS` setting. Hermes never sends it runtime notices (busy and interrupt acknowledgements, progress, the "not processed" and retry hints, model-fallback and inactivity warnings, failed-delegation notices), only the model's reply, and a bot it is addressed by may still be answered with silence. `gateway.bot_loop_guard` ends the exchange: `max_hops` (default 4) bot messages after your last message, a repeated message counted once, and no answer to a bot answering a reply Hermes delivered to it unless `bot_replies_expect_reply: true`; `enabled: false` turns the rules off.
 
 ### Admins vs Regular Users
 
@@ -781,7 +792,7 @@ Each platform has its own toolset:
 | Weixin | `hermes-weixin` | Full tools including terminal |
 | BlueBubbles | `hermes-bluebubbles` | Full tools including terminal |
 | QQBot | `hermes-qqbot` | Full tools including terminal |
-| Yuanbao | `hermes-yuanbao` | Full tools including terminal |
+| Yuanbao (Labs plugin) | `hermes-yuanbao` | Full tools + the `yb_*` group/DM/sticker tools from the `yuanbao` Hermes Labs plugin |
 | Microsoft Teams | `hermes-teams` | Full tools including terminal |
 | API Server | `hermes-api-server` | Full tools (drops `clarify`, `text_to_speech` — programmatic access doesn't have an interactive user) |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
@@ -1024,7 +1035,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [BlueBubbles Setup (iMessage)](bluebubbles.md)
 - [Photon Setup (iMessage)](photon.md)
 - [QQBot Setup](qqbot.md)
-- [Yuanbao Setup](yuanbao.md)
+- [Yuanbao](yuanbao.md) (Hermes Labs plugin)
 - [Microsoft Teams Setup](teams.md)
 - [Teams Meetings Pipeline](teams-meetings.md)
 - [Microsoft Graph Webhook Listener](msgraph-webhook.md)

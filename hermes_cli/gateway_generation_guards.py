@@ -13,6 +13,8 @@ definition is the gateway_service_owner module's refusal.)
 """
 from pathlib import Path
 
+from hermes_cli import gateway_service_owner
+
 
 def _gw():
     from hermes_cli import gateway  # late: the facade imports this module
@@ -66,6 +68,27 @@ def _generation_launcher_in_plist(definition: str) -> str | None:
         r"/installs/[^/<>\"'\s]+/environments/[^/<>\"'\s]+/+(?:workspace|venv)/+(?:\.hermes/)?bin/hermes\b",
         definition)
     return match.group(0) if match else None
+
+
+def _service_root(root: Path) -> Path:
+    """The install root a persisted supervisor command may name."""
+    return _service_install_root(root)
+
+
+def _refuse_generation_write(definition: str, kind: str) -> bool:
+    """Facade-facing wrapper: refuse a persisted write into a generation tree."""
+    return _refuse_generation_launcher_service_write(definition, kind)
+
+
+def _refuse_temp_home_or_generation_write(definition: str, kind: str) -> bool:
+    """Refuse a persisted write naming a temp home or a dependency generation.
+
+    Mirrors the gateway_service_owner temp-home refusal and adds the
+    generation-tree refusal (#131164) in one facade-facing call.
+    """
+    if gateway_service_owner.refuse_temp_home_service_write(definition, kind):
+        return True
+    return _refuse_generation_launcher_service_write(definition, kind)
 
 
 def _refuse_generation_launcher_service_write(definition: str, kind: str) -> bool:

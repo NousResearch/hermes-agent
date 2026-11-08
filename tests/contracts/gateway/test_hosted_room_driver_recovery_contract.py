@@ -104,6 +104,20 @@ def test_resolve_indeterminate_task_settles_under_the_current_lease_and_replays(
         resolve(status="failed")
 
 
+def test_late_receipt_settles_only_the_deferred_attempt_it_names(backend, scope_a):
+    store = backend.open(scope_a)
+    lease = _indeterminate(store)
+    driver = store.hosted_room_driver
+    driver.defer_indeterminate_task(_identity(), lease, placement="profile", expected_execution_generation=1,
+                                    expected_cancel_generation=0, reason="member_unavailable", now=210)
+    receipt = dict(placement="profile", expected_cancel_generation=0, settlement_id="answer",
+                   status="settled", result={"text": "done"}, now=220)
+    with pytest.raises(StaleTaskError):
+        driver.settle_recovered_task(_identity(), lease, expected_execution_generation=2, **receipt)
+    settled = driver.settle_recovered_task(_identity(), lease, expected_execution_generation=1, **receipt)
+    assert (settled["status"], settled["result"]) == ("settled", {"text": "done"})
+
+
 def test_resolve_indeterminate_cancellation_cancels_with_the_next_cancel_generation(backend, scope_a):
     store = backend.open(scope_a)
     lease = _indeterminate(store)

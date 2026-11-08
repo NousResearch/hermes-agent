@@ -140,7 +140,11 @@ def _apply_discussion_event(tables: HostedTables, event: Mapping[str, Any], payl
     if kind == "turn.settled" and payload.get("message_event_id"):
         committed = _settled_message(tables, room_id, discussion_event_id, payload["message_event_id"])
         if committed is not None:
-            seen_through_seq = max(seen_through_seq, int(committed["seq"]))
+            intervening = (event_from_row(row) for seq, row in tables["hosted_room_events"][room_id].items()
+                           if seen_through_seq < seq < committed["seq"] and row["kind"] in _MESSAGE_KINDS)
+            if not any(other["payload"].get("thread_id") == thread_id
+                       and other["payload"].get("member_id") != member_id for other in intervening):
+                seen_through_seq = max(seen_through_seq, int(committed["seq"]))
             _store_transcript_event(tables, event=committed, thread_id=thread_id, settled_seq=seq)
     else:
         _store_transcript_event(tables, event=event, thread_id=thread_id)

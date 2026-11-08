@@ -23,6 +23,7 @@ from persistence import JsonValue
 from persistence.gateway.hosted_rooms import (
     SHOWN_TASK_STATUSES,
     TERMINAL_STATUSES,
+    AuthorityChangedError,
     DriverLease,
     DriverStateError,
     DriverValidationError,
@@ -307,7 +308,7 @@ def _load_active_room(conn: sqlite3.Connection, room_id: str) -> Row:
 def _require_room_authority(conn: sqlite3.Connection, room_id: str, gateway_id: str, epoch: int) -> Row:
     room = _load_active_room(conn, room_id)
     if room["authority_gateway_id"] != gateway_id or int(room["authority_epoch"]) != epoch:
-        raise StaleLeaseError("hosted room authority changed")
+        raise AuthorityChangedError("hosted room authority changed")
     return room
 
 
@@ -599,6 +600,17 @@ class SQLiteHostedRoomDriverRepository:
             placement, attempt, guard_stale="task attempt is stale or cancelled", lease_first=False, now=now,
             replay=replay, sql=_SETTLE_RUNNING_SQL, set_params=set_params, stale="task changed during settlement",
             allow_expired_lease=allow_expired_lease)
+
+    def settle_recovered_task(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement,
+                             expected_execution_generation: int, expected_cancel_generation: int, settlement_id: str,
+                             status: TerminalStatus, result: JsonValue, now: float | None = None) -> Mapping[str, JsonValue]:
+        now = clock(now)
+        replay, set_params = _settlement(settlement_id, status, result, now)
+        return self._transition(
+            placement, identity, lease=lease, now=now, replay=replay,
+            sql=_task_update(_SETTLE_SET, f"status IN ('running', 'deferred') AND {_GENERATION_FENCE}"),
+            set_params=set_params, fence_params=(expected_execution_generation, expected_cancel_generation),
+            stale="late receipt belongs to a replaced or cancelled attempt")
 
     # Settles a stopping task; the replay check comes before the lease check.
     def settle_stopping_task(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement,

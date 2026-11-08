@@ -11,6 +11,7 @@ from typing import Any
 from persistence import JsonValue
 from persistence.gateway.hosted_rooms import (
     TERMINAL_STATUSES,
+    AuthorityChangedError,
     DriverLease,
     HostedPlacement,
     HostedTaskIdentity,
@@ -76,7 +77,7 @@ def require_room_authority(tables: HostedTables, room_id: str, gateway_id: str, 
     """The active room when its authority is ``(gateway_id, epoch)``, else ``StaleLeaseError``."""
     room = active_room(tables, room_id)
     if room["authority_gateway_id"] != gateway_id or int(room["authority_epoch"]) != epoch:
-        raise StaleLeaseError("hosted room authority changed")
+        raise AuthorityChangedError("hosted room authority changed")
     return room
 
 
@@ -258,6 +259,20 @@ class DriverTaskMixin:
             return _generations_match(row, "stopping", expected_execution_generation, expected_cancel_generation)
 
         return self._transition(placement, identity, lease=lease, lease_first=False, now=now, replay=replay, fence=fence, changes=changes, stale="task completion lost the stop race")
+
+    def settle_recovered_task(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement,
+                              expected_execution_generation: int, expected_cancel_generation: int, settlement_id: str,
+                              status: TerminalStatus, result: JsonValue, now: float | None = None) -> Mapping[str, JsonValue]:
+        now = rules.clock(now)
+        replay, changes = _settlement(settlement_id, status, result, now)
+
+        def fence(row: Row) -> bool:
+            return (row["status"] in {"running", "deferred"}
+                    and row["execution_generation"] == expected_execution_generation
+                    and row["cancel_generation"] == expected_cancel_generation)
+
+        return self._transition(placement, identity, lease=lease, now=now, replay=replay, fence=fence,
+                                changes=changes, stale="late receipt belongs to a replaced or cancelled attempt")
 
     def resolve_indeterminate_task(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement, expected_execution_generation: int, expected_cancel_generation: int, settlement_id: str, status: TerminalStatus, result: JsonValue, now: float | None = None) -> Mapping[str, JsonValue]:
         now = rules.clock(now)

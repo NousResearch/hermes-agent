@@ -226,6 +226,19 @@ def settle_stopping_task(
         result=result, now=now)
 
 
+def settle_recovered_task(
+    store, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement,
+    expected_execution_generation: int, expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus,
+    result: Any, clock: Clock) -> dict[str, Any]:
+    """Accept a running or deferred attempt's late reply under the current lease."""
+    _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
+    settlement_id, now = _settlement(settlement_id, status, result, clock)
+    return store.hosted_room_driver.settle_recovered_task(
+        identity, lease, placement=placement, expected_execution_generation=expected_execution_generation,
+        expected_cancel_generation=expected_cancel_generation, settlement_id=settlement_id, status=status,
+        result=result, now=now)
+
+
 def resolve_indeterminate_task(
     store, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement,
     expected_execution_generation: int, expected_cancel_generation: int, settlement_id: Any, status: TerminalStatus,

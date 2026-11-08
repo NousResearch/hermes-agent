@@ -999,10 +999,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
 
         Live replies send the private topic thread id together with a reply anchor. Synthetic/resumed sends
         without an anchor (loop wakeups, background-process notifications, queued follow-ups after a gateway
-        restart) prefer the Hermes topic's ``message_thread_id`` so they stay in the active topic lane
-        (#87051); ``direct_messages_topic_id`` is only used when no topic thread resolves, since the native
-        DM-topic id does not match the Hermes topic lane and can render the message in a different chat
-        lane.
+        restart) prefer the Hermes topic's ``message_thread_id`` so they stay in the active topic lane (#87051).
+        ``direct_messages_topic_id`` is a first route only when no topic thread resolves, and otherwise a retry
+        after Telegram rejected the thread id twice: native DM topics accept only that id (#137568).
         """
         fallback = cls._dm_topic_fallback(metadata)
         if fallback and reply_to_mode != "off":
@@ -3405,17 +3404,17 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                     if topic_gone(chat_id, send_err) and (effective_thread_id or (private_chat(chat_id) and thread_kwargs.get("direct_messages_topic_id"))):
                         if metadata and metadata.get("telegram_dm_topic_created_for_send"):
                             return SendResult(success=False, error=str(send_err), retryable=False)
+                        # A one-off "thread not found" flake retries the same thread_id before any route change.
+                        if effective_thread_id and not retried_thread_not_found:
+                            retried_thread_not_found = True
+                            logger.warning("[%s] Thread %s not found, retrying once with same thread_id", self.name, effective_thread_id)
+                            continue
                         if private_dm_topic_send or private_chat(chat_id):  # telegram_dm_topic_send.py: native id, then root
                             thread_kwargs = direct_topic_retry_kwargs(chat_id, thread_id, metadata, thread_kwargs) or {}
                             if not thread_kwargs:
                                 reply_to_id, used_thread_fallback = None, True
                                 self._prune_stale_dm_topic_binding(chat_id, effective_thread_id or thread_id, metadata=metadata)
                             effective_thread_id = None
-                            continue
-                        # One-off "thread not found" flakes recover on immediate retry: same thread_id once.
-                        if not retried_thread_not_found:
-                            retried_thread_not_found = True
-                            logger.warning("[%s] Thread %s not found, retrying once with same thread_id", self.name, effective_thread_id)
                             continue
                         # Thread is genuinely gone: retry without it and prune the stale binding.
                         logger.warning("[%s] Thread %s not found, retrying without message_thread_id", self.name, effective_thread_id)

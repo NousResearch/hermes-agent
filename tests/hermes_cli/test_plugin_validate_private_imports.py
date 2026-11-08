@@ -71,6 +71,7 @@ def test_documented_public_stdlib_and_own_package_imports_are_not_flagged(tmp_pa
 
 
 _PLATFORM_PLUGIN_SEAMS = (
+    ("hermes_time", "deadline_clock"),
     ("gateway.platforms.access_policy_mixin", "OwnAccessPolicyMixin"),
     ("tools.approval", "resolve_gateway_approval"),
     ("tools.clarify_gateway", "get_pending"),

@@ -15,6 +15,7 @@ later than it does today.
 """
 
 import time
+from hermes_time import deadline_clock
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
@@ -308,7 +309,7 @@ class TestResetAwareRestoreGate:
         """The existing 60s monotonic gate fires before the reset-aware one."""
         agent = _make_agent(fallback_model=self.FB)
         _activate_fallback(agent)
-        agent._rate_limited_until = time.monotonic() + 60
+        agent._rate_limited_until = deadline_clock() + 60
         pool = _FakePool("custom", next_at=None)
         agent._credential_pool = pool
 

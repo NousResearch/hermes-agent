@@ -3954,9 +3954,10 @@ class GatewayRunner(
             chat_type=str(source.chat_type) if source.chat_type else "",
             chat_name=source.chat_name or "",
             thread_id=str(source.thread_id) if source.thread_id else "",
-            user_id=str(context.actor_user_id or source.user_id or ""),
+            user_id=str(source.user_id) if source.user_id else "",
             user_id_alt=str(source.user_id_alt) if source.user_id_alt else "",
-            user_name=str(context.actor_user_name or source.user_name or ""),
+            user_name=str(source.user_name) if source.user_name else "",
+            actor_id=str(context.actor_user_id or ""), actor_name=str(context.actor_user_name or ""),
             scope_id=str(getattr(source, "scope_id", "") or ""),
             parent_chat_id=str(getattr(source, "parent_chat_id", "") or ""),
             session_key=context.session_key,
@@ -3965,8 +3966,7 @@ class GatewayRunner(
             session_id=context.session_id or "",
             message_id=str(source.message_id) if source.message_id else "",
             profile=getattr(source, "profile", "") or "",
-            async_delivery=_async_delivery,
-            cron_session="", session_history_delivery=_history_delivery)
+            async_delivery=_async_delivery, cron_session="", session_history_delivery=_history_delivery)
 
     def _clear_session_env(self, tokens: list) -> None:
         """Restore session context variables to their pre-handler values."""

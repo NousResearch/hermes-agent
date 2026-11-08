@@ -196,7 +196,7 @@ from plugins.platforms.telegram.telegram_network import (
     proxy_target_hosts)
 from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
 from plugins.platforms.telegram.telegram_send_errors import is_entity_parse_error
-from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution
+from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, shared_sender_suffix
 from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
 from utils import env_float, env_int
 
@@ -6344,6 +6344,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
 
     # -- Text message aggregation (handles Telegram client-side splits) --
 
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """The mixin's batching key (topic recovery included) plus the sender, so two observed-group members never merge."""
+        return super()._text_batch_key(event) + shared_sender_suffix(event)
+
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text chunk, or hold it while delayed delivery must be dropped."""
         if self._should_drop_delayed_delivery():
@@ -6421,6 +6425,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         """Return a batching key for Telegram photos/albums."""
         session_key = self._event_session_key(event)
         media_group_id = getattr(msg, "media_group_id", None)
+        session_key += shared_sender_suffix(event)
         return f"{session_key}:album:{media_group_id}" if media_group_id else f"{session_key}:photo-burst"
 
     async def _flush_photo_batch(self, batch_key: str) -> None:

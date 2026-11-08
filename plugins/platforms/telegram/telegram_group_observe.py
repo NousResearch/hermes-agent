@@ -30,3 +30,10 @@ def apply_group_observe_attribution(adapter, event: MessageEvent) -> MessageEven
     return dataclasses.replace(
         event, text=adapter._telegram_group_observe_attributed_text(event),
         source=adapter._telegram_group_observe_shared_source(event.source), channel_prompt=channel_prompt)
+
+
+def shared_sender_suffix(event: MessageEvent) -> str:
+    """Batch-key suffix for a sender-less shared source: two members addressing the bot inside one
+    batch window are two requests with two actors, never one merged turn under the first sender."""
+    actor = getattr(event, "user_id", None)
+    return f":from:{actor}" if actor and not event.source.user_id else ""

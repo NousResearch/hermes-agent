@@ -87,6 +87,8 @@ interface Props {
    * "Set Auxiliary: Vision" shows `current: glm-5.3` while Vision is Qwen.
    */
   currentAssignment?: { model?: string; provider?: string } | null;
+  /** Override the confirm button label (default: "Switch"). */
+  confirmLabel?: string;
 }
 
 export function ModelPickerDialog(props: Props) {
@@ -100,6 +102,7 @@ export function ModelPickerDialog(props: Props) {
     title = "Switch Model",
     alwaysGlobal = false,
     currentAssignment,
+    confirmLabel = "Switch",
   } = props;
   const standalone = !!loader && !!onApply;
 
@@ -471,7 +474,7 @@ export function ModelPickerDialog(props: Props) {
               Cancel
             </Button>
             <Button onClick={confirm} disabled={!canConfirm}>
-              {applying ? <Spinner /> : "Switch"}
+              {applying ? <Spinner /> : confirmLabel}
             </Button>
           </div>
         </footer>

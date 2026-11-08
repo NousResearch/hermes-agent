@@ -9,8 +9,16 @@ from typing import Any, Dict, List, Optional
 
 from hermes_cli.fallback_config import get_fallback_chain
 
-# Normalized fallback chain (merges legacy ``fallback_model``); always a fresh copy.
-_read_chain = get_fallback_chain
+
+def read_chain(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the normalized fallback chain as a list of dicts.
+
+    Accepts both the new list format (``fallback_providers``) and the legacy
+    ``fallback_model`` format. When both are present, the effective chain is
+    merged with ``fallback_providers`` entries kept first. The returned list is
+    always a fresh copy — callers can mutate without touching the config dict.
+    """
+    return get_fallback_chain(config)
 
 
 _MISSING_ACTIVE_PROVIDER = object()
@@ -22,7 +30,7 @@ def _identity(entry: dict[str, Any]):
     return BackendIdentity.build(provider=entry.get("provider"), model=entry.get("model"), base_url=entry.get("base_url"))
 
 
-def _write_chain(config: dict[str, Any], chain: list[dict[str, Any]]) -> None:
+def write_chain(config: dict[str, Any], chain: list[dict[str, Any]]) -> None:
     """Persist the chain to ``fallback_providers``; drop the legacy key so there is one source of truth."""
     config["fallback_providers"] = chain
     config.pop("fallback_model", None)
@@ -108,7 +116,7 @@ def _load_chain(empty_message: str):
     """Load config + chain; print ``empty_message`` block and return ``(config, None)`` when empty."""
     from hermes_cli.config import load_config
     config = load_config()
-    chain = _read_chain(config)
+    chain = read_chain(config)
     if not chain:
         print(f"\n{empty_message}\n")
     return config, chain or None
@@ -182,12 +190,12 @@ def cmd_fallback_add(args) -> None:
 
     # Reload after primary restoration; picker-created providers/credentials remain.
     final_cfg = load_config()
-    chain = _read_chain(final_cfg)
+    chain = read_chain(final_cfg)
     if any(same_deployment(_identity(existing), new_ident) for existing in chain):
         print(f"\n  {_format_entry(new_entry)} is already in the fallback chain — skipped.")
         return
     chain.append(new_entry)
-    _write_chain(final_cfg, chain)
+    write_chain(final_cfg, chain)
     save_config(final_cfg)
     print(f"\n  Added fallback: {_format_entry(new_entry)}")
     print(f"  Chain is now {_entries(len(chain))} long.\n")
@@ -208,7 +216,7 @@ def cmd_fallback_remove(args) -> None:
         print("\n  Cancelled — no change.")
         return
     removed = chain.pop(idx)
-    _write_chain(config, chain)
+    write_chain(config, chain)
     save_config(config)
     print(f"\n  Removed fallback: {_format_entry(removed)}")
     print(f"  Chain is now {_entries(len(chain))} long.\n" if chain else "  Fallback chain is now empty.\n")
@@ -230,7 +238,7 @@ def cmd_fallback_clear(args) -> None:
     if resp not in {"y", "yes"}:
         print("  Cancelled — no change.")
         return
-    _write_chain(config, [])
+    write_chain(config, [])
     save_config(config)
     print("\n  Fallback chain cleared.\n")
 

@@ -105,7 +105,7 @@ const mocks = vi.hoisted(() => {
 })
 
 vi.mock('./use-mic-recorder', () => ({
-  useMicRecorder: () => ({ handle: mocks.handle, level: 0 })
+  useMicRecorder: () => ({ handle: mocks.handle, levelStore: { get: () => 0, listen: () => () => {}, set: () => {} } })
 }))
 
 vi.mock('@/lib/voice-barge-in', () => ({

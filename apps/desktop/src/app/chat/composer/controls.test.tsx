@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatBarState } from '@/app/chat/composer/types'
@@ -26,7 +27,7 @@ function renderControls(overrides: Partial<React.ComponentProps<typeof ComposerC
         canSubmit={true}
         conversation={{
           active: false,
-          level: 0,
+          levelStore: atom(0),
           muted: false,
           onEnd: vi.fn(),
           onStart: vi.fn(),
@@ -224,7 +225,7 @@ describe('wake-word ear visibility', () => {
     renderControls({
       conversation: {
         active: true,
-        level: 0,
+        levelStore: atom(0),
         muted: false,
         onEnd: vi.fn(),
         onStart: vi.fn(),

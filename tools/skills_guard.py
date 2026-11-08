@@ -623,8 +623,9 @@ def _unicode_char_name(char: str) -> str:
 # A STRING token opens a triple-quoted block after at most a two-char prefix (r/b/f combos).
 _TRIPLE_QUOTE_OPEN_RE = re.compile(r'^[A-Za-z]{0,2}(?:"""|\'\'\')')
 # 3.12+ splits f-strings into FSTRING_START/MIDDLE/END tokens; only the quote delimiters are prose.
-_FSTRING_BOUNDARY_TYPES = {t for t in (getattr(tokenize, "FSTRING_START", None),
-                                       getattr(tokenize, "FSTRING_END", None)) if t is not None}
+_FSTRING_START, _FSTRING_MIDDLE, _FSTRING_END = (
+    getattr(tokenize, name, None) for name in ("FSTRING_START", "FSTRING_MIDDLE", "FSTRING_END"))
+_FSTRING_BOUNDARY_TYPES = {t for t in (_FSTRING_START, _FSTRING_END) if t is not None}
 
 
 def _compute_docstring_lines(lines: list) -> set:
@@ -634,14 +635,22 @@ def _compute_docstring_lines(lines: list) -> set:
     bundle author mark arbitrary payload lines as prose. Any lexer failure fails closed — no line is
     exempted, so every pattern still runs. Callers scope the skip to ``_DOCSTRING_EXEMPT_PATTERN_IDS``."""
     doc_lines: set = set()
+    fstrings: list = []  # open f-strings (3.12+), True when triple-quoted
+    expr_lines: set = set()  # lines holding a ``{...}`` expression: code, never prose
     try:
         for tok in tokenize.generate_tokens(io.StringIO('\n'.join(lines)).readline):
+            if tok.type == _FSTRING_START:
+                fstrings.append(bool(_TRIPLE_QUOTE_OPEN_RE.match(tok.string)))
+            elif tok.type == _FSTRING_END and fstrings:
+                fstrings.pop()
             if ((tok.type == tokenize.STRING or tok.type in _FSTRING_BOUNDARY_TYPES)
-                    and _TRIPLE_QUOTE_OPEN_RE.match(tok.string)):
+                    and _TRIPLE_QUOTE_OPEN_RE.match(tok.string)) or tok.type == _FSTRING_MIDDLE and fstrings and fstrings[-1]:
                 doc_lines.update(range(tok.start[0], tok.end[0] + 1))
+            elif fstrings and tok.type not in _FSTRING_BOUNDARY_TYPES and tok.type != _FSTRING_MIDDLE:
+                expr_lines.update(range(tok.start[0], tok.end[0] + 1))
     except (tokenize.TokenError, SyntaxError):  # unparsable input must never silence the pattern passes
         return set()
-    return doc_lines
+    return doc_lines - expr_lines
 
 
 def _mask_markdown_link_destinations(line: str) -> str:
@@ -733,10 +742,10 @@ def scan_file(file_path: Path, rel_path: str = "", *, skill: bool = False) -> li
         # Malformed input raises suspicion instead of silencing the scan: decode with replacement so every
         # pattern pass still runs, and flag the file (one bad byte used to exempt it entirely).
         text = raw.decode('utf-8-sig', errors='replace')
-        bad_line = raw[:exc.start].count(b'\n') + 1
+        bad_line = exc.object[:exc.start].count(b'\n') + 1  # offsets index the BOM-stripped bytes
         findings = [Finding("invalid_utf8", "high", "injection", rel_path, bad_line, "non-UTF-8 bytes",
                             "invalid UTF-8 decoded with replacement (possible encoding-obfuscated payload)")]
-    lines = text.split('\n')
+    lines = text.replace('\r\n', '\n').replace('\r', '\n').split('\n')  # read_bytes skips newline translation
     docstring_lines = _compute_docstring_lines(lines)  # so code patterns don't fire on prose
     traversal_lines = _mask_prose_link_destinations(lines) if file_path.suffix.lower() == ".md" else lines
     suffix, owners = file_path.suffix.lower(), _statement_owners(lines)  # per-file context for the demotion

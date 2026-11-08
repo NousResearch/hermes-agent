@@ -392,6 +392,23 @@ class TestScanFile:
         findings = scan_file(f, "evil.py")
         assert any(fi.pattern_id == "python_os_system" for fi in findings)
 
+    def test_byte_read_keeps_line_semantics(self, tmp_path):
+        """Reading bytes skips newline translation: a bare CR must still end a line (else an earlier
+        ``#`` hides the statement after it), and an invalid byte after a BOM reports its own line."""
+        cr = tmp_path / "cr.py"
+        cr.write_bytes(b"# helper\rimport os\rsnapshot = dict(os.environ)\r")
+        assert [fi.line for fi in scan_file(cr, "cr.py") if fi.pattern_id == "python_os_environ"] == [3]
+        bom = tmp_path / "bom.py"
+        bom.write_bytes(b"\xef\xbb\xbfimport os\n\xff\n")
+        assert [fi.line for fi in scan_file(bom, "bom.py") if fi.pattern_id == "invalid_utf8"] == [2]
+
+    @pytest.mark.skipif(sys.version_info < (3, 12), reason="f-strings tokenize as one STRING before 3.12")
+    def test_multiline_fstring_prose_is_exempt_but_its_expressions_are_not(self, tmp_path):
+        f = tmp_path / "help.py"
+        f.write_text('help_text = f"""\nUse os.environ for configuration.\nVersion: {version}\n"""\n'
+                     'x = f"""a\n{dict(os.environ)}\nb"""\n', encoding="utf-8")
+        assert [fi.line for fi in scan_file(f, "help.py") if fi.pattern_id == "python_os_environ"] == [6]
+
 
 # ---------------------------------------------------------------------------
 # scan_skill_cached — verdict cache keyed on the scanner version

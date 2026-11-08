@@ -40,12 +40,27 @@ describe('application menu IPC', () => {
     )
   })
 
-  test('rejects aliases, unsupported locales, and non-strings without changing the menu', async () => {
+  test('falls back to English for locales without a menu translation', async () => {
     const setLocale = vi.fn()
 
     registerApplicationMenuIpc(setLocale)
 
-    for (const locale of ['zh-TW', 'en-US', 'de-DE', 'pt', '', null, 42, {}]) {
+    for (const locale of ['zh-TW', 'en-US', 'de-DE', 'pt', '']) {
+      assert.deepEqual(await invoke('hermes:application-menu:set-locale', locale), { locale: 'en', ok: true })
+    }
+
+    assert.deepEqual(
+      setLocale.mock.calls.map(call => call[0]),
+      ['en', 'en', 'en', 'en', 'en']
+    )
+  })
+
+  test('rejects non-strings without changing the menu', async () => {
+    const setLocale = vi.fn()
+
+    registerApplicationMenuIpc(setLocale)
+
+    for (const locale of [null, 42, {}]) {
       await assert.rejects(
         Promise.resolve().then(() => invoke('hermes:application-menu:set-locale', locale)),
         /Invalid application menu locale/

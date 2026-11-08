@@ -280,3 +280,28 @@ def test_a_sender_written_to_the_earlier_contract_still_delivers(standalone, mon
     monkeypatch.setattr(entry, "standalone_sender_fn", open_kwargs)
     assert standalone.run("daily brief", notify=True)["success"] is True
     assert calls == ["daily brief", True]
+
+
+def test_an_unhashable_callable_sender_still_delivers(standalone, monkeypatch) -> None:
+    """A ``standalone_sender_fn`` that is a callable object defining ``__eq__`` (so unhashable)
+    is reached through the real registry lookup and still gets ``notify``."""
+    from gateway.platform_registry import platform_registry
+    from hermes_cli.plugins import discover_plugins
+    discover_plugins()
+
+    class Sender:
+        def __init__(self):
+            self.calls = []
+
+        def __eq__(self, other):
+            return self is other
+
+        async def __call__(self, pconfig, chat_id, message, *, thread_id=None, media_files=None,
+                           force_document=False, notify=None):
+            self.calls.append((message, notify))
+            return {"success": True, "message_id": "obj"}
+
+    sender = Sender()
+    monkeypatch.setattr(platform_registry.get("telegram"), "standalone_sender_fn", sender)
+    assert standalone.run("daily brief", notify=True) == {"success": True, "message_id": "obj"}
+    assert sender.calls == [("daily brief", True)]

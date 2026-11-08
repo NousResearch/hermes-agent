@@ -2,7 +2,6 @@
 
 from pm import install_hint
 import contextlib
-import functools
 import inspect
 import logging
 import os
@@ -116,10 +115,10 @@ def _plugin_standalone_sender(platform_name, *, label=None, discover=True):
     return entry.standalone_sender_fn, None
 
 
-@functools.lru_cache(maxsize=64)
 def _accepts_kwarg(fn, name):
     """True when ``fn`` takes keyword ``name`` (named or through ``**kwargs``); an uninspectable
-    callable is assumed to (the documented contract)."""
+    callable is assumed to (the documented contract). Uncached: a plugin's sender may be an
+    unhashable callable object, and one signature read per send is cheap."""
     try:
         params = inspect.signature(fn).parameters.values()
     except (TypeError, ValueError):

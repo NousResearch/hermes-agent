@@ -3,8 +3,7 @@ repo: https://github.com/kellycryptos/hermes-detox
 sha: 6a8e7b81f55134a856ced9592884d8a72aeb3efd
 version: "0.1.0"
 title: "Hermes Detox"
-description: >-
-  Tool output firewall for Hermes Agent. Intercepts oversized tool and terminal outputs before truncation, archives full raw text in local zero-network SQLite WAL storage, and provides compact, content-aware summaries with surgical line retrieval and search tools.
+description: "Tool output firewall. Saves redacted tool output locally (unencrypted; redaction is pattern-based and can miss secrets; no network), gives the model a compact report, and retrieves exact lines on demand."
 maintainer: kellycryptos
 tier: community
 category: tools

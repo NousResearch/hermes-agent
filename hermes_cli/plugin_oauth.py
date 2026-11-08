@@ -37,7 +37,7 @@ _HOST_RE = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z](?:[a-z0-9-]
 
 @dataclass(frozen=True)
 class OAuthClient:
-    """One ``oauth:`` entry of a plugin manifest. Holds variable names, never their values."""
+    """One ``oauth:`` entry: variable names and an optional public client ID, never secrets."""
 
     id: str
     authorize_url: str
@@ -47,11 +47,16 @@ class OAuthClient:
     hosts: tuple[str, ...]
     client_secret_env: str = ""
     authorize_params: tuple[tuple[str, str], ...] = ()
+    client_id_default: str = ""
 
     @property
     def fingerprint(self) -> str:
         """Hash of every field: a grant is used only with the entry it was made for."""
-        return hashlib.sha256(json.dumps(asdict(self), sort_keys=True).encode("utf-8")).hexdigest()
+        fields = asdict(self)
+        if not self.client_id_default:
+            # Adding this opt-in field must not invalidate existing plugin grants.
+            fields.pop("client_id_default")
+        return hashlib.sha256(json.dumps(fields, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 # ── Manifest ───────────────────────────────────────────────────────────────────────────────────────
@@ -93,6 +98,16 @@ def _hermes_owned_env(name: str) -> bool:
                    for _, manifest in _platform_plugin_manifests(source="bundled", strict=True)))
 
 
+def _client_default_problems(entry: dict, where: str) -> list[str]:
+    if "client_id_default" not in entry:
+        return []
+    value = entry["client_id_default"]
+    if (not isinstance(value, str) or not value.strip() or len(value) > 2048
+            or any(ord(char) < 32 or ord(char) == 127 for char in value)):
+        return [f"{where}.client_id_default: must be a non-empty public client ID without control characters"]
+    return []
+
+
 def _entry_problems(entry: dict, where: str) -> list[str]:
     oauth_id = entry.get("id")
     problems = [] if isinstance(oauth_id, str) and _ID_RE.match(oauth_id) else [
@@ -108,6 +123,7 @@ def _entry_problems(entry: dict, where: str) -> list[str]:
             problems.append(f"{where}.{field}: {name!r} must be an UPPER_SNAKE environment variable name")
         elif name and _hermes_owned_env(name):
             problems.append(f"{where}.{field}: {name} is a variable Hermes uses itself; declare the plugin's own")
+    problems += _client_default_problems(entry, where)
     hosts = entry.get("hosts")
     if not (isinstance(hosts, list) and hosts and all(isinstance(h, str) and _HOST_RE.match(h) for h in hosts)):
         problems.append(f"{where}.hosts: must list lowercase DNS host names (no scheme, port, path or IP address)")
@@ -122,6 +138,7 @@ def _client(entry: dict) -> OAuthClient:
         id=entry["id"], authorize_url=entry["authorize_url"], token_url=entry["token_url"],
         scopes=tuple(entry["scopes"]), client_id_env=entry["client_id_env"], hosts=tuple(entry["hosts"]),
         client_secret_env=entry.get("client_secret_env") or "",
+        client_id_default=entry.get("client_id_default", ""),
         authorize_params=tuple(sorted((entry.get("authorize_params") or {}).items())))
 
 
@@ -199,6 +216,20 @@ def _declared_env_names(manifest: Mapping[str, Any]) -> set[str]:
     return names
 
 
+def _same_profile_plugin(left: Path, right: Path) -> bool:
+    """Copies under the launch/bound homes share their relative directory identity.
+
+    Never trust manifest names (an unrelated directory can claim one), or collapse
+    category paths to their leaf name. Bundled/project claimants stay independent.
+    """
+    from hermes_constants import get_hermes_home, get_process_hermes_home
+
+    roots = {(home / "plugins").resolve() for home in (get_hermes_home(), get_process_hermes_home())}
+    owners = [(root, left.relative_to(root)) for root in roots if left != root and left.is_relative_to(root)]
+    return any(right != root and right.is_relative_to(root) and right.relative_to(root) == key
+               for owner, key in owners for root in roots if root != owner)
+
+
 def _foreign_client_env_problems(clients: list[OAuthClient], plugin_dir: Path, manifest: Mapping[str, Any]) -> list[str]:
     """Check every claimant, not discovery winners or the manifest's self-reported name.
 
@@ -224,7 +255,7 @@ def _foreign_client_env_problems(clients: list[OAuthClient], plugin_dir: Path, m
     for other in collect_directory_manifests():
         directory = Path(other.path)
         resolved = directory.resolve()
-        if resolved == requester:
+        if resolved == requester or _same_profile_plugin(requester, resolved):
             continue
         if not (requester_is_platform or other.kind == "platform" or resolved in platform_dirs):
             continue
@@ -324,10 +355,10 @@ def _auth_error(key: str, message: str, code: str):
     return AuthError(f"{key}: {message}", provider=key, code=code)
 
 
-def _env(name: str, code: str, key: str) -> str:
+def _env(name: str, code: str, key: str, *, default: str = "") -> str:
     from agent.secret_scope import get_secret
 
-    value = str(get_secret(name) or "").strip()
+    value = str(get_secret(name) or "").strip() or default
     if not value:
         raise _auth_error(key, f"{name} is not set. Add it to this profile's .env (the plugin declares it).", code)
     return value
@@ -369,7 +400,7 @@ def _token_request(client: OAuthClient, key: str) -> Callable[[dict[str, str]], 
         from hermes_cli.auth import _default_verify
         from hermes_cli.auth_constants import httpx
 
-        form = {**fields, "client_id": _env(client.client_id_env, "oauth_client_id_missing", key)}
+        form = {**fields, "client_id": _env(client.client_id_env, "oauth_client_id_missing", key, default=client.client_id_default)}
         if client.client_secret_env:
             form["client_secret"] = _env(client.client_secret_env, "oauth_client_secret_missing", key)
         failure = ""
@@ -394,7 +425,7 @@ def _pkce_config(client: OAuthClient, key: str, *, timeout: Optional[float] = No
     from hermes_cli.auth_oauth_pkce_plugin import OAuthPKCEConfig
 
     return OAuthPKCEConfig(
-        client_id=_env(client.client_id_env, "oauth_client_id_missing", key), authorize_url=client.authorize_url,
+        client_id=_env(client.client_id_env, "oauth_client_id_missing", key, default=client.client_id_default), authorize_url=client.authorize_url,
         token_url=client.token_url, scopes=client.scopes, extra_authorize_params=dict(client.authorize_params),
         label=key, token_request=_token_request(client, key), timeout_seconds=timeout or 180.0)
 

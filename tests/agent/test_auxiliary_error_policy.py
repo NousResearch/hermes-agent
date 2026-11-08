@@ -812,3 +812,42 @@ def test_a_parameter_repair_survives_a_credential_refresh(is_async, third, answe
         assert _routed_call([client] * 2, provider=provider, is_async=is_async, temperature=0.3,
                             pool=pool if provider == "openrouter" else None) == answer
     assert len(sent) == 3 and ["temperature" in body for body in sent] == [True, False, False]
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("refreshed,answer", [(200, "fresh"), (400, "next")], ids=["refreshed-request-answers",
+                                                                                 "rejected-again-takes-next"])
+def test_a_fallback_candidates_repair_survives_its_credential_refresh(is_async, refreshed, answer):
+    """primary 503 -> candidate temperature 400 -> the stripped request 401s -> refresh: the refreshed request still
+    omits temperature; if it is rejected anyway, that candidate is quarantined and the next one answers."""
+    sent, statuses = [], {"sk-primary": iter([503] * 2), "sk-old": iter([400, 401]), "sk-fresh": iter([refreshed]),
+                          "sk-next": iter([200])}
+
+    def handle(request):
+        key = request.headers["authorization"].removeprefix("Bearer ")
+        sent.append((key, "temperature" in json.loads(request.content)))
+        status = next(statuses[key])
+        message = {400: _TEMPERATURE_400 if key == "sk-old" else "Invalid request.", 401: "invalid api key",
+                   503: "down"}.get(status)
+        return httpx.Response(status, json={"error": {"message": message}} if message else {
+            "id": "x", "object": "chat.completion", "created": 0, "model": "fb", "choices": [{"index": 0, "message": {
+                "role": "assistant", "content": key.removeprefix("sk-")}, "finish_reason": "stop"}]}, request=request)
+
+    keys = iter(["sk-primary", "sk-fresh"])  # the primary's client, then the candidate's refreshed rebuild
+    candidates = iter([(_wire(handle, key="sk-old"), "fb", "openrouter"),
+                       (_wire(handle, key="sk-next", url="https://api.example.com/v1"), "fb", "custom")])
+    with patch.multiple(
+        "agent.auxiliary_client", _resolve_task_provider_model=lambda *_a: ("openrouter", "fast-1", None, None, None),
+        _get_cached_client=lambda *_a, **_k: (_wire(handle, key=next(keys), is_async=is_async), "fb"),
+        _transient_retry_count=lambda *_a: 0, _refresh_provider_credentials=lambda *_a, **_k: True,
+        _mark_provider_unhealthy=lambda *_a, **_k: None, _recoverable_pool_provider=lambda *_a, **_k: None,
+        _try_configured_fallback_chain=lambda *_a, **_k: next(candidates, (None, None, "")),
+        _try_main_agent_model_fallback=lambda *_a, **_k: (None, None, ""),
+        _openai_http_client_kwargs=lambda *_a, **_k: {"http_client": httpx.AsyncClient(
+            transport=httpx.MockTransport(handle))}):
+        call = async_call_llm(task="title_generation", messages=_MESSAGES, temperature=0.3) if is_async else None
+        result = asyncio.run(call) if is_async else call_llm(task="title_generation", messages=_MESSAGES, temperature=0.3)
+    assert result.choices[0].message.content == answer
+    fallbacks = [request for request in sent if request[0] != "sk-primary"]
+    assert fallbacks == [("sk-old", True), ("sk-old", False), ("sk-fresh", False)] + [("sk-next", True)] * (
+        answer == "next")

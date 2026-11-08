@@ -1,13 +1,13 @@
 name: screenrig
 title: screenRIG
 repo: https://github.com/screenrig/plugin
-sha: c2b70922dfaaf1f42fa1dcad90385bff51dce86c
+sha: 37de9fcb22bd1e7e13f881643ac2328b325cb75b
 subdir: plugins/screenrig-agents
 maintainer: screenrig
 tier: community
 category: tools
 requires_hermes: ">=0.22.5"
-version: "26.11.188"
+version: "26.11.231"
 docs_url: https://screenrig.ai/docs/start/hermes
 readme: true
 platforms: []

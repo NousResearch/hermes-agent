@@ -20,6 +20,7 @@ import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
+from gateway.platforms.base_image_sniff import _looks_like_image
 
 from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
@@ -559,23 +560,6 @@ def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_na
 
 get_image_cache_dir, cleanup_image_cache = _cache_dir_accessors(
     "image", "IMAGE_CACHE_DIR", "cache/images", "image_cache")
-
-
-# ISO-BMFF stills: iOS sends uncompressed photos as HEIC documents. Brand detection
-# is agent.image_routing's, which transcodes these to PNG before vision sees them.
-_ISOBMFF_IMAGE_MIMES = frozenset({"image/heic", "image/avif"})
-
-
-def _looks_like_image(data: bytes) -> bool:
-    """Return True if *data* starts with a known image magic-byte sequence."""
-    if len(data) >= 4 and (data[:8] == b"\x89PNG\r\n\x1a\n" or data[:3] == b"\xff\xd8\xff"
-                           or data[:6] in {b"GIF87a", b"GIF89a"} or data[:2] == b"BM"
-                           or (data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP")):
-        return True
-    if data[4:8] != b"ftyp":
-        return False
-    from agent.image_routing import _sniff_mime_from_bytes
-    return _sniff_mime_from_bytes(data[:16]) in _ISOBMFF_IMAGE_MIMES
 
 
 def _secure_media_cache_dir(cache_dir: Path) -> None:

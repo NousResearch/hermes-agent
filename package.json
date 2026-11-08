@@ -1,0 +1,52 @@
+{
+  "name": "hermes-agent",
+  "version": "1.0.0",
+  "description": "An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.",
+  "private": true,
+  "scripts": {
+    "preinstall": "node -e \"const ua=(process.env.npm_config_user_agent||'').split(' ')[0];let pin,why;try{pin=require('./pm/lock.json').packages.pnpm.version}catch(e){why=e.code||e.message}if(typeof pin==='string'&&ua==='pnpm/'+pin)process.exit(0);console.error(typeof pin==='string'?'This repository installs with pnpm '+pin+' (pm/lock.json), found '+(ua||'no user agent')+': source ./activate (PowerShell: . ./activate.ps1) provides it, then run pnpm install --frozen-lockfile':'pm/lock.json pins no pnpm'+(why?' ('+why+')':'')+': restore it from git');process.exit(1)\"",
+    "postinstall": "echo '✅ Node dependencies installed. Run: python run_agent.py --help'",
+    "install:root": "pnpm install --filter .",
+    "install:web": "pnpm install --filter web...",
+    "install:tui": "pnpm install --filter hermes-tui...",
+    "install:desktop": "pnpm install --filter hermes...",
+    "audit:root": "pnpm audit --filter .",
+    "audit:web": "pnpm audit --filter web",
+    "audit:tui": "pnpm audit --filter hermes-tui",
+    "audit:fix:root": "pnpm audit --fix --filter .",
+    "audit:fix:web": "pnpm audit --fix --filter web",
+    "audit:fix:tui": "pnpm audit --fix --filter hermes-tui",
+    "check": "pnpm -r check",
+    "fix": "pnpm -r fix",
+    "prepare": "node -e \"const {existsSync}=require('fs');const {spawnSync}=require('child_process');if(existsSync('.git'))spawnSync('lefthook',['install'],{stdio:'inherit',shell:true})\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NousResearch/Hermes-Agent.git"
+  },
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/NousResearch/Hermes-Agent/issues"
+  },
+  "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "eslint": "10.12.0",
+    "eslint-plugin-perfectionist": "5.12.1",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-unused-imports": "4.4.1",
+    "globals": "17.13.0",
+    "lefthook": "2.2.1",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.1"
+  },
+  "engines": {
+    "node": ">=26",
+    "pnpm": "^12",
+    "npm": "npm is refused here: run pnpm install --frozen-lockfile at the repository root"
+  },
+  "dependencies": {
+    "js-yaml": "4.3.2",
+    "semver": "7.7.4"
+  }
+}

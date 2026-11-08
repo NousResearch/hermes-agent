@@ -1,0 +1,19 @@
+name: model-usage-status
+repo: https://github.com/krapwoo/hermes-model-usage-status
+sha: da9b55ee79972dd04d333745574d5d198b3b2088
+description: Provider-native Claude and Codex remaining allowance windows in the Hermes Desktop status
+  bar. Disclosure — spawns the local `codex app-server` and `claude auth status` CLIs and reads the Claude
+  OAuth token read-only through Hermes core; the optional install.sh (not part of the catalog install)
+  edits the statusLine in ~/.claude/settings.json; macOS only.
+maintainer: krapwoo
+tier: community
+category: desktop
+docs_url: https://github.com/krapwoo/hermes-model-usage-status#readme
+version: 0.2.1
+platforms:
+- macos
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

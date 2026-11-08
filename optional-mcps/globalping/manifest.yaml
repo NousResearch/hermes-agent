@@ -1,0 +1,41 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: globalping
+description: Ping, traceroute, DNS, and HTTP tests from global probes.
+source: https://github.com/jsdelivr/globalping-mcp-server
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint); Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://mcp.globalping.dev/mcp
+
+auth:
+  type: oauth
+
+# Excluded: in-band documentation/usage-guide/rate-limit probes.
+tools:
+  default_excluded:
+    - help
+    - compareLocations
+    - limits
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - globalping
+    - traceroute
+    - ping
+  hosts:
+    - globalping.io
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Globalping (or run `hermes mcp login globalping`). Approve access,
+  then restart the session so tools load.

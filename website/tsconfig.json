@@ -1,0 +1,10 @@
+{
+  "extends": "@docusaurus/tsconfig",
+  "compilerOptions": {
+    "ignoreDeprecations": "6.0",
+    "baseUrl": ".",
+    "paths": { "@site/*": ["./*"] },
+    "resolveJsonModule": true
+  },
+  "exclude": [".docusaurus", "build"]
+}

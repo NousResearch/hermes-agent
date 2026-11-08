@@ -1,0 +1,14 @@
+name: jev-model-router
+repo: https://github.com/Pinutss/jev-model-router
+sha: b977dc3ef07738aab005c433d08c1da3fa949e8d
+description: "Agent Plugins v1 package: one skill plus one stdio MCP server (model_route) started with uv run from the checkout. Needs uv on PATH. Registers no Hermes tools or hooks; do not expect jev_* tools."
+maintainer: Pinutss
+tier: community
+category: models
+docs_url: https://github.com/Pinutss/jev-model-router#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

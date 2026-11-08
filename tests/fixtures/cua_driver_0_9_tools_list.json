@@ -1,0 +1,570 @@
+{
+  "format": "normalized-selected-tools-list-v1",
+  "contract_epoch": "cua-driver-0.9",
+  "observed_reported_version": "0.8.3",
+  "capability_version": "1",
+  "observed_tool_count": 49,
+  "tools": [
+    {
+      "capabilities": [
+        "window.activate"
+      ],
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "pid": {
+            "type": "integer"
+          },
+          "window_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pid"
+        ],
+        "type": "object"
+      },
+      "name": "bring_to_front"
+    },
+    {
+      "capabilities": [
+        "browser.input.click"
+      ],
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "input_route": {
+            "enum": [
+              "trusted",
+              "dom_event"
+            ],
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "tab_id": {
+            "type": "string"
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "target_id",
+          "tab_id"
+        ],
+        "type": "object"
+      },
+      "name": "browser_click"
+    },
+    {
+      "capabilities": [
+        "browser.dialog"
+      ],
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "action": {
+            "enum": [
+              "inspect",
+              "accept",
+              "dismiss"
+            ],
+            "type": "string"
+          },
+          "delivery_mode": {
+            "enum": [
+              "background",
+              "foreground"
+            ],
+            "type": "string"
+          },
+          "dialog_id": {
+            "type": "string"
+          },
+          "prompt_text": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "tab_id": {
+            "type": "string"
+          },
+          "target_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_id",
+          "tab_id",
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "browser_dialog"
+    },
+    {
+      "capabilities": [
+        "browser.download"
+      ],
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "destination_root": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "tab_id": {
+            "type": "string"
+          },
+          "target_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "target_id",
+          "tab_id",
+          "ref",
+          "destination_root"
+        ],
+        "type": "object"
+      },
+      "name": "browser_download"
+    },
+    {
+      "capabilities": [
+        "browser.navigate"
+      ],
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "tab_id": {
+            "type": "string"
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_id",
+          "tab_id",
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "browser_navigate"
+    },
+    {
+      "capabilities": [
+        "browser.input.pointer"
+      ],
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "action": {
+            "enum": [
+              "hover",
+              "right_click",
+              "double_click",
+              "scroll",
+              "drag"
+            ],
+            "type": "string"
+          },
+          "delta_x": {
+            "type": "number"
+          },
+          "delta_y": {
+            "type": "number"
+          },
+          "destination_ref": {
+            "type": "string"
+          },
+          "input_route": {
+            "enum": [
+              "trusted",
+              "dom_event"
+            ],
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "tab_id": {
+            "type": "string"
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "to_x": {
+            "type": "number"
+          },
+          "to_y": {
+            "type": "number"
+          },
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "target_id",
+          "tab_id",
+          "session",
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "browser_pointer"
+    },
+    {
+      "capabilities": [
+        "browser.prepare"
+      ],
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "allow_launch": {
+            "type": "boolean"
+          },
+          "approval_token": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "profile": {
+            "additionalProperties": false,
+            "properties": {
+              "mode": {
+                "enum": [
+                  "isolated_new",
+                  "isolated_named"
+                ],
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "type": "object"
+          },
+          "session": {
+            "type": "string"
+          },
+          "strategy": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "existing_profile"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          "window_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pid"
+        ],
+        "type": "object"
+      },
+      "name": "browser_prepare"
+    },
+    {
+      "capabilities": [
+        "browser.input.files"
+      ],
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "type": "array"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "tab_id": {
+            "type": "string"
+          },
+          "target_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_id",
+          "tab_id",
+          "ref",
+          "files"
+        ],
+        "type": "object"
+      },
+      "name": "browser_set_input_files"
+    },
+    {
+      "capabilities": [
+        "browser.input.type"
+      ],
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "mode": {
+            "enum": [
+              "insert_text",
+              "keystrokes"
+            ],
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "tab_id": {
+            "type": "string"
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_id",
+          "tab_id",
+          "ref",
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "browser_type"
+    },
+    {
+      "capabilities": [
+        "input.pointer.click",
+        "input.pointer.click.left",
+        "accessibility.element_tokens"
+      ],
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "button": {
+            "enum": [
+              "left",
+              "right",
+              "middle"
+            ],
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "debug_image_out": {
+            "type": "string"
+          },
+          "delivery_mode": {
+            "enum": [
+              "background",
+              "foreground"
+            ],
+            "type": "string"
+          },
+          "element_index": {
+            "type": "integer"
+          },
+          "element_token": {
+            "type": "string"
+          },
+          "from_zoom": {
+            "type": "boolean"
+          },
+          "modifier": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "scope": {
+            "enum": [
+              "window",
+              "desktop"
+            ],
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "window_id": {
+            "type": "integer"
+          },
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "click"
+    },
+    {
+      "capabilities": [
+        "browser.state"
+      ],
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "continuation": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "query": {
+            "type": "string"
+          },
+          "scope_ref": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "snapshot_format": {
+            "enum": [
+              "dom_refs_v1",
+              "semantic_v2"
+            ],
+            "type": "string"
+          },
+          "tab_id": {
+            "type": "string"
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "window_id": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_browser_state"
+    },
+    {
+      "capabilities": [
+        "input.keyboard.type",
+        "input.keyboard.type.terminal_safe",
+        "accessibility.element_tokens"
+      ],
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "delay_ms": {
+            "maximum": 200,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "delivery_mode": {
+            "enum": [
+              "background",
+              "foreground"
+            ],
+            "type": "string"
+          },
+          "element_index": {
+            "type": "integer"
+          },
+          "element_token": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "scope": {
+            "enum": [
+              "window",
+              "desktop"
+            ],
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "window_id": {
+            "type": "integer"
+          },
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "type_text"
+    }
+  ]
+}

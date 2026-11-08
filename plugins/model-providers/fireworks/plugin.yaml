@@ -1,0 +1,5 @@
+name: fireworks-provider
+kind: model-provider
+version: 1.0.0
+description: Fireworks AI — fast inference for open and proprietary models
+author: Alex Jestin Taylor (@alex-fireworks) + Hermes Agent

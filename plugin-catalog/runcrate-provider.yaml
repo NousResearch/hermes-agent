@@ -1,0 +1,19 @@
+name: runcrate-provider
+repo: https://github.com/runcrateai/hermes-runcrate
+sha: c0023f37820e05147f1dcd1cb8ebd712e6b122e2
+subdir: model-providers/runcrate
+title: "Runcrate"
+description: "Runcrate (runcrate.ai) open models via the OpenAI-compatible API at api.runcrate.ai/v1: live model list from /v1/models, DeepSeek V4.1 Flash as the default, and Hermes reasoning settings sent as reasoning_effort. Disclosure: model provider; prompts, tool schemas and RUNCRATE_API_KEY go to api.runcrate.ai, and free requests can be served by third-party model providers under their own terms (runcrate.ai/privacy)."
+maintainer: runcrateai
+tier: community
+category: models
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/runcrateai/hermes-runcrate#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - RUNCRATE_API_KEY

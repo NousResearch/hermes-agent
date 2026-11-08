@@ -1,0 +1,38 @@
+name: concierge
+title: Concierge
+repo: https://github.com/dresraz/hermes-concierge
+sha: 0d6c7a635a50a2dc9b84f522e4182fbc7f2b0de2
+description: >-
+  A marketplace concierge: one sentence upgrades your default profile or any bot you already have, or
+  adds a new one, and installs a plugin or skill the same way. /concierge create turns a sentence into
+  a working profile with a role, five to eight catalog skills and a SOUL.md, plus your own model login. /concierge
+  improve adds what a bot is missing, a skill from the marketplace or one rule written into that bot's
+  soul, and it works on any bot on the machine, not only ones Concierge made. Every
+  bot Concierge creates also gets its own /concierge, scoped to itself: it can add a
+  skill or a rule to itself, and cannot create or delete profiles. A bare /concierge opens a
+  numbered shelf of bots, skills and the plugin catalog; the number acts on the row. Installs go through
+  Hermes's own installer and scan gate; every action prints a receipt read back off the disk, and
+  /concierge undo restores exactly what it wrote, including the soul bytes a rule replaced.
+  Disclosure: registers one /concierge command and one post_gateway_admission hook (reply words in the
+  messaging gateway). Network calls: it fetches the plugin catalog index from GitHub, the skill
+  registries behind a skill search, and one plugin manifest at its pinned commit for the dependency
+  line on the card. It reads the active HERMES_HOME (profiles, plugin and skill directories) and
+  writes there: a new profile per bot created, skills, a SOUL.md, and the install records. An install
+  aimed at another bot runs `hermes -p <bot>` as a short-lived child process. Listing, resetting and
+  deleting profiles are limited to profiles Concierge made, and the default profile can be reset but
+  never deleted. No credentials, no telemetry, no self-updater, nothing runs at load time. Memory
+  plugins are not recommended and are never installed by default, since they can need a hosted
+  service or a paid plan.
+maintainer: dresraz
+tier: community
+category: general
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/dresraz/hermes-concierge#readme
+version: 0.5.0
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_gateway_admission
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,16 @@
+name: web-serply
+repo: https://github.com/serply-inc/hermes-web-serply
+sha: c6cab41471586a110e5a584061168a045f566e08
+description: Serply web search provider for Hermes Agent. Google web results via the Serply
+  SERP API. Requires SERPLY_API_KEY (sign up at https://serply.io).
+maintainer: serply-inc
+tier: community
+category: web
+docs_url: https://github.com/serply-inc/hermes-web-serply#readme
+version: "1.0.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - SERPLY_API_KEY

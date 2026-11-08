@@ -74,3 +74,26 @@ async def test_full_command_send_is_marked_interim_so_it_never_seals_the_live_re
     adapter = _Chat()
     await adapter.send_exec_approval("c1", "echo " + "A" * 900, "sk", metadata={"thread_id": "t1"})
     assert adapter.sent_metadata == {"thread_id": "t1", "_interim_send": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adapter_factory", ["base", "discord", "slack"])
+async def test_backticks_inside_a_short_command_cannot_close_the_card_fence(adapter_factory):
+    """A ``` (or longer run) in the command would end the card's markdown fence early, and the rest
+    would render as markdown (spoilers, links): the fence is longer than any run in the command."""
+    from gateway.platforms.base_exec_approval import render_exec_approval
+
+    adapter = _Chat()
+    if adapter_factory == "discord":
+        from plugins.platforms.discord.adapter import DiscordAdapter
+        adapter = DiscordAdapter.__new__(DiscordAdapter)
+        adapter._approval_mention_content = lambda: ""
+    elif adapter_factory == "slack":
+        from plugins.platforms.slack.adapter import SlackAdapter
+        adapter = SlackAdapter.__new__(SlackAdapter)
+    command = "echo '```' ||spoiler|| [x](https://e.x) ````` done"
+    text, truncated = render_exec_approval(adapter, command, "flagged", False, True)
+    assert not truncated
+    fence = "``````"  # one longer than the command's longest run (5)
+    assert text.count(fence) == 2
+    assert text.index(fence) < text.index(command) < text.rindex(fence)

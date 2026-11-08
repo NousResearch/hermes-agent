@@ -825,3 +825,17 @@ class TestMcpEnvelopeSpillover:
         persisted = (get_spillover_dir() / "tc_term_tail.txt").read_text(encoding="utf-8")
         assert "chars elided" not in persisted
         assert persisted.count("filler line") == 4_000
+
+    def test_preview_tail_is_the_output_not_the_metadata_after_it(self):
+        output = "".join(f"cell line {i}\n" for i in range(3_000)) + "ZeroDivisionError: LAST_LINE\n"
+        content = json.dumps({"status": "error", "output": output, "exit_code": 1,
+                              "kernel": {"mode": "session", "execution_count": 3}}, ensure_ascii=False)
+        result = maybe_persist_tool_result(
+            content=content, tool_name="execute_code", tool_use_id="tc_exec_tail",
+            env=None, threshold=30_000)
+
+        preview = result.split("Preview (first", 1)[1]
+        assert "ZeroDivisionError: LAST_LINE" in preview
+        assert '"kernel"' not in preview
+        spill = (get_spillover_dir() / "tc_exec_tail.txt").read_text(encoding="utf-8")
+        assert spill.index("LAST_LINE") < spill.index('"kernel"')

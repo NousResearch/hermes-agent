@@ -1,7 +1,7 @@
 ---
 name: agentsmd
 description: "Distill session lessons into a lean AGENTS.md — collect, distill, organically merge, verify commands, and write only after user approval."
-version: 1.5.1
+version: 1.5.2
 author: "Felix (kelegele/agentsmd-skill)"
 license: MIT
 platforms: [linux, macos, windows]

@@ -1,10 +1,9 @@
-"""Model-scoped rate-limit cooldowns for pooled credentials.
+"""Model-scoped rate-limit cooldowns for providers with per-model limits.
 
-Anthropic enforces its API rate limits (requests / tokens per minute) per
-model, so a generic 429 for one Claude model says nothing about the same
-credential's standing for its sibling models. Such a 429 is recorded as a
-cooldown on the requested model only, beside the credential-wide status that
-auth, billing and payment failures keep benching the whole credential with.
+Anthropic and OpenCode Go enforce applicable 429 usage limits per model, so a
+rate limit for one model says nothing about the same credential's standing for
+its sibling models. Such a 429 is recorded as a cooldown on the requested model
+only, beside credential-wide status for auth, billing and payment failures.
 """
 from __future__ import annotations
 
@@ -84,8 +83,9 @@ class CredentialPoolModelCooldownMixin:
             return False
         if failure_reason in ("model_entitlement", FAILURE_REASON_USAGE_WINDOW):
             return True
+        provider = str(getattr(self, "provider", "") or "").strip().lower()
         return (
-            self.provider == "anthropic" and status_code == 429
+            provider in {"anthropic", "opencode-go"} and status_code == 429
             and failure_reason not in (FAILURE_REASON_BILLING, FAILURE_REASON_BILLING_UNVERIFIED)
         )
 

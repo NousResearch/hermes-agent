@@ -27,11 +27,11 @@
   \ can change; admission validation reports these imports for reviewer inspection."
 - "Live subscription voice requires a profile sign-in with voice access. API voice\
   \ requires the profile's OpenAI credentials. Email drafts require neither."
-"sha": "a39afe7ae4acc2f2da50d73b6a117a5ce2f61e1a"
-"version": "0.3.1"
+"sha": "1ed50e56d13d6bb265e70a25260c2b6b14b82784"
+"version": "0.3.2"
 "requires_hermes": ">=0.23.0"
 "screenshots":
-- "https://raw.githubusercontent.com/tarkilhk/wing-hermes-plugin/a39afe7ae4acc2f2da50d73b6a117a5ce2f61e1a/docs/email-draft-preview.png"
+- "https://raw.githubusercontent.com/tarkilhk/wing-hermes-plugin/1ed50e56d13d6bb265e70a25260c2b6b14b82784/docs/email-draft-preview.png"
 "capabilities":
   "provides_tools":
   - "wing_email_draft"

@@ -26,7 +26,7 @@ def fire(authority, ref, route, policy, reason):
     from gateway.session_policy import SURFACES
     home, key = Path(authority.profile_id), (authority.profile_id, ref.session_id)
     platform = SURFACES.get(policy.source, policy.source)
-    previous = _PENDING.get(key)
+    previous = _live(key)
 
     def deliver_now():
         from gateway.run import _profile_runtime_scope
@@ -49,9 +49,19 @@ def fire(authority, ref, route, policy, reason):
     task.add_done_callback(lambda done: _PENDING.pop(key) if _PENDING.get(key) is done else None)
 
 
+def _live(key):
+    """*key*'s pending delivery on the running loop; a retired loop's (an in-process restart) never
+    resolves on this one."""
+    task = _PENDING.get(key)
+    if task is not None and task.get_loop() is not asyncio.get_running_loop():
+        _PENDING.pop(key, None)
+        return None
+    return task
+
+
 async def settled(authority, session_id):
     """Wait out an open delivery still running for *session_id* (the hook dispatcher bounds each
     callback by ``plugins.hook_callback_timeout``); awaited before a claimed turn executes."""
-    task = _PENDING.get((authority.profile_id, session_id))
+    task = _live((authority.profile_id, session_id))
     if task is not None:
         await asyncio.wait({task})

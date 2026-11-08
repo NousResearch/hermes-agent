@@ -96,7 +96,7 @@ async def test_retry_redispatch_admits_natively_under_session_authority(
                 payload = await prepare_native(runner, event)
                 seen.append(('prepared',
                              payload['native_text_v1'].get('provenance') is not None,
-                             prov is not None))
+                             prov is not None, payload['native_text_v1']['event'].get('borrowed_source')))
             except RuntimeStoreError as exc:
                 seen.append(('refused', exc.reason, prov is not None))
             return 'spy-ok'
@@ -113,6 +113,7 @@ async def test_retry_redispatch_admits_natively_under_session_authority(
         assert seen[0][0] == 'prepared', f'retry was refused: {seen}'
         assert seen[0][1] is True, 'provenance not resolved on re-dispatch'
         assert seen[0][2] is True, 'capture_provenance returned None inside rebind'
+        assert seen[0][3] is True, 'the replayed text lost its borrowed-source marker'
     finally:
         for authority in list(getattr(runner, 'session_authorities', []) or []):
             authority.db.close()

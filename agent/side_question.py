@@ -121,7 +121,8 @@ def _answer_via_fork(parent_agent: Any, question: str, history: Optional[list[di
             "Tools are disabled here — answer directly from the conversation context."))
         snapshot = trim_snapshot_for_fork(history)
         result = fork.run_conversation(user_message=f"{_FORK_PROMPT}\n\nSide question: {question}",
-                                       conversation_history=_digest_history(snapshot) if routed else snapshot)
+                                       conversation_history=_digest_history(snapshot) if routed else snapshot,
+                                       turn_origin="side_question")
         answer = (result or {}).get("final_response", "") or ""
         if not answer and result and result.get("error"):
             raise RuntimeError(str(result["error"]))

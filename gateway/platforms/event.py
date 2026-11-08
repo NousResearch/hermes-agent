@@ -137,6 +137,9 @@ class MessageEvent:
     # unknown). For adapters whose ``media_urls`` are random cache names (relay); the name is
     # display data only, never a path. Appended for positional compat.
     media_filenames: list[str] = field(default_factory=list)
+    # Hermes rebuilt this text on a source that did not write it (a /retry replay, a leftover /steer):
+    # attribution only, the turn's ``turn_origin`` is None. Appended for positional compat.
+    borrowed_source: bool = False
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

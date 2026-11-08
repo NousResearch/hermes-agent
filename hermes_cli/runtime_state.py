@@ -11,6 +11,7 @@ import logging
 import os
 from pathlib import Path
 import shutil
+import sys
 import time
 import uuid
 
@@ -179,12 +180,75 @@ def lease_directory(generation: Path) -> Callable[[], None]:
     return release
 
 
+FILE_DISPOSITION_FLAG_DELETE = 0x1
+FILE_DISPOSITION_FLAG_POSIX_SEMANTICS = 0x2
+FILE_DISPOSITION_INFO_EX = 21  # FILE_INFO_BY_HANDLE_CLASS::FileDispositionInfoEx
+
+
+def _unlink_by_posix_disposition(path: str) -> bool:
+    """Strip a mapped image's directory entry via Win32 POSIX-semantics deletion.
+
+    On Windows an unlink that a running process's image mapping refuses
+    (``PermissionError``) is not final: a disposition with
+    ``FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS``
+    removes the link as soon as the disposition handle closes, while the bytes
+    stay with the mapping until it does (what MSYS ``rm -rf`` uses). Generation
+    collection can therefore reclaim a blocked generation instead of deferring
+    its shell forever. Inert off Windows and on any refusal; callers keep their
+    ordinary defer path, and no chmod touches the selected inode's attributes.
+    """
+    if sys.platform != "win32":
+        return False
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    kernel32.CreateFileW.argtypes = [
+        ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+        ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+    ]
+    kernel32.SetFileInformationByHandle.restype = ctypes.c_int
+    kernel32.SetFileInformationByHandle.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
+    ]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    DELETE_ACCESS = 0x00010000
+    FILE_SHARE_READ_WRITE_DELETE = 0x7
+    OPEN_EXISTING = 3
+    # FILE_FLAG_BACKUP_SEMANTICS opens the link itself, so a symlinked payload
+    # entry loses its link, never its target — the os.unlink contract.
+    FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+    handle = kernel32.CreateFileW(
+        str(path), DELETE_ACCESS, FILE_SHARE_READ_WRITE_DELETE, None,
+        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, None,
+    )
+    if not handle or handle == ctypes.c_void_p(-1).value:  # NULL / INVALID_HANDLE_VALUE
+        return False
+
+    class FILE_DISPOSITION_INFO_EX_STRUCT(ctypes.Structure):
+        _fields_ = [("Flags", ctypes.c_uint32)]
+
+    info = FILE_DISPOSITION_INFO_EX_STRUCT(
+        FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+    )
+    try:
+        # No FILE_DISPOSITION_FLAG_FORCE_IMAGE_SECTION_CHECK: without it the
+        # kernel explicitly allows deletion despite an existing image section.
+        return bool(kernel32.SetFileInformationByHandle(
+            handle, FILE_DISPOSITION_INFO_EX, ctypes.byref(info), ctypes.sizeof(info),
+        ))
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def remove_generation(generation: Path) -> bool:
     """Best-effort payload cleanup; retain lifetime metadata while any payload remains.
 
     Call only after the collector's selection/lease checks, under its publication lock.
     A mapped hard-linked image can refuse unlink in *every* old generation. Continue
-    past that file without chmod (which would also mutate the selected/cache inode).
+    past that file without chmod (which would also mutate the selected/cache inode),
+    first trying a POSIX-semantics disposition, which Windows permits even while the
+    image stays mapped.
     """
     failed = False
 
@@ -193,6 +257,8 @@ def remove_generation(generation: Path) -> bool:
         exc = exc_info[1]
         if isinstance(exc, FileNotFoundError):
             return
+        if isinstance(exc, PermissionError) and _unlink_by_posix_disposition(str(path)):
+            return  # The entry is gone; what refused the unlink was the mapping, not the name.
         failed = True
         LOG.warning("could not remove generation payload %s: %s", path, exc)
 

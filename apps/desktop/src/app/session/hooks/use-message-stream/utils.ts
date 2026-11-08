@@ -121,6 +121,27 @@ export const STREAM_DELTA_FLUSH_MS = 40
 // still visibly updates at least ~4x per second no matter the load.
 export const MAX_STREAM_FLUSH_GAP_MS = 250
 
+/**
+ * Minimum gap before the next assistant-text flush.
+ *
+ * Visible: 30->25 fps text growth, stretched to 3x the measured flush cost so a
+ * heavy commit never saturates the thread.
+ *
+ * Hidden and no voice consumer: nothing can paint, and the assistant-ui store
+ * update + React commit still run on every flush. A hidden 300-word reply
+ * measured ~2.3 s of renderer script with only layouts removed; batching at the
+ * 4/s ceiling cuts the commits ~6x. Voice output (read-aloud, hands-free
+ * conversation, dictation) deliberately keeps the responsive floor — its
+ * consumers read the transcript on a timer, not from the screen.
+ */
+export function streamFlushFloor(measuredCostMs: number, hidden: boolean, voiceBusy: boolean): number {
+  if (hidden && !voiceBusy) {
+    return MAX_STREAM_FLUSH_GAP_MS
+  }
+
+  return Math.min(Math.max(STREAM_DELTA_FLUSH_MS, measuredCostMs * 3), MAX_STREAM_FLUSH_GAP_MS)
+}
+
 // How long an optimistically armed turn (busy/awaitingResponse set at submit /
 // restore / edit, before the backend confirms it live) may hold off a
 // session.info running=false heartbeat. Within this window a running=false is

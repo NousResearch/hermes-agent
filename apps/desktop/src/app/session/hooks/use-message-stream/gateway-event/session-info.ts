@@ -329,6 +329,16 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // the turn now live, so it neither ends that turn's compaction phase, nor
     // clears its prompts, nor settles it.
     if (runningEdge(ctx, knownState, runningChanged) && sessionId) {
+      // Like every other turn-end edge, drain throttled text before settling:
+      // a delta still waiting on the flush floor would otherwise land after
+      // the settle cleared streamId and seed a fresh pending bubble. Only a
+      // live turn owns that text; with no live turn and no open stream the
+      // queued bytes are orphans of a superseded attempt, which the next
+      // turn boundary drops (#119543).
+      if (!payload!.running && (knownState?.turnLive || knownState?.streamId)) {
+        deps.flushQueuedDeltas(sessionId)
+      }
+
       // Reconnect can miss the structured `compacted` edge. A gateway-authored
       // running=false is a terminal fact; a running heartbeat is intentionally
       // not used as a timeout-like guess, so genuine compaction stays visible.

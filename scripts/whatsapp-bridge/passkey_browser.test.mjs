@@ -3,7 +3,8 @@ import { createHash, generateKeyPairSync, randomBytes, verify } from 'node:crypt
 import { test } from 'node:test';
 import { chromium } from 'playwright-core';
 import pino from 'pino';
-import { proto, initAuthCreds, Curve, hkdf, aesDecryptGCM, makeShortcakeFlow } from '@whiskeysockets/baileys';
+import { proto, initAuthCreds, Curve, hkdf, aesDecryptGCM } from '@whiskeysockets/baileys';
+import { makeShortcakeFlow } from './passkey_flow.js';
 import { signPasskeyInPage } from './passkey_browser.js';
 
 const options = () => Buffer.from(JSON.stringify({

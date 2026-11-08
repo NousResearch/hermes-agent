@@ -1,39 +1,38 @@
-# Passkey dependency and verification
+# WhatsApp passkey pairing
 
-The bridge pins a review candidate of Baileys at commit
-`e5125258c920bf06448cf9f25fda32671aac5d3b` in `helix4u/Baileys`.
-The archive URL is immutable by commit and package-lock.json records its integrity.
-It is not an official Baileys release. Restore an official release pin once an
-equivalent passkey implementation is available upstream.
+The bridge uses the official `@whiskeysockets/baileys` 7.0.0-rc13 npm release.
+There is no personal fork, external commit archive, build step, or sibling checkout.
 
-The candidate preserves vinikjkkj's original commits from
-[Baileys PR #2689](https://github.com/WhiskeySockets/Baileys/pull/2689), which was
-closed unmerged after stale handling. Source commit
-`8979f800c4c0a0b26fe6430579748c3b861b334b` adds explicit owner confirmation,
-socket-lifetime cancellation, notification-origin validation and bridge-facing
-error/confirmation events. The subsequent packaging commit includes `lib/`
-generated with the repository's locked Yarn 4.9.2 build. It retains the MIT
-license and includes `HERMES-PASSKEY.md` with build provenance.
+`passkey_flow.js` and `passkey_crypto.js` adapt the MIT-licensed handshake from
+vinikjkkj's [Baileys PR #2689](https://github.com/WhiskeySockets/Baileys/pull/2689).
+That PR was closed unmerged after stale handling. Original commit references and
+the license are preserved in `PASSKEY-LICENSE`.
 
-The compiled files make the archive usable with the bridge's CI install command:
+`passkey_socket.js` attaches the handshake to Baileys' public notification event,
+query method, authentication state and connection lifecycle. Baileys owns the
+notification acknowledgement; the interactive signer runs separately. Closing the
+socket cancels pending authentication and removes the added listeners.
+
+The adapter preserves owner confirmation unless a trusted handoff applies. The
+interactive signer loads the real WhatsApp Web origin and validates the returned
+challenge and origin. No existing browser profile or browser session is imported.
+
+## Verification
+
+Run from this directory:
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
 node --test *.test.mjs
 ```
 
-Neither command requires a sibling source checkout or build tools for Baileys.
-The package-local `.npmrc` permits direct remote URL dependencies for npm 12;
-transitive remote URL dependencies remain disabled. Setup checks the installed
-dependency records against this lockfile so an older `node_modules` directory
-does not skip the new pin.
-For the additional offline browser integration test, set `PASSKEY_TEST_BROWSER`
-to a Chrome/Chromium executable before running the tests. That test uses a
-virtual authenticator and intercepts the page in the test only. It verifies a
-real browser assertion's signature, origin and challenge, then decrypts the
-actual handshake's pairing payload as a simulated primary device. Production
-signing loads the real WhatsApp Web origin and does not intercept the page.
+Set `PASSKEY_TEST_BROWSER` to an installed Chrome/Chromium executable to include
+the offline WebAuthn integration test. It uses a virtual authenticator and a
+test-only intercepted page, verifies a real assertion signature, then decrypts
+the actual handshake payload as a simulated primary. Production does not
+intercept the page. Tests also cover connection teardown, rejected signing,
+server-origin filtering and preserving explicit owner confirmation.
 
-These tests do not establish WhatsApp server acceptance for a real account.
-Keep that distinction in release and support statements. The candidate supports
-interactive CLI pairing; it does not add headless or dashboard passkey onboarding.
+Offline tests do not establish WhatsApp server acceptance. Keep real-account
+pairing validation outstanding until observed. This supports interactive CLI
+pairing with a graphical browser, not headless SSH or dashboard onboarding.

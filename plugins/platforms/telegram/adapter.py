@@ -147,7 +147,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error, unauthorized_action_notice,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, safe_proxy_url_for_log, describe_proxy_error, SUPPORTED_VIDEO_TYPES,
-    SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
+    SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len, env_proxy_for_redaction,
 )
 
 _BOT_COMMAND_DESCRIPTION_LIMIT = 256  # Telegram's ``BotCommand`` description cap
@@ -2928,7 +2928,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 logger.warning(
                     "[%s] Telegram fallback-IP discovery failed after %.0fs; "
                     "using seed IPv4 Telegram API IPs so a blackholed IPv6 hostname path cannot hang initialize() (#87015): %s",
-                    self.name, discovery_timeout, _redact_telegram_error_text(exc))
+                    self.name, discovery_timeout, _redact_telegram_error_text(exc, env_proxy_for_redaction()))
                 fallback_ips = list(SEED_FALLBACK_IPS)
             else:
                 logger.info("[%s] Auto-discovered Telegram fallback IPs: %s", self.name, ", ".join(fallback_ips))
@@ -3187,7 +3187,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             return True
         except Exception as e:
             self._release_platform_lock()
-            safe_error = _redact_telegram_error_text(e, self._ptb_proxy_url)
+            safe_error = _redact_telegram_error_text(e, self._ptb_proxy_url or env_proxy_for_redaction("https://api.telegram.org"))
             # Classify by exception TYPE (never message text): auth failures can never self-heal, so
             # marking them retryable put agents into a silent eternal reconnect loop.
             if self._looks_like_auth_error(e):

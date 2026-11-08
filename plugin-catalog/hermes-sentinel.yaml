@@ -1,0 +1,16 @@
+name: hermes-sentinel
+version: "0.4.0"
+repo: https://github.com/ChasClogston/hermes-sentinel
+sha: 9331c41d41e2f2320ec0f43dfaf46f67a081cefd
+description: "Audit-first runtime tool-action governance for Hermes: a pre_tool_call policy engine that classifies conservative terminal proposals, requests native Hermes approval for recognizable external transfers, blocks obvious credential-file uploads in enforcement mode, and records allowlisted HMAC-correlated decision metadata. Audit mode is default and never vetoes a tool call. Experimental, not a firewall or sandbox. Disclosure: inspects tool arguments in memory; reads its own YAML policy and locally generated HMAC key; writes a local 0600 key and JSONL audit journal under the active Hermes home. No external network calls, subprocess launches, telemetry, external credential reads, or background processes. Only a small subset of terminal commands is classified; unknown operations are denied in enforcement mode."
+maintainer: ChasClogston
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/ChasClogston/hermes-sentinel#readme
+platforms: [macos, linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: []

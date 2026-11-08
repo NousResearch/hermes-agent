@@ -94,7 +94,15 @@ export interface WorkspaceTabScope {
  *  canonical chat is stored under the same name, so the tab reads the bot's
  *  (#99152). Any other title (a `+` side thread, a Sessions tab) is untouched. */
 export function workspaceOwnerTitle(title: string, scope: WorkspaceTabScope | undefined): string {
-  if (scope?.workspaceMode !== 'bots' || !scope.workspaceOwnerKey || title !== scope.workspaceTabTitle) {
+  // After a compression rotation, the new stored id may be selected before its
+  // row reaches the session lists. Keep its bot caption during that gap instead
+  // of exposing the generic new-session placeholder.
+  if (
+    scope?.workspaceMode !== 'bots' ||
+    !scope.workspaceOwnerKey ||
+    !scope.workspaceTabTitle ||
+    (title !== scope.workspaceTabTitle && title !== 'New session')
+  ) {
     return title
   }
 

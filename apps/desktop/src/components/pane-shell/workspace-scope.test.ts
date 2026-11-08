@@ -69,6 +69,18 @@ describe('workspace owner title', () => {
     // No label yet (roster not loaded): the stored title stands.
     expect(workspaceOwnerTitle('Bot Chat', { ...botChat, workspaceOwnerKey: 'bot:beta' })).toBe('Bot Chat')
   })
+
+  it('keeps the bot caption while a compression tip is selected but missing from session lists', () => {
+    setWorkspaceOwnerLabel('bot:alpha', 'Alpha')
+    const botChat = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'bot:alpha', workspaceTabTitle: 'Bot Chat' }
+
+    // syncWorkspaceTitle passes the new-session fallback when the row has not
+    // arrived yet. The scope has already followed the rotation.
+    expect(workspaceOwnerTitle('New session', botChat)).toBe('Alpha')
+    // No canonical bot tab: ordinary drafts must keep their own caption.
+    expect(workspaceOwnerTitle('New session', { workspaceMode: 'bots', workspaceOwnerKey: 'bot:alpha' })).toBe('New session')
+    expect(workspaceOwnerTitle('New session', { ...botChat, workspaceMode: 'sessions' })).toBe('New session')
+  })
 })
 
 describe('workspace stored title', () => {

@@ -521,3 +521,15 @@ it.each([
   expect(errorCards).toHaveLength(1)
   expect(errorCards[0]).toMatchObject({ error: 'rate limited', errorSurface: { code: 'rate_limit' } })
 })
+
+it('keeps settled message and part identity when reconciliation has nothing to merge', () => {
+  const live = [row('u1', 'user', 'hi'), row('a1', 'assistant', 'hello')]
+  const hydrated = [row('u1', 'user', 'hi'), row('a1', 'assistant', 'hello')]
+
+  const merged = preserveLocalAssistantErrors(hydrated, live)
+
+  // The streamed path republishes every row through this reconciler; allocating
+  // fresh settled objects here defeats the runtime repository's identity cache.
+  expect(merged[1]).toBe(hydrated[1])
+  expect(merged[1].parts[0]).toBe(hydrated[1].parts[0])
+})

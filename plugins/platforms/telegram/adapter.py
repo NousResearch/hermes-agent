@@ -6125,9 +6125,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         bot_username = self._current_bot_username() if self._bot else None
         if not bot_username:
             return False
-        from plugins.platforms.telegram.telegram_addressing import leading_bot_handles
+        from plugins.platforms.telegram.telegram_addressing import foreign_command_target, leading_bot_handles
         addressed = leading_bot_handles(message, lambda h: h == bot_username or bool(self._FOREIGN_BOT_HANDLE_RE.fullmatch(h)))
-        if not addressed or bot_username in self._extract_bot_mention_usernames(message, bot_username):
+        target = foreign_command_target(message, bot_username)
+        if target:
+            addressed = {target}
+        if not addressed or (not target and bot_username in self._extract_bot_mention_usernames(message, bot_username)):
             return False
         self._schedule_bot_identity_recheck()  # or our handle is stale after a rename: re-check out of band
         logger.info("[%s] Skipping message %s in chat %s: addressed to other bot(s) %s", self.name,

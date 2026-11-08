@@ -144,6 +144,21 @@ platforms:
       max_concurrent_updates: 32   # 1 restores fully sequential processing
 ```
 
+### Albums (Optional)
+
+Telegram delivers an album (several photos or files sent together) as one update per item.
+Hermes waits until every item that has arrived is downloaded, then sends the whole album to the
+agent as one message. It waits at most 8 seconds for a slow download before sending what it has.
+After the last item, it waits a short debounce (default 1.5 s, at most 10 s) for one sent later.
+Raise the debounce if your phone uploads album items far apart:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      media_group_wait_seconds: 3.0
+```
+
 ### Repeated inbound updates
 
 Hermes suppresses repeated Telegram `update_id` values before message batching,

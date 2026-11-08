@@ -183,6 +183,7 @@ from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_polling_probe import TelegramPendingProbeMixin
 from plugins.platforms.telegram.telegram_intake import effective_update_message
+from plugins.platforms.telegram.telegram_media_group import flush_media_group_event, queue_media_group_event, tracking_album_item
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, log_resolved, tap_matches_prompt
@@ -467,7 +468,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     RICH_MESSAGE_MAX_CHARS = 32768  # Bot API 10.1 rich cap; above it use legacy chunking
     _SPLIT_THRESHOLD = 4000  # chunk near this length ⇒ a client-side split continuation is almost certain
-    MEDIA_GROUP_WAIT_SECONDS = 0.8
+    MEDIA_GROUP_WAIT_SECONDS = 1.5  # default album debounce; extra.media_group_wait_seconds overrides
     HELD_INBOUND_MAX = 64  # inbound events held across a disconnect window; oldest dropped first
     _GENERAL_TOPIC_THREAD_ID = "1"
     # send() can race a disconnect blip; failing "Not connected" (retryable=False) parks the answer in the
@@ -6711,7 +6712,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         return False
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming media messages, downloading images to local cache."""
+        """Handle incoming media; an album item counts as in flight until merged, so its album waits for it."""
+        with tracking_album_item(self, self._effective_update_message(update)):
+            await self._process_media_message(update)
+
+    async def _process_media_message(self, update: Update) -> None:
         msg = self._effective_update_message(update)  # channel posts arrive as update.channel_post
         if not msg:
             return
@@ -6769,21 +6774,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         await self.handle_message(event)
 
     async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
-        """Debounce album items (shared media_group_id) into one MessageEvent so the second image isn't
-        treated as a new message interrupting the first."""
-        if self._should_drop_delayed_delivery():
-            self._hold_inbound_event(event, where="media-group-enqueue")
-            return
-        self._merge_into_pending(self._media_group_events, media_group_id, event)
-        self._accept_update()
-        prior_task = self._media_group_tasks.get(media_group_id)
-        if prior_task:
-            prior_task.cancel()
-        self._media_group_tasks[media_group_id] = asyncio.create_task(self._flush_media_group_event(media_group_id))
+        """Debounce album items (shared media_group_id) into one MessageEvent (see telegram_media_group)."""
+        await queue_media_group_event(self, media_group_id, event)
 
     async def _flush_media_group_event(self, media_group_id: str) -> None:
-        await self._flush_buffered(
-            self._media_group_events, self._media_group_tasks, media_group_id, self.MEDIA_GROUP_WAIT_SECONDS, "media-group")
+        await flush_media_group_event(self, media_group_id)
 
     async def _handle_sticker(self, msg: Message, event: MessageEvent) -> None:
         """Describe a sticker via vision, cached by file_unique_id; animated/video stickers get an emoji placeholder."""

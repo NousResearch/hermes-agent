@@ -974,9 +974,6 @@ platform:
     approved: "✅ Aprobado."
     denied: "❌ Denegado."
     approval_expired: "⌛ Aprobación expirada — el comando no se ejecutó (ya se agotó el tiempo o se resolvió en otro lugar)."
-  yuanbao:
-    slow_response_notice: "Esta tarea es algo compleja — sigo trabajando en ella, un momento por favor..."
-    owner_command_denied: "⚠️ {command} solo está disponible para el creador en modo de chat privado"
   shared:
     truncated_suffix: "\n...(truncado)"
     unknown: "desconocido"
@@ -1371,6 +1368,12 @@ platform:
       unauthorized: "Solo un usuario autorizado de Matrix puede usar estos controles."
       not_requester: "Solo el usuario que solicitó esta acción puede usar estos controles."
   feishu:
+    clarify:
+      title: "Hermes necesita tu respuesta"
+      other: "✏️ Otra (escribir respuesta)"
+      awaiting_typed: "Esperando la respuesta escrita de {user}…"
+    picker:
+      apply_error: "Error al aplicar la selección: {error}"
     approval:
       action_session: "Sesión"
       action_always: "Siempre"
@@ -1474,6 +1477,8 @@ platform:
     prompt_other: "✏️ Otra (escribir respuesta)"
     prompt_expired: ⌛ Esa solicitud ya no espera respuesta. Envía tu respuesta como un mensaje normal.
 slash:
+  rewind:
+    description: "Rebobinar a un prompt anterior para editarlo y reenviarlo, o bifurcar desde ahí (Esc Esc)"
   approve:
     description: "Aprobar un comando peligroso pendiente"
   bg:
@@ -1701,6 +1706,20 @@ slash:
   quit:
     description: "Salir de la CLI (usa --delete para eliminar también el historial de la sesión)"
 cli:
+  backtrack:
+    title: "↺ Transcripción — elige un prompt para editar"
+    keys_hint: "Explorando la transcripción · ↑↓/jk desplazar · ←→/hl prompts · ↵ editar · f bifurcar · esc volver"
+    prime_hint: "esc otra vez para editar el mensaje anterior"
+    no_previous: "No hay ningún mensaje anterior que editar."
+    editing_hint: "↺ Editando el prompt {number} — Enter rebobina hasta aquí y envía · Esc Esc cancela"
+    edit_cancelled: "↺ Rebobinado cancelado; no se eliminó nada."
+    rewound: "↺ Rebobinado al prompt {number} ({count} mensaje(s) archivado(s)); enviando la edición."
+    forked: "⑂ Bifurcado antes del prompt {number}; la sesión original {parent} no ha cambiado. Edita el prompt abajo y pulsa Enter para enviarlo."
+    nothing: "(._.) No hay prompts anteriores a los que rebobinar."
+    target_changed: "(x_x) La sesión cambió desde que elegiste el prompt {number}; no se eliminó nada. Tu edición ha vuelto al editor."
+    invalid: "(._.) No existe el prompt {value} — elige de 1 a {total}."
+    usage: "Uso: /rewind [N | fork N]"
+    rewind_failed: "(x_x) Falló el rebobinado; el historial no se modificó: {error}"
   modern:
     thought_for: "Pensó durante {seconds}s"
     thought: "Pensó"
@@ -2164,6 +2183,7 @@ cli:
     images_attached_other: "📎 {count} imágenes adjuntas"
     command_interrupted: "Comando interrumpido."
     welcome: "¡Bienvenido a Hermes Agent! Escribe tu mensaje o /help para ver los comandos."
+    vscode_images_hint: "VS Code puede mostrar aquí imágenes a resolución completa: activa terminal.integrated.enableImages en la configuración."
     activated_skills_label: "Skills activadas:"
     redaction_disabled_title: "⚠  La redacción de secretos está DESACTIVADA"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). Las claves de API y los tokens pueden aparecer sin ocultar en la salida del chat, los JSON de sesión y los registros. Establece {setting} en config.yaml para reactivarla."
@@ -2618,6 +2638,7 @@ cli:
     goal_turns: "⊙ objetivo {used}/{max}"
     goal: "⊙ objetivo"
     ctx_pinned: " fijado"
+    ctx_fallback: " por defecto"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Guardados ({count} elemento)"
@@ -3957,3 +3978,8 @@ plan_usage:
   large_notice_limit: "Modelo grande: alcanzaste tu límite {name} ({resets})."
   large_notice_limit_stops: "Modelo grande: alcanzaste tu límite {name} ({resets}), así que no se ejecutará hasta entonces."
   large_notice_percent: "Modelo grande: usa más del uso de tu plan por mensaje. Límite mensual de modelos grandes: {percent} usado."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Archivos cambiados en los turnos deshechos: {files}. Ejecuta /rollback para listar los checkpoints y restaurar uno."
+    more: "+{count} más"

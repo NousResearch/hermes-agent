@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Classify a PR's changed files into CI work lanes.
 
-Reads newline-separated changed paths on stdin and writes ``key=value``
+Reads changed paths on stdin, one file per line (a renamed file as
+``path<TAB>old path``), and writes ``key=value``
 booleans (one per lane) to ``$GITHUB_OUTPUT`` and stdout. The
 ``detect-changes`` composite action consumes them so steps gate on
 ``if: steps.changes.outputs.<lane> == 'true'``.
@@ -29,7 +30,8 @@ Lanes:
 * ``uv_lock``     — ``PM lock check``. Re-resolves the whole graph against
   PyPI, so a diff that touches neither ``pyproject.toml`` nor ``uv.lock``
   must not run it.
-* ``npm_lock``    — semantic package-lock.json diff PR comment.
+* ``npm_lock``    — semantic JS lockfile diff PR comment (pnpm-lock.yaml and
+  the standalone npm projects' package-lock.json).
 * ``bootstrap``   — the bootstrap installer lane: install.sh sandbox install,
   pin-fragment drift check, and shipped version-stamp verification.
 * ``desktop_updater`` — the Windows desktop-update hand-off script and the
@@ -93,13 +95,15 @@ import subprocess
 import sys
 
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
-# Shipped page outside those packages, exercised by the desktop Electron suite.
-_FRONTEND_FILES = {"scripts/desktop-update/ui.html"}
+# Shipped page outside those packages, exercised by the desktop Electron suite. The desktop cache
+# key owner is checked by tests-js/desktop-build-cache-inputs.test.mjs against the Node graph.
+_FRONTEND_FILES = {"scripts/desktop-update/ui.html", "scripts/ci/desktop_build_cache.py"}
 # The WhatsApp bridge's ``node --test`` suites run in the JS & TS job, so a
 # change to the bridge or to the Python adapter that speaks its protocol
 # selects ``frontend``.
 _WHATSAPP_BRIDGE = ("scripts/whatsapp-bridge/", "plugins/platforms/whatsapp/")
-_ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
+# Shift every package's tree (pnpm-workspace.yaml carries the overrides).
+_ROOT_NPM = {"package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"}
 _DOCKER_META = ("docker/", ".hadolint.yaml", "Dockerfile", ".dockerignore") # docker setup
 _NIX_PATHS = ("nix/",) # nix files
 _NIX_FILES = {"flake.nix", "flake.lock"} # base nix files
@@ -129,12 +133,16 @@ _PY_RELEVANT_CONTRACT_FILES = {
     # tests/tui_gateway/contracts/test_generated.py (rendered from tui_gateway/contracts)
     "apps/shared/src/gateway-contract.generated.ts",
     "apps/shared/src/gateway-contract.openrpc.json",
+    # tests/gateway/test_control_socket_vectors.py (the public control-socket contract)
+    "apps/shared/src/node/control-socket.vectors.json",
     # tests/hermes_cli/test_desktop_slash_registry.py
     "apps/desktop/src/lib/desktop-slash-registry.json",
     # tests/tui_gateway/test_show_reasoning_display_gate.py (card-tool names vs the gateway lifecycle set)
     "apps/desktop/src/lib/tool-render-class.ts",
     # tests/website/test_catalog_rules_mirror.py (docs page mirrors the canonical rules)
     "plugin-catalog/README.md",
+    # tests/hermes_cli/test_plugin_docs_public_imports.py (its examples import only the plugin API)
+    "plugins/AGENTS.md",
 }
 
 # Catalog entry data: read by the catalog tests and the Plugin Catalog CI
@@ -228,7 +236,7 @@ _REMOTE_BACKEND_PATHS = (
 # suite itself, its harness, and the product code the suite exists to guard.
 # Everything else reaches these lanes on the next push to main.
 _DEP_MANIFESTS = ("pyproject.toml", "uv.lock", "setup.py")
-_NPM_MANIFESTS = ("package.json", "package-lock.json")
+_NPM_MANIFESTS = ("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml")
 # Shared pytest harness: a bad edit here can break every Python E2E suite.
 _PY_TEST_HARNESS = (
     "tests/conftest.py",
@@ -238,6 +246,8 @@ _PY_TEST_HARNESS = (
     "tests/e2e/core/_",
     "scripts/run_tests.sh",
     "scripts/run_tests_parallel.py",
+    "scripts/run_tests_launch.py",
+    "scripts/run_tests_fork_child.py",
 )
 # Both Desktop suites package the app and share this harness (the update
 # suite imports the core suite's harness and provider).
@@ -263,6 +273,7 @@ _DESKTOP_E2E_SHARED = (
 _UPDATE_PIPELINE = (
     "hermes_cli/main.py",  # cmd_update: lock, pre-update backup, receipt boundary
     "hermes_cli/main_dashboard.py",  # hangup protection + update.log mirror
+    "hermes_cli/main_web_build.py",  # completion's bytecode sweep and dropped-folder prune
     # Prefix: main_desktop.py (staged Desktop swap / rebuild in the tail) and the
     # main_desktop_* siblings it imports (macOS signing identity).
     "hermes_cli/main_desktop",
@@ -342,6 +353,8 @@ _UPDATE_DEPENDENCIES = (
     "agent/memory_provider.py",
     "pm/plugins_state.py",
     "pm/install.py",  # also sealed()/lazy_installs_allowed(): every update's default-tool install
+    "pm/packages.py",  # source_build's pnpm environment (pnpm_env)
+    "pm/index_config.py",  # source_build's npmrc bridge (read_npmrc, user_npmrc, hermes_npmrc)
     "hermes_cli/desktop_build_lock.py",
     "hermes_cli/desktop_build_reuse.py",  # source_build keeps the packaged app when no input changed
     "hermes_cli/desktop_release_holders.py",  # main_desktop names/closes a holder of release/ on a failed swap
@@ -373,6 +386,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/_parser.py",
     "hermes_cli/gateway_multiplex_mode.py",
     "hermes_cli/plugin_catalog.py",
+    "hermes_cli/plugins_auto_update.py",  # update_cmd_maint's catalog-pin notice after the code swap
     "hermes_cli/steward.py",
     "hermes_cli/observability/shared_metrics_update.py",
     "hermes_cli/main_install_repair.py",
@@ -638,7 +652,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
         for f in files
     )
     deps = any(f == "pyproject.toml" for f in files)
-    npm_lock = any(f.split("/")[-1] == "package-lock.json" for f in files)
+    npm_lock = any(f.split("/")[-1] in ("pnpm-lock.yaml", "package-lock.json") for f in files)
     docker_meta = any(f.startswith(_DOCKER_META) for f in files)
     
     ret = {
@@ -738,7 +752,8 @@ def pull_request_changed_files() -> list[str]:
     pr = _pull_request_number()
     if not repo or not pr:
         return []
-    return _gh_lines("api", "--paginate", f"repos/{repo}/pulls/{pr}/files", "--jq", ".[].filename") or []
+    return _gh_lines("api", "--paginate", f"repos/{repo}/pulls/{pr}/files", "--jq",
+                     ".[] | [.filename, .previous_filename // empty] | @tsv") or []
 
 
 def pull_request_labels() -> list[str]:
@@ -760,9 +775,26 @@ def pull_request_labels() -> list[str]:
     return [label["name"] for label in labels if isinstance(label, dict) and label.get("name")]
 
 
+# The compare API lists at most this many files and drops the rest without saying so.
+COMPARE_FILE_CAP = 300
+
+
+def changed_paths(lines: list[str]) -> list[str]:
+    """Paths from lines of ``path`` or ``path<TAB>old path``; ``[]`` (every lane runs) at the cap.
+
+    A rename counts under both names: a lane keyed on the old location still has to see a file move
+    away from it."""
+    lines = [line for line in lines if line.strip()]
+    if len(lines) >= COMPARE_FILE_CAP:
+        print(f"{len(lines)} changed files reached the compare API's {COMPARE_FILE_CAP}-file cap; "
+              "the list may be cut short, so every lane runs", file=sys.stderr)
+        return []
+    return [path for line in lines for path in line.split("\t") if path.strip()]
+
+
 def main() -> int:
-    files = sys.stdin.read().splitlines()
-    if not any(f.strip() for f in files):
+    lines = sys.stdin.read().splitlines()
+    if not any(f.strip() for f in lines):
         recovered = pull_request_changed_files()
         if recovered:
             print(
@@ -770,7 +802,8 @@ def main() -> int:
                 "path(s) from the pull request files endpoint",
                 file=sys.stderr,
             )
-            files = recovered
+            lines = recovered
+    files = changed_paths(lines)
     lanes = classify(files, run_e2e=RUN_E2E_LABEL in pull_request_labels())
     out = "\n".join(f"{key}={str(value).lower()}" for key, value in lanes.items())
     if dest := os.environ.get("GITHUB_OUTPUT"):

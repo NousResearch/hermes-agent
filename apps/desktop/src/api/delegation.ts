@@ -11,6 +11,8 @@ export interface DelegationBackendInfo {
   available: boolean
   reason: string
   builtin: boolean
+  /** The backend's own route-entry keys an editor may write (e.g. `daybreak`); absent on older cores. */
+  route_keys?: string[]
 }
 
 /** One entry of `delegation.backends.model_map.options`. Unknown keys round-trip untouched. */

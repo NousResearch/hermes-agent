@@ -410,6 +410,9 @@ declare global {
       watchDirectory?: (dir: string) => Promise<HermesPreviewWatch>
       stopPreviewFileWatch: (id: string) => Promise<boolean>
       setActiveWork?: (payload: HermesActiveWork) => void
+      /** Bounded functional stream deadlines; does not enable hidden-window painting. */
+      scheduleStreamWorkWake?: (token: string, delayMs: number | null) => void
+      onStreamWorkWake?: (callback: (token: string) => void) => () => void
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       /** Main-process fact: this OS can back glass with a native material. */
@@ -449,6 +452,10 @@ declare global {
       setPreviewShortcutActive?: (active: boolean) => void
       /** Tell main a preview guest is off screen, so focused-guest gestures skip it. */
       setPreviewGuestHidden?: (webContentsId: number, hidden: boolean) => void
+      /** Wake only this window's preview guest while an automation script is pending. */
+      beginPreviewGuestActivity?: (webContentsId: number) => Promise<number>
+      endPreviewGuestActivity?: (token: number) => Promise<void>
+      executePreviewGuestScript?: (token: number, code: string) => Promise<unknown>
       openExternal: (url: string) => Promise<void>
       onExternalOpenFailed?: (callback: (payload: ExternalOpenFailedPayload) => void) => () => void
       /** The free tier's browser challenge (electron/challenge-window.ts): load
@@ -644,6 +651,17 @@ declare global {
         write: (id: string, data: string) => Promise<boolean>
       }
       reachPreviewUrl?: (url: string) => Promise<string>
+      // Real-profile sign-ins for the in-app browser: main reads them from the backend host's real-profile
+      // browser and sets them on the preview partition. Counts only, never a cookie.
+      syncPreviewSignins?: (request: {
+        connectionId?: null | string
+        enabled: boolean
+        profile?: null | string
+      }) => Promise<PreviewSigninsResult>
+      // P2-7: the per-profile imported-sign-ins record + cookie jar live in Electron main (userData),
+      // so the renderer's local profile rename/delete flow signals main to move/clear them.
+      migratePreviewSigninsForProfile?: (request: { oldProfile: string; newProfile: string }) => Promise<{ ok: boolean }>
+      dropPreviewSigninsForProfile?: (request: { profile: string }) => Promise<{ ok: boolean }>
       setActiveConnectionRoute?: (
         route: {
           connectionId?: null | string
@@ -1093,6 +1111,15 @@ export interface DesktopPluginProfileRoute {
   targetProfile: string
 }
 
+export interface PreviewSigninsResult {
+  status: 'cleared' | 'disabled' | 'error' | 'imported' | 'remote'
+  imported: number
+  skipped: number
+  failed: number
+  cleared: number
+  error?: string
+}
+
 export interface HermesConnection {
   baseUrl: string
   customWindowControls?: boolean
@@ -1144,6 +1171,8 @@ export interface HermesTitleBarTheme {
 export interface HermesActiveWork {
   count: number
   titles: string[]
+  /** Speech output still consumes the frame-published transcript while streaming. */
+  voiceActive?: boolean
 }
 
 export interface HermesWindowState {

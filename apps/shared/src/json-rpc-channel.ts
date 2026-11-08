@@ -133,6 +133,8 @@ export interface JsonRpcRequestChannelOptions {
    * against a crashed client (clarify blocks 3600s).
    */
   onRequestHandlerError?: (error: Error, request: { id: string; method: string; params: ServerRequestParams }) => void
+  /** An error frame with no request id (the backend's `-32700` parse-error reply): the owner logs it. */
+  onUncorrelatedError?: (error: JsonRpcGatewayError) => void
   requestIdPrefix?: string
   requestTimeoutMs?: number
   /**
@@ -219,9 +221,9 @@ export class JsonRpcRequestChannel {
   private backendClarifyBatch = false
   private readonly requestHandlers: ServerRequestHandler[] = []
   private readonly options: Required<
-    Omit<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUnhandledRequest'>
+    Omit<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUncorrelatedError' | 'onUnhandledRequest'>
   > &
-    Pick<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUnhandledRequest'>
+    Pick<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUncorrelatedError' | 'onUnhandledRequest'>
 
   constructor(options: JsonRpcRequestChannelOptions = {}) {
     this.options = {
@@ -233,6 +235,7 @@ export class JsonRpcRequestChannel {
       onEvent: options.onEvent,
       onHeartbeatFailure: options.onHeartbeatFailure,
       onRequestHandlerError: options.onRequestHandlerError,
+      onUncorrelatedError: options.onUncorrelatedError,
       onUnhandledRequest: options.onUnhandledRequest,
       requestIdPrefix: options.requestIdPrefix ?? 'r',
       requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
@@ -461,10 +464,41 @@ export class JsonRpcRequestChannel {
     }
   }
 
+  /** Settle the ping or pending call this response answers; an unknown id is ignored. */
+  private settleResponse(id: GatewayRequestId, frame: JsonRpcFrame): void {
+    if (typeof id === 'string' && this.outstandingPings.delete(id)) {
+      this.lastLivenessAt = Date.now()
+
+      return
+    }
+
+    const call = this.pending.get(id)
+
+    if (!call) { return }
+    this.lastLivenessAt = Date.now()
+    this.clearPending(id)
+
+    if (frame.error) {
+      call.reject(jsonRpcErrorFromFrame(frame.error))
+
+      return
+    }
+
+    // Reconnect contract: `session.resume` / `session.activate` /
+    // `session.events.since` answer with `open_requests` — the server→
+    // client requests still waiting on this session. They cannot ride
+    // the event replay ring (they are not events), so they are re-
+    // delivered here, before the caller sees the result, over the very
+    // socket that owns them.
+    this.deliverOpenRequests(frame.result)
+    call.resolve(frame.result)
+  }
+
   /**
-   * Route one inbound frame: a response settles its pending call, an
-   * `event` notification reaches `onEvent`, a server→client request reaches
-   * the `onRequest` handlers. Returns the decoded frame so the owner can act
+   * Route one inbound frame: a response settles its pending call, an error
+   * frame with no request id reaches `onUncorrelatedError`, an `event`
+   * notification reaches `onEvent`, a server→client request reaches the
+   * `onRequest` handlers. Returns the decoded frame so the owner can act
    * on it too (mirror it, record seq, …) or `null` when the text was not
    * JSON or not a JSON object (`null`, a scalar).
    */
@@ -493,31 +527,13 @@ export class JsonRpcRequestChannel {
     }
 
     if (frame.id !== undefined && frame.id !== null) {
-      if (typeof frame.id === 'string' && this.outstandingPings.delete(frame.id)) {
-        this.lastLivenessAt = Date.now()
+      this.settleResponse(frame.id, frame)
 
-        return frame
-      }
+      return frame
+    }
 
-      const call = this.pending.get(frame.id)
-
-      if (call) {
-        this.lastLivenessAt = Date.now()
-        this.clearPending(frame.id)
-
-        if (frame.error) {
-          call.reject(jsonRpcErrorFromFrame(frame.error))
-        } else {
-          // Reconnect contract: `session.resume` / `session.activate` /
-          // `session.events.since` answer with `open_requests` — the server→
-          // client requests still waiting on this session. They cannot ride
-          // the event replay ring (they are not events), so they are re-
-          // delivered here, before the caller sees the result, over the very
-          // socket that owns them.
-          this.deliverOpenRequests(frame.result)
-          call.resolve(frame.result)
-        }
-      }
+    if (frame.error) {
+      this.options.onUncorrelatedError?.(jsonRpcErrorFromFrame(frame.error))
 
       return frame
     }

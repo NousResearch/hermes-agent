@@ -140,8 +140,8 @@ def _no_proxy_bypasses_all(values: list[str], targets: list[str]) -> bool:
 def _bypasses(no_proxy: str, host: str | None, netloc: str) -> bool:
     if no_proxy == "*":
         return True
-    if not host or "*" in no_proxy:
-        return False
+    if not host or "*" in no_proxy or not (host.isascii() and netloc.isascii() and no_proxy.isascii()) or "xn--" in host.lower():
+        return False  # requests/websockets/yarl IDNA-encode the target; urllib compares raw text
     proxies = {"no": no_proxy}
     if not (proxy_bypass_environment(host, proxies) and proxy_bypass_environment(netloc, proxies)):
         return False

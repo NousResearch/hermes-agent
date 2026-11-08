@@ -205,6 +205,28 @@ def test_simplex_trailing_dot_host_is_not_bypassed_by_its_bare_name(monkeypatch,
     assert re.search(r"\bInvalidProxy via ", error) and "qzx" not in unquote(error), error
 
 
+@pytest.mark.parametrize("no_proxy, ws_url", [("bücher.example", "ws://bücher.example:5225"),
+                                              ("xn--bcher-kva.example", "ws://xn--bcher-kva.example:5225")])
+def test_simplex_idna_host_is_never_treated_as_bypassed(monkeypatch, caplog, no_proxy, ws_url):
+    # urllib compares NO_PROXY raw; websockets/httpx/aiohttp IDNA-encode the host first, so they disagree.
+    pytest.importorskip("websockets")
+    from plugins.platforms.simplex import adapter as sx
+
+    secret = "http://bob:qzxqzxqzx@127.0.0.1:1/p"
+    for name in (*ENV_PROXY_VARS, "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in (("HTTPS_PROXY", secret), ("HTTP_PROXY", secret), ("NO_PROXY", no_proxy)):
+        monkeypatch.setenv(name, value)
+    with caplog.at_level(logging.DEBUG):
+        result = asyncio.run(asyncio.wait_for(
+            sx._standalone_send(SimpleNamespace(extra={"ws_url": ws_url}), "@alice", "hi"), 60))
+    error = str(result.get("error") or "")
+    logs = "\n".join(logging.Formatter("%(message)s").format(r) for r in caplog.records)
+    assert re.search(r"\b\w+ via http://127.0.0.1:1\b", error), error
+    for text in (error, logs):
+        assert "qzx" not in text and "qzx" not in unquote(text), text[-2000:]
+
+
 def test_feishu_media_download_failure_log_carries_no_proxy_secret(monkeypatch, caplog):
     from gateway.config import PlatformConfig
     from gateway.platforms.base import SendResult as _SendResult

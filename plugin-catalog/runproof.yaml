@@ -1,0 +1,19 @@
+name: runproof
+title: RunProof
+repo: "https://github.com/Biznomad/runproof"
+sha: "c4b3f1e2f8e8cfd96ff264a3bfc1208d5986838a"
+maintainer: "Biznomad"
+description: Verify that a completed Hermes cron execution produced a fresh JSON report with all required fields.
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+
+docs_url: https://github.com/Biznomad/runproof#readme

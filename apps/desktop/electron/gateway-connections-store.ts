@@ -34,7 +34,9 @@
  * merges that directory's registry (after the v1→v2 migration and the drift
  * reconcile, in memory) and its native-oauth-tokens.json into the store, by id
  * and then by the URL / SSH-target duplicate rule. An existing store is never
- * overwritten; the userData files are never written.
+ * overwritten; the userData files are never written. The import runs ONCE per
+ * directory: later reads never consult connection.json again, so a gateway
+ * removed from this list (here or in the Webapp) stays removed (#142906).
  */
 import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
@@ -79,15 +81,19 @@ export interface ConnectionsChange {
   reason: 'removed' | 'saved' | 'updated'
 }
 
+/** `before`/`after`: the list as last announced and as now read (a removed entry is only in `before`). */
+export type RegistryChangeHandler = (
+  changes: ConnectionsChange[],
+  lists: { after: ConnectionRegistry; before: ConnectionRegistry }
+) => void
+
 export interface GatewayConnectionsStoreDeps {
   /** The store directory (main's ROOT Hermes home, through symlinks). */
   root: string
   /** Electron userData: where the pre-store connections.json / native-oauth-tokens.json live. */
   userData: string
-  /** The userData registry after main's v1→v2 migration and drift reconcile, computed in memory. */
+  /** The userData registry after main's v1→v2 migration and drift reconcile, computed in memory (import only). */
   legacyRegistry: () => ConnectionRegistry
-  /** The v1 connection.json, for the per-read drift reconcile main already runs. */
-  reconcile?: (registry: ConnectionRegistry) => { changed: boolean; registry: ConnectionRegistry }
   /** decryptDesktopSecret: '' when the envelope cannot be opened. */
   decrypt: (secret: unknown) => string
   log?: (message: string) => void
@@ -620,12 +626,14 @@ export interface GatewayConnectionsStore {
   file: string
   tokensFile: string
   read(): ConnectionRegistry
+  /** `read`, but a store that cannot be read throws instead of answering a local-only list. */
+  readStrict(): ConnectionRegistry
   write(registry: ConnectionRegistry): void
   invalidate(): void
   /** A NativeTokenStoreIo over the tokens file, keyed by connection id (unbound URLs fall back). */
   nativeTokenIo(log?: (message: string) => void): NativeTokenStoreIo
   /** Stat-poll both files; `onRegistry` gets per-connection changes another writer made. */
-  watch(handlers: { onRegistry: (changes: ConnectionsChange[]) => void; onTokens: () => void }): () => void
+  watch(handlers: { onRegistry: RegistryChangeHandler; onTokens: () => void }): () => void
 }
 
 export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps): GatewayConnectionsStore {
@@ -749,14 +757,7 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
       return importUserData()
     }
 
-    const registry = remember(normalizeRegistry(doc), revisionOf(doc))
-    const reconciled = deps.reconcile?.(registry)
-
-    if (reconciled?.changed) {
-      write(reconciled.registry)
-    }
-
-    return cache!
+    return remember(normalizeRegistry(doc), revisionOf(doc))
   }
 
   function read(): ConnectionRegistry {
@@ -901,7 +902,7 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
     }
   }
 
-  function watch(handlers: { onRegistry: (changes: ConnectionsChange[]) => void; onTokens: () => void }) {
+  function watch(handlers: { onRegistry: RegistryChangeHandler; onTokens: () => void }) {
     // No read here: main registers this at load, before safeStorage may be used.
     const onRegistryStat = () => {
       const before = announced
@@ -914,7 +915,7 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
         const changes = registryChanges(before, after)
 
         if (changes.length) {
-          handlers.onRegistry(changes)
+          handlers.onRegistry(changes, { after, before })
         }
       }
     }
@@ -934,6 +935,7 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
     file,
     tokensFile,
     read,
+    readStrict: () => (cache && cacheStamp === stampOf() ? cache : readFresh()),
     write,
     invalidate: () => {
       cache = null
@@ -942,4 +944,24 @@ export function createGatewayConnectionsStore(deps: GatewayConnectionsStoreDeps)
     nativeTokenIo,
     watch
   }
+}
+
+/**
+ * Desktop's store: the userData registry and connection.json feed the one-time
+ * import only. Nothing here reads connection.json after that import.
+ */
+export function createDesktopGatewayConnectionsStore(deps: {
+  root: string
+  userData: string
+  readV1Config: () => unknown
+  decrypt: (secret: unknown) => string
+  log?: (message: string) => void
+}): GatewayConnectionsStore {
+  return createGatewayConnectionsStore({
+    root: deps.root,
+    userData: deps.userData,
+    legacyRegistry: () => readLegacyUserDataRegistry(deps.userData, deps.readV1Config(), deps.log),
+    decrypt: deps.decrypt,
+    log: deps.log
+  })
 }

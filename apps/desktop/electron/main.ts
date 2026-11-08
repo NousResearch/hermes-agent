@@ -191,11 +191,9 @@ import {
   parseBackendScopeKey,
   profileMetadataFromApiProfiles,
   reconcileAppliedGlobalConnection,
-  reconcileRegistryDrift,
   registryDialConnectionId,
   registrySourceOwnsPrimaryBackend,
   rememberSshEnumeration,
-  removeConnection,
   type ResolvedConnectionDescriptor,
   resolvedConnectionId,
   resolveRegistryLocalRoute,
@@ -212,6 +210,8 @@ import {
 } from './connection-registry'
 import type { RegistryConnection } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
+import { forgetRemovedGlobalRoute, registerGlobalRoute, removeSavedConnection } from './connection-registry-remove'
+import { buildRemoteBlock } from './connection-remote-block'
 import { liveWindowState, overlayWindowState } from './connection-window-state'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
@@ -266,7 +266,7 @@ import {
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { registerFsIpc } from './fs-ipc'
 import { directoryExists, fileExists, isGitCheckout } from './fs-probes'
-import { createGatewayConnectionsStore, readLegacyUserDataRegistry } from './gateway-connections-store'
+import { createDesktopGatewayConnectionsStore } from './gateway-connections-store'
 import { downloadViaTokenToFile as downloadViaNativeGatewayToFile } from './gateway-download-transport'
 import type {
   GatewayFileSaveContext,
@@ -402,6 +402,7 @@ import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { execGit, killTimedGitChildren, setNoConsoleGitRoots } from './no-console-git'
 import { registerNativeNotifications } from './notification-ipc'
+import { connectionConfigUrls, createRemovedConnectionCookieCleaner } from './oauth-jar-removal'
 import { loginFlightKey, OauthLoginFlights } from './oauth-login-flights'
 import { startOauthLoginWindow } from './oauth-login-window'
 import { isExpectedOauthNavigationAbort } from './oauth-navigation'
@@ -1966,12 +1967,10 @@ const MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS = 3
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
 
-const gatewayConnectionsStore = createGatewayConnectionsStore({
+const gatewayConnectionsStore = createDesktopGatewayConnectionsStore({
   root: uiPreferencesRoot(HERMES_HOME),
   userData: app.getPath('userData'),
-  legacyRegistry: () =>
-    readLegacyUserDataRegistry(app.getPath('userData'), readDesktopConnectionConfig(), message => rememberLog(message)),
-  reconcile: registry => reconcileRegistryDrift(registry, readDesktopConnectionConfig()),
+  readV1Config: () => readDesktopConnectionConfig(),
   decrypt: secret => decryptDesktopSecret(secret),
   log: message => rememberLog(message)
 })
@@ -7082,8 +7081,17 @@ async function hasLiveOauthSession(baseUrl) {
   return readLive()
 }
 
+const clearRemovedOauthJars = createRemovedConnectionCookieCleaner({
+  sessionFor: partition => (partition === OAUTH_SESSION_PARTITION ? getOauthSession() : app.isReady() ? session.fromPartition(partition) : null),
+  clearMirror: (partition, url) => remoteSessionCookies.clear(partition, url),
+  v1RemoteUrl: () => readDesktopConnectionConfig()?.remote?.url,
+  sharedUrls: () => [resolvePortalBaseUrl(), ...connectionConfigUrls(readDesktopConnectionConfig())]
+})
+
 async function clearOauthSession(baseUrl) {
   const sess = getOauthSessionForUrl(baseUrl)
+  // The in-memory mirror is sent as an explicit Cookie header: it goes with the jar.
+  remoteSessionCookies.clear(resolveOauthPartitionForUrl(baseUrl), baseUrl)
 
   if (!sess) {
     return
@@ -8440,6 +8448,22 @@ function readDesktopConnectionsRegistry(): any {
   return gatewayConnectionsStore.read()
 }
 
+// connection.json's app-global route outranks the list's primary at boot, so a
+// gateway removed from the list (by the Webapp, or by a build that left the route
+// behind) must leave connection.json too, or Desktop keeps dialing it.
+function forgetDesktopGlobalRouteIfRemoved() {
+  try {
+    // Strict: an unreadable store must not read as "every gateway was removed".
+    forgetRemovedGlobalRoute(gatewayConnectionsStore.readStrict(), {
+      readConfig: readDesktopConnectionConfig,
+      writeConfig: writeDesktopConnectionConfig,
+      log: rememberLog
+    })
+  } catch (error) {
+    rememberLog(`[connections] could not reset a removed gateway's route: ${(error as Error).message}`)
+  }
+}
+
 function writeDesktopConnectionsRegistry(registry) {
   gatewayConnectionsStore.write(registry)
   // A remove or re-point drops that entry's sign-in on disk; the URL-keyed cache follows.
@@ -8719,66 +8743,6 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   }
 }
 
-// Build + validate a `{ url, authMode, token }` remote block. OAuth gateways
-// authenticate via the login-window session cookie (verified at connect time in
-// resolveRemoteBackend), so only token-auth remotes require a saved token.
-// `org` (optional) is the Hermes Cloud org slug/id the instance was discovered
-// under — persisted so Settings can reopen into the same org; omitted from the
-// block when empty so plain remote connections stay unchanged.
-function buildRemoteBlock(
-  remoteUrl,
-  authMode,
-  token,
-  org?: string,
-  headers?: object,
-  name?: string,
-  remoteProfile?: string
-) {
-  if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
-    throw new Error('Remote gateway session token is required.')
-  }
-
-  const block: {
-    url: string
-    authMode: string
-    token: object
-    headers?: object
-    org?: string
-    name?: string
-    remoteProfile?: string
-  } = {
-    url: normalizeRemoteBaseUrl(remoteUrl),
-    authMode,
-    token
-  }
-
-  const remoteHeaders = normalizeRemoteHeaders(headers)
-
-  if (Object.keys(remoteHeaders).length > 0) {
-    block.headers = remoteHeaders
-  }
-
-  const nameValue = typeof name === 'string' ? name.trim() : ''
-
-  if (nameValue) {
-    block.name = nameValue
-  }
-
-  const orgValue = typeof org === 'string' ? org.trim() : ''
-
-  if (orgValue) {
-    block.org = orgValue
-  }
-
-  const remoteProfileName = normalizeRemoteProfileName(remoteProfile)
-
-  if (remoteProfileName) {
-    block.remoteProfile = remoteProfileName.remoteProfile
-  }
-
-  return block
-}
-
 function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopConnectionConfig(), options: any = {}) {
   const persistToken = options.persistToken !== false
   const key = connectionScopeKey(input.profile)
@@ -8863,7 +8827,7 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
     if (remoteLike) {
       profiles[key] = {
         mode,
-        ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName, input.remoteProfile)
+        ...buildRemoteBlock(decryptDesktopSecret, remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName, input.remoteProfile)
       }
     } else {
       const localEntry = localProfileEntry(rawExistingBlock)
@@ -8883,7 +8847,7 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   }
 
   const nextRemote = remoteLike
-    ? buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName)
+    ? buildRemoteBlock(decryptDesktopSecret, remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName)
     : existingMode === 'ssh'
       ? rawExistingBlock
       : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
@@ -14451,17 +14415,21 @@ ipcMain.handle('hermes:connections:save', async (_event, payload) => {
 ipcMain.handle('hermes:connections:remove', async (_event, id) => {
   const key = String(id || '')
   managedConnectionUpdateGate.assertCanMutate(key)
-  const registry = removeConnection(readDesktopConnectionsRegistry(), key)
-  writeDesktopConnectionsRegistry(registry)
-  // Tear down anything the removed connection still had running: pooled
-  // backends under its composite keys and any ssh tunnel scopes it owned.
+  // Every jar it rode, primary or not (#98242); its native sign-in goes with the write (signedInIdsGone).
+  await clearRemovedOauthJars(key, readDesktopConnectionsRegistry())
+
+  // A fresh read after that await, written without yielding: a save or removal
+  // another window made meanwhile must not be overwritten by an older snapshot.
+  const registry = await removeSavedConnection(key, readDesktopConnectionsRegistry(), readDesktopConnectionConfig(), {
+    writeConfig: writeDesktopConnectionConfig,
+    writeRegistry: writeDesktopConnectionsRegistry
+  })
+
+  // Tear down owned backends/tunnels and evict per-id metadata: label slugs
+  // are recycled, so cached profiles must not follow a re-added connection.
   await stopRegistryConnectionBackends(key)
-  // …and everything cached ABOUT it. Ids are recycled label slugs, so re-adding "Mac mini"
-  // gets `mac-mini` back — with the removed machine's profile list still cached under it.
   evictConnectionCaches(key)
-  // And the renderer side: without this push, secondaries scoped to the
-  // removed connection keep their WebSocket open (remote/cloud have no local
-  // process to kill) and stream ghost events until page reload.
+  // Secondary windows must close remote/cloud sockets with no process to stop.
   broadcastConnectionsChanged({ connectionId: key, reason: 'removed' })
   desktopProfilePreferences.connectionRemoved(key)
 
@@ -15242,8 +15210,21 @@ ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl) => {
 })
 ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   assertCanMutateManagedPrimaryRouting()
-  const config = coerceDesktopConnectionConfig(payload)
-  writeDesktopConnectionConfig(config)
+  const previousConfig = readDesktopConnectionConfig()
+  const previousRegistry = readDesktopConnectionsRegistry()
+  const config = coerceDesktopConnectionConfig(payload, previousConfig)
+
+  // The saved list learns an app-global route when the user picks it, never on a
+  // later read: a read-time repair re-adds a gateway removed since (#142906).
+  await applyConnectionConfigAtomically({
+    previousConfig,
+    previousRegistry,
+    nextConfig: config,
+    nextRegistry: connectionScopeKey(payload?.profile) ? previousRegistry : registerGlobalRoute(previousRegistry, config),
+    writeConfig: writeDesktopConnectionConfig,
+    writeRegistry: writeDesktopConnectionsRegistry,
+    apply: async () => undefined
+  })
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
@@ -15255,7 +15236,11 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
 
   const key = connectionScopeKey(payload?.profile)
   const scope = key || ''
-  const nextRegistry = key ? previousRegistry : reconcileAppliedGlobalConnection(previousRegistry, config)
+
+  // registerGlobalRoute: an applied SSH route joins the list (reconcileApplied… leaves SSH alone).
+  const nextRegistry = key
+    ? previousRegistry
+    : registerGlobalRoute(reconcileAppliedGlobalConnection(previousRegistry, config), config, { select: true })
 
   // Primary apply: the applied window's recorded route still names the source
   // it just LEFT, and a profile-less re-dial is answered from that record
@@ -16319,6 +16304,7 @@ const streamThrottle = createStreamThrottle(undefined, undefined, {
   // normal idle throttling contract.
   keepFullscreenPainting: process.platform === 'linux' && linuxOzoneBackend(process.env, process.argv) === 'wayland'
 })
+
 registerStreamWorkClock(ipcMain, sender => BrowserWindow.fromWebContents(sender))
 
 function isAnyTurnInFlight() {
@@ -16345,9 +16331,11 @@ ipcMain.on('hermes:active-work', (event, payload) => {
       event.sender.off('destroyed', forget)
       event.sender.off('render-process-gone', forget)
       activeWorkByWebContents.delete(id)
+
       if (owner) {
         streamThrottle.setVoiceActive(owner, false)
       }
+
       updateStreamThrottleFromActiveWork()
     }
 
@@ -16361,9 +16349,11 @@ ipcMain.on('hermes:active-work', (event, payload) => {
   const work = normalizeActiveWork(payload)
   activeWorkByWebContents.set(id, work)
   lastActiveWorkSeen = work
+
   if (owner?.webContents === event.sender && event.senderFrame === event.sender.mainFrame) {
     streamThrottle.setVoiceActive(owner, payload?.voiceActive === true)
   }
+
   updateStreamThrottleFromActiveWork()
 })
 
@@ -16836,8 +16826,16 @@ registerLocalSkinIpc(ipcMain, HERMES_HOME, id => windowConnectionRoutes.get(id)?
 registerMachineUiPreferences(HERMES_HOME)
 // Another writer (the Webapp) changed the shared list: same teardown as a local save/remove.
 gatewayConnectionsStore.watch({
-  onRegistry: changes => {
+  onRegistry: (changes, { after, before }) => {
+    if (changes.some(change => change.reason === 'removed')) {
+      forgetDesktopGlobalRouteIfRemoved()
+    }
+
     for (const change of changes) {
+      if (change.reason === 'removed') {
+        void clearRemovedOauthJars(change.connectionId, before, after)
+      }
+
       if (change.reason !== 'saved') {
         void stopRegistryConnectionBackends(change.connectionId)
         evictConnectionCaches(change.connectionId)
@@ -17606,6 +17604,8 @@ app.whenReady().then(() => {
   // Settings → Gateway. Must run before createWindow() and the first
   // connection resolution.
   migrateLegacyEncryptedSecretsOnce()
+  // After the store's one-time import: drop a stale route to a removed gateway.
+  forgetDesktopGlobalRouteIfRemoved()
 
   // Expose the renderer's accessibility tree to the OS (#118271, Windows
   // twin #92607): dictation tools that insert text through the accessibility

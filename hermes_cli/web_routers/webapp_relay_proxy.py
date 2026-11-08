@@ -281,6 +281,7 @@ def _admit_browser(ws: WebSocket) -> Optional[str]:
     admitted = admitted_with(info)
     if ticket_refusal(info, RELAY_SOCKET, auth_required=bool(getattr(state, "auth_required", False))) is not None or admitted is None:
         return None
+    ws._hermes_auth_identity = info
     return admitted
 
 
@@ -296,9 +297,13 @@ async def relay_ws(ws: WebSocket, connection_id: str, path: str) -> None:
     from websockets.typing import Origin, Subprotocol
 
     from hermes_cli.web_session_sockets import track
+    from hermes_cli.web_host_terminal_ssh import serve_ssh_terminal
 
     admitted = _admit_browser(ws)
     try:
+        if admitted is not None and path == "api/host-terminal":
+            if await serve_ssh_terminal(ws, connection_id, admitted):
+                return
         row = await _resolve(ws.app.state, connection_id) if admitted is not None else None
         target = _target(ws.scope, connection_id, drop_query=_CREDENTIAL_QUERY) if row else None
         credential = await reach.socket_credential(row, f"/{path}") if target else None

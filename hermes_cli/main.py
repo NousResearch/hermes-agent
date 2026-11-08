@@ -2717,10 +2717,8 @@ def _resolve_deferred_platform_cli_command(command_name: str | None) -> None:
 
 
 _AGENT_COMMANDS = {None, "chat", "acp", "rl"}
-_AGENT_SUBCOMMANDS = {
-    "cron": ("cron_command", {"run", "tick"}),
-    "gateway": ("gateway_command", {"run"}),
-}
+_AGENT_SUBCOMMANDS = {"cron": ("cron_command", {"run", "tick"}), "gateway": ("gateway_command", {"run"}),
+                      "curator": ("curator_command", {"run"})}  # curator run fires post_curator_run
 
 
 def _is_tui_chat_launch(args) -> bool:
@@ -2742,7 +2740,7 @@ def _is_tui_chat_launch(args) -> bool:
 
 
 def _agent_subcommand_selected(args) -> bool:
-    """True for ``cron run/tick``, ``gateway run`` (see _AGENT_SUBCOMMANDS)."""
+    """True for ``cron run/tick``, ``gateway run``, ``curator run`` (see _AGENT_SUBCOMMANDS)."""
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
     return bool(_sub_attr and getattr(args, _sub_attr, None) in _sub_set)
 

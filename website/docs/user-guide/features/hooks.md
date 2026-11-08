@@ -478,6 +478,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_session_delete` | Observer | After a session delete or deliberate archive commits (CLI, TUI, Desktop/dashboard, gateway API, sweeps, prune); return ignored. | `session_id`, `reason`, `profile`, optional `deleted_ids` (full set when more than one row went), `sessions_dir` | Session identifiers only; no message content. |
 | `post_compaction` | Observer | Once per committed compaction, on every path: automatic and manual compaction in the agent loop (CLI, TUI, Desktop, gateway hygiene, overflow recovery), the gateway's `/compress` (`session.mutate compress`), Codex app-server compactions, micro-compaction and proactive tool-result pruning. Not fired for attempts that changed nothing (aborted, blocked, refused). Timeout-bounded; return ignored. | `session_id`, `old_session_id`, `kind`, `reason`, `before_tokens`, `after_tokens`, `messages_removed` | Identifiers and counts only. |
+| `post_curator_run` | Observer | After a curator pass wrote its per-run report (`logs/curator/<run>/run.json` + `REPORT.md`), in the process that ran the pass. Return ignored. | `run_dir`, `run_json_path`, `report_md_path`, `dry_run` | Local filesystem paths; the report names skills. |
 | `agent_loop_stopped` | Observer | Immediately after a real running agent is interrupted — gateway `_interrupt_and_clear_session` or TUI/desktop `session.interrupt`; return ignored. | `session_key`, `platform`, `reason`, `invalidation_reason` | Session/routing identifiers and interruption reasons; no message body. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
@@ -1183,6 +1184,27 @@ def my_callback(session_id: str, kind: str, reason: str, **kwargs):
 **Return value:** Ignored. A callback that raises is logged and skipped; the compaction is already committed and is unaffected. Callbacks are bounded by `plugins.hook_callback_timeout`.
 
 **Use cases:** Re-inject session context after compaction, refresh an external index, count compactions.
+
+### `post_curator_run`
+
+Fires once after a curator pass has written its per-run report directory, so a plugin or shell hook can react to what the curator changed (route new skills to another profile, override an archival, write an audit log) instead of polling `logs/curator/`.
+
+**Callback signature:**
+
+```python
+def my_callback(run_dir: str, run_json_path: str, report_md_path: str, dry_run: bool, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `run_dir` | `str` | The run's report directory under the profile's `logs/curator/`. |
+| `run_json_path` | `str` | `run.json`, the machine-readable record (added, archived, consolidated, pruned, state transitions, cron rewrites). |
+| `report_md_path` | `str` | `REPORT.md`, the human-readable report. |
+| `dry_run` | `bool` | `True` for a preview (`hermes curator run --dry-run`): the report lists what WOULD change and nothing was archived or rewritten. Check it before acting on the report. |
+
+**Fires:** in the process that ran the pass (the gateway's scheduled curator tick, or `hermes curator run`), under that profile, after both files are written. A pass whose report directory could not be created fires nothing.
+
+**Return value:** Ignored. A callback that raises is logged and skipped; the curator pass is unaffected.
 
 ### `agent_loop_stopped`
 

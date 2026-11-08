@@ -62,3 +62,19 @@ def test_two_members_long_commands_never_coalesce_into_the_first_sender():
     asyncio.run(_run())
     by_sender = sorted((e.source.user_id, e.user_id, "Alice" in e.text, "Bob" in e.text) for e in flushed)
     assert by_sender == [("111", "111", True, False), ("222", "222", False, True)]
+
+
+def test_two_members_photos_batch_separately_but_share_the_group_session():
+    from gateway.platforms.event import MessageType
+    from tests.gateway.test_telegram_group_gating import _group_message as _msg
+
+    adapter = _make_adapter(require_mention=False, allowed_chats=["-100"], group_allowed_chats=["-100"],
+                            observe_unmentioned_group_messages=True)
+    keys, session_keys = [], set()
+    for uid in (111, 222):
+        msg = _msg("", from_user_id=uid, caption="look")
+        event = adapter._apply_telegram_group_observe_attribution(adapter._build_message_event(msg, MessageType.PHOTO))
+        keys.append(adapter._photo_batch_key(event, msg))
+        session_keys.add(adapter._event_session_key(event))
+    assert keys[0] != keys[1]
+    assert len(session_keys) == 1

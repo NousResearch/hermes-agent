@@ -206,3 +206,18 @@ async def test_progress_delivered_by_a_tool_event_is_not_resent_by_the_idle_retr
     await loop._deliver_flood_pending_progress(st)
 
     assert [c.kwargs["content"] for c in st.adapter.send.await_args_list] == ["long build"]
+
+
+@pytest.mark.asyncio
+async def test_held_progress_survives_a_transient_failure_of_its_idle_retry():
+    """A network blip on the first post-window edit leaves the update owed, not lost."""
+    loop, st = _held_progress([
+        SendResult(success=False, error="ConnectError", retryable=True),
+        SendResult(success=True, message_id="m1"),
+    ])
+
+    assert await loop._deliver_flood_pending_progress(st)  # attempted: caller spaces the next try
+    await loop._deliver_flood_pending_progress(st)
+
+    assert st.adapter.edit_message.await_count == 2
+    assert await loop._deliver_flood_pending_progress(st) is False  # landed: nothing left owed

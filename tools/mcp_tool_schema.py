@@ -7,7 +7,7 @@ import hashlib
 import fnmatch
 import re
 from typing import Any, List
-from tools.ansi_strip import strip_tool_metadata_text, strip_unicode_tags_deep
+from tools.ansi_strip import strip_tool_metadata_text
 from tools.mcp_tool_common import mcp_field
 
 logger = logging.getLogger("tools.mcp_tool")
@@ -183,16 +183,44 @@ def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
     return full_name[:_MCP_TOOL_NAME_MAX_LENGTH - len(suffix)] + suffix
 
 
+# Strings the server matches calls against: rewriting them would break a working tool, so they stay
+# byte-exact (a hidden char there is logged instead).
+_SCHEMA_CONTRACT_KEYS = frozenset({"enum", "const", "required", "$ref", "pattern"})
+
+
+def strip_schema_annotations(node, tool_name: str = "", _contract: bool = False, _names: bool = False):
+    """Strip invisible TAG/bidi chars from every free-text string in a JSON schema (descriptions,
+    titles, defaults, examples) at any depth, leaving property names and enum/const/required/$ref/
+    pattern values exact. Returns ``node`` itself when nothing changed (schemas are frozen wire bytes)."""
+    if isinstance(node, str):
+        if not _contract:
+            return strip_tool_metadata_text(node)
+        if strip_tool_metadata_text(node) != node:
+            logger.warning("MCP tool '%s': schema name/enum value %r carries invisible characters; "
+                           "kept as-is (the server matches it)", tool_name, node)
+        return node
+    if isinstance(node, dict):
+        if _names:  # a ``properties`` map: keys are argument names, values are sub-schemas
+            for name in node:
+                strip_schema_annotations(name, tool_name, True)
+        items = [(k, strip_schema_annotations(v, tool_name, _contract or (not _names and k in _SCHEMA_CONTRACT_KEYS),
+                                              not _names and k in ("properties", "patternProperties", "$defs")))
+                 for k, v in node.items()]
+        return node if all(nv is v for (_, nv), v in zip(items, node.values())) else dict(items)
+    if isinstance(node, list):
+        items = [strip_schema_annotations(v, tool_name, _contract) for v in node]
+        return node if all(n is v for n, v in zip(items, node)) else items
+    return node
+
+
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     """Convert an MCP ``Tool`` (``.input_schema``, or ``.inputSchema`` before mcp 2.0) to a
     ``registry.register(schema=...)`` dict."""
     return {
         "name": mcp_prefixed_tool_name(server_name, mcp_tool.name),
         "description": strip_tool_metadata_text(mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"),
-        # Parameter descriptions, titles, enums and defaults reach the model on every call too.
-        "parameters": strip_unicode_tags_deep(
-            _normalize_mcp_input_schema(mcp_field(mcp_tool, "input_schema", "inputSchema")),
-            strip_tool_metadata_text),
+        "parameters": strip_schema_annotations(
+            _normalize_mcp_input_schema(mcp_field(mcp_tool, "input_schema", "inputSchema")), mcp_tool.name),
     }
 
 

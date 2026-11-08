@@ -689,13 +689,15 @@ def _rewrite_cron_refs(consolidated: list[dict[str, Any]], pruned: list[dict[str
         return {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0, "error": str(e)}
 
 
-def _write_file(path: Path, label: str, render: Any) -> None:
-    """Best-effort write of *render()* (or the JSON dump of a non-callable payload);
-    rendering runs inside the guard so a serialisation error is logged, not raised."""
+def _write_file(path: Path, label: str, render: Any) -> bool:
+    """Best-effort write of *render()* (or the JSON dump of a non-callable payload); True once written.
+    Rendering runs inside the guard so a serialisation error is logged, not raised."""
     try:
         path.write_text(render() if callable(render) else json.dumps(render, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        return True
     except Exception as e:
         logger.debug("Curator %s write failed: %s", label, e)
+        return False
 
 
 def _write_run_report(
@@ -736,13 +738,14 @@ def _write_run_report(
         "llm_final": llm_meta.get("final", ""), "llm_summary": llm_meta.get("summary", ""),
         "llm_error": llm_meta.get("error"), "tool_calls": llm_meta.get("tool_calls", []),
     }
-    _write_file(run_dir / "run.json", "run.json", payload)
-    _write_file(run_dir / "REPORT.md", "REPORT.md", lambda: _render_report_markdown(payload))
+    wrote_json = _write_file(run_dir / "run.json", "run.json", payload)
+    wrote_md = _write_file(run_dir / "REPORT.md", "REPORT.md", lambda: _render_report_markdown(payload))
     if jobs_updated > 0:  # only when a job was touched, to keep no-op run dirs uncluttered
         _write_file(run_dir / "cron_rewrites.json", "cron_rewrites.json", cron_rewrites)
-    from hermes_cli.lifecycle import invoke_hook  # observers + plugins; each callback isolated there
-    invoke_hook("post_curator_run", run_dir=str(run_dir), run_json_path=str(run_dir / "run.json"),
-                report_md_path=str(run_dir / "REPORT.md"))
+    if wrote_json and wrote_md:  # observers are promised both files on disk
+        from hermes_cli.lifecycle import invoke_hook  # observers + plugins; each callback isolated there
+        invoke_hook("post_curator_run", run_dir=str(run_dir), run_json_path=str(run_dir / "run.json"),
+                    report_md_path=str(run_dir / "REPORT.md"))
     return run_dir
 
 

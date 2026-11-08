@@ -974,8 +974,10 @@ def _delivery_manager() -> PluginManager:
     surface imported us (dashboards/TUI/cron never import model_tools: #50776, #64178).
     ``getattr`` default ``True`` leaves test doubles untouched."""
     manager = get_plugin_manager()
+    # ``_discovered`` flips when a scan STARTS (re-entrancy guard), so an in-flight background scan
+    # must be joined first or a hook fired during startup sees a half-loaded registry.
+    _join_background_discovery()
     if not getattr(manager, "_discovered", True):
-        _join_background_discovery()
         manager.discover_and_load()
     return manager
 

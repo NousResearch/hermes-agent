@@ -21,6 +21,9 @@ def test_json_headers_remain_parseable_without_exposing_credentials():
             file_redacted = json.loads(redact_sensitive_text(serialized, force=True, file_read=True, secret_file=True))
             assert file_redacted["headers"][name].startswith("«redacted")
             assert redact_sensitive_text(serialized, force=True, code_file=True) == serialized
+        if "cookie" not in name.lower():  # a slash-led opaque key is a credential, not a path
+            slash_key = json.dumps({name: "/abcdef0123456789abcdef0123456789"})
+            assert "0123456789abcdef0123" not in redact_sensitive_text(slash_key, force=True)
 
 
 def test_raw_headers_mask_all_values_without_consuming_shell_or_next_line():

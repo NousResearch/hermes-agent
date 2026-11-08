@@ -225,11 +225,12 @@ def cookie_value_is_credential(value: str, *, qualified: bool = False) -> bool:
 
 def json_header_value_is_credential(key: str, value: str) -> bool:
     """Gate for a JSON ``"<header>": "<value>"`` field: cookie fields follow the cookie value
-    shape; API-key headers follow main's ``"apikey"`` field (``${API_KEY}`` stays readable)."""
-    from agent.redact import _should_redact_assignment
+    shape; an API-key header masks every value but a whole ``${API_KEY}`` / env-lookup
+    placeholder (no path exemption: ``/abc…`` is a valid key shape)."""
+    from agent.redact import _ENV_LOOKUP_VALUE_RE, _SHELL_VAR_REF
     if "cookie" in key.lower():
         return cookie_value_is_credential(value)
-    return _should_redact_assignment("api_key", value, check_keyword=False)
+    return not (_ENV_LOOKUP_VALUE_RE.match(value) or re.fullmatch(_SHELL_VAR_REF, value))
 
 
 def _redact_cookie_assignment(m: "re.Match[str]", mask) -> str:

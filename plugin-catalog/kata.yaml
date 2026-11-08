@@ -1,9 +1,6 @@
-# Draft of plugin-catalog/kata.yaml for NousResearch/hermes-agent.
-# Replace every ca0d4356e6c2b5e4384830d344d2d8d4b97013d3 with the full 40-character commit you are submitting, then copy this file
-# (without this comment block) to plugin-catalog/kata.yaml in your pull request.
 name: kata
 repo: https://github.com/opeblow/kata
-sha: "ca0d4356e6c2b5e4384830d344d2d8d4b97013d3"
+sha: "cc59b08f1bbeeb02524c060faac04edb34de0564"
 subdir: kata
 version: "0.1.0"
 title: Kata
@@ -12,13 +9,13 @@ maintainer: opeblow
 tier: community
 category: automation
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/opeblow/kata/blob/ca0d4356e6c2b5e4384830d344d2d8d4b97013d3/README.md
+docs_url: https://github.com/opeblow/kata/blob/cc59b08f1bbeeb02524c060faac04edb34de0564/README.md
 readme: true
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/opeblow/kata/ca0d4356e6c2b5e4384830d344d2d8d4b97013d3/docs/screenshots/dashboard-review-dark.png
-  - https://raw.githubusercontent.com/opeblow/kata/ca0d4356e6c2b5e4384830d344d2d8d4b97013d3/docs/screenshots/dashboard-active.png
-  - https://raw.githubusercontent.com/opeblow/kata/ca0d4356e6c2b5e4384830d344d2d8d4b97013d3/docs/screenshots/dashboard-review-light.png
+  - https://raw.githubusercontent.com/opeblow/kata/cc59b08f1bbeeb02524c060faac04edb34de0564/docs/screenshots/dashboard-review-dark.png
+  - https://raw.githubusercontent.com/opeblow/kata/cc59b08f1bbeeb02524c060faac04edb34de0564/docs/screenshots/dashboard-active.png
+  - https://raw.githubusercontent.com/opeblow/kata/cc59b08f1bbeeb02524c060faac04edb34de0564/docs/screenshots/dashboard-review-light.png
 capabilities:
   provides_tools: [kata_list]
   provides_hooks: [post_tool_call, post_api_request, pre_tool_call, pre_llm_call, on_session_start, on_session_end]

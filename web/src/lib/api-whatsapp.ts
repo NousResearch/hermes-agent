@@ -30,8 +30,10 @@ export interface WhatsAppOnboardingApplyResponse {
   ok: boolean;
   platform: "whatsapp";
   needs_restart: boolean;
-  restart_started?: boolean;
-  restart_action?: string;
-  restart_pid?: number | null;
-  restart_error?: string;
+  activation_started: boolean;
+  active?: boolean;
+  pending?: boolean;
+  retrying?: boolean;
+  reason?: string;
+  activation_error?: string;
 }

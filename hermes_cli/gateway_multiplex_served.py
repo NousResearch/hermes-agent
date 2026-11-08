@@ -124,3 +124,14 @@ def notify_multiplexer_profiles_changed(profile_name: str, *, timeout: float = 8
         return None
     served = answer.get("served_profiles")
     return [str(p) for p in served] if isinstance(served, list) else None
+
+
+def notify_gateway_whatsapp_paired(home: Path, profile_name: str) -> Optional[dict]:
+    """Activate a paired profile on its own gateway or its default-profile host."""
+    from gateway.control_socket import activate_gateway_whatsapp
+    from hermes_constants import get_default_hermes_root
+
+    answer = activate_gateway_whatsapp(home, profile_name)
+    if answer is None and profile_name != "default":
+        answer = activate_gateway_whatsapp(get_default_hermes_root(), profile_name)
+    return None if answer and answer.get("reason") == "profile_not_served" else answer

@@ -397,6 +397,36 @@ class TestFormatMessageBlockquote:
         assert "\\>" not in result
 
 
+    def test_expandable_blockquote_single_line(self, adapter):
+        result = adapter.format_message("**> Only line||")
+        assert result == "**> Only line||"
+
+
+    def test_expandable_blockquote_multiline_keeps_closing_mark(self, adapter):
+        """Telegram's documented form: **> opens, || ends the LAST line of the block."""
+        text = "**> First line\n> Second line\n> Last line||"
+        result = adapter.format_message(text)
+        assert result == "**> First line\n> Second line\n> Last line||"
+
+
+    def test_expandable_blockquote_mark_escaped_before_last_line(self, adapter):
+        """A raw || before the block's last line is rejected by Telegram as an unterminated spoiler."""
+        result = adapter.format_message("**> First line||\n> Second line")
+        assert result == "**> First line\\|\\|\n> Second line"
+
+
+    def test_expandable_blockquote_ends_at_next_opener(self, adapter):
+        """A **> line starts a new quote block, so each block keeps its own closing mark."""
+        text = "> Plain quote\n**> Hidden one\n> Hidden two||"
+        result = adapter.format_message(text)
+        assert result == "> Plain quote\n**> Hidden one\n> Hidden two||"
+
+
+    def test_expandable_blockquote_escapes_content(self, adapter):
+        result = adapter.format_message("**> Step 1.\n> Done (ok)!||")
+        assert result == "**> Step 1\\.\n> Done \\(ok\\)\\!||"
+
+
 # =========================================================================
 # format_message - mixed/complex
 # =========================================================================

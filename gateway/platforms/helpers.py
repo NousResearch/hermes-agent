@@ -117,16 +117,24 @@ def display_width(text: str) -> int:
     return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
 
 
-def numbered_clarify_choices(choices, *, max_label_cols: int, escape=None) -> Optional[str]:
+def numbered_clarify_choices(choices, *, max_label_cols: int, escape=None,
+                             max_chars: Optional[int] = None) -> Optional[str]:
     """``"1. <choice>\n2. <choice>"`` when any choice is wider than ``max_label_cols`` display
     columns, else ``None``. Button-capable adapters put this in the message body and switch to
     positional (``1``, ``2``, …) button labels: a clipped label with no tooltip is unanswerable
-    (#78115), and the body is the only place a long option renders in full."""
+    (#78115), and the body is the only place a long option renders in full. ``max_chars`` keeps
+    whole lines only (a cut mid-line could split an escape) and marks the drop with ``…``."""
     texts = [str(c).strip() for c in choices]
     if all(display_width(t) <= max_label_cols for t in texts):
         return None
     esc = escape or (lambda s: s)
-    return "\n".join(f"{i}. {esc(t)}" for i, t in enumerate(texts, start=1))
+    lines = [f"{i}. {esc(t)}" for i, t in enumerate(texts, start=1)]
+    out = "\n".join(lines)
+    if max_chars is None or len(out) <= max_chars:
+        return out
+    while lines and len("\n".join(lines)) + 2 > max_chars:
+        lines.pop()
+    return "\n".join(lines + ["…"]) if lines else out[: max(0, max_chars - 1)] + "…"
 
 
 def bounded_put(store: MutableMapping[str, Any], key: str, value: Any, cap: int) -> None:

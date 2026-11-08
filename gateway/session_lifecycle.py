@@ -290,7 +290,10 @@ class SessionLifecycleMixin:
         (keep) on probe errors, mirroring ``_has_active_processes_safe``."""
         db = self._db_for_key(entry.session_key)
         if db is None:
-            return False
+            # A local route whose owning store failed to open (or has no resolvable home) is kept
+            # like a probe error: the sweep would otherwise drop its saved route state. A store run
+            # deliberately without a DB (``store._db = None``) and non-local routes still prune.
+            return self._pinned_db() is not None and ":local:" in (entry.session_key or "")
         try:
             from hermes_state_local import POLICY_PREFIX, local_lineage_owner
 

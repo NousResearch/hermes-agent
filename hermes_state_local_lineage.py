@@ -11,12 +11,34 @@ from hermes_state_runtime import RuntimeStoreError, _epoch, _json
 import itertools
 
 
+def _gateway_minted(session_id):
+    """Whether *session_id* is an id this build mints (``local_identity``).
+
+    A legacy row predates that minting, so its id is a timestamp id (``YYYYMMDD_HHMMSS_xxxxxx``).
+    A ``local-`` id can only come from a create, and a create binds through ``bind_legacy_target``,
+    which refuses an existing routed row. So a legacy claim over a ``local-`` id cannot be lineage:
+    it is a receipt someone rewrote outside the store, and it must not excuse the identity check."""
+    return isinstance(session_id, str) and session_id.startswith('local-')
+
+
+def _minted_under(receipt):
+    """The profile home *receipt*'s session id was minted under.
+
+    ``adopted_profile_id`` records the home a store was moved from (a store swapped between
+    profiles keeps ids derived from the old home; rewriting ``profile_id`` alone would make every
+    one of them fail the identity check, which is what a rewrite then papers over with a false
+    legacy claim). Nothing else about the receipt depends on it."""
+    return receipt.get('adopted_profile_id') or receipt['profile_id']
+
+
 def validate_local_lineage(conn, receipt):
     from hermes_state_compression import _CHAIN_STEP_SQL
     from hermes_state_keys import local_identity
-    if ('legacy_session_id' not in receipt and
-            receipt['session_id'] != local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id'])):
-        raise RuntimeStoreError('storage_unavailable')
+    if receipt['session_id'] != local_identity(_minted_under(receipt), receipt['principal_id'], receipt['request_id']):
+        # A self-referencing legacy claim is only a legitimate excuse when the id is not one this
+        # build mints (an adopted pre-gateway row). One over a gateway id is malformed, not lineage.
+        if 'legacy_session_id' not in receipt or _gateway_minted(receipt['session_id']):
+            raise RuntimeStoreError('storage_unavailable')
     from hermes_state_local_migration import legacy_lineage_root
     root = legacy_lineage_root(conn, receipt)
     lineage = receipt.get('lineage', [root])

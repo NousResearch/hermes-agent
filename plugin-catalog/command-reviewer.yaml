@@ -7,7 +7,7 @@ maintainer: spideysri2802
 tier: community
 category: tools
 requires_hermes: '>=0.23'
-docs_url: https://github.com/OWNER/command-reviewer#readme
+docs_url: https://github.com/spideysri2802/command-reviewer#readme
 version: '0.2.7'
 platforms: []
 capabilities:

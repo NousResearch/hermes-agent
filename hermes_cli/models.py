@@ -2301,14 +2301,17 @@ def _probe_neg_key(base_url: str) -> Optional[str]:
 
 
 def _probe_result(
-    models, probed_url, resolved_base_url, suggested_base_url=None, used_fallback=False
+    models, probed_url, resolved_base_url, suggested_base_url=None, used_fallback=False,
+    model_names=None,
 ) -> dict[str, Any]:
     return {
         "models": models,
         "probed_url": probed_url,
         "resolved_base_url": resolved_base_url,
         "suggested_base_url": suggested_base_url,
-        "used_fallback": used_fallback}
+        "used_fallback": used_fallback,
+        # ``{model_id: display_name}`` as published by the endpoint. Presentation only.
+        "model_names": model_names or {}}
 
 
 def probe_api_models(
@@ -2377,13 +2380,20 @@ def probe_api_models(
         from hermes_cli.chat_catalog import note_catalog_item
 
         probed = []
+        names: dict[str, str] = {}
         for item in data.get("data", []):
             if isinstance(item, dict) and note_catalog_item(item):
                 continue
             probed.append(item.get("id", ""))
+            if isinstance(item, dict):
+                model_id = str(item.get("id") or "").strip()
+                label = _published_name(item)
+                if model_id and label:
+                    names[model_id] = label
         return _probe_result(
             probed, url, candidate_base.rstrip("/"),
-            alternate_base if alternate_base != candidate_base else normalized, is_fallback)
+            alternate_base if alternate_base != candidate_base else normalized, is_fallback,
+            model_names=names)
 
     if _neg_key is not None and all_timed_out:
         _probe_neg_cache[_neg_key] = time.monotonic()
@@ -2536,6 +2546,64 @@ def fetch_api_models(
     """Fetch the list of available model IDs from the provider's ``/models`` endpoint."""
     result = probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode, request_headers=headers)
     return result.get("models")
+
+
+def _published_name(item: dict) -> str:
+    """The row's own human label, whichever key the catalog publishes it under.
+
+    The OpenAI shape is ``name``; Anthropic's ``/v1/models`` uses ``display_name``. Both are
+    read so this works for every provider rather than one gateway's dialect. A label identical
+    to the id carries no information and is dropped, letting the caller render the id itself."""
+    for key in ("name", "display_name", "displayName"):
+        label = str(item.get(key) or "").strip()
+        if label:
+            return "" if label == str(item.get("id") or "").strip() else label
+    return ""
+
+
+def fetch_api_model_names(
+    api_key: Optional[str], base_url: Optional[str], timeout: float = 5.0,
+    api_mode: Optional[str] = None, headers: Optional[dict[str, str]] = None,
+) -> dict[str, str]:
+    """``{model_id: display_name}`` from the provider's ``/models`` endpoint (``{}`` on any miss).
+
+    Read from the same response :func:`fetch_api_models` parses, with the same auth and TLS
+    rules, so any picker can show a provider's own labels. Never raises: presentation must not
+    break on an unreachable or name-less catalog."""
+    try:
+        result = probe_api_models(
+            api_key, base_url, timeout=timeout, api_mode=api_mode, request_headers=headers)
+    except Exception:
+        return {}
+    names = result.get("model_names")
+    return dict(names) if isinstance(names, dict) else {}
+
+
+def model_display_names() -> dict[str, str]:
+    """``{model_id: display_name}`` from the bundled models.dev catalog, for every provider.
+
+    ``/v1/models`` is not the only source of human names: models.dev ships one per model for
+    the providers it covers, and it is already on disk (no network). Used as the base layer so
+    built-in providers get real labels too; a live ``/models`` response overrides it per id.
+    """
+    try:
+        from agent.models_dev import fetch_models_dev
+    except ImportError:
+        return {}
+    try:
+        data = fetch_models_dev()
+    except Exception:
+        return {}
+    names: dict[str, str] = {}
+    for provider_data in (data or {}).values():
+        models = provider_data.get("models") if isinstance(provider_data, dict) else None
+        if not isinstance(models, dict):
+            continue
+        for model_id, entry in models.items():
+            label = str((entry or {}).get("name") or "").strip() if isinstance(entry, dict) else ""
+            if label and label != model_id and model_id not in names:
+                names[model_id] = label
+    return names
 
 
 def _custom_endpoint_fingerprint(

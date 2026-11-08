@@ -16,6 +16,23 @@ logger = logging.getLogger("acp_adapter.server")
 ACP_MAX_MODELS_PER_PROVIDER = 200
 
 
+def _endpoint_display_names(api_key: str, base_url: str, entry: dict,
+                            headers: dict | None) -> dict[str, str]:
+    """``{model_id: display_name}`` from one endpoint's ``/models``.
+
+    Delegates to :func:`hermes_cli.models.fetch_api_model_names`, so auth, TLS and the name
+    parsing live in the one owner of catalog probing. Never raises and never affects which rows
+    exist: any failure returns ``{}`` and the picker renders ids, exactly as before."""
+    try:
+        from hermes_cli.models import fetch_api_model_names
+        return fetch_api_model_names(
+            api_key, base_url, timeout=1.5,
+            api_mode=entry.get("api_mode"), headers=headers)
+    except Exception:
+        logger.debug("No display names for %s", base_url, exc_info=True)
+        return {}
+
+
 def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, str]]]]:
     """``(slug, label, [(model_id, description), ...])`` for named endpoints (v12 ``providers:``
     and legacy ``custom_providers:``), which canonical provider enumeration never lists.
@@ -90,7 +107,10 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
 
         if not model_ids and not isinstance(live, _NativePickerModelList):
             return None
-        return slug, name, [(mid, "") for mid in model_ids]
+        # The endpoint's own labels for the picker; ids stay the routing keys. One extra read of
+        # the same catalog, never allowed to change which rows exist.
+        names = _endpoint_display_names(api_key, base_url, entry, native_headers)
+        return slug, name, [(mid, names.get(mid, "")) for mid in model_ids]
 
     catalogs = [_entry_catalog(entry) for entry in entries if isinstance(entry, dict)]
     return [c for c in catalogs if c is not None]
@@ -168,6 +188,8 @@ class _ModelCatalog:
     seen_ids: set[str] = field(default_factory=set)
     seen_semantic_ids: set[str] = field(default_factory=set)
     empty_authoritative: set[str] = field(default_factory=set)
+    # ``{model_id: display_name}`` from the live catalogs and models.dev; see ``label``.
+    display_names: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.current_choice_provider == "ollama":
@@ -209,7 +231,11 @@ class _ModelCatalog:
             )
             for model_entry in row_models:
                 if isinstance(model_entry, dict):
-                    model_entry = model_entry.get("id") or model_entry.get("model") or model_entry.get("name")
+                    # A row may carry its own label alongside the id (``{"id":…, "name":…}``).
+                    entry_name = str(model_entry.get("name") or "").strip()
+                    model_entry = model_entry.get("id") or model_entry.get("model") or entry_name
+                else:
+                    entry_name = ""
                 rendered_model = str(model_entry or "").strip()
                 if not rendered_model:
                     continue
@@ -217,9 +243,23 @@ class _ModelCatalog:
                     self.semantic(encoded_provider) == self.semantic(self.current_choice_provider)
                 )
                 self.add(
-                    encoded_provider, rendered_model, f"{provider_name} · {rendered_model}",
+                    encoded_provider, rendered_model,
+                    self._label(encoded_provider, rendered_model, entry_name, provider_name),
                     f"Provider: {provider_name}" + (" • current" if is_current else ""),
                 )
+
+    def label(self, provider_id: str, model_id: str, published: str = "") -> str:
+        """Visible label for one model: the provider's own name when it has one.
+
+        ACP documents ``ModelInfo.name`` as the "human-readable name of the model", so a
+        published name wins over the routing id. Order: the label this row carried (live
+        ``/models``), then models.dev's name for the id, then the id itself. Never empty."""
+        label = str(published or "").strip() or str(self.display_names.get(model_id) or "").strip()
+        return label or model_id
+
+    def _label(self, provider_id: str, model_id: str, published: str, provider_name: str) -> str:
+        label = self.label(provider_id, model_id, published)
+        return label if label != model_id else f"{provider_name} · {model_id}"
 
     def add_named_catalogs(self, catalogs: list, current_choice_provider: str) -> None:
         """Named user-defined endpoints (providers: / custom_providers:) are invisible
@@ -232,7 +272,22 @@ class _ModelCatalog:
             for named_model, named_desc in named_catalog:
                 is_current = named_slug.lower() == current_choice_provider and named_model == self.current_model
                 parts = [f"Provider: {named_label}", str(named_desc or "").strip(), "current" if is_current else ""]
-                self.add(named_slug, named_model, named_model, " • ".join(part for part in parts if part))
+                self.add(named_slug, named_model, self.label(named_slug, named_model, named_desc),
+                         " • ".join(part for part in parts if part))
+
+
+def _display_names() -> dict[str, str]:
+    """Base label map for every provider: models.dev's own names (no network, already on disk).
+
+    A per-endpoint live ``/models`` response overlays this per id in ``add_named_catalogs``, so a
+    gateway's fresher name wins. Best-effort: any failure yields ``{}`` and rows render ids.
+    """
+    try:
+        from hermes_cli.models import model_display_names
+        return model_display_names()
+    except Exception:
+        logger.debug("models.dev display names unavailable", exc_info=True)
+        return {}
 
 
 def build_model_state(model: str, provider: str, base_url: str) -> SessionModelState | None:
@@ -280,6 +335,7 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
         normalize_provider=normalize_provider, current_model=model,
         current_choice_provider=current_choice_provider,
         current_base_url=current_base,
+        display_names=_display_names(),
     )
     cat.add_inventory_rows(inventory_rows, provider_label)
     cat.add_named_catalogs(named_catalogs, current_choice_provider)

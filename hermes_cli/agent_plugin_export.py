@@ -15,9 +15,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
+from urllib.parse import parse_qsl, urlsplit
+
 from hermes_cli.agent_plugins import (
-    MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1, _HERMES_EXTENSION, _PLUGIN_NAME_RE, _discover_mcp,
-    _discover_skills, _parse_skill_frontmatter, _validate_root)
+    MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1, _HERMES_EXTENSION, _PLUGIN_NAME_RE, _SKILL_NAME_RE,
+    _parse_skill_frontmatter, load_agent_plugin)
 
 _ENV_TEMPLATE_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
 _SECRET_NAME_RE = re.compile(r"(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|COOKIE|SESSION)",
@@ -61,7 +63,14 @@ def _stdio_entry(server: str, cfg: Mapping[str, Any], notes: list[str]) -> dict[
     args = cfg.get("args") or []
     if not isinstance(args, list):
         raise ExportError(f"mcp:{server}: args must be a list")
-    entry: dict[str, Any] = {"type": "stdio", "command": command, "args": [str(a) for a in args]}
+    args = [str(a) for a in args]
+    for i, arg in enumerate(args):
+        flag = args[i - 1] if i else ""
+        if "${" in arg or _looks_secret(arg.split("=", 1)[0], arg) or (
+                flag.startswith("-") and _SECRET_NAME_RE.search(flag)):
+            raise ExportError(f"mcp:{server}: args carry a credential or ${{VAR}} template ({arg[:12]}…); "
+                              "pass it through env instead so the package ships only the variable name")
+    entry: dict[str, Any] = {"type": "stdio", "command": command, "args": args}
     if isinstance(cfg.get("env"), Mapping) and cfg["env"]:
         entry["env"] = _portable_env(server, cfg["env"], notes)
     if cfg.get("cwd"):
@@ -71,8 +80,13 @@ def _stdio_entry(server: str, cfg: Mapping[str, Any], notes: list[str]) -> dict[
 
 def _remote_entry(server: str, cfg: Mapping[str, Any], notes: list[str]) -> dict[str, Any]:
     url = str(cfg["url"])
-    if _ENV_TEMPLATE_RE.search(url) or "${" in url:
+    if "${" in url:
         raise ExportError(f"mcp:{server}: url uses a ${{VAR}} template; portable URLs are literal")
+    parts = urlsplit(url)
+    if parts.username or parts.password or any(
+            _looks_secret(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)):
+        raise ExportError(f"mcp:{server}: url carries a credential; v1 remote URLs and headers are "
+                          "visible package data")
     entry: dict[str, Any] = {"type": "sse" if cfg.get("transport") == "sse" else "streamable-http", "url": url}
     headers = {}
     for key, value in (cfg.get("headers") or {}).items():
@@ -129,9 +143,17 @@ def _copy_skill(name: str, skills_root: Path, notes: list[str]) -> str:
     source = Path(found["path"])
     frontmatter = _parse_skill_frontmatter(source / "SKILL.md")
     skill_name = str(frontmatter.get("name") or source.name)
+    if not 1 <= len(skill_name) <= 64 or _SKILL_NAME_RE.fullmatch(skill_name) is None:
+        raise ExportError(f"skill:{name}: name {skill_name!r} is not a valid Agent Skills name "
+                          "(lowercase letters, digits and single hyphens)")
     dest = skills_root / skill_name
     if dest.exists():
         raise ExportError(f"skill:{name}: two requested skills share the name {skill_name!r}")
+    root = source.resolve()
+    for link in (p for p in source.rglob("*") if p.is_symlink()):
+        if not link.resolve().is_relative_to(root):
+            raise ExportError(f"skill:{name}: {link.relative_to(source)} links outside the skill folder; "
+                              "copy the file in or remove the link")
     # symlinks=False copies link targets, so the package carries files, never links out of it.
     shutil.copytree(source, dest, symlinks=False, ignore=shutil.ignore_patterns("__pycache__", ".git"))
     metadata = frontmatter.get("metadata")
@@ -192,14 +214,18 @@ _SSE_SKIP = "portable sse transport is not supported"
 
 
 def _validate_export(output: Path, report: ExportReport) -> None:
-    """Load the package with the importer; any skill or server it would skip fails the export.
-    The one allowed skip is a legacy ``sse`` entry: v1 makes sse optional and Hermes' importer
-    declines it, but other clients load it, so it is still a valid package."""
-    root, _manifest, diagnostics = _validate_root(output)
-    loaded = {skill.name for skill in _discover_skills(root, diagnostics)}
-    loaded |= set(_discover_mcp(root, root / ".data", diagnostics, create_data=False))
+    """Load the package with the real importer (every manifest/extension check it runs at install);
+    any skill or server it would skip fails the export. The one allowed skip is a legacy ``sse``
+    entry: v1 makes sse optional and Hermes' importer declines it, but other clients load it."""
+    data = output / ".export-check-data"
+    try:
+        package = load_agent_plugin(output, data)
+    finally:
+        shutil.rmtree(data, ignore_errors=True)
+    diagnostics = package.diagnostics
     problems = [f"{d.scope}: {d.message}" for d in diagnostics if d.message != _SSE_SKIP]
     sse = {d.scope.removeprefix("mcp:") for d in diagnostics if d.message == _SSE_SKIP}
+    loaded = {skill.name for skill in package.skills} | set(package.mcp_servers)
     missing = (set(report.skills) | (set(report.servers) - sse)) - loaded
     if problems or missing:
         raise ExportError("the exported package does not validate: "

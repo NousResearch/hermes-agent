@@ -152,6 +152,9 @@ async def test_the_reads_a_viewer_sends_for_an_open_chat_answer_on_a_mount(tmp_p
     for name in ('_voice_key_for_source', '_voice_key', '_resolve_session_service_tier', '_resolve_session_key_or_none',
                  '_peek_session_state', '_load_service_tier'):
         setattr(runner, name, getattr(GatewayRunner, name).__get__(runner))
+    # A borrowed classmethod lands with this namespace as its ``cls``; give it the one attribute it
+    # reads config through (a staticmethod on the mixin).
+    runner._cfg_str = GatewayRunner._cfg_str
     runner._adapter_profile_for_source = lambda source: None  # no adapters here
     # Desktop's automatic voice read on open, and the TUI's /fast status read.
     replies = {key: await conn.dispatch({'id': 1, 'method': 'config.get', 'params': {**sid, 'key': key}})

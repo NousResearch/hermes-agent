@@ -536,14 +536,8 @@ export default class Output {
             // See Screen.softWrap docstring for the encoding. contentEnd
             // from writeLineToScreen is tab-expansion-aware, unlike
             // x+stringWidth(line) which treats tabs as width 0.
-            // Sign carries the wrap-trim flag: a 2-mark stores the negated
-            // content end so the copier can re-insert the dropped space.
-            // -0 collapses to 0, so an empty previous fragment falls back to
-            // -1 (continuation preserved; the clamp is unused on empty rows
-            // since they have no selectable cells).
             if (softWrap) {
-              const flag = softWrap[swFrom + offsetY]!
-              swBits[lineY] = !flag ? 0 : flag === 2 ? -prevContentEnd || -1 : prevContentEnd
+              swBits[lineY] = encodeSoftWrapMark(softWrap[swFrom + offsetY]!, prevContentEnd)
               prevContentEnd = contentEnd
             }
 
@@ -578,6 +572,22 @@ export default class Output {
 
     return screen
   }
+}
+
+/**
+ * Encode one row's screen.softWrap value from its per-line mark (0 hard
+ * break, 1 continuation, 2 continuation whose separator space wrap-trim
+ * dropped). The sign carries the wrap-trim flag so the copier can re-insert
+ * the space; -0 collapses to 0, so an empty previous fragment falls back to
+ * -1 (continuation preserved; the clamp is unused on empty rows since they
+ * have no selectable cells).
+ */
+function encodeSoftWrapMark(mark: number, prevContentEnd: number): number {
+  if (!mark) {
+    return 0
+  }
+
+  return mark === 2 ? -prevContentEnd || -1 : prevContentEnd
 }
 
 function stylesEqual(a: AnsiCode[], b: AnsiCode[]): boolean {

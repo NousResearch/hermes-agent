@@ -25,6 +25,7 @@ def test_post_tool_compression_reanchors_the_active_user_boundary(monkeypatch):
         context_compressor=Compressor(),
         compression_enabled=True,
         _clear_context_overflow_warn=lambda: None,
+        _emit_status=lambda _message: None,
         _safe_print=lambda *_args: None,
         _compress_context=lambda *_args, **_kwargs: (compressed, "system"),
         _persist_user_message_idx=4,

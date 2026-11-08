@@ -74,11 +74,11 @@ _SPLIT_FAILURE_COOLDOWN_SECONDS = 60
 # the phrase intact when rewording. Idle/preflight/retry lines lack it; is_compaction_progress_status covers those.
 COMPACTION_STATUS_MARKER = "Compacting context"
 COMPACTION_STATUS = f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
-# Periodic heartbeat re-emitted while a long compression is still running so remote transports with
-# idle-turn watchdogs (#98371) see progress. Same marker as COMPACTION_STATUS so consumers classify it alike.
+# Periodic heartbeat during a long compression so remote idle-turn watchdogs (#98371) see progress; same marker as COMPACTION_STATUS so consumers classify it alike.
 COMPACTION_HEARTBEAT_STATUS = f"🗜️ {COMPACTION_STATUS_MARKER} — still summarizing earlier conversation so I can continue..."
 
 COMPACTION_DONE_STATUS = "✓ Context compaction complete — continuing turn..."
+PREFLIGHT_COMPACTING_STATUS = "⟳ compacting context…"
 
 
 def _strip_marker_for_comparison(msgs: Any) -> Any:
@@ -136,7 +136,7 @@ CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE = (
 
 # Formatted from the same constants the emission sites use, so noise-filter tests exercise the ACTUAL wording.
 ROUTINE_COMPRESSION_STATUS_SAMPLES = (
-    COMPACTION_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_DONE_STATUS,
+    COMPACTION_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_DONE_STATUS, PREFLIGHT_COMPACTING_STATUS,
     PRE_API_COMPRESSION_STATUS_TEMPLATE.format(tokens=123456),
     PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(tokens=120000, threshold=100000),
     IDLE_COMPACTION_STATUS_TEMPLATE.format(idle_seconds=3600, tokens=120000),

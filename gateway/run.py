@@ -36,7 +36,7 @@ from agent.conversation_compression import (
     COMPACTION_DONE_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_STATUS, COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
-    PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
+    PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPACTING_STATUS, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
@@ -90,7 +90,7 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     rf"|{re.escape(COMPACTION_STATUS)}"
     rf"|{re.escape(COMPACTION_HEARTBEAT_STATUS)}"
     r"|resumed\s+after\s+\d+s\s+idle\s+[—-]\s+compacting"
-    r"|preflight\s+compression"
+    r"|preflight\s+compression" rf"|{re.escape(PREFLIGHT_COMPACTING_STATUS)}"
     r"|pre[- ]api\s+compression"
     # Retry chatter via _emit_status; ", retrying"/"— compressing" anchors exclude manual /compress feedback.
     r"|context\s+too\s+large\s+\(~[\d,]+\s+tokens\)\s+[—-]+\s+compressing"
@@ -334,7 +334,7 @@ _COMPRESSION_PROGRESS_STATUS_RE = re.compile(
     "|".join(
         _status_template_to_regex(_template)
         for _template in (
-            COMPACTION_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_DONE_STATUS, PRE_API_COMPRESSION_STATUS_TEMPLATE,
+            COMPACTION_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_DONE_STATUS, PREFLIGHT_COMPACTING_STATUS, PRE_API_COMPRESSION_STATUS_TEMPLATE,
             PREFLIGHT_COMPRESSION_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
             COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
             COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,

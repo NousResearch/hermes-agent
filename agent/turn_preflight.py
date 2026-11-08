@@ -15,7 +15,8 @@ from typing import Any, Dict, List, Optional
 
 from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
-    PRE_API_COMPRESSION_STATUS_TEMPLATE, _reset_read_dedup_caches, compression_blocked_transiently,
+    PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPACTING_STATUS, _reset_read_dedup_caches,
+    compression_blocked_transiently,
     compression_skipped_due_to_lock, context_compression_timed_out, conversation_history_after_compression,
 )
 from agent.conversation_compression_feasibility import ensure_compression_feasibility_checked
@@ -309,7 +310,10 @@ def compress_after_tool_results(
         # Compression is running: reset blocked-overflow warning dedup so a
         # future blocked turn can warn again.
         _clear_overflow_warn(agent)
-        agent._safe_print("  ⟳ compacting context…")
+        # Route through the status callback so chat surfaces see it on the lifecycle rail and the gateway's
+        # noise filter can classify it like its sibling compaction lines; a bare _safe_print wrote to stdout,
+        # bypassing _prepare_gateway_status_message and reaching the chat raw (#151048).
+        agent._emit_status(PREFLIGHT_COMPACTING_STATUS)
         _post_tool_input = messages
         # Pass overhead-aware _real_tokens, not last_prompt_tokens (0 in the
         # no-usage fallback), so the overflow guard sees the true size.

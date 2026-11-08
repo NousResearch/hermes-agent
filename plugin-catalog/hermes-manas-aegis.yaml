@@ -1,8 +1,8 @@
 name: hermes-manas-aegis
 title: Manas Aegis
 repo: https://github.com/elianjuan-g/hermes-manas-aegis
-sha: d52cb625e6bee781519a36085b19db9e3b259a06
-version: "2.4.0"
+sha: 92c32a08f2a44c035fecd2acc75c101e1da6505d
+version: "2.5.0"
 description: >-
   [ALPHA] Experimental Hermes guardrail (prototype, not standalone security):
   pattern-based pre-tool checks that can block or rewrite some risky tool
@@ -25,7 +25,9 @@ description: >-
   (~/.hermes/manas-aegis-custom-rules.json), quick/full/network scans with
   on-HUD findings, and a global threat-intel panel fed by CISA KEV and the
   NVD CVE API (free, no key; awareness only, never presented as a device
-  scan). The two query tools (manas_tactical_core,
+  scan). The HUD visual system follows the C3iHub CISO dashboard design
+  (deep slate, one severity scale, sidebar navigation, Lucide SVG icons)
+  with dark + light themes (toggle, saved in the browser). The two query tools (manas_tactical_core,
   manas_stix_intelligence) need Hermes 0.23+ (register_tool parameters kwarg);
   the core guard hooks work on 0.21.0+.
 maintainer: elianjuan-g

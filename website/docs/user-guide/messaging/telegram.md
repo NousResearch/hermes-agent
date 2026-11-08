@@ -122,8 +122,9 @@ Notes:
 - Default is `true`: existing behavior is unchanged unless you opt in.
 - Watcher reconnects (brief network outages with the process still alive)
   always preserve the queue regardless of this setting.
-- Conflict recovery still drops pending updates to terminate the competing
-  `getUpdates` session — that path is unrelated to this knob.
+- Conflict recovery (another poller holding the bot's `getUpdates` session)
+  also preserves the queue: messages sent during a 409 conflict are delivered
+  once polling resumes.
 - After a crash, a preserved queue can redeliver an update the crashed
   instance partially processed. Telegram's offset usually prevents this,
   but time-sensitive commands sent during a long outage will run on boot.

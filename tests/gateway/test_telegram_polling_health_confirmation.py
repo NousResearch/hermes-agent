@@ -26,7 +26,7 @@ def _bare_adapter():
     a._polling_progress_event = asyncio.Event()
     a._polling_network_error_count = 2
     a._polling_conflict_count = 3
-    a._polling_conflict_recovery_generation = None
+    a._polling_last_conflict_monotonic = None
     a._send_path_degraded = True
     return a
 

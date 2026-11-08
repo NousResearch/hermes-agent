@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
+from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -115,12 +116,11 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_conflict_retry_drops_pending_updates(monkeypatch):
-    """Conflict recovery must use drop_pending_updates=True (#75017).
+async def test_conflict_retry_keeps_queued_updates(monkeypatch):
+    """A 409 retry must not empty Telegram's update queue (#143871).
 
-    Without this, each retry starts a new getUpdates session that
-    immediately gets 409'd by the previous still-expiring session,
-    creating the very conflict we are trying to recover from.
+    ``drop_pending_updates=True`` makes PTB call ``deleteWebhook(drop_pending_updates=True)``,
+    which discards every message the user sent while the conflict lasted.
     """
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
     adapter.set_fatal_error_handler(AsyncMock())
@@ -144,10 +144,34 @@ async def test_conflict_retry_drops_pending_updates(monkeypatch):
         conflict("Conflict: terminated by other getUpdates request")
     )
 
-    assert captured.get("drop_pending_updates") is True, (
-        "Conflict retry must use drop_pending_updates=True to terminate "
-        "stale getUpdates sessions on Telegram's servers (#75017)"
-    )
+    assert captured.get("drop_pending_updates") is False
+
+
+@pytest.mark.asyncio
+async def test_conflict_ladder_climbs_across_progress_between_conflicts(monkeypatch):
+    """getUpdates progress between the 409s of one storm must not reset the ladder (#82303).
+
+    PTB starts getUpdates in the background, so the first progress after a retry arrives only
+    after ``_handle_polling_conflict`` returned; a competing poller then steals the session again.
+    """
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.set_fatal_error_handler(AsyncMock())
+    adapter._drain_polling_connections = AsyncMock()
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    updater = SimpleNamespace(start_polling=AsyncMock(), stop=AsyncMock(), running=True)
+    adapter._app = SimpleNamespace(updater=updater)
+    conflict = type("Conflict", (Exception,), {})("Conflict: terminated by other getUpdates request")
+
+    for expected in (1, 2, 3):
+        await adapter._handle_polling_conflict(conflict)
+        adapter._record_polling_progress(adapter._polling_generation)
+        adapter._record_polling_progress(adapter._polling_generation)
+        assert adapter._polling_conflict_count == expected
+
+    # A quiet period after the last 409 ends the episode.
+    adapter._polling_last_conflict_monotonic -= tg_adapter._POLLING_CONFLICT_QUIET_PERIOD
+    adapter._record_polling_progress(adapter._polling_generation)
+    assert adapter._polling_conflict_count == 0
 
 
 @pytest.mark.asyncio
@@ -184,7 +208,6 @@ async def test_conflict_retry_progress_does_not_reset_retry_ladder(monkeypatch):
 
     assert calls["n"] == 1
     assert adapter._polling_conflict_count == 1
-    assert adapter._polling_conflict_recovery_generation is None
     assert adapter._send_path_degraded is False
 
 

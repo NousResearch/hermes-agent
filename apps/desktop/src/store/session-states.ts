@@ -349,7 +349,11 @@ export const SESSION_WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000
 export const LIVE_TURN_EVENT_SILENCE_MS = 45_000
 // Bound on the status request itself; past it the check counts as unanswered.
 export const LIVE_TURN_PROBE_TIMEOUT_MS = 15_000
-const sessionEventSilenceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+// One re-armed deadline per live session. A streaming turn can emit 30-80
+// events/s; the old shape cleared and allocated a new timeout for every one of
+// them. The timer now stays armed and reads `lastEventAt` when it fires, so a
+// token costs a number write instead of a timer swap.
+const sessionEventSilenceTimers = new Map<string, { lastEventAt: number; timer: ReturnType<typeof setTimeout> }>()
 // One token per status check in flight: an event, a settle, or a newer check
 // drops it, so a late answer cannot act on a turn that moved on.
 const silentTurnChecks = new Map<string, object>()
@@ -380,12 +384,12 @@ export function setLiveTurnBackend(backend: LiveTurnBackend): () => void {
 }
 
 function clearEventSilence(runtimeId: string) {
-  const timer = sessionEventSilenceTimers.get(runtimeId)
+  const armed = sessionEventSilenceTimers.get(runtimeId)
 
   silentTurnChecks.delete(runtimeId)
 
-  if (timer) {
-    clearTimeout(timer)
+  if (armed) {
+    clearTimeout(armed.timer)
     sessionEventSilenceTimers.delete(runtimeId)
   }
 }
@@ -519,7 +523,22 @@ async function recoverEndedLiveTurn(runtimeId: string) {
  *  also keeps it — the stall hint and Stop remain — and asks again next window.
  *  Only a backend that reports the turn over settles it. */
 async function onEventSilence(runtimeId: string) {
-  sessionEventSilenceTimers.delete(runtimeId)
+  const armed = sessionEventSilenceTimers.get(runtimeId)
+
+  if (armed) {
+    // Events landed after this timer was armed: the deadline is measured from
+    // the LAST event, so re-arm for the remainder instead of probing while the
+    // turn is still demonstrably producing.
+    const remaining = armed.lastEventAt + LIVE_TURN_EVENT_SILENCE_MS - Date.now()
+
+    if (remaining > 0) {
+      armed.timer = setTimeout(() => void onEventSilence(runtimeId), remaining)
+
+      return
+    }
+
+    sessionEventSilenceTimers.delete(runtimeId)
+  }
 
   if (!isLiveTurnAwaitingEvents($sessionStates.get()[runtimeId])) {
     return
@@ -554,46 +573,83 @@ export function noteSessionEvent(runtimeId: string) {
   }
 
   const current = $sessionStates.get()[runtimeId]
+  const armed = sessionEventSilenceTimers.get(runtimeId)
 
-  clearEventSilence(runtimeId)
+  // Any real event invalidates an in-flight silence verdict, armed or not.
+  silentTurnChecks.delete(runtimeId)
 
   if (!isLiveTurnAwaitingEvents(current)) {
+    if (armed) {
+      clearTimeout(armed.timer)
+      sessionEventSilenceTimers.delete(runtimeId)
+    }
+
     return
   }
 
-  sessionEventSilenceTimers.set(
-    runtimeId,
-    setTimeout(() => void onEventSilence(runtimeId), LIVE_TURN_EVENT_SILENCE_MS)
-  )
-}
+  // Monotonic: setTimeout runs on it, so a wall-clock jump cannot move the deadline.
+  const now = performance.now()
 
-const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  if (armed) {
+    armed.lastEventAt = now
 
-function armWatchdog(runtimeId: string) {
-  const existing = sessionWatchdogTimers.get(runtimeId)
-
-  if (existing) {
-    clearTimeout(existing)
+    return
   }
 
-  sessionWatchdogTimers.set(
-    runtimeId,
-    setTimeout(() => {
-      sessionWatchdogTimers.delete(runtimeId)
-      const current = $sessionStates.get()[runtimeId]
+  sessionEventSilenceTimers.set(runtimeId, {
+    lastEventAt: now,
+    timer: setTimeout(() => void onEventSilence(runtimeId), LIVE_TURN_EVENT_SILENCE_MS)
+  })
+}
 
-      if (current?.busy) {
-        setSessionStalled(current.storedSessionId, true)
-      }
-    }, SESSION_WATCHDOG_TIMEOUT_MS)
-  )
+// One re-armed deadline per busy session. `handleTransition` calls this on EVERY
+// busy publish (a streamed delta every ~40 ms), and the old shape cleared and
+// allocated a 5-minute timeout on each one. The timer stays armed and re-checks
+// `lastBusyAt` when it fires, so a publish costs a number write.
+const sessionWatchdogTimers = new Map<string, { lastBusyAt: number; timer: ReturnType<typeof setTimeout> }>()
+
+function fireWatchdog(runtimeId: string) {
+  const armed = sessionWatchdogTimers.get(runtimeId)
+
+  if (armed) {
+    const remaining = armed.lastBusyAt + SESSION_WATCHDOG_TIMEOUT_MS - performance.now()
+
+    if (remaining > 0) {
+      armed.timer = setTimeout(() => fireWatchdog(runtimeId), remaining)
+
+      return
+    }
+
+    sessionWatchdogTimers.delete(runtimeId)
+  }
+
+  const current = $sessionStates.get()[runtimeId]
+
+  if (current?.busy) {
+    setSessionStalled(current.storedSessionId, true)
+  }
+}
+
+function armWatchdog(runtimeId: string) {
+  const armed = sessionWatchdogTimers.get(runtimeId)
+
+  if (armed) {
+    armed.lastBusyAt = performance.now()
+
+    return
+  }
+
+  sessionWatchdogTimers.set(runtimeId, {
+    lastBusyAt: performance.now(),
+    timer: setTimeout(() => fireWatchdog(runtimeId), SESSION_WATCHDOG_TIMEOUT_MS)
+  })
 }
 
 function clearWatchdog(runtimeId: string) {
-  const t = sessionWatchdogTimers.get(runtimeId)
+  const armed = sessionWatchdogTimers.get(runtimeId)
 
-  if (t) {
-    clearTimeout(t)
+  if (armed) {
+    clearTimeout(armed.timer)
     sessionWatchdogTimers.delete(runtimeId)
   }
 }
@@ -938,14 +994,14 @@ export function dropSessionState(runtimeId: string) {
  *  wiped gateway's sessions must not fire stale clears or linger in the
  *  sidebar merge keep-set after the switch. */
 export function clearAllSessionStates() {
-  for (const timer of sessionWatchdogTimers.values()) {
-    clearTimeout(timer)
+  for (const armed of sessionWatchdogTimers.values()) {
+    clearTimeout(armed.timer)
   }
 
   sessionWatchdogTimers.clear()
 
-  for (const timer of sessionEventSilenceTimers.values()) {
-    clearTimeout(timer)
+  for (const armed of sessionEventSilenceTimers.values()) {
+    clearTimeout(armed.timer)
   }
 
   sessionEventSilenceTimers.clear()

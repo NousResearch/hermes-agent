@@ -74,10 +74,15 @@ async def send_rich_standalone(bot, extra: dict, chat_id, content: str, *, threa
 
 
 async def send_album_standalone(bot, extra: dict, chat_id, paths: list[str], *, thread_id=None, notify=None):
-    """Photos as native albums through the adapter's ``send_multiple_images`` (``sendMediaGroup``,
-    10 per chunk, per-photo fallback for a refused chunk)."""
-    from urllib.parse import quote
+    """Photos as native albums (``sendMediaGroup``, 10 per chunk) through the adapter's album sender.
+    A refused chunk is handed back in ``raw_response["refused"]`` (local paths) for the caller's own
+    per-file upload, which reports each failure; a lost reply is ``ambiguous`` and never resent."""
+    from urllib.parse import quote, unquote
+    from plugins.platforms.telegram.telegram_album import send_photo_album
     adapter = _standalone_adapter(bot, extra)
-    # The caller hands absolute, existence-checked paths; quote() matches the adapter's unquote().
+    # The caller hands absolute, existence-checked paths; quote() matches the album sender's unquote().
     images = [("file://" + quote(p), None) for p in paths]
-    return await adapter.send_multiple_images(str(chat_id), images, _metadata(thread_id, notify))
+    result = await send_photo_album(adapter, str(chat_id), images, _metadata(thread_id, notify), per_photo_fallback=False)
+    if result.raw_response:
+        result.raw_response["refused"] = [unquote(url[7:]) for url, _ in result.raw_response["refused"]]
+    return result

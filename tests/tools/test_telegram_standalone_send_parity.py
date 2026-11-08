@@ -18,6 +18,10 @@ class BadRequest(Exception):
     """python-telegram-bot's ``BadRequest`` (matched by class name when PTB is absent)."""
 
 
+class TimedOut(Exception):
+    """python-telegram-bot's ``TimedOut``: the request left, the reply never came."""
+
+
 def _install_telegram_mock(monkeypatch: pytest.MonkeyPatch, bot) -> None:
     parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
     constants_mod = SimpleNamespace(ParseMode=parse_mode)
@@ -42,13 +46,13 @@ def standalone(monkeypatch: pytest.MonkeyPatch, tmp_path):
     bot.do_api_request = AsyncMock(return_value={"message_id": 9})
     _install_telegram_mock(monkeypatch, bot)
 
-    def run(message, *, config="", extra=None, notify=None, media_files=None):
+    def run(message, *, config="", extra=None, notify=None, media_files=None, thread_id=None):
         from gateway.config import Platform, PlatformConfig
         from tools.send_message_tool import _send_to_platform
         (tmp_path / "config.yaml").write_text(config, encoding="utf-8")
         pconfig = PlatformConfig(enabled=True, token="tok", extra=extra or {})
         return asyncio.run(_send_to_platform(Platform.TELEGRAM, pconfig, "123", message, notify=notify,
-                                             media_files=media_files))
+                                             media_files=media_files, thread_id=thread_id))
     return SimpleNamespace(bot=bot, run=run, home=tmp_path)
 
 
@@ -128,3 +132,59 @@ def test_photo_batches_go_as_albums_and_mixed_batches_stay_per_file(standalone) 
     assert standalone.run("", media_files=photos[:2] + [(str(doc), False)])["success"] is True
     assert standalone.bot.send_media_group.await_count == 2
     assert standalone.bot.send_photo.await_count == 2
+
+
+def _photos(home, n):
+    paths = []
+    for i in range(n):
+        photo = home / f"p{i}.png"
+        photo.write_bytes(b"\x89PNG\r\n\x1a\n")
+        paths.append((str(photo), False))
+    return paths
+
+
+def test_album_with_a_lost_reply_is_never_resent(standalone) -> None:
+    """Telegram may already have posted the album: no per-photo copy, success with a warning."""
+    standalone.bot.send_media_group = AsyncMock(side_effect=TimedOut("Timed out"))
+    standalone.bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=12))
+
+    result = standalone.run("", media_files=_photos(standalone.home, 2))
+
+    assert result["success"] is True
+    assert "not resent" in " ".join(result["warnings"])
+    assert standalone.bot.send_media_group.await_count == 1
+    standalone.bot.send_photo.assert_not_awaited()
+
+
+def test_refused_album_falls_back_per_photo_and_reports_each_failure(standalone) -> None:
+    standalone.bot.send_media_group = AsyncMock(side_effect=BadRequest("Bad Request: group send failed"))
+
+    async def send_photo(**kwargs):
+        if kwargs["photo"].name.endswith("p1.png"):
+            raise BadRequest("Bad Request: wrong file identifier")
+        return SimpleNamespace(message_id=12)
+    standalone.bot.send_photo = AsyncMock(side_effect=send_photo)
+
+    result = standalone.run("", media_files=_photos(standalone.home, 2))
+
+    assert result["success"] is True
+    assert standalone.bot.send_photo.await_count == 2
+    assert [w for w in result["warnings"] if "p1.png" in w], result["warnings"]
+
+
+def test_album_to_a_stale_topic_retries_once_without_the_thread(standalone) -> None:
+    calls = []
+
+    async def send_media_group(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise BadRequest("Bad Request: message thread not found")
+        return [SimpleNamespace(message_id=11)]
+    standalone.bot.send_media_group = AsyncMock(side_effect=send_media_group)
+    standalone.bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=12))
+
+    result = standalone.run("", media_files=_photos(standalone.home, 2), thread_id="77")
+
+    assert result["success"] is True and "warnings" not in result
+    assert [c.get("message_thread_id") for c in calls] == [77, None]
+    standalone.bot.send_photo.assert_not_awaited()

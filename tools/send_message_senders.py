@@ -415,9 +415,15 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
         if album := _telegram_album_paths(media_files, force_document, _tg_caption):
             result = await send_album_standalone(bot, extra or {}, chat_id, album, thread_id=thread_id, notify=notify)
-            if not result.success:
+            detail = result.raw_response or {}
+            warnings += [_sanitize_error_text(f"Failed to send Telegram photo {path}: {err}")
+                         for path, err in detail.get("failed", ())]
+            if detail.get("ambiguous"):
+                warnings.append("Telegram never confirmed a photo album; it may already be in the chat, so it was not resent")
+            if not result.success and not detail.get("failed") and not detail.get("refused"):
                 warnings.append(_sanitize_error_text(f"Failed to send Telegram photo album: {result.error}"))
-            media_files = []  # the adapter already fell back photo by photo for a refused chunk
+            # A refused album goes photo by photo below (topic fallback, a warning per failure).
+            media_files = [(path, False) for path in detail.get("refused", ())]
             last_msg = last_msg or (SimpleNamespace(message_id=None) if result.success else None)
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):

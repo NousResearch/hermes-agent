@@ -502,6 +502,22 @@ async def test_media_group_dm_topic_reply_not_found_retry_preserves_thread_id(tm
 
 
 @pytest.mark.asyncio
+async def test_media_group_lost_reply_is_ambiguous_and_never_resent(tmp_path):
+    """A read timeout after the upload may have posted the album: no per-photo copy."""
+    adapter = _make_adapter()
+    paths = [tmp_path / f"p{i}.png" for i in range(2)]
+    for path in paths:
+        path.write_bytes(b"png-data")
+    adapter._bot = SimpleNamespace(send_media_group=AsyncMock(side_effect=FakeTimedOut("Timed out")),
+                                   send_photo=AsyncMock(return_value=SimpleNamespace(message_id=1)))
+
+    result = await adapter.send_multiple_images(chat_id="123", images=[(f"file://{p}", None) for p in paths])
+
+    assert result.success is True and result.raw_response["ambiguous"] is True
+    adapter._bot.send_photo.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_send_image_upload_dm_topic_reply_not_found_retry_preserves_thread_id(monkeypatch):
     adapter = _make_adapter()
     call_log = []

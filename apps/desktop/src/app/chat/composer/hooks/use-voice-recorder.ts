@@ -18,6 +18,9 @@ interface VoiceRecorderOptions {
   onTranscribeAudio?: (audio: Blob, owner?: ResolvedOwner) => Promise<string>
   focusInput: () => void
   onTranscript: (text: string) => void
+  /** Stop-and-send: the transcript routes here (instead of `onTranscript`) when
+   *  the user asks to stop + transcribe + submit in one push. */
+  onTranscriptSubmit?: (text: string) => void
 }
 
 /**
@@ -37,7 +40,8 @@ export function useVoiceRecorder({
   maxRecordingSeconds,
   onTranscribeAudio,
   focusInput,
-  onTranscript
+  onTranscript,
+  onTranscriptSubmit
 }: VoiceRecorderOptions) {
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
@@ -86,7 +90,7 @@ export function useVoiceRecorder({
     []
   )
 
-  const stop = async () => {
+  const stop = async (submit = false) => {
     clearTimers()
     const dictation = dictationRef.current
     const result = await handle.stop()
@@ -125,6 +129,12 @@ export function useVoiceRecorder({
 
       if (!transcript) {
         notify({ kind: 'warning', title: voiceCopy.noSpeechDetected, message: voiceCopy.tryRecordingAgain })
+      } else if (submit && onTranscriptSubmit) {
+        // Stop-and-send: hand the transcript straight to the submit path instead
+        // of parking it in the composer, so the user never sees the two-step
+        // stop-then-send. Still settle the dictation (release lease, drop the
+        // live session) exactly like a normal stop.
+        onTranscriptSubmit(transcript)
       } else {
         onTranscript(transcript)
       }
@@ -263,6 +273,14 @@ export function useVoiceRecorder({
     }
   }
 
+  const dictateAndSend = () => {
+    if (recording) {
+      void stop(true)
+    } else if (voiceStatus === 'idle') {
+      void start()
+    }
+  }
+
   const voiceActivityState: VoiceActivityState = {
     elapsedSeconds,
     level,
@@ -270,5 +288,5 @@ export function useVoiceRecorder({
     status: voiceStatus
   }
 
-  return { dictate, voiceActivityState, voiceStatus }
+  return { dictate, dictateAndSend, voiceActivityState, voiceStatus }
 }

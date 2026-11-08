@@ -2336,6 +2336,7 @@ export const jaOverrides = {
     endShort: '終了',
     stopDictation: '口述を停止',
     transcribingDictation: '口述を文字起こし中',
+    stopAndSend: '停止して送信',
     voiceControls: '音声',
     voiceDictation: '音声口述',
     speakReplies: '返信を読み上げる',

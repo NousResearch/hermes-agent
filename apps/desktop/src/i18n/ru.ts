@@ -2594,6 +2594,7 @@ export const ruOverrides = {
     endShort: 'Завершить',
     stopDictation: 'Остановить диктовку',
     transcribingDictation: 'Расшифровка диктовки',
+    stopAndSend: 'Остановить и отправить',
     voiceControls: 'Голос',
     voiceDictation: 'Голосовая диктовка',
     speakReplies: 'Зачитывать ответы вслух',

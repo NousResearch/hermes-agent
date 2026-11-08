@@ -62,6 +62,7 @@ export function ComposerControls({
   state,
   voiceStatus,
   onDictate,
+  onDictateAndSend,
   onQueue,
   onSteer,
   onToggleAutoSpeak
@@ -82,6 +83,8 @@ export function ComposerControls({
   state: ChatBarState
   voiceStatus: VoiceStatus
   onDictate: () => void
+  /** Stop the recording, transcribe, and send in one push. */
+  onDictateAndSend?: () => void
   onQueue: () => void
   onSteer?: () => void
   onToggleAutoSpeak: () => void
@@ -94,7 +97,8 @@ export function ComposerControls({
     return <ConversationPill {...conversation} disabled={disabled} />
   }
 
-  const showVoicePrimary = !busy && !hasComposerPayload
+  const recording = voiceStatus === 'recording'
+  const showVoicePrimary = !busy && !hasComposerPayload && !recording
   // Steer is just send: a payload keeps the Send affordance mid-turn (it answers
   // a waiting card). Stop only when the composer is empty and a turn is running.
   const showStop = busy && !hasComposerPayload
@@ -171,7 +175,23 @@ export function ComposerControls({
           </Button>
         </Tip>
       ) : null}
-      {showVoicePrimary ? (
+      {recording && onDictateAndSend ? (
+        <Tip label={<TipKeybindLabel actionId="composer.send" text={c.stopAndSend} />} placement="control">
+          <Button
+            aria-label={c.stopAndSend}
+            className={PRIMARY_ICON_BTN}
+            disabled={disabled}
+            onClick={() => {
+              triggerHaptic('submit')
+              recordAction('composer.send-dictation', 'click')
+              onDictateAndSend()
+            }}
+            type="button"
+          >
+            <Codicon name="arrow-up" size="0.875rem" />
+          </Button>
+        </Tip>
+      ) : showVoicePrimary ? (
         <StartVoiceButton disabled={disabled} label={c.startVoice} onStart={conversation.onStart} />
       ) : (
         <Tip

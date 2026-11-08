@@ -3257,6 +3257,7 @@ export const zhOverrides = {
     endShort: '结束',
     stopDictation: '停止听写',
     transcribingDictation: '正在转写听写',
+    stopAndSend: '停止并发送',
     voiceControls: '语音',
     voiceEngine: '语音聊天引擎',
     voiceEngineChained: '语音转文字 + Hermes 语音',

@@ -47,6 +47,10 @@ interface UseComposerVoiceArgs {
   onInterrupt?: () => Promise<void> | void
   onSubmit: ChatBarProps['onSubmit']
   onTranscribeAudio: ChatBarProps['onTranscribeAudio']
+  /** Stop-and-send transcript handler (receives the settled text so the caller
+   *  can submit through the composer's real submit engine). Optional — when
+   *  absent, dictation always parks text in the draft and the user sends it. */
+  onTranscriptSubmit?: (text: string) => void
   sessionId: string | null | undefined
   /** This composer's focus-bus key — voice toggles targeting another
    *  composer (or the active one, when not us) are ignored. */
@@ -69,6 +73,7 @@ export function useComposerVoice({
   onInterrupt,
   onSubmit,
   onTranscribeAudio,
+  onTranscriptSubmit,
   sessionId,
   target
 }: UseComposerVoiceArgs) {
@@ -112,10 +117,11 @@ export function useComposerVoice({
     previousSessionIdRef.current = sessionId
   }, [sessionId])
 
-  const { dictate, voiceActivityState, voiceStatus } = useVoiceRecorder({
+  const { dictate, dictateAndSend, voiceActivityState, voiceStatus } = useVoiceRecorder({
     focusInput,
     maxRecordingSeconds,
     onTranscript: insertText,
+    onTranscriptSubmit,
     onTranscribeAudio
   })
 
@@ -450,6 +456,7 @@ export function useComposerVoice({
   return {
     conversation,
     dictate,
+    dictateAndSend,
     endConversation,
     handleToggleAutoSpeak,
     startConversation,

@@ -3789,6 +3789,7 @@ export const esOverrides = {
     endShort: 'Terminar',
     stopDictation: 'Detener dictado',
     transcribingDictation: 'Transcribiendo dictado',
+    stopAndSend: 'Detener y enviar',
     voiceControls: 'Voz',
     voiceEngine: 'Motor del chat de voz',
     voiceEngineChained: 'Voz a texto + voz de Hermes',

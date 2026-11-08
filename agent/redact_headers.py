@@ -230,7 +230,9 @@ def json_header_value_is_credential(key: str, value: str) -> bool:
     from agent.redact import _ENV_LOOKUP_VALUE_RE, _SHELL_VAR_REF
     if "cookie" in key.lower():
         return cookie_value_is_credential(value)
-    return not (_ENV_LOOKUP_VALUE_RE.match(value) or re.fullmatch(_SHELL_VAR_REF, value))
+    # An earlier pass's marker keeps its vendor label (``«redacted:ghp_…»``), as main's field pass does.
+    return not (value == "***" or value.startswith("«redacted") or _ENV_LOOKUP_VALUE_RE.match(value)
+                or re.fullmatch(_SHELL_VAR_REF, value))
 
 
 def _redact_cookie_assignment(m: "re.Match[str]", mask) -> str:

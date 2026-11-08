@@ -659,6 +659,9 @@ DANGEROUS_PATTERNS = [
     (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
     (r'\bgit\b(?:\s+(?:--?[A-Za-z][\w-]*(?:[= ]\S+)?))*\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
     (r'\bgit\b(?:\s+(?:--?[A-Za-z][\w-]*(?:[= ]\S+)?))*\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    # `hermes config set` can rewrite the agent's own approval policy (approvals.mode, approvals.deny,
+    # command_allowlist) — gate it like the file-tool path so a default empty deny list is not an open door.
+    (r'\bhermes\b.*\bconfig\b.*\bset\b.*\b(?:approvals(?:\.\w+)?|command_allowlist)\b', "hermes config set approval settings"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     # `-D` = `-d --force`: only the capital short flag is force-delete, so the group opts out of
     # the module-wide re.IGNORECASE and relies on _lower_preserving_flags keeping dash-prefixed

@@ -1,13 +1,13 @@
 name: firecrawl-plugin
 title: Firecrawl
 repo: https://github.com/firecrawl/firecrawl-hermes-plugin
-sha: 32368200ee1c139f5a079bb899db5f2760f0efd5
-description: "Search, scrape, crawl, map, interact, monitor and research through Firecrawl's hosted MCP server, with Firecrawl skills. Adds the full Firecrawl tool set (Alexandria data providers, people and company search, developer, paper and US government search) beside the bundled Firecrawl web backend, using the same FIRECRAWL_API_KEY; supports Hermes-managed OAuth through a native MCP entry. Disclosure — Connects to Firecrawl's hosted MCP server at `mcp.firecrawl.dev` and sends it the queries, URLs, prompts and files the agent asks Firecrawl to process, authenticated with `FIRECRAWL_API_KEY` or a Hermes-managed Firecrawl OAuth sign-in; calls use Firecrawl account credits."
+sha: 3e92ff7e41b2580c0c41d3d969e1f3c704927311
+description: "Search, scrape, crawl, map, interact, monitor and research through Firecrawl's hosted MCP server at /v2/mcp-oauth, with Firecrawl skills (get-started, routing, deep research and 16 workflow skills). Adds the full Firecrawl tool set (Alexandria data providers, people and company search, developer, paper and US government search) beside the bundled Firecrawl web backend. The packaged connection uses FIRECRAWL_API_KEY, the same key as the bundled backend; Hermes-managed OAuth on the same endpoint works through a native MCP entry. Disclosure — Connects to Firecrawl's hosted MCP server at `mcp.firecrawl.dev` and sends it the queries, URLs, prompts and files the agent asks Firecrawl to process, authenticated with `FIRECRAWL_API_KEY` or a Hermes-managed Firecrawl OAuth sign-in; calls use Firecrawl account credits."
 maintainer: firecrawl
 tier: community
 category: web
 requires_hermes: ">=0.22.2"
-docs_url: https://github.com/firecrawl/firecrawl-hermes-plugin/blob/32368200ee1c139f5a079bb899db5f2760f0efd5/README.md
+docs_url: https://github.com/firecrawl/firecrawl-hermes-plugin/blob/3e92ff7e41b2580c0c41d3d969e1f3c704927311/README.md
 version: "1.0.0"
 platforms: []
 capabilities:

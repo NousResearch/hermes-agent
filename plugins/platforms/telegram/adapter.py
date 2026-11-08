@@ -2644,7 +2644,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 if not topic_name:
                     continue
                 cache_key = f"{chat_id}:{topic_name}"
-                existing_thread_id = topic_conf.get("thread_id")
+                existing_thread_id = topic_conf.get("thread_id") or self._dm_topics.get(cache_key)  # unsaved id
                 if existing_thread_id:
                     self._dm_topics[cache_key] = int(existing_thread_id)
                     logger.info("[%s] DM topic loaded from config: %s -> thread_id=%s", self.name, cache_key, existing_thread_id)

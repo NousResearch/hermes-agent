@@ -806,13 +806,20 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
-            if fut is not None:
-                fut.result(timeout=15)
-                # No card to edit on the text path: the prompt has no buttons to drop and carries
-                # the /approve instructions, so the timeout notice is posted as a new message.
-                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+            outcome = _approval_send_outcome(fut, timeout=15)
+            if outcome == "ambiguous":
+                # The send may have posted: keep this exact waiter, never duplicate the prompt.
+                logger.warning("Approval text send ambiguous, keeping the existing prompt armed")
+                return
+            if outcome != "sent":
+                raise RuntimeError(f"approval text undeliverable: {outcome}")
+            # No card to edit on the text path: the timeout notice is a new message.
+            register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
+            # The shared waiter drops its entry on a raising notifier; a quiet return
+            # would publish an actionable projection for a definitively undelivered prompt.
+            raise
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

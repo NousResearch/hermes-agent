@@ -76,7 +76,7 @@ class TestCliApprovalSurvivesExecAskLeak:
         assert result.get("user_approved") is True
 
     def test_pending_approval_still_used_without_cli_callback(self, monkeypatch):
-        """Headless ask-mode without a CLI callback keeps the pending fallback."""
+        """Headless ask-mode without a CLI callback fails closed as undelivered."""
         monkeypatch.setenv("HERMES_EXEC_ASK", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         set_approval_callback(None)
@@ -84,8 +84,9 @@ class TestCliApprovalSurvivesExecAskLeak:
         result = check_all_command_guards("rm -rf /tmp/testdir", "local")
 
         assert result.get("approved") is False
-        assert result.get("status") == "pending_approval"
-        assert result.get("approval_pending") is True
+        assert result.get("status") == "approval_required"
+        assert result.get("approval_pending") is False
+        assert result.get("approval_delivery") == "unavailable"
 
 
 class TestExecuteCodeGuardCliApprovalSurvivesExecAskLeak:
@@ -144,7 +145,7 @@ class TestExecuteCodeGuardCliApprovalSurvivesExecAskLeak:
         assert second.get("status") != "pending_approval"
 
     def test_pending_approval_still_used_without_cli_callback(self, monkeypatch):
-        """Headless ask-mode without a CLI callback keeps the pending fallback."""
+        """Headless ask-mode without a CLI callback fails closed as undelivered."""
         monkeypatch.setenv("HERMES_EXEC_ASK", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         set_approval_callback(None)
@@ -152,8 +153,9 @@ class TestExecuteCodeGuardCliApprovalSurvivesExecAskLeak:
         result = check_execute_code_guard("print('hi')", "local")
 
         assert result.get("approved") is False
-        assert result.get("status") == "pending_approval"
-        assert result.get("approval_pending") is True
+        assert result.get("status") == "approval_required"
+        assert result.get("approval_pending") is False
+        assert result.get("approval_delivery") == "unavailable"
 
     def test_cli_callback_used_for_platform_marker_leak_without_exec_ask(
         self, monkeypatch

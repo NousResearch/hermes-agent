@@ -375,6 +375,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),
             initial_status=getattr(args, "initial_status", "running"),
+            task_class=getattr(args, "task_class", None),
             creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
                              if is_dispatcher_owned_worker_context() else None),
         )
@@ -1047,7 +1048,8 @@ def _cmd_request_review(args: argparse.Namespace) -> int:
             return _err(gate_err)
         ok, reason = kb.request_review(
             conn, tid, summary=summary, metadata=metadata, reviewer=getattr(args, "reviewer", None),
-            expected_run_id=_worker_run_id_for(tid), force=bool(getattr(args, "force", False)), with_reason=True)
+            expected_run_id=_worker_run_id_for(tid), force=bool(getattr(args, "force", False)), with_reason=True,
+            task_class=getattr(args, "task_class", None))
         if not ok:
             return _err(f"cannot request review for {tid}: {reason or 'not running/ready?'}")
         persisted_run = kb.latest_run(conn, tid)

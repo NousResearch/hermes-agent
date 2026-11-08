@@ -239,6 +239,13 @@ KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
                 "Optional reviewer profile. When provided, the task is "
                 "reassigned to that profile before review dispatch."
         )),
+        "task_class": _prop("string", (
+                "Class of review being handed over (e.g. 'code-review', "
+                "'security-review', 'design-review', 'docs-review'). "
+                "Recorded on the card so dispatch can check the reviewer "
+                "serves this class, not merely that it may review at all. "
+                "Omit only when the class is genuinely unknown."
+        )),
         "metadata": {
             "type": "object",
             "description": (
@@ -310,8 +317,10 @@ KANBAN_ARCHIVE_SCHEMA = _schema(
         "Archive a card (terminal; its workspace is reaped). This is the "
         "sanctioned way to finish a duplicate resolution: pick the survivor, "
         "then archive the twin. A dispatcher-spawned worker may archive a "
-        "foreign card only when the worker's own card body names that card "
-        "(the escalation mandate). Never archive your own card — use "
+        "foreign card only when the worker's own card body carries an "
+        "``ARCHIVE_MANDATE: <task id>`` line naming that card (the supervisor "
+        "writes one per escalation); prose that merely names a card grants "
+        "nothing. Never archive your own card — use "
         "``kanban_complete`` or ``kanban_block``. A running card cannot be "
         "archived here (that would kill a live worker); stop it first. The "
         "response carries the status read back from the board, so ``status: "
@@ -425,6 +434,16 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "(e.g. 'researcher-a', 'reviewer', 'writer'). "
                 "Required — tasks without an assignee are never "
                 "dispatched."
+        )),
+        "task_class": _prop("string", (
+                "Class of work this card represents, from the fleet "
+                "routing rule's task_classes (e.g. 'execution', "
+                "'code-review', 'security-review', 'design-review', "
+                "'research', 'fleet-governance'). Dispatch checks it "
+                "against the assignee's routing permission. Omit only "
+                "when the class is genuinely unknown — it is never "
+                "inferred from the title, and an unclassified card is "
+                "reported as such."
         )),
         "body": _prop("string", (
                 "Opening post: full spec, acceptance criteria, "

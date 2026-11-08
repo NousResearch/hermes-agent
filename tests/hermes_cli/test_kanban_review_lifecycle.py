@@ -917,6 +917,50 @@ def test_review_handoff_of_card_assigned_to_its_reviewer_records_no_implementer(
         assert "implementer provenance" in (reason or "")
 
 
+def test_explicit_implementer_is_recorded_and_request_changes_routes_back(
+    kanban_home: Path,
+) -> None:
+    """A caller that knows the builder passes it explicitly (t_5a6a9145).
+
+    A foreground handoff has no run profile to read, and by handoff time the card
+    already belongs to the reviewer, so both inference paths are blind. The
+    provenance the caller supplies must be recorded, and ``request_changes`` must
+    then route the card back to that profile instead of refusing it.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="explicit provenance", assignee="reviewer-a")
+        assert kb.request_review(
+            conn, tid, summary="review this", reviewer="reviewer-a",
+            implementer="builder-b",
+        ) is True
+
+        ev = _events(conn, tid, kind="review_requested")[0][1]
+        assert ev["reviewer"] == "reviewer-a"
+        assert ev["implementer"] == "builder-b"
+
+        claimed = kb.claim_review_task(conn, tid, claimer="reviewer-a")
+        assert claimed is not None
+        ok, reason = kb.request_changes(conn, tid, reason="found 3 issues")
+        assert ok is True, reason
+        assert reason == "builder-b"
+        task = kb.get_task(conn, tid)
+        assert task.assignee == "builder-b"
+        assert task.status != "review"
+
+
+def test_explicit_implementer_must_differ_from_the_reviewer(kanban_home: Path) -> None:
+    """Recording the reviewer as its own implementer would misroute a rejection."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="self provenance", assignee="reviewer-a")
+        ok, reason = kb.request_review(
+            conn, tid, summary="review this", reviewer="reviewer-a",
+            implementer="reviewer-a", with_reason=True,
+        )
+        assert ok is False
+        assert "must differ from the reviewer" in (reason or "")
+        assert kb.get_task(conn, tid).status != "review"
+
+
 def test_synthesized_run_for_unassigned_card_keeps_null_profile(kanban_home: Path) -> None:
     """A transition that does not name an actor still reads the card: an
     unassigned card's synthesized run carries ``profile=NULL`` (the actor

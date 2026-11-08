@@ -236,7 +236,7 @@ _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "reaped_terminal_workers", "crashed", "stale",
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
-    "skipped_nonspawnable",
+    "skipped_nonspawnable", "routing_refused",
 )
 
 
@@ -638,6 +638,9 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    # Explicit class of work for fleet routing (Q2). Not inferred from the title:
+    # NULL means "unclassified", which is reported rather than guessed.
+    task_class: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Task:
@@ -669,7 +672,7 @@ _TASK_EPOCH_COLUMNS = ("created_at", "started_at", "completed_at", "claim_expire
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "current_run_id", "workflow_template_id",
-    "current_step_key", "max_retries", "session_id", "completion_contract",
+    "current_step_key", "max_retries", "session_id", "completion_contract", "task_class",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -874,7 +877,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Explicit class of work for fleet routing (Q2, fleet-routing-rule.json
+    -- ``task_classes``). Q2 reads it at dispatch; an absent class is reported as
+    -- unclassified, never inferred from the title. NULL = unclassified.
+    task_class           TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1006,6 +1013,32 @@ def _host_prefix() -> str:
     return f"{_claimer_id().split(':', 1)[0]}:"
 
 
+def _host_key(host: str) -> str:
+    """Case- and punctuation-insensitive machine name (``TheMateMachine`` == ``the-mate-machine``)."""
+    return re.sub(r"[^a-z0-9]", "", (host or "").lower())
+
+
+def host_local_lock(lock: Optional[str]) -> bool:
+    """True when the ``host:pid`` claim ``lock`` was issued by this machine.
+
+    Every reclaim path judges pids, so it must first decide whether the claim's pids are this
+    host's at all. It compared the raw ``host:`` string, which is not stable: a machine rename, a
+    NetBIOS/DNS spelling change, or a container that mounts this board reports the same machine
+    under a different spelling. Claims written before the change then look foreign to the process
+    that must reap them, and NO path touches them — the crash sweep skips them, the TTL and stale
+    sweeps are held by the owner gate — so a card killed by a gateway restart held its profile's
+    worker slot until an operator reclaimed it by hand (4 Nov: ``TheMateMachine:15104`` written at
+    21:10, ``The-Mate-Machine:3612`` reading from 21:56; two cards stranded for 38 minutes).
+
+    Comparing the normalised machine name keeps a genuinely different host foreign while making
+    the same machine's claim readable across a respelling. The pid itself is still never trusted by
+    existence alone: the spawn fingerprint decides liveness, and signalling refuses a recycled pid.
+    """
+    key = _host_key(_claimer_id().split(":", 1)[0])
+    host = str(lock or "").split(":", 1)[0]
+    return bool(key) and _host_key(host) == key
+
+
 # --- Task creation / mutation ---
 
 def _validate_model_override(model: Optional[str], provider: Optional[str]) -> tuple[Optional[str], Optional[str]]:
@@ -1114,6 +1147,21 @@ def _project_from_source_task(
     return project_obj, project_repo
 
 
+def _normalize_routing_class(task_class: Optional[str]) -> Optional[str]:
+    """Validate a card's ``task_class`` against the fleet routing rule vocabulary.
+
+    Shape and vocabulary live in one place (:mod:`hermes_cli.kanban_fleet_routing`) so the tool,
+    the CLI and a direct ``create_task`` call cannot disagree about what a class is. An unreadable
+    rule file does not block card creation — a policy record is not a schema constraint — but a
+    class outside the vocabulary is refused while the rule is readable.
+    """
+    if task_class is None:
+        return None
+    from hermes_cli.kanban_fleet_routing import check_task_class
+
+    return check_task_class(task_class)
+
+
 def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str]]:
     """Strip/dedupe a skills list. Commas are refused (a comma-joined string must
     not land in one argv slot); toolset names are rejected all at once because
@@ -1168,6 +1216,7 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    task_class: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1183,6 +1232,9 @@ def create_task(
     in the active profile's projects.db — see ``_resolve_project_link``.
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
+    ``task_class``: explicit class of work for fleet routing (Q2), validated
+    against the rule's vocabulary when the rule is readable. Never inferred:
+    omitting it leaves the card unclassified, which dispatch reports.
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
@@ -1190,6 +1242,7 @@ def create_task(
     completion_contract = validate_contract(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    task_class = _normalize_routing_class(task_class)
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
@@ -1267,8 +1320,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        task_class
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1278,6 +1332,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        task_class,
                     ),
                 )
                 for pid in parents:
@@ -1300,6 +1355,7 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "task_class": task_class,
                     },
                 )
                 if task_status == "blocked":
@@ -2345,7 +2401,6 @@ def release_stale_claims(
     """
     now = int(time.time())
     reclaimed = 0
-    host_prefix = _host_prefix()
     stale = conn.execute(
         "SELECT id, claim_lock, worker_pid, worker_started_at, claim_expires, last_heartbeat_at, "
         "       assignee "
@@ -2357,7 +2412,7 @@ def release_stale_claims(
     for row in stale:
         if owner_reclaim_blocked(conn, row["id"]):
             continue
-        host_local = (row["claim_lock"] or "").startswith(host_prefix)
+        host_local = host_local_lock(row["claim_lock"])
         hb = _to_epoch(row["last_heartbeat_at"])
         # Backstop: a heartbeat older than the max-stale threshold means no
         # observable progress — reclaim even if the PID is alive (logic loop).
@@ -3145,6 +3200,7 @@ def worker_skill_identifiers(
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    counts_toward_loop: bool = True,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
@@ -3217,6 +3273,7 @@ def block_task(
         new_status, event_kind, set_sql, params, payload = _route_block(
             kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
             prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
+            counts_toward_loop=counts_toward_loop,
         )
         if rekind_reason:
             payload["requested_kind"] = requested_kind
@@ -3250,6 +3307,7 @@ def block_task(
 def _route_block(
     kind: Optional[str], reason: Optional[str], source_status: str, *,
     prev_kind: Optional[str], prev_recurrences: int,
+    counts_toward_loop: bool = True,
 ) -> tuple[str, str, str, tuple, dict]:
     """``(new_status, event_kind, set_sql, params, payload)`` for :func:`block_task`.
 
@@ -3263,14 +3321,24 @@ def _route_block(
     incoming one means blocked -> unblocked -> re-block for the same cause
     (un-typed None compares equal to a prior un-typed block). At
     ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
+
+    ``counts_toward_loop=False`` parks the card ``blocked`` for the same
+    ``kind`` while leaving ``block_recurrences`` untouched, so a verdict this
+    card's own worker can never change (a fleet-routing policy refusal) cannot
+    escalate itself into ``triage`` and then into decomposition.
     """
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
     if kind == "dependency":
         return "todo", "dependency_wait", "block_kind    = ?", (kind,), payload
-    recurrences = prev_recurrences + 1 if prev_kind == kind else 1
+    if counts_toward_loop:
+        recurrences = prev_recurrences + 1 if prev_kind == kind else 1
+    else:
+        recurrences = prev_recurrences
     set_sql = "block_kind    = ?,\n                       block_recurrences = ?"
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}
-    if recurrences >= BLOCK_RECURRENCE_LIMIT:
+    if not counts_toward_loop:
+        payload["policy_parked"] = True
+    if counts_toward_loop and recurrences >= BLOCK_RECURRENCE_LIMIT:
         payload["limit"] = BLOCK_RECURRENCE_LIMIT
         return "triage", "block_loop_detected", set_sql, (kind, recurrences), payload
     return "blocked", "blocked", set_sql, (kind, recurrences), payload
@@ -3294,7 +3362,9 @@ def redact_review_value(value: Any) -> Any:
 def request_review(
     conn: sqlite3.Connection, task_id: str, *, summary: Optional[str] = None,
     metadata: Optional[dict] = None, reviewer: Optional[str] = None,
+    implementer: Optional[str] = None,
     expected_run_id: Optional[int] = None, force: bool = False, with_reason: bool = False,
+    task_class: Optional[str] = None,
 ):
     """``running``/``ready`` -> ``review``; never touches block recurrence accounting.
 
@@ -3319,6 +3389,11 @@ def request_review(
     used to be the only accepted transition there, which returned the card to the
     same under-provisioned reviewer; the implementer provenance is preserved and
     the card stays in ``review`` under a reviewer that can actually start.
+
+    ``task_class`` records the class of review being handed over (one of the
+    fleet routing rule's ``task_classes``) so dispatch can answer Q2 — is this
+    reviewer the right agent for *this* class — and not just whether the reviewer
+    is allowed on the review lane at all.
     """
 
     def _ret(ok: bool, reason: Optional[str] = None):
@@ -3326,6 +3401,7 @@ def request_review(
 
     summary = redact_review_value(summary)
     metadata = redact_review_value(metadata)
+    task_class = _normalize_routing_class(task_class)
     # Declared (metadata["artifacts"]) and prose-referenced files
     # must be durable BEFORE anything can clean the scratch workspace up: for a
     # review-bound card the reviewer's completion is the cleanup trigger.
@@ -3362,6 +3438,23 @@ def request_review(
                         "malformed); pass reviewer= explicitly",
                     )
             reviewer = _canonical_assignee(reviewer)
+            # Explicit provenance wins over inference. A caller that was never
+            # dispatched (a foreground session, whose run carries no profile)
+            # knows who built the work and passes it here; the inference below
+            # cannot see it once the card already belongs to the reviewer, so
+            # the handoff recorded implementer=null and request_changes() then
+            # refused to hand the card back (t_5a6a9145).
+            explicit_implementer = _nonblank_str(implementer)
+            explicit_implementer = explicit_implementer.strip() if explicit_implementer else None
+            if (
+                explicit_implementer is not None
+                and reviewer is not None
+                and _canonical_assignee(explicit_implementer) == reviewer
+            ):
+                return _ret(
+                    False, "implementer must differ from the reviewer: "
+                    "request_changes() routes the card back on this field",
+                )
             # A gate whose reviewer died before its first turn sits in ``review`` with a dead run.
             # Re-route it to a provisioned reviewer: no live claim to protect, an explicit
             # different reviewer, and no run-ownership assertion (the worker path is unchanged).
@@ -3377,8 +3470,8 @@ def request_review(
             # implementer is worse than recording nothing: request_changes()
             # routes on this field, and it already refuses a handoff that
             # carries no implementer provenance.
-            implementer = None
-            if reroute:
+            implementer = explicit_implementer
+            if implementer is None and reroute:
                 # The card still names the dead *reviewer* attempt, so reading the run would
                 # record the reviewer that could not start as the implementer — and
                 # request_changes() routes back on this field. Keep the provenance the original
@@ -3395,7 +3488,7 @@ def request_review(
                         (trow["current_run_id"],),
                     ).fetchone()
                     implementer = arow["profile"] if arow else None
-            elif trow["current_run_id"] is not None:
+            elif implementer is None and trow["current_run_id"] is not None:
                 arow = conn.execute(
                     "SELECT profile FROM task_runs WHERE id = ?",
                     (trow["current_run_id"],),
@@ -3404,9 +3497,15 @@ def request_review(
             if implementer is None and trow["assignee"] != reviewer:
                 implementer = trow["assignee"]
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
+            # The class travels with the handoff that creates the review lane card: without it Q2
+            # can only check that the reviewer is permitted review at all, not that it serves this
+            # class of review. Never inferred from the card title.
+            class_sql = ", task_class = ?" if task_class is not None else ""
             run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
             params: tuple[Any, ...] = (
-                *(() if reviewer is None else (reviewer,)), task_id,
+                *(() if reviewer is None else (reviewer,)),
+                *(() if task_class is None else (task_class,)),
+                task_id,
                 *(() if expected_run_id is None else (int(expected_run_id),)),
             )
             statuses = "('running', 'ready', 'review')" if reroute else "('running', 'ready')"
@@ -3417,7 +3516,7 @@ def request_review(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL
-                """ + assignee_sql + f"""
+                """ + assignee_sql + class_sql + f"""
                  WHERE id = ?
                    AND status IN {statuses}
                 """ + run_guard,
@@ -3440,6 +3539,7 @@ def request_review(
                 "summary": _first_line(summary, 400) or None,
                 "implementer": implementer,
                 "reviewer": reviewer,
+                "task_class": task_class,
             }
             staged = _cleaned_artifact_paths(metadata)
             if staged:

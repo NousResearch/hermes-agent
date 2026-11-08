@@ -1,4 +1,6 @@
-"""Can the profile that will run this card resolve the skills its worker preloads?
+"""Dispatch preflight: two questions, asked before a worker is spawned.
+
+**Q1 — can the profile that will run this card resolve the skills its worker preloads?**
 
 A managed worker dies before its first turn when *none* of its preloaded identifiers resolve
 (``ValueError: kanban_skills_unavailable`` in ``gateway/session_kanban.py``). The worker now parks
@@ -13,17 +15,28 @@ pieces that make that answer checkable from outside a worker:
 
       python -m hermes_cli.kanban_skill_preflight --board default
 
+**Q2 — is this the right agent for this class of work?**
+
+Q1 alone let the review lane be filled by whichever profile looked free. :func:`routing_refusal`
+adds the policy lookup against the fleet routing rule and returns one refusal carrying both
+answers, so dispatch can refuse before it claims. Deny is the default: a profile absent from the
+rule cannot be routed.
+
 The identifier list is not guessed here: :func:`hermes_cli.kanban_db.worker_skill_identifiers` is
 the single definition the dispatcher and the gateway also use (task-pinned skills, plus
-``sdlc-review`` on the review lane).
+``sdlc-review`` on the review lane), and the refusal predicate is the gateway's own
+``missing and not loaded``.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from typing import Iterable, Optional, Sequence
+
+_log = logging.getLogger(__name__)
 
 PREFLIGHT_FAILURE_MARKER = "worker skill preload unsatisfiable"
 
@@ -82,6 +95,40 @@ def unsatisfiable_preload(
     if not identifiers or loaded:
         return None
     return missing
+
+
+def routing_refusal(
+    profile: Optional[str],
+    task_class: Optional[str],
+    *,
+    lane: str,
+    identifiers: Sequence[str],
+):
+    """Both dispatch questions for one assignment: the refusal, or ``None``.
+
+    Q1 (can it start) is :func:`unsatisfiable_preload` against *identifiers* — the exact list
+    :func:`hermes_cli.kanban_db.worker_skill_identifiers` hands the worker. Q2 (is it the right
+    agent) is the fleet routing rule, a policy record: see
+    :mod:`hermes_cli.kanban_fleet_routing`, which denies any profile absent from that record.
+
+    The returned object names the profile, the class, the lane, the missing identifiers, the
+    decision, the rule path and the config version, so the caller can park a card with a reason
+    that is actually diagnosable.
+
+    A rule that cannot be read does not stop dispatch: an unreadable policy file is an operational
+    fault, and the worker's own Q1 guard plus the next tick remain the backstop. The failure is
+    logged, never swallowed silently.
+    """
+    from hermes_cli.kanban_fleet_routing import assignment_refusal
+
+    try:
+        return assignment_refusal(profile or "", task_class, lane=lane, identifiers=list(identifiers))
+    except Exception:
+        _log.warning(
+            "kanban preflight: fleet routing rule unreadable; Q2 not enforced for %r on the %s lane",
+            profile, lane, exc_info=True,
+        )
+        return None
 
 
 def sweep_assignees(conn, *, lanes: Sequence[str] = ("review", "ready")) -> list[dict]:

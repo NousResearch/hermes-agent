@@ -27,22 +27,19 @@ python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 
 ## Quick Start
 
-Add MCP servers to `~/.hermes/config.yaml` under the `mcp_servers` key:
+For a catalog server, use `manage_connections` where available; otherwise run `hermes mcp install NAME` in `terminal`.
+For a custom server, run one of these commands in `terminal` (always pass `--yes` before `--args`):
 
-```yaml
-mcp_servers:
-  time:
-    command: "uvx"
-    args: ["mcp-server-time"]
+```bash
+hermes mcp add NAME --yes --command npx --args -y PKG
+hermes mcp add NAME --url URL --yes # add --auth header when required
 ```
 
-Restart Hermes Agent. On startup it will:
-1. Connect to the server
-2. Discover available tools
-3. Register them with the prefix `mcp_time_*`
-4. Inject them into all platform toolsets
-
-You can then use the tools naturally -- just ask the agent to get the current time.
+The user approves the command. `--yes` skips the prompts (authentication follows `--auth`) and enables all discovered tools.
+It never replaces an existing server (run `hermes mcp remove NAME` first) and does not skip OAuth
+sign-in; header authentication requires the server's `MCP_*_API_KEY` in `.env` first.
+The running session picks up the server, or use `/reload-mcp` to load it into open sessions.
+Never edit `config.yaml` by hand to add a server.
 
 ## Configuration Reference
 

@@ -57,13 +57,21 @@ TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 # also matched ordinary English words like "author"/"authored"/"authoring"/
 # "authoritative" in worker progress prose, parking a healthy card forever
 # (#117009).
+# The HTTP-status digits sit outside the shared \b(...) group: as bare tokens
+# they also tail non-HTTP compound tokens — a stale claim lock's ``host:port``
+# stamp, a ``file:line`` reference, a workspace slug digit — each of which
+# parked a healthy card as blocker_auth forever (#142853, the digit flavour of
+# #63248/#127808). They only match when not glued to a ':'/'-' compound token:
+# "HTTP 403"/"Error code: 429" still trip the guard, "stale_lock=<host>:403"
+# does not.
 _RESPAWN_BLOCKER_RE = re.compile(
-    r"\b(quota|rate[\s_\-]?limit|429|403|"
+    r"\b(quota|rate[\s_\-]?limit|"
     r"auth|authenticat(?:e|es|ed|ing|ion)|authoriz(?:e|es|ed|ing|ation)|"
     r"authoris(?:e|es|ed|ing|ation)|authz|"
     r"unauthorized|forbidden|billing|subscription|"
     r"access[\s_]denied|permission[\s_]denied|"
-    r"invalid[\s_]api[\s_]key)\b",
+    r"invalid[\s_]api[\s_]key)\b"
+    r"|(?<![:-])\b(429|403)\b",
     re.IGNORECASE,
 )
 

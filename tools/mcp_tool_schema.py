@@ -58,6 +58,8 @@ def mcp_max_description_chars() -> int:
         from hermes_cli.config import load_config
         raw = (load_config().get("mcp") or {}).get("max_description_chars", _DEFAULT_MAX_DESCRIPTION_CHARS)
     except Exception:
+        logger.debug("mcp.max_description_chars unreadable; using %d", _DEFAULT_MAX_DESCRIPTION_CHARS,
+                     exc_info=True)
         return _DEFAULT_MAX_DESCRIPTION_CHARS
     if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
         logger.warning("mcp.max_description_chars=%r is not a non-negative integer; using %d",

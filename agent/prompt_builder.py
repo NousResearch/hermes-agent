@@ -1092,8 +1092,8 @@ def build_mcp_instructions_prompt(valid_tool_names: "set[str] | None" = None) ->
     try:
         from tools.mcp_tool_discovery import get_mcp_server_instructions
         rows = get_mcp_server_instructions()
-    except Exception as exc:
-        logger.debug("Failed to collect MCP server instructions: %s", exc)
+    except Exception:
+        logger.debug("Failed to collect MCP server instructions", exc_info=True)
         return ""
     sections = [f'## Instructions from MCP server "{row["server"]}"\n\n{row["instructions"]}'
                 for row in rows if exposed & set(row["tool_names"])]

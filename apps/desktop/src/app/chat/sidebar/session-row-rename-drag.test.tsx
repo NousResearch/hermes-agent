@@ -376,7 +376,7 @@ describe('SidebarSessionRow drag and the rename dialog (portal press)', () => {
       pointerType: 'mouse'
     })
     await act(async () => {
-      fireEvent.pointerMove(doc, { clientX: 20, clientY: 160, isPrimary: true, pointerId: 3 })
+      fireEvent.pointerMove(doc, { buttons: 1, clientX: 20, clientY: 160, isPrimary: true, pointerId: 3 })
       await nextFrame()
     })
 

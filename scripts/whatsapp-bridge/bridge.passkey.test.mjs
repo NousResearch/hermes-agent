@@ -17,7 +17,9 @@ test('bridge distinguishes interactive pairing failure from a non-retryable gate
       import { initAuthCreds } from ${JSON.stringify(import.meta.resolve('@whiskeysockets/baileys'))};
       import { EventEmitter } from 'node:events';
       export async function useMultiFileAuthState() {
-        return { state: { creds: initAuthCreds() }, saveCreds() {} };
+        const creds = initAuthCreds();
+        if (process.env.STUB_REGISTERED) creds.me = { id: '15551234567:1@s.whatsapp.net' };
+        return { state: { creds }, saveCreds() {} };
       }
       export async function fetchLatestBaileysVersion() { return { version: [2, 3000, 1] }; }
       export function makeWASocket({ auth }) {
@@ -75,6 +77,10 @@ test('bridge distinguishes interactive pairing failure from a non-retryable gate
     // would happen in the same tick as the request, before the warning, so status null proves it is alive.
     const connected = await runUntil([], { STUB_OPEN_FIRST: '1' }, /already connected session; ignoring it/);
     assert.equal(connected.alive, true, connected.output);
+    // A paired session that is still logging in (Baileys awaits prekey and passive IQs between CB:success and
+    // 'open') has the same claim to keep running.
+    const reconnecting = await runUntil([], { STUB_REGISTERED: '1' }, /already connected session; ignoring it/);
+    assert.equal(reconnecting.alive, true, reconnecting.output);
     const pairJson = run(['--pair-only', '--pair-json']);
     assert.equal(pairJson.status, 1);
     assert.match(pairJson.stdout, /"event":"error","error":"passkey_required"/);

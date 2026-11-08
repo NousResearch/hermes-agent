@@ -14,13 +14,17 @@ socket cancels pending authentication and removes the added listeners.
 
 A server-sent prologue request derives a pairing handoff proof from the ADV
 secret the phone already received during the QR scan (as upstream does), so the
-primary normally skips code matching and no confirmation prompt appears. The
+primary normally skips code matching and no confirmation prompt appears. A
+request that supersedes an earlier one keeps that QR-era key rather than one
+derived from the secret the first request rotated in, which the phone never saw;
+whether WhatsApp re-sends the request within one pairing is unverified. The
 terminal prompt only runs when no trusted handoff applies (for example when
 signing takes longer than the five-minute handoff window). The flow awaits the
 owner's answer itself and sends the pairing request only for the attempt that
 derived the code: a newer prologue request or a socket close cancels both the
 pending browser prompt and the code question, and whatever the interrupted call
-then throws counts as that cancellation, not a pairing failure. Other failures
+then throws counts as that cancellation, not a pairing failure. Ctrl+C at the
+code question ends pairing with an error. Other failures
 print the error's name and message; assertion and credential buffers are not
 printed. The interactive signer loads the real WhatsApp Web origin and validates the returned
 challenge and origin. No existing browser profile or browser session is imported.
@@ -33,8 +37,9 @@ same floor without depending on `AbortSignal.any`, which arrived in Node 20.3.
 A passkey challenge in gateway mode before the connection opens exits the bridge
 with code 78 (`PASSKEY_REQUIRED_EXIT`); the adapter reports
 `whatsapp_passkey_required` as non-retryable until interactive pairing. A
-challenge reaching a session that is already connected is logged and ignored, as
-before passkey support, so a working gateway is not parked. Dashboard pairing
+challenge reaching a paired session (connected, or still logging in after a
+reconnect) is logged and ignored, as before passkey support, so a working
+gateway is not parked. Dashboard pairing
 (`--pair-json`) reports `{event: error, error: passkey_required}`, which the
 dashboard shows as an instruction to pair from a local terminal.
 

@@ -1,0 +1,438 @@
+{
+  "family": "runtime",
+  "wrappers": {
+    "execute_write": "write",
+    "tui_gateway/session_lifecycle.py::read_ctx": "read"
+  },
+  "legacy_modules": [
+    "hermes_state_runtime.py::begin_runtime_epoch",
+    "hermes_state_mutation_chat_pick.py::_fenced_row",
+    "hermes_state_mutation_chat_pick.py::commit_chat_pick",
+    "hermes_state_mutation_prepared.py::local_snapshot",
+    "hermes_state_mutation_prepared.py::_commit_policy",
+    "hermes_state_mutation_prepared.py::picks_on",
+    "hermes_state_mutation_prepared.py::commit_refreshed_policy",
+    "hermes_state_mutation_retirement.py::keep_passed_fences",
+    "hermes_state_mutation_retirement.py::has_mutation_receipt",
+    "hermes_state_mutation_retirement.py::expiring_retirements",
+    "hermes_state_mutation_guards.py::require_not_executing",
+    "hermes_state_mutation_guards.py::_require_transcript_unleased",
+    "hermes_state_mutation_guards.py::require_idle",
+    "gateway/session_deferred_pick.py::defer_pick",
+    "gateway/session_viewer_close.py::_persist_close",
+    "gateway/session_viewer_close.py::forget_persisted_close",
+    "gateway/session_viewer_close.py::rearm_persisted_closes",
+    "tui_gateway/session_lifecycle.py::_end_unless_ledger_busy",
+    "gateway/platforms/webhook_ingress.py::finalize_webhook",
+    "hermes_state_runtime.py::mutate_runtime_session",
+    "hermes_state_mutations.py",
+    "hermes_state_mutation_compress.py",
+    "hermes_state_mutation_branch.py",
+    "hermes_state_mutation_reset.py",
+    "hermes_state_mutation_prepared.py::model_in_transaction",
+    "hermes_state_mutation_prepared.py::reasoning_in_transaction",
+    "hermes_state_mutation_prepared.py::workspace_in_transaction",
+    "hermes_state_mutation_guards.py::_continuation_edges",
+    "hermes_state_mutation_guards.py::delete_targets",
+    "hermes_state_mutation_binding.py::import_history_control",
+    "hermes_state_mutation_binding.py::history_binding",
+    "hermes_state_mutation_binding.py::same_history_owner",
+    "hermes_state_mutation_retirement.py::delete_in_transaction"
+  ],
+  "units": [
+    {
+      "backend": "persistence/sqlite/authority/_runtime_ends.py::begin_runtime_epoch",
+      "legacy": "hermes_state_runtime.py::begin_runtime_epoch#0,1",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_ends.py::current_epoch",
+      "legacy": "hermes_cli/web_server_sessions.py::_mutate_offline_store#0",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_ends.py::_persist_close",
+      "legacy": "gateway/session_viewer_close.py::_persist_close#0",
+      "names": {
+        "authority.db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_ends.py::forget_persisted_close",
+      "legacy": "gateway/session_viewer_close.py::forget_persisted_close#0",
+      "names": {
+        "authority.db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_ends.py::stored_closes",
+      "legacy": "gateway/session_viewer_close.py::rearm_persisted_closes#0",
+      "names": {
+        "authority.db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_ends.py::_end_unless_ledger_busy",
+      "legacy": "tui_gateway/session_lifecycle.py::_end_unless_ledger_busy#0-2",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_ends.py::finalize_webhook",
+      "legacy": "gateway/platforms/webhook_ingress.py::finalize_webhook#0",
+      "names": {
+        "authority.db": "holder",
+        "authority.epoch": "epoch",
+        "receipt.execution_generation": "generation",
+        "receipt.admission_id": "admission_id",
+        "receipt.authority_epoch": "admission_epoch"
+      },
+      "exception": {
+        "ruling": "boundary translation",
+        "aspects": [
+          "binding",
+          "transaction"
+        ],
+        "reason": "The verb takes the end reason as a parameter, and its one caller (gateway/platforms/webhook_ingress.py::finalize_webhook) passes 'webhook_complete', the literal main bound; the statement runs through persistence/sqlite/conversation/_store/sessions.py::_end_and_bump(holder, conn, ...) as main's ran through hermes_state_sessions.py::SessionSessionsMixin._end_and_bump(conn, ...), so the binding and the helper's call carry the reason parameter where main's carry the literal."
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_guards.py::require_not_executing",
+      "legacy": "hermes_state_mutation_guards.py::require_not_executing#0,1"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_guards.py::_require_transcript_unleased",
+      "legacy": "hermes_state_mutation_guards.py::_require_transcript_unleased#0",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_guards.py::require_idle",
+      "legacy": "hermes_state_mutation_guards.py::require_idle#0,1",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_picks.py::local_snapshot",
+      "legacy": "hermes_state_mutation_prepared.py::local_snapshot#0,1",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_picks.py::_commit_policy",
+      "legacy": "hermes_state_mutation_prepared.py::_commit_policy#0-2",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_picks.py::picks_on",
+      "legacy": "hermes_state_mutation_prepared.py::picks_on#0-2"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_picks.py::commit_refreshed_policy",
+      "legacy": "hermes_state_mutation_prepared.py::commit_refreshed_policy#0",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_picks.py::_fenced_row",
+      "legacy": "hermes_state_mutation_chat_pick.py::_fenced_row#0"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_picks.py::commit_chat_pick",
+      "legacy": "hermes_state_mutation_chat_pick.py::commit_chat_pick#0-2",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_picks.py::defer_pick",
+      "legacy": "gateway/session_deferred_pick.py::defer_pick#0-3",
+      "names": {
+        "authority.db": "holder",
+        "ref.session_id": "session_id",
+        "_PREFIX": "DEFERRED_PICK_PREFIX"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_picks.py::deferred_pick",
+      "legacy": "gateway/session_deferred_pick.py::reask_on_attach#0",
+      "names": {
+        "authority.db": "holder",
+        "ref.session_id": "session_id",
+        "_PREFIX": "DEFERRED_PICK_PREFIX"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_picks.py::forget_deferred_pick",
+      "legacy": "gateway/session_deferred_pick.py::apply_deferred_pick#2",
+      "names": {
+        "authority.db": "holder"
+      },
+      "exception": {
+        "ruling": "boundary translation",
+        "aspects": [
+          "binding"
+        ],
+        "reason": "Main's compare-and-delete in gateway/session_deferred_pick.py::apply_deferred_pick bound key and raw, that is _PREFIX + ref.session_id and the stored slot value; the verb takes the session id and the stored value and binds DEFERRED_PICK_PREFIX + session_id, stored, the same key and value."
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_picks.py::mark_deferred_pick_asked",
+      "legacy": "gateway/session_deferred_pick.py::apply_deferred_pick#1",
+      "names": {
+        "authority.db": "holder"
+      },
+      "exception": {
+        "ruling": "boundary translation",
+        "aspects": [
+          "binding"
+        ],
+        "reason": "Main's compare-and-swap in gateway/session_deferred_pick.py::apply_deferred_pick bound _json({**pick, 'awaiting_confirm': result['confirm']}), key, raw; the verb takes the session id, the stored value and the confirm token, computes the same value from the stored pick before the write (the encoding sorts keys, so a stale awaiting_confirm the caller dropped and the verb overwrites encodes the same) and binds value, DEFERRED_PICK_PREFIX + session_id, stored."
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_retirement.py::first_generation",
+      "legacy": [
+        "gateway/session_api.py::implicit_api_session#0",
+        "gateway/session_bot.py::_bot_chat_creation_id#0"
+      ],
+      "names": {
+        "db": "holder"
+      },
+      "exception": {
+        "ruling": "stated difference",
+        "aspects": [
+          "binding"
+        ],
+        "reason": "Main's hermes_state_mutation_retirement.py::first_generation walked the generations in one read and ran the caller's pinned(conn, sid) and spent(conn, sid) callables inside it; the verb takes the pinned identity as a PinnedIdentity and binds identity_key over it as main's callers' lambdas did (identity_key('api', sid, request_id) in gateway/session_api.py::implicit_api_session, identity_key(actor.subject, sid, params['input_id']) in gateway/session_a2a.py::forward), and returns the first non-retired generation with its row's title and source. The Bot Chat caller (gateway/session_bot.py::_bot_chat_creation_id) judges spent with main's rule (titled, or handed off to a messaging lane by _messaging_platform) and walks on with start = generation + 1, one read per skipped generation, and the other callers now run main's spent statement SELECT title, source FROM sessions WHERE id=? as one extra read-only statement."
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_retirement.py::keep_passed_fences",
+      "legacy": "hermes_state_mutation_retirement.py::keep_passed_fences#0,1"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_retirement.py::has_mutation_receipt",
+      "legacy": "hermes_state_mutation_retirement.py::has_mutation_receipt#0",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_retirement.py::expiring_retirements",
+      "legacy": "hermes_state_mutation_retirement.py::expiring_retirements#0",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_mutation.py::mutate_runtime_session",
+      "legacy": "hermes_state_runtime.py::mutate_runtime_session#0,1,2,3",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_mutation.py::apply_action",
+      "legacy": "hermes_state_mutations.py::apply_action#0",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_mutation.py::_rewind",
+      "legacy": "hermes_state_mutations.py::_rewind#0,1",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_mutation.py::_summarized_by_compaction",
+      "legacy": "hermes_state_mutations.py::_summarized_by_compaction#0"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_mutation.py::_carrier_live_view",
+      "legacy": "hermes_state_mutations.py::_carrier_live_view#0",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_mutation.py::_import",
+      "legacy": "hermes_state_mutations.py::_import#0,1",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_binding_history.py::import_history_control",
+      "legacy": "hermes_state_mutation_binding.py::import_history_control#0,1"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_binding_history.py::history_binding",
+      "legacy": "hermes_state_mutation_binding.py::history_binding#0"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_binding_history.py::same_history_owner",
+      "legacy": "hermes_state_mutation_binding.py::same_history_owner#0"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_mutation_publish.py::compress_in_transaction",
+      "legacy": "hermes_state_mutation_compress.py::compress_in_transaction#0,1",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_mutation_publish.py::_branch_boundary",
+      "legacy": "hermes_state_mutation_branch.py::_branch_boundary#0,1,2"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_mutation_publish.py::branch_in_transaction",
+      "legacy": "hermes_state_mutation_branch.py::branch_in_transaction#0,1,2,3,4,5,6",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_mutation_publish.py::reset_in_transaction",
+      "legacy": "hermes_state_mutation_reset.py::reset_in_transaction#0,1,2,3,4",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_guards.py::_continuation_edges",
+      "legacy": "hermes_state_mutation_guards.py::_continuation_edges#0"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_guards.py::delete_targets",
+      "legacy": "hermes_state_mutation_guards.py::delete_targets#0"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_picks.py::model_in_transaction",
+      "legacy": "hermes_state_mutation_prepared.py::model_in_transaction#0,1,2,3,4",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_picks.py::reasoning_in_transaction",
+      "legacy": "hermes_state_mutation_prepared.py::reasoning_in_transaction#0,1,2",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_picks.py::workspace_in_transaction",
+      "legacy": "hermes_state_mutation_prepared.py::workspace_in_transaction#0",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_retirement.py::delete_in_transaction",
+      "legacy": "hermes_state_mutation_retirement.py::delete_in_transaction#0,1,2",
+      "names": {
+        "db": "holder"
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_ends.py::pending_ledger_status",
+      "legacy": "tui_gateway/session_lifecycle.py::_canonical_ledger_refusal#0"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_picks.py::replace_deferred_pick",
+      "legacy": "gateway/session_deferred_pick.py::_commit_level#1",
+      "names": {
+        "authority.db": "holder"
+      },
+      "exception": {
+        "ruling": "boundary translation",
+        "aspects": [
+          "binding"
+        ],
+        "reason": "Main's compare-and-swap in gateway/session_deferred_pick.py::_commit_level bound rest, key, raw: _json(pick) of the slot without its reasoning level, _PREFIX + ref.session_id and the stored value. The verb takes the session id, the stored value and the remaining pick and binds _json(pick), DEFERRED_PICK_PREFIX + session_id, stored, the same values."
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_guards.py::delete_footprint",
+      "legacy": "gateway/session_history_mount.py::require_history_leaf#0",
+      "names": {
+        "authority.db": "holder",
+        "sid": "session_id"
+      },
+      "exception": {
+        "ruling": "no caller code in a transaction",
+        "aspects": [
+          "binding",
+          "builder"
+        ],
+        "reason": "Main's gateway/session_history_mount.py::require_history_leaf ran delete_targets inside its read context, and its owner checks (hermes_state_mutation_binding.py::same_history_owner through gateway.owner_identity, and hermes_state_local_migration.py::not_client_labels) read the host owner's OS subject, the dashboard sign-in providers and the shipped messaging platforms from the gateway there; the backend may not import the gateway, so the caller passes that host data as an OwnerRule and the rule's pure functions (session_rules.legacy_local) take it as their last argument."
+      }
+    }
+  ],
+  "builders": [
+    {
+      "backend": "persistence/sqlite/authority/_runtime_guards.py::_non_continuation_child_sql",
+      "legacy": "hermes_state_common.py::_non_continuation_child_sql"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_guards.py::_continuation_edges",
+      "legacy": "hermes_state_mutation_guards.py::_continuation_edges"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_runtime_guards.py::delete_targets",
+      "legacy": "hermes_state_mutation_guards.py::delete_targets",
+      "exception": {
+        "ruling": "no caller code in a transaction",
+        "aspects": [
+          "builder"
+        ],
+        "reason": "Main's hermes_state_mutation_guards.py::delete_targets called same_history_owner(conn, anchor, sid), whose owner check reads the host owner's OS subject, the dashboard sign-in providers and the shipped messaging platforms from the gateway inside the store's read; the backend may not import the gateway, so the caller passes that host data as an OwnerRule and the rule's pure functions (session_rules.legacy_local) take it as their last argument."
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_binding_history.py::same_history_owner",
+      "legacy": "hermes_state_mutation_binding.py::same_history_owner",
+      "exception": {
+        "ruling": "no caller code in a transaction",
+        "aspects": [
+          "builder"
+        ],
+        "reason": "Main's hermes_state_mutation_binding.py::same_history_owner called _history_row(row) and gateway.owner_identity's owner comparison, which read the host owner's OS subject, the dashboard sign-in providers and the shipped messaging platforms from the gateway inside the store's read; the backend may not import the gateway, so the caller passes that host data as an OwnerRule and the rule's pure functions (session_rules.legacy_local) take it as their last argument."
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_binding_history.py::history_binding",
+      "legacy": "hermes_state_mutation_binding.py::history_binding"
+    },
+    {
+      "backend": "persistence/sqlite/authority/_binding_history.py::_history_row",
+      "legacy": "hermes_state_mutation_binding.py::_history_row",
+      "exception": {
+        "ruling": "no caller code in a transaction",
+        "aspects": [
+          "builder"
+        ],
+        "reason": "Main's hermes_state_mutation_binding.py::_history_row called legacy_history_row(dict(row)), which reads the shipped messaging platforms from the gateway (hermes_state_local_migration.py::not_client_labels) inside the store's read; the backend may not import the gateway, so the caller passes that host data as an OwnerRule and the rule's pure functions (session_rules.legacy_local) take it as their last argument."
+      }
+    },
+    {
+      "backend": "persistence/sqlite/authority/_binding_history.py::_owner_user",
+      "legacy": "hermes_state_mutation_binding.py::_owner_user"
+    }
+  ],
+  "not_moved": []
+}

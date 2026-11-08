@@ -1,0 +1,767 @@
+{
+ "family": "hosted_rooms",
+ "legacy_modules": [
+  "gateway/hosted_room_replicas.py",
+  "gateway/hosted_rooms.py",
+  "gateway/hosted_rooms_common.py",
+  "gateway/hosted_rooms_legacy_import.py",
+  "gateway/hosted_rooms_gateway_import.py::_claim",
+  "gateway/hosted_rooms_gateway_import.py::_ensure_handoff_table",
+  "gateway/hosted_rooms_gateway_import.py::_fenced_ids",
+  "gateway/hosted_rooms_gateway_import.py::_record_handoff",
+  "gateway/hosted_rooms_gateway_import.py::handed_room_ids",
+  "gateway/hosted_rooms_gateway_import.py::import_standalone_rooms",
+  "gateway/platforms/api_server_room_dispatch.py::_ensure_hosted_member_session",
+  "gateway/session_hosted_rpc.py::HostedRoomAuthorityRPC._create",
+  "gateway/session_hosted_service.py::CanonicalHostedRoomService._owner",
+  "gateway/session_hosted_service.py::CanonicalHostedRoomService._resolve_member_transport",
+  "gateway/session_hosted_service.py::CanonicalHostedRoomService.authorize_room",
+  "gateway/session_hosted_service.py::CanonicalHostedRoomService.bindings",
+  "gateway/session_hosted_transport.py::_check_remote_hosted_admission",
+  "gateway/session_hosted_transport.py::install_hosted_transport",
+  "hermes_state_runtime.py::_epoch",
+  "gateway/hosted_room_context.py",
+  "gateway/session_hosted_service.py::probe_native_room_owner"
+ ],
+ "wrappers": {
+  "_hosted_write": {
+   "kind": "write",
+   "begin": "immediate"
+  },
+  "_hosted_read": {
+   "kind": "read"
+  },
+  "gateway/hosted_rooms.py::_transaction": {
+   "kind": "write",
+   "begin": "immediate",
+   "default": false
+  },
+  "gateway/hosted_room_replicas.py::_transaction": {
+   "kind": "write",
+   "begin": "immediate",
+   "default": false
+  },
+  "gateway/hosted_room_replicas.py::_replica_transaction": {
+   "kind": "write",
+   "begin": "immediate",
+   "default": true
+  },
+  "gateway/hosted_room_work_records.py::_transaction": {
+   "kind": "write",
+   "begin": "immediate",
+   "default": false
+  },
+  "gateway/hosted_room_driver.py::_transaction": {
+   "kind": "write",
+   "begin": "immediate",
+   "default": true
+  },
+  "gateway/hosted_room_attachments.py::_transaction": {
+   "kind": "write",
+   "begin": "immediate",
+   "default": false
+  },
+  "gateway/hosted_room_policy_checkpoint.py::_transaction": {
+   "kind": "write",
+   "begin": "immediate",
+   "default": false
+  },
+  "gateway/hosted_rooms_gateway_import.py::_transaction": {
+   "kind": "write",
+   "begin": "immediate",
+   "default": false
+  }
+ },
+ "units": [
+  {
+   "backend": "persistence/sqlite/gateway/_hosted_store.py::_run_steps#0",
+   "legacy": "gateway/hosted_rooms_common.py::connect#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_hosted_store.py::HostedFiles._hosted_write#0",
+   "legacy": "hermes_cli/sqlite_util.py::transaction#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_hosted_rooms_common.py::fenced_update",
+   "legacy": "gateway/hosted_rooms_common.py::fenced_update#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_hosted_rooms_common.py::table_columns",
+   "legacy": "gateway/hosted_rooms_common.py::table_columns#0",
+   "exception": {
+    "ruling": "checker limit",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "This helper runs inside _copy_rows. Main's standalone hand-off (gateway/hosted_rooms_gateway_import.py::import_standalone_rooms) calls _copy_rows inside its with _transaction(target_db, immediate=True) block, but in a conditional expression, whose calls the checker does not follow, so main's label keeps only the pre-isolation import in the store's schema setup, which carries none; the backend's _import_fenced_rooms makes the same call inside _hosted_write(\"profile\", ..., immediate=True), the same BEGIN IMMEDIATE on the gateway's state.db."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_hosted_rooms_common.py::table_exists",
+   "legacy": "gateway/hosted_rooms_common.py::table_exists#0",
+   "exception": {
+    "ruling": "read context",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "The read label comes from the attachment viewer reads (persistence/sqlite/gateway/hosted_room_attachments.py::_require_viewer_room), which main also runs through this helper (imported there as _table_exists) inside the attachment store's deferred _transaction() after an explicit BEGIN, never taking the write lock; the backend runs them in _hosted_read with the same 10 s lock wait. The other callers run inside BEGIN IMMEDIATE writes in both trees, or in the schema setup."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_hosted_rooms_legacy_import.py::_copy_rows",
+   "legacy": "gateway/hosted_rooms_legacy_import.py::_copy_rows#0,1,2,3,4,5,6",
+   "exception": {
+    "ruling": "checker limit",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "Main's standalone hand-off (gateway/hosted_rooms_gateway_import.py::import_standalone_rooms) calls _copy_rows inside its with _transaction(target_db, immediate=True) block, but in a conditional expression, whose calls the checker does not follow, so main's label keeps only the pre-isolation import in the store's schema setup, which carries none; the backend's _import_fenced_rooms makes the same call inside _hosted_write(\"profile\", ..., immediate=True), the same BEGIN IMMEDIATE on the gateway's state.db."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_hosted_rooms_legacy_import.py::_select_expressions",
+   "legacy": "gateway/hosted_rooms_legacy_import.py::_select_expressions#0",
+   "exception": {
+    "ruling": "checker limit",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "This helper runs inside _copy_rows. Main's standalone hand-off (gateway/hosted_rooms_gateway_import.py::import_standalone_rooms) calls _copy_rows inside its with _transaction(target_db, immediate=True) block, but in a conditional expression, whose calls the checker does not follow, so main's label keeps only the pre-isolation import in the store's schema setup, which carries none; the backend's _import_fenced_rooms makes the same call inside _hosted_write(\"profile\", ..., immediate=True), the same BEGIN IMMEDIATE on the gateway's state.db."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_hosted_rooms_legacy_import.py::import_legacy_rooms",
+   "legacy": "gateway/hosted_rooms_legacy_import.py::import_legacy_rooms#0,1,2,3,4,5"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_hosted_rooms_legacy_import.py::settled",
+   "legacy": "gateway/hosted_rooms_legacy_import.py::settled#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_hosted_rooms_schema.py::_initialize_schema",
+   "legacy": "gateway/hosted_rooms.py::_initialize_schema#0,1,2,3",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_hosted_rooms_schema.py::_migrate_legacy_columns",
+   "legacy": "gateway/hosted_rooms.py::_migrate_legacy_columns#0,1",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_hosted_rooms_schema.py::_migrate_remote_run_schema",
+   "legacy": "gateway/hosted_rooms.py::_migrate_remote_run_schema#0,1,2,3,4",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_hosted_rooms_schema.py::_remote_run_schema_current",
+   "legacy": "gateway/hosted_rooms.py::_remote_run_schema_current#0",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_hosted_rooms_schema.py::_schema_is_current",
+   "legacy": "gateway/hosted_rooms.py::_schema_is_current#0,1",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.delete_room_link_records",
+   "legacy": "gateway/hosted_rooms.py::delete_room_link_records#0",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.list_room_link_records",
+   "legacy": "gateway/hosted_rooms.py::list_room_link_records#0",
+   "names": {
+    "db_path": "placement"
+   },
+   "exception": {
+    "ruling": "read context",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "Main reads in gateway/hosted_rooms.py's deferred _transaction(db_path), a connection with a 10 s busy wait that runs only SELECTs and never takes the write lock; the verb reads in _hosted_read on the placement's file with the same lock wait, after the rooms schema step."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.peer_room_grant_is_current",
+   "legacy": "gateway/hosted_rooms.py::peer_room_grant_is_current#0",
+   "names": {
+    "db_path": "placement"
+   },
+   "exception": {
+    "ruling": "read context",
+    "aspects": [
+     "binding",
+     "transaction"
+    ],
+    "reason": "Main reads in gateway/hosted_rooms.py's deferred _transaction(db_path) through _read_one, a connection with a 10 s busy wait that runs only SELECTs and never takes the write lock; the verb reads in _hosted_read on the placement's file with the same lock wait, after the rooms schema step. The verb takes RoomGrantClaims the caller has validated (the protocol HostedRoomPeerRepository leaves main's _reservation_claims checks to the caller) and binds the same five values and the timestamp in main's order."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.probe_peer_room_reservation",
+   "legacy": "gateway/hosted_rooms.py::probe_peer_room_reservation#0",
+   "names": {
+    "db_path": "placement"
+   },
+   "exception": {
+    "ruling": "boundary translation",
+    "aspects": [
+     "binding",
+     "transaction"
+    ],
+    "reason": "The caller validates room_id and target_profile (main's _room_id and _actor_id) before the call, and the verb opens the placement's file where main opens Path(db_path); the probe itself is main's _probe: its own connection with a 0.05 s timeout, no schema work, the same SELECT and binding."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.remote_run_receipt",
+   "legacy": "gateway/hosted_rooms.py::remote_run_receipt#0",
+   "names": {
+    "db_path": "placement",
+    "record": "identity"
+   },
+   "exception": {
+    "ruling": "read context",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "Main reads in gateway/hosted_rooms.py's deferred _transaction(db_path) through _read_one, a connection with a 10 s busy wait that runs only SELECTs and never takes the write lock; the verb reads in _hosted_read on the placement's file with the same lock wait, after the rooms schema step."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.reserve_peer_room",
+   "legacy": "gateway/hosted_rooms.py::reserve_peer_room#0,1,2,3,4",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.revoke_room_grant_scope",
+   "legacy": "gateway/hosted_rooms.py::revoke_room_grant_scope#0,1,2",
+   "names": {
+    "db_path": "placement",
+    "claims": "fields"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.room_grant_is_revoked",
+   "legacy": "gateway/hosted_rooms.py::room_grant_is_revoked#0",
+   "names": {
+    "db_path": "placement"
+   },
+   "exception": {
+    "ruling": "read context",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "Main reads in gateway/hosted_rooms.py's deferred _transaction(db_path) through _read_one, a connection with a 10 s busy wait that runs only SELECTs and never takes the write lock; the verb reads in _hosted_read on the placement's file with the same lock wait, after the rooms schema step."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.update_room_link_status",
+   "legacy": "gateway/hosted_rooms.py::update_room_link_status#0",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.upsert_remote_run_receipt",
+   "legacy": "gateway/hosted_rooms.py::upsert_remote_run_receipt#0,1,2",
+   "names": {
+    "db_path": "placement",
+    "record": "receipt"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.upsert_room_link_record",
+   "legacy": "gateway/hosted_rooms.py::upsert_room_link_record#0,1,2",
+   "names": {
+    "db_path": "placement"
+   },
+   "exception": {
+    "ruling": "boundary translation",
+    "aspects": [
+     "binding"
+    ],
+    "reason": "The verb takes a typed RoomLinkRecord the caller has validated and reads its fields as attributes where main indexes a mapping; it binds the same values in main's order inside _hosted_write(..., immediate=True), main's BEGIN IMMEDIATE."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_replicas.py::SQLiteHostedRoomReplicaRepository.demote_room",
+   "legacy": "gateway/hosted_room_replicas.py::demote_room#0,1",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_replicas.py::SQLiteHostedRoomReplicaRepository.ingest_page",
+   "legacy": "gateway/hosted_room_replicas.py::ingest_page#0",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_replicas.py::SQLiteHostedRoomReplicaRepository.promote_replica",
+   "legacy": "gateway/hosted_room_replicas.py::promote_replica#0,1,2,3,4,5,6",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_replicas.py::SQLiteHostedRoomReplicaRepository.replica_state",
+   "legacy": "gateway/hosted_room_replicas.py::replica_state#0",
+   "names": {
+    "db_path": "placement"
+   },
+   "exception": {
+    "ruling": "schema step",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "Main's _replica_transaction runs the replica DDL on its own connection and again inside a BEGIN IMMEDIATE transaction that then holds only this SELECT; the backend creates the replica tables in REPLICA_STEP, the schema step of the replica verbs' files, and reads the row in _hosted_read with the same 10 s lock wait."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_replicas.py::_append_control_event",
+   "legacy": "gateway/hosted_room_replicas.py::_append_control_event#0",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_replicas.py::_initialize_replica_schema",
+   "legacy": "gateway/hosted_room_replicas.py::_initialize_replica_schema#0,1",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_replicas.py::_replica_row_state",
+   "legacy": "gateway/hosted_room_replicas.py::_replica_row_state#0,1",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_replicas.py::_store_replica",
+   "legacy": "gateway/hosted_room_replicas.py::_store_replica#0,1",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_append_locked",
+   "legacy": "gateway/hosted_rooms.py::append_event#0,1",
+   "names": {
+    "db_path": "placement"
+   },
+   "exception": {
+    "ruling": "read context",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "The statement runs in _room_row, whose label the checker merges over every caller: the room writes begin BEGIN IMMEDIATE in both trees (main's _transaction(db_path, immediate=True), the backend's _hosted_write(..., immediate=True)), and the room reads run in main's deferred _transaction(db_path), which never takes the write lock, and in the backend's _hosted_read with the same 10 s lock wait."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.bind_transport",
+   "legacy": "gateway/session_hosted_transport.py::install_hosted_transport#0,1",
+   "note": "1 statements unmatched",
+   "names": {
+    "encoded": "binding"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.create_room",
+   "legacy": "gateway/hosted_rooms.py::create_room#0,1,2,3",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.disband_room",
+   "legacy": "gateway/hosted_rooms.py::disband_room#0,1,2",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.ensure_room_member_session",
+   "legacy": "gateway/platforms/api_server_room_dispatch.py::_ensure_hosted_member_session#0,1,2"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.label_room_session#0",
+   "legacy": "gateway/session_hosted_rpc.py::HostedRoomAuthorityRPC._create#0",
+   "note": "1 statements unmatched",
+   "exception": {
+    "ruling": "boundary translation",
+    "aspects": [
+     "binding"
+    ],
+    "reason": "The caller (gateway/session_hosted_rpc.py::HostedRoomAuthorityRPC._create) passes the title main formats, f'Group: {room_id}', and the member session's id; the verb binds them in main's order after the epoch fence, inside state.db's _execute_write as main's label write does."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.list_rooms",
+   "legacy": "gateway/hosted_rooms.py::list_rooms#0",
+   "names": {
+    "db_path": "placement"
+   },
+   "exception": {
+    "ruling": "read context",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "Main reads on _read_connection(db_path), an autocommit connection with a 10 s busy wait that writes nothing on a ready store; the verb reads in _hosted_read on the placement's file with the same lock wait, after the rooms schema step."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.owned_rooms",
+   "legacy": "gateway/session_hosted_service.py::CanonicalHostedRoomService.bindings#0",
+   "names": {
+    "_OWNER": "OWNER_PREFIX"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.owner",
+   "legacy": "gateway/session_hosted_service.py::CanonicalHostedRoomService._owner#0",
+   "names": {
+    "_OWNER": "OWNER_PREFIX"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.probe_room_owner",
+   "legacy": "gateway/session_hosted_service.py::probe_native_room_owner#0",
+   "names": {
+    "_OWNER": "OWNER_PREFIX",
+    "db_path": "placement"
+   },
+   "exception": {
+    "ruling": "boundary translation",
+    "aspects": [
+     "binding",
+     "transaction"
+    ],
+    "reason": "The caller (gateway/session_hosted_service.py::probe_native_room_owner) passes str(room_id) as main binds it, and the verb probes the bound profile's state.db where main probes Path(db_path) of that store; the probe itself is main's _probe: its own connection with a 0.05 s timeout, no schema work, the same SELECT and binding."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.probe_hosted_room",
+   "legacy": "gateway/hosted_rooms.py::probe_hosted_room#0",
+   "names": {
+    "db_path": "placement"
+   },
+   "exception": {
+    "ruling": "boundary translation",
+    "aspects": [
+     "binding",
+     "transaction"
+    ],
+    "reason": "The caller validates room_id (main's _room_id) before the call, and the verb opens the placement's file where main opens Path(db_path); the probe itself is main's _probe: its own connection with a 0.05 s timeout, no schema work, the same SELECT and binding."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.rename_room",
+   "legacy": "gateway/hosted_rooms.py::rename_room#0,1,2,3",
+   "names": {
+    "db_path": "placement"
+   },
+   "exception": {
+    "ruling": "read context",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "The statement runs in _room_row, whose label the checker merges over every caller: the room writes begin BEGIN IMMEDIATE in both trees (main's _transaction(db_path, immediate=True), the backend's _hosted_write(..., immediate=True)), and the room reads run in main's deferred _transaction(db_path), which never takes the write lock, and in the backend's _hosted_read with the same 10 s lock wait."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.room_state",
+   "legacy": "gateway/hosted_rooms.py::room_state#0,1",
+   "names": {
+    "db_path": "placement"
+   },
+   "exception": {
+    "ruling": "read context",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "Main reads in gateway/hosted_rooms.py's deferred _transaction(db_path) (the room row through _room_row, then the claim event), a connection with a 10 s busy wait that runs only SELECTs and never takes the write lock; the verb reads in _hosted_read on the placement's file with the same lock wait, after the rooms schema step."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.transport_binding",
+   "legacy": "gateway/session_hosted_transport.py::_check_remote_hosted_admission#0",
+   "names": {
+    "_BINDING": "TRANSPORT_PREFIX",
+    "ref.session_id": "session_id"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_adopt_legacy_room",
+   "legacy": "gateway/hosted_rooms.py::_adopt_legacy_room#0,1",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_claim_owner_locked",
+   "legacy": "gateway/session_hosted_service.py::CanonicalHostedRoomService.authorize_room#0,1,2",
+   "names": {
+    "actor_subject": "actor"
+   },
+   "exception": {
+    "ruling": "checker limit",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "Main's CanonicalHostedRoomService.authorize_room runs this body either on the caller's connection inside create_room's _transaction(db_path, immediate=True) (the groups.create admit hook of gateway/session_group_controls.py::_group) or through state.db's _execute_write, picked in a conditional expression, whose calls the checker does not follow, so main's statements carry no label; the backend runs the body in claim_owner's _execute_write and inside create_room's write on state.db, both BEGIN IMMEDIATE."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_disband_replay",
+   "legacy": "gateway/hosted_rooms.py::_disband_replay#0,1",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_gateway_event_bytes",
+   "legacy": "gateway/hosted_rooms.py::_gateway_event_bytes#0",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_insert_event",
+   "legacy": "gateway/hosted_rooms.py::_insert_event#0",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_is_retired",
+   "legacy": "gateway/hosted_rooms.py::_is_retired#0",
+   "names": {
+    "db_path": "placement"
+   },
+   "exception": {
+    "ruling": "read context",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "This helper runs inside the room writes and inside _room_row, whose label the checker merges over every caller: the room writes begin BEGIN IMMEDIATE in both trees (main's _transaction(db_path, immediate=True), the backend's _hosted_write(..., immediate=True)), and the room reads run in main's deferred _transaction(db_path), which never takes the write lock, and in the backend's _hosted_read with the same 10 s lock wait."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_load_event",
+   "legacy": "gateway/hosted_rooms.py::_load_event#0",
+   "names": {
+    "db_path": "placement"
+   },
+   "exception": {
+    "ruling": "read context",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "Main also runs _load_event outside its writes: on _read_connection(db_path), an autocommit read connection with a 10 s busy wait, in gateway/hosted_room_context.py::post_scheduled_message's conflict fallback, and on the append's write-locked connection in set_room_context's payload function; the backend reads it in _hosted_read with the same lock wait for event_by_id, and inside save_room_settings's _hosted_write(immediate=True)."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_latest_payload",
+   "legacy": "gateway/hosted_room_context.py::_latest_context#0",
+   "names": {
+    "CONTEXT_EVENT_KIND": "kind",
+    "db_path": "placement"
+   },
+   "exception": {
+    "ruling": "read context",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "Main runs _latest_context on _read_connection(db_path), an autocommit read connection with a 10 s busy wait after the rooms schema step (room_context), and on the append's write-locked connection (set_room_context's payload function, after BEGIN IMMEDIATE); the backend runs it in _hosted_read with the same lock wait for latest_event_payload, and inside save_room_settings's _hosted_write(immediate=True)."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_member_authorized_locked",
+   "legacy": "gateway/session_hosted_service.py::CanonicalHostedRoomService._resolve_member_transport#0,1,2",
+   "names": {
+    "_OWNER": "OWNER_PREFIX",
+    "binding.room_id": "guard.room_id",
+    "identity.task_id": "guard.task.task_id"
+   },
+   "exception": {
+    "ruling": "checker limit",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "Main runs this member check both in a read (the authorize closure, on state.db's _read_ctx) and inside admit_session_input's write, as the authorize_write hook that HostedRoomAuthorityRPC._submit hands to SessionAuthority._submit from the RPC object's authorize_write attribute; the checker does not follow a callable held in an attribute, so main's label shows only the read. The backend runs the same check in member_authorized's read and inside the admission write (persistence/sqlite/authority/_admission_owner.py::_hosted_authorize_write), with the caller's typed HostedMemberGuard in place of the closure's process state."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_probe",
+   "legacy": "gateway/hosted_rooms.py::_probe#0,1",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_prune_disbanded_rooms_locked",
+   "legacy": "gateway/hosted_rooms.py::_prune_disbanded_rooms_locked#0,1,2,3,4,5",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_reload",
+   "legacy": "gateway/hosted_rooms.py::_reload#0",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_room_ids",
+   "legacy": "gateway/hosted_rooms.py::_room_ids#0",
+   "names": {
+    "db_path": "placement"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_room_row",
+   "legacy": "gateway/hosted_rooms.py::_room_row#0,1",
+   "names": {
+    "db_path": "placement"
+   },
+   "exception": {
+    "ruling": "read context",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "This helper runs its statements under its callers' transactions, whose label the checker merges over every caller: the room writes begin BEGIN IMMEDIATE in both trees (main's _transaction(db_path, immediate=True), the backend's _hosted_write(..., immediate=True)), and the room reads run in main's deferred _transaction(db_path), which never takes the write lock, and in the backend's _hosted_read with the same 10 s lock wait."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::read_events_page",
+   "legacy": "gateway/hosted_rooms.py::read_events#0,1",
+   "names": {
+    "db_path": "placement"
+   },
+   "exception": {
+    "ruling": "read context",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "Main reads in gateway/hosted_rooms.py's deferred _transaction(db_path) (the room row through _room_row, then the event page), a connection with a 10 s busy wait that runs only SELECTs and never takes the write lock; the verb reads in _hosted_read on the placement's file with the same lock wait, after the rooms schema step."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.label_room_session#1",
+   "legacy": null,
+   "exception": {
+    "ruling": "boundary translation",
+    "aspects": [
+     "source"
+    ],
+    "reason": "When the unique title index (idx_sessions_title_unique) refuses main's UPDATE, main's label write raises sqlite3.IntegrityError and _execute_write rolls it back; the verb, still inside that write, reads the session that holds the title and raises TitleConflict naming it, and the write rolls back the same way, so nothing is written in either tree."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_hosted_rooms_common.py::_epoch",
+   "legacy": "hermes_state_runtime.py::_epoch",
+   "exception": {
+    "ruling": "fewer callers",
+    "aspects": [
+     "transaction"
+    ],
+    "reason": "Main's epoch fence (hermes_state_runtime.py::_epoch) is one function reached from the runtime, admission and transcript writers and reads and from the standalone hand-off; this copy is reached only by the hosted-room verbs on state.db (claim_owner, bind_transport, label_room_session, create_room's owner claim, import_fenced_rooms, member_authorized), each inside its own write or read."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_fenced_room_ids",
+   "legacy": "gateway/hosted_rooms_gateway_import.py::_fenced_ids#0",
+   "names": {
+    "handoff_id": "handoff_gateway_id"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_ensure_handoff_table",
+   "legacy": "gateway/hosted_rooms_gateway_import.py::_ensure_handoff_table#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_record_handoff",
+   "legacy": "gateway/hosted_rooms_gateway_import.py::_record_handoff#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_handed_room_ids",
+   "legacy": "gateway/hosted_rooms_gateway_import.py::handed_room_ids#0",
+   "exception": {
+    "ruling": "read context",
+    "aspects": [
+     "binding",
+     "transaction"
+    ],
+    "reason": "Main reads on _read_connection(source), an autocommit connection with a 10 s busy wait, and calls handoff_gateway_id() in the binding; the caller (gateway/hosted_rooms_gateway_import.py::handed_room_ids) calls it and passes the value, and the verb reads in _hosted_read on shared-state.db with the same lock wait."
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_claim",
+   "legacy": "gateway/hosted_rooms_gateway_import.py::_claim#0,1,2",
+   "names": {
+    "_OWNER": "OWNER_PREFIX"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_import_fenced_rooms",
+   "legacy": "gateway/hosted_rooms_gateway_import.py::import_standalone_rooms#0"
+  }
+ ],
+ "builders": [
+  {
+   "backend": "persistence/sqlite/gateway/_hosted_rooms_common.py::table_columns",
+   "legacy": "gateway/hosted_rooms_common.py::table_columns"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_hosted_rooms_common.py::table_exists",
+   "legacy": "gateway/hosted_rooms_common.py::table_exists"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/_hosted_rooms_legacy_import.py::_select_expressions",
+   "legacy": "gateway/hosted_rooms_legacy_import.py::_select_expressions"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_room_ids",
+   "legacy": "gateway/hosted_rooms.py::_room_ids"
+  }
+ ],
+ "not_moved": [
+  {
+   "legacy": "gateway/hosted_rooms.py::_read_one",
+   "reason": "Main's generic one-row read helper; the checker extracts its SQL at each caller, where the verbs that replace the callers map it."
+  },
+  {
+   "legacy": "gateway/hosted_rooms.py::claim_authority",
+   "reason": "no production caller in main (tests only), and the protocol HostedRoomRepository (persistence/gateway/hosted_rooms.py) offers no verb for it"
+  },
+  {
+   "legacy": "gateway/hosted_rooms.py::list_remote_run_receipts",
+   "reason": "no production caller in main (tests only) and no contract verb."
+  },
+  {
+   "legacy": "gateway/hosted_rooms.py::peer_room_is_reserved",
+   "reason": "no production caller in main (tests only); probe_peer_room_reservation is the contract read of a reservation."
+  },
+  {
+   "legacy": "gateway/hosted_rooms_common.py::connect#0",
+   "reason": "the schema transaction of a hosted-room connection is _run_steps in _hosted_store.py, run by _connect_shared for the steps the verb's HostedFiles carries."
+  }
+ ]
+}

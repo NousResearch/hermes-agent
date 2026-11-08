@@ -1,3 +1,43 @@
+# devtonic-agent
+
+> **A fork of [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research**, rebuilt to be the embedded agent runtime for [Devtonic](https://github.com/devtonic0/devtonic-web).
+
+devtonic-agent starts from Hermes: the self-improving agent with tools, memory, skills, cron, and multi-provider model support. We're reshaping it so it can run *inside* a developer app instead of being driven from the outside.
+
+## What we're building
+
+**Devtonic** is a mission-control workspace for building software with AI agents. It has dockable panels for chat, architecture and feature maps, a 3D codebase graph, code, terminal, git, servers, and tasks, all driven by a live `devtonic.config.json` that the agent keeps up to date.
+
+Today Devtonic talks to Hermes by spawning `hermes --cli -z …` for every turn and tailing log files. It works, but it's fragile and it makes installing two separate products awkward. devtonic-agent fixes that in four steps:
+
+1. **Perfect the fork.** Establish a reliable test baseline and clean CI, keep it easy to sync with upstream Hermes, and give it an isolated install that coexists with a normal Hermes setup.
+2. **Embeddable API.** Expose a structured, streaming agent API (turns, thinking, tool calls, sessions, cron) over a local HTTP/WebSocket server and a Python interface, so host apps never scrape logs.
+3. **Devtonic integration.** Make Devtonic's chat and task panels consume that event stream directly, with one-command install and version handshakes between the two.
+4. **Standalone app.** Replace Devtonic's Electron shell with a native standalone app (Tauri is the leading candidate) that ships this agent built in: one download, no separate agent install.
+
+The full plan is in [ROADMAP.devtonic.md](./ROADMAP.devtonic.md), and the goals and ground rules are in [DEVTONIC.md](./DEVTONIC.md).
+
+## Related projects
+
+- **[devtonic-web](https://github.com/devtonic0/devtonic-web)**: the open-source browser edition of the Devtonic workspace
+- **[hermes-agent](https://github.com/NousResearch/hermes-agent)**: the upstream project this fork is based on
+
+## Relationship to upstream
+
+- We merge `NousResearch/hermes-agent` `main` regularly and keep Devtonic-specific work additive where possible, so the fork stays mergeable.
+- Original copyright and the MIT license are preserved (see [LICENSE](./LICENSE)). All credit for the core agent goes to Nous Research and the Hermes contributors.
+- This fork is not affiliated with or endorsed by Nous Research.
+
+## Development
+
+Every change lands as a pull request with passing CI and updated docs. This repo is also improved continuously by an autonomous agent loop that works through the roadmap and opens documented PRs.
+
+Install, usage, and configuration are currently identical to upstream Hermes (see below).
+
+---
+
+## Upstream README (Hermes Agent)
+
 <p align="center">
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>

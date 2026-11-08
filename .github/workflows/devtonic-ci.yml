@@ -1,0 +1,27 @@
+name: Devtonic CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install
+        run: uv sync --frozen --group dev --group test
+      - name: Import smoke
+        run: uv run python -c "import run_agent, cli, model_tools, toolsets; print('ok')"
+      - name: Lint changed Python files
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --depth=1 origin ${{ github.base_ref }}
+          files=$(git diff --name-only --diff-filter=ACMR origin/${{ github.base_ref }}...HEAD -- '*.py' || true)
+          if [ -n "$files" ]; then uvx ruff check $files; else echo "no python changes"; fi
+      - name: Tests for changed areas
+        if: github.event_name == 'pull_request'
+        run: |
+          files=$(git diff --name-only --diff-filter=ACMR origin/${{ github.base_ref }}...HEAD | grep '^tests/.*\.py$' || true)
+          if [ -n "$files" ]; then uv run python -m pytest -q -p no:cacheprovider $files; else echo "no test changes"; fi

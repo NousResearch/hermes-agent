@@ -7,6 +7,7 @@ import base64
 import itertools
 import json
 import logging
+import mimetypes
 import os
 import random
 import shutil
@@ -90,17 +91,33 @@ def _is_audio_ext(ext: str) -> bool:
     return ext.lower() in {".mp3", ".wav", ".ogg", ".m4a", ".aac"}
 
 
-def _ext_to_mime(ext: str) -> str:
-    """Map file extension to MIME type (shared table matches Signal's historical map)."""
-    return mime_for_ext(ext, fallback="application/octet-stream")
+def _ext_to_mime(ext: str, path: Optional[str] = None) -> str:
+    """Map file extension to MIME type.
+
+    The shared table mirrors Signal's historical map. Extensions outside it (``.svg``,
+    ``.css``, ...) are resolved by the stdlib ``mimetypes`` guess so they do not collapse
+    into ``application/octet-stream`` and render as a generic file. ``path`` is only used
+    to give ``mimetypes`` a full filename; the extension decides the lookup.
+    """
+    mime = mime_for_ext(ext, fallback="")
+    if mime:
+        return mime
+    guessed = mimetypes.guess_type(path or f"attachment{ext or ''}")[0]
+    return guessed or "application/octet-stream"
 
 
 def _path_to_data_uri(path: str) -> str:
-    """Read a local attachment path and return a Signal-compatible data URI."""
+    """Read a local attachment path and return a Signal-compatible data URI.
+
+    Signal derives the attachment's display name from a ``filename`` parameter in the
+    RFC 2397 URI; without it the receiving client falls back to a generic name. The
+    value is URL-escaped because the parameter is part of the URI, not a body field.
+    """
     data = Path(path).read_bytes()
-    mime = _ext_to_mime(Path(path).suffix)
+    mime = _ext_to_mime(Path(path).suffix, path)
     encoded = base64.b64encode(data).decode("ascii")
-    return f"data:{mime};base64,{encoded}"
+    name = quote(Path(path).name, safe="")
+    return f"data:{mime};filename={name};base64,{encoded}"
 
 
 async def _inline_send_attachments(params: dict) -> dict:

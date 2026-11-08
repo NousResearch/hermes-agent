@@ -127,6 +127,21 @@ class TestSignalHelpers:
         assert _parse_comma_list("") == []
         assert _parse_comma_list("  ,  ,  ") == []
 
+    def test_ext_to_mime_unknown_ext_falls_back_to_mimetypes(self):
+        """An extension outside the shared table must resolve via stdlib mimetypes, not octet-stream."""
+        from gateway.platforms.signal import _ext_to_mime
+        assert _ext_to_mime(".svg") == "image/svg+xml"
+        assert _ext_to_mime(".SVG") == "image/svg+xml"
+
+    def test_ext_to_mime_unknown_ext_with_path_uses_full_filename(self):
+        from gateway.platforms.signal import _ext_to_mime
+        assert _ext_to_mime(".css", path="style.css") == "text/css"
+
+    def test_ext_to_mime_truly_unknown_ext_still_falls_back_to_octet_stream(self):
+        from gateway.platforms.signal import _ext_to_mime
+        assert _ext_to_mime(".nope-not-a-real-ext") == "application/octet-stream"
+        assert _ext_to_mime("") == "application/octet-stream"
+
     @pytest.mark.asyncio
     async def test_inline_send_attachments_converts_local_paths(self, tmp_path):
         from gateway.platforms.signal import _inline_send_attachments
@@ -143,9 +158,39 @@ class TestSignalHelpers:
 
         expected_data = base64.b64encode(b"OggS test audio").decode("ascii")
         assert converted is not params
-        assert converted["attachments"][0] == f"data:audio/ogg;base64,{expected_data}"
+        assert converted["attachments"][0] == f"data:audio/ogg;filename=voice.ogg;base64,{expected_data}"
         assert converted["attachments"][1:] == ["data:image/png;base64,AAAA", "/missing.jpg"]
         assert params["attachments"][0] == str(attachment)
+
+    @pytest.mark.asyncio
+    async def test_inline_send_attachments_url_escapes_filename(self, tmp_path):
+        """The filename parameter must be URL-escaped: RFC 2397 forbids raw spaces/# in URIs."""
+        from gateway.platforms.signal import _inline_send_attachments
+
+        attachment = tmp_path / "my voice note #2.ogg"
+        attachment.write_bytes(b"OggS test audio")
+
+        converted = await _inline_send_attachments({"attachments": [str(attachment)]})
+
+        expected_data = base64.b64encode(b"OggS test audio").decode("ascii")
+        assert converted["attachments"][0] == (
+            f"data:audio/ogg;filename=my%20voice%20note%20%232.ogg;base64,{expected_data}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_inline_send_attachments_unknown_ext_falls_back_to_mimetypes(self, tmp_path):
+        """Extensions outside the shared table (e.g. .svg) must not become application/octet-stream."""
+        from gateway.platforms.signal import _inline_send_attachments
+
+        attachment = tmp_path / "diagram.svg"
+        attachment.write_bytes(b"<svg/>")
+
+        converted = await _inline_send_attachments({"attachments": [str(attachment)]})
+
+        expected_data = base64.b64encode(b"<svg/>").decode("ascii")
+        assert converted["attachments"][0] == (
+            f"data:image/svg+xml;filename=diagram.svg;base64,{expected_data}"
+        )
 
     @pytest.mark.asyncio
     async def test_inline_send_attachments_leaves_no_local_files_unchanged(self):
@@ -924,7 +969,7 @@ class TestSignalSendResultValidation:
         assert result == {"timestamp": 123}
         payload = mock_client.post.await_args.kwargs["json"]
         expected_data = base64.b64encode(b"\x89PNG image bytes").decode("ascii")
-        assert payload["params"]["attachments"] == [f"data:image/png;base64,{expected_data}"]
+        assert payload["params"]["attachments"] == [f"data:image/png;filename=photo.png;base64,{expected_data}"]
 
     @pytest.mark.asyncio
     async def test_rpc_raises_rate_limit_on_results_failure(self, monkeypatch):

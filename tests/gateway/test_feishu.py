@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from gateway.platforms.event import ProcessingOutcome
+from gateway.platforms.event import MessageType, ProcessingOutcome
 
 
 if TYPE_CHECKING:
@@ -2529,3 +2529,324 @@ def test_processing_failure_skips_cross_mark_when_typing_removal_fails(fake_lark
     assert tracker.created == ["Typing"]
     assert tracker.deleted == ["r_typing"]
     assert adapter._pending_processing_reactions["om_msg"] == "r_typing"
+
+
+class TestFeishuOutboundMentions(unittest.TestCase):
+    """Outbound "@名字" → real Feishu ``<at>`` mention resolution."""
+
+    @staticmethod
+    def _run(coro):
+        return asyncio.run(coro)
+
+    @staticmethod
+    def _make_adapter():
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        return FeishuAdapter(PlatformConfig())
+
+    # --- _resolve_mention_candidates (pure) ---
+
+    def test_resolves_known_member_to_at_markup(self):
+        from plugins.platforms.feishu.adapter import _resolve_mention_candidates
+
+        result = _resolve_mention_candidates("@钢蛋 在吗", {"钢蛋": ("钢蛋", "ou_gangdan")})
+        self.assertEqual(result, '<at user_id="ou_gangdan">钢蛋</at> 在吗')
+
+    def test_unknown_name_passes_through_untouched(self):
+        from plugins.platforms.feishu.adapter import _resolve_mention_candidates
+
+        result = _resolve_mention_candidates("@陌生人 在吗", {"钢蛋": ("钢蛋", "ou_gangdan")})
+        self.assertEqual(result, "@陌生人 在吗")
+
+    def test_email_address_not_replaced(self):
+        from plugins.platforms.feishu.adapter import _resolve_mention_candidates
+
+        members = {"张三": ("张三", "ou_zs")}
+        result = _resolve_mention_candidates("发我 zhang@example.com", members)
+        self.assertEqual(result, "发我 zhang@example.com")
+
+    def test_case_insensitive_match_uses_canonical_display_name(self):
+        from plugins.platforms.feishu.adapter import _resolve_mention_candidates
+
+        result = _resolve_mention_candidates("@ALICE 看一下", {"alice": ("Alice", "ou_alice")})
+        self.assertEqual(result, '<at user_id="ou_alice">Alice</at> 看一下')
+
+    def test_preexisting_at_markup_not_double_processed(self):
+        from plugins.platforms.feishu.adapter import _resolve_mention_candidates
+
+        content = '回复 <at user_id="ou_other">别人</at> 和 @钢蛋'
+        result = _resolve_mention_candidates(content, {"钢蛋": ("钢蛋", "ou_gangdan")})
+        self.assertIn('<at user_id="ou_other">别人</at>', result)
+        self.assertIn('<at user_id="ou_gangdan">钢蛋</at>', result)
+
+    def test_multiple_mentions_in_one_message(self):
+        from plugins.platforms.feishu.adapter import _resolve_mention_candidates
+
+        members = {"张三": ("张三", "ou_zs"), "李四": ("李四", "ou_ls")}
+        result = _resolve_mention_candidates("@张三 @李四 一起看下", members)
+        self.assertIn('<at user_id="ou_zs">张三</at>', result)
+        self.assertIn('<at user_id="ou_ls">李四</at>', result)
+
+    # --- _md_elements_with_ats (pure) ---
+
+    def test_md_elements_without_at_unchanged(self):
+        from plugins.platforms.feishu.adapter import _md_elements_with_ats
+
+        self.assertEqual(_md_elements_with_ats("纯文本"), [{"tag": "md", "text": "纯文本"}])
+
+    def test_md_elements_split_around_at(self):
+        from plugins.platforms.feishu.adapter import _md_elements_with_ats
+
+        elements = _md_elements_with_ats('你好 <at user_id="ou_x">名字</at> 在吗')
+        self.assertEqual(elements, [
+            {"tag": "md", "text": "你好 "},
+            {"tag": "at", "user_id": "ou_x", "user_name": "名字"},
+            {"tag": "md", "text": " 在吗"},
+        ])
+
+    def test_md_elements_at_at_edges(self):
+        from plugins.platforms.feishu.adapter import _md_elements_with_ats
+
+        elements = _md_elements_with_ats('<at user_id="all">所有人</at>注意了')
+        self.assertEqual(elements, [
+            {"tag": "at", "user_id": "all", "user_name": "所有人"},
+            {"tag": "md", "text": "注意了"},
+        ])
+
+    # --- post rows integration ---
+
+    def test_post_rows_carry_at_elements(self):
+        from plugins.platforms.feishu.adapter import _build_markdown_post_rows, _resolve_mention_candidates
+
+        content = _resolve_mention_candidates("@钢蛋 **加粗**", {"钢蛋": ("钢蛋", "ou_gangdan")})
+        rows = _build_markdown_post_rows(content)
+        self.assertEqual(rows, [[
+            {"tag": "at", "user_id": "ou_gangdan", "user_name": "钢蛋"},
+            {"tag": "md", "text": " **加粗**"},
+        ]])
+
+    def test_post_rows_code_block_split_still_works(self):
+        from plugins.platforms.feishu.adapter import _build_markdown_post_rows, _resolve_mention_candidates
+
+        members = {"钢蛋": ("钢蛋", "ou_gangdan")}
+        content = _resolve_mention_candidates("@钢蛋 看代码\n```\nprint(1)\n```\n谢谢", members)
+        rows = _build_markdown_post_rows(content)
+        self.assertEqual(rows[0], [
+            {"tag": "at", "user_id": "ou_gangdan", "user_name": "钢蛋"},
+            {"tag": "md", "text": " 看代码"},
+        ])
+        self.assertEqual(rows[1], [{"tag": "md", "text": "```\nprint(1)\n```"}])
+        self.assertEqual(rows[2], [{"tag": "md", "text": "谢谢"}])
+
+    # --- _fetch_mention_members ---
+
+    def test_fetch_members_paged_and_injects_at_all(self):
+        adapter = self._make_adapter()
+        pages = [
+            SimpleNamespace(
+                success=lambda: True,
+                data=SimpleNamespace(
+                    items=[SimpleNamespace(name="钢蛋", member_id=SimpleNamespace(open_id="ou_gangdan"))],
+                    has_more=True, page_token="p2",
+                ),
+            ),
+            SimpleNamespace(
+                success=lambda: True,
+                data=SimpleNamespace(
+                    items=[SimpleNamespace(name="Alice", member_id=SimpleNamespace(open_id="ou_alice"))],
+                    has_more=False, page_token="",
+                ),
+            ),
+        ]
+        calls = []
+
+        def _get(request):
+            calls.append(request)
+            return pages[len(calls) - 1]
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(chat_members=SimpleNamespace(get=_get)))
+        )
+        members = self._run(adapter._fetch_mention_members("oc_x"))
+        self.assertEqual(members["钢蛋"], ("钢蛋", "ou_gangdan"))
+        self.assertEqual(members["alice"], ("Alice", "ou_alice"))
+        self.assertEqual(members["所有人"], ("所有人", "all"))
+        self.assertEqual(len(calls), 2)
+
+    def test_fetch_members_raises_on_api_error(self):
+        adapter = self._make_adapter()
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(chat_members=SimpleNamespace(
+                get=lambda _r: SimpleNamespace(success=lambda: False, code=99991672, msg="no scope")
+            )))
+        )
+        with self.assertRaises(RuntimeError):
+            self._run(adapter._fetch_mention_members("oc_x"))
+
+    # --- _get_mention_members cache ---
+
+    def test_members_cache_avoids_refetch(self):
+        adapter = self._make_adapter()
+        calls = []
+
+        async def _fake_fetch(chat_id):
+            calls.append(chat_id)
+            return {"钢蛋": ("钢蛋", "ou_gangdan")}
+
+        adapter._fetch_mention_members = _fake_fetch
+        first = self._run(adapter._get_mention_members("oc_x"))
+        second = self._run(adapter._get_mention_members("oc_x"))
+        self.assertEqual(first, second)
+        self.assertEqual(len(calls), 1)
+
+    def test_members_failure_caches_short_ttl_then_retries(self):
+        adapter = self._make_adapter()
+        calls = []
+
+        async def _flaky_fetch(chat_id):
+            calls.append(chat_id)
+            if len(calls) == 1:
+                raise RuntimeError("boom")
+            return {"钢蛋": ("钢蛋", "ou_gangdan")}
+
+        adapter._fetch_mention_members = _flaky_fetch
+        self.assertEqual(self._run(adapter._get_mention_members("oc_x")), {})
+        # Failure is cached with the short TTL: no immediate refetch.
+        self.assertEqual(self._run(adapter._get_mention_members("oc_x")), {})
+        self.assertEqual(len(calls), 1)
+        # After expiry the next call retries and succeeds.
+        adapter._mention_members_cache["oc_x"] = (0.0, {})
+        self.assertEqual(
+            self._run(adapter._get_mention_members("oc_x")),
+            {"钢蛋": ("钢蛋", "ou_gangdan")},
+        )
+        self.assertEqual(len(calls), 2)
+
+    # --- _resolve_outbound_mentions ---
+
+    def test_resolve_without_client_returns_content(self):
+        adapter = self._make_adapter()
+        adapter._client = None
+        result = self._run(adapter._resolve_outbound_mentions("@钢蛋 在吗", "oc_x"))
+        self.assertEqual(result, "@钢蛋 在吗")
+
+    def test_resolve_failure_falls_back_to_original(self):
+        adapter = self._make_adapter()
+        adapter._client = SimpleNamespace()
+
+        async def _boom(chat_id):
+            raise RuntimeError("no scope")
+
+        adapter._fetch_mention_members = _boom
+        result = self._run(adapter._resolve_outbound_mentions("@钢蛋 在吗", "oc_x"))
+        self.assertEqual(result, "@钢蛋 在吗")
+
+    # --- send() integration ---
+
+    def test_send_resolves_mention_in_text_message(self):
+        adapter = self._make_adapter()
+        adapter._client = SimpleNamespace()
+        adapter._fetch_mention_members = AsyncMock(return_value={"钢蛋": ("钢蛋", "ou_gangdan")})
+        sent = []
+
+        async def _fake_raw(*, chat_id, msg_type, payload, reply_to, metadata):
+            sent.append((msg_type, payload))
+            return SimpleNamespace(success=lambda: True)
+
+        adapter._send_raw_message = _fake_raw
+        result = self._run(adapter.send("oc_x", "@钢蛋 这是测试"))
+        self.assertTrue(result.success)
+        self.assertEqual(len(sent), 1)
+        msg_type, payload = sent[0]
+        self.assertEqual(msg_type, "text")
+        text_content = json.loads(payload)["text"]
+        self.assertIn('<at user_id="ou_gangdan">钢蛋</at>', text_content)
+
+    def test_send_resolves_mention_in_post_message(self):
+        adapter = self._make_adapter()
+        adapter._client = SimpleNamespace()
+        adapter._fetch_mention_members = AsyncMock(return_value={"钢蛋": ("钢蛋", "ou_gangdan")})
+        sent = []
+
+        async def _fake_raw(*, chat_id, msg_type, payload, reply_to, metadata):
+            sent.append((msg_type, payload))
+            return SimpleNamespace(success=lambda: True)
+
+        adapter._send_raw_message = _fake_raw
+        result = self._run(adapter.send("oc_x", "@钢蛋 **请确认**"))
+        self.assertTrue(result.success)
+        msg_type, payload = sent[0]
+        self.assertEqual(msg_type, "post")
+        post = json.loads(payload)
+        row = post["zh_cn"]["content"][0]
+        self.assertIn({"tag": "at", "user_id": "ou_gangdan", "user_name": "钢蛋"}, row)
+
+    def test_send_without_at_skips_member_fetch(self):
+        adapter = self._make_adapter()
+        adapter._client = SimpleNamespace()
+        adapter._fetch_mention_members = AsyncMock(return_value={"钢蛋": ("钢蛋", "ou_gangdan")})
+        sent = []
+
+        async def _fake_raw(*, chat_id, msg_type, payload, reply_to, metadata):
+            sent.append((msg_type, payload))
+            return SimpleNamespace(success=lambda: True)
+
+        adapter._send_raw_message = _fake_raw
+        result = self._run(adapter.send("oc_x", "普通消息"))
+        self.assertTrue(result.success)
+        adapter._fetch_mention_members.assert_not_called()
+
+    def test_learned_inbound_mention_resolves_when_api_has_no_bots(self):
+        """chat_members.get omits bot members; mentions seen on inbound messages fill the gap."""
+        adapter = self._make_adapter()
+        adapter._client = SimpleNamespace()
+        adapter._fetch_mention_members = AsyncMock(return_value={})  # API knows no one
+        adapter._inbound_mention_names["钢蛋"] = ("钢蛋", "ou_gangdan")  # learned from an inbound @
+        sent = []
+
+        async def _fake_raw(*, chat_id, msg_type, payload, reply_to, metadata):
+            sent.append((msg_type, payload))
+            return SimpleNamespace(success=lambda: True)
+
+        adapter._send_raw_message = _fake_raw
+        result = self._run(adapter.send("oc_x", "@钢蛋 在吗"))
+        self.assertTrue(result.success)
+        text_content = json.loads(sent[0][1])["text"]
+        self.assertIn('<at user_id="ou_gangdan">钢蛋</at>', text_content)
+
+    def test_process_inbound_message_learns_mention_names(self):
+        adapter = self._make_adapter()
+        adapter._client = SimpleNamespace()
+        mention = SimpleNamespace(name="钢蛋", open_id="ou_gangdan", is_all=False, is_self=False)
+
+        async def _fake_extract(_message):
+            # _extract_message_content returns (text, type, media_urls, media_types,
+            # media_text_inlined, mentions) on current main.
+            return ("@钢蛋 测试", MessageType.TEXT, [], [], [], [mention])
+
+        dispatched = []
+
+        async def _fake_dispatch(event):
+            dispatched.append(event)
+
+        async def _fake_chat_info(_chat_id):
+            return {"name": "助理群"}
+
+        async def _fake_profile(_sender_id, is_bot=False):
+            return {"user_id": "ou_x", "user_name": "张小林", "user_id_alt": ""}
+
+        adapter._extract_message_content = _fake_extract
+        adapter._dispatch_inbound_event = _fake_dispatch
+        adapter.get_chat_info = _fake_chat_info
+        adapter._resolve_sender_profile = _fake_profile
+        adapter.build_source = lambda **kw: SimpleNamespace(**kw)
+        self.assertEqual(adapter._inbound_mention_names, {})
+        self._run(
+            adapter._process_inbound_message(
+                data=None, message=SimpleNamespace(chat_id="oc_x"), sender_id=None,
+                chat_type="group", message_id="m1",
+            )
+        )
+        self.assertEqual(adapter._inbound_mention_names.get("钢蛋"), ("钢蛋", "ou_gangdan"))
+        self.assertEqual(len(dispatched), 1)

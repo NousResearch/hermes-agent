@@ -839,9 +839,10 @@ platforms:
 ### How it works
 
 1. On gateway startup, Hermes calls `createForumTopic` for each topic that doesn't have a `thread_id` yet
-2. The `thread_id` is saved back to `config.yaml` automatically — subsequent restarts skip the API call
+2. The `thread_id` is saved back to `config.yaml` automatically. Restarts, reconnects and adapter rebuilds after a network failure reuse it instead of creating the topic again
 3. Each topic maps to an isolated session key: `agent:main:telegram:dm:{chat_id}:{thread_id}`
 4. Messages in each topic have their own conversation history, memory flush, and context window
+5. Every topic with a `thread_id` (in `dm_topics` and `group_topics`) is listed in `channel_directory.json`, so `send_message` can target it by name even when it has no recent session. A topic name used in more than one chat is listed as `<chat_id> / <name>`
 
 ### Root DM handling
 

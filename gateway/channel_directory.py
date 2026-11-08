@@ -163,6 +163,7 @@ async def build_channel_directory(adapters: dict[Any, Any]) -> dict[str, Any]:
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.loaded_entries():
             await _discover(entry.name)
+    _merge_configured_channels(adapters, platforms)
     _apply_channel_aliases(platforms)
     directory = {"updated_at": datetime.now().isoformat(), "platforms": platforms}
     try:
@@ -170,6 +171,24 @@ async def build_channel_directory(adapters: dict[Any, Any]) -> dict[str, Any]:
     except Exception as e:
         logger.warning("Channel directory: failed to write: %s", e)
     return directory
+
+
+def _merge_configured_channels(adapters: dict[Any, Any], platforms: dict[str, list[dict[str, Any]]]) -> None:
+    """Add the targets an adapter's own config declares (``configured_channels()``, e.g. Telegram
+    ``extra.dm_topics``) after discovery: session history alone drops them once their sessions are
+    pruned (#52629). Discovered entries win on an id collision."""
+    for platform, adapter in adapters.items():
+        configured = getattr(adapter, "configured_channels", None)
+        if not callable(configured):
+            continue
+        try:
+            entries = _normalize_adapter_channels(configured())
+        except Exception as e:
+            logger.warning("Channel directory: configured channels for %s failed: %s", platform.value, e, exc_info=True)
+            continue
+        known = platforms.setdefault(platform.value, [])
+        seen = {entry.get("id") for entry in known}
+        known.extend(entry for entry in entries if entry["id"] not in seen)
 
 
 def _build_discord(adapter) -> list[dict[str, str]]:

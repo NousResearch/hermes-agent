@@ -599,6 +599,40 @@ def _normalize_config_for_web(config: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
+def _repair_surrogate_halves(value: str) -> str:
+    """Recombine escaped surrogate halves into the code point they spell; a lone half becomes U+FFFD.
+
+    YAML's ``\\u`` escape takes four hex digits, so ``"\\uD83E\\uDD19"`` in a double-quoted scalar parses
+    to the two LONE surrogates U+D83E U+DD19 rather than U+1F919. Python accepts that string and the
+    file itself is valid UTF-8, but a rendered response cannot encode it (``UnicodeEncodeError:
+    surrogates not allowed``), so the only place the damage shows is the response (#150918). A string
+    without surrogates is returned unchanged.
+    """
+    if value.isascii():
+        return value
+    try:
+        return value.encode("utf-16", "surrogatepass").decode("utf-16")
+    except UnicodeError:
+        from agent.message_sanitization import _sanitize_surrogates
+        return _sanitize_surrogates(value)
+
+
+def _repair_config_surrogates(value: Any) -> Any:
+    """A copy of *value* whose strings — keys included — can be UTF-8 encoded.
+
+    Containers are rebuilt rather than walked in place: the payload shares its nested dicts with the
+    cached config ``load_config()`` handed out, which the caller must not mutate.
+    """
+    if isinstance(value, str):
+        return _repair_surrogate_halves(value)
+    if isinstance(value, dict):
+        return {_repair_surrogate_halves(key) if isinstance(key, str) else key: _repair_config_surrogates(item)
+                for key, item in value.items()}
+    if isinstance(value, list):
+        return [_repair_config_surrogates(item) for item in value]
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Model assignment — main slot or auxiliary slots. Mirrors the model.options
 # JSON-RPC from tui_gateway but over REST so the Models page can drive it.

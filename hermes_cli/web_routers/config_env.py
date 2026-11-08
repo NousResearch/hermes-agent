@@ -18,8 +18,8 @@ from hermes_cli.web_routers._common import (
 from hermes_cli.config_backend import refusing_locked_omissions
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
-    _apply_main_model_assignment, _denormalize_config_from_web, drop_model_key, _normalize_config_for_web, _schema_with_dynamic_provider_options,
-    _validated_main_model_selection,
+    _apply_main_model_assignment, _denormalize_config_from_web, drop_model_key, _normalize_config_for_web, _repair_config_surrogates,
+    _schema_with_dynamic_provider_options, _validated_main_model_selection,
 )
 from hermes_cli.web_server_profiles import (
     _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_entries,
@@ -88,8 +88,10 @@ async def get_config(profile: Optional[str] = None, include_defaults: bool = Tru
     config = await scoped_to_thread(
         profile, lambda: _normalize_config_for_web(load_config() if include_defaults else read_raw_config())
     )
-    # Strip internal keys that the frontend shouldn't see or send back
-    return {k: v for k, v in config.items() if not k.startswith("_")}
+    # Strip internal keys that the frontend shouldn't see or send back.
+    # A string YAML decoded into lone surrogate halves cannot be rendered, so one such value would
+    # 500 every config-reading pane; the payload is repaired rather than the cached config (#150918).
+    return _repair_config_surrogates({k: v for k, v in config.items() if not k.startswith("_")})
 
 
 @config_router.get("/api/config/defaults")

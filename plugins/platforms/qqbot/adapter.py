@@ -71,7 +71,7 @@ from .utils import coerce_list as _coerce_list, build_user_agent
 from .chunked_upload import (
     ChunkedUploader, UploadDailyLimitExceededError, UploadFileTooLargeError)
 from .keyboards import (
-    ApprovalRequest, InlineKeyboard, InteractionEvent, build_approval_keyboard,
+    ApprovalRequest, InlineKeyboard, InteractionEvent, approval_button_request_id, build_approval_keyboard,
     build_update_prompt_keyboard, parse_approval_button_data, parse_interaction_event,
     parse_update_prompt_button_data)
 from gateway.platforms._shared import get_scoped_secret as _resolve_qq_secret
@@ -701,7 +701,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 return
             try:
                 from tools.approval import resolve_gateway_approval_card  # lazy: keep adapter light
-                count = resolve_gateway_approval_card(session_key, choice, None)  # refuses approve on Deny-only
+                count = resolve_gateway_approval_card(  # refuses approve on Deny-only
+                    session_key, choice, approval_button_request_id(button_data))
                 logger.info(
                     "[%s] Button resolved %d approval(s) for session %s (choice=%s, operator=%s)",
                     self._log_tag, count, session_key, choice, event.operator_openid)
@@ -1483,8 +1484,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         one the shortened-preview check measured; the keyboard offers only ``prompt.choices`` (QQ's three
         buttons fold the session tier into ``always``)."""
         choices = prompt.choices
-        keyboard = build_approval_keyboard(
-            prompt.session_key, allow_permanent="always" in choices, allow_once="once" in choices)
+        keyboard = build_approval_keyboard(prompt.session_key, allow_permanent="always" in choices,
+                                           allow_once="once" in choices, request_id=prompt.request_id)
         # QQ requires a msg_id for passive replies; the last inbound id is the natural one.
         return await self.send_with_keyboard(
             prompt.chat_id, prompt.text, keyboard, reply_to=self._last_msg_id.get(prompt.chat_id))

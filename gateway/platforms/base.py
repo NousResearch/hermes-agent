@@ -436,7 +436,7 @@ from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, exec_approval_cmd_budget, format_approval_deadline_line,
-    render_exec_approval, send_full_command)
+    full_command_proven, render_exec_approval)
 from gateway.platforms.base_streaming_tts import (
     AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -2789,11 +2789,10 @@ class BasePlatformAdapter(ABC):
         actions = self._exec_approval_actions(
             allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied)
         text, truncated = render_exec_approval(self, command, description, smart_denied, True)
-        if truncated and not await send_full_command(self, chat_id, command, metadata):
+        # Deny-only (a forged approve tap resolves nothing) until every chunk of the full command lands.
+        if truncated and not await full_command_proven(self, chat_id, session_key, request_id, command, metadata):
             text = render_exec_approval(self, command, description, smart_denied, False)[0]
             actions = [row for row in actions if row[1] == "deny"]
-            from tools.approval import restrict_gateway_approval_card_to_deny
-            restrict_gateway_approval_card_to_deny(session_key, request_id)  # a forged approve tap resolves nothing
         return await self._send_exec_approval_prompt(ExecApprovalPrompt(
             chat_id=chat_id, session_key=session_key, metadata=metadata, command=command, description=description,
             smart_denied=smart_denied, request_id=request_id, text=text, actions=actions))

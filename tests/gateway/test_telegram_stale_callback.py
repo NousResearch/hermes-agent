@@ -33,22 +33,14 @@ def _error(text: str) -> Exception:
     return BadRequest(text)
 
 
-class _Bot:
-    def __init__(self, sent):
-        self.sent = sent
-
-    async def send_message(self, chat_id=None, text=None, **kwargs):
-        self.sent.append((chat_id, text))
-
-
 class _RefusingQuery:
     """``CallbackQuery`` stand-in whose ``answer()`` Telegram refuses."""
 
-    def __init__(self, error: str = STALE):
+    def __init__(self, error: str = STALE, *, thread_id=None, is_topic_message=False):
         self.data = "mc:0"
-        self.message = SimpleNamespace(chat_id=12345, text="picker")
+        self.message = SimpleNamespace(
+            chat_id=12345, text="picker", message_thread_id=thread_id, is_topic_message=is_topic_message)
         self.from_user = SimpleNamespace(id=1, first_name="tester")
-        self.notes: list = []
         self.edits: list = []
         self._error = error
 
@@ -58,8 +50,10 @@ class _RefusingQuery:
     async def edit_message_text(self, **kwargs):
         self.edits.append(kwargs)
 
-    def get_bot(self):
-        return _Bot(self.notes)
+
+def _notes(adapter) -> list[dict]:
+    """Every chat note the adapter posted (``sendMessage`` kwargs)."""
+    return [c.kwargs for c in adapter._bot.send_message.await_args_list]
 
 
 def _adapter() -> TelegramAdapter:
@@ -90,9 +84,22 @@ class TestExpiredCallbackAnswer:
         await adapter._handle_model_picker_callback(query, "mc:0", "12345")
 
         # The tap can no longer be acked as a toast; the toast text is still a usable next step.
-        assert len(query.notes) == 1
-        assert query.notes[0][0] == 12345
-        assert "/model" in query.notes[0][1]
+        notes = _notes(adapter)
+        assert len(notes) == 1
+        assert notes[0]["chat_id"] == 12345
+        assert notes[0].get("message_thread_id") is None
+        assert "/model" in notes[0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_stale_tap_in_a_forum_topic_posts_the_note_in_that_topic(self):
+        adapter = _adapter()
+        query = _RefusingQuery(thread_id=77, is_topic_message=True)
+
+        await adapter._handle_model_picker_callback(query, "mc:0", "12345")
+
+        notes = _notes(adapter)
+        assert len(notes) == 1
+        assert notes[0]["message_thread_id"] == 77
 
     @pytest.mark.asyncio
     async def test_stale_tap_on_an_expired_choice_picker_also_answers_in_the_chat(self):
@@ -101,7 +108,7 @@ class TestExpiredCallbackAnswer:
 
         await adapter._handle_choice_picker_callback(query, "cp:0", "12345")
 
-        assert len(query.notes) == 1
+        assert len(_notes(adapter)) == 1
 
     @pytest.mark.asyncio
     async def test_stale_answer_on_a_model_switch_still_switches_and_clears_the_picker(self):

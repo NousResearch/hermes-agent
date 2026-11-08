@@ -183,7 +183,7 @@ from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, 
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, log_resolved, tap_matches_prompt
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
-from plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, answer_callback
+from plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, answer_callback, answer_or_note
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
 from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
@@ -4303,7 +4303,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         """Handle choice picker button taps (cp:<index>)."""
         state = self._choice_picker_state.get(chat_id)
         if not state:
-            await answer_callback(query, _toast("platform.telegram.picker.expired_rerun"), chat_note=True)
+            await answer_or_note(self, query, _toast("platform.telegram.picker.expired_rerun"))
             return
         try:
             choice = state["choices"][int(data[3:])]
@@ -4312,7 +4312,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             return
         callback = state.get("on_choice_selected")
         if not callback:
-            await answer_callback(query, _toast("platform.telegram.picker.expired"), chat_note=True)
+            await answer_or_note(self, query, _toast("platform.telegram.picker.expired"))
             return
         try:
             result_text = await callback(chat_id, str(choice.get("value") or ""))
@@ -4458,7 +4458,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             return None
         callback = state.get("on_model_selected")
         if not callback:
-            await answer_callback(query, _toast("platform.telegram.picker.expired"), chat_note=True)
+            await answer_or_note(self, query, _toast("platform.telegram.picker.expired"))
             return None
         return idx, model_list[idx], state.get("selected_provider", ""), callback
 
@@ -4487,7 +4487,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         """Handle model picker callbacks (mp:/mpg:/mpv:/mm:/mc:/mb/mx/mg:)."""
         state = self._model_picker_state.get(chat_id)
         if not state:
-            await answer_callback(query, _toast("platform.telegram.picker.expired_model"), chat_note=True)
+            await answer_or_note(self, query, _toast("platform.telegram.picker.expired_model"))
             return
         get_label = self._provider_get_label()
         if data.startswith("mp:"):  # provider selected: show model buttons (page 0)

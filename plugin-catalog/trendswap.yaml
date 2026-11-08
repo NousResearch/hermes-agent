@@ -1,0 +1,17 @@
+name: trendswap
+title: TrendSwap Video Studio
+repo: https://github.com/GptsApp/trendswap-mcp
+sha: 7a09537f7e186891a9fb714651fed83e2e567325
+description: "Discover viral video templates, explore motion transfer styles, and prepare portrait assets for video generation directly from Hermes Agent via TrendSwap hosted MCP server. Compliant with Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/). Tool calls go to TrendSwap streamable HTTP MCP server at https://trendswap.app/api/mcp."
+maintainer: GptsApp
+tier: community
+category: tools
+requires_hermes: ">=0.21.0"
+version: "1.0.0"
+docs_url: https://trendswap.app
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

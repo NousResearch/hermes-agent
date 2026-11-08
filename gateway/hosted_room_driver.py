@@ -59,7 +59,7 @@ _GENERATION_FENCE = "execution_generation=? AND cancel_generation=?"
 _RUN_FENCE = "run_gateway_id=? AND run_process_generation=? AND run_lease_generation=?"
 _SETTLE_SET = "status=?, settlement_id=?, settlement_status=?, result_json=?, terminal_at=?, updated_at=?"
 _REQUEUE_SET = "status='queued', run_gateway_id=NULL, run_process_generation=NULL, run_lease_generation=NULL"
-_CANCEL_SET = "status='cancelled', cancel_generation=?, cancel_id=?, terminal_at=?, updated_at=?"
+_CANCEL_SET = "status='cancelled', cancel_generation=?, cancel_id=?, result_json=NULL, terminal_at=?, updated_at=?"
 
 
 def _task_update(set_clause: str, fence: str) -> str:

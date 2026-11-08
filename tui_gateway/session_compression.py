@@ -179,16 +179,34 @@ def _apply_live_context_length_pin(agent: Any, cfg: dict | None, cc: Any) -> Non
     """
     from agent.agent_init import config_context_length_for_runtime, set_config_context_length
 
+    agent._compression_pin_sync_failed = False
     new_ctx = config_context_length_for_runtime(agent, cfg)
-    if new_ctx is None and isinstance(cfg, dict) and cfg.get("custom_providers"):
-        # Construction and /model also honor provider-specific model context pins.
-        from hermes_cli.config import get_compatible_custom_providers, get_custom_provider_context_length
+    if new_ctx is None:
+        # Construction and /model also honor provider-specific model context pins, across both
+        # the legacy custom_providers list and v12 providers: (get_compatible_custom_providers
+        # merges them); mirror that resolution here.
+        try:
+            from hermes_cli.config import get_compatible_custom_providers, get_custom_provider_context_length
 
-        new_ctx = get_custom_provider_context_length(
-            model=getattr(agent, "model", "") or "",
-            base_url=getattr(agent, "base_url", "") or "",
-            custom_providers=get_compatible_custom_providers(cfg),
-        )
+            cp_entries = get_compatible_custom_providers(cfg)
+            if cp_entries:
+                new_ctx = get_custom_provider_context_length(
+                    model=getattr(agent, "model", "") or "",
+                    base_url=getattr(agent, "base_url", "") or "",
+                    custom_providers=cp_entries,
+                )
+        except Exception:
+            # A throwing resolver must not erase the pin it cannot re-read, and must not
+            # abort the rest of the live apply mid-function either: keep the last
+            # known-good pin (skip only the pin writes), still finish the apply, and leave
+            # the signature unlatched so the sync retries next turn.
+            agent._compression_pin_sync_failed = True
+            logger.warning(
+                "Could not re-read custom_providers context_length for %r; keeping the existing pin",
+                getattr(agent, "model", None),
+                exc_info=True,
+            )
+            return
     if new_ctx is not None:
         if cc is None:
             agent._config_context_length = new_ctx
@@ -229,8 +247,12 @@ def _sync_agent_compression_with_config(sid: str, session: dict) -> None:
     except Exception as e:
         logger.warning("Could not apply live compression config for %s: %s", sid, e)
     else:
-        # Latch only on success: a failed apply must retry next turn.
-        session["config_compression_seen"] = signature
+        # Latch only on success: a failed apply must retry next turn. A resolver throw keeps the
+        # pin but still leaves this apply incomplete, so it must not latch either.
+        if getattr(agent, "_compression_pin_sync_failed", False):
+            agent._compression_pin_sync_failed = False
+        else:
+            session["config_compression_seen"] = signature
 
 
 def _apply_pending_model_switch(sid: str, session: dict) -> None:

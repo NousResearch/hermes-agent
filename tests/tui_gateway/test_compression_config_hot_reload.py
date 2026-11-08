@@ -555,3 +555,147 @@ def test_external_engine_retains_custom_provider_context_pin(monkeypatch):
     assert agent._config_context_length == 512_000
     assert engine.threshold_tokens == 100_000
     assert not hasattr(engine, "tail_mode")
+
+def test_throwing_custom_provider_resolver_keeps_agent_pin_and_apply_completes(monkeypatch, caplog):
+    """A resolver that raises must not erase the pin nor abort the live apply mid-function.
+
+    Keeping the last known-good pin beats silently dropping a 512k ceiling; the rest of the
+    apply (cap coercion, cache invalidation) must still run.
+    """
+    engine = SimpleNamespace(
+        name="lcm",
+        threshold_tokens=100_000,
+        threshold_percent=0.65,
+        model_thresholds={},
+    )
+    agent = SimpleNamespace(
+        model="lcm-model",
+        provider="custom:acme",
+        base_url="http://127.0.0.1:8123/v1",
+        context_compressor=engine,
+        _config_context_length=512_000,
+        compression_enabled=True,
+        compression_idle_compact_after_seconds=0,
+        codex_responses_native_compaction=False,
+        codex_responses_compact_threshold=200_000,
+    )
+    cfg = {
+        "model": {"default": "lcm-model", "provider": "custom:acme"},
+        "custom_providers": [{
+            "name": "acme",
+            "base_url": "http://127.0.0.1:8123/v1",
+            "models": {"lcm-model": {"context_length": 512_000}},
+        }],
+        "compression": {"tail_mode": "legacy"},
+    }
+
+    import hermes_cli.config as hc
+
+    def _boom(**kwargs):
+        raise RuntimeError("resolver exploded")
+
+    monkeypatch.setattr(hc, "get_custom_provider_context_length", _boom)
+
+    session = {"agent": agent, "session_key": "resolver-raises"}
+    with caplog.at_level(logging.WARNING):
+        _sync_with_cfg(monkeypatch, session, cfg)
+
+    assert agent._config_context_length == 512_000
+    assert not hasattr(engine, "tail_mode")
+    assert "Could not apply live compression config" not in caplog.text
+    # The failure must be logged as a pin-keep and must not latch the signature, so the
+    # sync retries next turn instead of freezing the stale pin.
+    assert "Could not re-read custom_providers context_length" in caplog.text
+    assert "config_compression_seen" not in session
+
+def test_providers_only_config_retains_custom_provider_context_pin(monkeypatch):
+    """v12 providers: entries must resolve the pin the same way legacy custom_providers do.
+
+    Construction and /model read through get_compatible_custom_providers(), which merges
+    both shapes; gating the live sync on the raw ``custom_providers`` key dropped pins
+    configured only under ``providers:``.
+    """
+    engine = SimpleNamespace(
+        name="lcm",
+        threshold_tokens=100_000,
+        threshold_percent=0.65,
+        model_thresholds={},
+    )
+    agent = SimpleNamespace(
+        model="lcm-model",
+        provider="acme",
+        base_url="http://127.0.0.1:8123/v1",
+        context_compressor=engine,
+        _config_context_length=512_000,
+        compression_enabled=True,
+        compression_idle_compact_after_seconds=0,
+        codex_responses_native_compaction=False,
+        codex_responses_compact_threshold=200_000,
+    )
+    cfg = {
+        "model": {"default": "lcm-model", "provider": "acme"},
+        "providers": {
+            "acme": {
+                "api": "http://127.0.0.1:8123/v1",
+                "models": {"lcm-model": {"context_length": 512_000}},
+            },
+        },
+        "compression": {"tail_mode": "legacy"},
+    }
+
+    _sync_with_cfg(
+        monkeypatch,
+        {"agent": agent, "session_key": "providers-only-pin"},
+        cfg,
+    )
+
+    assert agent._config_context_length == 512_000
+    assert engine.threshold_tokens == 100_000
+    assert not hasattr(engine, "tail_mode")
+
+def test_throwing_custom_provider_resolver_on_compressor_path_keeps_pin_and_recovers_apply(monkeypatch, caplog):
+    """Native ContextCompressor path: a resolver throw must not stop the rest of the apply.
+
+    The percent/window writes and ``_coerce_threshold_tokens_cap``/cache invalidation
+    still run; only the pin writes are skipped, and the sync must not latch.
+    """
+    sess, compressor = _session_with_compressor()
+    agent = sess["agent"]
+    agent._config_context_length = 512_000
+
+    cap_calls = []
+    orig_coerce = compressor._coerce_threshold_tokens_cap
+
+    def _spy_coerce(value):
+        cap_calls.append(value)
+        return orig_coerce(value)
+
+    cfg = {
+        "model": {"default": "gpt-5.6-sol", "provider": "openai-codex"},
+        "custom_providers": [{
+            "name": "acme",
+            "base_url": "http://127.0.0.1:8123/v1",
+            "models": {"gpt-5.6-sol": {"context_length": 512_000}},
+        }],
+        "compression": {"tail_mode": "legacy"},
+    }
+
+    import hermes_cli.config as hc
+
+    def _boom(**kwargs):
+        raise RuntimeError("resolver exploded")
+
+    monkeypatch.setattr(hc, "get_custom_provider_context_length", _boom)
+    monkeypatch.setattr(compressor, "_coerce_threshold_tokens_cap", _spy_coerce)
+
+    session = {"agent": agent, "session_key": "compressor-resolver-raises"}
+    with caplog.at_level(logging.WARNING):
+        _sync_with_cfg(monkeypatch, session, cfg)
+
+    assert agent._config_context_length == 512_000
+    assert cap_calls, "cap coercion must still run after a resolver throw"
+    assert compressor._threshold_tokens is None
+    assert compressor._tail_token_budget is None
+    assert "Could not apply live compression config" not in caplog.text
+    assert "Could not re-read custom_providers context_length" in caplog.text
+    assert "config_compression_seen" not in session

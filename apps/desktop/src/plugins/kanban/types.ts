@@ -34,6 +34,12 @@ export interface KanbanTask {
   /** Unblock-loop counter — how many times this task re-blocked for the same
    *  reason after a human unblock. 0/absent on legacy payloads. */
   block_recurrences?: number
+  /** First-class project this card belongs to (`hermes project list`). It is
+   *  what the worker's context reads for its root and its memory term. */
+  project_id?: null | string
+  /** Project display name when the backend supplies it; the board resolves the
+   *  label from the projects list when it does not. */
+  project_name?: null | string
 }
 
 export interface KanbanColumn {

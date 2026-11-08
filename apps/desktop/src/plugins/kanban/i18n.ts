@@ -78,6 +78,8 @@ type KanbanMessages = {
   skills: string
   skillsPlaceholder: string
   projectInherit: string
+  projectNone: string
+  projectHint: string
   parent: string
   noParent: string
   goalMode: string
@@ -304,6 +306,8 @@ export const en: KanbanMessages = {
   parkedOption: "unassigned (parked — won't run)",
   skills: 'Skills (comma-separated)',
   projectInherit: 'Inherit from board',
+  projectNone: 'No project',
+  projectHint: 'Its worker gets this project’s root, context and memory.',
   skillsPlaceholder: 'translation, github',
   parent: "Parent (blocks until it's done)",
   noParent: '— no parent —',
@@ -533,6 +537,8 @@ const ja: KanbanMessages = {
   parkedOption: '未割り当て（保留 — 実行されません）',
   skills: 'スキル（カンマ区切り）',
   projectInherit: 'Inherit from board',
+  projectNone: 'No project',
+  projectHint: 'Its worker gets this project’s root, context and memory.',
   skillsPlaceholder: 'translation, github',
   parent: '親（完了するまでブロック）',
   noParent: '— 親なし —',
@@ -760,6 +766,8 @@ const zh: KanbanMessages = {
   parkedOption: '未分配（搁置 — 不会运行）',
   skills: '技能（逗号分隔）',
   projectInherit: 'Inherit from board',
+  projectNone: 'No project',
+  projectHint: 'Its worker gets this project’s root, context and memory.',
   skillsPlaceholder: 'translation, github',
   parent: '父任务（完成前会阻塞）',
   noParent: '— 无父任务 —',
@@ -985,6 +993,8 @@ const zhHant: KanbanMessages = {
   parkedOption: '未指派（擱置 — 不會執行）',
   skills: '技能（以逗號分隔）',
   projectInherit: 'Inherit from board',
+  projectNone: 'No project',
+  projectHint: 'Its worker gets this project’s root, context and memory.',
   skillsPlaceholder: 'translation, github',
   parent: '父任務（完成前會阻擋）',
   noParent: '— 無父任務 —',

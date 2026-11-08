@@ -167,6 +167,13 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
   // auto-default (ready), else the specifier that rewrites triage cards.
   const attached = task.assignee || (task.status === 'ready' ? fallback : task.status === 'triage' ? orchestrator : '')
 
+  // Which product this card belongs to, resolved from the shared projects query
+  // (one fetch for the whole board). The chip is the only place allocation is
+  // visible without opening the card.
+  const scope = useKanbanScope()
+  const { data: projectData } = useQuery({ queryKey: projectsKey(scope), queryFn: fetchProjects, staleTime: 60_000 })
+  const projectLabel = task.project_id ? (projectData?.projects.find(p => p.id === task.project_id)?.name ?? null) : null
+
   const meta = columnMeta(task.status)
 
   return (
@@ -227,7 +234,15 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
         </Tip>
       )}
       <div className="ml-auto flex min-w-0 shrink items-center gap-2">
-        {typeof task.priority === 'number' && task.priority > 0 && <PriorityGlyph priority={task.priority} />}
+        {projectLabel ? (
+        <span
+          className="inline-flex max-w-[7rem] shrink-0 items-center rounded-full border border-(--ui-stroke-tertiary) px-1.5 py-px text-[0.5625rem] font-medium uppercase tracking-[0.06em] text-(--ui-text-tertiary)"
+          title={`${k.project}: ${projectLabel}`}
+        >
+          <span className="truncate">{projectLabel}</span>
+        </span>
+      ) : null}
+      {typeof task.priority === 'number' && task.priority > 0 && <PriorityGlyph priority={task.priority} />}
         {task.progress && task.progress.total > 0 && (
           <Meta icon="checklist">
             {task.progress.done}/{task.progress.total}
@@ -801,6 +816,7 @@ function NewTaskDialog({
                 ))}
               </SelectContent>
             </Select>
+            <span className="text-[0.625rem] text-(--ui-text-quaternary)">{k.projectHint}</span>
           </Field>
 
           <Field label={k.model}>

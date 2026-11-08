@@ -54,6 +54,7 @@ def test_channel_directory_lists_configured_topics_without_sessions(tmp_path):
         assert resolve_channel_name("telegram", "Ops") == "-1001:5"
         assert resolve_channel_name("telegram", "777 / Reports") == "777:9"
 
+
 def test_topic_names_differing_only_by_hash_are_qualified(tmp_path):
     """``Reports`` and ``#Reports`` resolve as the same name, so both must be chat-qualified."""
     from gateway.channel_directory import build_channel_directory, resolve_channel_name
@@ -79,3 +80,27 @@ def test_unnamed_group_topic_is_listed(tmp_path):
         (entry,) = directory["platforms"]["telegram"]
         assert entry["id"] == "-1001:5"
         assert resolve_channel_name("telegram", entry["name"]) == "-1001:5"
+
+
+@pytest.mark.asyncio
+async def test_topic_setup_does_not_mutate_shared_config_cache(tmp_path, monkeypatch):
+    """Setup writes created thread_ids into its own copy; the process-wide config cache only learns
+    them through the persist path."""
+    from hermes_cli.config import load_config_readonly
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "platforms:\n  telegram:\n    extra:\n      dm_topics:\n"
+        "      - chat_id: 222\n        topics:\n        - name: WEBSITE\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra={}))
+    adapter._bot = AsyncMock()
+    adapter._bot.create_forum_topic.return_value = SimpleNamespace(message_thread_id=58890)
+    adapter._persist_dm_topic_thread_id = lambda *a, **k: None  # the save fails / is skipped
+
+    await adapter._setup_dm_topics()
+
+    assert adapter._dm_topics == {"222:WEBSITE": 58890}
+    topics = load_config_readonly()["platforms"]["telegram"]["extra"]["dm_topics"][0]["topics"]
+    assert "thread_id" not in topics[0]

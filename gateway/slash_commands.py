@@ -436,6 +436,8 @@ class GatewaySlashCommandsMixin(
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        from tools.slash_confirm import clear as clear_slash_confirm
+        clear_slash_confirm(session_key)
         await self._hm_stop_owner_turn(session_key)  # also between turns, before the next claim (N53)
 
         async def _stop(key: str, invalidation_reason: str) -> None:

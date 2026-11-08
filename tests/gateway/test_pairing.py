@@ -809,3 +809,47 @@ def test_approval_cache_isolated_and_unreadable_files_fail_closed(tmp_path, monk
     first._save_json(path, {"user2": {}})
     assert not first.is_approved("telegram", "user1")
     assert first.is_approved("telegram", "user2")
+
+
+class TestApprovedIndex:
+    """is_approved uses an in-memory index; identity aliases resolve once per query."""
+
+    def _write(self, tmp_path, platform, ids):
+        (tmp_path / f"{platform}-approved.json").write_text(
+            json.dumps({i: {"user_name": "u", "approved_at": 1.0} for i in ids})
+        )
+
+    def test_hit_miss_and_reload_on_file_change(self, tmp_path):
+        self._write(tmp_path, "telegram", ["111"])
+        store = _make_store(tmp_path)
+        assert store.is_approved("telegram", "111") is True
+        assert store.is_approved("telegram", "222") is False
+        self._write(tmp_path, "telegram", ["111", "222"])
+        os.utime(tmp_path / "telegram-approved.json", (1, 1))  # mtime alone must not matter
+        assert store.is_approved("telegram", "222") is True
+
+    def test_revoke_invalidates_index(self, tmp_path):
+        self._write(tmp_path, "telegram", ["111"])
+        store = _make_store(tmp_path)
+        assert store.is_approved("telegram", "111") is True
+        store.revoke("telegram", "111")
+        assert store.is_approved("telegram", "111") is False
+
+    def test_whatsapp_normalized_and_lid_alias(self, tmp_path):
+        sess = tmp_path / "sess"
+        sess.mkdir()
+        (sess / "lid-mapping-5511999.json").write_text('"6012@lid"')
+        (sess / "lid-mapping-6012_reverse.json").write_text('"5511999"')
+        self._write(tmp_path, "whatsapp", ["+5511999"])
+        store = _make_store(tmp_path)
+        with patch("gateway.whatsapp_identity.get_hermes_dir", return_value=sess):
+            assert store.is_approved("whatsapp", "5511999:12@s.whatsapp.net") is True
+            assert store.is_approved("whatsapp", "6012@lid") is True
+            assert store.is_approved("whatsapp", "777") is False
+
+    def test_whatsapp_aliases_resolved_once_per_query(self, tmp_path):
+        self._write(tmp_path, "whatsapp", [str(i) for i in range(50)])
+        store = _make_store(tmp_path)
+        with patch("gateway.pairing.expand_whatsapp_aliases", return_value=set()) as expand:
+            store.is_approved("whatsapp", "999")
+        assert expand.call_count == 1

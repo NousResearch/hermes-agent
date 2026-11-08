@@ -24,7 +24,8 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
-    KANBAN_SCHEDULE_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
+    KANBAN_SCHEDULE_SCHEMA, KANBAN_SHOW_SCHEMA,
+    KANBAN_UNBLOCK_SCHEMA, KANBAN_UNLINK_SCHEMA, KANBAN_SPECIFY_SCHEMA)
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +240,33 @@ def _worker_run_id(task_id: str) -> Optional[int]:
         return int(raw) if raw else None
     except ValueError:
         return None
+
+
+def _verified_worker_principal(conn, task_id: str) -> tuple[str, int]:
+    """Return the dispatcher-recorded principal and live run id, or fail closed.
+
+    Environment variables identify the candidate task/run only. The principal
+    used for authorization and audit is read from the matching open
+    ``task_runs`` row, never from ``HERMES_PROFILE``/``HERMES_PROFILE_NAME``.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        raise _Reject("worker identity refused: task is not the dispatcher's current task")
+    if not _is_dispatcher_owned_worker():
+        raise _Reject("worker identity refused: caller is not a dispatcher-owned worker")
+    run_id = _worker_run_id(task_id)
+    if run_id is None:
+        raise _Reject("worker identity refused: missing or malformed current run")
+    row = conn.execute(
+        """SELECT t.status AS task_status, t.current_run_id, r.profile,
+                  r.status AS run_status, r.ended_at
+             FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id
+            WHERE t.id = ?""", (task_id,)
+    ).fetchone()
+    if (row is None or row["current_run_id"] != run_id
+            or row["profile"] is None or row["run_status"] != "running"
+            or row["ended_at"] is not None):
+        raise _Reject("worker identity refused: current run is absent, stale, mismatched, or ended")
+    return str(row["profile"]), run_id
 
 
 def _stamp_worker_session_metadata(task_id: str, metadata: Optional[dict]) -> Optional[dict]:
@@ -1116,9 +1144,14 @@ def _handle_create(args: dict, **kw) -> str:
     with _board(args.get("board")) as (kb, conn):
         from gateway.session_context import get_session_env
         from tools.async_delegation import _current_origin_session_id
-        self_tid = (os.environ.get("HERMES_KANBAN_TASK")
-                    if _is_dispatcher_owned_worker() else None)
-        self_task = kb.get_task(conn, self_tid) if self_tid else None
+        self_tid = os.environ.get("HERMES_KANBAN_TASK")
+        self_task = None
+        creator_identity = _persisted_identity()
+        if self_tid:
+            # A worker context is security-sensitive even when its task is absent
+            # from this board.  Verify before any fallback to ambient identity.
+            creator_identity, _ = _verified_worker_principal(conn, self_tid)
+            self_task = kb.get_task(conn, self_tid)
         # The worker/API runtime may be transient; the owning task's origin is durable.
         # The ambient id is the request-scoped ContextVar binding, not the process-global
         # os.environ: in a multi-session gateway the env holds the LAST agent built, and an
@@ -1146,7 +1179,7 @@ def _handle_create(args: dict, **kw) -> str:
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),
             initial_status=str(args.get("initial_status") or "running"),
-            created_by=_persisted_identity(), session_id=session_id)
+            created_by=creator_identity, session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
@@ -1257,18 +1290,63 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
         return False
 
 
+@_kanban_handler("kanban_specify")
+def _handle_specify(args: dict, **kw) -> str:
+    """Promote a creator-owned triage card without changing its content."""
+    _reject_delegated_child_mutation("kanban_specify")
+    tid = _require_task_id(args)
+    _enforce_worker_task_ownership(tid)
+    identity = _persisted_identity()
+    with _board(args.get("board")) as (kb, conn):
+        task = _existing_task(kb, conn, tid)
+        _check(task.status == "triage", f"task {tid} is not in triage (status={task.status!r})")
+        _check(task.created_by == identity,
+               f"task {tid} was created by {task.created_by!r}, not the authenticated profile")
+        _check(kb.specify_triage_task(conn, tid, author=identity),
+               f"could not specify {tid} (it may have moved out of triage)")
+        return _ok_landed(kb, conn, tid, "todo")
+
+
 @_kanban_handler("kanban_unblock")
 def _handle_unblock(args: dict, **kw) -> str:
     """Transition a blocked task to ready, or todo while parents remain open."""
     _reject_delegated_child_mutation("kanban_unblock")
-    _require_orchestrator_tool("kanban_unblock")
     tid = args.get("task_id")
     _check(tid, "task_id is required")
     tid = str(tid)
-    _enforce_worker_task_ownership(tid)
     with _board(args.get("board")) as (kb, conn):
-        _check(kb.unblock_task(conn, tid), f"could not unblock {tid} (not blocked or unknown)")
+        actor = expected_run_id = worker_task_id = None
+        if os.environ.get("HERMES_KANBAN_TASK"):
+            _enforce_worker_task_ownership(tid)
+            actor, expected_run_id = _verified_worker_principal(conn, tid)
+            task = _existing_task(kb, conn, tid)
+            _check(task.block_kind in {"dependency", "transient"},
+                   "worker cannot self-unblock needs_input or an untyped/ended block")
+            worker_task_id = tid
+        _check(kb.unblock_task(
+            conn, tid, actor=actor, expected_run_id=expected_run_id,
+            worker_task_id=worker_task_id,
+        ), f"could not unblock {tid} (not blocked or unknown)")
         return _ok(task_id=tid, **_fields(kb.get_task(conn, tid), ("status",)))
+
+
+def _enforce_worker_link_scope(child_id: str) -> None:
+    """A worker may use the running-child exception only for its own live run.
+
+    Ordinary links to non-running children remain available; the DB link
+    operation rejects any other running child. The run principal comes from
+    the persisted task_runs row, not ambient profile environment.
+    """
+    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    child_id = str(child_id).strip()
+    if not task_id:
+        return
+    if child_id != task_id:
+        raise _Reject(
+            f"worker is scoped to task {task_id}; refusing to link foreign child {child_id}. "
+            "Use kanban_create to spawn follow-up work.")
+    with _board(None) as (kb, conn):
+        _verified_worker_principal(conn, task_id)
 
 
 @_kanban_handler("kanban_link")
@@ -1280,6 +1358,8 @@ def _handle_link(args: dict, **kw) -> str:
     parent_id = args.get("parent_id")
     child_id = args.get("child_id")
     _check(parent_id and child_id, "both parent_id and child_id are required")
+    parent_id, child_id = str(parent_id).strip(), str(child_id).strip()
+    _enforce_worker_link_scope(child_id)
     with _board(args.get("board")) as (kb, conn):
         gated = kb.link_tasks(
             conn, parent_id=parent_id, child_id=child_id,
@@ -1288,10 +1368,30 @@ def _handle_link(args: dict, **kw) -> str:
                    **({"gated_by": parent_id} if gated else {}))
 
 
+@_kanban_handler("kanban_unlink")
+def _handle_unlink(args: dict, **kw) -> str:
+    parent_id, child_id = args.get("parent_id"), args.get("child_id")
+    _check(parent_id and child_id, "both parent_id and child_id are required")
+    parent_id, child_id = str(parent_id), str(child_id)
+    with _board(args.get("board")) as (kb, conn):
+        actor = expected_run_id = worker_task_id = None
+        if os.environ.get("HERMES_KANBAN_TASK"):
+            _reject_delegated_child_mutation("kanban_unlink")
+            _enforce_worker_task_ownership(child_id)
+            actor, expected_run_id = _verified_worker_principal(conn, child_id)
+            worker_task_id = child_id
+        removed = kb.unlink_tasks(
+            conn, parent_id, child_id, actor=actor,
+            expected_child_run_id=expected_run_id, worker_task_id=worker_task_id,
+        )
+        _check(removed, f"no such link: {parent_id} -> {child_id}")
+        return _ok(parent_id=parent_id, child_id=child_id)
+
+
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
-# kanban_list / kanban_unblock route the board and are hidden from task workers.
-_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
+# kanban_list routes the board; lifecycle tools are available to workers only
+_ORCHESTRATOR_TOOLS = frozenset({"kanban_list"})
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
@@ -1307,7 +1407,9 @@ _TOOLS = (
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
-    ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
+    ("kanban_specify", KANBAN_SPECIFY_SCHEMA, _handle_specify, "✎"),
+    ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"),
+    ("kanban_unlink", KANBAN_UNLINK_SCHEMA, _handle_unlink, "🔗"))
 
 for _name, _sch, _handler, _emoji in _TOOLS:
     _gate = _check_kanban_orchestrator_mode if _name in _ORCHESTRATOR_TOOLS else _check_kanban_mode

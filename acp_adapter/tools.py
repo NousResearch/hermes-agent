@@ -49,7 +49,7 @@ _POLISHED_TOOLS = {
     "feishu_drive_reply_comment", "feishu_drive_add_comment",
     "kanban_create", "kanban_show", "kanban_comment", "kanban_complete",
     "kanban_block", "kanban_request_review", "kanban_request_changes",
-    "kanban_link", "kanban_heartbeat",
+    "kanban_specify", "kanban_link", "kanban_heartbeat",
 }
 
 _EMPTYISH = (None, "", [], {})

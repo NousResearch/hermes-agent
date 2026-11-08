@@ -16,16 +16,21 @@ def test_worker_create_keeps_durable_origin(tmp_path, monkeypatch, linked, expli
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     kb.init_db()
     with kbc.connect_closing() as conn:
-        owner = kb.create_task(conn, title="owner", session_id="durable")
+        owner = kb.create_task(
+            conn, title="owner", session_id="durable", assignee="default",
+        )
         kn.add_notify_sub(conn, task_id=owner, platform="discord", chat_id="chat",
                           user_id="user", notifier_profile="default", delivery_mode="notify",
                           delivery_metadata={"scope_id": "guild", "parent_chat_id": "forum"})
+        kb.claim_task(conn, owner)
         expected = kn.list_notify_subs(conn, owner)[0]
+        run_id = kb.get_task(conn, owner).current_run_id
     if explicit:
         state = SessionDB(db_path=tmp_path / "state.db")
         state.create_session(explicit, source="cli")
         state.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", owner)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     monkeypatch.setenv("HERMES_SESSION_ID", "ephemeral")
     monkeypatch.setattr(async_delegation, "_current_origin_session_id", lambda: "api-origin")
     # Even a matching current channel must not upgrade an inherited passive policy.
@@ -116,3 +121,36 @@ def test_tool_create_stamps_request_scoped_session_over_process_env(tmp_path, mo
         result = json.loads(kt._handle_create({"title": "child", "assignee": "default"}))
     with kbc.connect_closing() as conn:
         assert kb.get_task(conn, result["task_id"]).session_id == "ordering-session"
+
+
+def test_worker_link_rejects_persisted_foreign_nonrunning_child_and_normalizes_ids(tmp_path, monkeypatch):
+    """Only the persisted current worker task may be a link child, irrespective of run status."""
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    with kbc.connect_closing() as conn:
+        own = kb.create_task(conn, title="own", assignee="test-worker")
+        kb.claim_task(conn, own)
+        run_id = kb.get_task(conn, own).current_run_id
+        parent = kb.create_task(conn, title="parent")
+        foreign = kb.create_task(conn, title="foreign", assignee="test-worker")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", own)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+
+    # String-normalize numeric-like argument payloads before they reach the guard/database.
+    own_result = json.loads(kt._handle_link({"parent_id": parent, "child_id": f" {own} "}))
+    assert own_result["ok"] is True
+    rejected = json.loads(kt._handle_link({"parent_id": parent, "child_id": foreign}))
+    assert "foreign child" in rejected["error"]
+    with kbc.connect_closing() as conn:
+        assert kb.parent_ids(conn, own) == [parent]
+        assert kb.parent_ids(conn, foreign) == []

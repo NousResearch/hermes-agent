@@ -745,7 +745,7 @@ def test_create_happy_path(worker_env):
 @pytest.mark.parametrize("explicit", [{"workspace_kind": "scratch"}, {"project": ""}])
 @pytest.mark.parametrize("target_scoped", [False, True])
 def test_create_explicit_scratch_ignores_ambient_board_project(
-    worker_env, tmp_path, explicit, target_scoped,
+    worker_env, tmp_path, explicit, target_scoped, monkeypatch,
 ):
     """#106342: an explicit scratch / empty project wins over the project the
     session's current board (and, when scoped, the target board itself) carries.
@@ -753,6 +753,9 @@ def test_create_explicit_scratch_ignores_ambient_board_project(
     from hermes_cli import kanban_db as kb
     from hermes_cli import projects_db as pdb
     from tools import kanban_tools as kt
+    # This test exercises board routing as an orchestrator, not worker identity.
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -785,6 +788,9 @@ def test_link_running_child_allows_owner_but_rejects_foreign(monkeypatch, worker
 
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(own_run_id))
     own = json.loads(kt._handle_link({"parent_id": own_parent, "child_id": worker_env}))
+    # Exercise the running-child guard independently of worker task scoping;
+    # worker-scoped rejection is covered by the dedicated scope tests.
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     foreign = json.loads(kt._handle_link(
         {"parent_id": foreign_parent, "child_id": foreign_child},
     ))
@@ -1109,6 +1115,9 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     to its own kanban_create result, and the response surfaces the
     ``subscribed`` flag so the orchestrator can react."""
     from tools import kanban_tools as kt
+    # Subscription behavior is independent of worker authorization.
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
     monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
     monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "thread-7")
@@ -1278,6 +1287,8 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
         "kanban:\n  auto_subscribe_on_create: false\n"
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
     monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "channel-1")
 
@@ -1483,3 +1494,50 @@ class TestDefaultTaskId:
         assert kt._default_task_id("") == worker_env
         assert kt._default_task_id("   ") == worker_env
         assert kt._default_task_id(None) == worker_env
+
+
+def test_worker_unlink_uses_persisted_run_actor_and_rejects_foreign_live_child(
+        monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_PROFILE", "spoofed-actor")
+    with kbc.connect() as conn:
+        own_run = kb.get_task(conn, worker_env).current_run_id
+        parent = kb.create_task(conn, title="parent")
+        foreign = kb.create_task(conn, title="foreign", assignee="other")
+        kb.claim_task(conn, foreign, claimer="other")
+        kb.link_tasks(conn, parent, worker_env, expected_child_run_id=own_run)
+        kb.link_tasks(conn, parent, foreign, expected_child_run_id=kb.get_task(conn, foreign).current_run_id)
+
+    out = json.loads(kt._handle_unlink({"parent_id": parent, "child_id": foreign}))
+    assert "refusing to mutate" in out["error"]
+    out = json.loads(kt._handle_unlink({"parent_id": parent, "child_id": worker_env}))
+    assert out["ok"] is True
+    with kbc.connect() as conn:
+        event = [e for e in kb.list_events(conn, worker_env) if e.kind == "unlinked"][-1]
+        assert event.payload["actor"] == "test-worker"
+        assert kb.parent_ids(conn, foreign) == [parent]
+
+
+def test_worker_unblock_needs_input_is_denied_but_operator_path_remains(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        conn.execute("UPDATE tasks SET block_kind='needs_input' WHERE id=?", (worker_env,))
+        conn.commit()
+    denied = json.loads(kt._handle_unblock({"task_id": worker_env}))
+    assert "needs_input" in denied["error"]
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    with kbc.connect() as conn:
+        conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (worker_env,))
+        conn.commit()
+    allowed = json.loads(kt._handle_unblock({"task_id": worker_env}))
+    assert allowed["ok"] is True
+    with kbc.connect() as conn:
+        event = [e for e in kb.list_events(conn, worker_env) if e.kind == "unblocked"][-1]
+        assert "actor" not in (event.payload or {})

@@ -275,7 +275,8 @@ def test_cancel_task_cancels_queued_and_deferred_work_directly(backend, scope_a)
     driver.defer_indeterminate_task(_identity(), lease, placement="profile", expected_execution_generation=1, expected_cancel_generation=0, reason="peer-unreachable", now=230.0)
     store.hosted_rooms.disband_room(placement="profile", room_id=ROOM, expected_gateway_id="gw", expected_epoch=1, now=240.0)
     # CONTRACT: no room check: a deferred task of a disbanded room still cancels.
-    assert cancel(1, now=250.0)["status"] == "cancelled"
+    stopped = cancel(1, now=250.0)
+    assert (stopped["status"], stopped["result"]) == ("cancelled", None)
 
 
 def test_begin_task_cancel_records_a_stop_intent_for_running_and_indeterminate_work(backend, scope_a):

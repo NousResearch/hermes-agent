@@ -281,7 +281,7 @@ class DriverTaskMixin:
 
     def resolve_indeterminate_cancellation(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement, expected_execution_generation: int, expected_cancel_generation: int, cancel_id: str, now: float | None = None) -> Mapping[str, JsonValue]:
         now = rules.clock(now)
-        changes = {"status": "cancelled", "cancel_generation": expected_cancel_generation + 1, "cancel_id": cancel_id, "terminal_at": now, "updated_at": now}
+        changes = {"status": "cancelled", "result_json": None, "cancel_generation": expected_cancel_generation + 1, "cancel_id": cancel_id, "terminal_at": now, "updated_at": now}
         return self._generation_transition(placement, identity, lease, "resolve_cancel", expected_execution_generation, expected_cancel_generation, now=now, replay=_cancel_replay(cancel_id), changes=changes)
 
     def requeue_indeterminate_task(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement, expected_execution_generation: int, expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:
@@ -353,7 +353,7 @@ class DriverTaskMixin:
         def fence(row: Row) -> bool:
             return row["status"] in {"queued", "deferred"} and int(row["cancel_generation"]) == expected_cancel_generation
 
-        changes = {"status": "cancelled", "cancel_generation": expected_cancel_generation + 1, "cancel_id": cancel_id, "terminal_at": now, "updated_at": now}
+        changes = {"status": "cancelled", "result_json": None, "cancel_generation": expected_cancel_generation + 1, "cancel_id": cancel_id, "terminal_at": now, "updated_at": now}
         return self._transition(placement, identity, now=now, replay=_cancel_replay(cancel_id), guard=guard, fence=fence, changes=changes, stale="task changed during cancellation")
 
     def begin_task_cancel(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:

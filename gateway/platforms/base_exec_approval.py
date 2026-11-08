@@ -15,6 +15,7 @@ No imports from ``gateway.platforms.base`` or ``gateway.run`` — both import th
 
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 from agent.i18n import t
@@ -84,6 +85,11 @@ def format_approval_deadline_line(timeout_s: int) -> str:
 
 def format_approval_timed_out_notice(timeout_s: int) -> str:
     return approval_timed_out_notice(format_approval_window(timeout_s))
+
+
+def code_fence(command: str) -> str:
+    """A backtick fence longer than any backtick run in ``command``, so the command cannot close it."""
+    return "`" * max(3, max((len(run) for run in re.findall(r"`+", command)), default=0) + 1)
 
 
 def render_exec_approval(adapter: Any, command: str, description: str, smart_denied: bool,

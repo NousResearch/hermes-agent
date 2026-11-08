@@ -1,6 +1,6 @@
 name: muster
 repo: https://github.com/jollyroger1480/muster
-sha: 9c8764dded31c96cae42628d9a446a195b82a526
+sha: 9a235acee2a63a5ac319308ed37a97b58a855b64
 description: >-
   See what your AI helpers are actually doing. Every worker hermes starts shows
   up live in one pane: working, stuck (silent too long), failing on repeat, or

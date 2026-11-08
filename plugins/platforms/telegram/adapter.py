@@ -2135,8 +2135,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                 # so a consumer with no successful round-trip past the stall threshold is dead (#92991).
                 # Pure local-state check — no Bot API call needed.
                 await self._check_polling_stall()
-                # Transport health is not dispatch health (#102260). Pure local-state check.
-                self._check_ingress_dispatch_stall()
+                # Transport health is not dispatch health (#102260). Pure local-state check. It counts passes as
+                # full heartbeats, so a short confirm pass must not count or a slow handler trips it early.
+                if next_interval == HEARTBEAT_INTERVAL:
+                    self._check_ingress_dispatch_stall()
                 next_interval = STUCK_CONFIRM_INTERVAL if queue_suspect else HEARTBEAT_INTERVAL
             except asyncio.CancelledError:
                 return

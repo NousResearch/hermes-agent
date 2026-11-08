@@ -1,18 +1,18 @@
 name: hermes-android
 repo: https://github.com/TechFlipsi/FlipsiBridge
-sha: 7ecca4ac7c63f8fda010ed21e53bebd825171e8c
+sha: 5f185b2d5ac8b88d127815c13ee31970d31f678a
 subdir: hermes-android-plugin
-description: "Remote Android device control for Hermes Agent: 58 android_* tools (read screen, tap/type/swipe, open apps, camera, screenshots & screen recording, files, notifications, microphone streaming, media, clipboard, SMS/calls, Health Connect) plus a companion Android bridge app (Kotlin/Compose). The phone dials out to a relay you host — works behind NAT, no port forwarding, no VPN — and chat plus device commands are end-to-end encrypted with a Double Ratchet, so the relay only ever sees ciphertext. Disclosure: tools act on the real, paired phone; the plugin is built for the Hermes Agent ecosystem and every device capability is an explicit opt-in switch (default denied)."
+description: "Remote Android device control for Hermes Agent: 58 android_* tools (read screen, tap/type/swipe, open apps, camera, screenshots & screen recording, files, notifications, microphone streaming, media, clipboard, SMS/calls, Health Connect) plus a companion Android bridge app (Kotlin/Compose). The phone dials out to a relay you host — works behind NAT, no port forwarding, no VPN. Chat and media are end-to-end encrypted with a Double Ratchet (the relay sees only ciphertext); device commands travel over your own TLS-authenticated relay. Disclosure: SMS, calls, file deletion, intents/broadcasts, APK install and relay setup go through Hermes’ human-approval gate and refuse in unattended runs. Disclosure: tools act on the real, paired phone; the plugin is built for the Hermes Agent ecosystem and every device capability is an explicit opt-in switch (default denied)."
 maintainer: TechFlipsi
 tier: community
 category: tools
-requires_hermes: ">=0.3.0"
+requires_hermes: ">=0.23.0"
 docs_url: https://github.com/TechFlipsi/FlipsiBridge
 readme: true
-image: https://raw.githubusercontent.com/TechFlipsi/FlipsiBridge/7ecca4ac7c63f8fda010ed21e53bebd825171e8c/docs/img/fb-chat.png
+image: https://raw.githubusercontent.com/TechFlipsi/FlipsiBridge/5f185b2d5ac8b88d127815c13ee31970d31f678a/docs/img/fb-chat.png
 screenshots:
-  - https://raw.githubusercontent.com/TechFlipsi/FlipsiBridge/7ecca4ac7c63f8fda010ed21e53bebd825171e8c/docs/img/fb-home.png
-  - https://raw.githubusercontent.com/TechFlipsi/FlipsiBridge/7ecca4ac7c63f8fda010ed21e53bebd825171e8c/docs/img/fb-chat.png
+  - https://raw.githubusercontent.com/TechFlipsi/FlipsiBridge/5f185b2d5ac8b88d127815c13ee31970d31f678a/docs/img/fb-home.png
+  - https://raw.githubusercontent.com/TechFlipsi/FlipsiBridge/5f185b2d5ac8b88d127815c13ee31970d31f678a/docs/img/fb-chat.png
 platforms: []
 capabilities:
   provides_tools:
@@ -74,6 +74,9 @@ capabilities:
     - android_type
     - android_volume
     - android_wait
-  provides_hooks: []
+  provides_hooks:
+    - pre_tool_call
   provides_middleware: []
-  requires_env: []
+  requires_env:
+    - ANDROID_BRIDGE_URL
+    - ANDROID_BRIDGE_TOKEN

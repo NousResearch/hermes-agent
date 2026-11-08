@@ -284,7 +284,7 @@ def test_persist_model_switch_heals_bare_custom(monkeypatch):
 def test_unmatched_custom_switch_restores_new_endpoint_with_bound_credentials(
     tmp_path, monkeypatch, resolver_url, resolver_key, expected_key,
 ):
-    import hermes_cli.runtime_provider as runtime_provider
+    from hermes_cli import runtime_provider
     from types import SimpleNamespace
 
     home = tmp_path / ".hermes"
@@ -346,7 +346,7 @@ def test_unmatched_custom_switch_restores_new_endpoint_with_bound_credentials(
 def test_provider_change_same_endpoint_resolver_failure_clears_ambient_credentials(
     tmp_path, monkeypatch,
 ):
-    import hermes_cli.runtime_provider as runtime_provider
+    from hermes_cli import runtime_provider
 
     home = tmp_path / ".hermes"
     home.mkdir()

@@ -59,6 +59,7 @@ class WriteAttempt:
                 try:
                     transaction_active = bool(conn.in_transaction)
                 except Exception:
+                    logger.warning("Cannot inspect transaction after failed BEGIN; settlement is unknown", exc_info=True)
                     transaction_active = True
                 not_started = getattr(self.receipt, "transaction_not_started", None)
                 if not_started is not None:

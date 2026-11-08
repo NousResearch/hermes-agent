@@ -2552,12 +2552,13 @@ def _published_name(item: dict) -> str:
     """The row's own human label, whichever key the catalog publishes it under.
 
     The OpenAI shape is ``name``; Anthropic's ``/v1/models`` uses ``display_name``. Both are
-    read so this works for every provider rather than one gateway's dialect. A label identical
-    to the id carries no information and is dropped, letting the caller render the id itself."""
+    read so this works for every provider rather than one gateway's dialect. An id-shaped
+    alias carries no information; later keys may still contain a human-readable name."""
+    model_id = str(item.get("id") or "").strip()
     for key in ("name", "display_name", "displayName"):
         label = str(item.get(key) or "").strip()
-        if label:
-            return "" if label == str(item.get("id") or "").strip() else label
+        if label and label != model_id:
+            return label
     return ""
 
 

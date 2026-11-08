@@ -60,6 +60,14 @@ class TestProbeModelNames:
         assert result["model_names"] == {}
         assert result["models"] == ["a/b", "c/d"]
 
+    def test_id_shaped_name_does_not_hide_display_name(self, monkeypatch):
+        # Some catalogs publish the routing id under "name" and the label separately.
+        result = _probe_with(monkeypatch, [{
+            "id": "vendor/model", "name": "vendor/model", "display_name": "Vendor Model",
+        }])
+        assert result["models"] == ["vendor/model"]
+        assert result["model_names"] == {"vendor/model": "Vendor Model"}
+
     def test_generation_rows_stay_out_of_both(self, monkeypatch):
         result = _probe_with(monkeypatch, [
             {"id": "codex/gpt-image-2", "name": "GPT Image 2",

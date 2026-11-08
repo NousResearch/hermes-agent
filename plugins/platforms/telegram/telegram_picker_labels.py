@@ -92,7 +92,7 @@ def model_button_labels(model_ids: list[str], suffix_for: Callable[[str], str]) 
             others = [names[j] for j in group if names[j] != names[i]] or [""]
             labels[i] = _with_suffix(_around_difference(names[i], others, _room(suffixes[i])), suffixes[i])
     for group in _clashes(labels):
-        for n, i in enumerate(group, 1):
-            tag = f" #{n}"
+        for i in group:
+            tag = f" #{i + 1}"  # catalog position: unique across groups, stable across pages
             labels[i] = _with_suffix(_around_difference(names[i], [""], _room(suffixes[i]) - len(tag)) + tag, suffixes[i])
     return labels

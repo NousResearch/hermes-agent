@@ -55,10 +55,14 @@ def _linux_x11_active_window_id() -> Optional[int]:
         return None
     return _parse_xprop_net_active_window(proc.stdout or "") if proc.returncode == 0 else None
 
+def _app_key(name: str) -> str:
+    """Exact-match key for an app name. Windows drivers name apps by executable, so ``Notepad`` must equal
+    ``Notepad.exe`` exactly rather than fall through to the substring tier (which also matches ``notepad++.exe``)."""
+    return name.strip().lower().removesuffix(".exe")
+
 def _is_cua_driver_self_window(w: dict[str, Any]) -> bool:
-    """True for the authorization daemon's own native window (normalized app name)."""
-    app_name = str(w.get("app_name", "")).strip().lower()
-    return re.sub(r"[\s_-]+", "", app_name) == "cuadriver"
+    """True for the authorization daemon's own native window (normalized app name; ``cua-driver.exe`` on Windows)."""
+    return re.sub(r"[\s_-]+", "", _app_key(str(w.get("app_name", "")))) == "cuadriver"
 
 
 def _select_capture_target(windows: list[dict[str, Any]], *, app_requested: bool,
@@ -179,10 +183,10 @@ class _CaptureMixin:
     def _match_windows_for_app(self, windows: list[dict[str, Any]], app: str) -> list[dict[str, Any]]:
         """Resolve ``app=``: exact window names, then exact list_apps aliases (Linux ``list_windows`` can
         omit the app name that ``list_apps`` keeps), then substrings — querying ``Code`` must not silently
-        select ``Visual Studio Code`` because it is frontmost."""
-        app_lower = app.strip().lower()
+        select ``Visual Studio Code`` because it is frontmost. Exact tiers ignore a Windows ``.exe`` suffix."""
+        app_lower, app_key = app.strip().lower(), _app_key(app)
         _name = lambda w: str(w.get("app_name", "")).lower()
-        direct_exact = [w for w in windows if app_lower and app_lower == _name(w).strip()]
+        direct_exact = [w for w in windows if app_key and app_key == _app_key(_name(w))]
         if not app_lower or direct_exact:
             return direct_exact
         try:
@@ -198,7 +202,7 @@ class _CaptureMixin:
             if pid is not None and raw_app.get("running") is not False:
                 aliases = {value.strip().lower() for key in ("bundle_id", "bundleId", "name", "app_name", "display_name")
                            if isinstance((value := raw_app.get(key)), str) and value.strip()}
-                if app_lower in aliases:
+                if app_key in {_app_key(alias) for alias in aliases}:
                     exact_pids.add(pid)
                 elif any(app_lower in alias for alias in aliases):
                     partial_pids.add(pid)

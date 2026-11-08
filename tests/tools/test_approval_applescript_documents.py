@@ -65,6 +65,9 @@ FRONTMOST = ("osascript -e 'tell application \"System Events\" to get name of fi
     'osascript <<-EOF\n\tget name of me\n\ttell application "Keynote" to quit\n\tEOF',
     # A quoted heredoc keeps `EO\<newline>F` literally (inside an AppleScript comment): no terminator.
     'osascript <<\'EOF\'\nget name of me\n(*\nEO\\\nF\n*)\ntell application "Keynote" to quit\nEOF',
+    # A whitespace-only `-e` value is a real argument; it must not shift the next `-e`.
+    'osascript -e \' \' -e \'tell application "Keynote" to quit\'',
+    'osascript \\\n  -e \'tell application "Keynote" to quit\'',
 ])
 def test_risky_program_is_flagged(command):
     assert detect_dangerous_command(command)[1] == RISKY, command

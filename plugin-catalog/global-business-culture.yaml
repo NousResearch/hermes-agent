@@ -7,7 +7,7 @@ description: "Cross-cultural business intelligence: country culture briefs and h
 maintainer: pswong661-eng
 tier: community
 category: tools
-requires_hermes: ">=0.21"
+requires_hermes: ">=0.21.0"
 readme: true
 platforms: [linux, macos, windows]
 capabilities:

@@ -3,7 +3,7 @@ title: Taint Sentry
 repo: https://github.com/YAN-XBT/hermes-sentry
 sha: 5f74fe9c923f228a2b6e6aa95d362b71b94bfc20
 version: "0.1.0"
-image: "https://raw.githubusercontent.com/YAN-XBT/hermes-sentry/8cbe7d863e48606d8e44a84f81f461be7194faf2/assets/banner.png"
+image: "https://raw.githubusercontent.com/YAN-XBT/hermes-sentry/5f74fe9c923f228a2b6e6aa95d362b71b94bfc20/assets/banner.png"
 screenshots:
   - "https://raw.githubusercontent.com/YAN-XBT/hermes-sentry/5f74fe9c923f228a2b6e6aa95d362b71b94bfc20/assets/console.png"
 description: >-

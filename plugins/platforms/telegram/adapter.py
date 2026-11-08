@@ -6907,7 +6907,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
-    from .adapter_hint import PLATFORM_HINT
+    from .adapter_hint import PLATFORM_HINT, PLATFORM_HINT_TOOL_NOTES
     from .dashboard_card import DASHBOARD_CARD
     from .standalone import standalone_send
     from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
@@ -6917,7 +6917,7 @@ def register(ctx) -> None:
         ensure_deps_fn=check_telegram_requirements, is_connected=_is_connected, required_env=["TELEGRAM_BOT_TOKEN"],
         install_hint=t("platform.telegram.install_hint"), setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, cron_deliver_env_var="TELEGRAM_HOME_CHANNEL",
         standalone_sender_fn=standalone_send, max_message_length=4096, emoji="✈️", allow_update_command=True,
-        platform_hint=PLATFORM_HINT,
+        platform_hint=PLATFORM_HINT, platform_hint_tool_notes=PLATFORM_HINT_TOOL_NOTES,
         display_tier="high",
         # Mobile inbox: quiet tool_progress / busy-ack, but keep interim commentary and heartbeats.
         display_overrides={"tool_progress": "off", "busy_ack_detail": False},

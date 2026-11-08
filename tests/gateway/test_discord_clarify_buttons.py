@@ -294,3 +294,27 @@ class TestDiscordSendClarify:
         for label in choice_labels:
             assert "only_name_here" not in label, f"name leaked: {label!r}"
             assert "only_value_here" not in label, f"value leaked: {label!r}"
+
+
+@pytest.mark.asyncio
+async def test_many_long_choices_fit_content_and_render_literally():
+    """A dozen long options (#78115): the numbered list lands in content within Discord's
+    2000-char cap, keeps whole lines, and escapes markdown so each option reads as typed."""
+    adapter = _make_adapter()
+    channel = MagicMock()
+    channel.send = AsyncMock(return_value=MagicMock(id=1))
+    adapter._client.get_channel = MagicMock(return_value=channel)
+    choices = [f"Option {i}: refactor the *auth* module and keep __init__ exports stable " + "x" * 40
+               for i in range(1, 13)]
+
+    result = await adapter.send_clarify(
+        chat_id="9001", question="Which plan?", choices=choices, clarify_id="cidL", session_key="sk-L")
+
+    assert result.success is True
+    content = channel.send.call_args.kwargs["content"]
+    assert len(content) <= 2000
+    assert "Which plan?" in content
+    assert r"1. Option 1: refactor the \*auth\* module and keep \_\_init\_\_ exports" in content
+    listed = [ln for ln in content.splitlines() if ln[:1].isdigit()]
+    assert listed and all(ln.endswith("x" * 40) for ln in listed)
+

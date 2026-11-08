@@ -7,7 +7,9 @@ job + same normalized error resolves to the SAME incident id, so a closed incide
 until the error text changes and mints a new one. ``alerted`` means a failure ping actually reached
 the operator (``alerted_at`` = when the latest one did; the scheduler withholds repeats until
 ``cron.failure_repeat_alert_hours`` have passed). Incidents share ``cron/executions.db`` with
-``cron.executions`` (one ledger file).
+``cron.executions`` (one ledger file). ``reopen_count`` tracks recurrence: how many times a
+resolved incident re-opened under the same signature. Rows predating the counter carry NULL
+(*not measured*) — never a silent 0, which would falsely attest "never reopened".
 """
 
 from __future__ import annotations
@@ -88,11 +90,18 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
              alerted_at    TEXT,
              closed_at     TEXT,
              error         TEXT NOT NULL,
-             output_file   TEXT
+             output_file   TEXT,
+             reopen_count  INTEGER
            )"""
     )
     # Ledgers created before the alert-once gate lack ``alerted_at``; add it in place.
     add_column_if_missing(conn, "cron_incidents", "alerted_at", "alerted_at TEXT")
+    # Ledgers predating the reopen counter lack ``reopen_count``. The ddl is deliberately NULLABLE
+    # with NO DEFAULT: ``add_column_if_missing`` is a raw ALTER TABLE pass-through, and a DEFAULT
+    # would backfill every existing row with the default value — silently attesting "never
+    # reopened" for rows that were never counted. Existing rows land NULL (not measured); the
+    # write path sets 0 on INSERT and increments on reopen.
+    add_column_if_missing(conn, "cron_incidents", "reopen_count", "reopen_count INTEGER")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_cron_incidents_job "
         "ON cron_incidents(job_id)"
@@ -158,10 +167,13 @@ def upsert_incident(
     output_file: Optional[str] = None,
 ) -> tuple[str, bool]:
     """Record (or refresh) the incident for ``job_id`` + ``error``; returns ``(incident_id,
-    is_new)``. An existing row for the signature refreshes
+    reopened)``, where ``reopened`` is True *only* when an existing ``resolved`` incident re-opened.
+    A first-ever INSERT and a plain refresh of an open incident both return False. An existing row
+    for the signature refreshes
     ``last_seen_at``/``error``/``output_file`` and keeps its state — a ``closed`` incident stays
     closed, while a ``resolved`` one (job recovered, then broke the same way again) re-opens as
-    ``detected`` so the operator is alerted once more. A changed error text mints a new incident."""
+    ``detected``, clears its alert/close stamps, and increments ``reopen_count`` so the operator is
+    alerted once more with the recurrence visible. A changed error text mints a new incident."""
     job_id = str(job_id or "")
     sig = _error_signature(job_id, error)
     stored_error = _redact_error(error)
@@ -176,25 +188,33 @@ def upsert_incident(
         ).fetchone()
         if row is not None:
             reopen = row["state"] == "resolved"
-            conn.execute(
-                """UPDATE cron_incidents
-                   SET last_seen_at=?, error=?, output_file=?,
-                       state=CASE WHEN state='resolved' THEN 'detected' ELSE state END,
-                       alerted_at=CASE WHEN state='resolved' THEN NULL ELSE alerted_at END,
-                       closed_at=CASE WHEN state='resolved' THEN NULL ELSE closed_at END
-                   WHERE id=?""",
-                (now, stored_error, output_file, incident_id),
-            )
+            if reopen:
+                # COALESCE: a pre-counter row (NULL) starts its history at 1, not at NULL+1.
+                conn.execute(
+                    """UPDATE cron_incidents
+                       SET last_seen_at=?, error=?, output_file=?, state='detected',
+                           alerted_at=NULL, closed_at=NULL,
+                           reopen_count=COALESCE(reopen_count, 0) + 1
+                       WHERE id=?""",
+                    (now, stored_error, output_file, incident_id),
+                )
+            else:
+                conn.execute(
+                    """UPDATE cron_incidents
+                       SET last_seen_at=?, error=?, output_file=?
+                       WHERE id=?""",
+                    (now, stored_error, output_file, incident_id),
+                )
             return incident_id, reopen
         conn.execute(
             """INSERT INTO cron_incidents
                (id, job_id, error_sig, state, failure_type,
-                first_seen_at, last_seen_at, error, output_file)
-               VALUES (?, ?, ?, 'detected', ?, ?, ?, ?, ?)""",
+                first_seen_at, last_seen_at, error, output_file, reopen_count)
+               VALUES (?, ?, ?, 'detected', ?, ?, ?, ?, ?, 0)""",
             (incident_id, job_id, sig, failure_type, now, now,
              stored_error, output_file),
         )
-        return incident_id, True
+        return incident_id, False
 
 
 def set_incident_state(incident_id: str, state: str) -> bool:

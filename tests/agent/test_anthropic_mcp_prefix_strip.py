@@ -100,6 +100,17 @@ class TestAnthropicMcpPrefixStrip:
             result = normalize_response_for_agent(agent, _make_response(_make_tool_use_block("mcp__tool_call")))
         assert result.tool_calls[0].name == "tool_call"
 
+    def test_offered_bridge_wins_over_gated_registered_mcp_name(self):
+        """A registered but unavailable MCP tool cannot steal an offered bridge call."""
+        transport = self._get_transport()
+        response = _make_response(_make_tool_use_block("mcp__tool_call"))
+        # get_entry still finds this registered name after check_fn withheld its schema.
+        with patch("tools.registry.registry", _FakeRegistry({"mcp_tool_call"})):
+            result = transport.normalize_response(
+                response, strip_tool_prefix=True, tool_names={"tool_call"},
+            )
+        assert result.tool_calls[0].name == "tool_call"
+
     def test_no_strip_when_flag_false(self):
         """When strip_tool_prefix=False, names are never modified."""
         transport = self._get_transport()

@@ -162,6 +162,39 @@ def test_writer_reader_preserve_response_with_nested_frames(cron_env, monkeypatc
     assert "Original prompt noise" not in prompt
 
 
+def test_empty_reply_run_keeps_previous_real_answer_for_chained_job(cron_env, monkeypatch, cron_owner):
+    """An upstream run that replies with nothing must not replace its last real answer.
+
+    Both runs go through the real writer (framed archives), then a downstream job reads them
+    through ``context_from`` the way a chained cron job does (#129609)."""
+    import os
+    from cron.jobs import OUTPUT_DIR, create_job, save_job_output
+    from cron.scheduler import NO_RESPONSE_PLACEHOLDER
+    from cron.scheduler_prompt import _inject_context_from
+
+    upstream = create_job(prompt="Collect", schedule="0 8 * * *")
+    downstream = create_job(prompt="Summarize", schedule="0 9 * * *", context_from=upstream["id"])
+    self_job = dict(upstream, context_from="self")
+
+    success, archive, _final, error = _run_stub_job(monkeypatch, upstream, "UPSTREAM REAL ANSWER")
+    assert success, error
+    save_job_output(upstream["id"], archive)
+    first = next((OUTPUT_DIR / upstream["id"]).glob("*.md"))
+    os.utime(first, (1_000, 1_000))
+
+    success, archive, final, error = _run_stub_job(monkeypatch, upstream, "")
+    assert success, error
+    assert final == ""  # nothing is delivered for the empty run
+    assert NO_RESPONSE_PLACEHOLDER in archive  # but its archive records the placeholder
+    (OUTPUT_DIR / upstream["id"] / "empty-run.md").write_text(archive, encoding="utf-8")
+
+    for job in (downstream, self_job):
+        prompt, injected = _inject_context_from(job, "Next task")
+        assert injected
+        assert "UPSTREAM REAL ANSWER" in prompt
+        assert NO_RESPONSE_PLACEHOLDER not in prompt
+
+
 def test_truncated_outer_frame_cannot_promote_a_quoted_inner_frame(cron_env, monkeypatch, cron_owner):
     import os
     from cron.jobs import create_job, save_job_output, OUTPUT_DIR

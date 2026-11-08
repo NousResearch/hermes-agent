@@ -79,6 +79,17 @@ class TestWhatGetsRemembered:
 
 
 
+    def test_a_relative_path_is_not_remembered(self, tmp_path, monkeypatch):
+        # The same relative string names another directory after a chdir.
+        for name in ("a", "b"):
+            (tmp_path / name / "home").mkdir(parents=True)
+        monkeypatch.chdir(tmp_path / "a")
+        first = hc.hermes_home_key("home")
+        monkeypatch.chdir(tmp_path / "b")
+        assert hc.hermes_home_key("home") == _uncached(tmp_path / "b" / "home") != first
+        assert hc._HOME_KEY_CACHE == {}
+
+
 class TestHomeChanges:
     def test_pointing_hermes_home_somewhere_else_gives_a_new_key(
         self, tmp_path, monkeypatch,

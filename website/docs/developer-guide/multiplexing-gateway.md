@@ -149,6 +149,44 @@ state:
   It also records the turn (`hermes_scope.current_turn()`) for the body's duration, with the
   path of the session store that issued the claim, whether or not a scope is bound.
 
+### Session storage ports
+
+`hermes_state_port.py` defines the session store and turn admission as ports at
+the level today's callers use, never SQL and never a connection: `SessionStore`
+(session rows and transcripts, transcript rewrites and rewinds, compression
+publication, usage) and `TurnAdmission` (the owner lock, owner epoch and each
+session's FIFO, whose claims issue turn fences; steering and its settlement,
+runtime-session mutations, worker executions and their receipts). A
+`SessionStorageProvider` supplies both.
+
+This is an interface for a follow-up migration, not a switch: no production
+caller goes through the ports yet, and nothing in config.yaml selects a
+backend. Today's callers still use `SessionDB` and `hermes_state_runtime`
+directly. `resolve_session_storage(name)` takes the backend's name explicitly:
+`"local"` is the local backend (`hermes_state_port_local.py`: today's
+per-profile `state.db`, the `hermes_state_runtime` ledger and the
+`gateway.lock` owner lock, each operation pinned and then delegated to the call
+the code makes today). Any other name is a provider plugin under
+`plugins/session_storage/<name>/` or `$HERMES_HOME/plugins/<name>/`; a named
+provider that is missing or unavailable raises, never falling back to the local
+file. Providers load in-process only: under `plugins.isolation: host` a user
+provider is refused with the reason (typed port proxies with a scope envelope
+on every call are a follow-up). A user provider's module is namespaced by its
+canonical directory, so same-named providers in two profiles never share code.
+
+Every operation reads its pin from `hermes_scope.current_scope()` when it runs.
+The local backend serves the local tenant and its own profile home only; any
+other bound scope raises `StoragePinRefused` before anything is read or written.
+With no scope bound, the pin is the ambient profile, as for every local caller
+today. The store's database file and owning profile are frozen when the ports
+open: a symlinked profile directory is the same profile, a database file that
+links into another directory is refused. `SessionStore.append_turn` is the
+turn-path write: it requires the session's claimed turn to be bound
+(`TurnFenceRequiredError` otherwise). `TurnAdmission.claim_next` takes typed
+`ClaimPreconditions` (the validated head and the owner's `AdmissionGate`) that
+the backend checks inside the claim's transaction. `assert_isolating()` is
+abstract: every backend must check that it isolates tenants in storage itself.
+
 ### Fenced turn writes
 
 A claimed turn has one identity: the bound `TurnScope` (session, turn, fence) plus the store

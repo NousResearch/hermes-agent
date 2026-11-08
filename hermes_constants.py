@@ -229,6 +229,8 @@ def hermes_home_key(path: str | Path | None = None) -> str:
     The resolved value is remembered per input path. A directory that does
     not exist yet is resolved without touching the cache, because the answer
     can change once it is created (e.g. part of the path turns out to be a symlink).
+    A relative path is never remembered either: it names a different directory
+    after the working directory changes, so it is resolved against the current one.
     """
     candidate = Path(path) if path is not None else get_hermes_home()
     raw = str(candidate)
@@ -236,6 +238,8 @@ def hermes_home_key(path: str | Path | None = None) -> str:
     if cached is not None:
         return cached
     expanded = candidate.expanduser()
+    if not expanded.is_absolute():
+        return os.path.normcase(str(expanded.resolve(strict=False)))
     try:
         resolved = expanded.resolve(strict=True)
     except OSError:

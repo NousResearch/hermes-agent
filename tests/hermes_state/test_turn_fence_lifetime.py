@@ -17,7 +17,7 @@ import pytest
 
 import hermes_state_runtime as rt
 from agent.runtime_scope import bind_profile_scope, bind_turn, claim_fence, owner_operation
-from hermes_scope import Fence, current_turn, push_state
+from hermes_scope import Fence, current_turn, push_state, scope_store
 from hermes_state import SessionDB
 from hermes_state_errors import TurnFenceSupersededError
 
@@ -222,6 +222,19 @@ def test_a_bound_turn_scope_alone_fences_its_profiles_store(claimed):
         with pytest.raises(TurnFenceSupersededError):
             db.append_message('s', 'assistant', 'unmarked turn')
     assert db.get_messages('s') == []
+
+
+def test_a_bound_turn_scope_alone_is_a_claimed_turn_to_the_ports_too(claimed):
+    from hermes_state_port_local import LocalSessionStorageProvider
+    db, row = claimed
+    storage = LocalSessionStorageProvider().open(db)
+    with push_state(scope=_turn_scope(db, row)):
+        assert current_turn().store == scope_store(_turn_scope(db, row))
+        assert storage.sessions.append_turn('s', [{'role': 'user', 'content': 'fenced'}]) == 1
+        _take_over(db)
+        with pytest.raises(TurnFenceSupersededError):
+            storage.sessions.append_turn('s', [{'role': 'user', 'content': 'stale'}])
+    assert [m['content'] for m in db.get_messages('s')] == ['fenced']
 
 
 def test_bind_turn_naming_no_store_fences_the_bound_profiles_store(claimed):

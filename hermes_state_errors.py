@@ -201,6 +201,12 @@ class TurnFenceSupersededError(SessionTurnLeaseLostError):
     already treats a lost turn lease as "another writer owns this turn" handles it the same way."""
 
 
+class TurnFenceRequiredError(RuntimeError):
+    """A turn-path write (``SessionStore.append_turn``) ran with no claimed turn of its store bound,
+    so there is no fence to check it against. Writes outside a claimed turn use the non-turn
+    operations instead."""
+
+
 class SessionActiveWriteGuardError(RuntimeError):
     """Raised when an active turn lease or compression lock rejects session deletion."""
 

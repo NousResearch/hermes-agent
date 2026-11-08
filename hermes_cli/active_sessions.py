@@ -113,6 +113,12 @@ MAX_CONCURRENT_SESSIONS = "MAX_CONCURRENT_SESSIONS"
 # fail-open hole that let two writers share one session (#94595 review, blocker 2).
 SESSION_COORDINATION_UNAVAILABLE = "SESSION_COORDINATION_UNAVAILABLE"
 
+# Surfaces whose slot a same-owner native client may take over once the holder has no turn in
+# flight. The dashboard/phone WebUI writes its chats as ``webui`` and keeps the slot for the life of
+# the open socket, long after the turn it claimed it for finished, so an idle holder refused every
+# other surface's resume. Another surface (a second window, another profile) keeps refusing.
+YIELDABLE_SURFACES = frozenset({"webui"})
+
 # Advertised through the gateway. A module constant, not a config flag: it holds
 # because try_acquire_active_session checks atomically, so it cannot drift from the
 # enforcement without this file changing.
@@ -801,19 +807,58 @@ def active_session_registry_snapshot(
     return entries
 
 
+def _yield_idle_holders(
+    entries: list[dict[str, Any]], session_id: str,
+    surfaces: frozenset[str] | None, holder_is_idle,
+) -> list[dict[str, Any]]:
+    """Drop this session's leases when EVERY holder is an idle one from ``surfaces``.
+
+    Caller holds the registry lock. One live turn, or one holder of another surface, leaves the
+    registry untouched so the caller keeps refusing: the handoff is all-or-nothing, never a
+    half-released session two surfaces could both enter.
+    """
+    if not surfaces or holder_is_idle is None:
+        return entries
+    target = str(session_id or "")
+    held = [entry for entry in entries if str(entry.get("session_id") or "") == target]
+    if not held:
+        return entries
+    if any(str(entry.get("surface") or "").strip().lower() not in surfaces for entry in held):
+        return entries
+    try:
+        idle = all(bool(holder_is_idle(entry)) for entry in held)
+    except Exception:
+        logger.warning("Idle-holder probe failed for session %s; keeping its lease", target, exc_info=True)
+        return entries
+    if not idle:
+        logger.info("Keeping %d active lease(s) on session %s: a holder has a turn in flight",
+                    len(held), target)
+        return entries
+    logger.info("Yielding %d idle active lease(s) on session %s to the caller", len(held), target)
+    return [entry for entry in entries if str(entry.get("session_id") or "") != target]
+
+
 @contextmanager
 def active_session_liveness_guard(
     session_id: str, *, registry_home: str | Path | None = None,
     own_live_lease_ids: set[str] | None = None,
+    yield_surfaces: frozenset[str] | None = None, holder_is_idle=None,
 ) -> Iterator[bool]:
     """Hold the registry lock while reporting whether ``session_id`` is leased, so no
-    new backend can acquire a lease between the check and the caller's ``end_session``."""
+    new backend can acquire a lease between the check and the caller's ``end_session``.
+
+    ``yield_surfaces`` + ``holder_is_idle`` hand the session to the caller: this session's leases
+    held by an idle holder of one of those surfaces are dropped under the same lock, BEFORE the
+    caller's own write, so the adopt sees an unheld session. Every holder must qualify; a turn in
+    flight (``holder_is_idle`` False) keeps the entry and the refusal.
+    """
     state_path, lock_path = _lease_paths(registry_home=registry_home)
     with _FileLock(lock_path):
         entries = _prune_dead(
             _read_entries(state_path, strict=True), strict=True, target_session_id=session_id,
         )
         entries = _drop_self_orphans(entries, own_live_lease_ids)
+        entries = _yield_idle_holders(entries, session_id, yield_surfaces, holder_is_idle)
         _write_entries(state_path, entries)
         yield _holds_session(entries, session_id)
 
@@ -844,3 +889,31 @@ def release_active_session_liveness_guard(
             _write_entries(state_path, kept)
         lease.released = True
         yield _holds_session(kept, session_id)
+
+
+def lease_is_registered(lease: ActiveSessionLease, *, registry_home: str | Path | None = None) -> bool:
+    """Whether ``lease`` still owns its registry entry.
+
+    A lease can be retired by another PROCESS: a native client that resumes this idle session hands
+    the slot over (``active_session_liveness_guard(yield_surfaces=...)``), which drops the holder's
+    entry. The holder's in-memory lease then authorizes nothing, so it must not start another turn
+    on the session — it would interleave with the surface that adopted it.
+
+    No own entry (a borrowed compute-host slot, an unsaved draft with no stored id) and a registry
+    that does not exist yet cannot contradict the lease: True. An unreadable registry also keeps the
+    lease, because this is a revalidation of a slot the caller already holds and the CLAIM path is
+    where ownership uncertainty fails closed.
+    """
+    if not lease.enabled or lease.released:
+        return True
+    state_path, lock_path = _lease_paths(lease, registry_home=registry_home)
+    if not state_path.exists():
+        return True
+    try:
+        with _FileLock(lock_path):
+            entries = _read_entries(state_path, strict=False)
+    except OSError:
+        logger.warning("Active-session registry unreadable at %s; keeping lease %s",
+                       state_path, lease.lease_id, exc_info=True)
+        return True
+    return any(str(entry.get("lease_id") or "") == lease.lease_id for entry in entries)

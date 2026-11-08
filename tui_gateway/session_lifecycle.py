@@ -118,6 +118,24 @@ def _install_borrowed_lease(sid: str, session: dict, frame: dict) -> None:
         surface=str(frame.get("source") or "desktop"), enabled=False)
 
 
+def _lease_still_ours(lease) -> bool:
+    """Whether this runtime's slot is still the registry's (another process can hand it over)."""
+    from hermes_cli.active_sessions import lease_is_registered
+    try:
+        return lease_is_registered(lease)
+    except Exception:
+        logger.warning("Could not revalidate the active-session slot", exc_info=True)
+        return True
+
+
+def _handed_over_refusal():
+    """Refusal for a runtime whose slot another surface took: it no longer owns the transcript."""
+    from hermes_cli.active_sessions import ActiveSessionRefusal, SESSION_NOT_OWNED
+    return ActiveSessionRefusal(
+        "This chat is now open in another Hermes window. Use it there, or start a new chat here.",
+        SESSION_NOT_OWNED)
+
+
 def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     """Claim this session's cap slot on its first real turn; None when ok. session.create/resume deliberately
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
@@ -125,6 +143,18 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream."""
     if (canonical := _canonical_ledger_refusal(session)) is not None:
         return canonical
+    # A long-lived runtime can outlive its slot: a native resume hands this idle chat over (the idle
+    # holder's registry entry is dropped under the liveness lock), and this runtime must not start
+    # another turn on a transcript another surface now owns. Sticky for this runtime: the slot is
+    # gone for good, and re-claiming one would re-open the second writer the handoff closed.
+    if session.get("_slot_handed_over"):
+        return _handed_over_refusal()
+    if (held := session.get("active_session_lease")) is not None and not _lease_still_ours(held):
+        held.released = True
+        session.pop("active_session_lease", None)
+        session["_slot_handed_over"] = True
+        logger.info("Session %s was handed to another surface; refusing this turn", sid)
+        return _handed_over_refusal()
     if session.get("active_session_lease") is not None:
         return None
     key = str(session.get("session_key") or "")

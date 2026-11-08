@@ -8,13 +8,17 @@ Compression and reset may later advance the physical target, never FIFO identity
 from dataclasses import asdict, replace
 from datetime import datetime
 import json
+import logging
 from pathlib import Path
+import time
 
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource
 from gateway.session_contract import SessionRef
 from hermes_state_errors import SessionTurnLeaseLostError
 from hermes_state_runtime import RuntimeStoreError
+
+logger = logging.getLogger(__name__)
 
 
 def bind_native_transport(authority, actor, identity):
@@ -331,6 +335,42 @@ def adopt_client_history(authority, actor, sid, capability=None):
     return True
 
 
+# A same-owner native resume hands an IDLE WebUI-held session over instead of refusing it. The
+# dashboard/phone WebUI claims a ``webui`` slot on its first turn and keeps it for the life of the
+# open socket, so a chat the user had finished on the phone held ``runtime_coordination_required``
+# against the desktop until that socket closed. The cross-process proof of idleness is the durable
+# session turn lease (``session_turn_leases``, claimed for the length of a turn by every surface
+# through ``admit_durable_turn_lease`` and released when the turn ends): no live row means no turn
+# is running. A holder that is mid-turn keeps the slot and the refusal. The surfaces that may yield
+# are ``hermes_cli.active_sessions.YIELDABLE_SURFACES``.
+
+
+def _turn_in_flight(db, sid):
+    """Whether *sid*'s conversation still holds a live durable turn lease (a turn is running).
+
+    Same rule ``bind_legacy_target`` applies inside the adoption transaction: any unexpired row
+    means a turn owns the session, so nothing is handed over.
+    """
+    with db._read_ctx() as conn:
+        root = db._session_turn_lease_key_on_conn(conn, sid)
+        row = conn.execute('SELECT expires_at FROM session_turn_leases WHERE conversation_id=?',
+                           (root,)).fetchone()
+    return row is not None and float(row[0] or 0.0) > time.time()
+
+
+def _idle_holder_probe(db, sid):
+    """``holder_is_idle`` for the liveness guard: True only when no turn runs on *sid*."""
+    def probe(entry):
+        try:
+            return not _turn_in_flight(db, sid)
+        except Exception:
+            # Unprovable is not idle: keep the holder's slot and the refusal.
+            logger.warning('Idle-holder probe failed for session %s (%s); keeping the lease',
+                           sid, entry.get('surface'), exc_info=True)
+            return False
+    return probe
+
+
 def adopt_legacy_session(authority, actor, row):
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
@@ -408,8 +448,13 @@ def adopt_legacy_session(authority, actor, row):
                'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy),
                'legacy_session_id': row['id'], 'lineage': [row['id']]}
     try:
-        # Same lock order as old Bot Chat: mailbox (if any), liveness, SQLite.
-        with active_session_liveness_guard(row['id'], registry_home=Path(authority.db.db_path).parent) as active:
+        # Same lock order as old Bot Chat: mailbox (if any), liveness, SQLite. An idle WebUI holder
+        # hands the slot over under this lock (before the commit below); a holder mid-turn does not.
+        from hermes_cli.active_sessions import YIELDABLE_SURFACES, active_session_liveness_guard
+        with active_session_liveness_guard(
+                row['id'], registry_home=Path(authority.db.db_path).parent,
+                yield_surfaces=YIELDABLE_SURFACES,
+                holder_is_idle=_idle_holder_probe(authority.db, row['id'])) as active:
             if active:
                 raise RuntimeStoreError('runtime_coordination_required')
             commit_local_session(authority.db, epoch=authority.epoch, receipt=receipt)

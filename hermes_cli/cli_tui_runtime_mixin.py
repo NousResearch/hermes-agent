@@ -437,9 +437,14 @@ class CLITuiRuntimeMixin:
             # Vi editing mode when display.vim_mode is on.
             # EMACS is prompt_toolkit's own default, so non-opted-in behaviour is unchanged.
             extra_kw["editing_mode"] = EditingMode.VI if self._vim_mode else EditingMode.EMACS
+        # PromptSession loads the ghost-text accept keys (Right, Ctrl+E, Ctrl+F, Alt+F) itself;
+        # a bare Application does not, so only our Tab handler could accept a suggestion (#151352).
+        # Our bindings come last so filtered overlays that also bind Right keep priority.
+        from prompt_toolkit.key_binding import merge_key_bindings
+        from prompt_toolkit.key_binding.bindings.auto_suggest import load_auto_suggest_bindings
         return Application(
             layout=layout,
-            key_bindings=kb,
+            key_bindings=merge_key_bindings([load_auto_suggest_bindings(), kb]),
             style=style,
             full_screen=False,
             mouse_support=False,

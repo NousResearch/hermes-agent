@@ -2,20 +2,7 @@ name: airpods-approvals
 title: AirPods Approvals
 repo: https://github.com/cineglobe/hermes-airpods-approvals
 sha: ce280b1ec1dc09dcbc28604036bdea48e41c8f5f
-description: >-
-  Hear Hermes approvals and questions in your AirPods and answer with your head: nod to approve,
-  shake to deny. Gestures are recognised by rhythm, with a tap in each ear as you go, and drive the
-  real approval through approval.respond. A nod only ever approves once, and a timeout or lost
-  AirPods sends nothing. Desktop-only plugin with a small native helper built from source on your
-  Mac, because head motion isn't reachable from a plugin: Install in the plugin's settings opens
-  the bundled desktop/Install Helper.command in Terminal, which builds and starts it. Set up then
-  walks through a Gemini key, Motion access and AirPods on the same page. Disclosure — the helper runs without a
-  window or menu bar item only while Hermes Desktop is open, listens on 127.0.0.1 with a paired
-  handshake, and reads head motion only during a question, which never leaves the Mac. Prompts are
-  written and spoken by Gemini: the approval's description and Hermes-redacted command are sent to
-  generativelanguage.googleapis.com to phrase a short question and to speak it, using your Gemini
-  key, which the helper keeps in the macOS Keychain. On Gemini's free tier, Google may use this content to improve its products. No
-  telemetry.
+description: "Hear Hermes approvals and questions in your AirPods and answer with your head: nod to approve, shake to deny. Gestures are recognised by rhythm, with a tap in each ear as you go, and drive the real approval through approval.respond. A nod only ever approves once, and a timeout or lost AirPods sends nothing. Desktop-only plugin with a small native helper built from source on your Mac, because head motion isn't reachable from a plugin: Install in the plugin's settings opens the bundled desktop/Install Helper.command in Terminal, which builds and starts it. Set up then walks through a Gemini key, Motion access and AirPods on the same page. Disclosure — Desktop-only, macOS. Install opens the bundled desktop/Install Helper.command in Terminal, which builds a native helper app from the plugin's Swift source into ~/Applications/Hermes AirPods.app (ad-hoc signed); once paired, Hermes Desktop launches it at every start and it runs without a window or menu bar item until Desktop quits. The helper listens on 127.0.0.1 with a paired handshake and reads AirPods head motion only during a question, which never leaves the Mac. A completed nod answers a real Hermes approval with approve-once (never session or always) and can answer clarify questions; timeouts and lost AirPods send nothing. Prompts are written and spoken by Gemini: each approval's description and Hermes-redacted command, and each clarify question with its choices, are sent to generativelanguage.googleapis.com using your Gemini key, which the helper keeps in the macOS Keychain; by default you hear Gemini's one-line summary of the command rather than the literal command. On Gemini's free tier, Google may use this content to improve its products. No telemetry."
 maintainer: cineglobe
 tier: community
 category: voice

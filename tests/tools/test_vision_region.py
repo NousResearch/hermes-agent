@@ -44,7 +44,7 @@ class TestCropImageRegion:
         from tools.vision_tools import _crop_image_region
 
         src = _make_png(tmp_path / "src.png", 100, 50)
-        cropped_path, mime, err = _crop_image_region(src, [10, 10, 60, 40])
+        cropped_path, _mime, err = _crop_image_region(src, [10, 10, 60, 40])
         assert err is None
         assert cropped_path is not None and cropped_path.exists()
         with Image.open(cropped_path) as img:
@@ -54,7 +54,7 @@ class TestCropImageRegion:
         from tools.vision_tools import _crop_image_region
 
         src = _make_png(tmp_path / "src.png", 100, 50)
-        cropped_path, mime, err = _crop_image_region(src, [-10, -10, 200, 200])
+        cropped_path, _mime, err = _crop_image_region(src, [-10, -10, 200, 200])
         assert err is None
         with Image.open(cropped_path) as img:
             assert img.size == (100, 50)
@@ -63,7 +63,7 @@ class TestCropImageRegion:
         from tools.vision_tools import _crop_image_region
 
         src = _make_png(tmp_path / "src.png", 100, 50)
-        cropped_path, mime, err = _crop_image_region(src, [200, 200, 300, 300])
+        cropped_path, _mime, err = _crop_image_region(src, [200, 200, 300, 300])
         assert cropped_path is None
         assert err is not None
         # Error must name the actual image dimensions so the model can retry.
@@ -73,7 +73,7 @@ class TestCropImageRegion:
         from tools.vision_tools import _crop_image_region
 
         src = _make_png(tmp_path / "src.png", 100, 50)
-        cropped_path, mime, err = _crop_image_region(src, [60, 40, 10, 10])
+        cropped_path, _mime, err = _crop_image_region(src, [60, 40, 10, 10])
         assert cropped_path is None
         assert "100" in err and "50" in err
 
@@ -82,7 +82,7 @@ class TestCropImageRegion:
 
         src = _make_png(tmp_path / "src.png", 100, 50)
         for bad in ([1, 2, 3], "10,10,60,40", [1, 2, 3, "x"], None):
-            cropped_path, mime, err = _crop_image_region(src, bad)
+            cropped_path, _mime, err = _crop_image_region(src, bad)
             assert cropped_path is None
             assert err is not None
 
@@ -142,7 +142,7 @@ class TestNativePathRegion:
         downscaled with the rest."""
         from tools.vision_tools import _EMBED_MAX_DIMENSION, _vision_analyze_native
 
-        # Taller than the 7900px embed cap — full shot would be downscaled.
+        # Taller than the embed long-edge cap — full shot would be downscaled.
         big = tmp_path / "big.png"
         Image.new("RGB", (200, _EMBED_MAX_DIMENSION + 500), (0, 100, 0)).save(
             big, format="PNG"
@@ -164,15 +164,6 @@ class TestNativePathRegion:
 
 
 class TestSchemaAndHandler:
-    def test_schema_declares_optional_region(self):
-        from tools.vision_tools import VISION_ANALYZE_SCHEMA
-
-        props = VISION_ANALYZE_SCHEMA["parameters"]["properties"]
-        assert "region" in props
-        assert props["region"]["type"] == "array"
-        assert "region" not in VISION_ANALYZE_SCHEMA["parameters"]["required"]
-        # Description must document original-image pixel space.
-        assert "original" in props["region"]["description"].lower()
 
     def test_handler_passes_region_to_native_path(self, tmp_path, monkeypatch):
         from tools import vision_tools

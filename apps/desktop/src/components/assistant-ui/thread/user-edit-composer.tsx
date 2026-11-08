@@ -1,5 +1,6 @@
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-ui/core'
 import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import {
   type ClipboardEvent,
   type FC,
@@ -9,6 +10,7 @@ import {
   type DragEvent as ReactDragEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState
 } from 'react'
@@ -16,6 +18,7 @@ import {
 import { ComposerDirectiveActions } from '@/app/chat/composer/directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from '@/app/chat/composer/drop-affordance'
 import {
+  ackComposerInsert,
   type ComposerInsertMode,
   focusComposerInput,
   markActiveComposer,
@@ -24,7 +27,7 @@ import {
   releaseActiveComposer
 } from '@/app/chat/composer/focus'
 import { useAtCompletions } from '@/app/chat/composer/hooks/use-at-completions'
-import { rebuildAroundCaret } from '@/app/chat/composer/hooks/use-composer-trigger'
+import { rebuildAroundCaret, triggerKeyUpHandler } from '@/app/chat/composer/hooks/use-composer-trigger'
 import { useComposerUndo } from '@/app/chat/composer/hooks/use-composer-undo'
 import { useEmojiCompletions } from '@/app/chat/composer/hooks/use-emoji-completions'
 import { useSlashCompletions } from '@/app/chat/composer/hooks/use-slash-completions'
@@ -36,8 +39,10 @@ import {
 } from '@/app/chat/composer/inline-refs'
 import { chipTypedPathOnSpace, pathifyRefs } from '@/app/chat/composer/path-refs'
 import {
+  beginComposerComposition,
   composerPlainText,
   insertComposerContentsAtCaret,
+  markEditorEmptiness,
   placeCaretEnd,
   refChipElement,
   renderComposerContents,
@@ -45,14 +50,17 @@ import {
   RICH_INPUT_SLOT
 } from '@/app/chat/composer/rich-editor'
 import { detectTrigger, openDirectiveScope, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
+import { composerTextEntryProps, touchTapFocusHandlers } from '@/app/chat/composer/touch-text-entry'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { isRedoShortcut, isUndoShortcut } from '@/app/chat/composer/undo-history'
 import { chipTypedUrlOnSpace, linkifyUrls } from '@/app/chat/composer/url-refs'
+import { type DropFailure, dropWarning } from '@/app/chat/hooks/drop-warning'
 import {
   extractDroppedFiles,
   HERMES_PATHS_MIME,
   isImagePath,
-  partitionDroppedFiles
+  partitionDroppedFiles,
+  stageDroppedFilePath
 } from '@/app/chat/hooks/use-composer-actions'
 import { uploadComposerAttachment } from '@/app/session/hooks/use-prompt-actions'
 import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
@@ -71,10 +79,14 @@ import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2Icon } from '@/lib/icons'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
-import { notifyError } from '@/store/notifications'
-import { $connection, $terminalBackend } from '@/store/session'
+import { notify, notifyError, readableError } from '@/store/notifications'
+import { $terminalBackend } from '@/store/session'
+import { ambientRequestFor } from '@/store/session-gone-latch'
+import { isSessionRemote, requestForOwnedSession } from '@/store/session-states'
+import { useForcedTextDirection } from '@/store/text-direction'
 import { notifyThreadEditClose } from '@/store/thread-scroll'
 
 interface UserEditComposerProps {
@@ -88,13 +100,17 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const copy = t.assistant.thread
   const aui = useAui()
   const draft = useAuiState(s => s.composer.text)
+  const textDirection = useForcedTextDirection()
   const rootRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
+  const touchPointer = useStore($touchPointer)
+  const tapFocus = useMemo(() => (touchPointer ? touchTapFocusHandlers() : undefined), [touchPointer])
   // Capture the original draft immediately before the first edit. The runtime
   // may hydrate composer.text after this component's first render, so taking a
   // mount-time snapshot can incorrectly classify every later blur as dirty.
   const initialDraftRef = useRef<string | null>(null)
   const draftRef = useRef(draft)
+  const composingRef = useRef(false)
   const dragDepthRef = useRef(0)
   const [dragActive, setDragActive] = useState(false)
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
@@ -114,17 +130,46 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const expanded = draft.includes('\n')
   const canSubmit = draft.trim().length > 0
   const at = useAtCompletions({ cwd, gateway, sessionId })
-  const slash = useSlashCompletions({ gateway })
+  const slash = useSlashCompletions({ gateway, sessionId })
   const emoji = useEmojiCompletions()
+
+  // Timers this composer schedules must not outlive it. Every callback below
+  // touches component state, a ref or the composer core, and this is the one
+  // composer that routinely unmounts mid-flight: confirming an edit tears it
+  // down while the 200ms submit latch is still pending, so the latch resumes
+  // against an unmounted tree. Two of the callbacks already carry defensive
+  // try/catch for the racing-teardown case; clearing the timers removes the
+  // race instead of surviving it.
+  const pendingTimeoutsRef = useRef<Set<number>>(new Set())
+
+  const scheduleTimeout = useCallback((run: () => void, delayMs: number): void => {
+    const id = window.setTimeout(() => {
+      pendingTimeoutsRef.current.delete(id)
+      run()
+    }, delayMs)
+
+    pendingTimeoutsRef.current.add(id)
+  }, [])
 
   // This is the one composer that routinely unmounts, so it is where the focus
   // bus leaks: confirming or cancelling an edit tears the composer down while
   // `'edit'` is still the active target. Release it alongside the thread-scroll
   // cleanup so keyboard routing falls back to the visible chat composer.
+  //
+  // It also drains whatever `scheduleTimeout` still has pending, which is a
+  // second concern under the same heading rather than a separate one: both
+  // are "this composer is going away", they unmount together by definition,
+  // and a sibling unmount-only effect would only be a second place to forget.
   useEffect(
     () => () => {
       notifyThreadEditClose()
       releaseActiveComposer('edit')
+
+      for (const id of pendingTimeoutsRef.current) {
+        window.clearTimeout(id)
+      }
+
+      pendingTimeoutsRef.current.clear()
     },
     []
   )
@@ -152,11 +197,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   }, [])
 
   const appendExternalText = useCallback(
-    (text: string, mode: ComposerInsertMode) => {
+    (text: string, mode: ComposerInsertMode): boolean => {
       const value = text.trim()
 
       if (!value) {
-        return
+        return false
       }
 
       rememberInitialDraft()
@@ -175,6 +220,8 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       }
 
       setFocusRequestId(id => id + 1)
+
+      return true
     },
     [aui, rememberInitialDraft]
   )
@@ -212,9 +259,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       }
     })
 
-    const offInsert = onComposerInsertRequest(({ mode, target, text }) => {
+    const offInsert = onComposerInsertRequest(({ mode, target, text, token }) => {
       if (target === 'edit') {
-        appendExternalText(text, mode)
+        // Tokened inserts come from the plugin SDK: acknowledge whether the
+        // text landed instead of reporting success unconditionally.
+        ackComposerInsert(token, appendExternalText(text, mode))
       }
     })
 
@@ -226,6 +275,9 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
   const syncDraftFromEditor = useCallback(
     (editor: HTMLDivElement) => {
+      // Native edits bypass renderComposerContents, so refresh the placeholder
+      // marker here as well, just like the main composer.
+      markEditorEmptiness(editor)
       const nextDraft = sanitizeComposerInput(composerPlainText(editor))
 
       if (nextDraft !== draftRef.current) {
@@ -262,7 +314,9 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     }
 
     const before = textBeforeCaret(editor)
-    const detected = detectTrigger(before ?? composerPlainText(editor))
+    const typed = detectTrigger(before ?? composerPlainText(editor))
+    // A `/` source with no adapter offers no menu (the onboarding chat before its setup ends).
+    const detected = typed?.kind === '/' && !slash.adapter ? null : typed
 
     if (detected) {
       const rect = editor.getBoundingClientRect()
@@ -281,7 +335,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     if (detected?.kind !== trigger?.kind || detected?.query !== trigger?.query) {
       setTriggerActive(0)
     }
-  }, [trigger])
+  }, [slash.adapter, trigger])
 
   const closeTrigger = useCallback(() => {
     setTrigger(null)
@@ -340,7 +394,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         draftRef.current = composerPlainText(editor)
         aui.composer().setText(draftRef.current)
         requestEditFocus()
-        starter ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
+        starter ? scheduleTimeout(refreshTrigger, 0) : closeTrigger()
       }
 
       // In place first, spanning Chromium's split text nodes (see
@@ -359,7 +413,16 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
       finish()
     },
-    [aui, closeTrigger, recordUndoPoint, refreshTrigger, rememberInitialDraft, requestEditFocus, trigger]
+    [
+      aui,
+      closeTrigger,
+      recordUndoPoint,
+      refreshTrigger,
+      rememberInitialDraft,
+      requestEditFocus,
+      scheduleTimeout,
+      trigger
+    ]
   )
 
   const insertRefStrings = useCallback(
@@ -407,24 +470,43 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         return droppedFileInlineRefs(osDrops, cwd)
       }
 
-      const remote = $connection.get()?.mode === 'remote'
+      const remote = isSessionRemote(sessionId)
+
+      // Staged on the edited session's owner: a bare-profile owner otherwise
+      // rides the ambient socket, which refuses another profile's session.
+      const ambient = ambientRequestFor(gateway)
 
       const requestGateway = <T,>(method: string, params?: Record<string, unknown>) =>
-        gateway.request<T>(method, params)
+        requestForOwnedSession<T>(sessionId, ambient, method, params)
 
       const refs: InlineRefInput[] = []
+      // The staging reason leaves out the name (the main composer's drop warning adds it): name
+      // each rejected file here too, in the same bounded warning, so several aren't told apart.
+      const failures: DropFailure[] = []
 
       for (const candidate of osDrops) {
-        const path = candidate.path || ''
+        let path: string
+
+        try {
+          // A rejected stage carries the server's or a proxy's reason (an nginx 413).
+          path = await stageDroppedFilePath(candidate)
+        } catch (err) {
+          const name = candidate.file?.name || candidate.path || 'file'
+          const reason = readableError(err, '').message
+
+          failures.push(reason ? { name, reason } : { name })
+
+          continue
+        }
 
         if (!path) {
           continue
         }
 
-        const kind: ComposerAttachment['kind'] =
-          candidate.file?.type.startsWith('image/') || isImagePath(candidate.file?.name || path) ? 'image' : 'file'
-
         try {
+          const kind: ComposerAttachment['kind'] =
+            candidate.file?.type.startsWith('image/') || isImagePath(candidate.file?.name || path) ? 'image' : 'file'
+
           const uploaded = await uploadComposerAttachment(
             { detail: path, id: attachmentId(kind, path), kind, label: pathLabel(path), path },
             { backendCwd: cwd, remote, requestGateway, sessionId, terminalBackend: $terminalBackend.get() }
@@ -440,9 +522,14 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         }
       }
 
+      // A warning, as in the main composer, so the same drop looks the same wherever it lands.
+      if (failures.length) {
+        notify({ kind: 'warning', title: t.desktop.dropFiles, ...dropWarning(failures, t.desktop.dropFilesMore) })
+      }
+
       return refs
     },
-    [cwd, gateway, sessionId, t.desktop.dropFiles]
+    [cwd, gateway, sessionId, t.desktop.dropFiles, t.desktop.dropFilesMore]
   )
 
   const resetDragState = useCallback(() => {
@@ -483,6 +570,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
   const handleDrop = (event: ReactDragEvent<HTMLElement>) => {
     if (!dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME)) {
+      // A plain text drag within the editor mutates the DOM without a
+      // React-visible beforeinput (insertFromDrop), so the undo snapshot has
+      // to be banked here — before Chromium applies the move.
+      recordUndoPoint()
+
       return
     }
 
@@ -498,8 +590,14 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
     // In-app drags (project tree / gutter) are workspace-relative paths that
     // resolve on the gateway as-is, so they stay inline refs. OS drops need to
-    // be staged + uploaded first, then their gateway-side ref is inserted.
-    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
+    // be staged + uploaded first, then their gateway-side ref is inserted —
+    // unless the backend resolves this machine's paths as-is, in which case
+    // the drop keeps its original-path inline ref too (#52427).
+    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates, {
+      backendCwd: cwd,
+      remote: isSessionRemote(sessionId),
+      terminalBackend: $terminalBackend.get()
+    })
 
     if (insertDroppedRefs(inAppRefs)) {
       triggerHaptic('selection')
@@ -517,16 +615,27 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     }
   }
 
-  const handleInput = (event: FormEvent<HTMLDivElement>) => {
-    const editor = event.currentTarget
+  const flushEditorToDraft = useCallback(
+    (editor: HTMLDivElement) => {
+      if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
+        editor.replaceChildren()
+      }
 
-    if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
-      editor.replaceChildren()
+      rememberInitialDraft()
+      const nextDraft = syncDraftFromEditor(editor)
+      scheduleTimeout(refreshTrigger, 0)
+
+      return nextDraft
+    },
+    [refreshTrigger, rememberInitialDraft, scheduleTimeout, syncDraftFromEditor]
+  )
+
+  const handleInput = (event: FormEvent<HTMLDivElement>) => {
+    if (composingRef.current) {
+      return
     }
 
-    rememberInitialDraft()
-    syncDraftFromEditor(editor)
-    window.setTimeout(refreshTrigger, 0)
+    flushEditorToDraft(event.currentTarget)
   }
 
   // Native typing/deleting still goes through Chromium's editing pipeline, whose
@@ -540,6 +649,15 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     }
 
     recordUndoPoint({ coalesce: inputType === 'insertText' || inputType === 'deleteContentBackward' })
+  }
+
+  // Cut never reaches the handler above: React's onBeforeInput is a
+  // keypress/textInput polyfill and does not observe the native
+  // `beforeinput` event, so Chromium's deleteByCut input type is invisible to
+  // it. The native `cut` clipboard event still fires before the DOM mutation,
+  // which is where the pre-edit snapshot has to be banked or ⌘Z skips the cut.
+  const handleCut = () => {
+    recordUndoPoint()
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
@@ -567,6 +685,10 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   }
 
   const submitEdit = (editor: HTMLDivElement) => {
+    if (composingRef.current) {
+      return
+    }
+
     const nextDraft = syncDraftFromEditor(editor)
 
     if (submitting || staging || !nextDraft.trim()) {
@@ -582,6 +704,13 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     // hazard on the main composer).
     try {
       aui.composer().send()
+
+      // Clear latch after cooldown to allow re-submission. This prevents rapid
+      // double-Enter but doesn't require tracking when onEdit settles (which may
+      // be synchronous or async, and whose promise we don't have access to).
+      scheduleTimeout(() => {
+        setSubmitting(false)
+      }, 200)
     } catch {
       setSubmitting(false)
     }
@@ -595,7 +724,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         return
       }
 
-      window.setTimeout(() => {
+      scheduleTimeout(() => {
         const root = rootRef.current
         const active = document.activeElement
 
@@ -630,10 +759,28 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         }
       }, 80)
     },
-    [aui, closeTrigger, submitting, syncDraftFromEditor]
+    [aui, closeTrigger, scheduleTimeout, submitting, syncDraftFromEditor]
   )
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // Self-heal a stale composition flag (same recovery as the main composer's
+    // handleEditorKeyDown, #44135): compositionend can be missed, and a wedged
+    // composingRef would swallow every Enter until the edit composer remounts.
+    if (composingRef.current && !event.nativeEvent.isComposing) {
+      composingRef.current = false
+    }
+
+    // IME composition: Enter confirms composed text, not a message submission.
+    if (composingRef.current || event.nativeEvent.isComposing) {
+      return
+    }
+
+    // IME commit Enter still carrying keyCode 229 (VK_PROCESSKEY) after
+    // compositionend — same guard as the main composer.
+    if (event.key === 'Enter' && event.keyCode === 229) {
+      return
+    }
+
     if (trigger && triggerItems.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
@@ -719,27 +866,16 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     }
   }
 
-  const handleKeyUp = () => {
-    // If this keyup belongs to a key the open trigger popover already consumed
-    // in keydown (Arrow/Enter/Tab/Escape), skip the refresh. Those keys never
-    // edit text, and for Escape the keydown already closed the menu — a refresh
-    // here would re-detect the still-present `/` and instantly reopen it. We
-    // read a ref set during keydown rather than `trigger`, because by keyup
-    // time React has re-rendered and `trigger` may already be null.
-    if (triggerKeyConsumedRef.current) {
-      triggerKeyConsumedRef.current = false
-
-      return
-    }
-
-    window.setTimeout(refreshTrigger, 0)
-  }
+  const handleKeyUp = triggerKeyUpHandler(triggerKeyConsumedRef, refreshTrigger)
 
   return (
     <ComposerPrimitive.Root className="contents" data-slot="aui_edit-composer-root">
       <StickyHumanMessageContainer>
         <div
           className="composer-human-message-container human-execution-message-top relative flex w-full items-start rounded-md bg-(--ui-chat-surface-background)"
+          // A raised box over the transcript field: under window glass it keeps
+          // a near-opaque fill instead of thinning with the field behind it.
+          data-glass-raised=""
           onBlur={handleEditBlur}
           onDragEnter={handleDragEnter}
           onDragLeave={handleDragLeave}
@@ -769,18 +905,29 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
           >
             <div
               aria-label={copy.editMessage}
-              autoCapitalize="off"
-              autoCorrect="off"
+              // The main composer's text entry: off on desktop, the platform's on touch.
+              {...composerTextEntryProps(touchPointer)}
+              {...tapFocus}
               className={cn(
-                'ui-prompt-input-editor__input max-h-48 w-full resize-none bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] text-foreground/95 outline-none',
+                'ui-prompt-input-editor__input max-h-48 w-full resize-none overflow-y-auto bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] text-foreground/95 outline-none',
                 '**:data-ref-text:cursor-default',
                 expanded ? 'min-h-16' : 'min-h-[1.25rem]'
               )}
               contentEditable
               data-placeholder={copy.editMessage}
               data-slot={RICH_INPUT_SLOT}
+              dir={textDirection}
               onBeforeInput={handleBeforeInput}
-              onBlur={() => window.setTimeout(closeTrigger, 80)}
+              onBlur={() => scheduleTimeout(closeTrigger, 80)}
+              onCompositionEnd={event => {
+                composingRef.current = false
+                flushEditorToDraft(event.currentTarget)
+              }}
+              onCompositionStart={event => {
+                composingRef.current = true
+                beginComposerComposition(event.currentTarget)
+              }}
+              onCut={handleCut}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
               onFocus={() => markActiveComposer('edit')}
@@ -791,7 +938,6 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               onPaste={handlePaste}
               ref={editorRef}
               role="textbox"
-              spellCheck={false}
               suppressContentEditableWarning
             />
             <ComposerDirectiveActions editorRef={editorRef} />
@@ -839,7 +985,6 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               // the edit silently never sends. The restore button guards the
               // same way.
               onPointerDown={event => event.preventDefault()}
-              title={copy.sendEdited}
               type="button"
             >
               {submitting ? StopGlyph : <Codicon name="arrow-up" size={USER_ACTION_ICON_SIZE} />}

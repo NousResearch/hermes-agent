@@ -109,7 +109,7 @@ Note: `image_generate` does not accept reference-image inputs under any usage ty
 
 ## Step 3: Confirm Settings
 
-Use the `clarify` tool. Since `clarify` handles one question at a time, ask the most important question first. Skip any question the user already answered in their request.
+Use the `clarify` tool. Put the independent questions in one `questions` array (up to 5). Skip any question the user already answered in their request.
 
 ### Q1: Preset or Type (highest priority)
 

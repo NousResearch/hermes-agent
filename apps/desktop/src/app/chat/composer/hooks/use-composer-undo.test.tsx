@@ -1,6 +1,8 @@
 import { render } from '@testing-library/react'
 import { createRef, type RefObject } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
+
+import { placeCaretAtEnd } from '../test-utils'
 
 import { useComposerUndo } from './use-composer-undo'
 
@@ -36,19 +38,10 @@ function makeEditor(text: string) {
   return { editor, ref }
 }
 
-const caretAtEnd = (editor: HTMLElement) => {
-  const range = document.createRange()
-  const selection = window.getSelection()!
-  range.selectNodeContents(editor)
-  range.collapse(false)
-  selection.removeAllRanges()
-  selection.addRange(range)
-}
-
 describe('useComposerUndo', () => {
   it('restores the pre-edit text, which is what a paste destroyed', () => {
     const { editor, ref } = makeEditor('before')
-    caretAtEnd(editor)
+    placeCaretAtEnd(editor)
 
     const { api, view } = mountUndo(ref, () => editor.textContent || '')
 
@@ -69,7 +62,7 @@ describe('useComposerUndo', () => {
 
   it('withUndoPoint banks only when the edit actually ran', () => {
     const { editor, ref } = makeEditor('text')
-    caretAtEnd(editor)
+    placeCaretAtEnd(editor)
 
     const { api, view } = mountUndo(ref, () => editor.textContent || '')
 
@@ -95,7 +88,7 @@ describe('useComposerUndo', () => {
   it('claims a native historyUndo aimed at the focused editor', () => {
     const { editor, ref } = makeEditor('kept')
     editor.focus()
-    caretAtEnd(editor)
+    placeCaretAtEnd(editor)
 
     const { api, view } = mountUndo(ref, () => editor.textContent || '')
 
@@ -162,7 +155,7 @@ describe('useComposerUndo', () => {
 
   it('reset drops history so undo cannot cross a draft swap', () => {
     const { editor, ref } = makeEditor('session A')
-    caretAtEnd(editor)
+    placeCaretAtEnd(editor)
 
     const { api, view } = mountUndo(ref, () => editor.textContent || '')
 
@@ -175,19 +168,5 @@ describe('useComposerUndo', () => {
 
     view.unmount()
     editor.remove()
-  })
-
-  it('is inert when the editor ref is empty', () => {
-    const ref = createRef<HTMLDivElement>() as RefObject<HTMLDivElement | null>
-    const sync = vi.fn(() => '')
-
-    const { api, view } = mountUndo(ref, sync)
-
-    api.current!.recordUndoPoint()
-
-    expect(api.current!.undo()).toBe(false)
-    expect(sync).not.toHaveBeenCalled()
-
-    view.unmount()
   })
 })

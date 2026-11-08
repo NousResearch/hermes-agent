@@ -56,6 +56,13 @@ describe('completionToApplyOnSubmit', () => {
     expect(completionToApplyOnSubmit('/cron add', 'add ', 6)).toBeNull()
   })
 
+  it("submits a fully typed TUI-local command instead of the gateway's fuzzy top hit", () => {
+    const local = (name: string) => name === 'connectors'
+
+    expect(completionToApplyOnSubmit('/connectors', '/login', 1, local)).toBeNull()
+    expect(completionToApplyOnSubmit('/conn', '/connectors', 1, local)).toBe('/connectors')
+  })
+
   it('returns null when there is no row text', () => {
     expect(completionToApplyOnSubmit('/exit', undefined, 1)).toBeNull()
     expect(completionToApplyOnSubmit('/exit', '', 1)).toBeNull()

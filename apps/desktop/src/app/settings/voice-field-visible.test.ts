@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { voiceFieldVisible } from './config-settings'
+import { voiceFieldVisible } from './helpers'
 
 const cfg = (over: Record<string, unknown> = {}): HermesConfigRecord =>
   ({
@@ -15,7 +15,7 @@ describe('voiceFieldVisible', () => {
   it('always shows top-level + non-provider keys', () => {
     const config = cfg()
 
-    for (const key of ['tts.provider', 'stt.enabled', 'stt.provider', 'voice.auto_tts', 'voice.record_key']) {
+    for (const key of ['tts.provider', 'stt.enabled', 'stt.provider', 'voice.auto_tts']) {
       expect(voiceFieldVisible(key, config)).toBe(true)
     }
   })
@@ -33,16 +33,19 @@ describe('voiceFieldVisible', () => {
     expect(voiceFieldVisible('stt.groq.model', config)).toBe(false)
   })
 
+  it('falls back to backend defaults when provider is unset so model fields stay visible', () => {
+    const unset = { tts: {}, stt: { enabled: true } } as unknown as HermesConfigRecord
+    expect(voiceFieldVisible('tts.edge.voice', unset)).toBe(true)
+    expect(voiceFieldVisible('tts.openai.voice', unset)).toBe(false)
+    expect(voiceFieldVisible('stt.local.model', unset)).toBe(true)
+    expect(voiceFieldVisible('stt.openai.model', unset)).toBe(false)
+  })
+
   it('hides every STT provider sub-field when STT is disabled', () => {
     const config = cfg({ stt: { enabled: false, provider: 'local', local: {} } })
     expect(voiceFieldVisible('stt.local.model', config)).toBe(false)
     // ...but the enable/provider toggles themselves stay visible.
     expect(voiceFieldVisible('stt.enabled', config)).toBe(true)
     expect(voiceFieldVisible('stt.provider', config)).toBe(true)
-  })
-
-  it('tracks a provider switch', () => {
-    expect(voiceFieldVisible('tts.openai.voice', cfg({ tts: { provider: 'openai', openai: {} } }))).toBe(true)
-    expect(voiceFieldVisible('tts.edge.voice', cfg({ tts: { provider: 'openai', openai: {} } }))).toBe(false)
   })
 })

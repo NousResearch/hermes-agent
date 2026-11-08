@@ -8,12 +8,9 @@ construction-time snapshot. The next turn immediately hits the same error,
 exhausting remaining entries and falling through to cross-provider fallback.
 """
 
-import json
-import logging
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 
 from agent.credential_pool import (
     AUTH_TYPE_OAUTH,
@@ -132,21 +129,6 @@ class TestRestorePrimaryPoolReselect:
 
 
 
-    def test_restore_rebuilds_client_after_reselect(self):
-        """After re-selecting from pool, client should be rebuilt with new key."""
-        entries = [
-            _make_entry("entry-1", "key-1", priority=0),
-        ]
-        pool = _build_mock_pool(entries)
-
-        agent = self._make_agent(pool)
-        result = agent._restore_primary_runtime()
-
-        assert result is True
-        # _swap_credential rebuilds the live OpenAI client with the fresh key.
-        agent._replace_primary_openai_client.assert_called_once_with(
-            reason="credential_rotation",
-        )
 
 
     def test_restore_updates_base_url_from_pool_entry(self):

@@ -9,9 +9,7 @@ _TEXT_KEYS = ("text", "content", "input_text", "output_text", "summary_text")
 
 
 def _field(value: Any, key: str) -> Any:
-    if isinstance(value, Mapping):
-        return value.get(key)
-    return getattr(value, key, None)
+    return value.get(key) if isinstance(value, Mapping) else getattr(value, key, None)
 
 
 def _text_from_part(part: Any) -> str:
@@ -19,11 +17,8 @@ def _text_from_part(part: Any) -> str:
         return ""
     if isinstance(part, str):
         return part
-
-    part_type = str(_field(part, "type") or "").strip().lower()
-    if part_type in _NON_TEXT_PART_TYPES:
+    if str(_field(part, "type") or "").strip().lower() in _NON_TEXT_PART_TYPES:
         return ""
-
     for key in _TEXT_KEYS:
         text = _field(part, key)
         if isinstance(text, str):
@@ -38,9 +33,7 @@ def flatten_message_text(content: Any, *, sep: str = "\n") -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        chunks = [_text_from_part(part) for part in content]
-        return sep.join(chunk for chunk in chunks if chunk)
-
+        return sep.join(chunk for chunk in map(_text_from_part, content) if chunk)
     text = _text_from_part(content)
     if text:
         return text

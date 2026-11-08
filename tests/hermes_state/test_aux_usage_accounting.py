@@ -67,7 +67,20 @@ class TestRecordAuxiliaryUsage:
         assert rows[0]["input_tokens"] == 3000
         assert rows[0]["api_call_count"] == 3
 
-
+    def test_explicit_none_api_call_count_uses_default_one(self, db):
+        """Explicit None must match the documented default of 1, not become 0."""
+        db.create_session("s1", source="cli")
+        db.record_auxiliary_usage(
+            "s1",
+            "vision",
+            model="gemini-3-flash",
+            input_tokens=10,
+            output_tokens=1,
+            api_call_count=None,
+        )
+        rows = _usage_rows(db, "s1")
+        assert len(rows) == 1
+        assert rows[0]["api_call_count"] == 1
 
     def test_main_loop_and_aux_rows_coexist(self, db):
         db.create_session("s1", source="cli")
@@ -83,7 +96,24 @@ class TestRecordAuxiliaryUsage:
         tasks = sorted(r["task"] for r in rows)
         assert tasks == ["", "title_generation"]
 
+    def test_existing_row_keeps_null_created_source_and_backfills_profile(self, db):
+        """Skipping the unknown upsert must not skip the NULL profile_name backfill.
 
+        source and created_source stay as they are. A NULL profile_name is filled
+        with this store's profile, the same value the upsert would have written.
+        """
+        db.create_session("s1", source="local")
+        db._own_profile_name = lambda: "default"
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET created_source=NULL, profile_name=NULL WHERE id=?",
+                ("s1",))
+            db._conn.commit()
+        db.record_auxiliary_usage("s1", "compression", model="m", input_tokens=1)
+        row = db.get_session("s1")
+        assert row["source"] == "local"
+        assert row["created_source"] is None
+        assert row["profile_name"] == "default"
 
 
 class TestSchemaMigrationV22:
@@ -221,11 +251,7 @@ class TestAmbientAccountingContext:
 
 class TestAnalyticsAuxRows:
     def test_aux_usage_rows_and_merge(self, db):
-        from hermes_cli.web_server import (
-            _aux_task_summary,
-            _aux_usage_rows,
-            _merge_aux_into_by_model,
-        )
+        from hermes_cli.web_server_profiles import _aux_task_summary, _aux_usage_rows, _merge_aux_into_by_model
 
         db.create_session("s1", source="cli")
         db.update_token_counts(

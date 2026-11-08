@@ -61,4 +61,111 @@ describe('sidebar collapse persistence', () => {
     s2.bind()
     expect(s2.leftCollapsed()).toBe(true)
   })
+
+  it('explicit open restores hidden strip tabs and minimized groups only on that physical side', async () => {
+    for (const flipped of [false, true]) {
+      window.localStorage.clear()
+      reload()
+      const { layout, tree, bind } = await loadStores()
+      const { findGroup, group, split } = await import('@/components/pane-shell/tree/model')
+      const { registry } = await import('@/contrib/registry')
+
+      const disposers = [
+        registry.register({ area: 'panes', id: 'sessions', data: { placement: 'left' } }),
+        registry.register({ area: 'panes', id: 'bots', data: { placement: 'left' } }),
+        registry.register({ area: 'panes', id: 'workspace', data: { placement: 'main' } }),
+        registry.register({ area: 'panes', id: 'files', data: { placement: 'right' } }),
+        registry.register({ area: 'panes', id: 'review', data: { placement: 'right' } })
+      ]
+
+      try {
+        const sidebar = group(['sessions', 'bots'], { active: 'bots', id: 'sidebar' })
+        const main = group(['workspace'])
+        const other = group(['files', 'review'], { id: 'other' })
+        tree.declareDefaultTree(split('row', flipped ? [other, main, sidebar] : [sidebar, main, other]))
+        bind()
+        tree.bindTreeSideVisibility('right', layout.$fileBrowserOpen, layout.setFileBrowserOpen)
+        layout.setFileBrowserOpen(true)
+        tree.setStripTabHidden('sessions', true)
+        tree.setStripTabHidden('review', true)
+        tree.setTreeGroupMinimized('sidebar', true)
+        tree.setTreeGroupMinimized('other', true)
+        const open = flipped ? layout.setFileBrowserOpen : layout.setSidebarOpen
+
+        open(true) // already true: must not depend on a nanostores notification
+        expect(tree.isStripTabHidden('sessions')).toBe(false)
+        expect(tree.$hiddenTreePanes.get().has('sessions')).toBe(false)
+        expect(tree.isStripTabHidden('review')).toBe(true)
+        expect(findGroup(tree.$layoutTree.get()!, 'sidebar')).toMatchObject({ active: 'bots', minimized: false })
+        expect(findGroup(tree.$layoutTree.get()!, 'other')?.minimized).toBe(true)
+        expect(JSON.parse(window.localStorage.getItem('hermes.desktop.hiddenStripTabs.v1')!)).toEqual(['review'])
+        const restored = tree.$layoutTree.get()
+        open(true)
+        expect(tree.$layoutTree.get()).toBe(restored)
+        tree.setStripTabHidden('sessions', true)
+        const toggle = flipped ? layout.toggleFileBrowserOpen : layout.toggleSidebarOpen
+        toggle()
+        toggle()
+        expect(tree.isStripTabHidden('sessions')).toBe(true) // ordinary toggles preserve the tab choice
+      } finally {
+        disposers.forEach(dispose => dispose())
+      }
+    }
+  })
+
+  it('recovers the minimized physical side after reload without changing its active tab', async () => {
+    for (const flipped of [false, true]) {
+      window.localStorage.clear()
+      reload()
+      const s1 = await loadStores()
+      const { group, split } = await import('@/components/pane-shell/tree/model')
+      const sidebar = group(['sessions', 'bots'], { active: 'bots', id: 'sidebar' })
+      const main = group(['workspace'])
+      const files = group(['files'], { id: 'files-zone' })
+      s1.tree.declareDefaultTree(split('row', flipped ? [files, main, sidebar] : [sidebar, main, files]))
+      s1.layout.setFileBrowserOpen(true)
+      s1.tree.setTreeGroupMinimized(sidebar.id, true)
+
+      reload()
+      const { layout, tree, bind } = await loadStores()
+      const { findGroup } = await import('@/components/pane-shell/tree/model')
+      const { registry } = await import('@/contrib/registry')
+
+      const disposers = [
+        registry.register({ area: 'panes', id: 'sessions', data: { placement: 'left' } }),
+        registry.register({ area: 'panes', id: 'bots', data: { placement: 'left' } }),
+        registry.register({ area: 'panes', id: 'workspace', data: { placement: 'main' } }),
+        registry.register({ area: 'panes', id: 'files', data: { placement: 'right' } })
+      ]
+
+      try {
+        bind()
+        tree.bindTreeSideVisibility('right', layout.$fileBrowserOpen, layout.setFileBrowserOpen)
+        const side = flipped ? 'right' : 'left'
+        const toggle = flipped ? layout.toggleFileBrowserOpen : layout.toggleSidebarOpen
+        const $open = flipped ? layout.$fileBrowserOpen : layout.$sidebarOpen
+        const otherToggle = flipped ? layout.toggleSidebarOpen : layout.toggleFileBrowserOpen
+
+        // Boot respects minimize; the OTHER physical button must not restore it.
+        expect(findGroup(tree.$layoutTree.get()!, sidebar.id)?.minimized).toBe(true)
+        otherToggle()
+        expect(tree.$collapsedTreeSides.get().has(flipped ? 'left' : 'right')).toBe(true)
+        expect(findGroup(tree.$layoutTree.get()!, sidebar.id)?.minimized).toBe(true)
+
+        toggle()
+        expect($open.get()).toBe(true)
+        expect(tree.$collapsedTreeSides.get().has(side)).toBe(false)
+        expect(findGroup(tree.$layoutTree.get()!, sidebar.id)).toMatchObject({ active: 'bots', minimized: false })
+        toggle()
+        expect($open.get()).toBe(false)
+        expect(tree.$collapsedTreeSides.get().has(side)).toBe(true)
+        toggle()
+        expect($open.get()).toBe(true)
+        expect(tree.$collapsedTreeSides.get().has(side)).toBe(false)
+        expect(findGroup(tree.$layoutTree.get()!, sidebar.id)?.active).toBe('bots')
+      } finally {
+        disposers.forEach(dispose => dispose())
+      }
+    }
+  })
 })

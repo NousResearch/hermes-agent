@@ -28,9 +28,24 @@ is created. Manage created jobs anytime with `/cron`.
 
 <AutomationBlueprintsCatalog />
 
+## Blueprints from plugins
+
+Plugins can add their own blueprints. They show up in the same catalog as the
+built-ins: in `/blueprint`, the dashboard's Blueprints tab, and the desktop Cron
+page, labelled with the plugin's name. Their keys are prefixed with the plugin
+name (`/blueprint teamtools:standup`), so a plugin can never replace a built-in.
+Plugins load per profile, so a plugin blueprint is listed only in profiles where
+that plugin is enabled.
+
+A job you create from a plugin blueprint is an ordinary cron job. Disabling the
+plugin removes the blueprint from the catalog, but jobs you already created keep
+running.
+
 ## Writing your own
 
 A blueprint is just a skill with a `metadata.hermes.blueprint` block in its
 `SKILL.md` frontmatter. See
 [Creating Skills → Automation Blueprints](../developer-guide/creating-skills.md) for the
-slot schema and how to publish one.
+slot schema and how to publish one. Plugin authors can register one directly
+with `ctx.register_automation_blueprint()`; see
+[Build a Plugin → Add Automation Blueprints](../developer-guide/plugins/index.md#add-automation-blueprints).

@@ -66,7 +66,7 @@ def _ensure_teams_mock():
         async def initialize(self):
             pass
 
-        async def send(self, conversation_id, activity):
+        async def send(self, conversation_id, activity, *, service_url=None):
             result = MagicMock()
             result.id = "sent-activity-id"
             return result
@@ -1189,3 +1189,81 @@ async def test_long_non_ascii_command_keeps_button_data_small():
         await adapter.send_exec_approval(chat_id="c1", command=command, session_key="s1", description="flagged")
     assert len(buttons) == 4
     assert sum(len(json.dumps(b["data"], ensure_ascii=False).encode()) for b in buttons) < 1024
+
+
+# ---------------------------------------------------------------------------
+# Tests: outbound sends go through App.send with the conversation's service URL
+# ---------------------------------------------------------------------------
+
+_CHANNEL = "19:chan@thread.tacv2"
+_CHANNEL_URL = "https://smba.trafficmanager.net/emea/"
+
+
+def _send_adapter(conversation_type="channel", conv_id=_CHANNEL, send_error=None):
+    adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+    send = AsyncMock(return_value=SimpleNamespace(id="sent-1"), side_effect=send_error)
+    adapter._app = SimpleNamespace(send=send, reply=AsyncMock())
+    adapter._conv_refs[conv_id] = SimpleNamespace(
+        service_url=_CHANNEL_URL, conversation=SimpleNamespace(id=conv_id, conversation_type=conversation_type))
+    return adapter, send
+
+
+@pytest.mark.anyio
+async def test_card_send_uses_app_send_with_the_cached_service_url():
+    """Approval cards used ``App.activity_sender``, which microsoft-teams-apps 2.1.1 removed."""
+    adapter, send = _send_adapter()
+    await adapter._send_card(_CHANNEL, _teams_mod.AdaptiveCard())
+    assert send.await_args.args[0] == _CHANNEL
+    assert send.await_args.kwargs["service_url"] == _CHANNEL_URL
+    assert "sent-1" in adapter._sent_ids
+
+
+@pytest.mark.anyio
+async def test_media_send_uses_app_send_with_the_cached_service_url():
+    adapter, send = _send_adapter()
+    result = await adapter.send_image(_CHANNEL, "https://example.invalid/i.png", caption="c")
+    assert result.success
+    assert send.await_args.args[0] == _CHANNEL and send.await_args.kwargs["service_url"] == _CHANNEL_URL
+
+
+@pytest.mark.anyio
+async def test_channel_reply_threads_under_the_message_with_the_channel_service_url():
+    adapter, send = _send_adapter()
+    assert (await adapter.send(_CHANNEL, "result", reply_to="1794139301823")).success
+    assert send.await_args.args[0] == f"{_CHANNEL};messageid=1794139301823"
+    assert send.await_args.kwargs["service_url"] == _CHANNEL_URL
+    adapter._app.reply.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_reply_inside_a_thread_keeps_that_thread():
+    thread = f"{_CHANNEL};messageid=100"
+    adapter, send = _send_adapter(conv_id=thread)
+    assert (await adapter.send(thread, "result", reply_to="200")).success
+    assert send.await_args.args[0] == thread
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("conversation_type", ["personal", "groupChat"])
+async def test_chat_reply_stays_flat(conversation_type):
+    adapter, send = _send_adapter(conversation_type, conv_id="a:1chat")
+    assert (await adapter.send("a:1chat", "result", reply_to="123")).success
+    assert send.await_args.args[0] == "a:1chat"
+
+
+@pytest.mark.anyio
+async def test_failed_thread_reply_is_an_error_and_never_posts_flat():
+    adapter, send = _send_adapter(send_error=RuntimeError("thread denied"))
+    result = await adapter.send(_CHANNEL, "result", reply_to="100")
+    assert not result.success and "thread denied" in result.error
+    send.assert_awaited_once()
+    assert send.await_args.args[0] == f"{_CHANNEL};messageid=100"
+
+
+@pytest.mark.anyio
+async def test_typing_uses_the_cached_service_url_and_is_not_remembered():
+    adapter, send = _send_adapter()
+    await adapter.send_typing(_CHANNEL)
+    assert send.await_args.kwargs["service_url"] == _CHANNEL_URL
+    assert "sent-1" not in adapter._sent_ids
+

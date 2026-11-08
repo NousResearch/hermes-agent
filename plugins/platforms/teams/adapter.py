@@ -606,17 +606,29 @@ class TeamsAdapter(BasePlatformAdapter):
         from microsoft_teams.api import MessageActivityInput
         if not self._app:
             return None
-        return await self._send_via_conv_ref(chat_id, MessageActivityInput().add_card(card), card)
+        return await self._send_via_conv_ref(chat_id, MessageActivityInput().add_card(card))
 
-    async def _send_via_conv_ref(self, chat_id: str, activity: Any, fallback: Any) -> Any:
-        """Send ``activity`` through the cached ConversationReference, else ``App.send(fallback)``."""
-        conv_ref = self._conv_refs.get(chat_id)
-        if conv_ref:
-            result = await self._app.activity_sender.send(activity, conv_ref)
-        else:
-            result = await self._app.send(chat_id, fallback)
-        self._remember_sent(result)
+    async def _send_via_conv_ref(self, chat_id: str, activity: Any, *, remember: bool = True) -> Any:
+        """``App.send`` to exactly ``chat_id``, with the service URL of the conversation reference
+        cached for it when there is one, else the App's own. microsoft-teams-apps 2.1.1 removed
+        ``App.activity_sender``; ``App.send(..., service_url=)`` is its replacement."""
+        # A thread of a channel shares the channel's service URL.
+        conv_ref = self._conv_refs.get(chat_id) or self._conv_refs.get(chat_id.partition(";messageid=")[0])
+        service_url = getattr(conv_ref, "service_url", None) if conv_ref is not None else None
+        result = await self._app.send(chat_id, activity, service_url=service_url)
+        if remember:
+            self._remember_sent(result)
         return result
+
+    def _reply_target(self, chat_id: str, reply_to: Optional[str]) -> str:
+        """The conversation a reply goes to. In a channel, a numeric ``reply_to`` threads under that
+        message (``<channel>;messageid=<reply_to>``) unless ``chat_id`` already names a thread.
+        Personal and group chats have no threads, so they get ``chat_id`` as is."""
+        if not (isinstance(reply_to, str) and reply_to.isdigit() and reply_to.strip("0")) or ";messageid=" in chat_id:
+            return chat_id
+        conv_ref = self._conv_refs.get(chat_id)
+        conv_type = getattr(getattr(conv_ref, "conversation", None), "conversation_type", None)
+        return f"{chat_id};messageid={reply_to}" if conv_type == "channel" else chat_id
 
     def _remember_sent(self, result: Any) -> None:
         """Track an outbound activity id (bounded deque) for the require_mention reply exemption."""
@@ -721,28 +733,22 @@ class TeamsAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
+        target = self._reply_target(chat_id, reply_to)
         last_message_id = None
         for chunk in self.truncate_message(self.format_message(content)):
             try:
-                if reply_to and reply_to.isdigit() and reply_to != "0":
-                    try:
-                        result = await self._app.reply(chat_id, reply_to, chunk)
-                    except Exception as reply_err:
-                        # Group chats 400 on threaded sends; the SDK has no typed HTTP errors → fall back on any.
-                        logger.debug("Teams reply() failed, falling back to flat send: %s", reply_err)
-                        result = await self._app.send(chat_id, chunk)
-                else:
-                    result = await self._app.send(chat_id, chunk)
+                result = await self._send_via_conv_ref(target, chunk)
                 last_message_id = getattr(result, "id", None)
-                self._remember_sent(result)
             except Exception as e:
+                # No flat retry: a reply that was meant for a thread must not land in the channel root.
+                logger.warning("[teams] send to %s failed: %s", target, e, exc_info=True)
                 return SendResult(success=False, error=str(e), retryable=True)
         return SendResult(success=True, message_id=last_message_id)
 
     async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
         if self._app:
             with suppress(Exception):
-                await self._app.send(chat_id, TypingActivityInput())
+                await self._send_via_conv_ref(chat_id, TypingActivityInput(), remember=False)
 
     async def _send_media_attachment(
         self, chat_id: str, source: str, default_mime: str, caption: Optional[str] = None, media_label: str = "media"
@@ -768,7 +774,7 @@ class TeamsAdapter(BasePlatformAdapter):
             activity = MessageActivityInput().add_attachments(Attachment(content_type=mime_type, content_url=content_url))
             if caption:
                 activity = activity.add_text(caption)
-            result = await self._send_via_conv_ref(chat_id, activity, activity)
+            result = await self._send_via_conv_ref(chat_id, activity)
             return SendResult(success=True, message_id=getattr(result, "id", None))
         except Exception as e:
             logger.error("[teams] send_%s failed: %s", media_label, e, exc_info=True)

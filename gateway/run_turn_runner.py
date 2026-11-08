@@ -1338,9 +1338,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             tier = _request_service_tier(api['settings'].get('model_options'))
             if tier is not _REQUEST_OPTION_MISSING:
                 runner._service_tier = tier
-        runner._reasoning_config = reasoning_config
+        from gateway.run_turn_reasoning import select_reasoning
+        baseline_reasoning = reasoning_config
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
+        reasoning_config, turn_effort = select_reasoning(
+            self, policy, reasoning_config, turn_route["model"], turn_route["runtime"], platform_key)
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )
@@ -1348,15 +1351,16 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
             agent._pending_fallback_notice = pending_fallback_notice
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
+        agent._turn_reasoning_own = {"reasoning_config": baseline_reasoning} if turn_effort is not None else None
         from gateway.run_turn_progress import local_viewer_turn
         local_sinks = None
-        if local_viewer_turn(self) and not ctx.mute_notification_reply:
-            # Per turn on the shared cached agent: installed here, restored when the run returns.
-            from gateway import local_viewer_events
-            local_sinks = local_viewer_events.wire(self, agent)
-            from gateway.session_usage import TURN_BASE_ATTR
-            setattr(agent, TURN_BASE_ATTR, int(getattr(agent, "session_output_tokens", 0) or 0))
         try:
+            if local_viewer_turn(self) and not ctx.mute_notification_reply:
+                # Per turn on the shared cached agent: installed here, restored when the run returns.
+                from gateway import local_viewer_events
+                local_sinks = local_viewer_events.wire(self, agent)
+                from gateway.session_usage import TURN_BASE_ATTR
+                setattr(agent, TURN_BASE_ATTR, int(getattr(agent, "session_output_tokens", 0) or 0))
             agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
             persist_msg, persist_ts = self._prepare_turn_message(agent_history)
             compressions = getattr(getattr(agent, "context_compressor", None), "compression_count", None)
@@ -1364,10 +1368,15 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             from gateway.session_secret_prompt import secret_prompt_scope
             from gateway.session_sudo_prompt import sudo_prompt_scope
             from gateway.session_vault_prompt import vault_prompt_scope
-            with sudo_prompt_scope(self, agent), secret_prompt_scope(self, agent), vault_prompt_scope(self, agent):
+            from agent.turn_reasoning import _reasoning_scope
+            with (_reasoning_scope(agent, turn_effort, baseline_reasoning), sudo_prompt_scope(self, agent),
+                  secret_prompt_scope(self, agent), vault_prompt_scope(self, agent)):
                 result = run_classic_cli_turn(self, lambda: self._run_conversation_with_approval(
                     agent, agent_history, observed_group_context, persist_msg, persist_ts))
         finally:
+            agent._turn_reasoning_own = None
+            if turn_effort is not None:
+                agent.reasoning_config = baseline_reasoning
             if local_sinks is not None:
                 from gateway import local_viewer_events
                 local_viewer_events.restore(agent, local_sinks)

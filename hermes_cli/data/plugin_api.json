@@ -138,6 +138,13 @@
       "entries": [
         "hermes_cli.plugin_session:session_client"
       ]
+    },
+    {
+      "source": "hooks.md select_turn_reasoning capability and value contract",
+      "entries": [
+        "agent.turn_reasoning:TURN_REASONING_HOOK",
+        "agent.turn_reasoning:TurnReasoningEffort"
+      ]
     }
   ]
 }

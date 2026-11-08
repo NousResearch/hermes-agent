@@ -199,7 +199,8 @@ def _service_tier(connection, ref, policy):
 
 def _reasoning(agent, policy, cfg, connection=None, ref=None):
     from hermes_constants import resolve_reasoning_config
-    value = getattr(agent, 'reasoning_config', None)
+    from agent.voice_turn_route import session_runtime_view
+    value = getattr(session_runtime_view(agent), 'reasoning_config', None)
     if not isinstance(value, dict) and policy is not None:
         # The next turn's level: a typed session /reasoning, else the frozen (or followed) one.
         runner = connection.authority.runner

@@ -482,6 +482,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
 | `pre_gateway_dispatch` | Directive/control | Once per incoming non-internal message, at ingress: platform-adapter messages before auth/pairing/dispatch; webhook and relay deliveries after their authorization, before the admission commits; never for local CLI/TUI/Desktop or API turns, a retry of a committed delivery, or a queued admission when it executes. First valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
+| `select_turn_reasoning` | Value selection | Once before a gateway turn constructs or reuses its agent, after session and request policy. First valid effort selects this turn's native reasoning configuration. | See contract below | Detached text, route identity and reasoning provenance; no runner, agent, credentials or mutable policy. |
 | `post_gateway_admission` | Directive/control (fail-open) | Admitted non-internal message after auth, pause/drain, pending-reply, running-session and slash-command lanes, inside the claimed session slot and the routed profile's scope; first `handled` result skips the agent turn, anything else (including a raise or timeout) runs it. | `session_key`, `platform`, `source` (dict snapshot), `message_id`, `text` | Inbound text is untrusted user data; no runner or session-store handles are passed. |
 | `gateway_platform_event` | Observer | After the gateway's profile-scoped authorization succeeds, when a supported platform-native event is normalized at the gateway boundary (Telegram: reactions, message edits; Discord: message edits/deletes, thread created/renamed); return ignored. | `platform`, `event_type`, `payload` (event-type-specific dict — see the per-event contracts below) | Normalized plain-dict envelope only; raw SDK objects, adapter handles, and bot clients are never exposed. |
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). A command the classic CLI, TUI or Desktop sends to the gateway through `slash.exec` or `command.dispatch` fires it once, in the gateway, with `surface` and `platform` both `"cli"` as before (Ink and Desktop fired it through the CLI slash worker) and `session_key` the session id. A recognized command the classic CLI runs itself is reported to the gateway (`command.observe`) once it has run, and so are these TUI commands: `/help`, `/history`, `/clear`, `/new`, `/tools` (not `enable`/`disable`), `/usage` and `/reasoning` (a level once the gateway accepts it). The gateway fires it there after replying, so neither client loads plugin code; a command either client refuses fires nothing. This is a deliberate change from the classic CLI before the unified gateway, which fired it for every recognized command just before dispatch: now a command fires it only if it runs, so one that is refused or that the client has no handler for (`/handoff` in a gateway session, `/start`) fires nothing. A TUI change the gateway applies, such as `/reasoning high`, fires it once the gateway accepts the change, so after the change has taken effect. A gateway older than the client fires no hook for those commands (the classic CLI prints a one-time notice). Known gap: Desktop's own pickers, actions and dedicated RPCs (commands it answers without `slash.exec`) fire nothing yet, and neither do the other commands the TUI answers itself or through a dedicated gateway call, such as `/title`, `/undo`, `/retry`, `/model`, `/compress`, `/branch`, `/save`, `/copy`, `/queue`, `/steer`, `/bg`, `/btw`, `/skin`, `/yolo`, `/busy`, `/fast`, `/verbose`, `/rollback`, `/reload-mcp`, `/quit` and `/reasoning --global`. During a local session's turn every command that still runs fires it except `/stop`, `/approve` and `/deny`; a command that is refused (rejected while busy, or named as unavailable on the gateway) fires nothing. Each callback is timeout-bounded (`plugins.hook_callback_timeout`); each delivery waits on a thread of its own, never a worker shared with other sessions or the event loop's executor. One session's commands reach it in order, and a callback still running for that session (hung) is skipped for its later commands instead of running out of order, without holding up other sessions. Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
@@ -1297,6 +1298,52 @@ With heavy delegation (e.g. orchestrator roles × 5 leaves × nested depth), `su
 :::
 
 ---
+
+### `select_turn_reasoning`
+
+An optional gateway execution hook selects reasoning for one complete turn, including its tool loop,
+retries and provider fallbacks. It also covers gateway-backed ACP and local/API turns that use the
+ordinary turn runner; standalone CLI, cron and managed worker construction do not call it. It does
+not replace the ingress admission policy in `pre_gateway_dispatch`.
+
+Feature-detect the published constant before registering on older Hermes versions:
+
+```python
+try:
+    from agent.turn_reasoning import TURN_REASONING_HOOK
+except ImportError:
+    pass
+else:
+    ctx.register_hook(TURN_REASONING_HOOK, choose_reasoning)
+```
+
+Callbacks accept keyword arguments:
+
+| Field | Value |
+|-------|-------|
+| `user_message` | Current user text, before gateway prompt wrapping where available. |
+| `conversation_history` | At most six recent user/assistant text messages, each truncated to 2,000 characters. Tool content is excluded. |
+| `model`, `provider`, `api_mode`, `platform` | Effective route identity before construction. Fallbacks may change the actual model. |
+| `profile_home`, `session_id`, `session_key`, `turn_id` | Owning profile and turn/session identifiers. An identifier can be absent on surfaces without it. |
+| `reasoning` | Detached mapping: `config` (native baseline or `None`), `source` (`default`, `session`, `session_override`, `request`), `pinned` (boolean), `raw_effort` (original session string/boolean or `None`). |
+
+Return `None` to leave native behavior unchanged, or one canonical string from
+`TurnReasoningEffort`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`.
+Hermes validates once, takes the first valid result in registration order and clamps it using the
+actual provider/model vocabulary (including after fallback). `ultra` is an internal label, never
+a literal wire effort. Disabled/absent plugins, invalid values, exceptions and callback timeouts
+preserve the baseline. The existing `plugins.hook_callback_timeout` bound applies.
+
+Explicit request choices, live session overrides and pinned efforts other than the literal string
+`none` always win. A consumer may reinterpret a session-pinned literal `none` only through its own
+explicit opt-in policy; inherited `none`, YAML `false` and aliases are distinguishable in provenance.
+Callbacks receive values, not a supported mechanism for changing durable session policy.
+
+The choice is ephemeral: the picker/session information continues reporting the session baseline,
+and cached agents and saved runtime reasoning return to that baseline after the turn. Native
+reasoning-rejection recovery and deliberate one-shot continuation disable still apply. This hook
+does not rewrite conversation history, tools or system prompts; a provider can still change its
+prompt-cache behavior when reasoning effort changes.
 
 ### `pre_gateway_dispatch`
 

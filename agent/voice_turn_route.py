@@ -193,7 +193,10 @@ def session_runtime_view(agent: Any) -> Any:
     runs on the voice route (often reasoning off); reported as the chat's own setting, Desktop adopted
     it into the composer, and every new chat it opened inherited reasoning off."""
     state = getattr(agent, "_voice_route_state", None)
-    return _SessionRuntimeView(agent, state) if state else agent
+    own_reasoning = getattr(agent, "_turn_reasoning_own", None)
+    if state and own_reasoning:
+        state = {**state, **own_reasoning}
+    return _SessionRuntimeView(agent, state or own_reasoning) if state or own_reasoning else agent
 
 
 def end_voice_turn_route(agent: Any) -> None:

@@ -44,7 +44,7 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
     "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end",
     # Fail-open consumer on every inbound gateway message: a hung plugin must not stall the profile.
-    "post_gateway_admission",
+    "post_gateway_admission", "select_turn_reasoning",
     # Observer on every local session's commands, fired by the gateway (gateway/session_commands.py).
     "pre_command",
     # Fires inside the compression commit window (lease held): a hung plugin must not wedge the session.
@@ -54,6 +54,7 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
 # sequence, so a still-running callback skips that session's next command, not another session's.
 _HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     "pre_command": ("session_key",), "post_compaction": ("session_id",),
+    "select_turn_reasoning": ("session_key",),
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).

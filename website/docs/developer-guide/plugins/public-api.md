@@ -110,3 +110,5 @@ with a name allows that one name only.
 | `gateway.session_context` | `get_session_env` | plugins/index.md § platform plugins: read session identity through the task-local context |
 | `agent.redact` | `redact_sensitive_text` | plugin-llm-access.md § From the plugin's frontend: a plugin RPC method (`force=True` where secrets must never leave) |
 | `hermes_cli.plugin_session` | `session_client` | user-guide/features/plugins.md § Plugin code inside the gateway: which client created the session |
+| `agent.turn_reasoning` | `TURN_REASONING_HOOK` | hooks.md select_turn_reasoning capability and value contract |
+| `agent.turn_reasoning` | `TurnReasoningEffort` | hooks.md select_turn_reasoning capability and value contract |

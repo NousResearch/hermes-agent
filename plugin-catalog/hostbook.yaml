@@ -1,0 +1,34 @@
+name: hostbook
+title: hostbook
+repo: https://github.com/Timidan/hostbook
+sha: 3f63aec97acb7e4af6a827564b62e5b4ba0d1f77
+description: >-
+  A dashboard for the machines and services on your home network, inside Hermes, plus tools so
+  Hermes can check and fix them from chat under a rule per machine (read only, asks before
+  changes, open). Disclosure: connects over SSH, with the user's existing keys or ssh-agent,
+  only to machines the user adds, and stores key paths, never keys. Runs scripts there when
+  asked in chat, after hostbook's per-machine rules and Hermes's approvals. Fixed read-only
+  scans run from the dashboard and as a no-agent Hermes cron job (hostbook-scan). One model
+  call only when the user clicks "Get AI help". No telemetry.
+maintainer: Timidan
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Timidan/hostbook/blob/3f63aec97acb7e4af6a827564b62e5b4ba0d1f77/docs/guide.md
+version: "0.2.0"
+image: https://raw.githubusercontent.com/Timidan/hostbook/3f63aec97acb7e4af6a827564b62e5b4ba0d1f77/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Timidan/hostbook/3f63aec97acb7e4af6a827564b62e5b4ba0d1f77/docs/screenshots/machines.png
+  - https://raw.githubusercontent.com/Timidan/hostbook/3f63aec97acb7e4af6a827564b62e5b4ba0d1f77/docs/screenshots/services.png
+  - https://raw.githubusercontent.com/Timidan/hostbook/3f63aec97acb7e4af6a827564b62e5b4ba0d1f77/docs/screenshots/setup.png
+  - https://raw.githubusercontent.com/Timidan/hostbook/3f63aec97acb7e4af6a827564b62e5b4ba0d1f77/docs/screenshots/discover.png
+  - https://raw.githubusercontent.com/Timidan/hostbook/3f63aec97acb7e4af6a827564b62e5b4ba0d1f77/docs/screenshots/schedule-people.png
+platforms: [linux, macos]
+known_issues:
+  - Machines must be Linux hosts that the Hermes machine can reach over SSH with a key (ssh-copy-id, ssh-agent or an SSH config Host); usage numbers need /proc.
+  - The per-person limits and the change check are guardrails, not a sandbox. For people you don't fully trust, also limit which Hermes tools they can use.
+capabilities:
+  provides_tools: [host_run, host_services, service_action, hostbook_setup]
+  provides_hooks: [pre_llm_call, pre_tool_call]
+  provides_middleware: []
+  requires_env: []

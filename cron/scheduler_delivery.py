@@ -1474,8 +1474,8 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
             "skipped; the plain mirror below may still apply",
             job["id"], t.platform_name, t.chat_id,
             origin.get("platform"), origin.get("chat_id"), origin.get("thread_id"))
-    _maybe_mirror_cron_delivery(
-        job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.thread_id,
+    _maybe_mirror_cron_delivery(  # a named topic's sessions key on its numeric id, not its name
+        job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.resolved_thread_id or t.thread_id,
         user_id=t.origin_user_id,
         enabled=t.mirror_this_target and not thread_seeded and not inchannel_seeded)
 
@@ -1517,7 +1517,7 @@ def _deliver_via_live_adapter(
         # payload is already assumed delivered (#38922). Record the skipped attachments so the drop is
         # visible rather than silently lost.
         if adapter_ok and not timed_out and text_to_send and t.resolved_thread_id:
-            # Named topic: media follows a thread-not-found refresh made by the text send.
+            # Named topic: media and the mirror follow a thread-not-found refresh made by the text send.
             media_metadata["thread_id"] = _resolve_named_dm_topic(t)
         if adapter_ok and not timed_out and media_files:
             _live_send_media(t, media_metadata, media_files, delivery_errors, unverified_targets)
@@ -1675,8 +1675,8 @@ def _deliver_standalone(
         delivery_errors.append(msg)
     logger.info("Job '%s': delivered to %s:%s", job["id"], t.platform_name, t.chat_id)
     # Thread seeding only happens on the live lane, so no thread_seeded gate applies here.
-    _maybe_mirror_cron_delivery(
-        job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.thread_id,
+    _maybe_mirror_cron_delivery(  # a named topic's sessions key on its numeric id, not its name
+        job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.resolved_thread_id or t.thread_id,
         user_id=t.origin_user_id,
         enabled=t.mirror_this_target)
 

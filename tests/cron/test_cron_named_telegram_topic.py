@@ -93,3 +93,23 @@ def test_media_follows_a_topic_recreated_by_the_text_send(tmp_path):
     assert error is None
     assert [m.get("thread_id") for _c, m in adapter.sends] == ["4242", "5151"]
     assert [m.get("thread_id") for _c, m in adapter.media] == ["5151"]
+
+
+def test_opted_in_mirror_targets_the_named_topics_numeric_id(tmp_path):
+    """Telegram topic sessions key on the numeric thread id; mirroring under the name finds none."""
+    adapter = _Adapter()
+    job = {"id": "j-named", "name": "Brief", "deliver": "telegram:722341991:Debug", "attach_to_session": True}
+    error, mirror = _run_named_delivery(tmp_path, adapter, job)
+
+    assert error is None
+    mirror.assert_called_once()
+    assert mirror.call_args.kwargs["thread_id"] == "4242"
+
+
+def test_text_only_mirror_follows_a_recreated_topic(tmp_path):
+    adapter = _Adapter(deleted_topic="4242")
+    job = {"id": "j-named", "name": "Brief", "deliver": "telegram:722341991:Debug", "attach_to_session": True}
+    error, mirror = _run_named_delivery(tmp_path, adapter, job, media=False)
+
+    assert error is None
+    assert mirror.call_args.kwargs["thread_id"] == "5151"

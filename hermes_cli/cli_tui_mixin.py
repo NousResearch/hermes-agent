@@ -20,7 +20,7 @@ from agent.interrupt_compat import request_hard_interrupt
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, cli_slash_completer
 from pathlib import Path
 from prompt_toolkit.filters import Condition
-from prompt_toolkit.history import FileHistory
+from hermes_cli.cli_history import SurrogateSafeFileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import (
     ConditionalContainer,
@@ -2201,7 +2201,7 @@ class CLITuiMixin:
             multiline=True,
             wrap_lines=True,
             read_only=Condition(lambda: bool(cli_ref._command_blocks_input)),
-            history=FileHistory(str(self._history_file)),
+            history=SurrogateSafeFileHistory(str(self._history_file)),
             # The completer does blocking work (fuzzy @-file indexing shells out to rg/fd with a 2s timeout;
             # path completion hits os.listdir/stat), so complete_while_typing inline would stall the render
             # loop per keystroke (WSL2/slow FS). ThreadedCompleter moves it off the UI event loop.

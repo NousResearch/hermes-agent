@@ -225,12 +225,14 @@ def test_error_through_a_secret_free_proxy_keeps_its_text(monkeypatch, caplog, p
     assert "homeserver said M_UNKNOWN" in _logs(caplog)
 
 
-def test_proxy_mode_file_url_error_hides_the_path(monkeypatch, caplog):
-    """A ``file:`` GATEWAY_PROXY_URL has no host to name; the media-path rule must not print its path."""
+@pytest.mark.parametrize("url", ["file:///AgentTokenProbe987", "fi\nle:///AgentTokenProbe987", "\x01file:///AgentTokenProbe987"])
+def test_proxy_mode_file_url_error_hides_the_path(monkeypatch, caplog, url):
+    """A ``file:`` GATEWAY_PROXY_URL has no host to name; the media-path rule must not print its path,
+    also when urlsplit only finds the ``file`` scheme after dropping a newline or control character."""
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource
 
-    monkeypatch.setenv("GATEWAY_PROXY_URL", "file:///AgentTokenProbe987")
+    monkeypatch.setenv("GATEWAY_PROXY_URL", url)
     monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
     runner = object.__new__(GatewayRunner)
     runner.adapters, runner._running_agents, runner._agent_cache = {}, {}, {}

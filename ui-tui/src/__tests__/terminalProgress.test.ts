@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const ink = vi.hoisted(() => ({ supported: true }))
 
 vi.mock('@hermes/ink', async importOriginal => ({
-  ...(await importOriginal<typeof import('@hermes/ink')>()),
+  ...(await importOriginal<Record<string, unknown>>()),
   isProgressReportingAvailable: () => ink.supported
 }))
 

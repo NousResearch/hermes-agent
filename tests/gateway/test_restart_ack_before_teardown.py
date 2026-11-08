@@ -4,6 +4,8 @@ The ack used to be the command's return value, sent after ``request_restart`` ha
 gateway; on a real Bot API round trip the adapter disconnected first and the user saw nothing.
 """
 
+import asyncio
+
 import pytest
 
 from gateway.platforms.base import SendResult
@@ -24,24 +26,29 @@ def _idle_restart(monkeypatch, tmp_path, send):
 
 @pytest.mark.asyncio
 async def test_idle_restart_ack_is_delivered_before_teardown_starts(monkeypatch, tmp_path):
-    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
-    monkeypatch.setattr("gateway.restart.is_container_restart_context", lambda: False)
-    monkeypatch.setattr("gateway.restart.is_gateway_supervisor_process", lambda: False)
-    runner, adapter = make_restart_runner()
-    order = []
+    """Restart is requested only after the platform has ANSWERED the ack, not when the send starts."""
+    started, answered = asyncio.Event(), asyncio.Event()
+    sent = []
 
     async def send(chat_id, content, **kwargs):
-        order.append(("send", content, runner._restart_requested))
+        sent.append(content)
+        started.set()
+        await answered.wait()  # the Bot API round trip is still in flight
         return SendResult(success=True, message_id="ack")
 
-    monkeypatch.setattr(adapter, "send", send)
-    runner.request_restart = lambda **kw: order.append(("restart", kw)) or True
+    runner, order = _idle_restart(monkeypatch, tmp_path, send)
     event = MessageEvent(text="/restart", message_type=MessageType.TEXT, source=make_restart_source(), message_id="m1")
 
-    result = await runner._handle_message(event)
+    handled = asyncio.create_task(runner._handle_message(event))
+    await asyncio.wait_for(started.wait(), timeout=5)
+    for _ in range(20):  # let a restart that does not wait for the answer run now
+        await asyncio.sleep(0)
+    assert len(sent) == 1 and "Restarting" in sent[0]
+    assert order == []  # send in flight: teardown has not been requested
+    answered.set()
+    result = await asyncio.wait_for(handled, timeout=5)
 
-    assert [step[0] for step in order] == ["send", "restart"]
-    assert "Restarting" in order[0][1] and order[0][2] is False  # sent while the gateway was still live
+    assert order == ["restart"]
     assert not result  # already delivered: no second copy through the reply path
 
 

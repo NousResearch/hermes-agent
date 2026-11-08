@@ -5,7 +5,8 @@ integration or account-level auth) mints an ``OP_SESSION_<account>`` token.
 A configured service-account token skips the prompt entirely (headless).
 List: ``op item list --categories Login --format json`` → title, urls,
 username, vault. Resolve: ``op item get <id> --vault <vault-id> ...`` (service
-accounts reject an item read without a vault query).
+accounts reject an item read without a vault query). The password is read with
+``--format json`` because the plain form CSV-quotes values containing ``"`` or ``,``.
 """
 
 from __future__ import annotations
@@ -140,8 +141,17 @@ class OnePasswordLoginBackend(LoginBackend):
         return [item_id, "--vault", vault_id] if vault_id else [item_id]
 
     def resolve_password(self, handle: str) -> str:
-        return self._run("item", "get", *self._item_selector(handle),
-                         "--fields", "label=password", "--reveal").rstrip("\r\n")
+        # Plain `--fields` output is CSV-quoted: a password containing `"` (or `,`) comes back wrapped
+        # in quotes with inner quotes doubled, so the page receives the wrong secret. JSON is exact.
+        raw = self._run("item", "get", *self._item_selector(handle),
+                        "--fields", "label=password", "--reveal", "--format", "json")
+        field = json.loads(raw or "null")
+        if isinstance(field, list):  # defensive: some op versions return a one-element list
+            field = field[0] if len(field) == 1 else None
+        value = field.get("value") if isinstance(field, dict) else None
+        if not isinstance(value, str):
+            raise RuntimeError("op returned no password field for this item")
+        return value
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         # `--otp` mints the current TOTP from the item's one-time-password field; items without one error out.

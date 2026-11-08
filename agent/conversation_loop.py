@@ -1048,6 +1048,15 @@ _DROPPED_TOOLCALL_NUDGE_CONTENT = (
     "restate intent — issue the actual tool call now to continue the task."
 )
 
+# Tool call leaked as plain text: local OpenAI-compatible servers (LM Studio, Ollama, vLLM,
+# Strata) sometimes write the call into the message *content* instead of emitting a
+# structured tool_calls entry, so finish_reason arrives as "stop" and the turn would end
+# "complete" with nothing executed. Same recovery shape as the dropped-tool-call nudge.
+_LEAKED_TOOLCALL_NUDGE_CONTENT = (
+    "Your previous message contained a tool call as plain text, not as a real tool call, "
+    "so nothing was executed. Do not repeat the call as text — emit the actual tool call now."
+)
+
 # Re-prompt for an empty response after tool calls (#9400); the metadata flag does not
 # survive SessionDB projection, so it is matched by content.
 _EMPTY_TOOL_RESPONSE_NUDGE = (

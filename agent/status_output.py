@@ -34,7 +34,7 @@ class StatusOutputMixin:
 
     def _safe_print(self, *args, diagnostic: bool = False, **kwargs):
         """Print that swallows broken pipes / closed stdout (headless stdout can vanish mid-session);
-        routes through ``self._print_fn`` so the CLI can inject an ANSI-aware renderer."""
+        routes through ``self._print_fn``: the CLI injects an ANSI renderer, ACP points it at stderr."""
         if getattr(self, "_mute_notification_reply", False):
             return
         if diagnostic and not self._warning_presentation_enabled():

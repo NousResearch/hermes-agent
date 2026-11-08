@@ -49,7 +49,11 @@ def symlinked_store_authority(tmp_path, monkeypatch):
         home=profile_home,  # recorded by run_runtime._build_profile_authority
     )
     
-    return authority, profile_home, store_dir
+    try:
+        yield authority, profile_home, store_dir
+    finally:
+        from hermes_state_registry import release
+        release(db)
 
 
 def test_bind_owner_uses_profile_id_not_resolved_db_path(symlinked_store_authority):
@@ -147,25 +151,24 @@ async def test_execute_scopes_to_profile_id_not_resolved_db_parent(symlinked_sto
     
     # Set up a cron session
     db = authority.db
-    with db:
-        db.create_session('s', source='cron')
-        authority.sessions['s'] = LiveSession(
-            SimpleNamespace(platform=None, user_id='cron-owner'), 
-            'route'
-        )
-        admit_session_input(db, epoch=authority.epoch, principal_id='cron-owner',
-                          session_id='s', request_id='cron:job:fire', payload={'text': ''})
-        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
-        
-        policy = SimpleNamespace(request_json=json.dumps({
-            'extra_prompt': None, 
-            'request_id': 'cron:job:fire',
-            'cron_job': {'id': 'job'}
-        }))
-        
-        ref = SessionRef(authority.profile_id, 's')
-        await session_cron.execute(authority, ref, row, policy)
+    db.create_session('s', source='cron')
+    authority.sessions['s'] = LiveSession(
+        SimpleNamespace(platform=None, user_id='cron-owner'), 
+        'route'
+    )
+    admit_session_input(db, epoch=authority.epoch, principal_id='cron-owner',
+                      session_id='s', request_id='cron:job:fire', payload={'text': ''})
+    row = claim_session_input(db, epoch=authority.epoch, session_id='s')
     
+    policy = SimpleNamespace(request_json=json.dumps({
+        'extra_prompt': None, 
+        'request_id': 'cron:job:fire',
+        'cron_job': {'id': 'job'}
+    }))
+    
+    ref = SessionRef(authority.profile_id, 's')
+    await session_cron.execute(authority, ref, row, policy)
+
     # Verify the scope was the profile_home (authority.profile_id), not the symlink target
     assert 'path' in scoped_home, "execute() never called _profile_runtime_scope"
     assert scoped_home['path'].resolve() == profile_home.resolve(), \

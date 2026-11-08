@@ -149,4 +149,22 @@ describe('openCatalogPluginInstall', () => {
     expect($notifications.get()[0]).toMatchObject({ kind: 'success' })
     $pluginRecords.set({})
   })
+
+  it('opens the dialog for a desktop-only entry the catalog has moved past (an update)', () => {
+    $agentPlugins.set([])
+    $pluginRecords.set({
+      accent: {
+        id: 'accent',
+        kind: 'disk',
+        name: 'Accent Picker',
+        packageOrigin: { catalogName: 'accent-picker', repo: 'https://github.com/x/y', sha: 'a'.repeat(40) },
+        status: 'loaded'
+      }
+    })
+
+    openCatalogPluginInstall({ name: 'accent-picker', repo: 'https://github.com/x/y', sha: 'b'.repeat(40) }, null)
+
+    expect($pluginInstallRequest.get()).toMatchObject({ catalogName: 'accent-picker', sha: 'b'.repeat(40) })
+    $pluginRecords.set({})
+  })
 })

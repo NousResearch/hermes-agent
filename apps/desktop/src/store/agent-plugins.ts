@@ -325,10 +325,16 @@ function backendPredatesInspectedSha(params: Record<string, unknown>, error: unk
   )
 }
 
-/** The backend refused because the source is no longer at the commit the dialog reviewed
- *  (`tui_gateway/methods_tools.py::_source_moved_data`): read it again, never resend that commit. */
-function refusalReason(error: unknown): unknown {
-  return error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : undefined
+/** Why the backend refused an install (`tui_gateway/methods_tools.py::_refusal_data`): the source is no
+ *  longer at the commit the dialog reviewed (read it again, never resend that commit), or a plugin of that
+ *  name is installed (Force replaces it). */
+type RefusalReason = 'exists' | 'source_moved'
+
+function refusalReason(error: unknown): RefusalReason | undefined {
+  const reason =
+    error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : undefined
+
+  return reason === 'exists' || reason === 'source_moved' ? reason : undefined
 }
 
 export function isSourceMovedRefusal(error: unknown): boolean {

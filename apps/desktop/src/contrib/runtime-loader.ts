@@ -970,10 +970,14 @@ async function scanOnce(desktop: NonNullable<Window['hermesDesktop']>, reloadKno
 
         if (known) {
           if (reloadKnown) {
-            // An install can record where a loaded folder came from after it loaded (a catalog install
-            // adopting a copy an older build left, a Force reinstall): re-read it, or the card keeps
-            // offering Install until restart.
-            known.packageOrigin = await readFolderOrigin(desktop, dir.path, await readPackageMarker(desktop, dir.path))
+            // An install can change what a loaded folder is after it loaded (a catalog install adopting a
+            // copy an older build left, a Force reinstall that makes it a package's half or a standalone
+            // plugin): re-read it, or the card keeps offering Install until restart.
+            const marker = await readPackageMarker(desktop, dir.path)
+
+            known.defaultEnabled = marker ? false : undefined
+            known.packageName = marker?.package
+            known.packageOrigin = await readFolderOrigin(desktop, dir.path, marker)
 
             if (await loadDiskPlugin(known)) {
               await watchDiskPluginFile(desktop, known)

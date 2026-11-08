@@ -98,7 +98,7 @@ interface Report {
   /** A half was refused on the backend's or Electron's structured source-moved marker. */
   sourceMoved: boolean
   /** The desktop half was refused because a plugin of that name is installed: Force replaces it. */
-  exists?: boolean
+  exists: boolean
 }
 
 /** What an agent-plugin install made usable, as toast fragments ("12 tools connected", ...). */
@@ -335,9 +335,10 @@ function failedOutcome(plan: InstallPlan, deps: InstallDeps, report: Report, age
 
   const error = report.errors.join(' ')
 
+  // Force reinstalls every half the dialog installs: offered only when no half went in that it would replace.
   return report.sourceMoved
     ? { status: 'stale', error }
-    : { status: 'failed', error, ...(report.exists ? { canForce: true } : {}) }
+    : { status: 'failed', error, canForce: report.exists && !agentInstalled }
 }
 
 /** Install every half `installComponents` picks, then refresh the inventory. A client timeout on the agent
@@ -349,7 +350,7 @@ export async function runPluginInstall(plan: InstallPlan, deps: InstallDeps): Pr
     return { status: 'failed', error: deps.copy.nothingToInstall }
   }
 
-  const report: Report = { errors: [], successes: [], sourceMoved: false }
+  const report: Report = { errors: [], exists: false, successes: [], sourceMoved: false }
   const agentResult = components.agent ? await installAgentHalf(plan, deps, report) : undefined
   const stopped = agentResult && agentStopsInstall(agentResult, plan, deps, report)
 

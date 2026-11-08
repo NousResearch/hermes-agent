@@ -122,12 +122,13 @@ export async function enablePackageDesktopHalf(packageName: string, { keepUserCh
   await enableDesktopPlugins(record => record.packageName === packageName, keepUserChoice)
 }
 
-/** The catalog names the desktop plugins on disk were installed from. A desktop-only entry has no agent
- *  row to carry its `catalog_name`, so a surface asking "is this entry installed?" reads these too. */
-export function installedDesktopCatalogNames(records: Record<string, PluginRecord>): Set<string> {
-  return new Set(
+/** The catalog entries the desktop plugins on disk were installed from, each with the commit it was
+ *  installed at. A desktop-only entry has no agent row to carry its `catalog_name`, so a surface asking
+ *  "is this entry installed?" reads these too. */
+export function installedDesktopCatalogEntries(records: Record<string, PluginRecord>): Map<string, string | undefined> {
+  return new Map(
     Object.values(records).flatMap(record =>
-      record.packageOrigin?.catalogName ? [record.packageOrigin.catalogName] : []
+      record.packageOrigin?.catalogName ? [[record.packageOrigin.catalogName, record.packageOrigin.sha] as const] : []
     )
   )
 }

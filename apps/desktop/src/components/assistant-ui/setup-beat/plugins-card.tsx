@@ -11,7 +11,7 @@ import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useConnectionOwner } from '@/components/assistant-ui/use-connection-owner'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
-import { $pluginRecords, installedDesktopCatalogNames } from '@/contrib/plugins-store'
+import { $pluginRecords, installedDesktopCatalogEntries } from '@/contrib/plugins-store'
 import { useI18n } from '@/i18n'
 import { lookupPluginCatalogEntry } from '@/lib/plugin-catalog'
 import { cn } from '@/lib/utils'
@@ -89,7 +89,7 @@ export function PluginsCard({
   // Desktop plugins live in one app-level folder, not a profile's: a desktop-only entry installed is installed.
   const installed = new Set([
     ...ownRows.flatMap(row => (row.catalog_name ? [row.catalog_name, row.name] : [row.name])),
-    ...installedDesktopCatalogNames(records)
+    ...installedDesktopCatalogEntries(records).keys()
   ])
 
   const rows = presence.data ?? []

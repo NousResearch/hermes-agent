@@ -873,14 +873,14 @@ def test_a_fallback_candidates_repair_survives_its_credential_refresh(is_async, 
         answer == "next")
 
 
-@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
-def test_a_refreshed_candidate_on_another_model_quarantines_the_model_that_failed(is_async):
-    """candidate old-model temperature 400 -> stripped 401 -> refresh rebuilds on new-model -> 404: new-model is
-    quarantined on that route, old-model stays eligible, and the next candidate answers."""
+def _refreshed_candidate_walk(is_async, next_status):
+    """Primary 503 -> the REAL configured fallback_chain: [0] old-model temperature 400 -> stripped 401 -> refresh
+    rebuilds on new-model -> 404, then [1] answers with ``next_status``. Returns (answer or error, sent, marked)."""
     from agent import auxiliary_client as aux
 
     health, sent = {}, []
-    statuses = {"sk-primary": iter([503] * 2), "sk-old": iter([400, 401]), "sk-fresh": iter([404]), "sk-next": iter([200])}
+    statuses = {"sk-primary": iter([503] * 2), "sk-old": iter([400, 401]), "sk-fresh": iter([404]),
+                "sk-next": iter([next_status])}
 
     def handle(request):
         key, body = request.headers["authorization"].removeprefix("Bearer "), json.loads(request.content)
@@ -892,27 +892,53 @@ def test_a_refreshed_candidate_on_another_model_quarantines_the_model_that_faile
             "id": "x", "object": "chat.completion", "created": 0, "model": "fb", "choices": [{"index": 0, "message": {
                 "role": "assistant", "content": key.removeprefix("sk-")}, "finish_reason": "stop"}]}, request=request)
 
+    chain = [{"provider": "openrouter", "model": "old-model"},
+             {"provider": "custom", "model": "fb", "base_url": "https://api.example.com/v1", "api_key": "sk-next"}]
     builds = iter([("sk-primary", "fast-1"), ("sk-fresh", "new-model")])  # the primary, then the refreshed rebuild
-    candidates = iter([(_wire(handle, key="sk-old"), "old-model", "openrouter"),
-                       (_wire(handle, key="sk-next", url="https://api.example.com/v1"), "fb", "custom")])
 
     def build(*_a, **_k):
         key, model = next(builds)
         return _wire(handle, key=key, is_async=is_async), model
 
+    def resolve(provider, model=None, explicit_base_url=None, explicit_api_key=None, **_k):  # a chain entry's client
+        return _wire(handle, key=explicit_api_key or "sk-old", url=explicit_base_url or "https://openrouter.ai/api/v1"), model
+
     with patch.multiple(
         "agent.auxiliary_client", _resolve_task_provider_model=lambda *_a: ("openrouter", "fast-1", None, None, None),
         _get_cached_client=build, _transient_retry_count=lambda *_a: 0, _refresh_provider_credentials=lambda *_a, **_k: True,
         _aux_unhealthy_until=health, _aux_unhealthy_reason={}, _aux_unhealthy_logged_at={},
-        _recoverable_pool_provider=lambda *_a, **_k: None,
-        _try_configured_fallback_chain=lambda *_a, **_k: next(candidates, (None, None, "")),
+        _recoverable_pool_provider=lambda *_a, **_k: None, resolve_provider_client=resolve,
+        _get_auxiliary_task_config=lambda *_a, **_k: {"fallback_chain": chain},
         _try_main_agent_model_fallback=lambda *_a, **_k: (None, None, ""),
         _openai_http_client_kwargs=lambda *_a, **_k: {"http_client": httpx.AsyncClient(
             transport=httpx.MockTransport(handle))}):
         call = async_call_llm(task="title_generation", messages=_MESSAGES, temperature=0.3) if is_async else None
-        result = asyncio.run(call) if is_async else call_llm(task="title_generation", messages=_MESSAGES, temperature=0.3)
+        try:
+            result = asyncio.run(call) if is_async else call_llm(task="title_generation", messages=_MESSAGES, temperature=0.3)
+            outcome = result.choices[0].message.content
+        except openai.APIStatusError as exc:
+            outcome = exc.status_code
         route = "https://openrouter.ai/api/v1"
         marked = [aux._is_provider_unhealthy("openrouter", route, model) for model in ("new-model", "old-model")]
-    assert result.choices[0].message.content == "next" and marked == [True, False], health
-    assert [request for request in sent if request[0] != "sk-primary"] == [
-        ("sk-old", "old-model", True), ("sk-old", "old-model", False), ("sk-fresh", "new-model", False), ("sk-next", "fb", True)]
+    return outcome, sent, marked
+
+
+_REFRESHED_WALK = [("sk-old", "old-model", True), ("sk-old", "old-model", False), ("sk-fresh", "new-model", False),
+                   ("sk-next", "fb", True)]
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_a_refreshed_candidate_on_another_model_quarantines_the_model_that_failed(is_async):
+    """new-model is quarantined on that route, old-model stays eligible, and the walk still reaches the next entry
+    (old-model's re-selected lane does not end it)."""
+    outcome, sent, marked = _refreshed_candidate_walk(is_async, 200)
+    assert outcome == "next" and marked == [True, False]
+    assert [request for request in sent if request[0] != "sk-primary"] == _REFRESHED_WALK
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_a_walk_where_every_entry_fails_tries_each_lane_once(is_async):
+    """Every entry fails: each lane is sent once, then the primary error is raised."""
+    outcome, sent, marked = _refreshed_candidate_walk(is_async, 503)
+    assert outcome == 503 and marked == [True, False]
+    assert [request for request in sent if request[0] != "sk-primary"] == _REFRESHED_WALK

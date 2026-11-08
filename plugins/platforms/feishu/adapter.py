@@ -323,6 +323,7 @@ class FeishuAdapterSettings:
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
     allow_all_dm: bool = False  # resolved per-profile so multiplexed adapters honor their own .env
+    message_format: str = "auto"  # "auto" | "post" | "text" — outbound msg_type policy
 
 
 @dataclass
@@ -1391,6 +1392,16 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         allow_all_dm = any(
             _secret(var).lower() in {"true", "1", "yes"} for var in ("FEISHU_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS")
         )
+
+        # Outbound msg_type policy. ``text`` renders everywhere (some clients draw a ``post`` markdown bubble as an
+        # empty one), ``post`` keeps markdown for every chunk, ``auto`` sniffs the message (the #26841 behaviour).
+        # Read through ``extra`` first: under multiplex a secondary profile's own yaml must govern its adapter.
+        message_format = str(_extra_or_secret("message_format", "FEISHU_MESSAGE_FORMAT", "auto") or "auto").strip().lower()
+        if message_format not in {"auto", "post", "text"}:
+            logger.warning(
+                "[Feishu] Unknown message_format=%r, falling back to 'auto'. Valid: auto, post, text.", message_format,
+            )
+            message_format = "auto"
         return FeishuAdapterSettings(
             app_id=_extra_or_secret("app_id", "FEISHU_APP_ID"),
             app_secret=_extra_or_secret("app_secret", "FEISHU_APP_SECRET"),
@@ -1419,6 +1430,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             admins=frozenset(_id_set(extra.get("admins", []))),
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
+            message_format=message_format,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
         )
 
@@ -1662,12 +1674,17 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        # Outbound msg_type policy from config.yaml ``feishu.message_format`` (env ``FEISHU_MESSAGE_FORMAT`` as the
+        # fallback): "text" strips markdown and sends every chunk as plain text — the escape hatch for clients that
+        # draw a ``post`` markdown bubble as empty; "post" keeps markdown for prose-only chunks as well.
+        message_format = getattr(self, "_message_format", "auto")
         # Decide markdown-vs-text once for the whole message: a chunk of a long
         # markdown reply may be plain prose that fails the per-chunk regex and would
         # otherwise render as literal ``**bold`` / fences while other chunks render.
         # Lock the markdown decision at the whole-message level so every chunk consistently uses ``post``.
         # See #26841.
-        prefer_post = bool(_MARKDOWN_HINT_RE.search(formatted))
+        prefer_post = message_format == "post" or bool(_MARKDOWN_HINT_RE.search(formatted))
+        force_text = message_format == "text"
         last_response = None
 
         async def _send_plain(chunk: str) -> Any:
@@ -1681,6 +1698,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
 
         try:
             for chunk in chunks:
+                if force_text:
+                    last_response = await _send_plain(chunk)
+                    continue
                 msg_type, payload = self._build_outbound_payload(chunk, prefer_post=prefer_post)
                 try:
                     response = await self._feishu_send_with_retry(
@@ -1719,13 +1739,19 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             return self._finalize_send_result(response, "update failed")
 
         try:
-            msg_type, payload = self._build_outbound_payload(content)
-            result = await _update(msg_type, payload)
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
-                logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
+            message_format = getattr(self, "_message_format", "auto")
+            if message_format == "text":
                 result = await _update(
                     "text", json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
                 )
+            else:
+                msg_type, payload = self._build_outbound_payload(content, prefer_post=message_format == "post")
+                result = await _update(msg_type, payload)
+                if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
+                    logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
+                    result = await _update(
+                        "text", json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
+                    )
             if result.success:
                 result.message_id = message_id
             return result
@@ -4500,10 +4526,16 @@ def interactive_setup() -> None:
 
 
 def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
-    """``apply_yaml_config_fn`` (#24849): bridge config.yaml feishu.allow_bots to FEISHU_ALLOW_BOTS (env wins) and
-    seed ``extra.allow_bots`` so a multiplexed secondary profile's adapter reads its own value."""
-    seeded = _apply_yaml_bridge(feishu_cfg, (("allow_bots", "FEISHU_ALLOW_BOTS", "lower"),))
-    return {"allow_bots": str(seeded["allow_bots"]).lower()} if seeded else None
+    """``apply_yaml_config_fn`` (#24849): bridge config.yaml feishu.allow_bots / feishu.message_format to
+    FEISHU_ALLOW_BOTS / FEISHU_MESSAGE_FORMAT (env wins) and seed the same keys in ``extra`` so a multiplexed
+    secondary profile's adapter reads its own values."""
+    seeded = _apply_yaml_bridge(feishu_cfg, (
+        ("allow_bots", "FEISHU_ALLOW_BOTS", "lower"),
+        ("message_format", "FEISHU_MESSAGE_FORMAT", "lower"),
+    ))
+    if not seeded:
+        return None
+    return {key: str(value).lower() for key, value in seeded.items() if key in {"allow_bots", "message_format"}}
 
 
 def _is_connected(config) -> bool:

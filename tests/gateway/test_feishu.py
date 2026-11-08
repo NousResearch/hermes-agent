@@ -2529,3 +2529,96 @@ def test_processing_failure_skips_cross_mark_when_typing_removal_fails(fake_lark
     assert tracker.created == ["Typing"]
     assert tracker.deleted == ["r_typing"]
     assert adapter._pending_processing_reactions["om_msg"] == "r_typing"
+
+
+@patch.dict(os.environ, {}, clear=True)
+class TestFeishuMessageFormat(unittest.TestCase):
+    """``feishu.message_format`` (config.yaml; ``FEISHU_MESSAGE_FORMAT`` is the env fallback) picks the outbound
+    ``msg_type``: ``text`` for clients that draw a ``post`` markdown bubble as empty, ``post`` to keep markdown even
+    for prose-only chunks, ``auto`` (default) keeps the whole-message markdown sniff."""
+
+    def _adapter(self, **extra):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra=extra))
+        captured: list = []
+
+        class _MessageAPI:
+            def create(self, request):
+                captured.append(request)
+                return SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id=f"om_{len(captured)}"))
+
+            def update(self, request):
+                captured.append(request)
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+        return adapter, captured
+
+    @staticmethod
+    def _direct(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    def test_defaults_to_auto(self):
+        adapter, _ = self._adapter()
+        self.assertEqual(adapter._message_format, "auto")
+
+    def test_unknown_value_falls_back_to_auto(self):
+        adapter, _ = self._adapter(message_format="colourful")
+        self.assertEqual(adapter._message_format, "auto")
+
+    def test_env_is_the_fallback_when_yaml_is_silent(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        with patch.dict(os.environ, {"FEISHU_MESSAGE_FORMAT": "text"}):
+            adapter = FeishuAdapter(PlatformConfig())
+        self.assertEqual(adapter._message_format, "text")
+
+    def test_text_forces_plain_text_for_every_chunk(self):
+        adapter, captured = self._adapter(message_format="text")
+        first = "Here is a short intro that has no markdown markers at all."
+        second = "## Heading\nAnd then some **bold** text."
+
+        with patch.object(adapter, "truncate_message", return_value=[first, second]), \
+                patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=self._direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=first + "\n" + second))
+
+        self.assertTrue(result.success)
+        self.assertEqual([r.request_body.msg_type for r in captured], ["text", "text"])
+        bodies = [json.loads(r.request_body.content)["text"] for r in captured]
+        self.assertNotIn("**bold**", bodies[1])
+        self.assertNotIn("## ", bodies[1])
+        self.assertIn("And then some bold text.", bodies[1])
+
+    def test_post_keeps_markdown_for_prose_only_chunks(self):
+        adapter, captured = self._adapter(message_format="post")
+
+        with patch.object(adapter, "truncate_message", return_value=["just prose here"]), \
+                patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=self._direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content="just prose here"))
+
+        self.assertTrue(result.success)
+        self.assertEqual([r.request_body.msg_type for r in captured], ["post"])
+
+    def test_edit_message_honors_text(self):
+        adapter, captured = self._adapter(message_format="text")
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=self._direct):
+            result = asyncio.run(
+                adapter.edit_message(chat_id="oc_chat", message_id="om_progress", content="可以用 **粗体** 和 *斜体*。")
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual([r.request_body.msg_type for r in captured], ["text"])
+        self.assertEqual(
+            captured[0].request_body.content,
+            json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
+        )
+
+    def test_yaml_bridge_seeds_message_format(self):
+        from plugins.platforms.feishu.adapter import _apply_yaml_config
+
+        seeded = _apply_yaml_config({}, {"message_format": "text"})
+        self.assertEqual(seeded, {"message_format": "text"})

@@ -44,20 +44,27 @@ test('bridge distinguishes interactive pairing failure from a non-retryable gate
       fileURLToPath(bridge), '--session', path.join(dir, 'session'), '--port', '0', ...args];
     const env = extraEnv => ({ PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: dir, TMP: dir, HERMES_HOME: dir, ...extraEnv });
     const run = args => spawnSync(process.execPath, argv(args), { encoding: 'utf8', timeout: 15000, windowsHide: true, env: env() });
-    // Resolves on the marker (then kills the bridge) or on exit, whichever comes first: no fixed sleep.
+    // Resolves once the child exits. `alive` is true only when the marker appeared and the child was
+    // still running 300 ms later, when this helper killed it; an exit right after the warning, an exit
+    // before it, or the 15 s guard kill all leave it false.
     const runUntil = (args, extraEnv, marker) => new Promise((resolve, reject) => {
       const child = spawn(process.execPath, argv(args), { windowsHide: true, env: env(extraEnv) });
       let output = '';
+      let seen = false;
+      let killedAlive = false;
       const guard = setTimeout(() => child.kill(), 15000);
       const onData = chunk => {
         output += chunk;
-        if (marker.test(output)) { clearTimeout(guard); child.kill(); resolve({ status: null, output }); }
+        if (seen || !marker.test(output)) return;
+        seen = true;
+        setTimeout(() => { killedAlive = child.exitCode === null && child.signalCode === null; child.kill(); }, 300);
       };
       child.stdout.setEncoding('utf8').on('data', onData);
       child.stderr.setEncoding('utf8').on('data', onData);
-      child.on('error', reject);
-      child.on('exit', status => { clearTimeout(guard); resolve({ status, output }); });
+      child.on('error', error => { clearTimeout(guard); reject(error); });
+      child.on('exit', status => { clearTimeout(guard); resolve({ alive: killedAlive, status, output }); });
     });
+    // 78 is bridge.js PASSKEY_REQUIRED_EXIT, which the gateway adapter's PASSKEY_REQUIRED_EXIT must match.
     for (const [args, expected] of [[[], 78], [['--pair-only'], 1]]) {
       const result = run(args);
       assert.equal(result.error, undefined);
@@ -67,7 +74,7 @@ test('bridge distinguishes interactive pairing failure from a non-retryable gate
     // An already connected gateway session ignores the request instead of parking itself: the guarded exit
     // would happen in the same tick as the request, before the warning, so status null proves it is alive.
     const connected = await runUntil([], { STUB_OPEN_FIRST: '1' }, /already connected session; ignoring it/);
-    assert.equal(connected.status, null, connected.output);
+    assert.equal(connected.alive, true, connected.output);
     const pairJson = run(['--pair-only', '--pair-json']);
     assert.equal(pairJson.status, 1);
     assert.match(pairJson.stdout, /"event":"error","error":"passkey_required"/);

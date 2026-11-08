@@ -795,8 +795,31 @@ def _handle_complete(args: dict, **kw) -> str:
                 raise _Reject(
                     f"could not complete {tid}: unsatisfied parent dependencies: "
                     f"{detail}; complete the parents first (done or archived)")
-            _check(False, (task.last_failure_error if task else None) or
-                   f"could not complete {tid} (unknown id, stale run, or already terminal)")
+            # Every other refusal comes back as a bare False, and "unknown id,
+            # stale run, or already terminal" hides which one fired. A worker
+            # whose run was superseded retried the same call until its
+            # iteration budget ran out (#136521). Name the live status/run and
+            # whether this session still owns the card so the model can stop
+            # instead of guessing.
+            if task is None:
+                _check(False, f"could not complete {tid}: no such task on this board")
+            state = f"task is {task.status!r}"
+            if task.current_run_id is not None:
+                state += f" on run {task.current_run_id}"
+            if task.last_failure_error:
+                state += f"; last failure: {task.last_failure_error}"
+            expected = _worker_run_id(tid)
+            if task.status not in ("running", "ready", "blocked", "review"):
+                _check(False, f"could not complete {tid}: {state} — already terminal; "
+                       f"do not retry, the card is closed")
+            if expected is not None and task.current_run_id != expected:
+                raise _Reject(
+                    f"could not complete {tid}: stale run — this session is run "
+                    f"{expected} but the {state}. A successor run owns the card now; "
+                    f"do not retry kanban_complete here — kanban_comment the handoff "
+                    f"for that run instead.")
+            _check(False, f"could not complete {tid}: {state} — the completion write "
+                   f"lost a race; re-check with kanban_show before retrying")
         run = kb.latest_run(conn, tid)
         # Artifact staging is atomic with the completion write, so a worker that
         # read `kanban_attachments` before completing saw an empty list and has

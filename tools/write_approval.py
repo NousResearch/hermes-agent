@@ -80,7 +80,9 @@ def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin
     record = {
         "id": pid, "subsystem": subsystem, "action": payload.get("action", ""),
         "summary": (summary or "").strip(), "origin": origin or "foreground",
-        "created_at": time.time(), "payload": payload,
+        # The id rides inside the payload too: replayers receive only the payload, and the memory
+        # replay reports it to ``post_memory_write`` observers. Appliers read named keys only.
+        "created_at": time.time(), "payload": {**payload, "pending_id": pid},
     }
     try:
         atomic_json_write(_pending_path(subsystem, pid), record)

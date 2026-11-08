@@ -1,0 +1,40 @@
+name: patch-sentinel
+repo: https://github.com/thebangarang/Patch-Sentinel
+sha: "d13d3693382ab8140b51873211831a3d4436590e"
+subdir: ""
+description: >-
+  Answers "are we patched?" with evidence, for whatever the host runs — an adapter chosen from the
+  host's own /etc/os-release (apt, dnf, pacman, zypper, apk), the running kernel against the newest
+  installed and installable, whatever advisory names the fixed version per release (Ubuntu notices,
+  OSV per release, Bodhi, Arch's tracker, SUSE's OVAL), container image digests, nine language
+  ecosystems through OSV plus lockfile pins, package checksums and listening sockets against a
+  recorded baseline, and a CycloneDX SBOM. Every check has three outcomes — clean, finding,
+  could-not-look — so an unreachable host, an unimplemented distro or a rate-limited registry reads
+  as unknown rather than clean. The pane reads one device at a time and hands over the exact commands
+  per device; a gated cve_apply tool stages, applies, re-measures and writes a receipt for an agent
+  explicitly asked to patch. Linux only: any other OS answers "unsupported" with its name.
+maintainer: thebangarang
+tier: community
+category: automation
+requires_hermes: ">=0.19"
+docs_url: "https://github.com/thebangarang/Patch-Sentinel#readme"
+version: "0.1.0"
+title: "Patch Sentinel"
+image: "https://raw.githubusercontent.com/thebangarang/Patch-Sentinel/d13d3693382ab8140b51873211831a3d4436590e/docs/banner.png"
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - cve_scan
+    - cve_plan
+    - cve_explain
+    - cve_coverage
+    - cve_libraries
+    - cve_image
+    - cve_sbom
+    - cve_apply
+    - cve_ack
+    - cve_integrity
+    - cve_rescan
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

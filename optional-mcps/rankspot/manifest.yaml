@@ -1,0 +1,52 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: rankspot
+description: 'RankSpot: SEO and AI visibility. Track how ChatGPT, Perplexity and Google AI answers mention your brand, research keywords and competitors, write articles, read Search Console.'
+source: https://www.rankspot.ai/mcp
+
+# Official vendor-hosted remote MCP (URL-only, Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration over
+# Streamable HTTP (verified live: 401 WWW-Authenticate -> RFC 9728
+# protected-resource metadata at https://mcp.rankspot.ai/.well-known/oauth-protected-resource
+# -> AS https://app-api.rankspot.ai with registration_endpoint, PKCE S256,
+# loopback redirect URIs accepted). Hermes's MCP client + mcp_oauth_manager
+# handle discovery, PKCE, token exchange, and refresh.
+transport:
+  type: http
+  url: https://mcp.rankspot.ai
+
+auth:
+  type: oauth
+
+# Tool selection: every tool carries readOnlyHint/destructiveHint annotations,
+# and delete tools refuse without an explicit confirm flag, so we leave
+# `default_enabled` unset and the install-time checklist starts fully checked.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - rankspot
+    - seo
+    - ai visibility
+    - keyword research
+  hosts:
+    - rankspot.ai
+  examples:
+    - How often is my brand mentioned in AI answers this month?
+    - Which Search Console queries for my site are on page two?
+    - Find content gaps against my competitors and plan an article for each
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to RankSpot
+  (or run `hermes mcp login rankspot`). Log in, review the workspaces the
+  agent will reach, and approve, then restart the session so tools load.
+  You need a RankSpot account with at least one workspace.
+
+  Search Console tools need a connected Search Console property, publishing
+  needs a connected website, and outreach needs a connected mailbox. Article
+  generation and live research use your RankSpot usage allowance.
+
+  Re-run the tool checklist any time with:
+    hermes mcp configure rankspot

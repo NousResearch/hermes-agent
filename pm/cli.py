@@ -504,14 +504,16 @@ def cmd_doctor(args) -> int:
 def _gc_launcher_entries(store_root: Path) -> set[str]:
     """Store entries still executed by a launcher minted for this install."""
     from pm import paths
-    from hermes_cli._launchers import _launcher_checkout, _launcher_python, _owns_launcher
+    from hermes_cli._launchers import WINDOWS_BIN_LAUNCHERS, _launcher_checkout, _launcher_python, _owns_launcher
     from hermes_constants import get_default_hermes_root
     from pm.filesystem import native
 
     root = paths.install_root().resolve()
     store_root = Path(native(store_root.resolve()))
     entries = set()
-    directories = (root / ".hermes" / "bin", get_default_hermes_root() / "bin")
+    legacy = root / "bin"
+    directories = (root / ".hermes" / "bin", get_default_hermes_root() / "bin", legacy)
+    legacy_names = {f"{name}{suffix}" for name in WINDOWS_BIN_LAUNCHERS for suffix in ("", ".cmd", ".exe")}
     for directory in dict.fromkeys(directories):
         try:
             try:
@@ -523,6 +525,8 @@ def _gc_launcher_entries(store_root: Path) -> set[str]:
         except OSError as exc:
             raise OSError(f"Cannot scan launcher directory: {directory}") from exc
         for target in targets:
+            if directory == legacy and target.name.lower() not in legacy_names:
+                continue
             try:
                 try:
                     if not stat.S_ISREG(target.stat().st_mode):

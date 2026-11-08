@@ -95,12 +95,12 @@ def test_gc_normalizes_windows_verbatim_store_prefix():
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("location", ["home", "local"])
+@pytest.mark.parametrize("location", ["home", "local", "legacy"])
 def test_gc_preserves_posix_launcher_interpreter_and_launches(launcher_gc_env, location):
     home, root, store = launcher_gc_env
     old_python = _entry(store, "python-old", Path(sys._base_executable).resolve())
     _entry(store, "python-current", Path(sys._base_executable).resolve())
-    out = home / "bin" if location == "home" else root / ".hermes/bin"
+    out = {"home": home / "bin", "local": root / ".hermes/bin", "legacy": root / "bin"}[location]
     out.mkdir(parents=True, exist_ok=True)
     launcher = _launchers.mint_launcher(
         "hermes", root, out, old_python, None
@@ -128,13 +128,13 @@ def test_gc_preserves_posix_launcher_interpreter_and_launches(launcher_gc_env, l
     assert subprocess.run([launcher, "--version"], check=False).returncode == 23
 
 
-@pytest.mark.parametrize("location", ["home", "local"])
+@pytest.mark.parametrize("location", ["home", "local", "legacy"])
 @pytest.mark.parametrize("form", ["cmd", "exe"])
 def test_gc_preserves_windows_launcher_interpreter(launcher_gc_env, location, form):
     home, root, store = launcher_gc_env
     old_python = _entry(store, "python-old", Path(sys._base_executable).resolve())
     _entry(store, "python-current", Path(sys._base_executable).resolve())
-    out = home / "bin" if location == "home" else root / ".hermes/bin"
+    out = {"home": home / "bin", "local": root / ".hermes/bin", "legacy": root / "bin"}[location]
     out.mkdir(parents=True, exist_ok=True)
     target = out / f"hermes.{form}"
     writer = _write_cmd if form == "cmd" else _write_exe
@@ -167,15 +167,42 @@ def test_gc_ignores_foreign_launcher_and_external_python(launcher_gc_env):
     assert not (store / "python-orphan").exists()
 
 
+def test_gc_legacy_directory_skips_unrelated_unreadable_file(launcher_gc_env, monkeypatch):
+    _home, root, store = launcher_gc_env
+    python = Path(sys._base_executable).resolve()
+    old_python = _entry(store, "python-old", python)
+    _entry(store, "python-current", python)
+    out = root / "bin"
+    out.mkdir()
+    launcher = _launchers.mint_launcher("hermes", root, out, old_python, None)
+    assert launcher is not None
+    unrelated = out / "other-tool.exe"
+    unrelated.write_bytes(b"not a Hermes launcher")
+    _write_orphan(store)
+    original_stat = Path.stat
+
+    def unrelated_unreadable(self, *args, **kwargs):
+        if self == unrelated:
+            raise PermissionError("unrelated tool unreadable")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", unrelated_unreadable)
+    removed, kept = _gc_store(Store(store), Facts(store / "facts.json"))
+    assert removed == 1 and kept == 2
+    assert old_python.is_file()
+    assert not (store / "python-orphan").exists()
+
+
 @pytest.mark.parametrize("failure", ["directory_status", "directory_scan", "launcher_status", "launcher_read", "launcher_text_read"])
+@pytest.mark.parametrize("location", ["local", "legacy"])
 def test_gc_refuses_incomplete_launcher_scan_on_low_level_io_error(
-    launcher_gc_env, monkeypatch, failure
+    launcher_gc_env, monkeypatch, failure, location
 ):
     _home, root, store = launcher_gc_env
     python = Path(sys._base_executable).resolve()
     old_python = _entry(store, "python-old", python)
     _entry(store, "python-current", python)
-    out = root / ".hermes/bin"
+    out = root / (".hermes/bin" if location == "local" else "bin")
     out.mkdir(parents=True)
     launcher = _launchers.mint_launcher("hermes", root, out, old_python, None)
     assert launcher is not None
@@ -227,14 +254,15 @@ def test_gc_refuses_incomplete_launcher_scan_on_low_level_io_error(
 
 
 @pytest.mark.parametrize("reader", ["python_bytes", "owner_text", "checkout_text"])
+@pytest.mark.parametrize("location", ["local", "legacy"])
 def test_gc_aborts_when_parser_read_fails_after_preflight(
-    launcher_gc_env, monkeypatch, reader
+    launcher_gc_env, monkeypatch, reader, location
 ):
     _home, root, store = launcher_gc_env
     python = Path(sys._base_executable).resolve()
     old_python = _entry(store, "python-old", python)
     _entry(store, "python-current", python)
-    out = root / ".hermes/bin"
+    out = root / (".hermes/bin" if location == "local" else "bin")
     out.mkdir(parents=True)
     if reader == "checkout_text":
         launcher = out / "hermes.cmd"

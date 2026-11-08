@@ -1210,6 +1210,22 @@ class SessionAuthority:
         await asyncio.to_thread(release_admission_media, self.db, admission_id)
         return True
 
+    def _refusable_head(self, ref, reason):
+        """The queued head a drain must settle rather than pause behind, or None.
+
+        A verdict on the head alone (its route or binding moved under it) that every drain repeats
+        strands the FIFO for good. ``_claim_with_retry`` refuses it only once the same head refused
+        twice, reading the head after each: never a successor a cancel advanced to. ``stale_hosted_task``
+        joins it: the room no longer holds that attempt, or the member's home is no longer served, so no
+        drain can ever run it. Every other hosted refusal (a revoked binding, a changed payload) stays a
+        hard denial that keeps the row queued for whoever may still be able to authorize it.
+        """
+        if reason not in ('admission_conflict', 'stale_hosted_task'):
+            return None
+        head = next((row for row in list_session_admissions(self.db, session_id=ref.session_id)
+                     if row['status'] == 'queued'), None)
+        return head['admission_id'] if head is not None else None
+
     async def _claim_with_retry(self, ref, live):
         """The drain's next ``(row, first)``, waiting out transient storage and a classic turn on the
         route; None when the drain must exit (paused, or stopping with committed rows left queued)."""
@@ -1230,21 +1246,16 @@ class SessionAuthority:
                         from gateway.session_unattended_unknown import settle_unattended_unknown
                         if await settle_unattended_unknown(self, ref):
                             continue
-                    if exc.reason == 'admission_conflict':
-                        # A verdict on the head alone (its route or binding moved under it) that every drain
-                        # repeats: pausing behind it strands the FIFO for good. Refused only once the same
-                        # head conflicted twice, read after each: never a successor a cancel advanced to.
-                        head = next((row['admission_id'] for row in list_session_admissions(
-                            self.db, session_id=ref.session_id) if row['status'] == 'queued'), None)
-                        if head is not None and head != conflicted:
+                    head = self._refusable_head(ref, exc.reason)
+                    if head is not None:
+                        if head != conflicted:
                             conflicted = head
                             continue
-                        if head is not None:
-                            refusing = head, exc.reason
-                            refused = await self._refuse_head(ref, *refusing)
-                            refusing = None
-                            if refused:
-                                continue
+                        refusing = head, exc.reason
+                        refused = await self._refuse_head(ref, *refusing)
+                        refusing = None
+                        if refused:
+                            continue
                     import logging
                     logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
                     self._pause(ref, exc.reason)

@@ -1,7 +1,7 @@
 """Authority-bound hosted service; no legacy session server is constructed."""
 import asyncio
 import hashlib
-from contextlib import nullcontext, suppress
+from contextlib import nullcontext
 from pathlib import Path
 
 from gateway.session_contract import SessionActor
@@ -32,6 +32,14 @@ def attempt_retired(task, generation):
 def retired_attempt_conflict():
     return RuntimeStoreError('admission_conflict', field='task',
                              detail='the room task no longer runs this attempt')
+
+
+def stale_hosted_task(detail='the room no longer holds this attempt'):
+    """The attempt a queued hosted admission names cannot run any more: its task row is gone from the
+    source, or the member's home is no longer served here. Not a security verdict -- a changed payload
+    or a revoked binding stays ``permission_denied``; this one says nothing can ever execute it, so the
+    drain may settle the row and move the member's queue on."""
+    return RuntimeStoreError('stale_hosted_task', field='task', detail=detail)
 
 
 def probe_native_room_owner(db_path, *, room_id) -> bool:
@@ -96,16 +104,21 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             # queued input can never run. Say so with the committed input, so the target still
             # hard-denies a changed row or owner before letting the member's queue move on.
             from gateway.hosted_room_driver import get_task, TaskIdentity
-            with suppress(KeyError, TypeError, ValueError):
+            try:
                 stored = get_task(self.db_path, TaskIdentity(**params.get('task')))
-                if (stored['identity'].room_id == room_id
-                        and stored['payload'].get('target_member_id', stored['payload']['target_profile']) == member
-                        and stored['payload']['target_profile'] == profile
-                        and attempt_retired(stored, params.get('execution_generation'))):
-                    from gateway.session_hosted_transport import source_attachment_digests
-                    manifest = stored['payload'].get('attachments', [])
-                    return {**result, 'retired': True, 'prompt': stored['payload']['prompt'], 'attachments': manifest,
-                            'attachment_digests': source_attachment_digests(self, member, room_id, manifest)}
+            except KeyError:  # the source does not hold the attempt at all: its terminal row was pruned
+                raise stale_hosted_task() from None
+            except (TypeError, ValueError):
+                stored = None
+            if (stored is not None
+                    and stored['identity'].room_id == room_id
+                    and stored['payload'].get('target_member_id', stored['payload']['target_profile']) == member
+                    and stored['payload']['target_profile'] == profile
+                    and attempt_retired(stored, params.get('execution_generation'))):
+                from gateway.session_hosted_transport import source_attachment_digests
+                manifest = stored['payload'].get('attachments', [])
+                return {**result, 'retired': True, 'prompt': stored['payload']['prompt'], 'attachments': manifest,
+                        'attachment_digests': source_attachment_digests(self, member, room_id, manifest)}
         if operation in {'submit', 'execute', 'attachment'}:
             matches = [t for t in list_tasks(self.db_path, room_id=room_id)
                        if asdict(t['identity']) == params.get('task')
@@ -300,9 +313,19 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             if not same_owner(owner, row['principal_id']):
                 raise ValueError('foreign owner')
             room = self._room(identity.room_id)
-            task = next(t for t in list_tasks(self.db_path, room_id=identity.room_id) if t['identity'] == identity)
-            rpc = self._resolve_member_transport(HostedRoomBinding(identity.room_id,
-                room['authority_gateway_id'], room['authority_epoch']), task)
+            task = next((t for t in list_tasks(self.db_path, room_id=identity.room_id)
+                         if t['identity'] == identity), None)
+            if task is None:
+                # The room no longer holds the attempt (a pruned terminal task): nothing can run it.
+                raise stale_hosted_task()
+            try:
+                rpc = self._resolve_member_transport(HostedRoomBinding(identity.room_id,
+                    room['authority_gateway_id'], room['authority_epoch']), task)
+            except RuntimeStoreError as exc:
+                # The member's home is no longer served here, so this queued turn can never run here.
+                if exc.reason != 'permission_denied':
+                    raise
+                raise stale_hosted_task('the member home is no longer served') from exc
             if (getattr(rpc, 'ref', None) != ref
                     or row['payload'] != committed_submission_payload(rpc, task['payload']['prompt'], task['payload'].get('attachments'))):
                 raise ValueError('changed hosted binding')
@@ -310,6 +333,8 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             # A retired attempt still needs a seated, served member: only the attempt check is skipped.
             if rpc.authorizer('execute', None if retired else identity, None if retired else generation) is not True:
                 raise ValueError('changed hosted binding')
+        except RuntimeStoreError:
+            raise
         except (ValueError, TypeError, KeyError, StopIteration) as exc:
             raise RuntimeStoreError('permission_denied') from exc
         if retired:

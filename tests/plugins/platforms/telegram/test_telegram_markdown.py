@@ -45,6 +45,8 @@ def test_bold_without_quote_keeps_its_markers(adapter):
         ("```\nprice=$5 $6\n```", "```\nprice=$5 $6\n```"),
         ("$2+2$ costs $5 vs $6", "$2+2$ costs \\$5 vs \\$6"),
         ("$3.5\\times10^3$ vs $4", "$3.5\\times10^3$ vs \\$4"),
+        ("$$x^2=16$$ so $4$, not $-4$", "$$x^2=16$$ so $4$, not $-4$"),
+        ("$2x$ but $5$6", "$2x$ but \\$5\\$6"),
         ("``price=$5`` costs $5", "``price=$5`` costs \\$5"),
         ("`` a`b $5 `` then $7", "`` a`b $5 `` then \\$7"),
     ],

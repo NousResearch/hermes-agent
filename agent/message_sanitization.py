@@ -1030,6 +1030,14 @@ def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
     carrier mentioned in passing) is not a schema that rejects a carrier, so nothing is learned.
     """
     body = str(error_body or "").lower()
+    if "use one reasoning field per message" in body:
+        # The flint gateway reports a carrier collision without naming either key (#136486).
+        # Learn only when the same assistant message actually carried both aliases.
+        return frozenset(
+            key for msg in (sent_messages if isinstance(sent_messages, list) else ())
+            if isinstance(msg, dict) and msg.get("role") == "assistant" and RC in msg and R in msg
+            for key in (R, RD) if key in msg
+        )
     if not any(phrase in body for phrase in _UNKNOWN_FIELD_PHRASES):
         return frozenset()
     sent = {

@@ -225,6 +225,28 @@ def test_duplicate_field_for_an_unrelated_key_learns_nothing(body):
     assert agent._reasoning_rejecting_routes == {}
 
 
+def test_single_reasoning_field_error_learns_only_the_replayed_alias():
+    """Flint's keyless alias-collision rejection needs the same one-retry recovery (#136486)."""
+    gw = _agent("flint")
+    gw.provider, gw.base_url = "custom", "http://127.0.0.1:11500/v1"
+    sent = [{"role": "assistant", "content": "", "reasoning_content": "thought", "reasoning": "thought"}]
+    body = '{"error": "Use one reasoning field per message"}'
+
+    assert _recover(gw, body, sent) is True
+    assert rejected_reasoning_carriers(gw) == frozenset({"reasoning"})
+    route = reasoning_replay_route("chat_completions", gw.provider, gw.model, gw.base_url,
+                                   rejected=rejected_reasoning_carriers(gw))
+    reapply_reasoning_echo(sent, route.pad, route.carriers)
+    assert sent[0]["reasoning_content"] == "thought" and "reasoning" not in sent[0]
+    assert _recover(gw, body, sent) is False  # same failure cannot re-trigger recovery
+
+    # A single-carrier message cannot cause the alias collision; don't learn from it.
+    solo = _agent("flint")
+    solo.provider, solo.base_url = "custom", "http://127.0.0.1:11500/v1"
+    assert _recover(solo, body, [{"role": "assistant", "reasoning_content": "thought"}]) is False
+    assert not rejected_reasoning_carriers(solo)
+
+
 def test_duplicate_field_for_the_only_carrier_sent_learns_nothing():
     """Naming the non-goal: a route that sends ONLY ``reasoning_content`` and is told it is a duplicate
     has no carrier left to drop, so nothing is learned and the turn still falls back. There is no way

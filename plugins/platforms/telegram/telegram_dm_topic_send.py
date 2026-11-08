@@ -21,6 +21,12 @@ def private_chat(chat_id: Any) -> bool:
         return False
 
 
+def dead_topic_may_reroute(chat_id: Any, metadata: Any) -> bool:
+    """A dead private topic may be retried by native id, then the chat root, unless the send targets a named topic
+    (``telegram_dm_topic_created_for_send``): that fails closed for text and media alike so DeliveryRouter recreates it."""
+    return private_chat(chat_id) and not (metadata or {}).get("telegram_dm_topic_created_for_send")
+
+
 def direct_topic_retry_kwargs(chat_id: Any, thread_id: Any, metadata: Any, tried: dict[str, Any]) -> dict[str, Any] | None:
     """The same topic by ``direct_messages_topic_id``, tried once before the topic is declared gone: some
     native DM-topic chats reject ``message_thread_id`` for an id they accept there (#137568)."""

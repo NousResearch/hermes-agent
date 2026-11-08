@@ -180,7 +180,7 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_audio_meta import (
     _coerce_duration_seconds, _probe_voice_duration_seconds, audio_player_fields, fit_thumbnail_jpeg)
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
-from plugins.platforms.telegram.telegram_dm_topic_send import dead_topic_retry_kwargs, direct_topic_retry_kwargs, private_chat
+from plugins.platforms.telegram.telegram_dm_topic_send import dead_topic_may_reroute, dead_topic_retry_kwargs, direct_topic_retry_kwargs, private_chat
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_polling_probe import TelegramPendingProbeMixin
 from plugins.platforms.telegram.telegram_intake import effective_update_message
@@ -1117,7 +1117,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                     return await _await_with_thread_deadline(
                         send_fn(**send_kwargs), timeout=_MEDIA_SEND_DEADLINE, label="telegram-media-send", dump_on_blocked_loop=False)
                 except Exception as send_err:
-                    gone = private_chat(send_kwargs.get("chat_id")) and self._is_thread_not_found_error(send_err)
+                    gone = dead_topic_may_reroute(send_kwargs.get("chat_id"), metadata) and self._is_thread_not_found_error(send_err)
                     if self._should_retry_without_dm_topic_reply_anchor(send_err, metadata, send_kwargs.get("reply_to_message_id")):
                         send_kwargs = {**send_kwargs, "reply_to_message_id": None}  # the topic route stays
                     elif gone and (direct := direct_topic_retry_kwargs(send_kwargs.get("chat_id"), None, metadata, send_kwargs)):

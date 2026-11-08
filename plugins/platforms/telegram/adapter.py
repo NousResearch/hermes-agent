@@ -6589,16 +6589,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                     return candidate
         return default
 
-    async def _cache_inbound_av(self, msg, event: MessageEvent, source: Any, label: str, kind: str, ext: str, mime: str) -> bool:
-        """Download a voice/audio/video attachment into the local cache. Returns True when the event was
-        already dispatched (oversized attachment), so the caller must return."""
+    async def _cache_inbound_av(self, msg, event: MessageEvent, source: Any, label: str, kind: str, ext: str, mime: str) -> None:
+        """Download a voice/audio/video attachment into the local cache. An oversized one only gets a note:
+        the caller's tail dispatches the event, so an album item still joins its album's turn."""
         try:
             allowed, note = self._telegram_media_size_allowed(source, label)
             if not allowed:
                 event.text = self._append_observed_note(event.text, note or "")
                 logger.info("[Telegram] Skipped oversized user %s (size=%s)", kind, getattr(source, "file_size", None))
-                await self.handle_message(event)
-                return True
+                return
             file_obj = await source.get_file()
             data = await file_obj.download_as_bytearray()
             if kind == "video":
@@ -6613,13 +6612,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         except Exception as e:
             logger.warning("[Telegram] Failed to cache %s: %s", kind, _redact_telegram_error_text(e), exc_info=True)
             await self._surface_media_cache_failure(msg, event, label, e)
-        return False
 
-    async def _dispatch_with_text(self, event: MessageEvent, text: str) -> bool:
-        """Replace the event text with a user-facing note and dispatch it; returns True (handled)."""
+    @staticmethod
+    def _note_instead_of_media(event: MessageEvent, text: str) -> bool:
+        """Replace the event text with a user-facing note; False lets the caller's tail dispatch it
+        (through the album queue for an album item, so the album stays one turn)."""
         event.text = text
-        await self.handle_message(event)
-        return True
+        return False
 
     @staticmethod
     def _set_cached_media(event: MessageEvent, path: str, mime: str, mtype: MessageType, log_fmt: str) -> None:
@@ -6630,7 +6629,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
 
     async def _cache_inbound_document(self, msg, event: MessageEvent) -> bool:
         """Cache a document attachment (image → photo path, video, else generic media + text injection).
-        Returns True when the event was already dispatched/routed so the caller must return."""
+        Returns True when the event was already routed (image documents), so the caller must return."""
         doc = msg.document
         try:
             original_filename = doc.file_name or ""
@@ -6644,7 +6643,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             # Size check before the image branch so image documents can't bypass the limit.
             if not doc.file_size or doc.file_size > self._max_doc_bytes:
                 logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
-                return await self._dispatch_with_text(
+                return self._note_instead_of_media(
                     event, f"The document is too large or its size could not be verified. Maximum: {self._max_doc_bytes // (1024 * 1024)} MB.")
             # Screenshots/photos sent as documents take the image cache + batching path.
             if ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/"):
@@ -6655,7 +6654,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                     cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=image_ext)
                 except ValueError as e:
                     logger.warning("[Telegram] Failed to cache image document: %s", _redact_telegram_error_text(e), exc_info=True)
-                    return await self._dispatch_with_text(event, f"Image document '{display}' could not be read as an image.")
+                    return self._note_instead_of_media(event, f"Image document '{display}' could not be read as an image.")
                 self._set_cached_media(
                     event, cached_path, doc_mime if doc_mime.startswith(
                         "image/"
@@ -6677,8 +6676,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                 self._set_cached_media(
                     event, await cache_video_from_bytes_async(bytes(video_bytes), ext=ext), SUPPORTED_VIDEO_TYPES[ext], MessageType.VIDEO,
                     "[Telegram] Cached user video document at %s")
-                await self.handle_message(event)
-                return True
+                return False  # the caller's tail dispatches (album queue for an album item)
             # Any file type is accepted (authorization is the gate, not the extension); unknown types get
             # application/octet-stream. Image documents already returned above.
             file_obj = await doc.get_file()
@@ -6686,7 +6684,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             from gateway.platforms.base import cache_media_bytes_async
             cached = await cache_media_bytes_async(raw_bytes, filename=original_filename or f"document{ext or '.bin'}", mime_type=doc_mime)
             if cached is None:
-                return await self._dispatch_with_text(event, f"Document '{display}' could not be cached.")
+                return self._note_instead_of_media(event, f"Document '{display}' could not be cached.")
             event.media_urls = [cached.path]
             event.media_types = [cached.media_type]
             event.media_text_inlined = [False]  # flipped below once the text is actually injected
@@ -6754,14 +6752,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                 await self._surface_media_cache_failure(msg, event, "photo", e)
         # Voice/audio cached for STT transcription; video for vision.
         if msg.voice:
-            if await self._cache_inbound_av(msg, event, msg.voice, "voice message", "voice", ".ogg", "audio/ogg"):
-                return
+            await self._cache_inbound_av(msg, event, msg.voice, "voice message", "voice", ".ogg", "audio/ogg")
         elif msg.audio:
-            if await self._cache_inbound_av(msg, event, msg.audio, "audio file", "audio", ".mp3", "audio/mp3"):
-                return
+            await self._cache_inbound_av(msg, event, msg.audio, "audio file", "audio", ".mp3", "audio/mp3")
         elif video := msg.video or getattr(msg, "video_note", None):
-            if await self._cache_inbound_av(msg, event, video, "video file" if msg.video else "video note", "video", ".mp4", "video/mp4"):
-                return
+            await self._cache_inbound_av(msg, event, video, "video file" if msg.video else "video note", "video", ".mp4", "video/mp4")
         elif msg.document and await self._cache_inbound_document(msg, event):
             return
         media_group_id = getattr(msg, "media_group_id", None)

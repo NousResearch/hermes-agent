@@ -350,6 +350,17 @@ def cancel_task(
         now=now)
 
 
+def cancel_deferred_task(
+    store, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str,
+    expected_execution_generation: int, expected_cancel_generation: int, clock: Clock,
+) -> dict[str, Any]:
+    """Commit a confirmed Discard only while the selected attempt remains deferred."""
+    return store.hosted_room_driver.cancel_deferred_task(
+        identity, placement=placement, cancel_id=_identifier(cancel_id, label="cancel_id"),
+        expected_execution_generation=expected_execution_generation,
+        expected_cancel_generation=expected_cancel_generation, now=_timestamp(clock))
+
+
 def begin_task_cancel(
     store, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: Any,
     expected_cancel_generation: int, clock: Clock) -> dict[str, Any]:

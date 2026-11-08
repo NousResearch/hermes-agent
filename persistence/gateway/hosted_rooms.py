@@ -791,6 +791,10 @@ class HostedRoomDriverRepository(Protocol):
         """Cancel a queued or deferred task directly."""
         ...
 
+    def cancel_deferred_task(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_execution_generation: int, expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:
+        """Cancel the selected deferred attempt after confirmation."""
+        ...
+
     def begin_task_cancel(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:
         """Request the two-phase stop of running work."""
         ...

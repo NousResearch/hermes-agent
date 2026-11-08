@@ -356,6 +356,19 @@ class DriverTaskMixin:
         changes = {"status": "cancelled", "result_json": None, "cancel_generation": expected_cancel_generation + 1, "cancel_id": cancel_id, "terminal_at": now, "updated_at": now}
         return self._transition(placement, identity, now=now, replay=_cancel_replay(cancel_id), guard=guard, fence=fence, changes=changes, stale="task changed during cancellation")
 
+    def cancel_deferred_task(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str,
+                             expected_execution_generation: int, expected_cancel_generation: int,
+                             now: float | None = None) -> Mapping[str, JsonValue]:
+        now = rules.clock(now)
+
+        def fence(row: Row) -> bool:
+            return _generations_match(row, "deferred", expected_execution_generation, expected_cancel_generation)
+
+        changes = {"status": "cancelled", "result_json": None, "cancel_generation": expected_cancel_generation + 1,
+                   "cancel_id": cancel_id, "terminal_at": now, "updated_at": now}
+        return self._transition(placement, identity, now=now, changes=changes, fence=fence,
+                                stale="deferred cancellation belongs to a replaced attempt")
+
     def begin_task_cancel(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:
         now = rules.clock(now)
 

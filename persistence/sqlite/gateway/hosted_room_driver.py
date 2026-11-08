@@ -712,6 +712,16 @@ class SQLiteHostedRoomDriverRepository:
             lease_generation=lambda value: int(value or 0), now=now, replay=replay, sql=_REQUEUE_RUNNING_SQL,
             set_params=(now,), stale="not-admitted task changed during requeue")
 
+    def cancel_deferred_task(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str,
+                             expected_execution_generation: int, expected_cancel_generation: int,
+                             now: float | None = None) -> Mapping[str, JsonValue]:
+        now = clock(now)
+        return self._transition(
+            placement, identity, now=now, sql=_task_update(_CANCEL_SET, f"status='deferred' AND {_GENERATION_FENCE}"),
+            set_params=(expected_cancel_generation + 1, cancel_id, now, now),
+            fence_params=(expected_execution_generation, expected_cancel_generation),
+            stale="deferred cancellation belongs to a replaced attempt")
+
     # Cancels a queued or deferred task; running work goes through ``begin_task_cancel``.
     def cancel_task(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str,
                     expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:

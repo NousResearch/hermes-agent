@@ -279,6 +279,19 @@ def test_cancel_task_cancels_queued_and_deferred_work_directly(backend, scope_a)
     assert (stopped["status"], stopped["result"]) == ("cancelled", None)
 
 
+def test_discard_only_cancels_the_selected_deferred_generation(backend, scope_a):
+    store = backend.open(scope_a)
+    lease = _indeterminate(store)
+    driver = store.hosted_room_driver
+    driver.defer_indeterminate_task(_identity(), lease, placement="profile", expected_execution_generation=1,
+                                    expected_cancel_generation=0, reason="member_unavailable", now=210)
+    cancel = dict(placement="profile", cancel_id="discard:1", expected_cancel_generation=0, now=220)
+    with pytest.raises(StaleTaskError):
+        driver.cancel_deferred_task(_identity(), expected_execution_generation=2, **cancel)
+    stopped = driver.cancel_deferred_task(_identity(), expected_execution_generation=1, **cancel)
+    assert (stopped["status"], stopped["result"], stopped["cancel_id"]) == ("cancelled", None, "discard:1")
+
+
 def test_begin_task_cancel_records_a_stop_intent_for_running_and_indeterminate_work(backend, scope_a):
     store = backend.open(scope_a)
     lease = _indeterminate(store)

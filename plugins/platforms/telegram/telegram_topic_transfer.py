@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable, Optional
 
-from gateway.platforms.base import coerce_plaintext_gateway_command
+from gateway.platforms.base import coerce_plaintext_gateway_command, resolve_channel_prompt
 from gateway.platforms.event import MessageEvent
 from gateway.session_identity import replace_source
 
@@ -54,3 +54,23 @@ async def apply_root_dm_topic_transfer(adapter: Any, event: MessageEvent) -> Non
     # override plus no source.message_id sends the first reply by message_thread_id alone.
     event.source = replace_source(source, thread_id=str(thread_id), message_id=None)
     event.reply_anchor_override = ""
+
+
+def apply_topic_recovery_with_inputs(adapter: Any, event: MessageEvent, recover: Callable[[MessageEvent], None]) -> None:
+    """Topic recovery (``recover``) plus the recovered topic's own prompt inputs (#131232).
+
+    A lobby-shaped message moved into a topic runs in the topic's session, so it takes the topic's
+    name, bound skill and channel prompt, the same lookups ``_build_message_event`` makes for a
+    message sent inside the topic. Keeping the lobby's would flip the session's pinned context and
+    channel prompts on every recovered turn, re-rendering the cached prompt.
+    """
+    before = event.source.thread_id if event.source is not None else None
+    recover(event)
+    source = event.source
+    if source is None or source.thread_id == before:
+        return
+    chat_id = str(source.chat_id)
+    topic = adapter._get_dm_topic_info(chat_id, source.thread_id) or {}
+    event.source = replace_source(source, chat_topic=topic.get("name"))
+    event.auto_skill = topic.get("skill")
+    event.channel_prompt = resolve_channel_prompt(adapter.config.extra, source.thread_id, chat_id)

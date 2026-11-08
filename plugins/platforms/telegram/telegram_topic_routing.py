@@ -100,3 +100,13 @@ class TelegramTopicRoutingMixin:
         logger.info("[%s] Thread-less message %s adopted by new Telegram topic %s (chat=%s)",
                     self.name, getattr(message, "message_id", "?"), created_thread_id, key[0])
         return created_thread_id
+
+    def _text_batch_key(self, event: Any) -> str:
+        """Session-scoped batching key; topic recovery first so DM-topic batches coalesce on the recovered lane."""
+        self._apply_topic_recovery(event)
+        return super()._text_batch_key(event)
+
+    def _apply_topic_recovery(self, event: Any) -> None:
+        """Topic recovery plus the recovered topic's own prompt inputs (#131232)."""
+        from plugins.platforms.telegram.telegram_topic_transfer import apply_topic_recovery_with_inputs
+        apply_topic_recovery_with_inputs(self, event, super()._apply_topic_recovery)

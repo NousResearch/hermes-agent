@@ -160,7 +160,7 @@ async def test_tapping_a_provider_shows_distinguishable_model_buttons(plain_keyb
     assert labels == [m.removeprefix("global.anthropic.") for m in _BEDROCK_IDS]
     assert [adapter._model_picker_state["12345"]["model_list"][int(r[0].callback_data[3:])] for r in model_rows] == _BEDROCK_IDS
     # The "N more available" note renders italic, not as literal underscores.
-    assert "46 more available" in edit["text"] and "\\_46" not in edit["text"]
+    assert "\n_46 more available" in edit["text"]
 
 
 async def _model_labels_for(provider: dict) -> list[str]:

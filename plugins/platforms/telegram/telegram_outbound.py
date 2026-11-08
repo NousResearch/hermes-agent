@@ -75,8 +75,8 @@ async def send_rich_standalone(bot, extra: dict, chat_id, content: str, *, threa
 
 async def send_album_standalone(bot, extra: dict, chat_id, paths: list[str], *, thread_id=None, notify=None):
     """Photos as native albums (``sendMediaGroup``, 10 per chunk) through the adapter's album sender.
-    A refused chunk is handed back in ``raw_response["refused"]`` (local paths) for the caller's own
-    per-file upload, which reports each failure; a lost reply is ``ambiguous`` and never resent."""
+    A refused chunk and every photo after it are handed back in order in ``raw_response["refused"]``
+    (local paths) for the caller's own per-file upload, which reports each failure; a lost reply is ``ambiguous`` and never resent."""
     from urllib.parse import quote, unquote
     from plugins.platforms.telegram.telegram_album import send_photo_album
     adapter = _standalone_adapter(bot, extra)

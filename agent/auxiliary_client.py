@@ -4061,10 +4061,10 @@ async def _call_fallback_candidate_async(
 
 def _try_payment_fallback(
     failed_provider: str, task: str | None = None, reason: str = "payment error", *,
-    failed_base_url: str = "", failure_scope: Any = None, main_runtime: Optional[dict[str, Any]] = None,
+    failed_base_url: str = "", failure_scope: Any = None, main_runtime: Optional[dict[str, Any]] = None, skip_lanes=(),
 ) -> tuple[Optional[Any], Optional[str], str]:
     """Try the auto-detection chain after a payment/credit or connection error, skipping the failed
-    provider (and the main-provider path when it maps to the same backend). Returns (client, model, label) or (None, None, "")."""
+    provider (and the main-provider path when it maps to the same backend) and the walk's ``skip_lanes``."""
     skip = failed_provider.lower().strip()
     # The SESSION's provider decides whether discovery is allowed: a live `/model xai-oauth` session
     # over a persisted ``provider: auto`` is a selection, so the disk value alone is not the answer.
@@ -4088,7 +4088,8 @@ def _try_payment_fallback(
             tried.append(f"{label} (unhealthy)")
             continue
         client, model = try_fn()
-        if client is not None and not _is_provider_unhealthy(label, candidate_base_url, model):
+        if (client is not None and not _is_provider_unhealthy(label, candidate_base_url, model)
+                and _fallback_lane(client, model, label) not in skip_lanes):
             logger.info("Auxiliary %s: %s on %s — falling back to %s (%s)",
                         task or "call", reason, failed_provider, label, model or "default")
             return client, model, label
@@ -4096,6 +4097,10 @@ def _try_payment_fallback(
     logger.warning("Auxiliary %s: %s on %s and no fallback available (tried: %s)",
                    task or "call", reason, failed_provider, ", ".join(tried))
     return None, None, ""
+
+
+def _fallback_lane(client: Any, model: Optional[str], label: str) -> tuple[str, Optional[str], str]:
+    return label, model, str(getattr(client, "base_url", "") or "")  # one candidate's identity within a walk
 
 
 def _failed_backend_skip(
@@ -4216,11 +4221,11 @@ def _context_too_small(
 
 def _try_configured_fallback_chain(
     task: str, failed_provider: str, reason: str = "error", failed_model: Optional[str] = None, *,
-    failed_base_url: str = "", failure_scope: Any = None,
+    failed_base_url: str = "", failure_scope: Any = None, skip_lanes=(),
 ) -> tuple[Optional[Any], Optional[str], str]:
     """Try auxiliary.<task>.fallback_chain entries in order (each needs ``provider``; model/base_url/api_key optional).
-    ``failed_model`` scoping per ``_failed_backend_skip`` (sibling models on the same provider still
-    run after a model-scoped failure). Returns (client, model, provider_label) or (None, None, "")."""
+    ``failed_model`` scoping per ``_failed_backend_skip`` (sibling models on the same provider still run after a
+    model-scoped failure); this walk's ``skip_lanes`` are passed over. Returns (client, model, label)."""
     if not task:
         return None, None, ""
     chain = _get_auxiliary_task_config(task).get("fallback_chain")
@@ -4250,7 +4255,7 @@ def _try_configured_fallback_chain(
             fb_client, resolved_model = _resolve_fallback_entry(entry)
         except Exception:
             fb_client, resolved_model = None, None
-        if fb_client is not None:
+        if fb_client is not None and _fallback_lane(fb_client, resolved_model or fb_model, label) not in skip_lanes:
             too_small = _context_too_small(
                 entry, fb_provider, resolved_model, min_ctx, task=task, label=label, name_model=True,
             ) if resolved_model else None
@@ -4302,7 +4307,7 @@ def _resolve_fallback_entry(entry: dict[str, Any]) -> tuple[Optional[Any], Optio
 
 def _try_main_fallback_chain(
     task: Optional[str], failed_provider: str = "", reason: str = "error", *,
-    failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None,
+    failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None, skip_lanes=(),
 ) -> tuple[Optional[Any], Optional[str], str]:
     """Top-level main-agent fallback chain for a ``provider: auto`` auxiliary call: auto tasks honour the
     user's main fallback policy before the built-in discovery chain; read via ``get_fallback_chain`` so
@@ -4342,7 +4347,7 @@ def _try_main_fallback_chain(
         except Exception as exc:
             logger.debug("Auxiliary %s: main fallback %s failed to resolve: %s", task or "call", label, exc)
             fb_client, resolved_model = None, None
-        if fb_client is not None:
+        if fb_client is not None and _fallback_lane(fb_client, resolved_model or fb_model, fb_provider) not in skip_lanes:
             too_small = _context_too_small(
                 entry, fb_provider, resolved_model or fb_model, min_ctx, task=task, label=label,
             )
@@ -7697,26 +7702,21 @@ def _ladder_credential_rungs(
 
 def _next_fallback_after_quarantine(
     task: Optional[str], resolved_provider: str, is_auto: bool, route: _LadderRoute,
-    failed_model: Optional[str], failure_scope: Any, *, task_chain_only: bool = False,
+    failed_model: Optional[str], failure_scope: Any, *, task_chain_only: bool = False, skip_lanes=(),
 ) -> tuple[Optional[Any], Optional[str], str]:
     """Next candidate after a fallback entry was quarantined mid-request (dead credential or a
     capacity error): remaining configured entries (task chain, then main chain on auto) before the
-    discovery chain. ``task_chain_only`` (explicit-provider auth error) stops at the task chain —
-    the user never opted that task into discovery or the main model."""
-    reason = "fallback candidate unavailable"
-    fb = _try_configured_fallback_chain(
-        task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
-        failed_base_url=route.base_info, failure_scope=failure_scope)
+    discovery chain, past this walk's ``skip_lanes``. ``task_chain_only`` (explicit-provider auth error)
+    stops at the task chain — the user never opted that task into discovery or the main model."""
+    walk = dict(reason="fallback candidate unavailable", failed_base_url=route.base_info,
+                failure_scope=failure_scope, skip_lanes=skip_lanes)
+    fb = _try_configured_fallback_chain(task, resolved_provider or "auto", failed_model=failed_model, **walk)
     if task_chain_only:
         return fb
     if fb[0] is None and is_auto:
-        fb = _try_main_fallback_chain(
-            task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
-            failed_base_url=route.base_info, failure_scope=failure_scope)
+        fb = _try_main_fallback_chain(task, resolved_provider or "auto", failed_model=failed_model, **walk)
     if fb[0] is None:
-        fb = _try_payment_fallback(
-            resolved_provider, task, reason=reason, failed_base_url=route.base_info,
-            failure_scope=failure_scope, main_runtime=route.main_runtime)
+        fb = _try_payment_fallback(resolved_provider, task, main_runtime=route.main_runtime, **walk)
     return fb
 
 
@@ -7782,15 +7782,15 @@ def _ladder_provider_fallback(failure: aux_errors.Failure, route: _LadderRoute, 
         fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
             resolved_provider, task, reason=reason, failed_model=_chain_failed_model,
             failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
-    # Ordered walk: a candidate that returns None was quarantined (dead credential or a capacity
-    # error such as a quota 429) and is now unhealthy, so re-walking the CONFIGURED chains first
-    # lands on the next entry, then discovery where the selection policy allows it (#106367).
-    # Bounded: each pass quarantines its candidate and a re-selected lane ends the walk (≤1 try each).
+    # Ordered walk: a candidate that returns None was quarantined (dead credential or a capacity error such as
+    # a quota 429), so re-walking the CONFIGURED chains first lands on the next entry, then discovery where the
+    # selection policy allows it (#106367). The selectors pass over tried lanes, so an entry whose refresh moved
+    # its quarantine to another model cannot hide later ones; bounded: ≤1 try per lane, a repeat ends the walk.
     # Candidates overwrite route_info; on exhaustion the PRIMARY error is raised, so restore its route.
     tried_lanes: set = set()
     primary_route = dict(route.route_info) if route.route_info is not None else None
     while fb_client is not None:
-        lane = (fb_label, fb_model, str(getattr(fb_client, "base_url", "") or ""))
+        lane = _fallback_lane(fb_client, fb_model, fb_label)
         if lane in tried_lanes:
             break
         tried_lanes.add(lane)
@@ -7803,7 +7803,7 @@ def _ladder_provider_fallback(failure: aux_errors.Failure, route: _LadderRoute, 
             return fb_resp
         fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
             task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope,
-            task_chain_only=explicit_auth_with_task_chain)
+            task_chain_only=explicit_auth_with_task_chain, skip_lanes=tried_lanes)
     # All fallback layers exhausted: one user-visible warning (#26882), then the caller re-raises.
     logger.warning("Auxiliary %s%s: %s on %s and all fallbacks exhausted "
                    "(fallback_chain + main agent model). Raising the primary error.",

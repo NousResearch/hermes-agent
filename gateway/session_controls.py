@@ -783,7 +783,10 @@ class AuthorityConnection:
         from gateway.session_server_requests import open_requests
         stream = self.authority.sessions[ref.session_id].event_stream
         replay = stream.since(epoch, sequence)
-        if ref.session_id not in self.subscriptions:  # an attached viewer's read (clarify recovery) is no reconnect
+        # A read by a viewer holding the session (clarify recovery), or one this connection itself
+        # detached (a backgrounded tab's probe), is no reconnect: its next resume is a real open. A
+        # read from a connection that never held it cannot be told from a reconnect's, and counts as one.
+        if ref.session_id not in self.subscriptions and ref.session_id not in self.handed_back:
             self.reconnects.add(ref.session_id)
         if not replay['snapshot_required']:
             self.replay_cursors[ref.session_id] = (

@@ -14,9 +14,13 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# (profile id, session id) -> the open delivery still pending or running for it. In-flight work only:
-# an entry leaves when its delivery ends, so this never dedupes and holds one task per opening session.
+# (profile id, session id) -> the open still pending or running for it. In-flight work only: an
+# entry leaves when its delivery ends, so this never dedupes and holds one open per opening session.
 _PENDING = {}
+
+# Longest a turn waits on an open when ``plugins.hook_callback_timeout`` is 0 (callbacks never
+# abandoned): that setting keeps a slow callback's thread, it does not let one stall the conversation.
+_UNBOUNDED_TURN_WAIT_S = 5.0
 
 
 def _reason(db, session_id):
@@ -35,12 +39,16 @@ class _Open:
     ``release``d (not a local session, a failed attach) so no turn waits on it."""
 
     def __init__(self, authority, ref):
+        from hermes_cli.plugins import _resolve_hook_callback_timeout
         self.ref, self.db = ref, authority.db
         key = (ref.profile_id, ref.session_id)
+        # Read here, in the owning profile's dispatch scope; the drain that waits runs in no profile's.
+        self.turn_wait = _resolve_hook_callback_timeout() or _UNBOUNDED_TURN_WAIT_S
         self.gate = asyncio.get_running_loop().create_future()
-        self.task = asyncio.ensure_future(self._run(_live(key)))
-        _PENDING[key] = self.task
-        self.task.add_done_callback(lambda done: _PENDING.pop(key) if _PENDING.get(key) is done else None)
+        previous = _live(key)
+        self.task = asyncio.ensure_future(self._run(previous and previous.task))
+        _PENDING[key] = self
+        self.task.add_done_callback(lambda _done: _PENDING.pop(key) if _PENDING.get(key) is self else None)
 
     def fire(self, policy, route):
         # A bypass launch (``--safe-mode`` / ``--ignore-user-config``) loads no plugin: nothing fires.
@@ -80,18 +88,23 @@ def open_local(authority, ref):
 
 
 def _live(key):
-    """*key*'s pending delivery on the running loop; a retired loop's (an in-process restart) never
+    """*key*'s pending open on the running loop; a retired loop's (an in-process restart) never
     resolves on this one."""
-    task = _PENDING.get(key)
-    if task is not None and task.get_loop() is not asyncio.get_running_loop():
+    opening = _PENDING.get(key)
+    if opening is not None and opening.task.get_loop() is not asyncio.get_running_loop():
         _PENDING.pop(key, None)
         return None
-    return task
+    return opening
 
 
 async def settled(ref):
-    """Wait out an open delivery still pending or running for *ref* (the hook dispatcher bounds each
-    callback by ``plugins.hook_callback_timeout``); awaited before a claimed turn executes."""
-    task = _live((ref.profile_id, ref.session_id))
-    if task is not None:
-        await asyncio.wait({task})
+    """Wait out an open delivery still pending or running for *ref*; awaited before a claimed turn
+    executes. The wait is bounded on its own (``plugins.hook_callback_timeout``, or
+    ``_UNBOUNDED_TURN_WAIT_S`` when that is 0): a hung callback delays the turn, never wedges it, and
+    its delivery keeps running."""
+    opening = _live((ref.profile_id, ref.session_id))
+    if opening is not None:
+        _done, pending = await asyncio.wait({opening.task}, timeout=opening.turn_wait)
+        if pending:
+            logger.warning('on_session_open for %s still running after %gs; the turn proceeds',
+                           ref.session_id, opening.turn_wait)

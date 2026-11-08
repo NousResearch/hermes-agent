@@ -88,12 +88,21 @@ def test_each_open_fires_once_in_the_owning_profile(tmp_path, monkeypatch):
                     client.call('session.resume', session_id=root_sid)
                 finally:
                     client.close()
-            root_fired = _wait_done(root_log, 3)
+            # A viewer that detached (a backgrounded tab) and then probes the ring (Desktop's clarify
+            # recovery) is no reconnect: its later reopen is an open.
+            tab = _Wire(home, desc)
+            try:
+                held = tab.call('session.resume', session_id=root_sid)
+                tab.call('session.detach', session_id=root_sid, subscription_id=held['subscription_id'])
+                tab.call('session.events.since', session_id=root_sid, last_seen=2**53 - 1)
+                tab.call('session.resume', session_id=root_sid)
+            finally:
+                tab.close()
+            root_fired = _wait_done(root_log, 5)
         finally:
             beta.close()
-    assert root_fired == [(root_sid, 'cli', 'create', str(home.resolve())),
-                          (root_sid, 'cli', 'resume', str(home.resolve())),
-                          (root_sid, 'cli', 'resume', str(home.resolve()))], root_fired
+    assert root_fired == [(root_sid, 'cli', 'create', str(home.resolve()))] + [
+        (root_sid, 'cli', 'resume', str(home.resolve()))] * 4, root_fired
     assert _done(beta_log) == [(beta_sid, 'tui', 'create', str(beta_home))]
 
 
@@ -130,3 +139,59 @@ def test_the_reply_never_waits_on_the_hook_and_the_first_turn_does(tmp_path, mon
         finally:
             wire.close()
     assert peer.seen_at_turn[0] == [(sid, 'desktop', 'create', str(Path(home).resolve()))], peer.seen_at_turn
+
+
+async def _hung_open(monkeypatch, sid, release):
+    """A real pending open whose delivery hangs until *release*, under ``hook_callback_timeout: 0``."""
+    import threading
+    from types import SimpleNamespace
+    from gateway import session_open
+    from gateway.session_contract import SessionRef
+    from hermes_cli import plugins
+    monkeypatch.setattr(plugins, '_resolve_hook_callback_timeout', lambda: 0.0)
+    monkeypatch.setattr(session_open, '_UNBOUNDED_TURN_WAIT_S', 0.5, raising=False)
+    entered = threading.Event()
+    monkeypatch.setattr(session_open._Open, '_deliver', lambda self, *a: (entered.set(), release.wait(20)))
+    ref = SessionRef('p', sid)
+    opening = session_open.open_local(SimpleNamespace(db=None), ref)
+    opening.fire(SimpleNamespace(ignore_user_config=False), 'route')
+    import asyncio
+    assert await asyncio.to_thread(entered.wait, 10), 'the open delivery never started'
+    return ref, opening
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cancel', [False, True])
+async def test_a_hung_open_never_wedges_the_turn_or_its_executing_stamp(monkeypatch, cancel):
+    """With callbacks never abandoned (``hook_callback_timeout: 0``) a hung ``on_session_open`` delays
+    the next turn by a bounded wait only, and a drain cancelled during that wait leaves no executing
+    stamp behind (which would pin the session against retirement forever)."""
+    import asyncio
+    import threading
+    from types import SimpleNamespace
+    from gateway import session_finite
+    from gateway.session_authority import LiveSession, SessionAuthority
+    release = threading.Event()
+    ran = []
+
+    async def turn(authority, ref, row):
+        ran.append(row['admission_id'])
+        return 'ok'
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', turn)
+    try:
+        ref, opening = await _hung_open(monkeypatch, 'hung-open', release)
+        live = LiveSession(SimpleNamespace(chat_id=ref.session_id), 'route')
+        owner = SimpleNamespace(executing={ref.session_id: 7})  # as _stamp_claim left it
+        task = asyncio.ensure_future(SessionAuthority._execute_claimed(owner, ref, live, {'admission_id': 'a'}))
+        if cancel:
+            for _ in range(5):  # yields only: the turn runs up to its wait on the open
+                await asyncio.sleep(0)
+            task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=5)
+        assert done, 'the turn waited on the hung open without bound'
+        assert not opening.task.done(), 'the open delivery keeps running; only the turn stopped waiting'
+    finally:
+        release.set()
+    assert ref.session_id not in owner.executing, owner.executing
+    assert task.cancelled() if cancel else (task.result() == ('ok', 'completed') and ran == ['a'])
+    await asyncio.wait({opening.task}, timeout=5)

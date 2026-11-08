@@ -18,9 +18,16 @@ LOST = "lost"  # the request left and no readable answer came back (timeout, 504
 LOCAL = "local"  # not a Telegram/transport error (raised before or outside the request)
 
 # A request in one of these may already be in the chat, so it is never resent in another shape
-# (per photo, plain text). The standalone text retry still repeats the SAME request once on
-# Telegram's own 5xx JSON answer (``SERVER_ERROR``), its policy since c928ebb1b1a.
+# (per photo, plain text). On Telegram's own 5xx JSON answer (``SERVER_ERROR``, its policy since
+# c928ebb1b1a) the standalone text send and both album lanes repeat the SAME request, with the same
+# budget: ``SAME_REQUEST_ATTEMPTS`` tries, ``same_request_backoff(attempt)`` seconds apart.
 MAY_HAVE_DELIVERED = frozenset({LOST, SERVER_ERROR})
+SAME_REQUEST_ATTEMPTS = 3
+
+
+def same_request_backoff(attempt: int) -> float:
+    """Seconds before resending the same request after failed try ``attempt`` (0-based)."""
+    return float(2 ** attempt)
 
 
 def send_error_kind(error: Exception) -> str:

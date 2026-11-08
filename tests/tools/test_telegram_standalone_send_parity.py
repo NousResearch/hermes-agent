@@ -222,11 +222,12 @@ def test_photo_that_cannot_be_read_is_reported_and_the_rest_go_as_the_album(stan
     assert [w for w in result.get("warnings", ()) if "p1.png" in w], result
 
 @pytest.mark.parametrize("exc", [TimedOut("Timed out"), NetworkError("Gateway Timeout (504)"),
-                                 NetworkError("Bad Gateway"), _html_5xx(504, "Gateway Timeout")],
-                         ids=["timed-out", "504", "502-json", "504-html"])
+                                 _html_5xx(502, "Bad Gateway"), _html_5xx(504, "Gateway Timeout")],
+                         ids=["timed-out", "504", "502-html", "504-html"])
 def test_album_that_may_be_in_the_chat_is_never_resent(standalone, exc) -> None:
-    """A timeout or any 5xx answer to sendMediaGroup may follow a posted album: no per-photo copy,
-    success with the "not resent" warning (one classifier with the text lane)."""
+    """A timeout, a 504 or an HTML 5xx page answering sendMediaGroup may follow a posted album: one
+    request, no per-photo copy, success with the "not resent" warning (one classifier with the text
+    lane)."""
     standalone.bot.send_media_group = AsyncMock(side_effect=exc)
     standalone.bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=12))
 
@@ -236,6 +237,30 @@ def test_album_that_may_be_in_the_chat_is_never_resent(standalone, exc) -> None:
     assert "not resent" in " ".join(result["warnings"])
     assert standalone.bot.send_media_group.await_count == 1
     standalone.bot.send_photo.assert_not_awaited()
+
+
+def test_album_on_telegrams_json_5xx_resends_the_same_album(standalone, monkeypatch) -> None:
+    """Telegram's own JSON 502 (PTB's unchained ``NetworkError('Bad Gateway')``) means the album was
+    not posted: the same sendMediaGroup goes again after the text lane's backoff, never photo by
+    photo, and the files are re-read from the start."""
+    sleep = AsyncMock()
+    monkeypatch.setattr("asyncio.sleep", sleep)
+    uploads = []
+
+    async def send_media_group(**kwargs):
+        uploads.append([item.media.read() for item in kwargs["media"]])
+        if len(uploads) == 1:
+            raise NetworkError("Bad Gateway")
+        return [SimpleNamespace(message_id=11)]
+    standalone.bot.send_media_group = AsyncMock(side_effect=send_media_group)
+    standalone.bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=12))
+
+    result = standalone.run("", media_files=_photos(standalone.home, 2))
+
+    assert result["success"] is True and "warnings" not in result
+    assert uploads[0] == uploads[1] and len(uploads) == 2 and uploads[0][0]
+    standalone.bot.send_photo.assert_not_awaited()
+    sleep.assert_awaited_once_with(1.0)
 
 
 @pytest.mark.parametrize("status,phrase", [(502, "Bad Gateway"), (504, "Gateway Timeout")])

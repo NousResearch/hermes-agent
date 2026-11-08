@@ -7,9 +7,45 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
+
+from agent.custom_entry_pool import pool_for_aux_provider
 
 logger = logging.getLogger(__name__)
+
+
+class PoolSelection(NamedTuple):
+    pool: Any   # None without a credentialed pool
+    entry: Any  # None when every entry is filtered out for the model
+
+
+def _aux_pool_selection(provider: str, model: Optional[str] = None) -> PoolSelection:
+    """``(pool, entry)`` behind an auxiliary client: ONE non-mutating peek that the cache key digests
+    and the client build sends, so the two never name different credentials. Loaded under the
+    canonical provider (``codex`` is ``openai-codex``), entry-scoped for a pinned ``custom:<name>``,
+    peeked against ``model``'s cooldowns.
+    """
+    from agent.auxiliary_client import _load_pool_with_credentials, _normalize_aux_provider, _peek_pool_entry
+    normalized = _normalize_aux_provider(provider)
+    pool = pool_for_aux_provider(provider, normalized, lambda key: _load_pool_with_credentials(key, " (peek)"))
+    return PoolSelection(pool, _peek_pool_entry(normalized, pool, model) if pool is not None else None)
+
+
+def _take_pool_selection(selection: PoolSelection, provider: str, model: Optional[str]) -> Any:
+    """The selection's peeked entry (the one the cache key digests), refreshed for sending. ``select()``
+    still runs for the strategy's bookkeeping, as on the explicit-key routes; when it picks another
+    entry the peeked one is reclaimed instead. With no peeked entry, ``select()``'s pick (usually None)."""
+    from agent.auxiliary_client import _normalize_resolved_model
+    pool, entry = selection
+    wire_model = _normalize_resolved_model(model, provider) if model else None
+    try:
+        chosen = pool.select(model=wire_model)
+        if entry is None or (chosen is not None and chosen.id == entry.id):
+            return chosen
+        return pool.reclaim(entry.id, model=wire_model)
+    except Exception as exc:
+        logger.debug("Auxiliary client: could not take the pool selection for %s: %s", provider, exc, exc_info=True)
+        return None
 
 
 def _pool_credential_digest(pool: Any, entry: Any = None) -> str:
@@ -40,27 +76,28 @@ def _pool_credential_digest(pool: Any, entry: Any = None) -> str:
     return digest.hexdigest()
 
 
-def _pool_cache_hint(provider: str, *, main_runtime: Optional[dict[str, Any]] = None, model: Optional[str] = None) -> str:
+def _pool_cache_hint(
+    provider: str, *, main_runtime: Optional[dict[str, Any]] = None, model: Optional[str] = None,
+    selection: Optional[PoolSelection] = None,
+) -> str:
     """Return a cache discriminator that follows the pooled credential, not just its entry id.
 
-    ``<provider>:<entry id>:<digest of that entry's key>`` when ``peek()`` names an entry,
+    ``<provider>:<entry id>:<digest of that entry's key>`` when the selection names an entry,
     ``<provider>::<digest of every entry's key>`` when every entry is filtered out (cooldown)
-    but keyed entries exist. ``model`` is the one the client build peeks with, so a per-model
-    cooldown skipping the current entry moves the hint too. A token rotated or refreshed by another
+    but keyed entries exist. ``selection`` is the build's ``_aux_pool_selection`` (taken here when
+    absent; ``auto`` keys on the main provider's pool). A token rotated or refreshed by another
     process yields a new client instead of a 401 on the cached one (stale entries age out, #113022).
     """
-    from agent.auxiliary_client import (
-        _load_pool_with_credentials, _normalize_aux_provider, _normalize_main_runtime, _peek_pool_entry, _read_main_provider)
+    from agent.auxiliary_client import _normalize_aux_provider, _normalize_main_runtime, _read_main_provider
     normalized = _normalize_aux_provider(provider)
     if normalized == "auto":
-        runtime = _normalize_main_runtime(main_runtime)
-        normalized = _normalize_aux_provider(runtime.get("provider") or _read_main_provider())
+        provider = _normalize_main_runtime(main_runtime).get("provider") or _read_main_provider()
+        normalized, selection = _normalize_aux_provider(provider), None
     if normalized in {"", "auto", "custom"}:
         return ""
-    pool = _load_pool_with_credentials(normalized, " (cache hint)")
+    pool, entry = selection or _aux_pool_selection(provider, model)
     if pool is None:
         return ""
-    entry = _peek_pool_entry(normalized, pool, model)
     digest = _pool_credential_digest(pool, entry)
     entry_id = str(getattr(entry, "id", "") or "").strip() if entry is not None else ""
     if not entry_id and not digest:

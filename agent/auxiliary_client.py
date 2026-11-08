@@ -125,7 +125,7 @@ def aux_probe_mode():
 from agent.credential_pool import load_pool
 from agent.credential_pool_model_cooldowns import pool_failure_reason
 from agent.custom_entry_pool import entry_scoped_pool, pool_for_aux_provider
-from agent.auxiliary_pool_selection import _pool_cache_hint
+from agent.auxiliary_pool_selection import PoolSelection, _aux_pool_selection, _pool_cache_hint, _take_pool_selection
 from agent.message_metadata import data_use_requirement
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
@@ -1997,18 +1997,20 @@ def _nous_api_key(provider: dict) -> str:
     return ""
 
 
-def _resolve_nous_pool_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[str, str]]:
-    """Resolve Nous auxiliary credentials from the selected pool entry."""
+def _resolve_nous_pool_runtime_api(*, force_refresh: bool = False, model: Optional[str] = None,
+                                   selection: Optional[PoolSelection] = None) -> Optional[tuple[str, str]]:
+    """Resolve Nous auxiliary credentials from ``selection`` (the cache key's), else a model-aware select."""
     try:
         from hermes_cli.auth import _agent_key_is_usable
-        pool = load_pool("nous")
+        pool = selection.pool if selection else load_pool("nous")
     except Exception as exc:
         logger.debug("Auxiliary Nous pool credential resolution failed: %s", exc)
         return None
     if not pool or not pool.has_credentials():
         return None
     try:
-        entry = pool.select()
+        entry = (_take_pool_selection(selection, "nous", model) if selection
+                 else pool.select(model=_normalize_resolved_model(model, "nous")) if model else pool.select())
     except Exception as exc:
         logger.debug("Auxiliary Nous pool selection failed: %s", exc)
         return None
@@ -2021,7 +2023,7 @@ def _resolve_nous_pool_runtime_api(*, force_refresh: bool = False) -> Optional[t
 
     if force_refresh or not _agent_key_is_usable(_entry_state(entry), _nous_min_key_ttl_seconds()):
         try:
-            refreshed = pool.try_refresh_current()
+            refreshed = pool.try_refresh_matching(credential_id=entry.id) if selection else pool.try_refresh_current()
         except Exception as exc:
             logger.debug("Auxiliary Nous pool refresh failed: %s", exc)
             refreshed = None
@@ -2036,12 +2038,12 @@ def _resolve_nous_pool_runtime_api(*, force_refresh: bool = False) -> Optional[t
 
 
 def _resolve_nous_runtime_api(
-    *, force_refresh: bool = False, stale_access_token: Optional[str] = None
-) -> Optional[tuple[str, str]]:
+    *, force_refresh: bool = False, stale_access_token: Optional[str] = None, model: Optional[str] = None,
+    selection: Optional[PoolSelection] = None) -> Optional[tuple[str, str]]:
     """Fresh Nous runtime credentials (pool first, then auth store + JWT refresh) — mirrors the main
     agent's 401 recovery. ``stale_access_token`` is the bearer that just 401'd; with ``force_refresh``
     it lets the auth store adopt a sibling process's rotation instead of re-POSTing the shared grant."""
-    pooled = _resolve_nous_pool_runtime_api(force_refresh=force_refresh)
+    pooled = _resolve_nous_pool_runtime_api(force_refresh=force_refresh, model=model, selection=selection)
     if pooled is not None:
         return pooled
     try:
@@ -2069,16 +2071,17 @@ def _creds_pair(creds: dict[str, Any]) -> Optional[tuple[str, str]]:
     return api_key, base_url
 
 
-def _resolve_xai_oauth_for_aux(model: Optional[str] = None) -> Optional[tuple[str, str]]:
+def _resolve_xai_oauth_for_aux(model: Optional[str] = None, selection: Optional[PoolSelection] = None) -> Optional[tuple[str, str]]:
     """Fresh xAI OAuth (api_key, base_url) for aux clients, or None.
 
     Pool first (some xAI OAuth logins exist only as pool entries), then the singleton auth-store resolver.
     """
     try:
         from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL, _xai_validate_inference_base_url
-        pool = load_pool("xai-oauth")
+        pool = selection.pool if selection else load_pool("xai-oauth")
         if pool and pool.has_credentials():
-            entry = pool.select(model=model)
+            entry = (_take_pool_selection(selection, "xai-oauth", model) if selection
+                     else pool.select(model=_normalize_resolved_model(model, "xai-oauth") if model else None))
             if entry is not None:
                 api_key = str(
                     getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "") or ""
@@ -2104,13 +2107,14 @@ def _resolve_xai_oauth_for_aux(model: Optional[str] = None) -> Optional[tuple[st
     return _creds_pair(creds)
 
 
-def _resolve_codex_credential_and_base(model: Optional[str] = None) -> tuple[Optional[str], str]:
+def _resolve_codex_credential_and_base(model: Optional[str] = None, selection: Optional[PoolSelection] = None) -> tuple[Optional[str], str]:
     """``(token, base_url)`` taken from ONE authority, so a Codex key is only ever sent to the host
     it belongs to (#121486): the profile-scoped ``HERMES_CODEX_BASE_URL`` wins; otherwise a pooled
     key goes where that pool entry routes (row URL / ``model.base_url``) and the auth.json OAuth
     token goes to the ChatGPT default. ``(None, <base>)`` without a usable token."""
     override = _codex_base_url_override()
-    pool_present, entry = _select_pool_entry("openai-codex", model)  # a model-scoped cooldown spares siblings
+    pool_present, entry = ((True, _take_pool_selection(selection, "openai-codex", model)) if selection
+                           else _select_pool_entry("openai-codex", model))  # a model-scoped cooldown spares siblings
     if pool_present:
         token = _pool_runtime_api_key(entry)
         if token:
@@ -2367,9 +2371,9 @@ def _describe_openrouter_unavailable(model: str | None = None) -> str:
     return "no usable OpenRouter credentials found"
 
 
-def _try_nous(vision: bool = False) -> tuple[Optional[OpenAI], Optional[str]]:
-    nous = _read_nous_auth()
-    runtime = _resolve_nous_runtime_api(force_refresh=False)
+def _try_nous(vision: bool = False, model: Optional[str] = None, selection: Optional[PoolSelection] = None) -> tuple[Optional[OpenAI], Optional[str]]:
+    runtime = _resolve_nous_runtime_api(force_refresh=False, model=model, selection=selection)
+    nous = _read_nous_auth() if runtime is None else None  # its own select() only on the fallback
     if runtime is None and not nous:
         logger.warning("Auxiliary Nous client unavailable: no Nous authentication found (run: hermes auth).")
         _mark_provider_unhealthy("nous", ttl=60, reason="no Nous authentication found", level=logging.DEBUG)
@@ -2930,7 +2934,7 @@ def _try_custom_endpoint() -> tuple[Optional[Any], Optional[str]]:
     return _maybe_wrap_anthropic(_fallback_client, model, custom_key, custom_base, custom_mode), model
 
 
-def _build_xai_oauth_aux_client(model: str) -> tuple[Optional[Any], Optional[str]]:
+def _build_xai_oauth_aux_client(model: str, selection: Optional[PoolSelection] = None) -> tuple[Optional[Any], Optional[str]]:
     """CodexAuxiliaryClient for xAI Grok OAuth (Responses API); (None, None) if not authed.
 
     Caller must pass an explicit model — a pinned Grok default would rot as xAI's allowlist drifts.
@@ -2941,7 +2945,7 @@ def _build_xai_oauth_aux_client(model: str) -> tuple[Optional[Any], Optional[str
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    resolved = _resolve_xai_oauth_for_aux(model)
+    resolved = _resolve_xai_oauth_for_aux(model, selection)
     if resolved is None:
         return None, None
     api_key, base_url = resolved
@@ -2959,7 +2963,7 @@ def _codex_base_url_override() -> str:
     return _scoped_key_env("HERMES_CODEX_BASE_URL").rstrip("/")
 
 
-def _build_codex_client(model: str) -> tuple[Optional[Any], Optional[str]]:
+def _build_codex_client(model: str, selection: Optional[PoolSelection] = None) -> tuple[Optional[Any], Optional[str]]:
     """CodexAuxiliaryClient for an explicit model; (None, None) without a Codex OAuth token.
 
     No auto-selected default: the Codex model allow-list is undocumented and drifts.
@@ -2970,7 +2974,7 @@ def _build_codex_client(model: str) -> tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    codex_token, base_url = _resolve_codex_credential_and_base(model)
+    codex_token, base_url = _resolve_codex_credential_and_base(model, selection)
     if not codex_token:
         return None, None
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
@@ -4673,6 +4677,7 @@ class _ResolveRequest(NamedTuple):
     main_runtime: Optional[dict[str, Any]]
     is_vision: bool
     task: Optional[str]
+    pool_selection: Optional[PoolSelection] = None  # the cache key's (pool, peeked entry); builders send it
 
 
 _ResolveResult = tuple[Optional[Any], Optional[str]]
@@ -4813,7 +4818,8 @@ def _resolve_nous_branch(req: _ResolveRequest) -> _ResolveResult:
     model = req.model
     # Vision: caller flag, _PROVIDER_VISION_MODELS override, or a known vision id.
     client, default = _try_nous(vision=(req.is_vision or model in _PROVIDER_VISION_MODELS.values()
-                                        or (model or "").strip().lower() == "mimo-v2-omni"))
+                                        or (model or "").strip().lower() == "mimo-v2-omni"),
+                                model=model, selection=req.pool_selection)
     if client is None:
         logger.warning("resolve_provider_client: nous requested but Nous Portal not configured (run: hermes auth)")
         return None, None
@@ -4839,21 +4845,21 @@ def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
     no_token_msg = "resolve_provider_client: openai-codex requested but no Codex OAuth token found (run: hermes model)"
     if req.raw_codex:
         # Raw OpenAI client for callers needing responses.stream() (main agent loop).
-        codex_token, base_url = _resolve_codex_credential_and_base(model)
+        codex_token, base_url = _resolve_codex_credential_and_base(model, req.pool_selection)
         if not codex_token:
             logger.warning(no_token_msg)
             return None, None
         raw_client = _create_openai_client(api_key=codex_token, base_url=base_url,
                                            default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url))
         return raw_client, _normalize_resolved_model(model, req.provider)
-    client, default = _build_codex_client(model)
+    client, default = _build_codex_client(model, req.pool_selection)
     return _route_or_warn(req, client, default, no_token_msg)
 
 
 def _resolve_xai_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
     """xAI Grok OAuth (device code → Responses API). Without this branch xai-oauth falls to the generic
     oauth_external arm, returns (None, None), and silently re-routes every aux task to the Step-2 fallback."""
-    client, default = _build_xai_oauth_aux_client(req.model)
+    client, default = _build_xai_oauth_aux_client(req.model, req.pool_selection)
     return _route_or_warn(req, client, default,
                           "resolve_provider_client: xai-oauth requested but no xAI "
                           "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)")
@@ -5205,7 +5211,7 @@ def resolve_provider_client(
     provider: str, model: str | None = None, async_mode: bool = False, raw_codex: bool = False,
     explicit_base_url: str | None = None, explicit_api_key: Optional[str | Callable[[], str]] = None,
     api_mode: str | None = None, main_runtime: Optional[dict[str, Any]] = None, is_vision: bool = False,
-    task: Optional[str] = None,
+    task: Optional[str] = None, pool_selection: Optional[PoolSelection] = None,
 ) -> tuple[Optional[Any], Optional[str]]:
     """Central router: return a configured client (auth, base URL, API format) for a provider + optional model.
     The client always exposes ``.chat.completions.create()``; Codex/Responses providers get an adapter.
@@ -5226,7 +5232,7 @@ def resolve_provider_client(
         if _agg_provider and _agg_model:
             original_provider = _agg_provider.strip().lower()
             provider = _normalize_aux_provider(_agg_provider)
-            model = _agg_model
+            model, pool_selection = _agg_model, None  # the selection was the facade's pool, not the aggregator's
             # The moa:// facade endpoint/key belong to the virtual runtime, not the aggregator.
             if explicit_base_url and str(explicit_base_url).lower().startswith("moa://"):
                 explicit_base_url = None
@@ -5269,7 +5275,7 @@ def resolve_provider_client(
         model = _get_aux_model_for_provider(provider) or _read_main_model_for_aux() or model
     req = _ResolveRequest(
         provider, original_provider, model, async_mode, raw_codex,
-        explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task,
+        explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task, pool_selection,
     )
     branch = _EXPLICIT_PROVIDER_BRANCHES.get(provider)
     alias_identity = original_provider.removeprefix("custom:")
@@ -5567,14 +5573,14 @@ def _client_cache_key(
     provider: str, *, async_mode: bool, base_url: Optional[str] = None,
     api_key: Optional[str] = None, api_mode: Optional[str] = None,
     main_runtime: Optional[dict[str, Any]] = None, is_vision: bool = False,
-    task: Optional[str] = None, model: Optional[str] = None,
+    task: Optional[str] = None, model: Optional[str] = None, pool_selection: Optional[PoolSelection] = None,
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
     # `auto` resolves through the main runtime and task-specific policy, so both join the key.
     runtime_key = tuple(_runtime_cache_discriminator(f, runtime.get(f, "")) for f in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
     task_key = (task or "", _task_prefers_fast_model(task)) if provider == "auto" else ""
-    # The same model the build's pool peek gets (_get_cached_client), not model_key's runtime fallback.
-    pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime, model=model)
+    # The build's own selection when given; else the same peek with the model it is called with.
+    pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime, model=model, selection=pool_selection)
     # Model MUST be in the key: concurrent calls to the same endpoint with different models would
     # share an entry, and the second builder's _store_cached_client would close the first's client.
     model_key = model or runtime.get("model", "")
@@ -5642,7 +5648,9 @@ def _refresh_nous_auxiliary_client(
     client refreshed on a 401 lands under the ``task=""`` key while the stale entry survives under the
     task-scoped key (#58894).
     """
-    runtime = _resolve_nous_runtime_api(force_refresh=True, stale_access_token=api_key)
+    selection = _aux_pool_selection("nous", lookup_model)  # refresh the entry the rebuilt key digests
+    runtime = _resolve_nous_runtime_api(force_refresh=True, stale_access_token=api_key, model=lookup_model,
+                                        selection=selection if selection.pool is not None else None)
     if runtime is None:
         return None, model
     fresh_key, fresh_base_url = runtime
@@ -5813,9 +5821,14 @@ def _get_cached_client(
         base_url, api_key = local
     current_loop = _current_event_loop() if async_mode else None
     runtime = _normalize_main_runtime(main_runtime)
+    # ONE pool selection: the key digests its entry and the builder sends it (env-var credentials
+    # would bypass pool rotation). `auto` keys on the main provider's pool; `custom` on its endpoint,
+    # so its pool is peeked only to build a keyless client.
+    normalized = _normalize_aux_provider(provider)
+    selection = None if normalized in {"auto", "custom"} else _aux_pool_selection(provider, model)
     cache_key = _client_cache_key(
         provider, async_mode=async_mode, base_url=base_url, api_key=api_key, api_mode=api_mode,
-        main_runtime=main_runtime, is_vision=is_vision, task=task, model=model,
+        main_runtime=main_runtime, is_vision=is_vision, task=task, model=model, pool_selection=selection,
     )
     with _client_cache_lock:
         if cache_key in _client_cache:
@@ -5829,17 +5842,16 @@ def _get_cached_client(
             # foreign loop stays force-neutered.
             _close_cached_client(cached_client, close_async=cached_loop is not None and cached_loop.is_closed())
             del _client_cache[cache_key]
-    # Build outside the lock. For pool-backed providers derive the key from the pool entry:
-    # resolve_api_key_provider_credentials prefers env vars, which would bypass pool rotation
-    # and retry an exhausted key. A pinned ``custom:<name>`` peeks only its entry's rows.
+    # Build outside the lock.
+    if normalized == "custom" and not api_key:
+        selection = _aux_pool_selection(provider, model)
+    picked = selection if selection and selection.pool is not None else None
     effective_api_key = api_key
-    if not effective_api_key:
-        _pool = pool_for_aux_provider(provider, _normalize_aux_provider(provider), lambda k: _load_pool_with_credentials(k, " (peek)"))
-        if _pool is not None and (_pe := _peek_pool_entry(provider, _pool, model)) is not None:
-            effective_api_key = _pool_runtime_api_key(_pe) or api_key
+    if not api_key and picked and picked.entry is not None:
+        effective_api_key = _pool_runtime_api_key(picked.entry) or api_key
     client, default_model = resolve_provider_client(
         provider, model, async_mode, explicit_base_url=base_url, explicit_api_key=effective_api_key,
-        api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task,
+        api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task, pool_selection=picked,
     )
     if client is not None and _aux_probe_active():
         # Availability probes answer "resolvable?" and must leave the cache untouched: the

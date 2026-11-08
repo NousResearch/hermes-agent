@@ -176,6 +176,13 @@ Use the **Move up** and **Move down** arrows beside a room to choose its positio
 - **Plugins can watch members work.** The durable room log records `turn.started` and `turn.settled`; what a member does in between (tools, approvals, streamed text) is projected to plugins through the [`on_room_member_activity`](./features/hooks.md#on_room_member_activity) hook with room, member and turn coordinates, so community clients can build tool cards and live member status on top of Group Chat without reading Hermes internals.
 - **What a member says outside the room still reaches it.** Each member's room session is an ordinary Hermes session (titled `Group: <room> · <thread>`), so you can resume it from the CLI, a routine can post into it, or the Bot's own tools can write to it. When you open the room, and again each time the room drives that member, whatever those writers added since the room last looked — your questions and the member's answers — is posted into the room log under that member's name, once, in the thread the session belongs to; a window restart does not repeat it. The room's own turn prompts and their replies are never duplicated this way, and neither are the agent's housekeeping rows (context compaction notes, routine deliveries, delegation results) or the member's reactions to them. The room starts watching a session the first time it sees it: what was already in that session by then is not replayed, so a room restored on a second Desktop does not re-post its members' history.
 
+**A gateway-run group chat stops a bot that goes quiet.** A bot's turn is stopped after
+the gateway process's `HERMES_AGENT_TIMEOUT` (30 minutes by default), with no reported activity,
+such as text, a tool call or a subagent. The profile that started that process supplies
+`agent.gateway_timeout`, even when it also serves other profiles' groups. Setting it to `0`
+turns the limit off. Approval waits and time asleep count as inactivity. Older peer gateways
+that cannot report activity enforce their own limit.
+
 ## Bot-to-bot messaging
 
 Bots message each other with attribution, and you can hand work off from any chat:

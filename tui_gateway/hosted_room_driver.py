@@ -10,6 +10,7 @@ sessions reuse ``Group: <room_id>`` so a local-to-hosted migration keeps one tra
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 import uuid
@@ -90,6 +91,7 @@ class _RecoveryInspection:
     terminal: _TerminalReceipt | None
     active: bool
     status: str | None
+    progress_at: float | None = None
     history_error: Exception | None = None  # history may hold a reply this probe could not read
 
 
@@ -130,7 +132,7 @@ class HostedRoomRuntime:
         positive = dict(
             lease_ttl_seconds=lease_ttl_seconds, poll_interval_seconds=poll_interval_seconds,
             active_poll_interval_seconds=active_poll_interval_seconds,
-            turn_timeout_seconds=turn_timeout_seconds,
+            turn_timeout_seconds=turn_timeout_seconds if turn_timeout_seconds > 0 else math.inf,
             indeterminate_defer_seconds=indeterminate_defer_seconds)
         for name, value in positive.items():
             if value <= 0:
@@ -170,6 +172,8 @@ class HostedRoomRuntime:
         self._blocked_rooms: set[str] = set()
         self._status_lock, self._current_tasks = threading.Lock(), {}
         self._terminal_receipts: dict[state.TaskAttempt, _TerminalReceipt] = {}
+        # (room, task, generation) -> (progress time the bot last reported, home time it last changed)
+        self._attempt_progress: dict[tuple[str, str, int], tuple[float, float]] = {}
         self._room_schedule_cursor, self._cycles = 0, 0
 
     # ------------------------------------------------------------------ lifecycle
@@ -660,13 +664,13 @@ class HostedRoomRuntime:
         with self._status_lock:
             supervisor = self._thread
         if threading.current_thread() is not supervisor:
-            self._forget_unlisted_receipts()
+            self._forget_unlisted_rooms()
             for binding in tuple(self._rooms_provider()):
                 if self._stop.is_set():
                     return
                 self._run_room_once(binding)
             return
-        self._forget_unlisted_receipts()
+        self._forget_unlisted_rooms()
         with self._status_lock:
             self._room_threads = {
                 room_id: t for room_id, t in self._room_threads.items() if t.is_alive()}
@@ -722,6 +726,7 @@ class HostedRoomRuntime:
                 self._set_blocked(binding.room_id, True)
                 return
             self._set_blocked(binding.room_id, False)
+        self._forget_ended_attempts(binding)
         if self.prepare_room is not None:
             self.prepare_room(binding)
         self._inspect_abandoned_attempts(binding)
@@ -848,7 +853,6 @@ class HostedRoomRuntime:
                 # A submit should fail before admission or return after it; an unexpected
                 # exception at that boundary is ambiguous, never a proven failure.
                 submit_attempted, session_id = True, _session_id(session)
-                deadline_monotonic = time.monotonic() + self.turn_timeout_seconds
                 transport.submit(
                     **_session_kw(profile, session_id), prompt=task["payload"]["prompt"],
                     task=attempt.identity, execution_generation=attempt.execution_generation,
@@ -859,7 +863,7 @@ class HostedRoomRuntime:
                     (task["identity"].room_id, _member_id(task)), None)
                 receipt = self._wait_for_terminal(
                     binding, profile=profile, session_id=session_id, attempt=attempt,
-                    transport=transport, deadline_monotonic=deadline_monotonic)
+                    transport=transport)
                 if receipt is None:
                     return
                 self._retain_terminal_receipt(binding, attempt, receipt)
@@ -938,14 +942,16 @@ class HostedRoomRuntime:
         return {attempt.identity for attempt, receipt in receipts
                 if self._commit_retained_receipt(binding, attempt, receipt)}
 
-    def _forget_unlisted_receipts(self) -> None:
+    def _forget_unlisted_rooms(self) -> None:
         with self._status_lock:
-            if not self._terminal_receipts:
+            if not (self._terminal_receipts or self._attempt_progress):
                 return
         listed = {binding.room_id for binding in self._rooms_provider()}
-        with self._status_lock:
+        with self._status_lock:  # this gateway no longer runs those group chats
             for attempt in [a for a in self._terminal_receipts if a.identity.room_id not in listed]:
-                self._terminal_receipts.pop(attempt)  # this gateway no longer runs that group chat
+                self._terminal_receipts.pop(attempt)
+            for key in [k for k in self._attempt_progress if k[0] not in listed]:
+                self._attempt_progress.pop(key)
 
     def _commit_retained_receipt(
         self, binding: HostedRoomBinding, attempt: state.TaskAttempt, terminal: _TerminalReceipt
@@ -998,13 +1004,15 @@ class HostedRoomRuntime:
 
     def _wait_for_terminal(
         self, binding: HostedRoomBinding, *, profile: str, session_id: str,
-        attempt: state.TaskAttempt, transport: InternalSessionRPC, deadline_monotonic: float,
+        attempt: state.TaskAttempt, transport: InternalSessionRPC,
     ) -> _TerminalReceipt | None:
         lease = attempt.lease
-        observation_failed_at = None
-        # Sleep at most a quarter lease ttl: `_renew_lease_if_needed` must get a chance to act
-        # inside its ttl/2 renewal window however the configured cadence compares to the ttl.
+        unobserved_since = None
         wait_cap = min(self.active_poll_interval_seconds, self.lease_ttl_seconds / 4)
+        with self._status_lock:  # the wait for the profile lock and the session spends none of the limit
+            self._attempt_progress[
+                attempt.identity.room_id, attempt.identity.task_id, attempt.execution_generation
+            ] = (None, self.clock())
         while not self._stop.is_set():
             task = state.get_task(self.db_path, attempt.identity)
             if task["status"] in state.TERMINAL_STATUSES:
@@ -1018,40 +1026,44 @@ class HostedRoomRuntime:
                     raise  # the room's scan keeps this Stop going under a new lease
                 except Exception as exc:
                     self._record_error(_STOP_PENDING.format(exc=exc))
-                    if observation_failed_at is None:
-                        observation_failed_at = self.clock()
-                    if self.clock() - observation_failed_at >= self.lease_ttl_seconds:
+                    if unobserved_since is None:
+                        unobserved_since = self.clock()
+                    if self.clock() - unobserved_since >= self.lease_ttl_seconds:
                         return None  # the room's scan keeps this Stop going, without the profile lock
                 if self._defer_unconfirmed_stop(binding, task, lease):
                     return None
                 self._wake.wait(wait_cap)
                 self._wake.clear()
                 continue
-            if time.monotonic() >= deadline_monotonic:
-                self._expire_attempt_deadline(binding, task, lease)
-                return None
             lease = self._renew_lease_if_needed(lease)
+            progress_at, alive = None, False
             try:
                 receipt = self._terminal_from_history(transport, profile, session_id, task)
                 if receipt is not None:
                     return receipt
                 info = transport.info(**_session_kw(profile, session_id))
+                progress_at = _attempt_progress_at(info, task)
                 self._report_pending_action(task, session_id=session_id, info=info)
+                alive = _info_active(info)
             except state.DriverStateError:
                 raise
             except Exception as exc:
                 if getattr(exc, "not_admitted", False) or getattr(exc, "refused_before_submit", False):
                     raise
                 self._record_task_error(attempt, f"observation failed after submit: {exc}")
-                if observation_failed_at is None:
-                    observation_failed_at = self.clock()
-                if self.clock() - observation_failed_at >= self.lease_ttl_seconds:
-                    state.mark_attempt_indeterminate(self.db_path, attempt, lease, clock=self.clock)
-                    return None
-            else:
-                observation_failed_at = None
-            remaining = max(0.0, deadline_monotonic - time.monotonic())
-            self._wake.wait(min(wait_cap, remaining))
+            # A turn queued behind another admission or waiting for an approval reports active. For
+            # one its bot lost, as for reads that keep failing, no limit may be set to end this watch.
+            if alive:
+                unobserved_since = None
+            elif unobserved_since is None:
+                unobserved_since = self.clock()
+            elif self.clock() - unobserved_since >= self.lease_ttl_seconds:
+                state.mark_attempt_indeterminate(self.db_path, attempt, lease, clock=self.clock)
+                return None
+            if self._past_execution_deadline(task, progress_at):
+                self._expire_attempt_deadline(binding, task, lease)
+                return None
+            self._wake.wait(wait_cap)
             self._wake.clear()
         return None
 
@@ -1065,9 +1077,11 @@ class HostedRoomRuntime:
             state.settle_stopping_task, binding, task, lease,
             settlement_id=f"deadline:{int(task['execution_generation'])}", status="failed",
             result={
-                "error": "This Group Chat turn exceeded its configured time limit and was stopped.",
+                "error": "This group chat turn exceeded its time limit and was stopped.",
                 "reason_code": "turn_deadline_exceeded",
-                "timeout_seconds": self.turn_timeout_seconds})
+                # A Stop begun under a finite limit may finish after a restart turned it off.
+                **({"timeout_seconds": self.turn_timeout_seconds}
+                   if math.isfinite(self.turn_timeout_seconds) else {})})
 
     def _expire_attempt_deadline(
         self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
@@ -1101,7 +1115,10 @@ class HostedRoomRuntime:
                 self._harvest_previous_attempt(binding, task, inspection.terminal)
             elif inspection.active:
                 # The prior session still owns the turn: no lease contention, no duplicate prompt.
-                raise state.LeaseHeldError("recovered session turn is still active")
+                # Its limit still applies. While the old process holds the lease this raises instead.
+                if not self._past_execution_deadline(task, inspection.progress_at):
+                    raise state.LeaseHeldError("recovered session turn is still active")
+                self._expire_attempt_deadline(binding, task, self._ensure_lease(binding))
 
     def _inspect_session(
         self, transport: InternalSessionRPC, task: Mapping[str, Any], session_id: str,
@@ -1121,7 +1138,8 @@ class HostedRoomRuntime:
         self._report_pending_action(task, session_id=session_id, info=info)
         return _RecoveryInspection(
             terminal=receipt, active=_info_is_active_for(info, task["identity"]),
-            status=str(info.get("status") or "") or None, history_error=history_error)
+            status=str(info.get("status") or "") or None, progress_at=_attempt_progress_at(info, task),
+            history_error=history_error)
 
     def _inspect_recovery_session(
         self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> _RecoveryInspection:
@@ -1190,7 +1208,7 @@ class HostedRoomRuntime:
                     continue
                 if inspection.active:
                     # Deferring a running turn would lose its reply and its Stop.
-                    if self.clock() >= float(task.get("started_at") or self.clock()) + self.turn_timeout_seconds:
+                    if self._past_execution_deadline(task, inspection.progress_at):
                         self._expire_attempt_deadline(binding, task, lease)
                         inspected.discard(attempt_key)
                         continue
@@ -1222,9 +1240,8 @@ class HostedRoomRuntime:
                     binding, task, lease, inspection.terminal, publish=False)
                 inspected.discard(attempt_key)
                 continue
-            if inspection.active and self._past_execution_deadline(task):
-                # Recovery never outlives the turn's own time limit, counted from its start: stop
-                # that exact attempt through the Stop protocol, as a live turn is stopped.
+            if inspection.active and self._past_execution_deadline(task, inspection.progress_at):
+                # Recovery applies the same inactivity limit and exact Stop as a watched turn.
                 self._expire_attempt_deadline(binding, task, lease)
                 inspected.discard(attempt_key)
                 continue
@@ -1262,11 +1279,34 @@ class HostedRoomRuntime:
             self._record_error(f"task {task['identity'].task_id} routing stop is unconfirmed: {exc}")
             return False
 
-    def _past_execution_deadline(self, task: Mapping[str, Any]) -> bool:
-        """Whether the attempt has run past ``turn_timeout_seconds`` since it started. A retried
-        deferred attempt counts from the retry (``reopen_deferred_task`` restarts its clock)."""
+    def _past_execution_deadline(
+        self, task: Mapping[str, Any], progress_at: float | None = None) -> bool:
+        """Whether the attempt shows no activity for ``turn_timeout_seconds``. Activity is a change
+        in the progress time its bot reports, the first one seen included, timed by this home's
+        clock: the bot's own clock may be far off. Until then the limit counts from the later of the
+        start, which a reopened attempt resets, and the submit."""
         started = task.get("started_at")
-        return started is not None and self.clock() >= float(started) + self.turn_timeout_seconds
+        if started is None:
+            return False
+        key = _attempt_key(task)
+        with self._status_lock:
+            reported, changed_at = self._attempt_progress.get(key, (None, 0.0))
+            if self._remote(task) and progress_at is None and reported is None:
+                return False  # older peers cannot distinguish activity from silence; they enforce their own limit
+            if progress_at is not None and progress_at != reported:
+                changed_at = self.clock()
+                self._attempt_progress[key] = (progress_at, changed_at)
+        return self.clock() >= max(float(started), changed_at) + self.turn_timeout_seconds
+
+    def _forget_ended_attempts(self, binding: HostedRoomBinding) -> None:
+        with self._status_lock:
+            remembered = {key for key in self._attempt_progress if key[0] == binding.room_id}
+        if remembered:
+            live = {_attempt_key(task) for status in ("running", "indeterminate", "stopping")
+                    for task in self._tasks(binding, status)}
+            with self._status_lock:
+                for key in remembered - live:
+                    self._attempt_progress.pop(key, None)
 
     def _harvest_previous_attempt(
         self, binding: HostedRoomBinding, task: Mapping[str, Any], receipt: _TerminalReceipt
@@ -1402,6 +1442,20 @@ def _find_terminal_receipt(
 
 def _info_active(info: Mapping[str, Any]) -> bool:
     return bool(info.get("active", info.get("running", False)))
+
+
+def _attempt_key(task: Mapping[str, Any]) -> tuple[str, str, int]:
+    return task["identity"].room_id, task["identity"].task_id, int(task["execution_generation"])
+
+
+def _attempt_progress_at(info: Mapping[str, Any], task: Mapping[str, Any]) -> float | None:
+    """Use only a finite frame timestamp belonging to this attempt, never the polling time."""
+    value = info.get("progress_at")
+    if (info.get("task_id") in (None, task["identity"].task_id)
+            and info.get("execution_generation") in (None, task["execution_generation"])
+            and type(value) in (int, float) and math.isfinite(value)):
+        return float(value)
+    return None
 
 
 def _info_is_active_for(

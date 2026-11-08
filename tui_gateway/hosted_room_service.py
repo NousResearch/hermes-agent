@@ -122,8 +122,9 @@ def _hosted_room_turn_timeout_seconds() -> float:
     try:
         agent_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", "1800"))
     except (TypeError, ValueError):
-        agent_timeout = 0.0
-    return (agent_timeout if agent_timeout > 0 else 1800.0) + _HOSTED_ROOM_TERMINAL_GRACE_SECONDS
+        agent_timeout = 1800.0
+    # As in the messaging gateway, a limit that is not positive (0, or nan) means no limit.
+    return agent_timeout + _HOSTED_ROOM_TERMINAL_GRACE_SECONDS if agent_timeout > 0 else float("inf")
 
 
 def _grant_revoke_is_terminal(exc: PeerRunsHTTPError) -> bool:

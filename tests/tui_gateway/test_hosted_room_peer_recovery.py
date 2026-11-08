@@ -293,8 +293,8 @@ def test_peer_completion_is_observed_after_the_first_recovery_probe(tmp_path, mo
 
 
 def test_a_recovered_peer_turn_still_running_is_stopped_at_its_execution_deadline(tmp_path, monkeypatch):
-    """A peer run that keeps going holds the room only until the turn's own time limit, measured
-    from when it started; then it is stopped through the exact Stop protocol and fails."""
+    """An unchanged activity timestamp reaches the limit after recovery's first observation;
+    the exact Stop protocol then fails the quiet turn."""
     stops, peer = [], _RecoveringPeerClient()
     turn = _crashed_turn(tmp_path, peer, indeterminate_defer_seconds=60, turn_timeout_seconds=300)
     service, db, identity, binding, lease, now = (
@@ -303,7 +303,7 @@ def test_a_recovered_peer_turn_still_running_is_stopped_at_its_execution_deadlin
     monkeypatch.setattr(peer, "history", lambda **_: [])
     monkeypatch.setattr(peer, "status", lambda **_: {
         "active": not stops, "status": "cancelled" if stops else "running",
-        "task_id": identity.task_id, "execution_generation": 1})
+        "task_id": identity.task_id, "execution_generation": 1, "progress_at": 7777.0})
     peer.stop_receipt = lambda **kwargs: stops.append(kwargs) or {"status": "cancelled"}
 
     # Past the deferral window but inside the turn's time limit, a running peer keeps the room waiting.
@@ -311,7 +311,7 @@ def test_a_recovered_peer_turn_still_running_is_stopped_at_its_execution_deadlin
     assert service.runtime._reconcile_indeterminate(binding, lease) is True
     assert driver.get_task(db, identity)["status"] == "indeterminate" and not stops
 
-    now[0] = 401.0
+    now[0] = 471.0
     service.runtime._reconcile_indeterminate(binding, lease)
     stopped = driver.get_task(db, identity)
     assert [(s["task_id"], s["execution_generation"]) for s in stops] == [(identity.task_id, 1)]
@@ -391,7 +391,8 @@ def test_a_retried_deferred_peer_turn_gets_its_own_time_limit(tmp_path, monkeypa
     monkeypatch.setattr(peer, "prepare", lambda **_: peer.session)
     monkeypatch.setattr(peer, "history", lambda **_: [])
     monkeypatch.setattr(peer, "status", lambda **_: {
-        "active": True, "status": "running", "task_id": identity.task_id, "execution_generation": 1})
+        "active": True, "status": "running", "task_id": identity.task_id,
+        "execution_generation": 1, "progress_at": 7777.0})
     peer.stop_receipt = lambda **kwargs: stops.append(kwargs) or {"status": "cancelled"}
     now = [100.0 + 7200]  # two hours after the first start
     service.runtime.clock = lambda: now[0]
@@ -425,4 +426,3 @@ def test_a_retried_peer_run_is_watched_when_its_first_status_read_fails(tmp_path
     watched = driver.get_task(db, identity)
     assert (watched["status"], watched["execution_generation"]) == ("indeterminate", 1)
     assert {r["dispatch"]["execution_generation"] for r in peer.recoveries} == {1}
-

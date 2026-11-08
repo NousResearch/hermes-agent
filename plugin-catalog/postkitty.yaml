@@ -1,22 +1,22 @@
 name: postkitty
 repo: https://github.com/mertkayacs/postkitty
-sha: 21271c7df949fcbcd4ce2b6c9716ce9a54ad6b2b
+sha: 9464ff3bd2ab726d9476b973c6c001015455794d
 title: postkitty
-description: 'One post in, every platform out. Turns a draft, photos and landscape video into checked, ready-to-post
-  files for Instagram, TikTok, YouTube Shorts, X, LinkedIn, Threads, Bluesky and Facebook: face-aware crops,
-  vertical reframing with a split screen for two speakers, copy counted with each platform''s own rule, and checks
-  that cite each platform''s published limits, with repairs before a file is marked ready. Runs locally with ffmpeg
-  and OpenCV; no API keys.'
+description: 'One post in, every platform out. Fixes and rewrites your draft for each platform and counts the
+  copy with each platform''s own rule, splitting long posts into threads. Crops photos and reframes landscape video
+  so every face stays in frame, with a split screen for two speakers. Checks every file against the platform''s
+  published limits and repairs failures before a file is marked ready. Covers Instagram, TikTok, YouTube Shorts, X,
+  LinkedIn, Threads, Bluesky and Facebook. Runs locally with ffmpeg and OpenCV; no API keys.'
 maintainer: mertkayacs
 tier: community
 category: tools
 version: "0.1.0"
 requires_hermes: ">=0.22.7"
 docs_url: https://postkitty.mertkayacs.com
-image: https://raw.githubusercontent.com/mertkayacs/postkitty/21271c7df949fcbcd4ce2b6c9716ce9a54ad6b2b/docs/banner.png
+image: https://raw.githubusercontent.com/mertkayacs/postkitty/9464ff3bd2ab726d9476b973c6c001015455794d/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/mertkayacs/postkitty/21271c7df949fcbcd4ce2b6c9716ce9a54ad6b2b/docs/board.png
-  - https://raw.githubusercontent.com/mertkayacs/postkitty/21271c7df949fcbcd4ce2b6c9716ce9a54ad6b2b/docs/before-after.jpg
+  - https://raw.githubusercontent.com/mertkayacs/postkitty/9464ff3bd2ab726d9476b973c6c001015455794d/docs/board.png
+  - https://raw.githubusercontent.com/mertkayacs/postkitty/9464ff3bd2ab726d9476b973c6c001015455794d/docs/before-after.jpg
 known_issues:
   - Needs ffmpeg and ffprobe on PATH for video.
 capabilities:

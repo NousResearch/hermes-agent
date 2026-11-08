@@ -267,6 +267,29 @@ describe('normalizeComposerEditorDom', () => {
     }
   })
 
+  // The user-visible #139578 flow end to end: a one-block draft with the caret
+  // parked at the editor end (placeCaretEnd), the draft sync's normalize, then
+  // a paste — every paste path (main composer, edit composer, large-paste
+  // fallback) goes through insertComposerContentsAtCaret.
+  it('pastes at the caret, not the draft start, after the draft sync unwraps a lone block', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    editor.innerHTML = '<div>Please review this </div>'
+    document.body.append(editor)
+
+    try {
+      editor.focus()
+      placeCaretEnd(editor)
+      normalizeComposerEditorDom(editor)
+      insertComposerContentsAtCaret(editor, 'the PR diff')
+
+      expect(composerPlainText(editor)).toBe('Please review this the PR diff')
+    } finally {
+      editor.remove()
+    }
+  })
+
   it('unwraps a single insertHTML wrapper div so plain text stays one line', () => {
     const editor = document.createElement('div')
     editor.dataset.slot = RICH_INPUT_SLOT

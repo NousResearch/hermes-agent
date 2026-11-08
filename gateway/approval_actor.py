@@ -10,8 +10,8 @@ responses) asks :func:`approval_refusal` first; ``/approve`` and ``/deny`` use
 
 ``approvals.approvers`` defaults to ``["*"]``: any admitted member answers, as before.
 Narrowing it (``[]``, or a list of chat user ids) is the opt-in: then only the requester,
-the listed ids and the platform's admins (``allow_admin_from`` / ``group_allow_admin_from``)
-answer. Host surfaces (CLI, TUI, Desktop, the API server and the session authority's
+the listed ids and the platform's admins of the approval's chat scope (``allow_admin_from`` in a
+DM, ``group_allow_admin_from`` in a group, as for slash commands) answer. Host surfaces (CLI, TUI, Desktop, the API server and the session authority's
 ``session:approve`` principals) answer as the host and never come through here.
 """
 
@@ -20,13 +20,27 @@ from __future__ import annotations
 from typing import Any, Iterable, Optional
 
 
-def admin_ids_from_extra(extra: Any) -> frozenset[str]:
-    """Both admin scopes of one platform's ``extra`` block."""
-    from gateway.slash_access import _coerce_id_list
+def may_answer(authority: dict, actor_id: Any, admin_ids: Iterable[str] = (), extra: Any = None) -> bool:
+    """Whether *actor_id* may answer the approval whose recorded ``authority`` this is: the requester,
+    a listed approver, or an admin. A native surface passes its platform ``extra`` and gets the admins
+    of the approval's own chat scope (DM or group, ``slash_access.policy_for_chat_type``), the same
+    scope ``/approve`` and relay answers read from ``admin_ids``. An entry with no requester recorded
+    is never refused."""
+    from gateway.slash_access import _coerce_id_list, policy_for_chat_type
 
-    if not isinstance(extra, dict):
-        return frozenset()
-    return _coerce_id_list(extra.get("allow_admin_from")) | _coerce_id_list(extra.get("group_allow_admin_from"))
+    actor = str(actor_id or "").strip()
+    requester = str(authority.get("requester_id") or "")
+    if not requester or actor == requester:
+        return True
+    approvers = _coerce_id_list(authority.get("approvers"))
+    if "*" in approvers:
+        return True
+    if not actor:
+        return False
+    admins = {str(a) for a in admin_ids}
+    if extra is not None:
+        admins |= policy_for_chat_type(extra, authority.get("chat_type")).admin_user_ids
+    return actor in approvers or actor in admins
 
 
 def runner_admin_ids(source: Any) -> frozenset[str]:
@@ -47,24 +61,16 @@ def answerable_request_ids(session_key: str, actor_id: Any, *, admin_ids: Iterab
     never blocks this one. Resolving the returned ids (not "the oldest" again) keeps a refused
     entry that became the oldest in between from being answered unchecked. An entry with no
     requester recorded is never refused."""
-    from gateway.slash_access import _coerce_id_list
     from tools.approval import list_gateway_approval_authority
 
-    actor = str(actor_id or "").strip()
-    admins = {str(a) for a in admin_ids} | admin_ids_from_extra(extra)
     pending = list_gateway_approval_authority(session_key)
     if request_id:
         pending = [p for p in pending if p.get("request_id") == request_id]
     elif not resolve_all:
         pending = pending[:1]
     for entry in pending:
-        requester = str(entry.get("requester_id") or "")
-        if not requester or actor == requester:
-            continue
-        approvers = _coerce_id_list(entry.get("approvers"))
-        if "*" in approvers or (actor and (actor in approvers or actor in admins)):
-            continue
-        return [], str(entry.get("requester_name") or requester)
+        if not may_answer(entry, actor_id, admin_ids, extra):
+            return [], str(entry.get("requester_name") or entry.get("requester_id"))
     return [str(p.get("request_id")) for p in pending], None
 
 

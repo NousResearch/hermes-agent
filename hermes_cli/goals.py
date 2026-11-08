@@ -120,7 +120,10 @@ JUDGE_SYSTEM_PROMPT = (
     "- The response clearly shows the final deliverable was produced.\n"
     "DONE requires the deliverable to actually exist. If the response only "
     "explains why the goal cannot be reached, the verdict is BLOCKED, not "
-    "DONE.\n\n"
+    "DONE. When the goal text states a review requirement (a card that needs an "
+    "independent verdict before it counts as done), a response that has not "
+    "requested that review is NOT DONE, however complete the deliverable looks — "
+    "the worker's own confidence is not the verdict.\n\n"
     "BLOCKED — the goal cannot be satisfied as stated:\n"
     "- The response explains the goal is genuinely unachievable (impossible, "
     "out of scope, no valid path to the deliverable), or refuses to "
@@ -1597,11 +1600,13 @@ KANBAN_GOAL_CONTINUATION_TEMPLATE = (
     "[Continuing toward this kanban task — judge says it is not done yet]\n"
     "Reason: {reason}\n\n"
     "Take the next concrete step toward completing the task. When the work "
-    "is genuinely finished, call kanban_complete with a summary. If it is a "
-    "code change that needs same-card review before counting as done, call "
-    "kanban_request_review with a summary instead. If you are blocked and "
-    "need human input, call kanban_block with a reason. Do not stop without "
-    "calling one of them."
+    "is genuinely finished, choose the terminal action the board's graph calls "
+    "for: `kanban_complete` when the card has a pre-created review child (that "
+    "release is what starts it) or when the work needs no verdict; "
+    "`kanban_request_review` when the card needs an independent verdict and none "
+    "has been requested; `kanban_block` when you need human input. If you were "
+    "spawned from the `review` lane you are the reviewer, and the verdict is "
+    "yours. Do not stop without calling one of them."
 )
 
 # Judge says done but the worker never made a terminal board call
@@ -1610,9 +1615,9 @@ KANBAN_GOAL_FINALIZE_TEMPLATE = (
     "[The work looks complete, but the task is still open]\n"
     "Reason: {reason}\n\n"
     "If the task is genuinely done, call kanban_complete now with a short "
-    "summary of what you did. If it is a code change awaiting same-card review, "
-    "call kanban_request_review with that summary instead. If something still "
-    "blocks completion, call kanban_block with the reason instead."
+    "summary of what you did — unless the card needs an independent verdict, in "
+    "which case call kanban_request_review with that summary instead. If "
+    "something still blocks completion, call kanban_block with the reason instead."
 )
 
 

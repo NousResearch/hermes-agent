@@ -237,7 +237,7 @@ def test_observed_group_context_uses_shared_source_and_prompt_for_later_mentions
         assert event.source.user_name is None
         assert event.text == "[Bob Example|222]\nwhat did Alice say?"
         assert "Existing topic prompt" in event.channel_prompt
-        assert "observed Telegram group context" in event.channel_prompt
+        assert "observed group context" in event.channel_prompt
         assert "current new message" in event.channel_prompt
 
     asyncio.run(_run())
@@ -277,7 +277,7 @@ def test_observed_group_context_preserves_slash_command_text_for_dispatch():
     # Commands preserve sender identity for slash-access control (#67816).
     assert attributed.source.user_id == "111"
     assert attributed.source.user_name == "Alice"
-    assert "observed Telegram group context" in attributed.channel_prompt
+    assert "observed group context" in attributed.channel_prompt
 
 
 def test_shared_group_observe_source_is_authorized_by_group_allowed_chats(monkeypatch):

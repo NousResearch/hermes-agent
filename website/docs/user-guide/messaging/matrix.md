@@ -21,7 +21,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | Context | Behavior |
 |---------|----------|
 | **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. Set `MATRIX_DM_MENTION_THREADS=true` to start a thread when the bot is `@mentioned` in a DM. Any room with 2 or fewer joined members is treated as a DM this way too, even if it has an explicit name — Matrix clients auto-name 1:1 chats, so name alone isn't a reliable signal. |
-| **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. A deliberately-created 2-person room is still classified as a DM (see above) and silently bypasses `MATRIX_ALLOWED_ROOMS`, `MATRIX_REQUIRE_MENTION`, and `MATRIX_FREE_RESPONSE_ROOMS` — add a third member if you need it to behave like a regular room. |
+| **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms, or to `MATRIX_PASSIVE_ROOMS` for passive rooms (unmentioned messages are ingested as ambient context — no agent turn, no reply, no read receipt). Room invites are auto-accepted. A deliberately-created 2-person room is still classified as a DM (see above) and silently bypasses `MATRIX_ALLOWED_ROOMS`, `MATRIX_REQUIRE_MENTION`, and `MATRIX_FREE_RESPONSE_ROOMS` — add a third member if you need it to behave like a regular room. |
 | **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
 | **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for DM messages — this is distinct from `MATRIX_DM_MENTION_THREADS`, which only starts a thread when the bot is `@mentioned` in a DM. Rooms with 2 or fewer joined members are DM-classified (see above) and follow `MATRIX_DM_AUTO_THREAD`, not `MATRIX_AUTO_THREAD`. |
 | **Commands** | Hermes accepts normal `/commands` when your Matrix client sends them. If your client reserves `/` for local commands, use `!commands` instead; Hermes normalizes known `!command` aliases to `/command`. |
@@ -95,6 +95,8 @@ matrix:
     - "!abc123:matrix.org"
   free_response_rooms:            # Rooms exempt from mention requirement
     - "!abc123:matrix.org"
+  passive_rooms:                  # Rooms ingested as ambient context; no reply unless @mentioned
+    - "!def456:matrix.org"
   ignore_user_patterns:           # Bridge/appservice ghost users to ignore
     - "^@telegram_"
     - "^@whatsapp_"
@@ -112,6 +114,8 @@ MATRIX_REQUIRE_MENTION=true
 MATRIX_ALLOWED_USERS=@alice:matrix.org
 MATRIX_ALLOWED_ROOMS=!abc123:matrix.org
 MATRIX_FREE_RESPONSE_ROOMS=!abc123:matrix.org,!def456:matrix.org
+MATRIX_PASSIVE_ROOMS=!def456:matrix.org
+MATRIX_GROUP_ALLOWED_CHATS=!def456:matrix.org  # authorizes passive-room shared sessions (mention turns)
 MATRIX_IGNORE_USER_PATTERNS='^@telegram_,^@whatsapp_'
 MATRIX_PROCESS_NOTICES=false
 MATRIX_SESSION_SCOPE=room       # recommended for stable project-room context
@@ -132,6 +136,21 @@ Hermes sends structured Matrix user mentions for explicit Matrix IDs such as `@a
 :::note
 If you are upgrading from a version that did not have `MATRIX_REQUIRE_MENTION`, the bot previously responded to all messages in rooms. To preserve that behavior, set `MATRIX_REQUIRE_MENTION=false`.
 :::
+
+### Passive Rooms
+
+Passive rooms turn a room's chatter into context without making the bot talk. Add a room to `passive_rooms` in `config.yaml` or `MATRIX_PASSIVE_ROOMS` (comma-separated room IDs): messages that do not `@mention` the bot (and are not slash commands) are ingested into the room's shared transcript as ambient context — no agent turn, no reply, no read receipt. A later `@mention` in that room sees the whole room transcript, including posted files, framed to the model as context only, not requests.
+
+Behavior:
+
+- **Ambient ingestion only.** Unmentioned messages never trigger an agent turn, reply, or read receipt. Slash commands are still processed.
+- **Files are cached at arrival.** Media and files posted without a mention are downloaded and cached when they arrive, subject to `MATRIX_MAX_MEDIA_BYTES` (default 100 MB). The transcript row records the cached local path, so when the bot is later mentioned in the room it can access the file (e.g. via `read_file`, vision, or the terminal). Oversized media is not cached — the transcript gets a "too large" note row instead.
+- **Free-response wins.** A room listed in both `passive_rooms` and `free_response_rooms` behaves as a free-response room — every message triggers a turn.
+- **`m.notice` interaction.** In passive rooms, unmentioned `m.notice` messages are ingested ambiently even when `process_notices` is `false`; a mention in an `m.notice` still never triggers a turn.
+- **One shared session.** Passive rooms use one shared room-scoped session (the room transcript); mention turns in those rooms are room-scoped as well.
+- **Shared session authorization.** A mention turn in a passive room lands in that shared session, whose source carries no user identity — the same shape as Telegram's observed-group mode. The room must therefore also be listed in `MATRIX_GROUP_ALLOWED_CHATS` (or `group_allowed_chats` under `matrix:` in `config.yaml`) so the gateway admits those turns; without it, ambient rows are still recorded for already-authorized senders, but a mention gets no turn.
+- **Context only, no new access.** Ingestion does not widen access: `MATRIX_ALLOWED_ROOMS`, `MATRIX_ALLOWED_USERS`/pairing, and the bot/system/`m.notice` traffic filters all still apply. Ambient content is treated as untrusted context and is never executed as instructions.
+- **No effect elsewhere.** DMs, `MATRIX_REQUIRE_MENTION=false`, threads where the bot has already participated, slash commands, and the parked-voice flow are unchanged.
 
 ### Project Room Isolation
 

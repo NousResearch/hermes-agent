@@ -12,6 +12,7 @@ Hiding is a *presentation* decision only: the vars keep working through ``hermes
 #   *_REPLY_TO_MODE / *_REPLY_MODE   cosmetic threading preference (Mattermost spelling too)
 #   *_REQUIRE_MENTION / *_AUTO_THREAD   behavior toggles with sane defaults
 #   *_FREE_RESPONSE_* / *_ALLOWED_CHANNELS   per-channel tuning, done once the bot is in a server
+#   *_PASSIVE_ROOMS              ambient room ingestion; per-room tuning like free-response rooms
 #   *_PROXY                only for networks that block the platform
 #
 # Allowlists (*_ALLOWED_USERS) deliberately stay visible: that IS the decision a new user has to
@@ -19,7 +20,7 @@ Hiding is a *presentation* decision only: the vars keep working through ``hermes
 SETUP_HIDDEN_ENV_SUFFIXES = (
     "_HOME_CHANNEL", "_HOME_CHANNEL_NAME", "_HOME_CHANNEL_THREAD_ID", "_HOME_ADDRESS", "_ALLOW_ALL_USERS",
     "_REPLY_TO_MODE", "_REPLY_MODE", "_REQUIRE_MENTION", "_AUTO_THREAD", "_FREE_RESPONSE_CHANNELS",
-    "_FREE_RESPONSE_ROOMS", "_ALLOWED_CHANNELS", "_PROXY",
+    "_FREE_RESPONSE_ROOMS", "_PASSIVE_ROOMS", "_ALLOWED_CHANNELS", "_PROXY",
 )
 
 

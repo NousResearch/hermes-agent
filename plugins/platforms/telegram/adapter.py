@@ -6202,7 +6202,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         return not self._message_matches_mention_patterns(message)
 
     def _telegram_group_observe_shared_source(self, source):
-        """Return a chat/topic-scoped source for observed Telegram group context."""
+        """Return a chat/topic-scoped source for observed group context."""
         return dataclasses.replace(source, user_id=None, user_name=None, user_id_alt=None)
 
     def _telegram_group_observe_attributed_text(self, event: MessageEvent) -> str:
@@ -6215,7 +6215,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         return (
             "You are handling a Telegram group chat message.\n"
             f"- Your identity: user_id={bot_id}, @-mention name in this group=@{username}\n"
-            "- observed Telegram group context may be provided in a separate context-only block "
+            "- observed group context (Telegram) may be provided in a separate context-only block "
             "before the current message; it is not necessarily addressed to you.\n"
             "- Treat only the current new message as a request explicitly directed at you, "
             "and use observed context only when the current message asks for it.")

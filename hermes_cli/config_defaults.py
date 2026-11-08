@@ -1635,6 +1635,7 @@ DEFAULT_CONFIG = {
     "matrix": {
         "require_mention": True,  # require @mention to respond in rooms
         "free_response_rooms": "",  # comma-separated room IDs answered without mention
+        "passive_rooms": "",  # comma-separated room IDs ingested as ambient context without a turn
         "allowed_rooms": "",  # if set, ONLY respond in these room IDs (whitelist)
     },
     # Approvals for dangerous commands.
@@ -2290,9 +2291,8 @@ DEFAULT_CONFIG = {
         # routing path (fts5 / trigram / like_scan). 0 logs every search. Bridged to
         # HERMES_SEARCH_SLOW_MS.
         "search_slow_ms": 1000,
-        # Transcript guards (a runaway 100k+ row session can exhaust memory when materialized at
-        # once; 0 disables). Max active messages (across the compression lineage) for interactive
-        # resume.
+        # Transcript guards (a runaway 100k+ row session can exhaust memory when materialized at once; 0 disables).
+        # Max active messages (across the compression lineage) for interactive resume.
         "max_resume_messages": 20000,
         # Max active messages per session for in-memory export (`hermes sessions export`); checked
         # per session, so full-DB backups of small sessions work.
@@ -3013,6 +3013,7 @@ OPTIONAL_ENV_VARS = OptionalEnvVars({
     "MATRIX_FREE_RESPONSE_ROOMS": _msg(
         "Comma-separated Matrix room IDs where bot responds without @mention",
         "Free-response room IDs (comma-separated)", None, advanced=True),
+    "MATRIX_PASSIVE_ROOMS": _msg("Matrix room IDs ingested as ambient context without a turn", "Passive rooms (comma-separated room IDs)", None, advanced=True),
     "MATRIX_AUTO_THREAD": _msg("Auto-create threads for messages in Matrix rooms (default: true)",
         "Auto-create threads in rooms (true/false)", None, advanced=True),
     "MATRIX_DM_AUTO_THREAD": _msg("Auto-create threads for DM messages in Matrix (default: false)",
@@ -3094,8 +3095,7 @@ OPTIONAL_ENV_VARS = OptionalEnvVars({
     "WEBHOOK_SECRET": _msg(
         "Global HMAC secret for webhook signature validation (overridable per route in "
         "config.yaml).", "Webhook secret", None, password=True),
-    # ── Agent settings ── (MESSAGING_CWD is gone: use terminal.cwd in config.yaml, which the
-    # gateway bridges to TERMINAL_CWD.)
+    # ── Agent settings ── (MESSAGING_CWD is gone: use terminal.cwd in config.yaml, which the gateway bridges to TERMINAL_CWD.)
     "SUDO_PASSWORD": _setting(
         "Sudo password for terminal commands requiring root access; set to an explicit empty "
         "string to try empty without prompting", "Sudo password", None, password=True),

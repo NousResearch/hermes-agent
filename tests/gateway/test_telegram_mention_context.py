@@ -58,7 +58,7 @@ def test_multi_bot_addressing_survives_real_handlers(media, observe):
             assert text in event.text  # Preserve both recipients and their positions.
             assert f"@{username}" in event.channel_prompt
             assert "Keep answers concise." in event.channel_prompt
-            assert ("observed Telegram group context" in event.channel_prompt) == observe
+            assert ("observed group context" in event.channel_prompt) == observe
             assert event.source.user_id == (None if observe else "111")
 
     asyncio.run(run())

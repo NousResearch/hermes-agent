@@ -24,6 +24,13 @@ class TestIsSetupHiddenEnv:
         ):
             assert is_setup_hidden_env(key), key
 
+    def test_matrix_room_lists_hidden_but_allowlist_stays_visible(self):
+        """Passive rooms are per-room ambient-ingestion tuning (like free-response rooms):
+        hidden. The allowlist is the decision a new user has to make: visible."""
+        assert is_setup_hidden_env("MATRIX_PASSIVE_ROOMS")
+        assert is_setup_hidden_env("MATRIX_FREE_RESPONSE_ROOMS")
+        assert not is_setup_hidden_env("MATRIX_ALLOWED_USERS")
+
 
 class TestChannelCards:
 

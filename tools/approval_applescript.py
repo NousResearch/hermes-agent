@@ -151,6 +151,7 @@ def _osascript_program(args: str) -> tuple[str, bool, bool, tuple[str, bool, boo
     heredoc = None
     jxa = opaque = False
     i = 0
+    tokens = [token for token in tokens if token.strip()]  # an escaped newline (`osascript \\`) is a lone token
     while i < len(tokens):
         token = tokens[i]
         nxt = tokens[i + 1] if i + 1 < len(tokens) else ""

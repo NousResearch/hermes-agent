@@ -45,7 +45,7 @@ from gateway.platforms._shared import (
     platform_gate_env as _scoped_gate_env, send_error
 )
 from gateway.platforms.base_log_safety import safe_url_for_log
-from gateway.platforms.helpers import MessageDeduplicator, numbered_clarify_choices
+from gateway.platforms.helpers import MessageDeduplicator, clarify_text_with_choices
 from plugins.platforms.slack.adapter_config_readers import (
     _extra_or_env_channel_set_getter, _extra_or_env_flag_getter)
 from gateway.platforms.base import (
@@ -5419,24 +5419,11 @@ class SlackAdapter(BasePlatformAdapter):
             # budget against the 3000-char section cap.
             def _esc(text: str) -> str:
                 return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            body = f"❓ {_esc(question or '')}"
-            budget = 3000 - len("...")
             # Slack clips button labels well under its 75-char API cap (narrower still on
             # mobile) with no tooltip, so a long option is unreadable as a label (#78115):
             # render the full numbered list in the body and label the buttons positionally.
-            # Every option keeps its numbered line (a button "3" whose line was cut off is
-            # unanswerable): over the section cap, each option's own text is shortened instead.
-            numbered = numbered_clarify_choices(choices, max_label_cols=48, escape=_esc)
-            room = budget - len(body) - 2
-            each = max(1, room // max(1, len(choices)))
-            while numbered and len(numbered) > room and each > 1:
-                each = each * 4 // 5  # shorten every option until all numbered lines fit together
-                short = [s if len(s) <= each else s[:each].rstrip() + "…" for s in (str(c).strip() for c in choices)]
-                numbered = numbered_clarify_choices(short, max_label_cols=0, escape=_esc)
-            if numbered:
-                body = f"{body}\n\n{numbered}"
-            if len(body) > budget:  # only a question that alone fills the section gets here
-                body = body[:budget] + "..."
+            body, numbered = clarify_text_with_choices(
+                f"❓ {_esc(question or '')}", choices, limit=3000, max_label_cols=48, escape=_esc)
             # Slack caps an actions block at 5 elements; clarify caps choices at 4 (+ Other) but
             # chunk anyway so larger lists degrade gracefully instead of 400ing.
             elements = []

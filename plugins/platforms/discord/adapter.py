@@ -5762,7 +5762,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 hint = t("platform.discord.prompt.clarify_hint_buttons")
                 # Button labels clip past ~40 columns on mobile with no tooltip (#78115): when
                 # any option is that long, the numbered full text goes in the content too.
-                # Capped at half the 2000-char content so the question keeps the rest.
+                # Capped at half the 2000-char content so the question keeps the rest; every
+                # option keeps its line (shortened) so each button still has one to match.
                 numbered = numbered_clarify_choices(clean_choices, max_label_cols=40, max_chars=1000,
                                                     escape=lambda s: re.sub(r"([\\*_~`|<>\[\]])", r"\\\1", s))
                 if numbered:

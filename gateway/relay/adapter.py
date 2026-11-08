@@ -25,7 +25,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
 )
 from gateway.platforms.event import ProcessingOutcome
-from gateway.platforms.helpers import numbered_clarify_choices
+from gateway.platforms.helpers import clarify_text_with_choices
 from agent.i18n import t
 from gateway.relay.adapter_discord_interaction import RelayDiscordInteractionMixin
 from gateway.relay.descriptor import CapabilityDescriptor
@@ -1984,14 +1984,13 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         back to base."""
         if choices and self.descriptor.supports_op("prompt"):
             # Clipped button labels are unreadable (#78115): long options go in full in the text.
-            numbered = numbered_clarify_choices(choices, max_label_cols=48)
-            text = f"❓ {question}\n\n{numbered}" if numbered else f"❓ {question}"
-            limit = self.max_message_length_for_chat(chat_id)
+            text, numbered = clarify_text_with_choices(f"❓ {question}", choices, max_label_cols=48,
+                limit=self.max_message_length_for_chat(chat_id), len_fn=self.message_len_fn_for_chat(chat_id))
             options = [{"id": f"c{i}", "label": str(i + 1) if numbered else str(c)[:75]} for i, c in enumerate(choices)]
             options.append({"id": "other", "label": t("platform.relay.prompt_other")})
             result = await self._mint_and_send_prompt(
                 "clarify", {"session_key": session_key, "clarify_id": clarify_id, "choices": [str(c) for c in choices]},
-                chat_id, prompt_kind="clarify", text=text if len(text) <= limit else text[: max(0, limit - 1)] + "…",
+                chat_id, prompt_kind="clarify", text=text,
                 options=options, metadata=metadata,
             )
             if result is not None:

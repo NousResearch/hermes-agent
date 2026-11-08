@@ -85,6 +85,7 @@ export {
   JSON_RPC_METHOD_NOT_FOUND,
   jsonRpcErrorFromFrame,
   type JsonRpcErrorPayload,
+  jsonRpcErrorReason,
   type JsonRpcFrame,
   JsonRpcGatewayError,
   JsonRpcRequestChannel,
@@ -118,7 +119,7 @@ export {
   usageLevel,
   usageTag
 } from './plan-usage'
-export { PLUGIN_CATALOG_NAME_RE } from './plugin-catalog-name'
+export { INSTALL_ORIGIN, PACKAGE_MARKER, PLUGIN_CATALOG_NAME_RE } from './desktop-plugin-files'
 export {
   DEFAULT_REASONING_EFFORT,
   isReasoningEffort,

@@ -1,4 +1,4 @@
-import { JsonRpcGatewayError, type PluginsManageParams } from '@hermes/shared'
+import { jsonRpcErrorReason, JsonRpcGatewayError, type PluginsManageParams } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { notifyError } from '@/store/notifications'
@@ -331,8 +331,7 @@ function backendPredatesInspectedSha(params: Record<string, unknown>, error: unk
 type RefusalReason = 'exists' | 'source_moved'
 
 function refusalReason(error: unknown): RefusalReason | undefined {
-  const reason =
-    error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : undefined
+  const reason = jsonRpcErrorReason(error)
 
   return reason === 'exists' || reason === 'source_moved' ? reason : undefined
 }
@@ -498,12 +497,9 @@ export async function inspectAgentPlugin(
  *  install_desktop`). Native Desktop clones one itself; a browser-hosted renderer has no disk of its
  *  own, so it asks the backend that serves the tab and the plugin appears in the folder the Webapp
  *  already loads. Never rejects. */
-export async function installDesktopPluginHalf(
-  request: GatewayRequest,
-  opts: { identifier: string; catalogName?: string; force?: boolean; profile?: string | null; ref?: string }
-): Promise<{
+/** A desktop half's install answer, from Electron's installer or the backend's (`installDesktopPluginHalf`). */
+export interface DesktopHalfInstallResult {
   ok: boolean
-  pairedWithAgent?: boolean
   pluginName?: string
   /** The backend predates the action: no retry changes that (a build older than this one). */
   unsupported?: boolean
@@ -511,9 +507,13 @@ export async function installDesktopPluginHalf(
   sourceMoved?: boolean
   /** Refused: a plugin of that name is installed there. Force replaces it. */
   exists?: boolean
-  warnings: string[]
   error?: string
-}> {
+}
+
+export async function installDesktopPluginHalf(
+  request: GatewayRequest,
+  opts: { identifier: string; catalogName?: string; force?: boolean; profile?: string | null; ref?: string }
+): Promise<DesktopHalfInstallResult & { pairedWithAgent?: boolean; warnings: string[] }> {
   try {
     const result = await request<{
       ok?: boolean

@@ -14,6 +14,7 @@ the way any other installed plugin does, on the next scan of ``desktop-plugins/`
 
 from __future__ import annotations
 
+import os
 import re
 import tempfile
 from pathlib import Path
@@ -161,7 +162,7 @@ def _adoptable(target: Path, source_dir: Path) -> bool:
     """*target* is a plain standalone folder whose ``plugin.js`` is byte for byte the one *source_dir*
     would publish: an install of that same tree by a build that recorded no origin, which a catalog
     install adopts in place instead of asking for Force (that would replace the folder and what it keeps)."""
-    return (not halves._is_link(target) and target.is_dir() and not (target / halves.PACKAGE_MARKER).exists()
+    return (not halves._is_link(target) and target.is_dir() and not os.path.lexists(target / halves.PACKAGE_MARKER)
             and halves._same_file(target / "plugin.js", source_dir / "plugin.js"))
 
 

@@ -200,3 +200,48 @@ async def test_flood_on_downloaded_image_upload_defers_instead_of_text_fallback(
                            what="deferred native image re-send")
     await asyncio.sleep(0)
     adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_every_native_media_entry_waits_out_a_known_flood_window(flooded, tmp_path, monkeypatch):
+    """A document's refusal arms the chat's window; a fresh voice clip, URL photo, animation and a
+    queued sibling document then make no request inside it and each go out once after it."""
+    from tools import url_safety
+    monkeypatch.setattr(url_safety, "is_safe_url", lambda *a, **k: True)
+    adapter, doc = flooded
+    clip = tmp_path / "reply.ogg"
+    clip.write_bytes(b"OggS-voice")
+    first_request = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    calls = []
+
+    def recorder(kind, refuse=False):
+        async def send(**kwargs):
+            calls.append((kind, loop.time()))
+            first_request.set()
+            if refuse and len(calls) == 1:
+                await asyncio.sleep(0)  # the sibling queues on the chat lock meanwhile
+                raise RetryAfter(0.3)
+            return _ok()
+        return send
+
+    adapter._bot.send_document = recorder("document", refuse=True)
+    adapter._bot.send_voice = recorder("voice")
+    adapter._bot.send_photo = recorder("photo")
+    adapter._bot.send_animation = recorder("animation")
+    first = asyncio.create_task(adapter.send_document("12345", str(doc)))
+    await first_request.wait()
+    sibling = asyncio.create_task(adapter.send_document("12345", str(doc)))
+    refused_at = loop.time()
+    results = [await first, await sibling,
+               await adapter.send_voice("12345", str(clip)),
+               await adapter.send_image("12345", "https://example.com/pic.png"),
+               await adapter.send_animation("12345", "https://example.com/a.gif")]
+
+    assert [r.success for r in results] == [False] * 5
+    assert all(r.raw_response["deferred_upload"] for r in results)
+    assert calls == [("document", calls[0][1])]  # nothing else inside the window
+    await async_wait_until(lambda: len(calls) == 6, timeout=10, what="every deferred upload once")
+    assert sorted(kind for kind, _ in calls) == ["animation", "document", "document", "document", "photo", "voice"]
+    assert all(at - refused_at >= 0.29 for _, at in calls[1:])
+    adapter.send.assert_not_awaited()

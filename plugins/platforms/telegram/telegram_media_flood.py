@@ -68,6 +68,14 @@ def _keep_private_copy(path: str) -> Optional[str]:
         return None
 
 
+class _KnownFloodWindow(Exception):
+    """A media request refused locally because the chat's flood window is still open (no API call)."""
+
+    def __init__(self, wait: float) -> None:
+        super().__init__(f"Telegram flood window open; retry in {wait:.1f} seconds")
+        self.retry_after = wait
+
+
 class TelegramMediaFloodMixin:
     """Native local-file upload shell + flood recovery shared by every media sender."""
 
@@ -90,9 +98,6 @@ class TelegramMediaFloodMixin:
             source = path
 
         what = f"{media_key} {os.path.basename(path)}"
-        deferred = await self._media_flood_precheck(chat_id, redo, what, source)
-        if deferred is not None:
-            return deferred
         try:
             with await asyncio.to_thread(open, path, "rb") as f:
                 msg = await self._send_media(
@@ -103,25 +108,19 @@ class TelegramMediaFloodMixin:
             recovered = await self._media_flood_recover(e, chat_id, redo, what, source)
             return recovered if recovered is not None else await on_error(e)
 
-    async def _media_flood_precheck(self, chat_id, redo: Redo, what: str, source: Optional[str]) -> Optional[SendResult]:
-        """Inside a known flood window, defer the upload without spending a request on it."""
-        from plugins.platforms.telegram.adapter import _flood_cap_result
-        cooldown = self._send_flood_cooldown_remaining(chat_id)
-        if cooldown is None or _FLOOD_STAGE.get() >= 2:
-            return None  # a deferred re-upload waits out the window in _media_send_slot instead
-        return await self._defer_media_upload(redo, source, cooldown, _flood_cap_result(cooldown), what)
-
     async def _media_flood_recover(
         self, error: Exception, chat_id, redo: Redo, what: str, source: Optional[str] = None,
     ) -> Optional[SendResult]:
         """Recover a media send refused by flood control. ``None``: not a flood, or recovery is
         exhausted (the caller then reports the failure; a deferred re-upload first sleeps out the
         new window so that report can land)."""
-        from plugins.platforms.telegram.adapter import _FLOOD_INLINE_WAIT_CAP_SECS
+        from plugins.platforms.telegram.adapter import _FLOOD_INLINE_WAIT_CAP_SECS, _flood_cap_result
         wait = flood_wait_seconds(error)
         if wait is None:
             return None
         stage = _FLOOD_STAGE.get()
+        if isinstance(error, _KnownFloodWindow):  # refused locally: the window is already armed
+            return await self._defer_media_upload(redo, source, wait, _flood_cap_result(wait), what)
         if stage == 0 and wait <= _FLOOD_INLINE_WAIT_CAP_SECS:
             logger.warning("[%s] Telegram flood control on %s, retrying in %.1fs", self.name, what, wait)
             await asyncio.sleep(wait)
@@ -138,17 +137,23 @@ class TelegramMediaFloodMixin:
 
     @contextlib.asynccontextmanager
     async def _media_send_slot(self, chat_id):
-        """The chat's send lock for one media request. A deferred re-upload re-checks the flood window
-        INSIDE the lock, right before its request: a sibling re-upload that woke first may have been
-        refused again and extended it. It waits that out with the lock released, without spending its
-        one remaining attempt (at most ``_MAX_WINDOW_WAITS`` times)."""
+        """The chat's send lock for one native media request, gated on the chat's flood window INSIDE
+        the lock, right before the request: a check made before the lock races a sibling refused while
+        this one queued. A fresh upload inside a window raises ``_KnownFloodWindow`` without a request,
+        so its caller's flood recovery defers it. A retry waits the window out with the lock released,
+        without spending its remaining attempt: the inline one only up to the inline cap (past it, it
+        is deferred too), the deferred re-upload at most ``_MAX_WINDOW_WAITS`` times."""
+        from plugins.platforms.telegram.adapter import _FLOOD_INLINE_WAIT_CAP_SECS
+        stage = _FLOOD_STAGE.get()
         waits = 0
         while True:
             async with self._chat_send_lock(chat_id):
-                wait = self._send_flood_cooldown_remaining(chat_id) if _FLOOD_STAGE.get() >= 2 else None
-                if wait is None or waits >= _MAX_WINDOW_WAITS:
+                wait = self._send_flood_cooldown_remaining(chat_id)
+                if wait is None or (stage >= 2 and waits >= _MAX_WINDOW_WAITS):
                     yield
                     return
+                if stage == 0 or (stage == 1 and (wait > _FLOOD_INLINE_WAIT_CAP_SECS or waits >= _MAX_WINDOW_WAITS)):
+                    raise _KnownFloodWindow(wait)
             waits += 1
             await asyncio.sleep(wait)
 

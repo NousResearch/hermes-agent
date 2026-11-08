@@ -39,11 +39,11 @@ class _Open:
     ``release``d (not a local session, a failed attach) so no turn waits on it."""
 
     def __init__(self, authority, ref):
-        from hermes_cli.plugins import _resolve_hook_callback_timeout
         self.ref, self.db = ref, authority.db
         key = (ref.profile_id, ref.session_id)
-        # Read here, in the owning profile's dispatch scope; the drain that waits runs in no profile's.
-        self.turn_wait = _resolve_hook_callback_timeout() or _UNBOUNDED_TURN_WAIT_S
+        # The profile's ``plugins.hook_callback_timeout``, read by the delivery (off-loop, in that
+        # profile's scope, only for a session that loads plugins); 0 until then.
+        self.callback_timeout = 0.0
         self.gate = asyncio.get_running_loop().create_future()
         previous = _live(key)
         self.task = asyncio.ensure_future(self._run(previous and previous.task))
@@ -72,10 +72,12 @@ class _Open:
         from gateway.session_context import scoped_session_key
         from gateway.session_policy import SURFACES
         from hermes_cli.lifecycle import has_hook, invoke_hook
+        from hermes_cli.plugins import _resolve_hook_callback_timeout
         sid = self.ref.session_id
         try:
             with _profile_runtime_scope(Path(self.ref.profile_id)), scoped_session_key(route):
                 if has_hook('on_session_open'):  # no consumer in this profile: no read, no call
+                    self.callback_timeout = _resolve_hook_callback_timeout()
                     invoke_hook('on_session_open', session_id=sid, platform=SURFACES.get(policy.source, policy.source),
                                 reason=_reason(self.db, sid))
         except Exception:  # health: allow BLE001 -- fail-open observer: an open never fails on a plugin
@@ -99,12 +101,15 @@ def _live(key):
 
 async def settled(ref):
     """Wait out an open delivery still pending or running for *ref*; awaited before a claimed turn
-    executes. The wait is bounded on its own (``plugins.hook_callback_timeout``, or
-    ``_UNBOUNDED_TURN_WAIT_S`` when that is 0): a hung callback delays the turn, never wedges it, and
-    its delivery keeps running."""
+    executes. The wait is bounded on its own: ``_UNBOUNDED_TURN_WAIT_S``, extended to the profile's
+    ``plugins.hook_callback_timeout`` once the delivery has read a longer one. A hung callback (or
+    a delivery stuck before it) delays the turn, never wedges it, and its delivery keeps running."""
     opening = _live((ref.profile_id, ref.session_id))
-    if opening is not None:
-        _done, pending = await asyncio.wait({opening.task}, timeout=opening.turn_wait)
-        if pending:
-            logger.warning('on_session_open for %s still running after %gs; the turn proceeds',
-                           ref.session_id, opening.turn_wait)
+    if opening is None:
+        return
+    _done, pending = await asyncio.wait({opening.task}, timeout=_UNBOUNDED_TURN_WAIT_S)
+    if pending and opening.callback_timeout > _UNBOUNDED_TURN_WAIT_S:
+        _done, pending = await asyncio.wait({opening.task},
+                                            timeout=opening.callback_timeout - _UNBOUNDED_TURN_WAIT_S)
+    if pending:
+        logger.warning('on_session_open for %s still running; its turn proceeds', ref.session_id)

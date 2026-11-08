@@ -142,13 +142,12 @@ def test_the_reply_never_waits_on_the_hook_and_the_first_turn_does(tmp_path, mon
 
 
 async def _hung_open(monkeypatch, sid, release):
-    """A real pending open whose delivery hangs until *release*, under ``hook_callback_timeout: 0``."""
+    """A real pending open whose delivery hangs until *release* (as under ``hook_callback_timeout: 0``,
+    where the dispatcher never abandons a callback)."""
     import threading
     from types import SimpleNamespace
     from gateway import session_open
     from gateway.session_contract import SessionRef
-    from hermes_cli import plugins
-    monkeypatch.setattr(plugins, '_resolve_hook_callback_timeout', lambda: 0.0)
     monkeypatch.setattr(session_open, '_UNBOUNDED_TURN_WAIT_S', 0.5, raising=False)
     entered = threading.Event()
     monkeypatch.setattr(session_open._Open, '_deliver', lambda self, *a: (entered.set(), release.wait(20)))

@@ -11,24 +11,33 @@ from collections.abc import Mapping
 from typing import Any
 
 
-def _rich_inline(value: Any) -> str:
+# Real clients nest a handful of levels; content deeper than this is dropped so a hostile payload
+# (valid JSON thousands of levels deep) cannot hit the recursion limit and drop the whole update.
+_MAX_RICH_DEPTH = 64
+
+
+def _rich_inline(value: Any, depth: int = 0) -> str:
     """Plain text of a rich ``text`` value: a string, a list of runs, or a span dict (bold, link…)
     whose content sits in ``text`` or ``children``, falling back to a link's ``url``."""
+    if depth > _MAX_RICH_DEPTH:
+        return ""
     if isinstance(value, str):
         return value
     if isinstance(value, list):
-        return "".join(_rich_inline(part) for part in value)
+        return "".join(_rich_inline(part, depth + 1) for part in value)
     if isinstance(value, Mapping):
         for key in ("text", "children"):
             if value.get(key) is not None:
-                return _rich_inline(value[key])
+                return _rich_inline(value[key], depth + 1)
         return str(value.get("url") or "")
     return ""
 
 
-def _rich_lines(blocks: Any, prefix: str = "") -> list[str]:
+def _rich_lines(blocks: Any, prefix: str = "", depth: int = 0) -> list[str]:
     """One line per paragraph-like block; a list item's ``label`` (bullet/number) prefixes its first line."""
     lines: list[str] = []
+    if depth > _MAX_RICH_DEPTH:
+        return lines
     for block in blocks if isinstance(blocks, list) else []:
         if not isinstance(block, Mapping):
             continue
@@ -38,9 +47,9 @@ def _rich_lines(blocks: Any, prefix: str = "") -> list[str]:
         for item in block.get("items") or []:
             if isinstance(item, Mapping):
                 label = str(item.get("label") or "-")
-                lines += _rich_lines(item.get("blocks") or [item], f"{label} ")
+                lines += _rich_lines(item.get("blocks") or [item], f"{label} ", depth=depth + 1)
         if block.get("blocks"):
-            lines += _rich_lines(block["blocks"], prefix)
+            lines += _rich_lines(block["blocks"], prefix, depth + 1)
     return lines
 
 

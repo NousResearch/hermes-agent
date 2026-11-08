@@ -852,3 +852,24 @@ def test_rich_reply_and_inbound_blocks_share_one_flattener():
 
     assert event.reply_to_text == "See the plan\n1. ship it"
     assert rich_message_text(msg.reply_to_message) == event.reply_to_text
+
+
+def test_reply_to_deeply_nested_rich_message_still_reaches_the_agent():
+    """A plain reply quoting a pathologically nested rich message (valid JSON, 2,000 levels of blocks
+    and of inline spans) is still delivered: the flattener drops the over-deep content instead of
+    raising RecursionError out of ``_build_message_event``."""
+    from gateway.platforms.event import MessageType
+
+    block = {"type": "paragraph", "text": "leaf"}
+    span = "deep"
+    for _ in range(2000):
+        block = {"type": "quote", "blocks": [block]}
+        span = {"type": "bold", "children": [span]}
+    blocks = [{"type": "paragraph", "text": ["top ", {"type": "bold", "text": "line"}]}, block,
+              {"type": "paragraph", "text": span}]
+    msg = _reply_message_with_rich_blocks("678", blocks=blocks)
+
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_message_id == "678"
+    assert event.reply_to_text == "top line"

@@ -6600,7 +6600,7 @@ async def _resolve_slack_user_dm(token: str, user_id: str) -> Optional[str]:
                 data.get("error", "unknown"))
             return None
     except Exception as e:
-        logger.warning("[Slack] conversations.open exception for %s: %s", user_id, e)
+        logger.warning("[Slack] conversations.open exception for %s: %s", user_id, describe_proxy_error(e, resolve_proxy_url()) or e)
         return None
 
 
@@ -6667,7 +6667,7 @@ async def _standalone_send_media(
             'error': "slack_sdk not installed. Run: pip install 'slack-sdk' (required for Slack MEDIA delivery via send_message)",
         }
     client = _AsyncWebClient(token=token)
-    _apply_slack_proxy(client, resolve_proxy_url())
+    _apply_slack_proxy(client, proxy := resolve_proxy_url())  # every catch below: the error may echo it
     last_message_id = None
     # The upload API cannot carry unfurl controls; explicit ones need a separate caption post.
     caption_as_upload_comment = bool(formatted_caption) and not unfurl_kwargs
@@ -6680,7 +6680,7 @@ async def _standalone_send_media(
                 return send_error(f"Slack API error: {post_payload.get('error', 'unknown')}")
             last_message_id = post_payload.get("ts")
         except Exception as e:
-            return send_error(f"Slack send failed: {e}")
+            return send_error(f"Slack send failed: {describe_proxy_error(e, proxy) or e}")
     caption_pending = caption_as_upload_comment
     uploaded_any = False
     for media_path, _is_voice in media_files:
@@ -6696,9 +6696,9 @@ async def _standalone_send_media(
                     if fb.get("ok", True):
                         last_message_id = fb.get("ts") or last_message_id
                         caption_pending = False
-                except Exception:
+                except Exception as e:
                     logger.warning(
-                        "[Slack] Caption-fallback send failed for missing media", exc_info=True)
+                        "[Slack] Caption-fallback send failed for missing media", exc_info=describe_proxy_error(e, proxy) is None)
             continue
         try:
             upload_result = await _standalone_upload_file(
@@ -6712,8 +6712,8 @@ async def _standalone_send_media(
             caption_pending = False
             last_message_id = upload_result.get("message_id") or last_message_id
         except Exception as e:
-            warning = f"Failed to send media {media_path}: {e}"
-            logger.error("[Slack] %s", warning, exc_info=True)
+            warning = f"Failed to send media {media_path}: {(shown := describe_proxy_error(e, proxy)) or e}"
+            logger.error("[Slack] %s", warning, exc_info=not shown)
             warnings.append(warning)
     if last_message_id is None and not uploaded_any and not text_to_send.strip():
         result: dict[str, Any] = {"error": "No deliverable text or media remained after processing"}

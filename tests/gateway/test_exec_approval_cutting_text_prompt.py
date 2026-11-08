@@ -127,3 +127,19 @@ def test_a_long_backtick_run_never_leaves_the_fence_open_past_the_cut(command, p
     shown = delivered[delivered.index("\n" + fence + "\n") + len(fence) + 2:-len(fence) - 1]
     assert max(map(len, re.findall("`+", shown)), default=0) < len(fence)  # and nothing shown closes it early
     assert pending.data.get("card_deny_only") is True
+
+
+@pytest.mark.parametrize("make", [_photon, _ntfy, _line], ids=["photon", "ntfy", "line"])
+def test_command_that_fits_only_beside_deny_is_shown_whole_and_not_called_shortened(make, pending):
+    """One character too long for every choice, short enough for Deny alone: the whole command is
+    shown, only Deny is offered, and the notice says why instead of claiming a shortened preview."""
+    adapter, wire = make()
+    adapter.pause_typing_for_chat = lambda _c: None
+    _render(adapter, TAIL)
+    room = adapter.max_message_length_for_chat("chat") - len(wire[-1])
+    command = "A" * (room + 1) + TAIL
+    _render(adapter, command)
+    delivered = wire[-1]
+    assert "\n" + command in delivered and "/approve" not in delivered and "/deny" in delivered
+    assert "Preview shortened" not in delivered and "only Deny is offered" in delivered
+    assert pending.data.get("card_deny_only") is True

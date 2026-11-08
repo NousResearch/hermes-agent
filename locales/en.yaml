@@ -638,6 +638,7 @@ gateway:
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
     truncated_full_above: "Preview shortened: the full command ({total} characters) is in the message above."
     truncated_deny_only: "Preview shortened ({total} characters) and the full command could not be shown here, so only Deny is offered. Review it in the CLI or Desktop app."
+    text_prompt_deny_only: "The full approval prompt is too long for this platform, so only Deny is offered. Review it in the CLI or Desktop app."
   notify:
     media_kind:
       audio: "audio"

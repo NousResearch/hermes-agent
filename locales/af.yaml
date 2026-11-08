@@ -634,6 +634,7 @@ gateway:
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
     truncated_full_above: "Voorskou verkort: die volledige opdrag ({total} karakters) is in die boodskap hierbo."
     truncated_deny_only: "Voorskou verkort ({total} karakters) en die volledige opdrag kon nie hier gewys word nie, dus is slegs Weier beskikbaar. Hersien dit in die CLI of die Desktop-toep."
+    text_prompt_deny_only: "Die volledige goedkeuringsboodskap is te lank vir hierdie platform, dus is slegs Weier beskikbaar. Hersien dit in die CLI of die Desktop-toep."
   notify:
     media_kind:
       audio: "klank"

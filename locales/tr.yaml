@@ -634,6 +634,7 @@ gateway:
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
     truncated_full_above: "Önizleme kısaltıldı: komutun tamamı ({total} karakter) yukarıdaki mesajda."
     truncated_deny_only: "Önizleme kısaltıldı ({total} karakter) ve komutun tamamı burada gösterilemedi, bu yüzden yalnızca Reddet sunuluyor. CLI'de veya masaüstü uygulamasında inceleyin."
+    text_prompt_deny_only: "Tam onay istemi bu platform için çok uzun, bu yüzden yalnızca Reddet sunuluyor. CLI'de veya masaüstü uygulamasında inceleyin."
   notify:
     media_kind:
       audio: "ses"

@@ -1390,29 +1390,33 @@ def _live_send_text(
     return True, False, delivered_message_id
 
 
+def _resolve_named_dm_topic(t: _TargetDelivery, topic_name: str, metadata: dict, delivery_errors: list,
+                            n_media: int, *, refresh: bool) -> bool:
+    """Resolve a named DM topic to its thread id through the router's resolver (cached by the
+    adapter, so after a text send this is the id that send used), writing it to ``t.thread_id``
+    (mirroring/seeding key on the numeric id) and ``metadata``. False = media dropped, never General."""
+    from agent.async_utils import safe_schedule_threadsafe
+    from gateway.delivery import _ensure_named_dm_topic
+    future = safe_schedule_threadsafe(
+        _ensure_named_dm_topic(t.runtime_adapter, str(t.chat_id), topic_name, refresh=refresh), t.loop)
+    try:
+        if future is None:
+            raise RuntimeError("gateway loop unavailable")
+        t.thread_id = future.result(timeout=30)
+    except Exception as e:  # any resolver/adapter failure drops the media for this target
+        logger.warning("Job '%s': named DM topic %r unresolved", t.job["id"], topic_name, exc_info=True)
+        if n_media:
+            delivery_errors.append(f"{n_media} media attachment(s) not delivered to {t.where}: {e}")
+        return False
+    metadata.update(thread_id=t.thread_id, telegram_dm_topic_created_for_send=True)
+    return True
+
+
 def _live_send_media(
     t: _TargetDelivery, media_metadata: dict, media_files: list, delivery_errors: list,
-    unverified_targets: list) -> None:
+    unverified_targets: list, topic_name: Optional[str] = None) -> None:
     """Send extracted media as native attachments with the same routing as the text send."""
     routed_media_metadata = dict(media_metadata or {})
-    if (topic_name := _named_dm_topic(t)) is not None:
-        # Same resolver as the text route (cached there, refreshed on "thread not found"); a name
-        # that cannot be resolved drops the media rather than posting it to General.
-        from agent.async_utils import safe_schedule_threadsafe
-        from gateway.delivery import _ensure_named_dm_topic
-        future = safe_schedule_threadsafe(
-            _ensure_named_dm_topic(t.runtime_adapter, str(t.chat_id), topic_name, refresh=False), t.loop)
-        try:
-            if future is None:
-                raise RuntimeError("gateway loop unavailable")
-            routed_media_metadata["thread_id"] = future.result(timeout=30)
-        except Exception as e:  # any resolver/adapter failure drops the media for this target
-            logger.warning("Job '%s': named DM topic %r unresolved for media", t.job["id"], topic_name,
-                           exc_info=True)
-            delivery_errors.append(
-                f"{len(media_files)} media attachment(s) not delivered to {t.where}: {e}")
-            return
-        routed_media_metadata["telegram_dm_topic_created_for_send"] = True
     if t.is_relay:
         routed_media_metadata["_relay_logical_platform"] = t.platform.value
         logical_home = t.config.get_home_channel(t.platform)
@@ -1425,6 +1429,13 @@ def _live_send_media(
         t.runtime_adapter, t.chat_id, media_files, routed_media_metadata or None, t.loop, t.job,
         platform=t.platform,
     )
+    if (topic_name and len(media_files) == sum("thread not found" in e.lower() for e in _media_errors)
+            and _resolve_named_dm_topic(t, topic_name, routed_media_metadata, delivery_errors,
+                                        len(media_files), refresh=True)):
+        # The named topic vanished (a media-only job never runs the router's text refresh): recreate once.
+        _media_errors = _send_media_via_adapter(
+            t.runtime_adapter, t.chat_id, media_files, routed_media_metadata, t.loop, t.job,
+            platform=t.platform)
     if t.job.pop("_media_ack_lost", False) and t.where not in unverified_targets:
         unverified_targets.append(t.where)
     # Surface per-file failures into run status: text delivered but attachment lost is not ok.
@@ -1517,8 +1528,11 @@ def _deliver_via_live_adapter(
         # gateway loop is contended, so each media send would also block its 30s budget, and the text
         # payload is already assumed delivered (#38922). Record the skipped attachments so the drop is
         # visible rather than silently lost.
+        if (topic_name := _named_dm_topic(t)) is not None and adapter_ok and not timed_out:
+            adapter_ok = _resolve_named_dm_topic(
+                t, topic_name, media_metadata, delivery_errors, len(media_files), refresh=False) or bool(text_to_send)
         if adapter_ok and not timed_out and media_files:
-            _live_send_media(t, media_metadata, media_files, delivery_errors, unverified_targets)
+            _live_send_media(t, media_metadata, media_files, delivery_errors, unverified_targets, topic_name)
         elif timed_out and media_files:
             _note_target_error(
                 job,

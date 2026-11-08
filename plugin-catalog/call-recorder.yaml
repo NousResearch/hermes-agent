@@ -1,0 +1,26 @@
+name: call-recorder
+repo: https://github.com/jacebenson/hermes-hackathon-call-recorder
+sha: 9e1dc27ddacce332b60ea40879a598c5dcfbf1b8
+description: Records both sides of a call as a two-track file (system audio + microphone)
+  and transcribes it locally, with a record control in the composer, a live transcript
+  strip, and a pane listing recordings with their transcripts.
+maintainer: jacebenson
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "1.3.1"
+title: Call Recorder
+platforms: [linux, windows]
+docs_url: https://github.com/jacebenson/hermes-hackathon-call-recorder#readme
+image: https://raw.githubusercontent.com/jacebenson/hermes-hackathon-call-recorder/9e1dc27ddacce332b60ea40879a598c5dcfbf1b8/docs/screenshots/in-context.png
+screenshots:
+  - https://raw.githubusercontent.com/jacebenson/hermes-hackathon-call-recorder/9e1dc27ddacce332b60ea40879a598c5dcfbf1b8/docs/screenshots/composer-and-live-strip.png
+  - https://raw.githubusercontent.com/jacebenson/hermes-hackathon-call-recorder/9e1dc27ddacce332b60ea40879a598c5dcfbf1b8/docs/screenshots/recorder-pane.png
+known_issues:
+  - "Needs a logged-in desktop session on the machine being recorded; a background session has no audio to capture on either platform."
+  - "Transcription needs faster-whisper on the recording machine. Without it the plugin records and reports transcription as unavailable."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

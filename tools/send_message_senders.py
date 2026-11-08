@@ -127,6 +127,8 @@ def _telegram_thread_kwargs(thread_id):
     the Bot API rejects message_thread_id=1, so it maps to no thread — same as the adapter."""
     if thread_id is None:
         return {}
+    if not str(thread_id).lstrip("-").isdigit():  # telegram:<chat>:<topic name> needs the live adapter
+        raise ValueError(f"named Telegram topic '{thread_id}' can only be resolved by the running gateway")
     try:
         from plugins.platforms.telegram.adapter import TelegramAdapter
         effective = TelegramAdapter._message_thread_id_for_send(str(thread_id))

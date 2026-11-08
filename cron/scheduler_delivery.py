@@ -1242,6 +1242,9 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
         and looks_like_telegram_private_chat_id(str(t.chat_id))
         and _looks_like_int(str(thread_id))
     )
+    if (t.platform == Platform.TELEGRAM and thread_id is not None and not _looks_like_int(str(thread_id))
+            and looks_like_telegram_private_chat_id(str(t.chat_id))):
+        return _named_dm_topic_route(t)
     if is_ambiguous_telegram_topic and _is_channel_dm_topic(
         t.runtime_adapter, t.chat_id, t.loop, job["id"]):
         # Channel DM topic: direct_messages_topic_id, no bare thread_id; media mirrors text.
@@ -1270,6 +1273,24 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
     # after a restart. See cron/scheduler_delivery_origin.py.
     _origin.stamp_origin_discriminators(t, route_metadata, media_metadata)
     return route_thread_id, route_metadata, media_metadata
+
+
+def _named_dm_topic_route(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]:
+    """``telegram:<private_chat>:<topic name>`` (#80483): text goes to the router with the name as the
+    target thread (it creates/refreshes the topic by name, retrying once on thread-not-found); media
+    gets the topic id resolved here through the same ``ensure_dm_topic``. Raises when the name cannot
+    be resolved, so the target fails instead of landing in the chat root."""
+    from agent.async_utils import safe_schedule_threadsafe
+    from gateway.delivery import _ensure_named_dm_topic
+    future = safe_schedule_threadsafe(
+        _ensure_named_dm_topic(t.runtime_adapter, str(t.chat_id), str(t.thread_id), refresh=False), t.loop)
+    if future is None:
+        raise RuntimeError(f"cannot resolve named Telegram topic for {t.where}: gateway loop unavailable")
+    topic_id = future.result(timeout=30)
+    route_metadata = {"job_id": t.job["id"], "notify": t.notify_delivery}
+    media_metadata = {"notify": t.notify_delivery, "thread_id": topic_id, "telegram_dm_topic_created_for_send": True}
+    _origin.stamp_origin_discriminators(t, route_metadata, media_metadata)
+    return str(t.thread_id), route_metadata, media_metadata
 
 
 _LIVE_SEND_CONFIRM_TIMEOUT_SECS = 60
@@ -1458,9 +1479,9 @@ def _deliver_via_live_adapter(
     this lane's soft failures (surfaced only if standalone also fails); ``delivery_errors`` =
     partial failures (media, thread fallback) that surface even on success."""
     job = t.job
-    route_thread_id, route_metadata, media_metadata = _live_route_metadata(t)
     delivered = False
     try:
+        route_thread_id, route_metadata, media_metadata = _live_route_metadata(t)
         # Send cleaned text (MEDIA tags stripped) through the gateway's DeliveryRouter so it gets
         # the same platform routing as live messages (Telegram's three-mode topic routing).
         text_to_send = cleaned_text.strip()

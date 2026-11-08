@@ -16,10 +16,11 @@ import sqlite3
 import threading
 import time
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
@@ -322,7 +323,7 @@ def _ledger_write_lock() -> Iterator[None]:
                     pass
 
 
-def _fetch(conn: sqlite3.Connection, execution_id: str) -> Optional[Dict[str, Any]]:
+def _fetch(conn: sqlite3.Connection, execution_id: str) -> Optional[dict[str, Any]]:
     row = conn.execute("SELECT * FROM executions WHERE id=?", (execution_id,)).fetchone()
     return dict(row) if row is not None else None
 
@@ -466,7 +467,7 @@ def set_execution_occurrence(execution_id: str, instant: Optional[str]) -> None:
 
 
 @_ledger_write
-def mark_execution_handoff_pending(execution_id: str) -> Optional[Dict[str, Any]]:
+def mark_execution_handoff_pending(execution_id: str) -> Optional[dict[str, Any]]:
     """Fence restart recovery while an external worker is adopting a claim."""
     with _transaction() as conn:
         cur = conn.execute(
@@ -484,7 +485,7 @@ def mark_execution_handoff_pending(execution_id: str) -> Optional[Dict[str, Any]
 
 
 @_ledger_write
-def adopt_claimed_execution(execution_id: str) -> Optional[Dict[str, Any]]:
+def adopt_claimed_execution(execution_id: str) -> Optional[dict[str, Any]]:
     """Atomically transfer and start an attempt in its worker process.
 
     The dispatching gateway creates the row before spawning a restart-safe
@@ -511,7 +512,7 @@ def adopt_claimed_execution(execution_id: str) -> Optional[Dict[str, Any]]:
 
 
 @_ledger_write
-def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
+def mark_execution_running(execution_id: str) -> Optional[dict[str, Any]]:
     """Transition one claimed attempt to running exactly once."""
     now = _hermes_now().isoformat()
     with _transaction() as conn:

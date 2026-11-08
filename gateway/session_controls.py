@@ -900,7 +900,7 @@ class AuthorityConnection:
             raise AuthorityRefusal('permission_denied')
         forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite', 'unattended',
                                    'surface', 'voice_context', 'interrupted', 'voice_turn', 'display_kind', 'title_preview',
-                                   'turn_author', 'api_text', 'model_override', 'clarify_batch'}
+                                   'turn_author', 'api_text', 'model_override', 'clarify_batch', 'turn_env'}
         if forbidden:
             raise AuthorityRefusal('invalid_params')
         request_id = params.get('submission_id') or params.get('input_id')
@@ -917,6 +917,8 @@ class AuthorityConnection:
         if self.client is not None:
             # The owner stamps the turn with the connection's announced label; the wire cannot.
             payload['client'] = self.client
+        if 'turn_env' in params:
+            payload['turn_env'] = params['turn_env']
         return Submission(request_id, ref, payload, 'queue')
 
     async def mutate(self, ref, params):

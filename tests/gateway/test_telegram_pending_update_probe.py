@@ -191,3 +191,38 @@ async def test_heartbeat_reprobes_stuck_queue_after_short_interval():
     assert len(delays) >= 2
     assert delays[0] == 90
     assert delays[1] == 30
+
+
+@pytest.mark.asyncio
+async def test_short_confirm_passes_do_not_speed_up_dispatch_stall_watchdog():
+    """A flickering server queue shortens some heartbeat passes to 30s; the ingress dispatch watchdog
+    counts heartbeats, so those passes must not count or a slow-but-bounded handler (<=300s) gets its
+    adapter rebuilt after 240s instead of the documented 360s."""
+    from plugins.platforms.telegram import adapter as tg_adapter
+
+    adapter = _make_adapter(pending=0)
+    adapter._app.bot.get_me = AsyncMock()
+    queue = iter([9, 0] * 20)
+    adapter._app.bot.get_webhook_info = AsyncMock(
+        side_effect=lambda: MagicMock(pending_update_count=next(queue))
+    )
+    adapter._polling_generation = 2
+    adapter._updates_received_total = 3  # fetched, held by a slow handler: no dispatch progress
+    real_sleep = asyncio.sleep
+    delays, reported_at = [], []
+
+    async def tracking_sleep(delay, *args, **kwargs):
+        delays.append(delay)
+        adapter._polling_last_progress_monotonic = _time.monotonic()  # transport stays healthy
+        if len(delays) > 12:
+            adapter._polling_teardown_started = True
+        await real_sleep(0)
+
+    def _record(err, reason):
+        if reason == "ingress dispatch stall watchdog":
+            reported_at.append(sum(delays))
+
+    with patch("asyncio.sleep", new=tracking_sleep), patch.object(adapter, "_schedule_polling_recovery", side_effect=_record):
+        await asyncio.wait_for(adapter._polling_heartbeat_loop(), 10)
+    assert 30 in delays  # the flicker really did shorten passes
+    assert reported_at and reported_at[0] >= 90 * tg_adapter._INGRESS_DISPATCH_STALL_HEARTBEATS

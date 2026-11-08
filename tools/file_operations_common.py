@@ -291,15 +291,51 @@ def _has_bom(text: Optional[str]) -> bool:
 _MAX_DIFF_WORK = 40_000_000
 
 
+def _lis(pairs: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Longest chain of ``(i, j)`` pairs (already in ``i`` order) with strictly increasing ``j``."""
+    from bisect import bisect_left
+    tails: list[int] = []
+    tail_at: list[int] = []
+    prev = [-1] * len(pairs)
+    for n, (_i, j) in enumerate(pairs):
+        k = bisect_left(tails, j)
+        tails[k:k + 1], tail_at[k:k + 1] = [j], [n]
+        prev[n] = tail_at[k - 1] if k else -1
+    chain, n = [], tail_at[-1] if tail_at else -1
+    while n != -1:
+        chain.append(pairs[n])
+        n = prev[n]
+    return chain[::-1]
+
+
+def _pairs(old: list[str], new: list[str], *, unique: bool) -> list[tuple[int, int]]:
+    """Candidate matches in ``old`` order: lines unique on both sides, or (``unique=False``) the
+    k-th copy of each line in *old* paired with its k-th copy in *new*."""
+    from collections import Counter, defaultdict
+    if unique:
+        old_count, new_count = Counter(old), Counter(new)
+        at = {line: j for j, line in enumerate(new) if new_count[line] == 1}
+        return [(i, at[line]) for i, line in enumerate(old) if old_count[line] == 1 and line in at]
+    slots: dict[str, list[int]] = defaultdict(list)
+    for j, line in enumerate(new):
+        slots[line].append(j)
+    seen: dict[str, int] = defaultdict(int)
+    out = []
+    for i, line in enumerate(old):
+        k = seen[line]
+        seen[line] = k + 1
+        if k < len(slots.get(line, ())):
+            out.append((i, slots[line][k]))
+    return out
+
+
 def _diff_work_estimate(old: list[str], new: list[str]) -> tuple[int, int]:
     """``(changed lines, span lines)`` after trimming the common head/tail, in O(n log n).
 
-    The k-th copy of a line in *old* is paired with its k-th copy in *new*, and the longest run of
-    pairs in order (an LIS) is a real common subsequence, so ``changed`` never undercounts: a
-    reordering counts as change, repeated lines included (sorting a 100k-line file costs difflib
-    ~55 s even though no line was added)."""
-    from bisect import bisect_left
-    from collections import defaultdict
+    Matches are a real common subsequence, so ``changed`` never undercounts and a reordering counts
+    as change (sorting a 100k-line file costs difflib ~55 s with no line added). Lines unique on both
+    sides anchor the alignment (patience diff); between anchors, repeated lines pair k-th copy to
+    k-th copy, so a small insert among blank lines keeps its preview."""
     limit = min(len(old), len(new))
     head = 0
     while head < limit and old[head] == new[head]:
@@ -308,19 +344,12 @@ def _diff_work_estimate(old: list[str], new: list[str]) -> tuple[int, int]:
     while tail < limit - head and old[-1 - tail] == new[-1 - tail]:
         tail += 1
     old_mid, new_mid = old[head:len(old) - tail], new[head:len(new) - tail]
-    positions: dict[str, list[int]] = defaultdict(list)
-    for i, line in enumerate(new_mid):
-        positions[line].append(i)
-    seen: dict[str, int] = defaultdict(int)
-    tails: list[int] = []
-    for line in old_mid:
-        k = seen[line]
-        seen[line] = k + 1
-        slots = positions.get(line)
-        if slots and k < len(slots):
-            i = bisect_left(tails, slots[k])
-            tails[i:i + 1] = [slots[k]]
-    return len(old_mid) + len(new_mid) - 2 * len(tails), max(len(old_mid), len(new_mid))
+    anchors = _lis(_pairs(old_mid, new_mid, unique=True))
+    matched, i0, j0 = len(anchors), 0, 0
+    for i1, j1 in [*anchors, (len(old_mid), len(new_mid))]:
+        matched += len(_lis(_pairs(old_mid[i0:i1], new_mid[j0:j1], unique=False)))
+        i0, j0 = i1 + 1, j1 + 1
+    return len(old_mid) + len(new_mid) - 2 * matched, max(len(old_mid), len(new_mid))
 
 
 def bounded_unified_diff(old_text: str, new_text: Optional[str], fromfile: str, tofile: str) -> str:

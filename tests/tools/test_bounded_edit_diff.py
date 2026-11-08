@@ -37,3 +37,6 @@ def test_ordinary_edit_keeps_its_unified_diff(tmp_path):
     assert result.success, result.error
     assert "-line 2500\n+changed\n" in result.diff
     assert result.diff.startswith("--- a/")
+    # Small insert among repeated (blank) lines keeps its preview too.
+    rows = "".join(f"\nrow {i}\n" for i in range(5_000))
+    assert bounded_unified_diff(rows, "\n" + rows + "end\n", "a/f", "b/f").startswith("--- a/f")

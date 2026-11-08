@@ -223,3 +223,22 @@ def test_error_through_a_secret_free_proxy_keeps_its_text(monkeypatch, caplog, p
     with caplog.at_level(logging.DEBUG):
         asyncio.run(adapter._connect_initial_sync(client))
     assert "homeserver said M_UNKNOWN" in _logs(caplog)
+
+
+def test_proxy_mode_file_url_error_hides_the_path(monkeypatch, caplog):
+    """A ``file:`` GATEWAY_PROXY_URL has no host to name; the media-path rule must not print its path."""
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+
+    monkeypatch.setenv("GATEWAY_PROXY_URL", "file:///AgentTokenProbe987")
+    monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+    runner = object.__new__(GatewayRunner)
+    runner.adapters, runner._running_agents, runner._agent_cache = {}, {}, {}
+    runner.config = MagicMock()
+    source = SessionSource(platform=Platform.MATRIX, chat_id="!r:s", chat_type="group", user_id="@u:s")
+    with patch("gateway.run._load_gateway_config", return_value={}), caplog.at_level(logging.DEBUG):
+        reply = asyncio.run(runner._run_agent_via_proxy(
+            message="hi", context_prompt="", history=[], source=source, session_id="s"))["final_response"]
+    for text in (reply, _logs(caplog)):
+        assert "AgentTokenProbe987" not in text, text
+    assert "Error" in reply, reply  # the user still learns the request failed

@@ -92,6 +92,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.helpers import send_chunks
 from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
@@ -1668,7 +1669,6 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         # Lock the markdown decision at the whole-message level so every chunk consistently uses ``post``.
         # See #26841.
         prefer_post = bool(_MARKDOWN_HINT_RE.search(formatted))
-        last_response = None
 
         async def _send_plain(chunk: str) -> Any:
             return await self._feishu_send_with_retry(
@@ -1679,28 +1679,28 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                 metadata=metadata,
             )
 
-        try:
-            for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk, prefer_post=prefer_post)
-                try:
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_to, metadata=metadata,
-                    )
-                except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
-                        raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
-                    response = await _send_plain(chunk)
-                if (
-                    msg_type == "post"
-                    and not self._response_succeeded(response)
-                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
-                ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
-                    response = await _send_plain(chunk)
-                last_response = response
+        async def _send_one(chunk: str) -> SendResult:
+            msg_type, payload = self._build_outbound_payload(chunk, prefer_post=prefer_post)
+            try:
+                response = await self._feishu_send_with_retry(
+                    chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_to, metadata=metadata,
+                )
+            except Exception as exc:
+                if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    raise
+                logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                response = await _send_plain(chunk)
+            if (
+                msg_type == "post"
+                and not self._response_succeeded(response)
+                and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
+            ):
+                logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+                response = await _send_plain(chunk)
+            return self._finalize_send_result(response, "send failed")
 
-            return self._finalize_send_result(last_response, "send failed")
+        try:  # stops at the first refused chunk and marks a partial delivery: a later success never masks it
+            return await send_chunks(chunks, _send_one)
         except Exception as exc:
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))

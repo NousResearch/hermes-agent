@@ -311,6 +311,9 @@ def _get_approval_mode() -> str:
     room MEMBER's profile: under the profile route's own mark the stricter of the two modes governs.
     The routed profile's own mode is never loosened by the member's, and a turn another installation
     dispatched never runs at ``off`` (the catalog refuses an ``off`` room policy for that reason)."""
+    from tools.approval_host_policy import managed_mode
+    if (managed := managed_mode()) is not None:
+        return managed
     mode = None
     try:
         from gateway.hosted_room_execution_policy import current_room_execution_policy, profile_routed
@@ -368,10 +371,11 @@ def approval_timeout_notice_kwargs() -> dict:
 
 def _binary_approval_mode(key: str) -> str:
     """Read ``approvals.<key>`` as 'approve' or 'deny' (default deny)."""
+    from tools.approval_host_policy import binary_mode
     try:
         from hermes_cli.config import load_config_readonly
         mode = str(cfg_get(load_config_readonly(), "approvals", key, default="deny")).lower().strip()
-        return "approve" if mode in {"approve", "off", "allow", "yes"} else "deny"
+        return binary_mode(key, "approve" if mode in {"approve", "off", "allow", "yes"} else "deny")
     except Exception:
         return "deny"
 

@@ -12,9 +12,7 @@ def _make_runner() -> GatewayRunner:
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")}
     )
     runner.adapters = {}
-    runner._pending_native_image_paths_by_session = {}
     runner._session_model_overrides = {}
-    runner._session_reasoning_overrides = {}
     return runner
 
 

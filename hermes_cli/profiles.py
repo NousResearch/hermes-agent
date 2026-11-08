@@ -1411,6 +1411,8 @@ def create_profile(
         discard_unpublished_vault_key(clone_key)
         shutil.rmtree(staging, ignore_errors=True)
         raise
+    from hermes_cli.profile_memory_config import notify_memory_provider
+    notify_memory_provider(profile_dir, lambda p: p.on_profile_created(canon, str(profile_dir)))
 
     # Inside a container under s6, register the gateway as a runtime s6 service so
     # `hermes -p <profile> gateway start` supervises via `s6-svc -u` instead of a bare
@@ -2202,8 +2204,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     if archive_root is None:
         raise ValueError("Profile archive must contain exactly one top-level directory.")
 
-    # Default-profile archives have "default/" at top level; importing as "default" would
-    # target ~/.hermes itself.
+    # A "default/" archive imported as "default" would target ~/.hermes itself.
     canon = _canon_valid(inferred_name)
     if canon == "default":
         raise ValueError(
@@ -2233,25 +2234,11 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
                 else:
                     child.unlink()
         shutil.move(str(final_source), str(profile_dir))
+    clear_named_profile_deleted(profile_dir)
     return profile_dir
 
 
 # Rename
-
-def _record_profile_rename(new_dir: Path, old_canon: str) -> None:
-    """Append ``old_canon`` to the renamed profile's ``previous_names`` history.
-    Best-effort: never raises, so a metadata write failure cannot fail the rename.
-
-    Only reached for a real slug change — ``rename_profile`` returns early for the
-    default profile (display-name only) and refuses ``old == new`` (target exists)."""
-    try:
-        history = read_profile_meta(new_dir).get("previous_names") or []
-        if old_canon not in history:
-            history = [*history, old_canon]
-        write_profile_meta(new_dir, previous_names=history)
-    except Exception as exc:  # unwritable / corrupt profile.yaml — history is advisory
-        logger.debug("profile rename: could not record previous name %r in %s: %s", old_canon, new_dir, exc)
-
 
 def _refuse_rename_without_file_tooling(old_canon: str) -> None:
     """A remote config backend keys each profile's settings by its canonical name, and the plane
@@ -2330,19 +2317,21 @@ def rename_profile(old_name: str, new_name: str) -> Path:
             print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
         raise
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
-    # The tombstone lives at profiles/.deleted/<old_name>; old_dir is gone so nothing can
-    # resurrect it, and a future profile reusing the old name must not read as deleted.
-    if live_mux:
-        clear_named_profile_deleted(old_dir)
+    clear_named_profile_deleted(old_dir)
+    clear_named_profile_deleted(new_dir)
 
     # 2b. Record the rename so Bot Mode group chats can re-link persisted
     # member descriptors to the new slug (#110200). Best-effort: a metadata
     # write failure must never fail the rename itself.
+    from hermes_cli.profile_identity import _record_profile_rename
     _record_profile_rename(new_dir, old_canon)
 
     # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
     from hermes_cli.profiles_honcho import migrate_honcho_profile_host
     migrate_honcho_profile_host(old_canon, new_canon, new_dir)
+    # 3b. Let the profile's memory provider re-key what it stores under the old name.
+    from hermes_cli.profile_memory_config import notify_memory_provider
+    notify_memory_provider(new_dir, lambda p: p.on_profile_renamed(old_canon, new_canon, str(new_dir)))
 
     # 4. Update wrapper script
     remove_wrapper_script(old_canon)

@@ -24,6 +24,8 @@ def test_json_headers_remain_parseable_without_exposing_credentials():
         if "cookie" not in name.lower():  # a slash-led opaque key is a credential, not a path
             slash_key = json.dumps({name: "/abcdef0123456789abcdef0123456789"})
             assert "0123456789abcdef0123" not in redact_sensitive_text(slash_key, force=True)
+        vendor_key = json.dumps({name: "ghp_" + "A1b2C3d4" * 5})
+        assert "«redacted:ghp_" in redact_sensitive_text(vendor_key, force=True, file_read=True, secret_file=True)
 
 
 def test_raw_headers_mask_all_values_without_consuming_shell_or_next_line():

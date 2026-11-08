@@ -175,3 +175,34 @@ async def test_flood_window_uses_the_wait_stated_in_raw_platform_wording(monkeyp
     first_tick = adapter.landed[0][0] if adapter.landed else None
     assert first_tick is not None, adapter.edits  # a 2 s penalty is not stretched into the 30 s default
     assert len(adapter.sent) == 1
+
+
+def _held_progress(edit_results):
+    """The real progress mixin over a transport fake, holding an update owed by a closed window."""
+    import queue
+    from unittest.mock import AsyncMock
+
+    from gateway.run_turn_progress import GatewayTurnProgressMixin
+
+    loop = GatewayTurnProgressMixin()
+    loop._ctx = SimpleNamespace(
+        source=SimpleNamespace(chat_id="-1001"), _progress_metadata={}, _progress_reply_to=None, _cleanup_progress=False,
+        _run_still_current=lambda: True, agent_holder=[SimpleNamespace(is_interrupted=False)],
+        progress_queue=queue.Queue(), last_progress_msg=[None], repeat_count=[0])
+    adapter = SimpleNamespace(
+        name="fake", REQUIRES_EDIT_FINALIZE=False, edit_message=AsyncMock(side_effect=edit_results),
+        send=AsyncMock(return_value=SendResult(success=True, message_id="m2")))
+    st = loop._ProgressEditState(adapter, ["search 0", "long build"], "m1", True, len, 4000, False)
+    st.flood_pending, st.flood_until = True, 0.0
+    return loop, st
+
+
+@pytest.mark.asyncio
+async def test_progress_delivered_by_a_tool_event_is_not_resent_by_the_idle_retry():
+    """The bubble was deleted: the event's fallback send delivers the held line, so idle owes nothing."""
+    loop, st = _held_progress([SendResult(success=False, error="message to edit not found")])
+
+    await loop._progress_send_or_edit(st, "long build")
+    await loop._deliver_flood_pending_progress(st)
+
+    assert [c.kwargs["content"] for c in st.adapter.send.await_args_list] == ["long build"]

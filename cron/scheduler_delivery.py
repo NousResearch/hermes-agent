@@ -1130,6 +1130,7 @@ class _TargetDelivery:
     opened_thread_id: Optional[str]
     live_adapter_ready: bool = False
     live_error: Optional[str] = None  # the live lane's own rejection string, e.g. "send_path_degraded"
+    resolved_thread_id: Optional[str] = None  # numeric id of a named Telegram DM topic (media + mirror)
 
     @property
     def is_relay(self) -> bool:
@@ -1278,19 +1279,27 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
 def _named_dm_topic_route(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]:
     """``telegram:<private_chat>:<topic name>`` (#80483): text goes to the router with the name as the
     target thread (it creates/refreshes the topic by name, retrying once on thread-not-found); media
-    gets the topic id resolved here through the same ``ensure_dm_topic``. Raises when the name cannot
+    and the mirror use the numeric id from ``_resolve_named_dm_topic``. Raises when the name cannot
     be resolved, so the target fails instead of landing in the chat root."""
+    route_metadata = {"job_id": t.job["id"], "notify": t.notify_delivery}
+    media_metadata = {"notify": t.notify_delivery, "thread_id": _resolve_named_dm_topic(t),
+                      "telegram_dm_topic_created_for_send": True}
+    _origin.stamp_origin_discriminators(t, route_metadata, media_metadata)
+    return str(t.thread_id), route_metadata, media_metadata
+
+
+def _resolve_named_dm_topic(t: _TargetDelivery) -> str:
+    """Resolve a named DM topic to its id via the adapter's ``ensure_dm_topic`` (a cache hit after the
+    first call) and record it on ``t``. Re-run after the text send: the router's thread-not-found
+    refresh recreates the topic and updates that cache, so media must not keep the pre-send id."""
     from agent.async_utils import safe_schedule_threadsafe
     from gateway.delivery import _ensure_named_dm_topic
     future = safe_schedule_threadsafe(
         _ensure_named_dm_topic(t.runtime_adapter, str(t.chat_id), str(t.thread_id), refresh=False), t.loop)
     if future is None:
         raise RuntimeError(f"cannot resolve named Telegram topic for {t.where}: gateway loop unavailable")
-    topic_id = future.result(timeout=30)
-    route_metadata = {"job_id": t.job["id"], "notify": t.notify_delivery}
-    media_metadata = {"notify": t.notify_delivery, "thread_id": topic_id, "telegram_dm_topic_created_for_send": True}
-    _origin.stamp_origin_discriminators(t, route_metadata, media_metadata)
-    return str(t.thread_id), route_metadata, media_metadata
+    t.resolved_thread_id = future.result(timeout=30)
+    return t.resolved_thread_id
 
 
 _LIVE_SEND_CONFIRM_TIMEOUT_SECS = 60
@@ -1507,6 +1516,9 @@ def _deliver_via_live_adapter(
         # gateway loop is contended, so each media send would also block its 30s budget, and the text
         # payload is already assumed delivered (#38922). Record the skipped attachments so the drop is
         # visible rather than silently lost.
+        if adapter_ok and not timed_out and text_to_send and t.resolved_thread_id:
+            # Named topic: media follows a thread-not-found refresh made by the text send.
+            media_metadata["thread_id"] = _resolve_named_dm_topic(t)
         if adapter_ok and not timed_out and media_files:
             _live_send_media(t, media_metadata, media_files, delivery_errors, unverified_targets)
         elif timed_out and media_files:

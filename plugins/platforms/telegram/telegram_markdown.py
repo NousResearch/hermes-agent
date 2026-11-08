@@ -55,8 +55,8 @@ def _resolve_emphasis(text: str, stash, escape) -> str:
                 span = text[o_end:start]
                 if use == 1 and "\n" in span:
                     break  # italic must not cross a line
-                if use == 2 and "\n\n" in span:
-                    break  # bold stays within one paragraph
+                if use == 2 and ("\n\n" in span or _crosses_quote_edge(text, o_end, start)):
+                    break  # bold stays within one paragraph and on one side of a quote's edge
                 kind = "bold" if use == 2 else "italic"
                 opener[6].append((kind, idx))
                 closes.append((kind, stack[-1]))
@@ -69,6 +69,15 @@ def _resolve_emphasis(text: str, stash, escape) -> str:
             stack.append(idx)
 
     return _render_emphasis(tokens, stash, escape)
+
+
+def _crosses_quote_edge(text: str, start: int, end: int) -> bool:
+    """True when a newline in text[start:end] borders a quote line: Telegram ends a blockquote at a
+    newline into non-quote text, an entity still open there is rejected, and an entity spanning
+    quote lines would swallow the next line's > marker."""
+    quote = re.compile(rf'(?:{_EXPANDABLE_QUOTE})?>')
+    is_quote = lambda pos: quote.match(text, text.rfind('\n', 0, pos) + 1) is not None
+    return any(is_quote(start + m.start()) or is_quote(start + m.end()) for m in re.finditer('\n', text[start:end]))
 
 
 def _emphasis_marks(tok, depth: dict) -> tuple:
@@ -184,6 +193,8 @@ def to_markdown_v2(content: str) -> str:
     # 3) Convert markdown links – escape the display text; inside the URL
     #    only ')' and '\' need escaping per the MarkdownV2 spec.
     def _convert_link(m):
+        if _crosses_quote_edge(text, m.start(), m.end()):
+            return m.group(0)  # Telegram ends the quote at the newline, cutting the link: keep it literal
         url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
         return _ph(f'[{_escape_mdv2(m.group(1))}]({url})')
 

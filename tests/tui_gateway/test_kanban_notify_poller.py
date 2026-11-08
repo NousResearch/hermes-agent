@@ -249,6 +249,43 @@ class TestFormatKanbanEventText:
         text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
         assert "timed out" in text
 
+    def test_review_requested_carries_the_handoff(self):
+        ev = SimpleNamespace(kind="review_requested", payload={"summary": "poller wired\nmore detail"})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "main")
+        assert "sent for review" in text
+        assert "poller wired" in text
+        assert "more detail" not in text
+
+    def test_review_requested_without_summary_leaves_no_none_literal(self):
+        ev = SimpleNamespace(kind="review_requested", payload={"summary": None})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert "sent for review" in text
+        assert "None" not in text
+
+    def test_changes_requested_carries_the_reason(self):
+        ev = SimpleNamespace(kind="changes_requested", payload={"reason": "missing test"})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert "returned by review" in text
+        assert "missing test" in text
+
+    def test_block_loop_detected_stands_alone(self):
+        ev = SimpleNamespace(kind="block_loop_detected", payload={
+            "kind": "needs_input", "recurrences": 5, "reason": "same question twice",
+        })
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert "triage" in text
+        assert "needs_input x5" in text
+        assert "same question twice" in text
+
+    def test_every_gateway_terminal_kind_is_claimable(self):
+        """The invariant behind ``_KANBAN_NOTIFY_KINDS``: a kind the gateway notifier claims but this poller does not
+        stays unclaimed, and ``claim_unseen_events_for_sub`` then pins the cursor behind it — every later event on
+        that task is muted. Widen the gateway list and this poller silently loses wakes without this guard."""
+        from gateway.kanban_watchers_notifier import TERMINAL_KINDS
+        from tui_gateway.session_notifications import _KANBAN_NOTIFY_KINDS
+
+        assert set(TERMINAL_KINDS) <= set(_KANBAN_NOTIFY_KINDS)
+
 
 class TestNotificationPollerLoopKanbanWiring:
     """Drive a real TUI subscription through ``_notification_poller_loop``.
@@ -348,3 +385,24 @@ class TestNotificationPollerLoopKanbanWiring:
         assert any(tid in text for text in submits), submits
         assert session["_kanban_pending"] == []
         assert session["running"] is True
+
+
+class TestReviewHandoffDelivery:
+    """A real ``request_review`` transition must reach the TUI poller (#151134). Before ``review_requested`` joined
+    ``_KANBAN_NOTIFY_KINDS`` the event was left unclaimed, so the implementer's session got no wake and the pinned
+    cursor muted every later event on that task."""
+
+    def test_review_requested_is_delivered(self):
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            assert kb.request_review(conn, tid, summary="implemented the thing", reviewer="reviewer")
+        finally:
+            conn.close()
+
+        texts = _collect_kanban_notifications(_session())
+
+        assert len(texts) == 1
+        assert tid in texts[0]
+        assert "sent for review" in texts[0]
+        assert "implemented the thing" in texts[0]

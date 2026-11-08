@@ -6,6 +6,9 @@ _UNSAFE_URL_PLACEHOLDER = "<unparseable URL redacted>"
 _FILE_NAME = re.compile(r"[\w-]{1,40}\.[A-Za-z0-9]{1,5}")
 # A host worth naming: a DNS name / IPv4 (``\w`` keeps IDN) or an IPv6 literal with a zone id.
 _PLAUSIBLE_HOST = re.compile(r"[\w.-]+|[0-9a-f:.]+(%[\w.-]+)?")
+# A URL that is nothing but ``scheme://host[:port]`` (trailing slashes allowed): the only shape whose
+# rendering can show all of it, modulo the case and port zero-padding that parsing normalises.
+_BARE_AUTHORITY = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*)://(\[[^\]]*\]|[^:/@?#\[\]]*)(?::([0-9]{1,5}))?/*")
 
 
 def _authority_for_log(raw: str, parsed) -> str | None:
@@ -85,6 +88,16 @@ def describe_proxy_error(exc: BaseException, proxy_url: str | None) -> str | Non
     fragment), so no substring redaction of that text is complete: none of it is shown."""
     proxy = str(proxy_url or "")
     shown = safe_proxy_url_for_log(proxy, max_len=len(proxy) + 64)
-    if not proxy or shown == proxy.rstrip("/"):
+    if not proxy or shown == _canonical_bare_authority(proxy):
         return None
     return f"{type(exc).__name__} via {shown}"
+
+
+def _canonical_bare_authority(url: str) -> str | None:
+    """``url`` as rendering prints it (lowercased scheme and host, integer port) when it is only
+    ``scheme://host[:port]``, else None: ``HTTP://Proxy:03128`` holds nothing ``http://proxy:3128``
+    leaves out, so it keeps the full error text."""
+    m = _BARE_AUTHORITY.fullmatch(url)
+    if not m:
+        return None
+    return f"{m[1].lower()}://{m[2].lower()}" + (f":{int(m[3])}" if m[3] else "")

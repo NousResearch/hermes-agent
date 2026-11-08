@@ -207,7 +207,10 @@ def test_slack_connect_error(monkeypatch, caplog, proxy, password):
     _assert_safe(_logs(caplog), password, exc)
 
 
-@pytest.mark.parametrize("proxy", [None, "http://proxy.example.com:3128", "socks5://10.0.0.1:1080"])
+@pytest.mark.parametrize("proxy", [
+    None, "http://proxy.example.com:3128", "socks5://10.0.0.1:1080",
+    # Rendering lowercases scheme/host and drops port zero-padding; nothing is left out.
+    "HTTP://proxy:3128", "http://Proxy.Corp:3128", "http://[2001:DB8::1]:3128", "http://proxy:03128/"])
 def test_error_through_a_secret_free_proxy_keeps_its_text(monkeypatch, caplog, proxy):
     """No proxy, or one whose URL is all shown: no secret involved, the user keeps the detail."""
     from plugins.platforms.matrix import adapter as matrix_adapter

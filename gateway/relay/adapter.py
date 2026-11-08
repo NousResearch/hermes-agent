@@ -117,9 +117,9 @@ def _profile_from_session_key(session_key: str) -> Optional[str]:
 class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
     """Generic relay adapter advertising a connector-negotiated capability profile."""
 
-    # Connector egress splits against negotiated max_message_length, so the
-    # gateway-level cap must not pre-truncate relay deliveries.
+    # The connector splits to max_message_length (never pre-truncate); its result cannot report a lost chunk.
     splits_long_messages = True
+    reports_partial_delivery = False
 
     def __init__(
         self,

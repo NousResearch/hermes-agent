@@ -811,6 +811,10 @@ def _kept_shared_launcher(name: str, local: Path, store: Path, own: Path | None)
         if not python.is_file():
             dead.append(target)
             continue
+        # A legacy checkout venv is not another home's managed store.
+        # Compare paths without resolving the interpreter: venv Python may be a symlink.
+        if any(python.is_relative_to(local.parent.parent / name) for name in ("venv", ".venv")):
+            continue
         try:
             # Resolve the store's directories, not the interpreter: a store
             # Python may link to one shared outside it.

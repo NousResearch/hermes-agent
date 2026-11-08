@@ -117,6 +117,32 @@ def test_missing_dead_and_same_store_launchers_still_publish(tmp_path, monkeypat
     assert all(_launchers._launcher_python(repo / ".hermes" / "bin" / name) == temp_python for name in healed)
 
 
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("directory", ["venv", ".venv"])
+def test_live_legacy_checkout_venv_launcher_is_replaced(tmp_path, monkeypatch, directory):
+    home, managed_python = _make_home(tmp_path, "default")
+    repo = _make_repo(tmp_path)
+    _isolate(tmp_path, monkeypatch, home)
+
+    local = repo / ".hermes" / "bin"
+    local.mkdir(parents=True)
+    stale_python = repo / directory / "bin" / "python3"
+    stale_python.parent.mkdir(parents=True)
+    stale_python.touch()
+    launcher = local / "hermes"
+    launcher.write_text(
+        f"#!/bin/sh\nexec {stale_python} -I -c 'pass' \"$@\"\n",
+        encoding="utf-8",
+    )
+    assert _launchers._launcher_python(launcher) == stale_python
+
+    written = _launchers.ensure_install_launchers(repo, local)
+
+    assert len(written) == len(_launchers.ENTRY_POINTS)
+    assert _launchers._launcher_python(launcher) == managed_python
+    assert stale_python.is_file(), "publication must not delete the old environment"
+
+
 def _write_dead_exe(target: Path, missing_python: Path) -> None:
     """distlib-shaped launcher: loader stub, '#!<python> -I' shebang, zip."""
     import io

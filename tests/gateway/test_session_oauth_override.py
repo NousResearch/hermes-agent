@@ -34,7 +34,7 @@ def _write_auth(home, provider, token):
 
 
 @pytest.mark.parametrize("provider", ["openai-codex", "xai-oauth"])
-def test_managed_session_override_reresolves_each_turn_and_recovers_from_auth_loss(tmp_path, monkeypatch, provider):
+def test_managed_session_override_reresolves_each_turn_and_keeps_route_on_auth_loss(tmp_path, monkeypatch, provider):
     """Catches both the keyed fast return and later re-overlay of the stale key/pool."""
     runner = _runner(monkeypatch, tmp_path)
     endpoint = PROVIDER_REGISTRY[provider].inference_base_url
@@ -62,16 +62,14 @@ def test_managed_session_override_reresolves_each_turn_and_recovers_from_auth_lo
                 assert pool.entry_id_for_api_key(token) is not None
     assert len(signatures) == 3, "a new credential must rebuild, not reuse the old authenticated agent"
 
+    # The auth store cannot vouch for a bearer (logged out, wrong host, wrong provider, empty key):
+    # the session keeps its route and last-known credential instead of moving to the default route.
+    last = runtime["api_key"]
     _write_auth(tmp_path, provider, None)
     model, runtime = runner._resolve_session_agent_runtime(session_key="session")
-    assert (model, runtime["provider"], runtime["api_key"]) == ("default-model", "openrouter", "default-key")
-    assert provider in runner._pre_agent_fallback_notice
-    assert runner._session_model_overrides["session"]["model"] == "selected-model"
+    assert (model, runtime["provider"], runtime["api_key"]) == ("selected-model", provider, last)
     _write_auth(tmp_path, provider, "fixture-D")
     assert runner._resolve_session_agent_runtime(session_key="session")[1]["api_key"] == "fixture-D"
-    assert runner._pre_agent_fallback_notice is None
-
-    # A provider's newly configured proxy key must not be re-paired with the pinned official host.
     for fresh_route in (
         {"provider": provider, "api_key": "proxy-only", "base_url": "https://proxy.invalid/v1"},
         {"provider": "xai-oauth" if provider == "openai-codex" else "openai-codex",
@@ -80,8 +78,8 @@ def test_managed_session_override_reresolves_each_turn_and_recovers_from_auth_lo
     ):
         monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs_for_provider", lambda *a, **k: dict(fresh_route))
         model, runtime = runner._resolve_session_agent_runtime(session_key="session")
-        assert (model, runtime["provider"], runtime["api_key"]) == ("default-model", "openrouter", "default-key")
-        assert provider in runner._pre_agent_fallback_notice
+        assert (model, runtime["provider"], runtime["base_url"], runtime["api_key"]) == (
+            "selected-model", provider, endpoint + "/", "fixture-D")
 
 
 @pytest.mark.asyncio
@@ -193,3 +191,19 @@ def test_managed_session_route_bypasses_channel_resolution(tmp_path, monkeypatch
     assert runtime["credential_pool"] is None
     assert override["credential_pool"] is None
     channel_lookup.assert_not_called()
+
+
+def test_managed_session_override_on_env_overridden_codex_host_follows_auth_store(tmp_path, monkeypatch):
+    """HERMES_CODEX_BASE_URL moves the managed host; the auth store still owns its bearer."""
+    runner = _runner(monkeypatch, tmp_path)
+    host = "http://127.0.0.1:9/v1"
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", host)
+    (tmp_path / "config.yaml").write_text("model:\n  provider: openrouter\n  default: default-model\n")
+    runner._session_model_overrides["session"] = {
+        "model": "selected-model", "provider": "openai-codex", "api_key": "account-A",
+        "base_url": host, "api_mode": "codex_responses", "credential_pool": None,
+    }
+    for token in ("account-A", "account-B"):
+        _write_auth(tmp_path, "openai-codex", token)
+        model, runtime = runner._resolve_session_agent_runtime(session_key="session")
+        assert (model, runtime["base_url"], runtime["api_key"]) == ("selected-model", host, token)

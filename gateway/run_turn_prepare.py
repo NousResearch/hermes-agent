@@ -99,13 +99,19 @@ def _session_override_uses_managed_oauth(override: Optional[dict]) -> bool:
     custom host's credential from the official provider's store (or the reverse).
     """
     from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.auth_codex import _codex_base_url
+    from hermes_cli.auth_xai import _xai_oauth_inference_base_url
 
     if not override or override.get("owns_credentials"):
         return False
-    provider = override.get("provider")
-    if provider not in {"openai-codex", "xai-oauth"}:
+    provider = str(override.get("provider") or "")
+    effective = {"openai-codex": _codex_base_url, "xai-oauth": _xai_oauth_inference_base_url}.get(provider)
+    if effective is None:
         return False
-    return (override.get("base_url") or "").rstrip("/") == PROVIDER_REGISTRY[provider].inference_base_url.rstrip("/")
+    # The managed host is the registry default OR its documented env override (HERMES_CODEX_BASE_URL /
+    # HERMES_XAI_BASE_URL): the auth store still owns the bearer for either.
+    managed_hosts = {PROVIDER_REGISTRY[provider].inference_base_url.rstrip("/"), effective().rstrip("/")}
+    return (override.get("base_url") or "").rstrip("/") in managed_hosts
 
 
 def _resolve_session_override_runtime(override: dict, *, managed_oauth: bool) -> dict:
@@ -218,6 +224,14 @@ class GatewayTurnPrepareMixin:
             try:
                 runtime_kwargs = _resolve_session_override_runtime(override, managed_oauth=managed_oauth)
             except Exception as exc:
+                if managed_oauth and override_runtime.get("api_key"):
+                    # The auth store cannot vouch for a newer bearer: keep the session's last-known one
+                    # (pre-refresh behaviour) rather than silently moving the session off its route.
+                    logger.warning("Session /model override %s: auth store did not resolve (%s); keeping the "
+                                   "session's last-known credential", override["provider"], exc)
+                    if override_runtime.get("credential_pool") is None:
+                        override_runtime["credential_pool"] = _credential_pool_for_provider(override.get("provider"))
+                    return _recover_or_remember_model(self, skey, override_model), override_runtime
                 # Layering the override on the default runtime sent its model to the default provider's
                 # endpoint (openai-codex on the Nous URL). Run this turn on the whole default route and say
                 # so; the persisted override is kept, so the next turn retries it.

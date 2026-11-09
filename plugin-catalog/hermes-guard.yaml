@@ -1,0 +1,27 @@
+name: hermes-guard
+title: Hermes Guard
+repo: https://github.com/elianjuan-g/hermes-guard
+sha: 07a9c180eacb3cfa8bac7aa4e9900bc33dba140b
+version: "1.1.1"
+description: >-
+  Defensive prompt-injection guard for Hermes Agent: a pre_llm_call hook scans every inbound message locally (deterministic patterns, no model calls) for Unicode smuggling, hidden instructions, special tokens, and Base64-decoded payloads; a pre_tool_call hook blocks RCE/subshell patterns, sensitive credential paths, and call-ID races. High-confidence attacks are blocked; suspicious messages are quarantined for manual review via the guard_review tool (release is manual re-send by design). Includes a Predator pattern store (human-corrected signatures), a SHA-256 hash-chained ledger, secret redaction, a live Posture Score, a 28-vector simulation arena (21 message + 7 tool-arg), and a standalone Obsidian & Gold HUD. Python stdlib + SQLite only.
+  Disclosure — no network calls, no credentials read or stored, no data leaves the machine, no core overrides, no self-updater.
+  Phase 3 verified live on Hermes 0.21.5 (validate 13/13, doctor OK, plugins list enabled, live hook-fire test: attack blocked on both hooks, benign passed); 152/152 tests pass in the VM.
+maintainer: elianjuan-g
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/elianjuan-g/hermes-guard
+known_issues:
+  - "Quarantine release is manual re-send; there is no one-click release."
+  - "Talking about jailbreak phrases — for example, quoting one to discuss it — can be flagged, because the scanner sees the pattern, not the intent."
+  - "Very short Base64 tokens (<20 chars, or token entropy <4.0) are skipped by design to avoid false positives on ordinary words."
+  - "The register_tool keyword style (>= 0.23) is per the documented API, not live-verified; the 0.21.5 positional fallback is the live-verified path."
+capabilities:
+  provides_tools:
+    - guard_review
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

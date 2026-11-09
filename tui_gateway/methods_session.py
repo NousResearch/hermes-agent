@@ -1445,10 +1445,7 @@ def _(rid, params: dict, session: dict) -> dict:
     usage: dict = _session_usage_snapshot(session)
     if session.get("agent") is None and not usage:
         usage = {"calls": 0, "input": 0, "output": 0, "total": 0}
-    from agent.account_usage import nous_credits_usage_fields  # never raises; a Nous route only (portal fetch)
-    with _session_profile_runtime_scope(session):
-        if _usage_on_nous_route(_usage_route(session)):
-            usage.update(nous_credits_usage_fields(session.get("agent")))
+    usage.update(_usage_nous_fields(session))
     return _ok(rid, usage)
 
 

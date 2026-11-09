@@ -58,5 +58,6 @@ def test_usage_slash_shows_account_limits_before_first_turn_inside_session_scope
     assert scoped == ["enter", "exit"]
     assert fetched == ["openai-codex"]
     assert "Account limits" in out, out
-    assert "Nous credits" not in out, out  # a Codex route has no Nous balance to top up
+    # The profile's Nous balance follows the Codex block as its own section, read in the same scope.
+    assert out.index("Account limits") < out.index("Nous Portal balance") < out.index("Nous credits: 100 remaining"), out
     assert "send a message first" not in out

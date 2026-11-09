@@ -145,16 +145,25 @@ def _usage_route(session: dict) -> dict:
 
 
 def _usage_on_nous_route(route: dict) -> bool:
-    """The Nous balance and /topup CTA apply to a Nous route only, never another provider's session."""
+    """The /topup CTA applies to a Nous route only; another provider's session sees the balance alone."""
     from agent.billing_links import is_nous_inference_route
     return is_nous_inference_route(route.get("provider") or "", route.get("base_url") or "")
 
 
+def _usage_nous_fields(session: dict) -> dict:
+    """``session.usage``'s Nous fields: ``nous_route`` (the /topup CTA applies), plus the balance lines
+    whenever Nous is signed in (``nous_credits_usage_fields``, which never raises), in the session's scope."""
+    from agent.account_usage import nous_credits_usage_fields
+    with _session_profile_runtime_scope(session):
+        nous_route = _usage_on_nous_route(_usage_route(session))
+        return {**nous_credits_usage_fields(session.get("agent"), nous_route=nous_route), "nous_route": nous_route}
+
+
 def _usage_account_blocks(session: dict) -> list[str]:
-    """Provider limits then Nous credits (Nous route only), as CLI/messaging /usage show them; neither
-    needs an agent. Both read the session profile's credentials, unreadable outside its scope when
-    multiplexed (#132422)."""
-    from agent.account_usage import account_limit_lines, nous_credits_lines
+    """Provider limits then the Nous section (``nous_usage_lines``), as CLI/messaging /usage show them;
+    neither needs an agent. Both read the session profile's credentials, unreadable outside its scope
+    when multiplexed (#132422)."""
+    from agent.account_usage import account_limit_lines, nous_usage_lines
     agent = session.get("agent")
     lines: list[str] = []
     with _session_profile_runtime_scope(session):
@@ -162,14 +171,12 @@ def _usage_account_blocks(session: dict) -> list[str]:
         with contextlib.suppress(Exception):
             lines += account_limit_lines(route.get("provider"), base_url=route.get("base_url"),
                                          api_key=route.get("api_key"))
-        if not _usage_on_nous_route(route):
-            return lines
         with contextlib.suppress(Exception):
             # Window plans: the last reply's gauges lift the portal's lagging percents (``is True``: a
-            # Mock agent's attribute is not a plan). Every other account: exactly main's call.
+            # Mock agent's attribute is not a plan). Every other account: no gauges.
             state = getattr(agent, "_credits_state", None)
             window = getattr(state, "is_usage_window", False) is True
-            lines += nous_credits_lines(credits_state=state) if window else nous_credits_lines()
+            lines += nous_usage_lines(nous_route=_usage_on_nous_route(route), credits_state=state if window else None)
     return lines
 
 

@@ -36154,13 +36154,21 @@
       },
       "SessionAccountUsage": {
         "additionalProperties": false,
-        "description": "``gateway/session_usage.py::account_usage``: the provider plan-limits block of ``/usage``.\n``nous_route``: the route is Nous inference, so the Nous balance and ``/topup`` CTA apply.",
+        "description": "``gateway/session_usage.py::account_usage``: the account blocks of ``/usage``. ``lines``: the\nroute's provider plan limits. ``nous_lines``: the Nous balance whenever Nous is signed in on the\nprofile, after them (headed as a separate account off a Nous route). ``nous_route``: the route is\nNous inference, so the ``/topup`` CTA applies.",
         "properties": {
           "lines": {
             "items": {
               "type": "string"
             },
             "title": "Lines",
+            "type": "array"
+          },
+          "nous_lines": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Nous Lines",
             "type": "array"
           },
           "nous_route": {
@@ -40996,6 +41004,18 @@
             ],
             "default": null,
             "title": "Credits Usage Window"
+          },
+          "nous_route": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Nous Route"
           }
         },
         "title": "SessionUsageResult",
@@ -50281,7 +50301,7 @@
     },
     {
       "name": "session.account_usage",
-      "summary": "The /usage provider plan-limits lines for this session's route (built-in or plugin fetcher).",
+      "summary": "The /usage account blocks for this session's route: provider plan limits, then the Nous balance.",
       "params": [
         {
           "name": "params",

@@ -265,15 +265,18 @@ class SessionAccountUsageParams(Params):
 
 
 class SessionAccountUsage(Result):
-    """``gateway/session_usage.py::account_usage``: the provider plan-limits block of ``/usage``.
-    ``nous_route``: the route is Nous inference, so the Nous balance and ``/topup`` CTA apply."""
+    """``gateway/session_usage.py::account_usage``: the account blocks of ``/usage``. ``lines``: the
+    route's provider plan limits. ``nous_lines``: the Nous balance whenever Nous is signed in on the
+    profile, after them (headed as a separate account off a Nous route). ``nous_route``: the route is
+    Nous inference, so the ``/topup`` CTA applies."""
 
     lines: list[str]
+    nous_lines: list[str] = []
     nous_route: bool
 
 
 canonical_method("session.account_usage", params=SessionAccountUsageParams, result=SessionAccountUsage,
-                 doc="The /usage provider plan-limits lines for this session's route (built-in or plugin fetcher).")
+                 doc="The /usage account blocks for this session's route: provider plan limits, then the Nous balance.")
 
 
 class RollbackSessionDiffParams(Params):

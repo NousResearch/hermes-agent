@@ -1,9 +1,9 @@
 """Messaging ``/usage`` before the first turn reads the route that turn resolves.
 
 With no resident agent and no persisted route, ``/usage`` used the raw ``model.provider``. Under
-``provider: auto`` with a saved Nous login that is ``auto``, so the Nous balance and allowance bars
-were skipped although the first turn runs on Nous. It now asks ``_resolve_session_agent_runtime``,
-the resolver the turn itself calls.
+``provider: auto`` with a saved Nous login that is ``auto``: no provider limits were fetched and the
+session did not read as a Nous route, although the first turn runs on Nous. It now asks
+``_resolve_session_agent_runtime``, the resolver the turn itself calls.
 """
 from unittest.mock import MagicMock
 
@@ -33,10 +33,13 @@ async def test_usage_right_after_a_nous_login_shows_the_nous_balance(monkeypatch
     fetched = []
     monkeypatch.setattr("gateway.slash_commands_status.fetch_account_usage",
                         lambda provider, base_url=None, api_key=None: fetched.append((provider, base_url)))
-    monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda **_kw: ["Nous credits: 7 remaining"])
+    nous_calls = []
+    monkeypatch.setattr("agent.account_usage.nous_credits_lines",
+                        lambda **kw: nous_calls.append(kw["nous_route"]) or ["Nous credits: 7 remaining"])
 
     result = await runner._handle_usage_command(MagicMock())
 
     assert resolved == [SK]
     assert fetched == [("nous", NOUS_URL)]
+    assert nous_calls == [True]  # a Nous route: the balance with its top-up lines
     assert "Nous credits: 7 remaining" in result

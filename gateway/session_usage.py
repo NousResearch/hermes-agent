@@ -228,11 +228,12 @@ def snapshot_usage(authority, ref, agent) -> dict | None:
 
 
 async def account_usage(connection, ref, params):
-    """``session.account_usage {session_id}``: the CLI's /usage plan-limits block for the route this
+    """``session.account_usage {session_id}``: the CLI's /usage account blocks for the route this
     session runs (``_session_runtime``: its agent's, else the one its next turn resolves, so
-    ``provider: auto`` is the saved login), fetched off the loop in the owning profile's scope."""
+    ``provider: auto`` is the saved login), fetched off the loop in the owning profile's scope:
+    the provider's plan limits, then the Nous section whenever Nous is signed in (``nous_usage_lines``)."""
     import asyncio
-    from agent.account_usage import account_limit_lines
+    from agent.account_usage import account_limit_lines, nous_usage_lines
     from agent.billing_links import is_nous_inference_route
     from gateway.session_authorities import owner_scope
     from gateway.session_llm_oneshot import _session_runtime
@@ -240,6 +241,7 @@ async def account_usage(connection, ref, params):
     await connection.authority.resolve(connection.actor, ref)
     authority = connection.authority
     runtime = _session_runtime(authority, ref)
+    credits_state = getattr(authority.agent(ref), "_credits_state", None)  # the last reply's Nous gauges
 
     def fetch():
         with owner_scope(authority):
@@ -249,7 +251,9 @@ async def account_usage(connection, ref, params):
                 route = {}
             provider, base_url = route.get("provider") or "", route.get("base_url") or ""
             lines = account_limit_lines(provider, base_url=base_url or None, api_key=route.get("api_key"))
-        return {"lines": lines, "nous_route": is_nous_inference_route(provider, base_url)}
+            nous_route = is_nous_inference_route(provider, base_url)
+            nous = nous_usage_lines(nous_route=nous_route, credits_state=credits_state)
+        return {"lines": lines, "nous_lines": nous, "nous_route": nous_route}
     return await asyncio.to_thread(fetch)
 
 

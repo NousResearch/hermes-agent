@@ -235,7 +235,7 @@ interface CommittedResult {
   total_tokens?: number
 }
 
-const NO_ROUTE: SessionAccountUsage = { lines: [], nous_route: false }
+const NO_ROUTE: SessionAccountUsage = { lines: [], nous_lines: [], nous_route: false }
 
 const isUnknownMethod = (error: unknown): boolean =>
   (error as { code?: number })?.code === RPC_UNKNOWN_METHOD ||
@@ -245,7 +245,7 @@ const isUnknownMethod = (error: unknown): boolean =>
 /** `/usage`: main's session totals panel. The owner's `session.stats` is the same session-cumulative
  * dict its `session.usage` ticks carry (`gateway/session_usage.py`), mapped onto main's `Usage` shape
  * and rendered as the classic CLI's `/usage` is (Usage panel, or "no API calls yet", then the provider
- * plan limits from `session.account_usage`, then the plan CTA). */
+ * plan limits and the Nous section from `session.account_usage`, then the plan CTA on a Nous route). */
 export function canonicalUsage(ctx: SlashRunCtx) {
   const sid = ctx.sid!
 
@@ -277,11 +277,12 @@ export function canonicalUsage(ctx: SlashRunCtx) {
         return
       }
 
-      for (const line of account?.lines ?? []) {
+      // The route's provider limits, then the Nous section (signed in only; its own heading off a Nous route).
+      for (const line of [...(account?.lines ?? []), ...(account?.nous_lines ?? [])]) {
         ctx.transcript.sys(line)
       }
 
-      // The Nous CTA and plan bars apply to a Nous route only (an older owner sends no flag).
+      // The /topup CTA and plan bars apply to a Nous route only (an older owner sends no flag).
       if (account?.nous_route === false) {
         return
       }

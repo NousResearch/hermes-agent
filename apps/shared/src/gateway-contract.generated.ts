@@ -3604,6 +3604,7 @@ export interface SessionUsageResult {
   plan_gauge?: PlanGauge | null
   credits_lines?: string[] | null
   credits_usage_window?: boolean | null
+  nous_route?: boolean | null
   [key: string]: unknown
 }
 export interface SessionContextBreakdownParams {
@@ -4899,9 +4900,10 @@ export interface SessionStats {
 export interface SessionAccountUsageParams {
   session_id: string
 }
-/** ``gateway/session_usage.py::account_usage``: the provider plan-limits block of ``/usage``. ``nous_route``: the route is Nous inference, so the Nous balance and ``/topup`` CTA apply. */
+/** ``gateway/session_usage.py::account_usage``: the account blocks of ``/usage``. ``lines``: the route's provider plan limits. ``nous_lines``: the Nous balance whenever Nous is signed in on the profile, after them (headed as a separate account off a Nous route). ``nous_route``: the route is Nous inference, so the ``/topup`` CTA applies. */
 export interface SessionAccountUsage {
   lines: string[]
+  nous_lines?: string[]
   nous_route: boolean
 }
 export interface RollbackSessionDiffParams {
@@ -7128,7 +7130,7 @@ export interface CanonicalRpcMethods {
   'rollback.session_diff': { params: RollbackSessionDiffParams; result: RollbackSessionDiffResult }
   /** Owner identity and the canonical capabilities a client may rely on. */
   'runtime.describe': { params: RuntimeDescribeParams; result: RuntimeDescribeResult }
-  /** The /usage provider plan-limits lines for this session's route (built-in or plugin fetcher). */
+  /** The /usage account blocks for this session's route: provider plan limits, then the Nous balance. */
   'session.account_usage': { params: SessionAccountUsageParams; result: SessionAccountUsage }
   /** The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row. */
   'session.automation': { params: SessionAutomationParams; result: SessionAutomationResult }

@@ -2,7 +2,7 @@
 
 ``session.usage`` and ``slash.exec /usage`` on a not-yet-built session guessed the route from the
 profile's ``model.provider``: ``auto`` read as no provider at all (a Nous login lost its balance),
-the session's composer pick was ignored (a Codex pick under a Nous profile got the Nous balance),
+the session's composer pick was ignored (a Codex pick under a Nous profile got the Nous CTA),
 and the read ran outside the session's profile scope. Both now resolve the route the agent build
 resolves (``_resolve_agent_model_runtime``) inside ``_session_profile_runtime_scope``.
 """
@@ -40,8 +40,7 @@ def rig(monkeypatch):
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve)
     monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"provider": "auto", "default": "m"}})
     monkeypatch.setattr(server, "_session_usage_snapshot", lambda session: {})
-    monkeypatch.setattr("agent.account_usage.nous_credits_usage_fields", lambda agent: {"credits_remaining": 7})
-    monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda **kw: ["Nous credits: 7 remaining"])
+    monkeypatch.setattr("agent.account_usage.nous_credits_view", lambda **kw: (["Nous credits: 7 remaining"], False))
     monkeypatch.setattr("agent.account_usage.fetch_account_usage", lambda *a, **kw: None)
     return scoped, resolved
 
@@ -61,18 +60,22 @@ def _usage(session):
             server._sessions.pop("sid-cold", None)
 
 
-def test_an_auto_profile_logged_in_to_nous_keeps_its_balance_before_the_first_turn(rig):
+def test_an_auto_profile_logged_in_to_nous_is_a_nous_route_before_the_first_turn(rig):
     scoped, _ = rig
     reply = _usage(_cold())
-    assert reply["result"].get("credits_remaining") == 7, reply
+    assert reply["result"]["nous_route"] is True, reply
+    assert reply["result"]["credits_lines"] == ["Nous credits: 7 remaining"]
     assert scoped == ["/profiles/coder"]
     assert "Nous credits: 7 remaining" in server._format_live_usage_output("sid-cold", _cold(), "")
 
 
-def test_a_codex_pick_under_a_nous_profile_gets_no_nous_balance(rig):
+def test_a_codex_pick_under_a_nous_profile_is_not_a_nous_route(rig):
+    from agent.account_usage import NOUS_OTHER_ROUTE_HEADING
     _, resolved = rig
     pick = {"model_override": {"model": "gpt-5.3-codex", "provider": "openai-codex"}}
     reply = _usage(_cold(**pick))
-    assert "credits_remaining" not in reply["result"], reply
+    assert reply["result"]["nous_route"] is False, reply
+    assert reply["result"]["credits_lines"][0] == NOUS_OTHER_ROUTE_HEADING  # the balance, as its own section
     assert resolved == ["openai-codex"]
-    assert "Nous credits" not in server._format_live_usage_output("sid-cold", _cold(**pick), "")
+    out = server._format_live_usage_output("sid-cold", _cold(**pick), "")
+    assert NOUS_OTHER_ROUTE_HEADING in out

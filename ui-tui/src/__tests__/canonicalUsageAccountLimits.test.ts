@@ -120,3 +120,19 @@ it('/usage whose read is refused shows no Nous CTA or plan bars', async () => {
   expect(sys.mock.calls.map(([line]) => String(line))).toEqual([])
   expect(request).not.toHaveBeenCalledWith('billing.state', expect.anything())
 })
+
+it('/usage on another provider with Nous signed in shows its limits, then the Nous section, and no CTA', async () => {
+  const NOUS = ['Nous Portal balance (a separate account: this session runs on another provider)', 'Top-up credits: $7.75']
+
+  const { request, slash, sys } = run({
+    'billing.state': () => ({ ok: true }),
+    'session.account_usage': () => ({ lines: LIMITS, nous_lines: NOUS, nous_route: false }),
+    'session.stats': () => STATS
+  })
+
+  slash('/usage')
+  await flush()
+
+  expect(sys.mock.calls.map(([line]) => String(line))).toEqual([...LIMITS, ...NOUS])
+  expect(request).not.toHaveBeenCalledWith('billing.state', expect.anything())
+})

@@ -270,7 +270,7 @@ def _usage_window_rows(gauges: Any, *, paused_reason: Any,
     return out, lines
 
 
-def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
+def build_nous_credits_snapshot(account_info, *, cta: bool = True) -> Optional[AccountUsageSnapshot]:
     """NousPortalAccountInfo → /usage snapshot: dollar magnitudes + renewal date + portal CTA, plus a ``% used``
     gauge when the portal supplies ``monthly_credits``. A usage-window account (``usage_window`` present) shows
     its allowances as percent used, the large-model line and its top-up balance instead. Fail-open → None."""
@@ -298,7 +298,7 @@ def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
             if sub is not None and (period_end := getattr(sub, "current_period_end", None)):
                 from agent.billing_usage import format_renews
                 details.append(f"Renews: {format_renews(period_end) or period_end}")
-            return _nous_snapshot(windows, details, ["Top up via /topup"], source="portal-account",
+            return _nous_snapshot(windows, details, ["Top up via /topup"] if cta else [], source="portal-account",
                                   plan=getattr(sub, "plan", None) if sub is not None else None, usage_window=True)
         # Gauge needs a positive cap AND a finite remaining <= cap (numeric fields, NOT a server *_usd); used =
         # cap - remaining clamped [0,100] so debt reads 100%. NaN/Inf (json.loads accepts bare NaN → "$nan") and
@@ -326,7 +326,8 @@ def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
                 details.append(f"Renews: {period_end}")
         if getattr(account_info, "paid_service_access", None) is False:
             details.append(_DEPLETED_LINE)
-        return _nous_snapshot(windows, details, [f"Top up: {nous_portal_topup_url(account_info)}", "(or run /topup)"],
+        tail = [f"Top up: {nous_portal_topup_url(account_info)}", "(or run /topup)"] if cta else []
+        return _nous_snapshot(windows, details, tail,
                               source="portal-account", plan=getattr(sub, "plan", None) if sub is not None else None)
     except (AttributeError, TypeError):
         return None
@@ -342,7 +343,7 @@ def _nous_logged_in() -> bool:
         return False
 
 
-def _fetch_portal_account(timeout: float):
+def _fetch_portal_account(timeout: float, *, stored_token_only: bool = False):
     """Wall-clock-bounded fresh portal account fetch (raises on any failure/timeout).
 
     No ``with`` block on purpose: ``Executor.__exit__`` joins the worker via
@@ -350,14 +351,17 @@ def _fetch_portal_account(timeout: float):
     answers would hold the caller until the provider's own timeout instead of
     ``timeout``. The abandoned daemon worker runs on to its own network timeout
     and never blocks the caller or process exit; its eventual exception is
-    drained so GC never logs "exception was never retrieved"."""
+    drained so GC never logs "exception was never retrieved". ``stored_token_only``: read with the stored
+    token, never refreshing it (``stored_token_account_info``)."""
     import contextvars
-    from hermes_cli.nous_account import get_nous_portal_account_info
+    from functools import partial
+    from hermes_cli.nous_account import get_nous_portal_account_info, stored_token_account_info
     from tools.daemon_pool import DaemonThreadPoolExecutor
 
     context = contextvars.copy_context()
     pool = DaemonThreadPoolExecutor(max_workers=1)
-    future = pool.submit(context.run, get_nous_portal_account_info, force_fresh=True)
+    read = stored_token_account_info if stored_token_only else partial(get_nous_portal_account_info, force_fresh=True)
+    future = pool.submit(context.run, read)
     try:
         return future.result(timeout=timeout)
     except BaseException:
@@ -410,17 +414,20 @@ def apply_header_gauge(snapshot: Optional[AccountUsageSnapshot], credits_state: 
     return replace(snapshot, windows=tuple(windows), details=details)
 
 
-def nous_credits_lines(*, markdown: bool = False, timeout: float = 10.0, credits_state: Any = None) -> list[str]:
+def nous_credits_lines(*, markdown: bool = False, timeout: float = 10.0, credits_state: Any = None,
+                       nous_route: bool = True) -> list[str]:
     """Rendered Nous-credits /usage lines, or [] when there's nothing to show. Independent of any live agent
     (logged-in gate, then a bounded portal fetch); shared by CLI ``_show_usage`` and the TUI ``session.usage`` RPC.
     Fail-open: any hiccup or timeout → []. HERMES_DEV_CREDITS_FIXTURE renders from the fixture instead of the portal.
     ``credits_state`` is the last response's header gauge; when it is ahead of the portal, the bars use it."""
-    return nous_credits_view(markdown=markdown, timeout=timeout, credits_state=credits_state)[0]
+    return nous_credits_view(markdown=markdown, timeout=timeout, credits_state=credits_state, nous_route=nous_route)[0]
 
 
-def nous_credits_view(*, markdown: bool = False, timeout: float = 10.0, credits_state: Any = None) -> tuple[list[str], bool]:
+def nous_credits_view(*, markdown: bool = False, timeout: float = 10.0, credits_state: Any = None,
+                      nous_route: bool = True) -> tuple[list[str], bool]:
     """``nous_credits_lines`` plus whether they are the usage-window layout (callers keep today's
-    presentation for everyone else). Fail-open → ``([], False)``."""
+    presentation for everyone else). ``nous_route=False`` (a session on another provider): the stored
+    token only, never refreshed, and no top-up lines. Fail-open → ``([], False)``."""
     try:
         from agent.credits_tracker import dev_fixture_credits_state
         fixture = dev_fixture_credits_state()
@@ -434,7 +441,8 @@ def nous_credits_view(*, markdown: bool = False, timeout: float = 10.0, credits_
         return [], False
     try:
         snapshot = apply_header_gauge(
-            build_nous_credits_snapshot(_fetch_portal_account(timeout)), credits_state,
+            build_nous_credits_snapshot(_fetch_portal_account(timeout, stored_token_only=not nous_route),
+                                        cta=nous_route), credits_state,
         )
         return render_account_usage_lines(snapshot, markdown=markdown), bool(snapshot and snapshot.usage_window)
     except Exception:
@@ -443,15 +451,33 @@ def nous_credits_view(*, markdown: bool = False, timeout: float = 10.0, credits_
         return [], False
 
 
-def nous_credits_usage_fields(agent: Any = None) -> dict[str, Any]:
+def nous_credits_usage_fields(agent: Any = None, *, nous_route: bool = True) -> dict[str, Any]:
     """The ``session.usage`` fields for the Nous credits block: ``credits_lines`` (when there are any) and
-    ``credits_usage_window`` for the usage-window layout. Reads *agent*'s live credits headers. Never raises."""
+    ``credits_usage_window`` for the usage-window layout. Reads *agent*'s live credits headers; off a Nous
+    route the lines are :func:`nous_usage_lines`' separate section. Never raises."""
     try:
-        lines, is_window = nous_credits_view(credits_state=getattr(agent, "_credits_state", None) if agent else None)
+        lines, is_window = nous_credits_view(credits_state=getattr(agent, "_credits_state", None) if agent else None,
+                                             nous_route=nous_route)
     except Exception:
         logger.debug("credits ▸ /usage fields unavailable", exc_info=True)
         return {}
+    lines = lines if nous_route or not lines else [NOUS_OTHER_ROUTE_HEADING, *lines]
     return ({"credits_lines": lines} | ({"credits_usage_window": True} if is_window else {})) if lines else {}
+
+
+# Heads the Nous section of a session another provider runs, so it never reads as that provider's balance.
+NOUS_OTHER_ROUTE_HEADING = "Nous Portal balance (a separate account: this session runs on another provider)"
+
+
+def nous_usage_lines(*, nous_route: bool, markdown: bool = False, credits_state: Any = None) -> list[str]:
+    """``/usage``'s Nous section, after the active provider's block: the balance whenever Nous is signed
+    in on this profile, whatever provider runs the session. Off a Nous route it carries its own heading,
+    reads with the stored token only and has no top-up lines: that session spends another provider's
+    quota, so a top-up nudge would point at the wrong account (a depleted balance keeps its status line)."""
+    lines = nous_credits_lines(markdown=markdown, credits_state=credits_state, nous_route=nous_route)
+    if nous_route or not lines:
+        return lines
+    return [f"**{NOUS_OTHER_ROUTE_HEADING}**" if markdown else NOUS_OTHER_ROUTE_HEADING, *lines]
 
 
 def _snapshot_from_credits_state(state) -> Optional[AccountUsageSnapshot]:

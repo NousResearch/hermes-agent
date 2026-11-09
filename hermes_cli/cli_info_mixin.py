@@ -625,25 +625,43 @@ class CLIInfoMixin:
             return
         self._show_usage()
 
-    def _account_usage_view(self) -> tuple[list[str], bool]:
-        """``(plan-limit lines, nous_route)`` for `/usage`. On a gateway session the owner answers for the
-        route the session runs (``session.account_usage``): this process's provider/base_url pair is not
-        that route once /model or a fallback moved the provider (the launch base_url stays). Off the
-        gateway, or on an owner older than the read, the CLI's own route."""
+    def _account_usage_view(self) -> tuple[list[str], list[str] | None, bool]:
+        """``(plan-limit lines, Nous section lines, nous_route)`` for `/usage`. On a gateway session the owner
+        answers for the route the session runs (``session.account_usage``): this process's provider/base_url
+        pair is not that route once /model or a fallback moved the provider (the launch base_url stays).
+        Off the gateway, or on an owner older than the read, the CLI's own route; its Nous lines are then
+        ``None`` (read on demand by ``_print_usage_account_blocks``)."""
         from agent.billing_links import is_nous_inference_route
         from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
         from hermes_cli.gateway_side import connection_for
         if (connection := connection_for(self)) is not None:
             try:
-                view = connection.call("session.account_usage", session_id=self.session_id, timeout=15) or {}
-                return list(view.get("lines") or []), view.get("nous_route") is True
+                view = connection.call("session.account_usage", session_id=self.session_id, timeout=25) or {}
+                return list(view.get("lines") or []), list(view.get("nous_lines") or []), view.get("nous_route") is True
             except GatewayRPCError as exc:
                 if exc.code != -32601 and str(exc) != "unknown_method":
-                    return [], False  # a refusal says nothing about the route: no Nous balance
+                    return [], [], False  # a refusal says nothing about the route: no Nous CTA
             except GatewayClientError:
-                return [], False
+                return [], [], False
         provider, base_url = self._agent_or_self("provider") or "", self._agent_or_self("base_url") or ""
-        return self._local_account_limit_lines(), is_nous_inference_route(provider, base_url)
+        return self._local_account_limit_lines(), None, is_nous_inference_route(provider, base_url)
+
+    def _print_usage_account_blocks(self) -> bool:
+        """`/usage`'s account blocks: the active provider's limits, then the Nous section whenever Nous is
+        signed in (its own heading off a Nous route), then the `/topup` CTA on a Nous route only. True if
+        anything printed."""
+        lines, nous_lines, nous_route = self._account_usage_view()
+        shown = self._print_account_limits(lines)
+        if nous_route:
+            # The Nous route keeps main's two-bar balance block and its call to action.
+            if self._print_nous_credits_block():
+                self._print_usage_cta()
+                return True
+            return shown
+        if nous_lines is None:
+            from agent.account_usage import nous_usage_lines
+            nous_lines = nous_usage_lines(nous_route=False)
+        return self._print_account_limits(nous_lines) or shown
 
     def _agent_or_self(self, name: str):
         """Provider-ish attribute from the live agent, falling back to the CLI's own value."""
@@ -745,11 +763,7 @@ class CLIInfoMixin:
         def _credits_or(fallback: str) -> None:
             # Account limits (e.g. Codex subscription windows) need only the configured provider
             # plus on-disk credentials, so they render without a live agent too (#42904).
-            lines, nous_route = self._account_usage_view()
-            shown = self._print_account_limits(lines)
-            if nous_route and self._print_nous_credits_block():
-                self._print_usage_cta()
-            elif not shown:
+            if not self._print_usage_account_blocks():
                 print(fallback)
 
         if not self.agent:
@@ -802,11 +816,7 @@ class CLIInfoMixin:
         print(f"  {t('cli.usage.label_messages'):<17} {len(self.conversation_history)}")
         print(f"  {t('cli.usage.label_compressions'):<17} {compressor.compression_count}")
 
-        lines, nous_route = self._account_usage_view()
-        self._print_account_limits(lines)
-
-        if nous_route and self._print_nous_credits_block():
-            self._print_usage_cta()
+        self._print_usage_account_blocks()
 
         if self.verbose:
             logging.getLogger().setLevel(logging.DEBUG)
@@ -830,7 +840,10 @@ class CLIInfoMixin:
                     account_limit_lines, provider, base_url=self._agent_or_self("base_url"),
                     api_key=self._agent_or_self("api_key"),
                 ).result(timeout=10.0)
-            except (concurrent.futures.TimeoutError, Exception):
+            except concurrent.futures.TimeoutError:
+                return []
+            except Exception:  # a provider's own fetch or render: /usage still prints the rest
+                logging.getLogger(__name__).debug("account limits for /usage failed", exc_info=True)
                 return []
 
     def _print_account_limits(self, lines: list[str]) -> bool:

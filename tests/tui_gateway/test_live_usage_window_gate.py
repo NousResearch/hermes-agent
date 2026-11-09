@@ -17,7 +17,7 @@ def calls(monkeypatch):
     seen: list[dict] = []
 
     def _lines(**kw):
-        seen.append(kw)
+        seen.append({k: v for k, v in kw.items() if k == "credits_state" and v is not None})
         return ["Nous credits block"]
 
     monkeypatch.setattr("agent.account_usage.nous_credits_lines", _lines)

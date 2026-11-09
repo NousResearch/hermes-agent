@@ -63,10 +63,7 @@ def _make_runner():
     runner.session_store.load_transcript.return_value = []
     runner.session_store.has_any_sessions.return_value = True
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
-    runner._queued_events = {}
     runner._session_db = MagicMock()
     runner._session_db.get_session_title.return_value = None
     runner._reasoning_config = None

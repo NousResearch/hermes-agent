@@ -29,7 +29,6 @@ def _runner(extra=None):
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
-    runner._pending_approvals = {}
     runner._running_agents = {}
     runner._background_tasks = set()
     return runner

@@ -89,72 +89,83 @@ def _tool_call_args(tc: Any) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _terminal_tool_result_succeeded(content: Any, expected_task: str) -> bool:
+    """Only a recorded non-error result for the owned card can verify handoff.
+
+    Some Kanban adapters return short human-readable success text rather than JSON;
+    preserve that contract, but reject empty results, explicit errors and foreign IDs.
+    The dispatcher's independent board-state gate remains authoritative.
+    """
+    if content is None or content == "":
+        return False
+    if _is_tool_error_content(content):
+        return False
+    data = content
+    if isinstance(content, str):
+        stripped = content.strip()
+        if not stripped:
+            return False
+        if stripped.startswith("{"):
+            try:
+                data = json.loads(stripped)
+            except (ValueError, TypeError):
+                return False
+        elif stripped.lower().startswith(
+            ("schema_validation_error", "tool error", "failed:", "rejected:", "exception:")
+        ):
+            return False
+    if isinstance(data, dict):
+        if data.get("ok") is False or data.get("success") is False:
+            return False
+        actual_task = str(data.get("task_id") or data.get("id") or "").strip()
+        if expected_task and actual_task and actual_task != expected_task:
+            return False
+    return True
+
+
 def session_called_kanban_terminal(
     messages: Iterable[dict] | None,
     task_id: Optional[str] = None,
 ) -> bool:
-    """True if this conversation successfully invoked a terminal kanban tool for the owned task.
+    """True only for a matched, successful terminal-tool response for the owned task.
 
-    A tool call whose tool response returned an error (e.g. schema error, unsatisfied dependencies,
-    or empty summary refusal) or that targeted a different task does NOT count as a successful handoff.
+    A merely proposed tool call, an orphan tool result, a mismatched response ID,
+    or a failed response cannot satisfy the lifecycle handoff.
     """
     expected_task = (task_id or owned_kanban_task() or "").strip()
+    calls: dict[str, tuple[str, str]] = {}
+    successful_results: dict[str, tuple[str, Any]] = {}
 
-    # Index tool responses by tool_call_id and by tool name
-    tool_results_by_id: dict[str, tuple[str, Any]] = {}
-    tool_results_by_name: dict[str, list[Any]] = {}
-
-    msg_list = [m for m in messages or () if isinstance(m, dict)]
-    for m in msg_list:
-        if m.get("role") == "tool":
-            tname = str(m.get("name") or "")
-            tcid = str(m.get("tool_call_id") or "")
-            tcontent = m.get("content")
-            if tcid:
-                tool_results_by_id[tcid] = (tname, tcontent)
-            if tname:
-                tool_results_by_name.setdefault(tname, []).append(tcontent)
-
-    for m in msg_list:
-        role = m.get("role")
-        if role == "assistant":
-            for tc in m.get("tool_calls") or []:
+    for msg in messages or ():
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or ():
                 name = _tool_call_name(tc)
-                if name in _TERMINAL_KANBAN_TOOLS:
-                    args = _tool_call_args(tc)
-                    tc_task = str(args.get("task_id") or "").strip()
-                    if expected_task and tc_task and tc_task != expected_task:
-                        # Call explicitly targeted an external/different task; does not satisfy handoff
-                        continue
+                if name not in _TERMINAL_KANBAN_TOOLS:
+                    continue
+                call_id = str(
+                    (tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", "")) or ""
+                ).strip()
+                if not call_id:
+                    continue
+                args = _tool_call_args(tc)
+                target = str(args.get("task_id") or "").strip()
+                if expected_task and target and target != expected_task:
+                    continue
+                calls[call_id] = (name, target)
+        elif msg.get("role") == "tool":
+            call_id = str(msg.get("tool_call_id") or "").strip()
+            name = str(msg.get("name") or "")
+            if call_id and name in _TERMINAL_KANBAN_TOOLS:
+                successful_results[call_id] = (name, msg.get("content"))
 
-                    tcid = str(tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", "") or "")
-                    if tcid and tcid in tool_results_by_id:
-                        _, content = tool_results_by_id[tcid]
-                        if _is_tool_error_content(content):
-                            continue
-                        return True
-                    if name in tool_results_by_name:
-                        if all(_is_tool_error_content(c) for c in tool_results_by_name[name]):
-                            continue
-                        return True
-                    # If assistant emitted tool call but tool message has not been recorded yet
-                    return True
-
-        elif role == "tool":
-            tname = str(m.get("name") or "")
-            if tname in _TERMINAL_KANBAN_TOOLS:
-                content = m.get("content")
-                if not _is_tool_error_content(content):
-                    if expected_task and isinstance(content, str):
-                        try:
-                            data = json.loads(content)
-                            if isinstance(data, dict) and data.get("task_id"):
-                                if str(data["task_id"]).strip() != expected_task:
-                                    continue
-                        except Exception:
-                            pass
-                    return True
-
+    for call_id, (name, _) in calls.items():
+        result = successful_results.get(call_id)
+        if result is None or result[0] != name:
+            continue
+        if _terminal_tool_result_succeeded(result[1], expected_task):
+            return True
     return False
 
 

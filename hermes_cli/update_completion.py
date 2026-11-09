@@ -354,8 +354,8 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
             ensure_tools_for_sync()
             # An update never fails because of a plugin: misfits are disabled and reported. A
             # pre-PM tree that reached this code with no recorded selection carries its old venv.
-            extras, carried = first_generation_selection(root)
-            pm.sync_venv(extras, explicit=True, project_root=root, evict_incompatible_plugins=True, **carried)
+            pm.sync_venv(first_generation_selection(root), explicit=True, project_root=root,
+                         evict_incompatible_plugins=True)
             collect_superseded_generations(root)
         finally:
             request["pm_receipt"] = receipt.last_for_update(update_id)

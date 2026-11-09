@@ -195,13 +195,19 @@ def test_without_during_an_opt_in_sync_stays_recorded(monkeypatch):
 def test_without_after_a_failed_first_migration_keeps_the_other_legacy_extras(monkeypatch):
     """A first PM sync that died before writing facts leaves the main-era venv as the only record of
     what was installed: `--without matrix` seeds its sync from that scan and drops only matrix."""
-    calls = []
+    from pm.environments import runtime_facts_path
+    from pm.lock import Facts
+
     monkeypatch.setattr(pm.cli, "_install_names", lambda names, target=None, *, verify=True: 0)
     monkeypatch.setattr(install, "activate", lambda **kwargs: [])
-    monkeypatch.setattr(install, "sync_venv", lambda extras=None, **kwargs: calls.append(list(extras or [])))
+    monkeypatch.setattr(install, "_feature_policy", lambda extras, *, repair: (None, None))
+    root = Path(os.environ["HERMES_HOME"]) / "checkout"
+    package = _BlockingVenv()
+    package.project_root = lambda: root
+    monkeypatch.setattr(install, "get_package", lambda name: package)
+    monkeypatch.setattr(install, "_member_inputs", lambda plugins: {})
     monkeypatch.setattr(pm.cli, "_install_defaults", lambda names, *, verify: None)
     monkeypatch.setattr(pm.cli, "repo_root", lambda: root)
-    root = Path(os.environ["HERMES_HOME"]) / "checkout"
     (root / "pyproject.toml").parent.mkdir(parents=True)
     (root / "pyproject.toml").write_bytes((repo_root() / "pyproject.toml").read_bytes())
     main_era_venv(root, *extras._anchors("matrix"), "fal_client")
@@ -209,7 +215,7 @@ def test_without_after_a_failed_first_migration_keeps_the_other_legacy_extras(mo
 
     assert pm.cli.cmd_install(argparse.Namespace(names=None, tools_only=False, without=["matrix"])) == 0
 
-    assert calls == [["all", "fal"]]
+    assert (Facts(runtime_facts_path(root)).get("venv") or {}).get("extras") == ["all", "fal"]
     assert extras.declined_extras(root) == frozenset({"matrix"})
 
 

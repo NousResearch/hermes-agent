@@ -45,14 +45,14 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
         ensure_tools_for_sync()
         from pm.extras import first_generation_selection
 
-        extras, carried = first_generation_selection(root)
+        extras = first_generation_selection(root)
         repair_marker = install_state_dir(root) / ".repair-incomplete"
         # Repair preserves the old stamp. Changed source inputs instead need
         # an ordinary sync, which builds and validates a fresh generation too.
         repair = repair_marker.is_file() and venv_is_current(project_root=root)
         # An update never fails because of a plugin: misfits are disabled and reported.
         sync_venv(None if repair else extras, explicit=True, project_root=root, repair=repair,
-                  evict_incompatible_plugins=not repair, **({} if repair else carried))
+                  evict_incompatible_plugins=not repair)
         collect_superseded_generations(root)
         request["pm_receipt"] = receipt.last_for_update(correlation)
     publish_launchers(root)

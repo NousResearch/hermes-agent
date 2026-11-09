@@ -121,8 +121,8 @@ def sync(project_root: Path | None = None, *, check: bool = False) -> dict:
         refuse_foreign_owned_venv(root)
         from pm.extras import first_generation_selection
 
-        extras, carried = first_generation_selection(root)
-        pm.sync_venv(extras, explicit=True, project_root=root, evict_incompatible_plugins=True, **carried)
+        pm.sync_venv(first_generation_selection(root), explicit=True, project_root=root,
+                     evict_incompatible_plugins=True)
         collect_superseded_generations(root)
         publish_launchers(root)
         return {"state": "synced", "ok": True}
@@ -668,11 +668,11 @@ def _sync_source_dependencies(root: Path, *, arm: bool, borrowed_from: Path | No
         arm_completion(root)
     # Main-era installs have no PM ledger; carry what their venv held.
     # Established PM installs retain their recorded extras and plugin union instead.
-    extras, carried = first_generation_selection(root)
+    extras = first_generation_selection(root)
     # Same order as `hermes update`: an interrupted update or a hand-run
     # `git pull` leaves this tree's lockfile ahead of the installed tools.
     ensure_tools_for_sync()
-    pm.sync_venv(extras, explicit=True, project_root=root, evict_incompatible_plugins=True, **carried)
+    pm.sync_venv(extras, explicit=True, project_root=root, evict_incompatible_plugins=True)
     collect_superseded_generations(root)
     if borrowed_from is not None:
         return  # The checkout's markers describe the owner's environment, not this one.

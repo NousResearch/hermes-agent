@@ -461,21 +461,16 @@ def venv_selection_recorded(project_root: Path) -> bool:
             or Facts(store_root(root) / "facts.json").get("venv") is not None)
 
 
-def first_generation_selection(project_root: Path) -> tuple[list[str] | None, dict]:
-    """``(extras, {"carried": ...})`` for a sync of the install's whole selection.
+def first_generation_selection(project_root: Path) -> list[str] | None:
+    """The extras a sync of the install's whole selection requests: ``None`` once PM recorded a
+    selection (that ledger owns the extras), else ``[all]``, as ``hermes pm install`` selects.
 
     The update's completion bootstrap, the historical takeover, the launch migration and the
-    ``venv_sync`` entry pass these. Until PM records a selection that sync would reach only the
-    core: ``legacy_selection`` instead (``[all]`` when there is no old venv, as ``hermes pm
-    install`` selects).
-    ``(None, {})`` once a selection is recorded: that ledger owns the extras.
-    The old venv's extras are carried, not asked for: none of them undoes a ``--without``, and
-    one beyond ``[all]`` that no longer builds is left out (``pm.carried_extras``).
+    ``venv_sync`` entry pass this; without it a first sync would reach only the core. The old
+    venv's extras are not added here: ``sync_venv`` carries them under the dependency lock
+    (``pm.carried_extras.with_pre_pm_baseline``).
     """
-    if venv_selection_recorded(project_root):
-        return None, {}
-    extras = legacy_selection(project_root)
-    return extras, ({"carried": extras[1:]} if len(extras) > 1 else {})
+    return None if venv_selection_recorded(project_root) else ["all"]
 
 
 def pre_pm_baseline(project_root: Path) -> list[str]:

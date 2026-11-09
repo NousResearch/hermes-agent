@@ -54,7 +54,7 @@ def transition(tmp_path):
         "ensure_tools_for_sync = lambda: event('tools')\n"
     )
     # A tree that already has PM facts: nothing to carry from a pre-PM venv.
-    (root / "pm/extras.py").write_text("first_generation_selection = lambda root: (None, {})\n")
+    (root / "pm/extras.py").write_text("first_generation_selection = lambda root: None\n")
     (package / "probe.py").write_text(
         "import json, os, pathlib, sys\n"
         "def event(name, **values):\n"

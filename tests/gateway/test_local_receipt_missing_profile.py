@@ -23,7 +23,7 @@ async def test_secondary_receipt_restores_without_losing_its_owner(tmp_path, mon
     from gateway.run import _profile_runtime_scope
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.runtime_ownership import process_ownership
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import restore_local_session
     from hermes_state_local import POLICY_PREFIX, local_receipt
@@ -38,7 +38,7 @@ async def test_secondary_receipt_restores_without_losing_its_owner(tmp_path, mon
         await initialize_gateway_runtime(first)
         home = homes[1][1]
         authority = first.session_authorities.for_home(home)
-        actor = Principal('owner', authority.profile_id,
+        actor = SessionActor('owner', authority.profile_id,
                           frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
         with _profile_runtime_scope(home, {}):
             ref = create_local_session(authority, actor, {'request_id': 'old-desktop', 'source': 'gui',

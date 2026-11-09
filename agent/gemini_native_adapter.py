@@ -26,9 +26,11 @@ from agent.gemini_schema import prepare_gemini_tool_parameters, sanitize_gemini_
 
 logger = logging.getLogger(__name__)
 
-from hermes_cli.version_info import get_version_info
+from hermes_cli.version_info import hermes_user_agent
 
-_API_CLIENT = f"hermes-agent/{get_version_info().base_version}"  # client context per Gemini's partner-integration guidance
+
+def _api_client() -> str:
+    return hermes_user_agent("hermes-agent")  # client context per Gemini's partner-integration guidance
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 # A Vertex AI express-mode base, when the user configures one explicitly: aiplatform serves the
@@ -202,7 +204,7 @@ def probe_gemini_tier(
         return "unknown"
     base = normalize_gemini_base_url(base_url)
     payload = {"contents": [{"role": "user", "parts": [{"text": "hi"}]}], "generationConfig": {"maxOutputTokens": 1}}
-    headers = {"Content-Type": "application/json", "X-Goog-Api-Client": _API_CLIENT}
+    headers = {"Content-Type": "application/json", "X-Goog-Api-Client": _api_client()}
     try:
         with httpx.Client(timeout=timeout) as client:
             resp = client.post(f"{base}/models/{model}:generateContent", params={"key": key}, json=payload, headers=headers)
@@ -662,7 +664,37 @@ def _part_function_call(part: dict[str, Any]) -> Optional[dict[str, Any]]:
     return fc if isinstance(fc, dict) and fc.get("name") else None
 
 
+# Guidance per ``promptFeedback.blockReason`` value with a specific remedy; the rest (OTHER, Vertex's
+# MODEL_ARMOR / JAILBREAK) get the generic text. A prompt-level block is an HTTP 200 with no candidates;
+# translated as-is it becomes an empty "stop" turn the user sees as silence.
+_BLOCK_REASON_GUIDANCE = {
+    "BLOCKLIST": "The prompt includes blocked terms. Rephrase and try again.",
+    "PROHIBITED_CONTENT": "The prompt may contain prohibited content. Adjust it and try again.",
+    "SAFETY": "The prompt was blocked by Gemini's safety filters. Adjust it and try again.",
+    "IMAGE_SAFETY": "The image was blocked for safety reasons.",
+}
+
+
+def raise_on_prompt_block(payload: dict[str, Any]) -> None:
+    """Raise a terminal error when ``promptFeedback.blockReason`` is set (unary response or stream event).
+
+    No HTTP status: the wire said 200. ``agent.error_classifier`` keys on the ``gemini_prompt_blocked`` code
+    and routes it to content_policy_blocked — deterministic for the unchanged prompt, so no retry."""
+    feedback = payload.get("promptFeedback")
+    reason = feedback.get("blockReason") if isinstance(feedback, dict) else None
+    if not reason:
+        return
+    reason = str(reason).upper()
+    # Vertex explains the block in ``blockReasonMessage``; prefer it over the canned guidance.
+    message = feedback.get("blockReasonMessage")
+    guidance = (message.strip() if isinstance(message, str) and message.strip()
+                else _BLOCK_REASON_GUIDANCE.get(reason, "The prompt was blocked. Adjust it and try again."))
+    raise GeminiAPIError(f"Gemini blocked this prompt (blockReason={reason}): {guidance}",
+                         code="gemini_prompt_blocked", details={"promptFeedback": feedback})
+
+
 def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespace:
+    raise_on_prompt_block(resp)
     candidates = resp.get("candidates") or []
     cand = parts = None
     if isinstance(candidates, list) and candidates:
@@ -771,6 +803,7 @@ def _tool_call_slot(fc: dict[str, Any], part: dict[str, Any], part_index: int, a
 
 
 def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices: dict[str, dict[str, Any]]) -> list[_GeminiStreamChunk]:
+    raise_on_prompt_block(event)
     candidates = event.get("candidates") or []
     if not candidates:
         return []
@@ -903,7 +936,7 @@ class GeminiNativeClient:
 
     def _headers(self) -> dict[str, str]:
         return {"Content-Type": "application/json", "Accept": "application/json", **self._auth_headers(),
-                "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **self._default_headers}
+                "User-Agent": f"{_api_client()} (gemini-native)", "X-Goog-Api-Client": _api_client(), **self._default_headers}
 
     def _http_error(self, response: httpx.Response, body_text: Optional[str] = None) -> GeminiAPIError:
         return gemini_http_error(response, body_text=body_text, api_key=self.api_key, base_url=self.base_url)

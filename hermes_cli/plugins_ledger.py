@@ -5,6 +5,7 @@ reload / targeted unload unwind registries in reverse order. Mixed into :class:`
 from __future__ import annotations
 
 import logging
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Union
@@ -39,6 +40,12 @@ class PluginRegistration:
     # re-discovery when the plugin no longer re-registers it.
     # See #91701.
     persistent: bool = False
+    # A ``transform_llm_output`` registration that must see the reply before the user does
+    # (``register_hook(..., hold_stream=True)``; read by ``PluginDispatchMixin.holds_stream``).
+    hold_stream: bool = False
+    # Staged change applied only once the plugin's load succeeded (``_publish_staged_registrations``); a failed
+    # or timed-out load disposes the handle first, so the change is never applied.
+    publish: Optional[Callable[[], Any]] = None
     _disposed: bool = field(default=False, init=False, repr=False)
     _on_dispose: Optional[Callable[[PluginRegistration], None]] = field(default=None, init=False, repr=False)
 
@@ -92,6 +99,31 @@ class PluginLedgerMixin:
             finalize=finalize,
         )
         return self._track_registration(manifest, kind, name, lease.dispose)
+
+    def _track_context_reference(
+        self, manifest: PluginManifest, provider: Any, register: Callable[..., Any],
+    ) -> PluginRegistration:
+        """Claim ``provider.prefix`` in the process-wide context-reference table and record the claim. The table
+        keeps the provider when the plugin unloads, so the same plugin on the same manager loading again (a
+        reload) holds the prefix with no live claim: its new provider is staged and published on load success.
+        A live claim (a second registration in the same load), another plugin or another manager is refused."""
+        prefix, plugin_key = provider.prefix.lower().strip(), manifest_key(manifest)
+        reclaim = not any(r.active and r.kind == "context_reference" and r.key == prefix
+                          for r in self._ownership_ledger.get(plugin_key, ()))
+        publish = register(provider, owner=(plugin_key, weakref.ref(self)), reclaim=reclaim)
+        registration = self._track_registration(manifest, "context_reference", prefix, lambda: None)
+        registration.publish = publish
+        return registration
+
+    @staticmethod
+    def _publish_staged_registrations(ctx: Any) -> None:
+        """Apply the staged changes of a plugin load that succeeded: only the ones this load's ``ctx`` made.
+        Neither an offset into ``_registration_order`` (an earlier registration disposed mid-load shortens it)
+        nor the plugin's whole ledger (a timed-out load's worker can stage into it late) is safe."""
+        for registration in ctx._staged:
+            if registration.active and registration.publish is not None:
+                registration.publish()
+        ctx._staged.clear()  # a provider that keeps its ctx must not keep the provider it replaced
 
     def _active_persistent(self) -> list[PluginRegistration]:
         """Live persistent registrations across every plugin in the ownership ledger."""
@@ -189,14 +221,15 @@ class PluginLedgerMixin:
                 handle.dispose()
 
     def _register_fallback_hook(self, context: Any, hook_source: Optional[tuple], hook_name: str,
-                                callback: Callable) -> PluginRegistration:
+                                callback: Callable, *, hold_stream: bool = False) -> PluginRegistration:
         """Register ``callback`` unless the same source is already live through general discovery, in
         which case return an inert handle so the provider keeps its disposable-handle contract."""
         if hook_source is None:
-            return context.register_hook(hook_name, callback)
+            return context.register_hook(hook_name, callback, hold_stream=hold_stream)
         owned = any(loaded.enabled and _hook_source_of(loaded.manifest.name, loaded.module) == hook_source
                     for loaded in self._plugins.values())
-        handle = context._track("hook", hook_name, lambda: None) if owned else context.register_hook(hook_name, callback)
+        handle = (context._track("hook", hook_name, lambda: None) if owned
+                  else context.register_hook(hook_name, callback, hold_stream=hold_stream))
         self._memory_hook_registrations.setdefault(hook_source, []).append(handle)
         return handle
 

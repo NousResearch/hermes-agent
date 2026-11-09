@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from hermes_cli._subprocess_compat import windows_detach_popen_kwargs, _WINDOWS_GATEWAY_BREAKAWAY_ENV
+from hermes_cli.gateway_launchd_runtime import GatewayJob, start_gateway_job
 from hermes_cli.gateway_runtime_service import RuntimeStartError, remaining
 
 
@@ -26,16 +27,29 @@ DAEMON_STRIPPED_ENV = (
     "HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_SINGLE_QUERY_SESSION",
     "HERMES_EPHEMERAL_SYSTEM_PROMPT", "HERMES_PREFILL_MESSAGES_FILE", "HERMES_INFERENCE_PROVIDER",
     "HERMES_ENABLE_PROJECT_PLUGINS", "HERMES_TUI_CLIENT_ENV",
+    # A terminal's shell under a systemd service (gnome-terminal-server, a user unit) carries these; the
+    # unmanaged daemon would then identify as "systemd" and maintenance would refuse it as supervised.
+    "INVOCATION_ID", "JOURNAL_STREAM",
+    # Same for any process below a launchd/--external-supervisor gateway (its agents' tools, scripts they
+    # run): the daemon would identify as "launchd", never arm --idle-exit, and outlive every client.
+    # HERMES_S6_SUPERVISED_CHILD stays: without it `gateway run` in an s6 container redirects to s6.
+    "XPC_SERVICE_NAME", "LAUNCHD_SOCKET", "HERMES_LAUNCHD_LABEL",
+    "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "HERMES_SUPERVISED_CHILD",
+    # systemd's notify socket and watchdog name the unit's main process: the daemon would feed them.
+    "NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID",
 )
 
 
-def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: bool = False) -> subprocess.Popen:
+def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: bool = False,
+                            force: bool = False) -> subprocess.Popen | GatewayJob:
     """Request a daemon, not readiness. Refuse Windows no-breakaway fallback.
 
     No --replace, persistence, login changes, elevation, shell, or inherited stdio.
     The gateway runtime's own exclusive ownership fence arbitrates racing starts.
     ``idle_exit``: the daemon ends itself once idle (a chat/TUI/cron client's own start; never
     Desktop's ``gateway ensure``, which keeps its attached gateway for the app's lifetime).
+    ``force``: a ``gateway restart --force --detach`` replacement keeps the ``--force`` its old owner
+    needed (a named profile under a multiplexer), or it exits on the run-side guard.
     """
     home = profile_home.resolve()
     root = Path(__file__).resolve().parent.parent
@@ -44,7 +58,7 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
     # profile's daemon. A <root>/profiles/<name> home is already trusted as-is.
     selector = [] if home.parent.name == "profiles" else ["--profile", "default"]
     command = [sys.executable, "-m", "hermes_cli.main", *selector, "gateway", "run", "--quiet",
-               *(["--idle-exit"] if idle_exit else [])]
+               *(["--idle-exit"] if idle_exit else []), *(["--force"] if force else [])]
     # The target profile's own secrets, never the launching client's: a `hermes -p work` client's
     # dotenv would otherwise become the default daemon's frozen launch env (host_gateway_child_env).
     from tools.environments.local import served_profile_child_env
@@ -61,20 +75,41 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
     # name. Launch-only approval/context/config flags ride the launching session's frozen
     # policy, not the shared daemon or every later session.
     from gateway.session_context import _VAR_MAP  # the launching turn's session identity, too
+    from tools.environments.local_env_policy import carry_gateway_profile_pin
+    carry_gateway_profile_pin(env)  # the supervisor markers go; the daemon's tools keep their pin
     for key in (*DAEMON_STRIPPED_ENV, *_VAR_MAP):
         env.pop(key, None)
     remaining(deadline)
     logs = home / "logs"
     logs.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "darwin":  # LAN access must outlive the app that asked for the gateway
+        if job := start_gateway_job(command, env=env, cwd=root, log_path=logs / "gateway-stdio.log",
+                                    deadline=deadline):
+            return job
     try:
         with (logs / "gateway-stdio.log").open("ab", buffering=0) as output:
             remaining(deadline)
             return subprocess.Popen(command, cwd=root, env=env, close_fds=True,
                                     stdin=subprocess.DEVNULL, stdout=output, stderr=output,
+                                    # detached-spawn: ok — a gateway daemon launch must outlive its launcher
                                     **windows_detach_popen_kwargs())
     except OSError as exc:
         reason = "windows_breakaway_unavailable" if sys.platform == "win32" else "spawn_failed"
         raise RuntimeStartError(reason) from exc
+
+
+def start_detached_replacement(profile_home: Path, *, force: bool = False) -> int:
+    """``gateway restart --detach`` with no service: start the stopped owner's replacement the way
+    ``gateway ensure`` starts an absent one. In the foreground, the restarting client (Desktop's
+    bounded, piped call) would itself become the long-lived gateway it only meant to restart."""
+    import time
+    try:
+        spawn_unmanaged_gateway(profile_home, deadline=time.monotonic() + 30, force=force)
+    except RuntimeStartError as exc:
+        print(f"✗ Could not start the gateway in the background: {exc}", file=sys.stderr)
+        return 1
+    print("✓ Started the gateway in the background")
+    return 0
 
 
 def stdio_log_path(profile_home: Path) -> Path:

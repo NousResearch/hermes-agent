@@ -1,7 +1,7 @@
 """Stdlib fetch helper for simple url_pattern brokers (osint-style).
 
 For JS-rendered or anti-bot pages the agent should use the `web_extract` or
-`browser_navigate` tools (and the `scrapling` skill for stealth/Cloudflare).
+`browser_exec` tools (and the `scrapling` skill for stealth/Cloudflare).
 This helper only covers plain static pages and is intentionally network-light so
 it can be mocked in tests.
 """

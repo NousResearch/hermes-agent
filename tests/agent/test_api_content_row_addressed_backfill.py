@@ -115,6 +115,13 @@ class _RealPersistenceAgent(SessionPersistenceMixin, _FakeAgent):
 class TestRealEarlyFlushAndOverrideLifecycle:
     """End-to-end tests exercising real database flushes and API-only overrides."""
 
+    @pytest.fixture(autouse=True)
+    def _no_title_request(self, monkeypatch):
+        """A real session row makes the prologue start auto-titling, which sent a title request
+        to openrouter.ai with the stand-in agent's fake key on every test. Titling is not under
+        test here."""
+        monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *args, **kwargs: None)
+
     def test_real_close_flush_syncs_row_id_and_prologue_backfills(self, tmp_path):
         """Proof that the real _flush_messages_to_session_db path syncs _row_id onto
         the live dict (via sync_flushed_message_markers) and the prologue backfills it."""

@@ -21,7 +21,7 @@ Scrape sites with stealth browsing and Cloudflare bypass.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Web Scraping`, `Browser`, `Cloudflare`, `Stealth`, `Crawling`, `Spider` |
-| Related skills | [`duckduckgo-search`](../../optional/research/research-duckduckgo-search.md), [`domain-intel`](../../optional/research/research-domain-intel.md) |
+| Related skills | [`domain-intel`](../../optional/research/research-domain-intel.md) |
 
 ## Reference: full SKILL.md
 

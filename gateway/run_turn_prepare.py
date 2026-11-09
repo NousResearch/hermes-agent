@@ -37,6 +37,8 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+# ``_resolve_turn_agent_config``'s default tier: the runner's per-turn ``_service_tier``.
+_TIER_FROM_RUNNER = object()
 
 
 def _resolve_policy_agent_runtime(runner, policy, *, fallback=True) -> tuple[str, dict]:
@@ -212,9 +214,12 @@ class GatewayTurnPrepareMixin:
 
         return _recover_or_remember_model(self, skey, model), runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict, *,
+                                   tier: Any = _TIER_FROM_RUNNER) -> dict:
         """Effective model/runtime config for one turn. With `/fast` priority on, fast-mode
-        ``request_overrides`` are deep-merged OVER the per-provider ones so both reach the model."""
+        ``request_overrides`` are deep-merged OVER the per-provider ones so both reach the model.
+        ``tier`` defaults to the runner's per-turn ``_service_tier``; an off-turn builder (a cold
+        ``/review``) passes the session's own instead of writing that shared slot."""
         from gateway.run import _deep_merge_request_overrides
         from agent.fast_mode import STATIC_TIERS
         from hermes_cli.models import resolve_fast_mode_overrides
@@ -236,7 +241,8 @@ class GatewayTurnPrepareMixin:
                 runtime["api_mode"], runtime["command"], tuple(runtime["args"]),
             ),
         }
-        tier = getattr(self, "_service_tier", None)
+        if tier is _TIER_FROM_RUNNER:
+            tier = getattr(self, "_service_tier", None)
         if tier not in STATIC_TIERS:
             # None / auto / cold: the bounded window is applied per request by agent.fast_mode.
             route["request_overrides"] = base_request_overrides
@@ -260,7 +266,14 @@ class GatewayTurnPrepareMixin:
         model = getattr(agent, "model", None)
         if not model:
             return
-        runtime = {k: getattr(agent, k, None) for k in ("provider", "base_url", "api_mode")}
+        from hermes_cli.runtime_provider_custom import session_provider_identity
+        runtime = {
+            "provider": session_provider_identity(getattr(agent, "provider", None),
+                                                  getattr(agent, "requested_provider", None),
+                                                  getattr(agent, "base_url", None), model),
+            "base_url": getattr(agent, "base_url", None),
+            "api_mode": getattr(agent, "api_mode", None),
+        }
         runtime["fallback_active"] = bool(getattr(agent, "_fallback_activated", False))
         runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
         try:
@@ -296,7 +309,10 @@ class GatewayTurnPrepareMixin:
         # cross-topic Reply doesn't fragment the conversation.
         event_metadata = getattr(event, "metadata", None) or {}
         expected_session_key = str(event_metadata.get("gateway_session_key") or "").strip()
-        recovered = (await asyncio.to_thread(self._recover_telegram_topic_thread_id, source)
+        # Plain lobby recovery here even with ``dm_topic_auto_transfer`` on: the opt-in topic transfer
+        # already ran at adapter ingress (``apply_root_dm_topic_transfer`` -> runner hook
+        # ``_transfer_telegram_root_dm``), before session keying.
+        recovered = (await asyncio.to_thread(self._recover_telegram_lobby_thread_id, source)
                      if not expected_session_key else None)
         if recovered is not None:
             logger.info(
@@ -396,6 +412,18 @@ class GatewayTurnPrepareMixin:
             if canonical_session_id and canonical_session_id != bound_session_id:
                 bound_session_id = canonical_session_id
         if bound_session_id and bound_session_id != session_entry.session_id:
+            # A binding whose sessions row is gone (deleted with foreign_keys OFF, so ON DELETE CASCADE
+            # never fired) is stale, not a resume target: switching onto it lets the next peer refresh
+            # re-create the row and the topic silently re-adopts an old transcript (#139283).
+            if self._session_db is not None and not await self._session_db.get_session(bound_session_id):
+                logger.warning("Telegram topic binding for %s points at session %s with no sessions row; "
+                               "keeping the current session and rebinding", session_key, bound_session_id)
+                try:  # CAS on the stale id: a /new that rebound the topic during the await wins
+                    await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry,
+                                            expected_session_id=stored_session_id)
+                except Exception:
+                    logger.debug("Failed to record Telegram topic binding", exc_info=True)
+                return session_entry
             # Route through SessionStore so the key → id mapping persists and the previous lane
             # session ends cleanly (in-place mutation split-brained the JSON index). The two DB
             # awaits above are a window for /new or /resume to move the route; the CAS on the
@@ -461,7 +489,8 @@ class GatewayTurnPrepareMixin:
         turn_sidecar_notes.append(context_note)
 
         try:
-            should_notify = reset_reason == "suspended"
+            from gateway.bot_peer_notices import automatic_notices_allowed
+            should_notify = reset_reason == "suspended" and automatic_notices_allowed(source)
             adapter = self._delivery_adapter_for(source) if should_notify else None
             if adapter:
                 notice = t("gateway.session.auto_reset_notice")
@@ -638,7 +667,7 @@ class GatewayTurnPrepareMixin:
         from tools.approval_yolo import restore_gateway_yolo
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
         restore_gateway_yolo(session_key, session_entry.yolo)  # None: TurnRunner seeds the launch policy
-        context = build_session_context(source, self.config, session_entry)
+        context = build_session_context(source, self.config, session_entry, event)
         # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
         # Self-injected turns (internal=True) persist with a DB-only display_kind: timeline notices, not user bubbles.

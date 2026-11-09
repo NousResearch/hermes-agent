@@ -1,7 +1,7 @@
 """Execution-scoped worker operations on the ordinary authenticated authority.
 
-Only explicit local compute registrations are enabled. Cron/child claims need
-producer-specific validation before their consumers can use this transport.
+Only explicit local compute registrations are enabled here. A delegated child is reserved by
+the owner on its parent's receipt stream (gateway/session_worker_child.py), never registered.
 """
 import asyncio
 import hmac
@@ -30,8 +30,8 @@ def _claim(connection, ref, params):
         raise RuntimeStoreError('invalid_params')
     try:
         process = psutil.Process(pid)
-        from hermes_cli.process_identity import process_birth
-        if (process_birth(process) != birth or not process.is_running()
+        from hermes_cli.process_identity import worker_birth
+        if (worker_birth(process) != birth or not process.is_running()
                 or process.status() == psutil.STATUS_ZOMBIE
                 or process.username() != psutil.Process().username()):
             raise RuntimeStoreError('permission_denied')
@@ -68,6 +68,9 @@ async def worker_request(connection, ref, params, *, operation):
     if operation == "persist" and isinstance(params.get("operation"), str) and params["operation"].startswith("delegation."):
         from gateway.session_worker_delegation import worker_delegation_request
         return await worker_delegation_request(connection, ref, params)
+    if operation == "persist" and params.get("operation") == "child.reserve":
+        from gateway.session_worker_child import worker_child_request
+        return await worker_child_request(connection, ref, params)
     extra = {'register': {'kind'}, 'adopt': set(), 'persist': {'epoch', 'sequence', 'operation', 'payload'}}[operation]
     if set(params) != _SCOPE | extra:
         raise RuntimeStoreError('invalid_params')

@@ -1,6 +1,7 @@
 'use client'
 
 import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
+import type { ConnectionTargetLaunchKind } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
@@ -34,7 +35,6 @@ import {
   toolConnectionRequest
 } from '@/store/connection-request'
 import { notifyError } from '@/store/notifications'
-import { invalidateMcpSuggestionIndex } from '@/store/suggestion-providers/mcp'
 
 import { selectMessageRunning } from './tool/fallback-model'
 import { parseMaybeObject } from './tool/fallback-model/format'
@@ -61,6 +61,11 @@ const DONE = {
   enable: (copy: SetupCopy, server: string) => copy.enabled(server),
   install: (copy: SetupCopy, server: string) => copy.installed(server)
 } satisfies Record<SetupAction, (copy: SetupCopy, server: string) => string>
+
+const LAUNCH_LINE = {
+  remote: (copy: SetupCopy, target: string) => copy.launchRemote(target),
+  stdio: (copy: SetupCopy, target: string) => copy.launchCommand(target)
+} satisfies Record<ConnectionTargetLaunchKind, (copy: SetupCopy, target: string) => string>
 
 /** The row's one verb. `approve` is the user's consent, `working` is the backend acting on it, `open`
  *  is a sign-in link the backend already minted, `reissue` asks for a fresh attempt. */
@@ -318,11 +323,8 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
   const verb = rowVerb(target, action)
   const fields = target.requiredEnv
 
-  // The composer's MCP suggestion index caches the configured servers; this row just changed them.
   useEffect(() => {
     if (target.state === 'connected') {
-      invalidateMcpSuggestionIndex()
-
       if (!target.discoveryError && target.tools.length > 0) {
         setSetupOpen(false)
       }
@@ -396,6 +398,11 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
       ? t.connectors.waiting
       : undefined
 
+  // What approving runs or contacts, shown until the row resolves. Plain text from the backend's
+  // scrubbed line: React escapes it. The backend never cuts the line, so it wraps in full; a very
+  // long one scrolls inside a bounded box, and every argument stays reachable without hover.
+  const launch = target.launch && !phase.resolved ? target.launch : null
+
   return (
     <>
       <ConnectorRow
@@ -405,6 +412,16 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
         mark={phase.mark}
         markLabel={MARK_LABEL[phase.mark](t.connectors)}
       />
+      {launch ? (
+        <p
+          className="-mt-1 max-h-40 overflow-y-auto break-all whitespace-pre-wrap pl-[3.375rem] font-mono text-[0.6875rem] leading-4 text-(--ui-text-tertiary)"
+          data-slot="mcp-launch-target"
+        >
+          {LAUNCH_LINE[launch.kind](copy, launch.target)}
+          {launch.cwd ? <span className="block">{copy.launchCwd(launch.cwd)}</span> : null}
+          {launch.env?.length ? <span className="block">{copy.launchEnv(launch.env.join(', '))}</span> : null}
+        </p>
+      ) : null}
       <SetupFormDialog
         copy={{
           cancel: t.connectors.setupCancel,

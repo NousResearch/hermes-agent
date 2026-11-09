@@ -6,7 +6,6 @@ monkeypatching on web_server stays authoritative.
 """
 
 import asyncio
-import shutil
 import subprocess
 import sys
 from typing import Any, Dict, List, Optional
@@ -82,12 +81,6 @@ def _probe_docker_backend(_cfg) -> tuple:
         return ("unavailable", f"{runtime} probe failed: {exc}")
 
 
-def _probe_singularity_backend(_cfg) -> tuple:
-    if shutil.which("singularity") or shutil.which("apptainer"):
-        return ("ready", "")
-    return ("needs_setup", "Neither singularity nor apptainer found on PATH.")
-
-
 def _probe_ssh_backend(terminal_cfg: dict) -> tuple:
     host = _terminal_cfg_value(terminal_cfg, "ssh_host", "TERMINAL_SSH_HOST")
     user = _terminal_cfg_value(terminal_cfg, "ssh_user", "TERMINAL_SSH_USER")
@@ -125,7 +118,6 @@ def _probe_daytona_backend(_cfg) -> tuple:
 _BACKEND_PROBES = {
     "local": lambda _cfg: ("ready", ""),
     "docker": _probe_docker_backend,
-    "singularity": _probe_singularity_backend,
     "ssh": _probe_ssh_backend,
     "modal": _probe_modal_backend,
     "daytona": _probe_daytona_backend,
@@ -203,7 +195,8 @@ def _find_toolset_provider_row(
 
 
 def _require_known_toolset(name: str) -> None:
-    """400 for toolset keys outside the effective configurable set."""
+    """400 for toolset keys outside the effective configurable set. Call it inside the target
+    profile's scope, like ``GET /api/tools/toolsets``: plugin toolsets are registered per profile."""
     from hermes_cli.tools_config import _get_effective_configurable_toolsets
 
     if name not in {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}:
@@ -286,12 +279,12 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
         _CONFIG_ONLY_TOOLSETS, _get_platform_tools, _save_platform_tools,
         _toolset_configuration_platform)
 
-    _require_known_toolset(name)
     target_platform = _toolset_configuration_platform(name)
     scope_profile = body.profile or profile
 
     def _run():
         with config_write_scope(scope_profile):
+            _require_known_toolset(name)
             config = load_config()
             if name in _CONFIG_ONLY_TOOLSETS:
                 # Config-only capabilities (stt) toggle their own section's
@@ -352,10 +345,9 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
     from hermes_cli.config import get_env_value
     from hermes_cli.nous_subscription import get_nous_subscription_features
 
-    _require_known_toolset(name)
-
     def _read():
         with _profile_scope(profile):
+            _require_known_toolset(name)
             config = load_config()
             cat = TOOL_CATEGORIES.get(name)
             providers = []
@@ -517,8 +509,6 @@ async def select_toolset_provider(
     from hermes_cli.nous_subscription import (
         MANAGED_FEATURE_COVERAGE_CATEGORY, get_nous_subscription_features)
 
-    _require_known_toolset(name)
-
     if body.capability is not None:
         if name != "web":
             raise _bad_request("capability selection is only supported for the web toolset")
@@ -532,6 +522,7 @@ async def select_toolset_provider(
 
     def _run():
         with _profile_scope(body.profile or profile):
+            _require_known_toolset(name)
             with _CONFIG_MUTATION_LOCK:
                 config = load_config()
                 if body.capability is not None:
@@ -594,10 +585,9 @@ async def save_toolset_env(name: str, body: ToolsetEnvUpdate, profile: Optional[
     can't write arbitrary env vars; a blank value means "leave unchanged"."""
     from hermes_cli.config import get_env_value, save_env_value
 
-    _require_known_toolset(name)
-
     def _run():
         with _profile_scope(body.profile or profile):
+            _require_known_toolset(name)
             config = load_config()
             allowed: set[str] = {
                 e["key"]
@@ -636,12 +626,17 @@ async def run_toolset_post_setup(
     ``profile`` is threaded so hooks see the drawer's HERMES_HOME."""
     from hermes_cli.tools_config import valid_post_setup_keys
 
-    _require_known_toolset(name)
-    if body.key not in valid_post_setup_keys():
-        raise _bad_request(f"Unknown post-setup key: {body.key}")
+    scope_profile = body.profile or profile
 
+    def _validate():
+        # Plugin toolsets and plugin providers' post-setup keys are both per profile.
+        _require_known_toolset(name)
+        if body.key not in valid_post_setup_keys():
+            raise _bad_request(f"Unknown post-setup key: {body.key}")
+
+    await scoped_to_thread(scope_profile, _validate)
     result = spawn_profile_action(
-        body.profile or profile, ["tools", "post-setup", body.key], "tools-post-setup",
+        scope_profile, ["tools", "post-setup", body.key], "tools-post-setup",
         log_msg="Failed to spawn tools post-setup", prefix="Failed to run post-setup")
     result["key"] = body.key
     return result
@@ -678,16 +673,18 @@ async def get_terminal_backends(profile: Optional[str] = None):
 async def select_terminal_backend(
     body: TerminalBackendSelect, profile: Optional[str] = None):
     """Persist ``terminal.backend``.  A backend that still needs setup is
-    allowed — the picker shows guidance instead of blocking, like the CLI."""
+    allowed — the picker shows guidance instead of blocking, like the CLI.
+    Validated inside the target profile's scope, like the GET: plugin backends
+    are registered per profile."""
     backend = (body.backend or "").strip().lower()
-    valid_names = {row["name"] for row in _terminal_backend_rows()}
-    if backend not in valid_names:
-        raise _bad_request(
-            f"Unknown terminal backend: {body.backend!r}. "
-            f"Use one of: {', '.join(sorted(valid_names))}")
 
     def _run():
         with config_write_scope(body.profile or profile):
+            valid_names = {row["name"] for row in _terminal_backend_rows()}
+            if backend not in valid_names:
+                raise _bad_request(
+                    f"Unknown terminal backend: {body.backend!r}. "
+                    f"Use one of: {', '.join(sorted(valid_names))}")
             config = load_config()
             _dict_section(config, "terminal")["backend"] = backend
             save_config(config)

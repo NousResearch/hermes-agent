@@ -241,7 +241,7 @@ async def _adopted(tmp_path, monkeypatch):
     from gateway.config import GatewayConfig, Platform
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local_title import resolve_titled_session
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_hermes_home', tmp_path)
@@ -256,8 +256,8 @@ async def _adopted(tmp_path, monkeypatch):
                              _refresh_fallback_model=lambda: [BACKUP])
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     owner = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='legacy')
-    actor = Principal('native', str(tmp_path), frozenset({'session:create', 'session:read', 'session:submit',
-                                                         'session:control'}), 'native-socket')
+    actor = SessionActor('native', str(tmp_path), frozenset({'session:create', 'session:read', 'session:submit',
+                                                             'session:control'}), 'native-socket')
     owner._native_legacy_transports = {actor.transport_id: actor}
     ref = resolve_titled_session(owner, actor, 'old-cli')
     return owner, actor, ref, runner.adapters[Platform.LOCAL].policies[ref.session_id]
@@ -321,7 +321,7 @@ def test_a_config_only_worker_keeps_its_frozen_chain_without_reading_the_profile
     its key walk, even with a pinned model; the profile is never read. The chain here is synthetic: a
     real ``--ignore-user-config`` snapshot freezes code defaults, whose ``fallback_providers`` is empty."""
     from gateway.session_policy import build_policy
-    from gateway.session_worker_construct import construct_inputs, worker_api_key
+    from gateway.session_worker_construct import construct_inputs, worker_route
     from hermes_cli import runtime_provider, runtime_provider_custom
     from hermes_cli.auth import AuthError
     policy = build_policy({'cwd': str(tmp_path), 'model': 'primary', 'pin_route': True, 'ignore_user_config': True},
@@ -341,5 +341,5 @@ def test_a_config_only_worker_keeps_its_frozen_chain_without_reading_the_profile
         return {'provider': 'custom', 'api_key': 'test-key'}
     monkeypatch.setattr(runtime_provider_custom, '_resolve_named_custom_runtime', lambda **kw: None)
     monkeypatch.setattr(runtime_provider, 'resolve_runtime_provider', resolve)
-    assert worker_api_key(policy, construct) is None
+    assert worker_route(policy, {**construct, 'api_key': None}) == {}  # keyless worker: no primary credential
     assert calls == ['primary', 'backup-model']

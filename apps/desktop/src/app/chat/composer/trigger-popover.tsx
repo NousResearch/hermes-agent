@@ -45,7 +45,7 @@ function rowKind(item: Unstable_TriggerItem, isSlash: boolean): string {
 
 const ROW_CLASS = [
   'relative flex w-full cursor-default select-none items-center gap-2 rounded-md px-2 py-1 text-left',
-  'outline-hidden transition-colors hover:bg-(--ui-bg-tertiary)',
+  'focus-visible:outline-hidden data-[highlighted]:outline-hidden transition-colors hover:bg-(--ui-bg-tertiary)',
   'data-[highlighted]:bg-(--ui-bg-tertiary) data-[highlighted]:text-foreground'
 ].join(' ')
 

@@ -84,11 +84,11 @@ Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, skills, and the 
 
 #### Keep a clone's imported agent setups synced (`--sync-imports`)
 
-If the source profile has run [`hermes import-agent`](./import-from-other-agents.md), its `import-sync.json` records which external Claude Code / Codex trees it imported. `--clone` leaves that manifest behind, so the clone gets a one-off copy of those skills and memories and stops there. Add `--sync-imports` to carry the manifest over:
+If the source profile has run [`hermes import-agent`](./import-from-other-agents.md) (the `agent-importers` plugin), its `import-sync.json` records which external Claude Code / Codex / Cursor trees it imported. `--clone` leaves that manifest behind, so the clone gets a one-off copy of those skills and memories and stops there. Add `--sync-imports` to carry the manifest over:
 
 ```bash
 hermes profile create work --clone --sync-imports
-hermes -p work import-agent --sync        # pulls changes from the same ~/.claude / ~/.codex
+hermes -p work import-agent --sync        # pulls changes from the same ~/.claude / ~/.codex / ~/.cursor
 ```
 
 This is explicit, opt-in and one-directional, and it links the clone to the **external agent trees only** — never to the source profile. Both profiles stay independent islands: editing the source's `config.yaml`, `SOUL.md` or skills afterwards never reaches the clone. `--clone-all` copies the manifest as part of the full copy.
@@ -286,7 +286,7 @@ assistant gateway install     # creates hermes-gateway-assistant service
 Each profile gets its own service name. They run independently.
 
 :::note Inside the official Docker image
-Per-profile gateways are supervised by [s6-overlay](https://github.com/just-containers/s6-overlay) (PID 1 in the container), so `hermes profile create <name>` automatically registers an s6 service slot at `/run/service/gateway-<name>/`. `hermes -p <name> gateway start/stop/restart` dispatches to `s6-svc` instead of spawning a bare process — crashes are auto-restarted and `docker restart` preserves the previously-running set of gateways. See [Per-profile gateway supervision](./docker.md#per-profile-gateway-supervision) for details.
+Per-profile gateways are supervised by [s6-overlay](https://github.com/just-containers/s6-overlay) (PID 1 in the container), so `hermes profile create <name>` automatically registers an s6 service slot at `/run/hermes-service/gateway-<name>/`. `hermes -p <name> gateway start/stop/restart` dispatches to `s6-svc` instead of spawning a bare process — crashes are auto-restarted and `docker restart` preserves the previously-running set of gateways. See [Per-profile gateway supervision](./docker.md#per-profile-gateway-supervision) for details.
 :::
 
 ## Configuring profiles

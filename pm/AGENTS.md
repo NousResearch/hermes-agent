@@ -19,7 +19,9 @@ isolated tool environments. Callers receive an interpreter or tool path, not uv.
 Nix's declarative uv2nix builds and unrelated user projects remain independently owned.
 
 The `[tool.uv] exclude-newer = "3 days"` release-age check covers **Hermes's own dependencies
-only**, exact pins included, with no per-package exemptions, and it runs when Hermes LOCKS
+only**, exact pins included, with one per-package exemption class: CA trust stores (`certifi`),
+whose revocation releases must reach the lock the day they ship (`exclude-newer-package`; nothing
+else goes there). It runs when Hermes LOCKS
 (`hermes pm lock`, CI's lock check), never on users' machines: every generated workspace drops the
 cutoff (`pm/workspace.py::_without_release_age`), so a mirror without upload times cannot break an
 install (#135589). Plugin resolution is unchanged by this: core's exact pins stay put, and a plugin
@@ -27,3 +29,6 @@ may move a transitive core package within core's declared ranges
 (`tests/pm/test_workspace_build_inputs.py::test_plugin_can_move_compatible_transitive_but_not_exact_requirement`).
 Plugin `python_dependencies` follow the plugin's own policy. Teknium's rulings: "plugins dont have to abide by our 14 day rule … Only hermes'
 dependencies themselves have to"; dates are checked by us, not users; pinned deps need >3 days.
+JS: `minimumReleaseAge` (14 days) in `pnpm-workspace.yaml`; an exemption is one exact
+`- name@1.2.3  # why` line in `minimumReleaseAgeExclude`, which `hermes pm update --pnpm` names
+and later drops (`website/docs/reference/package-management.md` § Release age and package mirrors).

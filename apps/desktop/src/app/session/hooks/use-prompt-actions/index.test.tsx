@@ -33,15 +33,15 @@ import { dropSessionState, publishSessionState } from '@/store/session-states'
 import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
 
 import { actRender, Harness, type HarnessHandle, RUNTIME_SESSION_ID, sessionInfo } from './index-test-utils'
+import { clearStoredJournal, storedJournal } from './prepared-submissions-test-utils'
 import { clearSingleFlightSessionResumeState } from './single-flight-resume'
 import { SESSION_COMPRESS_TIMEOUT_MS } from './slash'
 
-// Suites in this file reuse the same stored-id constants. The module-level
-// single-flight resume map (and drift-recovery cache) would otherwise leak a
-// never-settling in-flight promise from one test into the next.
+// Suites in this file reuse the same stored-id constants. The module-level single-flight resume map
+// (and drift-recovery cache) would otherwise leak a never-settling in-flight promise from one test into the next.
 beforeEach(() => {
   clearSingleFlightSessionResumeState()
-  window.localStorage.removeItem('hermes.desktop.preparedSubmissions.v1')
+  clearStoredJournal()
   // Queue mutations build on the persisted map, not the atom — a queue an
   // earlier test left in storage would otherwise sit ahead of this test's send.
   window.localStorage.removeItem('hermes.desktop.composerQueue.v1')
@@ -322,7 +322,7 @@ describe('terminal receipt settlement', () => {
     try {
       expect(await handle!.submitText('next input', { fromQueue: true })).toBe(true)
       expect(handle!.state()).toMatchObject({ busy: true, awaitingResponse: true, streamId: 'owner-stream', turnLive: true })
-      expect(JSON.parse(window.localStorage.getItem('hermes.desktop.preparedSubmissions.v1')!)).toEqual({})
+      expect(storedJournal()).toEqual({})
     } finally { $connection.set(null) }
   })
 
@@ -489,44 +489,6 @@ describe('usePromptActions /title', () => {
     )
     expect(refreshSessions).not.toHaveBeenCalled()
     expect($sessions.get()[0]?.title).toBe('Old title')
-  })
-})
-
-describe('usePromptActions /browser use', () => {
-  beforeEach(() => setSessions(() => [sessionInfo()]))
-
-  afterEach(() => {
-    cleanup()
-    $connection.set(null)
-    vi.restoreAllMocks()
-  })
-
-  // `use` is offered by the subcommand picker; it once fell to the usage line. It writes the
-  // profile's browser.backend, so it runs on remote backends too (connect stays local-only).
-  it.each([
-    ['/browser use', true],
-    ['/browser use off', false]
-  ])('%s switches Browser Use mode through browser.manage, remote backends included', async (text, enabled) => {
-    $connection.set({ connectionId: 'hermes01', mode: 'remote' } as never)
-    const requestGateway = vi.fn(async () => ({ browser_use: enabled, connected: false }) as never)
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={vi.fn(async () => undefined)}
-        requestGateway={requestGateway}
-      />
-    )
-
-    await handle!.submitText(text)
-
-    expect(requestGateway).toHaveBeenCalledWith('browser.manage', {
-      action: 'use',
-      enabled,
-      session_id: RUNTIME_SESSION_ID
-    })
-    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
 })
 

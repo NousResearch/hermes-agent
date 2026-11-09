@@ -133,12 +133,17 @@ def main():
                     wait_for(lambda: admission()['status'] == 'terminal')
                     wait_for(lambda: kb.get_task(conn, tid).status == 'done')
                     assert asyncio.run(retry(desc, params))['session_id'] == first['target_session_id']
+                    # The worker reads its terminal receipt from this owner: one still polling when the
+                    # owner stops redials, and the redial starts a replacement owner (a client's own start).
+                    wait_for(lambda: all(p.poll() is not None for p in clients))
             if mode == 'restart':
                 cfg['model']['default'] = 'changed-default'
                 (owner / 'config.yaml').write_text(json.dumps(cfg))
                 with daemon(root, owner, env, barrier=False) as (proc, desc):
                     answer = asyncio.run(retry(desc, params))
-                    assert answer['receipt']['status'] == 'unknown', answer
+                    # #134889 KB-8: nobody waits on a card attempt, so the lost turn settles
+                    # interrupted at boot (never replayed) instead of pausing the card session.
+                    assert (answer['receipt']['status'], answer['receipt']['outcome']) == ('terminal', 'interrupted'), answer
                     assert answer['session_id'] == first['target_session_id']
                     with closing(sqlite3.connect((owner / 'state.db').as_uri() + '?mode=ro', uri=True)) as db:
                         frozen = json.loads(db.execute('SELECT value FROM state_meta WHERE key=?',

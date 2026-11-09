@@ -40,6 +40,13 @@ import { profileCollectionRoute, profileRouteSuffix } from './profile-routes'
 
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
 const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt']
+// A gateway's Webapp follows each name with its gateway (`hermes_session_at_<16 hex digits>`), since
+// cookies are not scoped to a port; the dashboard keeps the bare names.
+const GATEWAY_COOKIE_SUFFIX = /_[0-9a-f]{16}$/
+
+function isCookieVariant(name: unknown, variants: string[]): boolean {
+  return typeof name === 'string' && (variants.includes(name) || variants.includes(name.replace(GATEWAY_COOKIE_SUFFIX, '')))
+}
 
 // Keep this aligned with hermes_cli.profiles.validate_profile_name(). `default`
 // is the built-in root alias; these names cannot be created as profiles.
@@ -706,7 +713,12 @@ const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
   'PUT /api/dashboard/theme',
   'GET /api/dashboard/font',
   'PUT /api/dashboard/font',
-  'GET /api/dashboard/plugins'
+  'GET /api/dashboard/plugins',
+  // Web Access: each handler takes `?profile=` and acts on the gateway serving it.
+  'GET /api/webapp-access/status',
+  'POST /api/webapp-access/start',
+  'POST /api/webapp-access/stop',
+  'POST /api/webapp-access/restart'
 ])
 
 function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
@@ -1158,7 +1170,7 @@ function cookiesHaveSession(cookies) {
     return false
   }
 
-  return cookies.some(c => c && AT_COOKIE_VARIANTS.includes(c.name) && c.value)
+  return cookies.some(c => c && isCookieVariant(c.name, AT_COOKIE_VARIANTS) && c.value)
 }
 
 /**
@@ -1179,7 +1191,9 @@ function cookiesHaveLiveSession(cookies) {
     return false
   }
 
-  return cookies.some(c => c && c.value && (AT_COOKIE_VARIANTS.includes(c.name) || RT_COOKIE_VARIANTS.includes(c.name)))
+  return cookies.some(
+    c => c && c.value && (isCookieVariant(c.name, AT_COOKIE_VARIANTS) || isCookieVariant(c.name, RT_COOKIE_VARIANTS))
+  )
 }
 
 export {

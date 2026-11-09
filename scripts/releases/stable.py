@@ -18,19 +18,19 @@ from urllib.parse import unquote, urlsplit
 
 from hermes_cli.update_channel import STABLE_TAG_RE
 from scripts.releases import lanes as lane_set
+from scripts.releases.desktop_targets import MANIFEST_TARGETS
 from scripts.releases.draft_warning import strip_draft_warning
 from scripts.releases.versioning import tag_record
 SHA = re.compile(r"[a-f0-9]{40}")
 DIGEST = re.compile(r"[a-f0-9]{64}")
-DESKTOP_TARGETS = ("windows/x64", "windows/arm64", "macos/x64", "macos/arm64")
+DESKTOP_TARGETS = tuple(f"{platform}/{arch}" for platform, arch in MANIFEST_TARGETS)
 ALL_TARGETS = tuple(lane_set.TARGET_LANE)
 SMOKE_JOBS = {
     "smoke-darwin-arm64": "macOS DMG + ZIP (arm64)",
-    "smoke-darwin-x64": "macOS DMG + ZIP (x64)",
     "smoke-win32-arm64": "Windows MSIX (arm64)",
     "smoke-win32-x64": "Windows MSIX (x64)",
 }
-SMOKE_TARGETS = {"smoke-darwin-arm64": "macos/arm64", "smoke-darwin-x64": "macos/x64",
+SMOKE_TARGETS = {"smoke-darwin-arm64": "macos/arm64",
                  "smoke-win32-arm64": "windows/arm64", "smoke-win32-x64": "windows/x64"}
 
 
@@ -91,7 +91,6 @@ def require_success(needs: dict, required: list[str]) -> None:
 
 # Each signed-package upgrade arm and the transitions job that plans it.
 PACKAGED_BY = {"macos-packaged-arm64": "transitions-darwin-arm64",
-               "macos-packaged-x64": "transitions-darwin-x64",
                "windows-packaged": "transitions-win32"}
 
 
@@ -175,20 +174,20 @@ def stable_windows_version(epoch: object) -> str:
 
 RECEIPT_TARGETS = {
     "darwin-arm64": ("macos/arm64",),
-    "darwin-x64": ("macos/x64",),
     "win32-bundle": ("windows/x64", "windows/arm64"),
 }
 
 # The staged handoffs each receipt is assembled from. The Windows bundle
 # receipt reads the per-arch metadata handoffs plus the universal bundle
-# handoff; fetch() re-verifies every staged byte against its receipt digest,
-# and validate_receipt enforces the signing facts (teamId, publisher).
+# handoff. Only the metadata is downloaded: package bytes are bound by their
+# handoff receipt digests here and re-downloaded and digest-checked by
+# release_artifacts.publish before anything goes live. validate_receipt
+# enforces the signing facts (teamId, publisher).
 RECEIPT_HANDOFFS = {
     "darwin-arm64": ("darwin-arm64",),
-    "darwin-x64": ("darwin-x64",),
     "win32-bundle": ("win32-x64", "win32-arm64", "windows-universal"),
 }
-RECEIPT_INCLUDES = ("metadata-*.json", "*.zip", "*.msixbundle")
+RECEIPT_INCLUDES = ("metadata-*.json",)
 
 
 def _validated_rows(manifest: dict, tag: str, commit: str, public_base: str,
@@ -342,8 +341,6 @@ def _receipt_manifest(root: Path, receipt: str, tag: str, commit: str, archive: 
     names = RECEIPT_HANDOFFS.get(receipt)
     if names is None:
         raise ValueError(f"Unknown receipt: {receipt}")
-    # Re-downloading the staged bytes proves the group's handoff is complete
-    # and matches its receipt before this receipt is published.
     fetch(tag=archive, commit=commit, names=list(names), root=root,
           includes=list(RECEIPT_INCLUDES))
     digests = {}
@@ -354,14 +351,14 @@ def _receipt_manifest(root: Path, receipt: str, tag: str, commit: str, archive: 
             for file in sorted(root.glob("metadata-*.json"))]
     universal = None
     if receipt == "win32-bundle":
-        bundles = [file.name for file in root.glob("*.msixbundle") if not file.name.startswith("Store-")]
+        bundles = [name for name in digests if name.endswith(".msixbundle") and not name.startswith("Store-")]
         if len(bundles) != 1:
             raise ValueError(f"Expected one universal bundle, found {len(bundles)}")
         universal = bundles[0]
     packages = []
     for row in rows:
         filename = universal if row["platform"] == "windows" else row.get("filename")
-        if not filename or filename not in digests or not (root / filename).is_file():
+        if not filename or filename not in digests:
             raise ValueError(f"Receipt {receipt} is missing staged bytes for "
                              f"{row['platform']}/{row['arch']}")
         packages.append({
@@ -373,11 +370,6 @@ def _receipt_manifest(root: Path, receipt: str, tag: str, commit: str, archive: 
         })
         if row["platform"] != "windows" and not filename.endswith(".zip"):
             raise ValueError(f"Receipt {receipt} needs a signed app ZIP for {row['platform']}/{row['arch']}")
-    if receipt == "win32-bundle":
-        from scripts.bundles.release_artifacts import validate_windows_bundle
-
-        validate_windows_bundle(root / universal,
-                                [row for row in rows if row["platform"] == "windows"])
     return {"schema": 2, "tag": tag, "commit": commit, "releaseEpoch": release_epoch,
             "archive": archive, "packages": packages}
 
@@ -791,13 +783,12 @@ def transitions(env: dict) -> None:
 # smokes run in the bundle call, beside assembly, not after each per-arch build.
 SMOKE_CALLS = {
     "smoke-darwin-arm64": "candidates-darwin-arm64",
-    "smoke-darwin-x64": "candidates-darwin-x64",
     "smoke-win32-arm64": "candidates-win32-bundle",
     "smoke-win32-x64": "candidates-win32-bundle",
 }
-CANDIDATE_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64",
+CANDIDATE_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-arm64",
                       "termux", "windows-universal")
-CANDIDATE_INCLUDES = ("metadata-*.json", "*.msixbundle")
+CANDIDATE_INCLUDES = ("metadata-*.json",)
 
 
 def candidate_manifest(env: dict) -> None:
@@ -831,8 +822,9 @@ def candidate_manifest(env: dict) -> None:
     archive = claim["claim_tag"]
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
+        # A Store-only claim stages no metadata: its receipts alone bind the bytes.
         fetch(tag=archive, commit=commit, names=list(handoffs), root=root,
-              includes=list(CANDIDATE_INCLUDES))
+              includes=list(CANDIDATE_INCLUDES), require_files=False)
         out = root / "release-candidates.json"
         assemble(root, tag, commit, base, out, smoke_results=smoke,
                  release_epoch=claim["claim_epoch"], archive=archive, lanes=lanes)
@@ -1026,7 +1018,7 @@ def main(argv: list[str] | None = None, env: dict | None = None) -> None:
         return
     if argv and argv[0] == "stage-receipt":
         if len(argv) != 3 or argv[1] != "--receipt" or argv[2] not in RECEIPT_TARGETS:
-            raise ValueError("Expected stage-receipt --receipt darwin-arm64|darwin-x64|win32-bundle")
+            raise ValueError("Expected stage-receipt --receipt darwin-arm64|win32-bundle")
         stage_receipt(env, argv[2])
         return
     commands = {"admit": admit, "verify": verify, "transitions": transitions,

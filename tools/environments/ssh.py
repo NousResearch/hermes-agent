@@ -54,7 +54,7 @@ class SSHEnvironment(BaseEnvironment):
     # Passthrough values are re-forwarded on every command (see _run_bash), so like docker/local
     # they stay out of the remote snapshot under multiplex.
     _profile_scoped_passthrough = True
-    _sudo_nopasswd_probe_supported = True
+    _passwordless_sudo_probe_supported = True
 
     def __init__(self, host: str, user: str, cwd: str = "~",
                  timeout: int = 60, port: int = 22, key_path: str = "",

@@ -3,7 +3,7 @@ import { computed } from 'nanostores'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
+import { chatMessageText, collectUnspokenTurnSpeech, lastTextPartText } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
 import {
   adoptSpokenReplySession,
@@ -21,6 +21,7 @@ import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $voiceLiveStatus, refreshVoiceLiveStatus, selectedVoiceChatMode } from '@/store/voice-live'
 import { $autoSpeakReplies, $voiceStopPhrase, setAutoSpeakReplies } from '@/store/voice-prefs'
+import { retainVoiceStreamPaint } from '@/store/voice-stream-paint'
 import { resumeWakeAfterVoice } from '@/store/wake-word'
 
 import { pinFloatingComposerCapture } from '../floating-target'
@@ -92,6 +93,7 @@ export function useComposerVoice({
 
   useStore($pendingVoiceReplyId)
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
+  useEffect(() => (voiceConversationActive ? retainVoiceStreamPaint() : undefined), [voiceConversationActive])
   // Engine selection is latched at conversation START (a Settings change
   // applies to the next conversation, never mid-call).
   const [liveEngineActive, setLiveEngineActive] = useState(false)
@@ -145,6 +147,7 @@ export function useComposerVoice({
     return {
       id: last.id,
       pending: Boolean(last.pending),
+      segmentText: lastTextPartText(last),
       text,
       turnKey: assistantTurnKey(sessionId, messages, last.id)
     }

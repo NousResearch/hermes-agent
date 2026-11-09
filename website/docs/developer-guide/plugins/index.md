@@ -25,6 +25,7 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | A **video-generation backend** | [Video Generation Provider Plugins](../video-gen-provider-plugin.md) |
 | A **web-search / extract backend** | [Web Search Provider Plugins](../web-search-provider-plugin.md) |
 | A **cloud browser backend** (Browserbase-style CDP session provider) | [Browser Provider Plugins](../browser-provider-plugin.md) |
+| A **delegation strategy** (pick a profile or a named model per subagent) | [Delegation Provider Plugins](../delegation-provider-plugin.md) — `ctx.register_delegation_provider()` |
 | A **computer-use driver** (desktop control behind the `computer_use` tool) | [Computer-use backend plugins](#computer-use-backend-plugins) — `ctx.register_computer_use_provider()` |
 | A **secret-manager backend** (vault / password manager / OS keystore) | [Secret Source Plugins](../secret-source-plugin.md) |
 | A **dashboard OIDC/auth provider** | [Web Dashboard — custom providers](../../user-guide/features/web-dashboard.md#custom-providers) — `ctx.register_dashboard_auth_provider()` |
@@ -85,9 +86,12 @@ them. An enabled package may provide immediate `skills/*/SKILL.md` directories
 and stdio MCP servers from root `mcp.json`. Skills are read-only, namespaced,
 and loaded through `skills_list` plus `skill_view`. MCP commands are passed as
 one executable token with a separate argument list, never through a shell.
-Use `skills_list` to discover the full qualified skill name. Portable skill
-namespaces have the deterministic form `agent-plugin-<slug>-<hash>`, derived
-from the discovered plugin key so sanitized names cannot collide. A portable
+A portable package's skills are named after the plugin, `<plugin-name>:<skill>`
+(`blender:blender`), the same form as a native plugin's; when two loaded plugins
+would register the same qualified name, the second one's skill is skipped with a
+warning naming both. Its data directory, `plugin-data/agent-plugin-<slug>-<hash>`,
+keeps a name derived from the discovered plugin key so sanitized names cannot
+collide on disk. A portable
 package's MCP servers keep the names their `mcp.json` gives them, the same rule
 as a user's own `mcp_servers` block, so the model-facing `mcp__<server>__<tool>`
 name keeps the tool verb inside the 64-character provider cap. A duplicate server
@@ -103,6 +107,12 @@ skipped at its own boundary when valid sibling components can still load.
 profile-scoped writable directory managed by Hermes.
 Values declared in portable MCP `env` are visible package data, not a secret
 storage mechanism. Do not place credentials in `mcp.json`.
+To pass a user's variable through to a stdio server (Hermes otherwise hands MCP
+servers a filtered environment), declare it as `"NAME": "${NAME}"`. The value
+comes from the user's shell or profile `.env`; when the variable is unset (or
+empty), the entry is treated as if it weren't there: the server doesn't get the
+literal `${NAME}`, and `NAME` keeps whatever value the server would have without
+that line (usually unset). Optional variables are safe to forward.
 
 The current portable subset supports stdio and Streamable HTTP MCP entries.
 Portable `streamable-http` entries are routed through Hermes' existing native
@@ -134,12 +144,49 @@ write-capable call instead of relying on the skill's instructions alone:
 
 The server name must match an `mcp.json` entry. With `untrusted`, every tool
 call to that server that is not annotated `readOnlyHint: true` asks the user
-first, and fails closed where nobody can answer (cron, unattended runs). The
+first (Once, Session or Always, per tool), and fails closed where nobody can answer (cron, unattended runs). The
 only other accepted value is `full`, the default, so a package can narrow
 access but never widen it. A `config.yaml` server with the same name replaces
-the package's entry, including its trust. Other harnesses ignore this extension.
+the package's entry, including its trust, but keeps the package's declared costs
+and spend limit (below) unless it sets its own. Other harnesses ignore this extension.
 `trust` can sit beside `app`, `requires` and `liveness` in the same server
 entry (see [Application declarations](./application-declarations.md)).
+
+A server whose tools spend money or credits can declare what each call costs
+and a budget per chat. Hermes then names the cost in the approval prompt along
+with the chat's running total, and a call that would take the chat past
+`spend_limit` asks first even when the user has made the server trusted:
+
+```json
+{
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "servers": {
+        "renders": {
+          "trust": "untrusted",
+          "costs": {
+            "create_image": 20,
+            "animate": { "credits": [5, 20], "note": "per animation" }
+          },
+          "spend_limit": 100,
+          "cost_unit": "credits"
+        }
+      }
+    }
+  }
+}
+```
+
+Keys of `costs` are MCP tool names as the server lists them. A cost is a
+non-negative number, a `[min, max]` range, or an object with `credits` (number
+or range) and a short `note`. `spend_limit` is optional (`0` or absent = no
+limit) and `cost_unit` defaults to `credits`. A malformed table makes the
+package fail to load with an error naming the key. These map to the native
+`tool_costs`, `spend_limit` and `cost_unit` keys (see
+[Tool costs and spend limits](../../user-guide/features/mcp.md#tool-costs-and-spend-limits)).
+Costs are facts about the server, so they survive a user's same-name
+`config.yaml` entry (the way a user widens trust) unless that entry sets the
+key itself; the user's `spend_limit` wins, including `0` to turn it off.
 
 A long-running server can also declare a Hermes-specific tool-call `timeout`
 (in seconds) in `plugin.json`, without changing other servers' defaults:
@@ -166,7 +213,10 @@ A server entry key this Hermes does not know (one a newer release added) is
 ignored with a warning, which `hermes plugins validate` lists, and the package
 still installs. Releases from before this rule reject the package instead, and a
 release that ignores a key may behave less safely than intended, so declare a new
-key together with a catalog `requires_hermes` floor.
+key together with a catalog `requires_hermes` floor. `plugin.json` has no
+`requires_hermes` field, so that catalog floor is a portable package's only one: an install by
+catalog name refuses on an older Hermes, and `hermes plugins update` keeps the
+installed pin until Hermes is updated.
 
 An explicit per-server MCP call budget also reaches Hermes' outer tool executor. A call
 whose budget exceeds the shared concurrent-batch deadline becomes a sequential
@@ -357,7 +407,9 @@ def register(ctx):
 
 Known capability ids: `tools.override`, `llm.provider_override`,
 `llm.model_override`, `llm.agent_id_override`, `llm.profile_override`,
-`llm.task_override` (see `hermes_cli/plugin_capabilities.py` for the
+`llm.task_override`, `llm.side_question` (ask the session's own agent after
+a turn, see [Plugin LLM Access](../plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question)),
+`gateway.platform_actions` (see `hermes_cli/plugin_capabilities.py` for the
 canonical registry). Unknown ids are ignored. The older per-capability
 config keys (`plugins.entries.<id>.allow_tool_override`, …) still work but
 are deprecated — declare capabilities instead so users get a single,
@@ -460,6 +512,98 @@ returns an `AccountUsageSnapshot` (plan, session/weekly windows with
 **Sign-out** belongs to Hermes, not to a plugin: point users at
 `hermes auth logout openai-codex` instead of deleting credential files.
 
+### Use your own OAuth client (Google and other APIs)
+
+A plugin that calls a third-party API with the user's own OAuth client (a
+Google Cloud "Desktop app" client, for example) does not run the
+consent flow, store the refresh token or refresh it. Declare the client and
+Hermes owns the grant:
+
+```yaml
+name: gemini-voice
+requires_env:
+  - name: GEMINI_VOICE_CLIENT_ID
+  - name: GEMINI_VOICE_CLIENT_SECRET
+    secret: true
+oauth:
+  - id: google
+    authorize_url: https://accounts.google.com/o/oauth2/v2/auth
+    token_url: https://oauth2.googleapis.com/token
+    scopes:
+      - https://www.googleapis.com/auth/calendar.events.owned
+      - https://www.googleapis.com/auth/documents
+    client_id_env: GEMINI_VOICE_CLIENT_ID
+    client_secret_env: GEMINI_VOICE_CLIENT_SECRET  # optional: a public PKCE client has none
+    hosts: [www.googleapis.com, docs.googleapis.com]
+    authorize_params: {access_type: offline, prompt: consent}  # Google issues a refresh token only with these
+```
+
+The user signs in once from a terminal with `hermes auth add gemini-voice:google`
+(the plugin's key, a colon, the entry's `id`). That is the same PKCE login the
+model-provider helper runs: a loopback redirect on `127.0.0.1`, with an SSH
+tunnel hint when Hermes runs on a remote host. If the IdP grants fewer scopes
+than declared, nothing is saved. `hermes auth status|refresh|logout
+gemini-voice:google` show, refresh and remove the grant. It lives in the active
+profile's `auth.json`; Hermes refreshes it on use once less than two minutes
+remain and never starts a sign-in under the gateway or cron.
+
+The plugin calls the API through the same helper, with the entry's `id` as the
+provider:
+
+```python
+from hermes_cli.auth_constants import AuthError
+from hermes_cli.plugin_provider_requests import ProviderNotSignedIn, credentialed_provider_request
+
+def create_document(title: str) -> dict:
+    try:
+        resp = credentialed_provider_request(
+            "google", "POST", "https://docs.googleapis.com/v1/documents", json={"title": title}, timeout=20)
+    except ProviderNotSignedIn as exc:
+        return {"ok": False, "error": str(exc)}  # names `hermes auth add gemini-voice:google`
+    except AuthError as exc:
+        return {"ok": False, "error": f"{exc.code}: {exc}"}
+    return {"ok": resp.status < 300, "status": resp.status, "body": resp.json()}
+```
+
+The Codex rules above apply, plus:
+
+- **HTTPS only.** `authorize_url`, `token_url` and every `hosts` entry are
+  `https` (there is no loopback exception); `hermes plugins validate` and
+  catalog admission fail anything else.
+- **Declared hosts only.** The bearer goes to `https://<host>` (port 443) for
+  the entry's `hosts`, matched exactly (no subdomains). Any other URL, `http`,
+  or a URL with user info raises `PermissionError` before a request is made.
+  A host outside the sign-in provider's domains is a warning reviewers check.
+- **Your own client variables.** `client_id_env` and `client_secret_env` name
+  the plugin's own variables; a variable Hermes itself uses (a provider API key,
+  a platform token) is refused, since Hermes sends these to `token_url`.
+- **The plugin's own grant.** The grant is stored under the calling plugin's
+  key, so another plugin declaring the same `id` cannot use it, and the plugin's
+  own entry wins over a Hermes sign-in of the same name.
+- **The grant follows the declaration.** It remembers the entry it was made
+  for: a plugin version that changes the token URL, hosts, scopes or client
+  variables gets `ProviderNotSignedIn` until the user signs in again, and a
+  catalog re-pin that adds an `oauth` entry or changes its authorize host, token
+  host, hosts or scopes asks before updating.
+- **Errors.** `ProviderNotSignedIn`: not signed in, revoked, or the entry
+  changed since sign-in. `AuthError` codes: `oauth_client_id_missing` and
+  `oauth_client_secret_missing` (the variable is not set), `invalid_client`,
+  `unauthorized_client` and `invalid_scope` (the IdP rejected the client; the
+  user has to fix it), `oauth_refresh_failed` (network or server error; try
+  later). A revoked grant (`invalid_grant`) is retired: nothing goes to the
+  network until the next sign-in. Errors reach the plugin without a traceback,
+  chain or request object, so none leads back to the token, refresh token or
+  client secret.
+- **Sign-in and removal.** `hermes auth add` prints which hosts get the code,
+  the client secret and the token before opening the browser, and refuses to
+  run from the gateway, cron or an agent session. `hermes plugins remove` drops
+  the plugin's grants, and `hermes auth logout <plugin>:<id>` still works after
+  the plugin is gone.
+
+`hermes plugins validate` checks the `oauth:` block and that its client
+variables are declared, and warns when plugin code names the token URL. Like
+`requires_auth`, this is consent and visibility, not a sandbox.
+
 ### Manifest v2 reference
 
 `plugin.yaml` also supports an additive **v2 schema** (#64165). Every field is
@@ -476,11 +620,13 @@ this Hermes understands still loads with a warning.
 | `python_dependencies` | list of str | Declared Python requirements (e.g. `"requests>=2.0,<3"`). Installation requests consent; enabling admits the candidate through PM with the existing core, extras, and enabled-plugin union. Successful preparation publishes the environment and configuration transactionally; failure preserves the previous selection and enabled set. Declining leaves the installed plugin disabled. Pin upper bounds. |
 | `python_runtime` | str | `external` — the plugin manages its own interpreter/venv (sidecar pattern); Hermes installs nothing and leaves any `pyproject.toml` alone. |
 | `config_schema` | mapping | JSON-schema-ish description of keys under `plugins.entries.<id>.settings`: `api_url: {type: str, default: "", description: "...", required: false}`. Validated at load; mismatches log actionable warnings naming the key and expected type — never load failures. Types: `str`, `int`, `float`, `bool`, `list`, `dict` (plus JSON-schema aliases) and `secret`. Also drives the settings form in the Desktop Plugins tab — see [Settings form in the Desktop](#settings-form-in-the-desktop). |
+| `config_keys` | list | Dotted paths in Hermes' own config sections that your code reads (e.g. `memory.retaindb`). Each path covers itself and everything below it, so `hermes config get/set` recognizes those keys instead of warning "not a recognized config key", but only while the plugin is active (enabled, or the selected `memory.provider`). A path must be at least two segments deep, and paths Hermes already defines are ignored, so a declaration never hides a typo elsewhere in the section. Settings for your plugin alone belong in `config_schema`; use this only for a core section your plugin reads. Portable `plugin.json` packages put it under `extensions."com.nousresearch.hermes".config_keys`. |
 | `license` | str | SPDX-style license id (e.g. `MIT`). |
 | `homepage` | str | Project URL. |
 | `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
 | `provides_locales` | list | Language pack declaration: ids (`- pl`) or `{id, endonym, rtl}` mappings whose `locales/<id>[.tui\|.desktop].yaml` the loader registers automatically — see [Ship a language pack](#ship-a-language-pack). |
 | `requires_auth` | list of str | Providers whose sign-in the plugin uses through Hermes (today: `openai-codex`). Required by `credentialed_provider_request`; shown at install and in `hermes plugins show`. See [Use the user's Codex sign-in](#use-the-users-codex-sign-in-core-made-requests). |
+| `oauth` | list of mappings | OAuth clients the plugin uses through Hermes: `id`, `authorize_url`, `token_url`, `scopes`, `client_id_env`, optional `client_secret_env`, `hosts`, optional `authorize_params`. Signed in with `hermes auth add <plugin>:<id>`, used through `credentialed_provider_request`. See [Use your own OAuth client](#use-your-own-oauth-client-google-and-other-apis). |
 
 ```yaml
 # plugin.yaml — manifest v2 example
@@ -548,6 +694,9 @@ When both exist the `pyproject.toml` wins. What Hermes does with them:
 - **`--yes-deps`** answers the dependency question up front, so a headless install (CI, SSH
   automation, a container entrypoint) prepares the declared dependencies instead of being refused.
   It is mutually exclusive with `--no-deps`.
+- **A `pyproject.toml` that installs nothing** (`dependencies = []`, no `[build-system]`, extras
+  or dependency groups) counts as no declaration: no dependency question, and enabling or updating
+  the plugin leaves the dependency environment as it is.
 - **`python_runtime: external`** keeps a sidecar's dependencies out of the shared union.
   Hermes does not install that Python runtime or modify its declaration.
 - **Nothing to load is an error** — `hermes plugins validate` rejects `plugin.yaml` without
@@ -737,9 +886,15 @@ def unit_convert(args: dict, **kwargs) -> str:
 1. **Signature:** `def my_handler(args: dict, **kwargs) -> str`
 2. **Return:** Always a JSON string. Success and errors alike.
 3. **Never raise:** Catch all exceptions, return error JSON instead.
-4. **Accept `**kwargs`:** Hermes injects context keywords (`task_id`, `session_id`, `user_task`,
-   `parent_agent`, ...) and only forwards the ones your signature names, so `def handler(args)`
+4. **Accept `**kwargs`:** Hermes injects context keywords (`task_id`, `session_id`, `conversation_id`,
+   `user_task`, `parent_agent`, ...) and only forwards the ones your signature names, so `def handler(args)`
    works; `**kwargs` is how you opt into the full, additively growing context.
+5. **Key per-conversation state on `conversation_id`:** `session_id` names the current transcript
+   segment, and a rotating compression (`compression.in_place: false`) replaces it mid-conversation.
+   `conversation_id` is the id of the conversation's first session and does not change. `/new` and
+   `/branch` start a new conversation. A delegated subagent's calls carry its own `session_id` and its
+   delegator's `conversation_id`. Both are empty when the call has no session (for example, a tool call
+   from inside an `execute_code` script).
 
 ## Step 5: Write the registration
 
@@ -875,6 +1030,35 @@ with `get_secret("MY_PLUGIN_API_KEY")` from `agent.secret_scope` — exactly lik
 Never read `.env`, `auth.json` or another tool's credential files yourself (catalog rule 11).
 The `plugins.manage settings` action refuses secret keys and any value whose type
 or `choices` disagree with the schema.
+
+**Portable packages (`plugin.json`)** declare the same schema under the Hermes
+vendor namespace, since Agent Plugins v1 rejects unknown top-level fields:
+
+```json
+{
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "config_schema": {
+        "api_key": { "type": "secret", "env": "MY_PLUGIN_API_KEY" },
+        "show_chip": { "type": "bool", "default": true, "label": "Show the status-bar chip" }
+      }
+    }
+  }
+}
+```
+
+A secret whose `env` names a variable your `mcp.json` passes through
+(`"env": { "MY_PLUGIN_API_KEY": "${MY_PLUGIN_API_KEY}" }`) reaches the MCP server
+right away: after a save, Hermes reconnects the plugin's servers whose resolved
+launch inputs changed (a new key does, a toggle does not), so the form is also
+where users set the server's key.
+
+**React to a save without polling.** Every save broadcasts
+`plugin.<id>.settings.changed` (payload `{ written: [...keys] }`; a secret-only
+save sends an empty list), so a Desktop half re-reads its preferences at once:
+`ctx.onEvent('plugin.my-plugin.settings.changed', reload)`. Read the values from
+your own `plugin_api.py` with `load_config_readonly()` from `hermes_cli.config`
+(`plugins.entries.<id>.settings`), falling back to the schema defaults.
 
 ## Step 6: Test it
 
@@ -1191,7 +1375,9 @@ legacy `pip_dependencies` and `python_dependencies` lists from `plugin.yaml` or
 Consent, workspace membership, and currency checks use the same declaration.
 PM prepares their dependencies together with core requirements before enabling
 the plugin. The generated workspace does not rewrite the plugin directory or
-the shipped lockfile. Dependency conflicts refuse admission and preserve the
+the shipped lockfile, and it is solved only for the installing interpreter's
+platform: a dependency that ships no wheels for another platform does not
+block the plugin. Dependency conflicts refuse admission and preserve the
 previous selection. PM does not automatically disable other plugins.
 
 Dependencies installed manually with pip are not durable PM declarations.
@@ -1265,17 +1451,16 @@ ctx.register_tool(
 
 ### Overriding a built-in tool
 
-To replace a built-in tool with your own implementation (e.g. swap the
-default browser tool for a headed-Chrome CDP backend, or replace
+To replace a built-in tool with your own implementation (e.g. replace
 `web_search` with a custom corporate index), pass `override=True`:
 
 ```python
 def register(ctx):
     ctx.register_tool(
-        name="browser_navigate",             # same name as the built-in
-        toolset="plugin_my_browser",         # your own toolset namespace
+        name="web_search",                   # same name as the built-in
+        toolset="plugin_my_search",          # your own toolset namespace
         schema={...},
-        handler=my_custom_navigate,
+        handler=my_corporate_search,
         override=True,                       # explicit opt-in
     )
 ```
@@ -1333,6 +1518,17 @@ def register(ctx):
     ctx.register_hook("on_session_end", on_session_end)
 ```
 
+### Rewrite the reply before the user sees it
+
+A `transform_llm_output` hook rewrites the finished reply, which the user has usually watched stream already. When your plugin must see the reply first (it redacts, filters or blocks content), pass `hold_stream=True`:
+
+```python
+def register(ctx):
+    ctx.register_hook("transform_llm_output", redact, hold_stream=True)
+```
+
+Every session in the profile that loads the plugin then stops streaming its replies: the user sees the typing or thinking indicator, and then only your rewritten final, on the surfaces listed in the reference. Commentary between tool calls is dropped for those turns, and if your hook raises or times out the user gets a short "reply withheld" notice instead of the original. Leave the flag off for cosmetic transforms (footers, styling) so replies keep streaming. Details per surface: [Holding the reply until it is rewritten](../../user-guide/features/hooks.md#hold-stream).
+
 ### Hook reference
 
 Each hook is documented in full on the **[Event Hooks reference](../../user-guide/features/hooks.md#plugin-hooks)** — callback signatures, parameter tables, exactly when each fires, and examples. Here's the summary:
@@ -1354,12 +1550,13 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | [`on_session_reset`](../../user-guide/features/hooks.md#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
 | [`on_session_delete`](../../user-guide/features/hooks.md#on_session_delete) | A session delete or deliberate archive commits (every surface, sweeps, prune) | `session_id: str, reason: str, profile: str \| None`, optional `deleted_ids: list[str]`, `sessions_dir: str` | ignored |
 | [`post_compaction`](../../user-guide/features/hooks.md#post_compaction) | A compaction committed (any path: auto, `/compress`, gateway, Codex, micro, prune) | `session_id: str, old_session_id: str, kind: str, reason: str, before_tokens: int \| None, after_tokens: int \| None, messages_removed: int \| None` | ignored |
+| [`post_curator_run`](../../user-guide/features/hooks.md#post_curator_run) | A curator pass wrote its report directory | `run_dir: str, run_json_path: str, report_md_path: str, dry_run: bool` | ignored |
 | [`gateway_platform_event`](../../user-guide/features/hooks.md#gateway_platform_event) | An authorized platform-native event is normalized at the gateway boundary (Telegram reactions currently) | `platform: str, event_type: str, payload: dict` | ignored |
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation, and `pre_tool_call`, which can return a block/approve directive.
+Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation or block the turn before it reaches the model, and `pre_tool_call`, which can return a block/approve directive.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 
@@ -1369,7 +1566,7 @@ The **API request hooks** are observers for the raw provider request, one level 
 
 ### `pre_llm_call` context injection
 
-This is the only hook whose return value matters. When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.
+When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.
 
 #### Return format
 
@@ -1380,11 +1577,20 @@ return {"context": "Recalled memories:\n- User prefers dark mode\n- Last project
 # Plain string (equivalent to the dict form above)
 return "Recalled memories:\n- User prefers dark mode"
 
+# Block the turn before it reaches the model (DLP / policy plugins)
+return {"action": "block", "message": "Blocked by policy: prompt contains a customer ID."}
+
 # Return None or don't return → no injection (observer-only)
 return None
 ```
 
 Any non-None, non-empty return with a `"context"` key (or a plain non-empty string) is collected and appended to the user message for the current turn.
+
+A `{"action": "block", "message": "..."}` return vetoes the turn **before any inference request**: the message is shown to the user in place of a model reply and saved as the assistant reply (so the transcript keeps a normal `user → assistant` pair and `--resume` works), the turn makes zero model calls, and the result carries `turn_exit_reason: "blocked_by_plugin_pre_llm_call"`. The first block wins; a block without a message is ignored.
+
+The blocked prompt is stored as `[Message withheld: a pre_llm_call policy hook blocked it.]`. That placeholder is what later turns replay and what compaction summaries, `session_search`, external memory providers and the background memory review read, so the prompt never reaches a model in this turn or a later one. What the user typed is kept only as display metadata, so the CLI `--resume` recap, the TUI, the desktop app and the dashboard still show it. The hook runs before turn-start compaction, and a blocked turn skips compaction, titling and external-memory prefetch/sync.
+
+A block applies only when a callback returns it. A callback that raises, or runs past `plugins.hook_callback_timeout` (30 s by default), is logged and skipped, and the turn goes ahead. A policy hook should therefore catch its own errors and return a block when it can't decide. Model metadata lookups (such as a `/models` context-length probe on a fresh session) can still run before the hook; they carry no message content.
 
 #### Oversized-context spill
 
@@ -1516,6 +1722,30 @@ The canonical list of kinds is `VALID_MIDDLEWARE` in `hermes_cli/middleware.py`:
 - Middleware payloads carry `middleware_schema_version` (`hermes.middleware.v1`) alongside the observer telemetry fields.
 - Unknown kinds register with a warning instead of failing, so a plugin written against a newer Hermes still loads on an older one.
 
+### Give each session's commands its own environment variables
+
+Tools run in the process that serves the session. With the shared gateway, that is the gateway daemon, so a variable from the terminal or pane that shows a conversation is not in the environment of the commands the agent runs. `ctx.register_session_env(names, resolver)` closes that gap without a change to the commands:
+
+```python
+def pane_env(session_id):
+    pane = find_pane_showing(session_id)  # your plugin's own lookup
+    if pane is None:
+        return {}  # the commands keep the gateway's own values
+    return {"MY_PANE": pane.id, "MY_PANE_SOCKET": pane.socket or None}
+
+def register(ctx):
+    ctx.register_session_env(["MY_PANE", "MY_PANE_SOCKET"], pane_env)
+```
+
+- Hermes calls `resolver(session_id)` each time it starts a local process for a session: a foreground or background `terminal` command, a `terminal()` call from `execute_code`, and the other subprocesses that get the session's `HERMES_SESSION_*` variables. The value is read at that moment, so a change (the conversation moves to another pane) applies to the next command.
+- `session_id` is the session the process runs for. A subagent's commands get the subagent's id; map it to its parent session in your resolver when the parent's values must apply.
+- Return a map of declared names to strings. A value of `None` removes the name from the process environment. A name you leave out keeps the gateway's own value. Names you did not declare are ignored.
+- The declared names are never saved in the shared shell snapshot, so one session's value cannot reach a later command of another session, and an `export` of one of these names does not carry to the next command. This applies to your plugin's own profile only: another profile served by the same gateway keeps its own exports of the name.
+- Each name has one plugin per profile. Declaring a name another loaded plugin of the same profile already declared raises `ValueError` naming that plugin. Unloading a plugin frees its names, and a reload of the same plugin declares them again. Your own plugin may declare a name in more than one call: the later registration's value wins, and disposing it brings back the earlier one's.
+- Names must be valid environment variable names. `HERMES_*` names are refused (they belong to core). Provider and Hermes credential names that the subprocess scrub removes are also removed from your values.
+- A resolver that raises is logged and contributes nothing; the command still runs. Keep it fast and local: it runs on every spawn.
+- Values apply on the local terminal backend only. Remote backends (Docker, SSH, Modal and other sandboxes) do not receive them.
+
 ### Register CLI commands
 
 Plugins can add their own `hermes <plugin>` subcommand tree:
@@ -1620,14 +1850,51 @@ def register(ctx):
 
 - Return the text to show. `print()` writes to the gateway's stdout, and the user never sees it.
 - Take the session's working directory from `agent.runtime_cwd.resolve_agent_cwd()`, not `os.getcwd()`, which is the gateway's own directory. Resolve relative paths against it.
-- Read session identity with `gateway.session_context.get_session_env("HERMES_SESSION_PLATFORM")` and the other `HERMES_SESSION_*` names, not `os.environ`.
+- Read session identity with `get_session_env("HERMES_SESSION_PLATFORM")`, `get_session_env("HERMES_SESSION_CHAT_ID")` and the other `HERMES_SESSION_*` names, not `os.environ`. Import the function itself with `from gateway.session_context import get_session_env`: that name is the public seam, and `hermes plugins validate` reports `import gateway.session_context` as a private import.
+- For "who asked this turn" (authorization, provenance), read `HERMES_SESSION_ACTOR_ID` / `HERMES_SESSION_ACTOR_NAME`. `HERMES_SESSION_USER_ID` is the session route, and it is empty in a shared chat (Telegram observe mode), so code that rebuilds a delivery target from it stays on the shared conversation.
 
 ```python
 from agent.runtime_cwd import resolve_agent_cwd
+from gateway.session_context import get_session_env
 
 def _handle_todo(raw_args: str) -> str:
     todo = resolve_agent_cwd() / "TODO.md"  # the session's folder, not the gateway's
     return todo.read_text() if todo.exists() else "No TODO.md here."
+
+def _handle_where(raw_args: str) -> str:
+    platform = get_session_env("HERMES_SESSION_PLATFORM")  # unbound: falls back to os.environ, then ""
+    return f"{platform or 'local'} chat {get_session_env('HERMES_SESSION_CHAT_ID') or '(none)'}"
+```
+
+### Ask the user to pick an option
+
+A sync slash-command handler can ask the user who ran it to pick one option with `ctx.ask_choice(question, choices)`. It blocks until the user answers and returns the picked choice's `value`, or `None`. Each surface shows it the way it shows the agent's `clarify` questions:
+
+| Surface | What the user sees |
+|---|---|
+| Telegram, Discord, Slack | A card with one button per choice (plus "Other") |
+| Other messaging platforms | A numbered list; the user replies with the number or the label |
+| Classic CLI, Ink TUI, Desktop | The clarify picker |
+
+A choice is a string (the label and the value) or a dict `{"value", "label", "description"}`; the description is shown after the label. A typed value or label, in any case, also picks that choice. `ask_choice` returns `None` when the user cancels, types something that is not a choice, or lets the clarify timeout (`agent.clarify_timeout`) pass. It also returns `None` when nothing can ask: a hook, a cron job, an async handler (blocking would stall the event loop that delivers the answer). The handler then falls back to its text usage:
+
+```python
+_MODES = [
+    {"value": "default", "label": "Default", "description": "delegation.model / parent model"},
+    {"value": "model_map", "label": "Model routes", "description": "per-task model map"},
+    {"value": "profile_routes", "label": "Profiles", "description": "delegate to other profiles"},
+]
+
+def register(ctx):
+    def delegation(raw_args: str) -> str:
+        mode = raw_args.strip() or ctx.ask_choice("Delegation mode", _MODES)
+        if mode not in {m["value"] for m in _MODES}:
+            return "Usage: /delegation default|model_map|profile_routes"
+        ctx.set_config("mode", mode)
+        return f"Delegation mode: {mode}"
+
+    ctx.register_command("delegation", delegation, description="Switch the delegation mode",
+                         args_hint="[mode]")
 ```
 
 ### Dispatch tools from slash commands
@@ -1690,6 +1957,78 @@ def register(ctx):
 ```
 
 For running a full `hermes <subcommand>` (e.g. `hermes kanban show`), shell out with the `terminal` tool via `ctx.dispatch_tool("terminal", {"command": "hermes kanban show ..."})` — there is no in-process slash-command bridge for headless worker sessions, and tools are the supported way to drive Hermes from a hook.
+
+### Talk to your own frontend: plugin RPC methods and session events
+
+A frontend that is a JSON-RPC client of the gateway (a terminal frontend attached to the shared gateway, a
+custom web client on `/api/ws`) can call its own Python half, and the Python half can push an event to the
+clients viewing one session:
+
+```python
+def register(ctx):
+    def pane_state(params, *, session_id, **kwargs):
+        # session_id is the session the call named (None for a sessionless call), already authorized.
+        state = load_state(session_id)
+        ctx.emit_to_session(session_id, "pane.changed", {"rows": len(state)})
+        return {"rows": state}
+
+    ctx.register_rpc("pane.state", pane_state)
+```
+
+The client calls `plugin.<plugin_id>.pane.state` with any JSON params (`session_id` names the session) and
+listens for the event frame of type `plugin.<plugin_id>.pane.changed`:
+
+```json
+{"jsonrpc": "2.0", "id": 7, "method": "plugin.my-plugin.pane.state", "params": {"session_id": "local-…", "page": 2}}
+```
+
+- **Names are forced into your namespace** (`<plugin_id>` is `ctx.plugin_id`). `ctx.register_rpc(name, handler)`
+  serves `plugin.<plugin_id>.<name>`, and `ctx.emit_to_session(session_id, event, payload=None)` sends
+  `plugin.<plugin_id>.<event>`. `name` and `event` are bare dotted names (segments of `[A-Za-z0-9_-]`), as for
+  `broadcast_plugin_event`. A plugin whose id is not `[a-z0-9_-]{1,64}` (a category plugin such as
+  `image_gen/x`) cannot register one: the call raises `ValueError`.
+- **The handler** is called as `handler(params, session_id=...)` off the gateway loop, in the owning
+  profile's scope. It may be `async def`: it then runs on its own event loop in that worker thread, never
+  on the gateway loop, the same as a plugin slash command. Accept `**kwargs`: later releases may pass more context. Its return value must be
+  JSON-encodable and is the call's `result`. An exception, or a value JSON cannot encode, answers the call
+  with error `4001`, reason `plugin_rpc_failed`, and the exception text in `error.data.detail`. The call
+  holds that client's request lane until it returns, so keep it short: start long work in a thread and
+  report through `emit_to_session`.
+- **Unload removes the methods.** Once the plugin is disabled or removed, its methods answer `-32601`
+  like any unknown method.
+- **Session events go to that session's viewers only**, on its event stream: clients attached now, and a
+  client that reconnects replays them. `session_id` may be the conversation's id or its agent's current
+  id (compression gives the agent a new one), so a tool or hook can pass the `session_id` it received.
+  `payload` is a JSON dict. The call returns `True` when a live viewer took the frame, `False` when no
+  client is viewing or this process holds no such session. `ctx.emit_to_session` looks the session up in
+  your plugin's own profile, also from a thread you started. `hermes_cli.plugin_events.emit_plugin_session_event(plugin_id, session_id, event, payload)`
+  is the same call for code without `ctx`; it uses the caller's profile scope, so from your own thread on
+  a gateway that serves several profiles, use `ctx.emit_to_session`.
+- **`plugins.isolation: host`:** handlers run in the plugin host process, and both emit calls are
+  forwarded to the gateway process, looked up in the host's profile. There `emit_plugin_session_event`
+  is sent as the plugin whose code made the call: it returns `False` and sends nothing when `plugin_id`
+  is not that plugin's own or the code is from a load that has since unloaded (a task left running
+  across a reload too), and it may do the same from a thread you
+  started (the host may not know which plugin it belongs to), so use `ctx.emit_to_session` there. In-process the helper takes
+  `plugin_id` as given.
+- **Where it works:** on a gateway that owns sessions (its session authority, as on the shared
+  `hermes gateway run` gateway that attached frontends use). A backend without one answers the method
+  with `-32601`. In a process without one (`hermes chat`, cron, a
+  `dashboard.turn_isolation` compute child) `emit_to_session` returns `False`.
+- **Detect it first.** An owner that serves plugin methods lists `plugin-rpc-v1` in
+  `runtime.describe`'s `capabilities`. With it, `-32601` means that plugin method is not loaded (the
+  plugin is disabled, not installed, or has no such method). Without `plugin-rpc-v1`, clients must not
+  assume plugin RPC is supported (an older owner may still serve it without listing the capability). The contract declares the namespace once as
+  `plugin.{plugin_id}.{name}` (`CanonicalRpcNamespaces` in the generated TypeScript,
+  `x-canonical-namespaces` in the OpenRPC document): params are an open object with an optional
+  `session_id`, and the result is whatever JSON your handler returns.
+
+**Security.** A plugin method gets the same gate as a plugin slash command on that gateway: the connection
+needs the `session:control` capability, and a call that names a `session_id` must pass that session's
+authorization (the right profile, the owner of a local session, a superseded conversation is read-only).
+Beyond that, any client the gateway authenticated can call any plugin method with any params. Hermes does
+not check callers per method (`SECURITY.md` §2.6, rule 4): treat a plugin method like a plugin tool, validate
+its params, and never expose through it more than the plugin's own data and actions.
 
 ### Send raw CDP commands to the agent's browser
 

@@ -298,14 +298,14 @@ def _owner_profile_executions(canonical_job_id: str) -> list[dict[str, Any]]:
     the owner-home scope so it opens the OWNER's cron/executions.db.
     """
     try:
-        from cron.executions import list_executions
+        from cron.executions import _TERMINAL_STATES, list_executions
 
         rows = list_executions(job_id=canonical_job_id, limit=100)
     except Exception:
         return []
     terminal: list[dict[str, Any]] = []
     for row in rows:
-        if str(row.get("status") or "") not in ("completed", "failed", "unknown"):
+        if str(row.get("status") or "") not in _TERMINAL_STATES:
             continue
         terminal.append({
             "id": str(row.get("id") or ""),
@@ -339,13 +339,20 @@ def _execution_contains(
     return finish is None or started_at <= finish + grace_seconds
 
 
+# A cancelled or missed attempt's ``error`` is its reason ("job removed while running",
+# "missed ×3 (...)"), the row's whole point — show it like a failure's.
+_LABELS_WITH_REASON = frozenset({"FAILED", "CANCELLED", "MISSED"})
+# Terminal attempts that carry a real outcome (``unknown`` is an owner that vanished).
+_OUTCOME_STATES = ("completed", "failed", "cancelled", "missed")
+
+
 def _execution_status_title(status: str, error: str, fallback: str) -> str:
     label = (status or "").replace("_", " ").upper()
     if label == "UNKNOWN":
         return fallback
     if not label:
         return fallback
-    return f"{label} · {error}" if (label == "FAILED" and error) else f"{label} · {fallback}"
+    return f"{label} · {error}" if (label in _LABELS_WITH_REASON and error) else f"{label} · {fallback}"
 
 
 def _list_cron_output_runs(
@@ -393,7 +400,7 @@ def _list_cron_output_runs(
             **_cron_output_run_row(started_at, preview or "Script-only run", preview),
         })
 
-    if docs or any(attempt["status"] in ("completed", "failed") for attempt in attempts):
+    if docs or any(attempt["status"] in _OUTCOME_STATES for attempt in attempts):
         return docs, attempts
 
     # No output docs survived (pruned or never written) but the job HAS run:
@@ -559,10 +566,10 @@ def _reconcile_cron_runs(
 
     by_execution = {s["cron_execution_id"]: s for s in session_runs if s.get("cron_execution_id")}
     legacy = [s for s in session_runs if not s.get("cron_execution_id")]
-    terminal = [(index, a) for index, a in enumerate(attempts) if a["status"] in ("completed", "failed")]
+    terminal = [(index, a) for index, a in enumerate(attempts) if a["status"] in _OUTCOME_STATES]
     represented = {index for index, a in terminal if a["id"] in by_execution}
     paired: set = set()
-    merged = list(session_runs)
+    merged = _with_cancel_reasons(session_runs, terminal)
 
     for doc in docs:
         doc_ts = float(doc.get("started_at") or 0)
@@ -596,6 +603,23 @@ def _reconcile_cron_runs(
         })
     merged.sort(key=lambda r: float(r.get("started_at") or 0), reverse=True)
     return merged[:limit]
+
+
+def _with_cancel_reasons(
+    session_runs: list[dict[str, Any]], terminal: list[tuple[int, dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Session rows, with a stopped agent run's title naming the stop and its reason.
+
+    The session stands in for its ledger attempt (richer record), so the attempt's own row is
+    dropped; without this, a cancelled agent run would read like any finished one.
+    """
+    cancelled = {a["id"]: a for _, a in terminal if a["status"] == "cancelled"}
+    return [
+        {**s, "title": _execution_status_title(
+            "cancelled", cancelled[s["cron_execution_id"]]["error"], s.get("title") or "")}
+        if s.get("cron_execution_id") in cancelled else s
+        for s in session_runs
+    ]
 
 
 def _doc_writer(doc_ts: float, attempt: dict[str, Any], session: Optional[dict[str, Any]]) -> tuple:
@@ -681,6 +705,15 @@ def _trigger_cron_job_sync(job_id: str, profile: Optional[str] = None):
     return {**job, "enabled": False, "state": "completed"}
 
 
+def _cancel_cron_job_sync(job_id: str, profile: Optional[str] = None):
+    """Stop the job's live run; ``cancelled: false`` when nothing is in flight. Schedule untouched."""
+    selected = _job_profile(job_id, profile)
+    job = _found(_call_cron_for_profile(selected, "resolve_job_ref", job_id))
+    # The reason lands in the run history row, so it names the surface that asked.
+    result = _call_cron_for_profile(selected, "cancel_job_run", job["id"], reason="cancelled on request (Stop)")
+    return {**result, "job_id": job["id"]}
+
+
 def _delete_cron_job_sync(job_id: str, profile: Optional[str] = None):
     selected = _job_profile(job_id, profile)
     try:
@@ -762,6 +795,11 @@ async def resume_cron_job(job_id: str, profile: Optional[str] = None):
 @router.post("/api/cron/jobs/{job_id}/trigger")
 async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_trigger_cron_job_sync, job_id, profile)
+
+
+@router.post("/api/cron/jobs/{job_id}/cancel")
+async def cancel_cron_job(job_id: str, profile: Optional[str] = None):
+    return await _run_cron_dashboard_io(_cancel_cron_job_sync, job_id, profile)
 
 
 @router.delete("/api/cron/jobs/{job_id}")

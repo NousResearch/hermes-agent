@@ -4,15 +4,27 @@ Reuse upstream authority-only value shapes; these overrides do not widen METHODS
 """
 from typing import Literal
 
+from pydantic import RootModel
+
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
 from .connectors_operation import ConnectionRequestPayload
-from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
+from .sessions import OpenRequestEntry, TodoState
+from .canonical import (AdmissionStatus, CanonicalClientLabel, CanonicalSessionRef, PromptResponseResult,
+                        SessionInventoryFields)
 from .registry import canonical_method
 
 
 class CanonicalSessionParams(ProfileParams):
     session_id: str
+
+
+class CanonicalClientIdentity(Params):
+    """A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64
+    printable ASCII without spaces. Attribution only (owners advertising ``session-client-v1``)."""
+
+    name: str
+    version: str | None = None
 
 
 class CanonicalCreateParams(ProfileParams):
@@ -53,6 +65,8 @@ class CanonicalCreateParams(ProfileParams):
     # A shell-launched client's allowlisted environment (HERMES_* behaviour values, toolchain PATH/venv),
     # applied to this session only; never echoed in ``launch_request``.
     client_env: dict[str, str] | None = None
+    # The creating client's self-declared label, echoed as ``session.info.client``; no policy reads it.
+    client: CanonicalClientIdentity | None = None
 
 
 class CanonicalResumeParams(ProfileParams):
@@ -117,12 +131,17 @@ class CanonicalSnapshotInfo(SessionInventoryFields):
     profile_id: str | None = None
     profile_name: str | None = None
     cwd: str | None = None
+    edit_approval_policy: Literal['ask', 'workspace_session', 'session'] | None = None
     launch_request: dict[str, JsonValue] | None = None
+    # ``session.info``'s ``client``: create and resume return the same projection.
+    client: CanonicalClientLabel | None = None
     reasoning_effort: str | None = None
     reasoning_effort_wire: str | None = None
     service_tier: str | None = None
     fast: bool | None = None
     title: str | None = None
+    # SQLite stores 0/1; the wire is a JSON boolean so Desktop's ``archived === true`` probe matches.
+    archived: bool | None = None
     started_at: float | None = None
     last_active_at: float | None = None
     yolo: bool | None = None
@@ -137,6 +156,8 @@ class CanonicalSnapshot(Result):
     session_id: str
     stored_session_id: str
     messages: list[TranscriptMessage]
+    # True when the resume asked ``omit_messages``: ``messages`` is empty and the client pages the transcript.
+    messages_omitted: bool | None = None
     # Present only when ``display_projection`` was asked: the rows as main's TUI rendered them.
     display_messages: list[TranscriptMessage] | None = None
     message_count: int
@@ -152,6 +173,10 @@ class CanonicalSnapshot(Result):
     info: CanonicalSnapshotInfo
     # The open ``manage_connections`` card, so a resume restores it while the tool waits.
     pending_connection: ConnectionRequestPayload | None = None
+    # The session's todo snapshot (its transcript's newest todo result); null when it has none.
+    todo_state: TodoState | None = None
+    # The owner's server→client requests still unanswered (``session_server_requests.open_requests``).
+    open_requests: list[OpenRequestEntry] | None = None
 
 
 class CanonicalListParams(ProfileParams):
@@ -159,6 +184,12 @@ class CanonicalListParams(ProfileParams):
     limit: int = 200
     title: str | None = None
     include_hidden: bool = False
+    # Only conversations of this folder, judged on each conversation's first row by the classic CLI's
+    # ``hermes -c`` rule (``hermes_state_sessions.workspace_key``): its git repo root equals this, or
+    # (no root recorded) its cwd is this folder or under it. Pass the caller's repo root (else its cwd).
+    workspace: str | None = None
+    # Each row also carries the picker fields below (off by default: a live-list poll does not pay for them).
+    picker: bool = False
 
 
 class CanonicalSessionListRow(Result):
@@ -172,6 +203,18 @@ class CanonicalSessionListRow(Result):
     model: str | None = None
     resolved_id: str | None = None
     root_title: str | None = None
+    # Picker fields, only with ``picker: true`` (``gateway/session_picker_fields.py``). From the
+    # conversation's first row: ``cwd`` and ``workspace`` (its ``workspace_key``, the row the filter
+    # reads). From its current segment (the compression tip, as the stored listing projects it): the
+    # first prompt there (``preview``), the newest reply (``last_reply``, shortened as ``preview`` is;
+    # a compaction handoff is no reply), ``git_branch``, ``last_active_at`` and ``pinned``.
+    preview: str | None = None
+    last_reply: str | None = None
+    cwd: str | None = None
+    git_branch: str | None = None
+    workspace: str | None = None
+    last_active_at: float | None = None
+    pinned: bool | None = None
 
 
 class CanonicalListResult(Result):
@@ -227,6 +270,19 @@ class CanonicalSubmitParams(CanonicalSessionParams):
     clarify_batch: bool = False
 
 
+class CanonicalVoiceStopped(Result):
+    """A bare stop phrase typed while the session's voice chat is on: the chat ended, nothing was
+    admitted (TUI-26)."""
+
+    voice_stopped: Literal[True]
+
+
+class CanonicalSubmitResult(RootModel):
+    """``prompt.submit``: the admission receipt, or ``{voice_stopped: true}``."""
+
+    root: AdmissionStatus | CanonicalVoiceStopped
+
+
 class CanonicalSteerQueuedParams(CanonicalSessionParams):
     admission_id: str
 
@@ -250,11 +306,21 @@ class CanonicalCorrectionParams(CanonicalControlParams):
     text: str
 
 
-class CanonicalCorrectionResult(Result):
+class CanonicalCorrectionAck(Result):
     status: Literal['queued', 'redirected', 'rejected']
     text: str
     execution_generation: int
     authority_epoch: int
+    # Only on a 'rejected' no agent ever saw (none was live): safe to admit as the next prompt. A plain
+    # 'rejected' may follow delivery (a Codex steer whose ACK timed out), so clients never re-send it.
+    delivered: Literal[False] | None = None
+
+
+class CanonicalCorrectionResult(RootModel):
+    """``session.steer`` / ``session.redirect``: the correction verdict, or ``{voice_stopped: true}``
+    when the busy-time text was a bare stop phrase that ended the LOCAL voice chat."""
+
+    root: CanonicalCorrectionAck | CanonicalVoiceStopped
 
 
 class CanonicalApprovalParams(CanonicalControlParams):
@@ -288,6 +354,7 @@ class CanonicalEventsResult(Result):
     truncated: bool
     snapshot_required: bool
     count: int
+    open_requests: list[OpenRequestEntry] | None = None
 
 
 for _name, _params, _result in (
@@ -298,7 +365,7 @@ for _name, _params, _result in (
     ('session.steer', CanonicalCorrectionParams, CanonicalCorrectionResult),
     ('session.redirect', CanonicalCorrectionParams, CanonicalCorrectionResult),
     ('session.events.since', CanonicalEventsParams, CanonicalEventsResult),
-    ('prompt.submit', CanonicalSubmitParams, AdmissionStatus),
+    ('prompt.submit', CanonicalSubmitParams, CanonicalSubmitResult),
     ('approval.respond', CanonicalApprovalParams, PromptResponseResult),
 ):
     canonical_method(_name, params=_params, result=_result)

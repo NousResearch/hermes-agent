@@ -495,18 +495,25 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return f"⚠️ *{ea_header_text()}*\n\n"
 
     _EA_CODE_CLOSE = "\n```\n\n"
-    _EA_CMD_BUDGET = 800  # body caps at 1024; leave room for the framing prose
+    _EA_CARD_CAP = 1024  # interactive.body.text cap; past it _truncate_body would cut the deadline line
+
+    def _approval_request_ids(self) -> OrderedDict[str, str]:
+        """approval_id → ``tools.approval`` request id; created on first use, like Telegram's
+        ``_approval_counter``, so adapters assembled without ``__init__`` still resolve."""
+        return self.__dict__.setdefault("_exec_approval_request_ids", OrderedDict())
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Approve / Deny buttons only (a 3-button cap leaves no room for the session/always
         tiers); a tap resolves via ``tools.approval.resolve_gateway_approval``."""
         approval_id = uuid.uuid4().hex[:12]
-        interactive = self._button_interactive(
-            self._truncate_body(prompt.text),
-            (f"appr:{approval_id}:approve", self._truncate_button_label(t("platform.whatsapp.approve_button"))),
-            (f"appr:{approval_id}:deny", self._truncate_button_label(t("platform.whatsapp.deny_button"))))
-        return await self._send_interactive(
+        buttons = [(f"appr:{approval_id}:{c}", self._truncate_button_label(t(f"platform.whatsapp.{c}_button")))
+                   for c in ("approve", "deny") if c == "deny" or "once" in prompt.choices]  # Deny-only: cut command
+        interactive = self._button_interactive(self._truncate_body(prompt.text), *buttons)
+        result = await self._send_interactive(
             prompt.chat_id, interactive, prompt.metadata, self._exec_approval_state, approval_id, prompt.session_key)
+        if result.success and prompt.request_id:
+            bounded_put(self._approval_request_ids(), approval_id, prompt.request_id, INTERACTIVE_STATE_CACHE_SIZE)
+        return result
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str, metadata: Optional[dict[str, Any]] = None,
@@ -612,11 +619,16 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             chat_id, file_path, "document", caption=caption, filename=file_name or os.path.basename(file_path), reply_to=reply_to,
         )
 
-    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
+    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
+                         is_voice: Optional[bool] = None, **kwargs) -> SendResult:
         """Voice message: ``audio/ogg; codecs=opus`` renders as a voice bubble, so a
-        local MP3 (Hermes TTS output) is converted via ffmpeg first; other audio is sent as-is."""
+        local MP3 (Hermes TTS output) is converted via ffmpeg first; other audio is sent as-is.
+        A plain audio MEDIA file (``is_voice=False``) is never converted into a voice bubble."""
         mime_type: Optional[str] = None
-        if not audio_path.startswith(_HTTP_PREFIXES) and audio_path.lower().endswith(".mp3") and os.path.exists(audio_path):
+        if is_voice is False and audio_path.lower().endswith(".mp3"):
+            mime_type = "audio/mpeg"
+        elif (not audio_path.startswith(_HTTP_PREFIXES) and audio_path.lower().endswith(".mp3")
+              and await asyncio.to_thread(os.path.exists, audio_path)):
             opus_path = await self._convert_to_opus(audio_path)
             if opus_path:
                 try:
@@ -912,6 +924,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _handle_approval_tap(self, to: str, inner: dict[str, Any], parts: list) -> bool:
         _, approval_id, choice = parts
+        from gateway.approval_actor import approval_refusal, refusal_text
+        if requester := approval_refusal(self._exec_approval_state.get(approval_id) or "", to, extra=self.config.extra,
+                                         request_id=self._approval_request_ids().get(approval_id)):
+            await self._reply_best_effort(to, refusal_text(requester), "[whatsapp_cloud] approval refusal reply failed")
+            return True  # left pending for the requester
         session_key = self._pop_tap_state(
             self._exec_approval_state, approval_id,
             "[whatsapp_cloud] approval tap with no matching state (approval_id=%s) — likely stale; falling back to text",
@@ -919,10 +936,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
         if not session_key:
             return False
+        request_id = self._approval_request_ids().pop(approval_id, None)
         approval = _optional_module("tools.approval", "[whatsapp_cloud] approval resolver unavailable")
         if approval is None:
             return False
-        count = approval.resolve_gateway_approval(session_key, choice)
+        count = approval.resolve_gateway_approval_card(session_key, choice, request_id, actor_id=to,
+                                                       extra=self.config.extra)
         # A tap after the wait timed out (count == 0) must not claim approval:
         # the command was already denied fail-closed.
         if count:

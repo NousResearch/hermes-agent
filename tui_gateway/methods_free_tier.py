@@ -26,7 +26,8 @@ def _(rid, params: dict) -> dict:
     inference actually runs on it is a ROUTE question answered by ``setup.runtime_check.free_tier``.
     ``notice_pending`` is true until ``free_tier.ack_notice`` ran for this identity.
     ``nudge_due_in``: seconds until the sign-in offer after a finished task is due (install-wide,
-    ``hermes_cli.free_tier_offer``); absent when none is pending.
+    ``hermes_cli.free_tier_offer``); absent when none is pending. ``connector_nudge_due_in``: the
+    same for a guest without the trial that has connected an app.
 
     A pure read: an identity is never created as a side effect of polling this (NS-845 Q1.2)."""
     try:
@@ -39,8 +40,9 @@ def _(rid, params: dict) -> dict:
             "notice_pending": bool(available and anon_auth.guest_notice_pending()),
             "model": anon_auth.GUEST_MODEL, "label": anon_auth.FREE_TIER_LABEL}
         from hermes_cli import free_tier_offer
-        if (nudge_due_in := free_tier_offer.offer_due_in()) is not None:
-            payload["nudge_due_in"] = nudge_due_in
+        for key, kind in (("nudge_due_in", free_tier_offer.TRIAL), ("connector_nudge_due_in", free_tier_offer.CONNECTOR)):
+            if (due_in := free_tier_offer.offer_due_in(kind)) is not None:
+                payload[key] = due_in
         if enabled and not has_guest:
             # Why there is no identity, when the last claim failed:
             # ``{error, error_code, retryable, retry_after}`` (the mint memo's verdict).
@@ -103,11 +105,12 @@ def _(rid, params: dict) -> dict:
 @method("free_tier.claim_nudge")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    """Claim the due sign-in offer. Claim before showing, so two windows never both show it:
-    ``claimed`` is true for exactly one caller each time an offer comes due."""
+    """Claim the due sign-in offer of ``kind`` (``trial`` or ``connector``). Claim before showing,
+    so two windows never both show it: ``claimed`` is true for exactly one caller each time an offer
+    comes due."""
     try:
         from hermes_cli import free_tier_offer
-        return _ok(rid, {"claimed": bool(free_tier_offer.claim_offer())})
+        return _ok(rid, {"claimed": bool(free_tier_offer.claim_offer(params.get("kind") or free_tier_offer.TRIAL))})
     except Exception as e:  # the RPC boundary: report it, never crash the dispatcher
         logger.warning("free_tier.claim_nudge failed", exc_info=True)
         return _err(rid, 5093, str(e))

@@ -55,6 +55,7 @@ class GatewayRuntimeInitMixin:
         self._exit_reason: Optional[str] = None
         self._exit_code: Optional[int] = None
         self._profile_failed_platforms: Dict[str, Dict[Platform, asyncio.Task]] = {}
+        self._profile_bot_platforms: Dict[str, set[Platform]] = {}
         self._systemd_watchdog = None
         # External (NAS-driven) drain, distinct from one-way ``_draining``: set while ``.drain_request.json``
         # exists — NEW turns refused, process stays up, removing the marker reverts to ``running``.

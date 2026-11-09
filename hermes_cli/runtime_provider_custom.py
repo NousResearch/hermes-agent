@@ -35,6 +35,12 @@ def _normalize_base_url_for_match(value) -> str:
     return str(value or "").strip().rstrip("/").lower()
 
 
+def _route_key(value) -> str:
+    """An endpoint compared for identity: scheme and host fold case, the path does not."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    return normalize_route_base_url(_clean(value))
+
+
 def _clean(value: Any) -> str:
     return str(value or "").strip()
 
@@ -292,19 +298,31 @@ def codex_model_provider_id(requested_provider: str) -> Optional[str]:
 # ── identity recovery (bare "custom" -> durable ``custom:<name>``) ─────────────────────────
 
 
-def _find_custom_identity(matches: Callable[[dict[str, Any]], bool]) -> Optional[str]:
-    """First entry in ``providers:`` then legacy ``custom_providers:`` where ``matches(entry)``
-    holds, as its canonical ``custom:<name>`` slug."""
+def _find_custom_identity(matches: Callable[[dict[str, Any]], bool],
+                          config: Optional[dict[str, Any]] = None, prefer: Optional[str] = None) -> Optional[str]:
+    """First enabled entry in ``providers:`` then legacy ``custom_providers:`` where ``matches(entry)``
+    holds (*prefer* when it is one of them), as its canonical ``custom:<name>`` slug. A legacy entry
+    whose slug a ``providers:`` entry with an endpoint owns never matches: runtime resolution runs that one.
+    *config* defaults to the active profile's."""
+    from hermes_cli.config import is_provider_enabled
     rp = _rp()
     try:
-        config = rp.load_config()
+        config = rp.load_config() if config is None else config
     except Exception:
         return None
+    first, owned = None, set()
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():
-            if isinstance(entry, dict) and matches(entry):
-                return custom_provider_slug(str(ep_name), str(ep_name))
+            if not (isinstance(entry, dict) and is_provider_enabled(entry)):
+                continue
+            slug = custom_provider_slug(str(ep_name), str(ep_name))
+            if _entry_url(entry):
+                owned.add(slug)
+            if matches(entry):
+                if prefer is None or slug == prefer:
+                    return slug
+                first = first or slug
     try:
         custom_providers = rp.get_compatible_custom_providers(config)
     except Exception:
@@ -312,18 +330,23 @@ def _find_custom_identity(matches: Callable[[dict[str, Any]], bool]) -> Optional
     for entry in custom_providers or []:
         name = entry.get("name") if isinstance(entry, dict) else None
         if isinstance(name, str) and name.strip() and matches(entry):
-            return custom_provider_slug(name, str(entry.get("provider_key", "") or ""))
-    return None
+            slug = custom_provider_slug(name, str(entry.get("provider_key", "") or ""))
+            if slug in owned and not entry.get("provider_key"):
+                continue
+            if prefer is None or slug == prefer:
+                return slug
+            first = first or slug
+    return first
 
 
 def find_custom_provider_identity(base_url: str) -> Optional[str]:
     """Map an endpoint URL back to its canonical ``custom:<name>`` menu key. Session persistence
     stores the agent's *resolved* provider, which for every named custom endpoint is the literal
     string ``"custom"`` — the entry name is lost, and the api_key is deliberately never persisted."""
-    target = _normalize_base_url_for_match(base_url)
+    target = _route_key(base_url)
     if not target:
         return None
-    return _find_custom_identity(lambda entry: _normalize_base_url_for_match(_entry_url(entry)) == target)
+    return _find_custom_identity(lambda entry: _route_key(_entry_url(entry)) == target)
 
 
 def _model_id_matches(value: Any, target: str) -> bool:
@@ -335,39 +358,60 @@ def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
     :func:`find_custom_provider_identity` for persistence paths where no base_url survived the
     round-trip (the session row always stores the model name)."""
     target = str(model or "").strip().lower()
-    if not target:
-        return None
+    return _find_custom_identity(lambda entry: _entry_serves_model(entry, target)) if target else None
 
-    def _entry_serves_model(entry: dict[str, Any]) -> bool:
-        if any(_model_id_matches(entry.get(key), target) for key in ("model", "default_model")):
-            return True
-        models = entry.get("models")
-        if isinstance(models, dict):
-            return any(str(mid).strip().lower() == target for mid in models)
-        if isinstance(models, list):
-            return any(_model_id_matches(item.get("id") or item.get("name") if isinstance(item, dict) else item, target)
-                       for item in models)
-        return False
 
-    return _find_custom_identity(_entry_serves_model)
+def _entry_serves_model(entry: dict[str, Any], target: str) -> bool:
+    if any(_model_id_matches(entry.get(key), target) for key in ("model", "default_model")):
+        return True
+    models = entry.get("models")
+    if isinstance(models, dict):
+        return any(str(mid).strip().lower() == target for mid in models)
+    if isinstance(models, list):
+        return any(_model_id_matches(item.get("id") or item.get("name") if isinstance(item, dict) else item, target)
+                   for item in models)
+    return False
+
+
+def routed_custom_identity(base_url: Optional[str], model: Optional[str],
+                           config: Optional[dict[str, Any]] = None, held: Optional[str] = None) -> Optional[str]:
+    """The configured ``custom:<name>`` entry a bare ``custom`` pick (the billing class every named
+    endpoint reports) names: on *base_url*, the entry also serving *model* beats the first one there;
+    without a URL the model alone names it. Among entries serving *model*, the *held* one (the
+    profile's own) wins over config order."""
+    url = _route_key(base_url)
+    target = str(model or "").strip().lower()
+
+    def on_url(entry: dict[str, Any]) -> bool:
+        return not url or _route_key(_entry_url(entry)) == url
+    return ((target and _find_custom_identity(lambda e: on_url(e) and _entry_serves_model(e, target), config, held))
+            or (url and _find_custom_identity(on_url, config)) or None)
+
+
+def _endpoint_identity(base_url: str) -> Optional[str]:
+    """The menu identity that owns ``base_url``: a configured entry, else the managed server."""
+    identity = find_custom_provider_identity(base_url)
+    if identity:
+        return identity
+    # The managed server has no custom-provider config entry. Recover its menu key
+    # from the ownership-checked endpoint, never from a model name or a fixed port.
+    from hermes_cli.local_runtime.endpoint import _state_endpoint
+    endpoint = _state_endpoint()
+    if endpoint and _route_key(base_url) == _route_key(endpoint["base_url"]):
+        return "llamacpp"
+    return None
 
 
 def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider: Optional[str] = None,
-                              model: Optional[str] = None) -> Optional[str]:
+                              model: Optional[str] = None, requested: Optional[str] = None) -> Optional[str]:
     """Recover the durable menu identity for a bare custom provider. Match a configured
     endpoint first, then the ownership-checked managed server, then a configured model or
     provider. Every session persistence/restore path shares this lookup."""
     rp = _rp()
-    if base_url:
-        identity = find_custom_provider_identity(base_url)
-        if identity:
-            return identity
-        # The managed server has no custom-provider config entry. Recover its menu key
-        # from the ownership-checked endpoint, never from a model name or a fixed port.
-        from hermes_cli.local_runtime.endpoint import _state_endpoint
-        endpoint = _state_endpoint()
-        if endpoint and _normalize_base_url_for_match(base_url) == _normalize_base_url_for_match(endpoint["base_url"]):
-            return "llamacpp"
+    # The entry the live agent resolved (*requested*) while it still serves base_url, else its owner.
+    identity = session_provider_identity("custom", requested, base_url) if base_url else "custom"
+    if identity != "custom":
+        return identity
     identity = find_custom_provider_identity_by_model(model) if model else None
     if identity:
         return identity
@@ -398,6 +442,25 @@ def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider
     except Exception:
         return None
     return identity or custom_provider_slug(candidate_norm)
+
+
+def session_provider_identity(provider: Any, requested_provider: Any, base_url: Any, model: Any = None, *,
+                              config: Optional[dict[str, Any]] = None) -> str:
+    """A session's identity: the requested entry while it still serves ``base_url``, else the endpoint's
+    owner, else the adapter. A name for an entry that left ``base_url`` pairs its new key with the old
+    endpoint on resume, so with an endpoint known the model and config fallbacks never apply."""
+    adapter = _clean(provider)
+    if adapter.lower() != "custom":
+        return adapter
+    requested = _clean(requested_provider)
+    url = _route_key(base_url)
+    if url and requested.lower() not in {"", "custom", "auto"}:
+        entry = _get_named_custom_provider(requested, config=config, resolve_credentials=False)
+        if entry and _route_key(_entry_url(entry)) == url:
+            return requested
+    if url:
+        return _endpoint_identity(_clean(base_url)) or adapter
+    return canonical_custom_identity(model=_clean(model) or None) or adapter
 
 
 def is_routable_provider(provider: Optional[str]) -> bool:
@@ -519,6 +582,20 @@ def _apply_custom_provider_extras(custom_provider: dict[str, Any], target_model:
         result["request_overrides"] = {**(result.get("request_overrides") or {}), **request_overrides}
 
 
+class LocalRuntimeUnavailableError(ValueError):
+    """The selected model is the managed local runtime and its server is not serving.
+
+    Typed so readiness probes can say "configured, but the local server is down" instead of
+    "nothing configured": provider onboarding cannot start a local server.
+    """
+
+    error_code = "local_runtime_unavailable"
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
 def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optional[str]) -> dict[str, Any]:
     """Managed llama.cpp runtime: the supervised (or detected external) server, or a typed error.
     No server => say so and stop; falling through to the generic custom path would surface "local
@@ -539,12 +616,14 @@ def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optiona
     except Exception:
         enabled = False
     if enabled:
-        raise ValueError("The local model server isn't running. It may still be "
-                         "starting — try again in a moment, or check Settings → "
-                         "Providers → Local models.")
-    raise ValueError("The local model server is turned off. Turn it back on in "
-                     "Settings → Providers → Local models, or switch to another "
-                     "model.")
+        raise LocalRuntimeUnavailableError("The local model server isn't running. It may still be "
+                                           "starting — try again in a moment, or switch to another "
+                                           "model with /model.", retryable=True)
+    # Every chat surface (messaging, TUI, Webapp) shows this sentence, so it names both places a
+    # user can start the server and no Desktop-only pane; the Desktop client links its pane itself.
+    raise LocalRuntimeUnavailableError("The local model server is turned off. Start it from the Hermes "
+                                       "desktop app or `hermes model` → Local models, or switch to "
+                                       "another model with /model.")
 
 
 def _custom_runtime(rp, base_url: str, api_key: Any, api_mode: Optional[str], **extra: Any) -> dict[str, Any]:

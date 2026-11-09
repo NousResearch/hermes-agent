@@ -236,36 +236,50 @@ def _pending_reaction_notes(session: dict) -> str:
 
 # ── prompt.submit pieces ────────────────────────────────────────────────────
 
-def _typed_stop_phrase_response(rid, text):
-    """RPC reply ending the voice chat when a bare stop phrase is TYPED while backend voice
-    mode is on (typed twin of the spoken stop phrase), or None for a normal message."""
-    if not (isinstance(text, str) and _voice_mode_enabled()):
-        return None
+def _consume_typed_stop_phrase(text, sid=None, *, emit: bool = True) -> bool:
+    """End *sid*'s voice chat when *text* is a bare stop phrase TYPED while its voice mode is on
+    (typed twin of the spoken stop phrase) -> True; False for a normal message. *emit* sends the
+    ``voice.transcript`` stop event to the voice client; the canonical ``prompt.submit`` path
+    (``gateway/session_controls.py``) answers its submitter in the reply instead (TUI-26)."""
+    if not (isinstance(text, str) and _session_voice_enabled(sid)):
+        return False
     try:
         # Typed bare stop phrase while backend voice mode is active ends the voice chat instead of sending
-        # "stop" to the agent — the typed twin of the spoken stop phrase (PR #73106), applied at the ONE
-        # server-side choke point every TUI submit passes through. (The desktop's voice conversation is
-        # renderer-owned and never flips the backend flag, so it handles its own typed stop client-side.)
+        # "stop" to the agent — the typed twin of the spoken stop phrase (PR #73106), applied at the
+        # server-side choke point every TUI submit passes through: this sidecar handler and the shared
+        # owner's canonical prompt.submit. (The desktop's voice conversation is renderer-owned and never
+        # flips the backend flag, so it handles its own typed stop client-side.)
         from tools.voice_mode_transcript import is_voice_stop_phrase
         if not is_voice_stop_phrase(text):
-            return None
-    except Exception:
-        return None
-    _end_voice_chat(stop_loop=True, stop_tts=True)
-    _voice_emit("voice.transcript", {"stop_phrase": True, "typed": True})
+            return False
+    except Exception:  # an unreadable voice config never swallows the message: it reaches the agent
+        logger.debug("typed stop-phrase check failed; submitting the text", exc_info=True)
+        return False
+    _end_session_voice_chat(sid, stop_loop=True, stop_tts=True)
+    if emit:
+        _voice_emit("voice.transcript", {"stop_phrase": True, "typed": True})
     logger.info("prompt.submit: typed stop phrase — voice chat ended")
-    return _ok(rid, {"voice_stopped": True})
+    return True
+
+
+def _typed_stop_phrase_response(rid, text, sid=None):
+    """RPC reply ending the voice chat when a bare stop phrase is TYPED while the session's voice
+    mode is on (typed twin of the spoken stop phrase), or None for a normal message."""
+    return _ok(rid, {"voice_stopped": True}) if _consume_typed_stop_phrase(text, sid) else None
 
 
 _HOSTED_TASK_FIELDS = {"room_id", "task_id", "thread_id", "turn_id", "execution_generation", "member_id"}
 
 
-def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback):
-    """Validate the hosted-room turn proof carried by an internal submit."""
+def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback, hosted_images=None):
+    """Validate the hosted-room turn proof carried by an internal submit. ``hosted_images`` are the
+    member's event-bound images, already materialized under the image cache by the room worker."""
     if session.get("source") != "bot_room":
         return _err(rid, 4120, "hosted room turns require a bot_room session")
     valid = (
         isinstance(hosted_task, dict) and callable(hosted_terminal_callback)
+        and (hosted_images is None or (isinstance(hosted_images, list)
+                                       and all(isinstance(p, str) and p for p in hosted_images)))
         and set(hosted_task) == _HOSTED_TASK_FIELDS
         and all(isinstance(hosted_task.get(f), str) and hosted_task[f]
                 for f in _HOSTED_TASK_FIELDS - {"execution_generation"})
@@ -658,7 +672,8 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
 
 
 def _run_after_agent_ready(
-    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None
+    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None,
+    hosted_images=None,
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
@@ -689,7 +704,7 @@ def _run_after_agent_ready(
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        image_paths=hosted_images, terminal_callback=hosted_terminal_callback, turn_author=turn_author)
 
 
 _TRUNCATION_PARAMS = (
@@ -742,6 +757,8 @@ def _submit_to_ledger_owner(rid, sid, session, text, params, refusal) -> dict:
                         session.get("session_key") or sid, exc, exc_info=True)
             why = str(exc) if isinstance(exc, owner_forward.OwnerUnavailable) else "the gateway refused it"
         else:
+            if receipt.get("voice_stopped") is True:
+                return _ok(rid, {"voice_stopped": True})  # the owner ended its voice chat; nothing queued
             return _ok(rid, {"status": "queued", "admission_id": receipt.get("admission_id"),
                              "forwarded": True})
     return _err(rid, 4090, "The gateway is running a turn in this chat and " + why
@@ -815,7 +832,7 @@ def _(rid, params: dict) -> dict:
         if isinstance(title_preview, str) and title_preview.strip()
         else None
     )
-    if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
+    if (stopped := _typed_stop_phrase_response(rid, text, sid)) is not None:
         return stopped
     if params.get("interrupted"):
         # Client-side barge-in: latch so this turn's model message carries the note.
@@ -833,9 +850,11 @@ def _(rid, params: dict) -> dict:
     turn_author = raw_author.author if raw_author is not None else None
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
-    internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
+    hosted_images = params.get("_hosted_images")
+    internal_hosted_submit = (
+        hosted_task is not None or hosted_terminal_callback is not None or hosted_images is not None)
     err = (
-        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback)
+        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback, hosted_images)
         if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
     if err is not None:
         return err
@@ -945,7 +964,8 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author),
+            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
+            hosted_images),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread

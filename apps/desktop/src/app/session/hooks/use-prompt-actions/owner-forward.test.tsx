@@ -2,7 +2,7 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 import { cleanup } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { errorRecoveryPlan, type ErrorSurface } from '@/lib/error-surface'
+import { errorCardOffers, type ErrorSurface } from '@/lib/error-surface'
 import { $composerAttachments } from '@/store/composer'
 import { clearNotifications } from '@/store/notifications'
 import { $connection, $currentCwd } from '@/store/session'
@@ -132,7 +132,7 @@ describe('usePromptActions gateway-owner queue (#140385)', () => {
     expect(await handle!.submitText('continue here')).toBe(false)
     const bubble = (latest?.messages as { errorSurface?: ErrorSurface }[]).at(-1)
     expect(bubble?.errorSurface).toEqual({ layer: 'gateway', code: 'SESSION_OWNER_UNCONFIRMED', retryable: false })
-    expect(errorRecoveryPlan(bubble?.errorSurface).retry).toBe(false)
+    expect(errorCardOffers(bubble?.errorSurface, 'retry')).toBe(false)
   })
 
   it('shows a prompt the legacy backend forwarded to the gateway owner as queued, not as a failed turn (#140385)', async () => {

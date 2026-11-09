@@ -18,10 +18,10 @@
 //   ...scenario opts       e.g. --tokens 600, --turns 400, --real, --a <sid> --b <sid>, --profile <name>
 //
 // Examples:
-//   npm run perf                       # attach to :9222, run CI suite, gate on baseline
-//   npm run perf -- --spawn            # isolated instance, no running app needed
-//   npm run perf -- stream --cpuprofile --tokens 800
-//   npm run perf -- --update-baseline
+//   pnpm run perf                      # attach to :9222, run CI suite, gate on baseline
+//   pnpm run perf --spawn              # isolated instance, no running app needed
+//   pnpm run perf stream --cpuprofile --tokens 800
+//   pnpm run perf --update-baseline
 
 import { writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'

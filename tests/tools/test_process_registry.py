@@ -22,8 +22,9 @@ from tools.process_registry import (
 
 
 @pytest.fixture()
-def registry():
-    """Create a fresh ProcessRegistry."""
+def registry(monkeypatch):
+    """A fresh ProcessRegistry. Fake Popen pids never reach the owner-death supervisor: a live pgid would start it."""
+    monkeypatch.setattr("hermes_cli.process_identity._update_supervised_pgids", lambda verb, pgids: None)
     return ProcessRegistry()
 
 
@@ -927,15 +928,12 @@ class TestSpawnEnvSanitization:
 
         with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
             patch.object(registry, "_write_checkpoint"):
-            session = registry.spawn_via_env(env, "echo hello")
+            with pytest.raises(RuntimeError, match="exited 2 without a PID: syntax error"):
+                registry.spawn_via_env(env, "echo hello")
 
-        assert session.exited is True
-        assert session.exit_code == 2
-        assert session.pid is None
-        assert session.output_buffer == "syntax error"
         fake_thread.start.assert_not_called()
         # A failed launch must not be exposed as a running/tracked session.
-        assert session.id not in registry._running
+        assert not registry._running and not registry._finished
 
     def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
         session = _make_session(sid="proc_space")
@@ -1188,7 +1186,6 @@ class TestSpawnRewriteCompoundBackground:
         shell_cmd = captured_cmd[0]
         # The command passed to Popen should be the REWRITTEN version
         assert "&& { node server.js &>/tmp/srv.log & }" in shell_cmd[2]
-
 
     def test_pty_path_uses_rewritten_command(self, registry):
         """PTY spawn path must also use the rewritten command (issue #68915)."""

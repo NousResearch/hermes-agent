@@ -42,6 +42,15 @@ RELAY_FINALIZE_POLL_S = 1.0
 #: nothing re-reads the stored transcript at ``message.complete``, which brings the user's own row
 #: (written by the owner, not by this backend) and the reply in their committed order.
 _RELAYED = frozenset({"message.start", "message.complete"})
+#: The owner's ``prompt.submit`` refusals raised before its durable write (dispatcher, ``authorize``,
+#: ``submission``, the admission gate, and the ledger's own checks inside the rolled-back write): only
+#: these prove nothing will run. ``storage_unavailable`` and an internal error can also come from the
+#: pending publication AFTER the commit (``SessionAuthority._admitted``), so they are never listed.
+#: ``not_found`` can follow the commit too, when the session is deleted meanwhile (``_handle``), but a
+#: session row is deleted only with its admissions (``ON DELETE RESTRICT``), so that one never runs.
+_REFUSED_BEFORE_COMMIT = frozenset({
+    "invalid_params", "runtime_draining", "runtime_retired", "profile_mismatch", "permission_denied",
+    "not_found", "stale_epoch", "admission_conflict", "queue_full"})
 
 
 class OwnerUnavailable(RuntimeError):
@@ -67,15 +76,17 @@ def discover_owner(home: Path):
 
 
 @contextlib.asynccontextmanager
-async def connect_owner(home: Path, endpoint):
-    """A ``GatewayClient`` on ``endpoint``, the ready gateway serving ``home``."""
+async def connect_owner(home: Path, endpoint, *, scope=None, max_size: int = 2 ** 20):
+    """A ``GatewayClient`` on ``endpoint``, the ready gateway serving ``home``; ``scope``: the
+    ticket's profile scope (``"host"``: the one native Desktop holds); ``max_size``: the largest
+    answer frame accepted (websockets' 1 MiB default)."""
     from hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, GatewayClient, _session_ticket, gateway_ws_target
     from websockets.asyncio.client import connect
 
-    ticket = await asyncio.to_thread(_session_ticket, home, endpoint)
+    ticket = await asyncio.to_thread(_session_ticket, home, endpoint, scope=scope)
     url, protocols = gateway_ws_target(endpoint, ticket)
     # Loopback owner dial: never through HTTP(S)_PROXY (websockets>=14 honours it by default).
-    async with connect(url, subprotocols=protocols, open_timeout=10, proxy=None) as ws:
+    async with connect(url, subprotocols=protocols, open_timeout=10, proxy=None, max_size=max_size) as ws:
         if ws.subprotocol != GATEWAY_WS_PROTOCOL:
             raise OwnerUnavailable("the gateway answered with another protocol")
         async with GatewayClient(ws) as client:
@@ -129,6 +140,11 @@ class _Relay:
             attached = await client.rpc("session.resume", session_id=self.key)
             target = str(attached.get("session_id") or self.key)
             receipt = await self._submit(client, target)
+            if receipt.get("voice_stopped") is True:
+                # TUI-26: the owner took a typed stop phrase as the end of its LOCAL voice chat and
+                # admitted nothing: there is no turn to relay.
+                self.admitted.set_result(receipt)
+                return
             admission_id = receipt.get("admission_id")
             if not isinstance(admission_id, str) or receipt.get("status") not in ("queued", "started", "terminal"):
                 raise OwnerUnavailable("the gateway did not admit it")
@@ -139,16 +155,19 @@ class _Relay:
 
     async def _submit(self, client, target: str) -> dict:
         """``prompt.submit`` on the owner. Once the request is handed to the socket, only a received
-        refusal (``GatewayRPCError``) proves nothing was queued: a lost connection or a missing answer
-        may follow the owner's durable commit (a gateway restart mid-forward), so it is unconfirmed,
-        never "nothing was sent" (a resend would run a second copy)."""
+        refusal the owner raises before its write (``_REFUSED_BEFORE_COMMIT``) proves nothing was
+        queued: a lost connection, a missing answer or any other error may follow the owner's durable
+        commit (a gateway restart mid-forward, a storage error publishing the pending list), so it is
+        unconfirmed, never "nothing was sent" (a resend would run a second copy)."""
         from hermes_cli.gateway_client import GatewayRPCError
         try:
             return await client.rpc("prompt.submit", session_id=target, text=self.text,
                                     submission_id=self.request_id)
-        except GatewayRPCError:
-            raise
         except Exception as exc:
+            # The owner names its refusal in ``data.reason``; ``message`` may be a display string.
+            reason = exc.data.get("reason", str(exc)) if isinstance(exc, GatewayRPCError) else None
+            if isinstance(reason, str) and reason in _REFUSED_BEFORE_COMMIT:
+                raise
             raise OwnerUnconfirmed("the gateway did not confirm it") from exc
 
     def _pending(self, params: dict, admission_id: str) -> None:
@@ -199,12 +218,26 @@ class _Relay:
                 self.emit("message.complete", self.sid, {"text": ""})
 
 
+def forward_rpc(home: Path, endpoint, method: str, params: dict) -> Any:
+    """One request/answer RPC on the owner serving ``home`` (Group Chat calls, WA-19), on the
+    host-scoped grant native Desktop itself holds, so a room may seat the served sibling profiles."""
+    from gateway.hosted_room_attachments import MAX_ATTACHMENT_BYTES
+    # A groups.attachment.download answer carries a whole file as base64: room for the largest
+    # one the room store accepts, plus its JSON-RPC envelope.
+    frame = (MAX_ATTACHMENT_BYTES + 2) // 3 * 4 + 2 ** 20
+
+    async def call():
+        async with connect_owner(home, endpoint, scope="host", max_size=frame) as client:
+            return await client.rpc(method, **params)
+    return asyncio.run(call())
+
+
 def forward_prompt(sid: str, session: dict, text: str, *, emit=None, home: Path | None = None) -> dict:
     """Admit ``text`` into the owner's FIFO for this session; the owner's receipt.
 
     Raises ``OwnerNotRunning`` when no gateway serves the home, ``OwnerUnavailable`` (or the
     client's refusal) when the owner did not take it, and ``OwnerUnconfirmed`` when the prompt may
-    be queued there: the receipt timed out, or the owner was lost after the request was sent."""
+    be queued there: the receipt timed out, or the owner was lost or failed after the request was sent."""
     from tui_gateway import server
     key = str(session.get("session_key") or "")
     if not key:

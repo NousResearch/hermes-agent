@@ -130,6 +130,26 @@ def test_temporary_global_redirects_do_not_allocate_new_sinks(monkeypatch):
         sys.stdout, sys.stderr = original_stdout, original_stderr
 
 
+def test_agent_builds_keep_the_installed_routing_proxy(monkeypatch):
+    """Agent builds between silences must not stack wrappers on sys.stdout/stderr (#139687)."""
+    from agent.process_bootstrap import _install_safe_stdio
+
+    monkeypatch.setattr(thread_output, "_installed", {})
+    monkeypatch.setattr(sys, "stdout", io.StringIO())
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+    _install_safe_stdio()
+    with thread_scoped_silence():
+        pass
+    routers = (sys.stdout, sys.stderr)
+
+    for _ in range(3):
+        _install_safe_stdio()
+        with thread_scoped_silence():
+            pass
+
+    assert (sys.stdout, sys.stderr) == routers
+
+
 def test_silence_survives_redirect_restoring_an_older_proxy(monkeypatch):
     """Silencing is stream-wide, even when a redirect swaps proxy generations."""
     monkeypatch.setattr(thread_output, "_installed", {})

@@ -1,5 +1,6 @@
 """Real private owner sockets; no public identity or foreign database access."""
 import asyncio
+import hashlib
 import json
 import threading
 from dataclasses import asdict
@@ -39,7 +40,7 @@ def test_authenticated_owner_transport_rechecks_source_and_cold_binding(hosted_o
         if operation in {'submit', 'execute'}:
             assert params['task'] == asdict(task)
             assert params['execution_generation'] == 1
-            if operation == 'submit' and params['prompt'] != 'input':
+            if operation == 'submit' and params['prompt_sha256'] != hashlib.sha256(b'input').hexdigest():
                 raise RuntimeStoreError('permission_denied')
         return {'owner': 'room-owner', 'target_home': authority.profile_id, 'prompt': 'input', 'attachments': []}
     servers = [_server(source), _server(target)]
@@ -91,7 +92,8 @@ def test_authenticated_owner_transport_rechecks_source_and_cold_binding(hosted_o
 class _SourceTask:
     """One committed attachment bound to a running task on a real source owner."""
 
-    def __init__(self, tmp_path, monkeypatch, data, *, name='note.txt', mime='text/plain', kind='file'):
+    def __init__(self, tmp_path, monkeypatch, data, *, name='note.txt', mime='text/plain', kind='file',
+                 prompt='frozen'):
         import time
         from types import SimpleNamespace
         from gateway.session_hosted_service import CanonicalHostedRoomService
@@ -120,7 +122,7 @@ class _SourceTask:
         self.bound = [{**manifest[0], 'event_id': 'event'}]
         self.identity = tasks.TaskIdentity('room', 'task', 'thread', 'turn')
         payload = {'target_profile': 'other', 'target_member_id': 'two', 'source_event_seq': 1,
-                   'prompt': 'frozen', 'attachments': self.bound}
+                   'prompt': prompt, 'attachments': self.bound}
         tasks.admit_task(db.db_path, self.identity, payload=payload, clock=time.time)
         lease = tasks.acquire_lease(db.db_path, room_id='room', gateway_id=self.gateway, authority_epoch=1,
                                     process_generation='test', ttl_seconds=30, clock=time.time)
@@ -128,8 +130,80 @@ class _SourceTask:
         self.task, = tasks.list_tasks(db.db_path, room_id='room')
         self.selector = dict(room_id='room', member_id='two', profile='other')
         self.params = dict(task=asdict(self.identity), execution_generation=self.task['execution_generation'],
-                           prompt='frozen', attachments=self.bound, _target_home=self.homes['other'])
+                           prompt=prompt, attachments=self.bound, _target_home=self.homes['other'])
         self.binding = {'source_home': str(tmp_path), 'target_home': self.homes['other'], 'selector': self.selector}
+
+
+@pytest.mark.parametrize('prompt_bytes', [41339, 128 * 1024 - 1])
+def test_large_cjk_prompt_crosses_owner_sockets_once(hosted_owner, tmp_path, monkeypatch, prompt_bytes):
+    """A legal source prompt plus chunked files reaches one fenced target admission."""
+    from gateway import session_hosted_transport as transport
+    from gateway.session_contract import SessionRef
+    from hermes_state_runtime import list_session_admissions
+    authority, loop, _, _ = hosted_owner
+    target = tmp_path / 'profiles' / 'other'
+    target.mkdir(parents=True, mode=0o700)
+    authority.profile_id = str(target)
+    prompt = '中' * (prompt_bytes // 3) + 'x' * (prompt_bytes % 3)
+    source = _SourceTask(tmp_path, monkeypatch, b'file bytes' * 80000, prompt=prompt)
+    servers = [_server(tmp_path), _server(target)]
+    request_sizes = []
+    for server in servers:
+        real_handle = server.handle_request_line
+        def handle(raw, *args, original=real_handle):
+            request_sizes.append(len(raw) + 1)
+            return original(raw, *args)
+        server.handle_request_line = handle
+    with source.db:
+        transport.install_hosted_transport(servers[0], source.authority, loop, attest=source.service.attest)
+        transport.install_hosted_transport(servers[1], authority, loop, attest=lambda *a: None)
+        for server in servers:
+            assert asyncio.run_coroutine_threadsafe(server.start(), loop).result()
+        try:
+            rpc = transport.HostedRoomOwnerRPC(home=target, source_home=tmp_path, **source.selector)
+            coords = dict(profile='other', source='bot_room')
+            sid = rpc.create(**coords, title='Group: room')['session_id']
+            args = dict(**coords, session_id=sid, prompt=prompt, task=source.identity,
+                        execution_generation=1, attachments=source.bound, on_terminal=None)
+            first = rpc.submit(**args)
+            assert rpc.submit(**args)['admission_id'] == first['admission_id']
+            row, = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+            assert row['payload']['text'][:len(prompt)].encode() == prompt.encode()
+            assert row['payload']['text'][len(prompt):].startswith('\n[Shared attachment] file: ')
+            assert transport.check_remote_hosted_admission(authority, SessionRef(str(target), sid), row)
+            # Even a wire caller supplying both fields cannot replace the source text.
+            wire = {k: v for k, v in args.items() if k != 'on_terminal'}
+            wire.update(task=asdict(source.identity), prompt='forged',
+                        prompt_sha256=hashlib.sha256(prompt.encode()).hexdigest())
+            replay = transport.owner_request(target, 'hosted-producer', {
+                **rpc.binding, 'operation': 'submit', 'params': wire})
+            assert replay['admission_id'] == first['admission_id']
+            assert row == list_session_admissions(authority.db, session_id=sid, pending_only=False)[0]
+            assert max(request_sizes) < 65536
+        finally:
+            for server in servers:
+                asyncio.run_coroutine_threadsafe(server.stop(), loop).result()
+
+
+def test_prompt_digest_preserves_source_fences_and_legacy_input(tmp_path, monkeypatch):
+    from hermes_state_runtime import RuntimeStoreError
+    source = _SourceTask(tmp_path, monkeypatch, b'file')
+    with source.db:
+        service, params = source.service, source.params
+        legacy = service.attest(source.selector, 'submit', params)
+        digest_params = {k: v for k, v in params.items() if k != 'prompt'}
+        digest_params['prompt_sha256'] = hashlib.sha256(b'frozen').hexdigest()
+        assert service.attest(source.selector, 'submit', digest_params) == legacy
+        for bad in ({'prompt_sha256': '0' * 64, 'prompt': 'frozen'},
+                    {'prompt_sha256': None, 'prompt': 'frozen'},
+                    {'execution_generation': 999}, {'task': {**params['task'], 'task_id': 'other'}},
+                    {'attachments': []}):
+            with pytest.raises(RuntimeStoreError, match='permission_denied'):
+                service.attest(source.selector, 'submit', {**digest_params, **bad})
+        room = service._room('room')
+        monkeypatch.setattr(service, '_room', lambda _: {**room, 'members': []})
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            service.attest(source.selector, 'submit', digest_params)
 
 
 def test_source_attestation_binds_bytes_to_task_member_and_current_home(tmp_path, monkeypatch):

@@ -413,8 +413,8 @@ async def search_sessions(
                 add_lineage_result(sid, hit_payload(row, snippet, None, row.get("started_at")))
 
             # Title matches come SECOND, ahead of message-content hits: a session
-            # title is what the user just read in the sidebar, so an exact/prefix
-            # title hit must outrank a bm25 content hit. This lane used to run
+            # title is what the user just read in the sidebar, so any title
+            # hit must outrank a bm25 content hit. This lane used to run
             # LAST and only when the content lane left slots, which starved it —
             # the content lane alone fills `limit`, so an exact-title query came
             # back with the conversation missing, or appended at the very end.
@@ -436,16 +436,18 @@ async def search_sessions(
                         return 3
                     if title == needle:
                         return 0
-                    return 1 if title.startswith(needle) else 2
+                    if title.startswith(needle):
+                        return 1
+                    return 2 if needle in title else 3
 
                 # sorted() is stable, so equal ranks keep the DB's recency order.
                 ranked_titles = sorted(title_rows, key=_title_rank)
-                strong_titles = [r for r in ranked_titles if _title_rank(r) < 2]
-                weak_titles = [r for r in ranked_titles if _title_rank(r) == 2]
+                title_hits = [r for r in ranked_titles if _title_rank(r) < 3]
+                id_only_hits = [r for r in ranked_titles if _title_rank(r) == 3]
             else:
-                strong_titles, weak_titles = [], []
+                title_hits, id_only_hits = [], []
 
-            for row in strong_titles:
+            for row in title_hits:
                 if len(seen) >= safe_limit:
                     break
                 sid = row.get("id")
@@ -474,9 +476,8 @@ async def search_sessions(
                     m["session_id"],
                     hit_payload(m, m.get("snippet", ""), m.get("role"), m.get("session_started")))
 
-            # Substring-only title hits fill any remaining slots, as before: a
-            # loose LIKE match must not outrank a real content hit.
-            for row in weak_titles:
+            # Rows matched only by id (not title) retain their tail slots.
+            for row in id_only_hits:
                 if len(seen) >= safe_limit:
                     break
                 sid = row.get("id")

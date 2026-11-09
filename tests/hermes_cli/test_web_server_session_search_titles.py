@@ -6,17 +6,16 @@ message content), so a term that lived solely in a manually-set
 ``sessions.title`` returned zero results. The DB layer already had title
 matching — ``list_sessions_rich(search_query=...)`` LIKE-matches titles across
 the whole compression chain — and the endpoint never called it. The fix
-backfills remaining result slots through that existing helper via the same
-add_lineage_result dedup path (content hits keep BM25 priority).
+originally backfilled remaining slots through that helper. Regression for
+#151685: all title matches outrank content hits while id hits stay first.
 
 These tests drive the real SessionDB through the real route handler (no fake
 DB) so the title lane is exercised end to end, including the SQLite
 read-only connection the endpoint opens.
 
 Lane precedence (see :func:`hermes_cli.web_routers.sessions.search_sessions`):
-id hits, then exact/prefix title hits, then bm25 content hits, then
-substring-only title hits. The exact/prefix-hoisting tests below pin that
-order; the substring case deliberately stays behind real content hits.
+id hits, then exact/prefix/substring title hits, then bm25 content hits.
+Rows matched only by id via the title helper retain tail precedence.
 """
 
 import asyncio
@@ -69,13 +68,12 @@ def test_search_finds_session_by_partial_title(db_path_for_profile):
     assert row["title"] == "Building the Modpack Server"
 
 
-def test_search_title_lane_keeps_content_hits_priority(db_path_for_profile):
-    """Content hits keep their BM25 priority; the title lane only fills
-    remaining slots and dedupes by lineage root against earlier lanes."""
+def test_search_partial_title_match_outranks_content_hit(db_path_for_profile):
+    """A mid-title match outranks content, with deduplication by lineage root."""
     response = asyncio.run(_rt_sessions.search_sessions(q="modpack", limit=20))
     ids = [row["session_id"] for row in response["results"]]
     assert set(ids) == {"content_session", "titled_session"}
-    assert ids[0] == "content_session"  # FTS content hit outranks the title backfill
+    assert ids[0] == "titled_session"  # title match precedes a message-only hit
     assert "other_session" not in ids
 
 
@@ -155,13 +153,12 @@ def test_search_prefix_title_outranks_content_hit(ranked_db):
     assert ids.index("doc_c") < ids.index("doc_d")
 
 
-def test_search_substring_title_stays_behind_content_hits(ranked_db):
-    """A loose LIKE (needle mid-title) must NOT be hoisted: it keeps the old
-    tail-lane slot after real content hits."""
+def test_search_mid_title_match_outranks_content_hit(ranked_db):
+    """A word in the middle of the title must outrank a message-content hit."""
     response = asyncio.run(_rt_sessions.search_sessions(q="Wandering", limit=20))
     ids = [row["session_id"] for row in response["results"]]
     assert "doc_f" in ids and "doc_e" in ids, ids
-    assert ids.index("doc_f") < ids.index("doc_e"), ids
+    assert ids.index("doc_e") < ids.index("doc_f"), ids
 
 
 def test_search_exact_title_returned_at_limit_one(ranked_db):
@@ -169,3 +166,9 @@ def test_search_exact_title_returned_at_limit_one(ranked_db):
     the content lane filling `limit` first."""
     response = asyncio.run(_rt_sessions.search_sessions(q="Quetzalcoatl", limit=1))
     assert [row["session_id"] for row in response["results"]] == ["doc_a"]
+
+
+def test_search_mid_title_returned_at_limit_one(ranked_db):
+    """A content hit must not starve a mid-title match at the limit."""
+    response = asyncio.run(_rt_sessions.search_sessions(q="Wandering", limit=1))
+    assert [row["session_id"] for row in response["results"]] == ["doc_e"]

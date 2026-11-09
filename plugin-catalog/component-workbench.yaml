@@ -1,0 +1,22 @@
+name: component-workbench
+repo: https://github.com/1anter/hermes-research-plugins
+sha: 48befeaf71f0bfed7916553d1a511c81a37a9c4b
+subdir: plugins/component-workbench
+description: Frozen candidate proposals, reproducible checks and review-only promotion
+  gate.
+maintainer: 1anter
+tier: community
+category: tools
+requires_hermes: '>=0.23.0'
+version: 0.1.1
+capabilities:
+  provides_tools:
+  - workbench_propose
+  - workbench_validate
+  - workbench_freeze
+  - workbench_review
+  - workbench_status
+  - workbench_diff
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

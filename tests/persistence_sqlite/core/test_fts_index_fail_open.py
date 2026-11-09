@@ -29,6 +29,7 @@ from persistence.sqlite.conversation._store.messages import append_message
 from persistence.sqlite.conversation._store.sessions import create_session, get_session
 from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
+from tests.fixtures.storage_holder import raw_holder
 
 
 def _flush_agent(db, session_id):
@@ -95,7 +96,7 @@ def test_turn_flush_survives_fts_only_corruption(tmp_path):
     not quarantined."""
     db_path = tmp_path / "state.db"
     handle = open_persistence(profile_scope(home=tmp_path), eager=True)
-    db = handle.holder()
+    db = raw_holder(handle)
     try:
         _seed(db)
         _stomp_fts_shadow(db_path)
@@ -124,7 +125,7 @@ def test_escaped_fts_only_error_is_index_scoped_not_quarantined(tmp_path, monkey
     quarantine the handle or touch the derived indexes."""
     db_path = tmp_path / "state.db"
     handle = open_persistence(profile_scope(home=tmp_path), eager=True)
-    db = handle.holder()
+    db = raw_holder(handle)
     try:
         _seed(db)
         _stomp_fts_shadow(db_path)

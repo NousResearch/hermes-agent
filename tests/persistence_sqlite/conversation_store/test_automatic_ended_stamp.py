@@ -30,6 +30,7 @@ from persistence.sqlite.conversation._store.compression import publish_compressi
 from persistence.sqlite.conversation._store.messages import append_message
 from persistence.sqlite.conversation._store.sessions import create_session, end_session, get_session
 from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
 
 
 @pytest.fixture
@@ -43,7 +44,7 @@ def persistence(tmp_path: Path):
 
 @pytest.fixture
 def db(persistence) -> StoreHolder:
-    return persistence.holder()
+    return raw_holder(persistence)
 
 
 def _publish(db: StoreHolder, parent: str, child: str) -> None:

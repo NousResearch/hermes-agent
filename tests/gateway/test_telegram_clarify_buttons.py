@@ -285,6 +285,9 @@ class TestTelegramClarifyPromptBinding:
         # The real prompt stays answerable.
         assert "cid-bind" in adapter._clarify_state
         query.edit_message_text.assert_not_called()
+        # The refused tap is still answered, so the client's spinner stops on the refusal toast.
+        from agent.i18n import t
+        query.answer.assert_awaited_once_with(text=t("platform.telegram.prompt.invalid_choice"))
 
     @pytest.mark.asyncio
     async def test_callback_from_another_chat_does_not_resolve(self):

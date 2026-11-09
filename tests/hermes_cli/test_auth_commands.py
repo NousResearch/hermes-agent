@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from unittest.mock import patch
 
@@ -267,6 +268,75 @@ def test_auth_list_includes_non_registry_configured_provider(
     auth_list_command(type("Args", (), {"provider": None})())
 
     assert "private-groq" in capsys.readouterr().out
+
+
+def _codex_pool_with_model_cooldowns(tmp_path, monkeypatch, cooldowns: dict) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    now = time.time()
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "acct1",
+                        "label": "work",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "tok-a",
+                        "refresh_token": "rt-a",
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                        "model_cooldowns": {m: now + offset for m, offset in cooldowns.items()},
+                    }
+                ]
+            },
+        },
+    )
+
+
+def test_auth_list_shows_the_model_cooldowns_that_refuse_a_credential(tmp_path, monkeypatch, capsys):
+    """A model-scoped cooldown leaves ``last_status`` alone, so the row used to look healthy while
+    selection refused the credential for that model, for a year in the Codex entitlement case. The
+    oracle is the pool itself: every model the list says is cooling down is a model ``select``
+    refuses, and the model it does not mention is still served."""
+    _codex_pool_with_model_cooldowns(
+        tmp_path, monkeypatch, {"gpt-5.6-sol": 365 * 86400, "gpt-5.5": 3 * 3600 + 120})
+
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth_commands import auth_list_command
+
+    auth_list_command(type("Args", (), {"provider": "openai-codex"})())
+    out = capsys.readouterr().out
+
+    shown = [line.split("cooling down for ", 1)[1].split(" (", 1)[0]
+             for line in out.splitlines() if "cooling down for " in line]
+    assert shown == ["gpt-5.5", "gpt-5.6-sol"]  # soonest first
+    # Days-scale, not a fixed figure: the time shown is whatever the pool holds after loading, and
+    # pending work bounds entitlement cooldowns (#119652 brings this one down to 2d on a sole credential).
+    assert re.search(r"cooling down for gpt-5\.6-sol \(\d+d \d+h left\)", out), out
+    assert "`hermes auth reset openai-codex` clears them now" in out
+
+    pool = load_pool("openai-codex")
+    assert [pool.select(model=model) for model in shown] == [None, None]
+    assert pool.select(model="gpt-5.4") is not None
+
+
+def test_auth_list_is_unchanged_without_an_active_model_cooldown(tmp_path, monkeypatch, capsys):
+    """Control: an expired cooldown is not a cooldown, so the row and the provider block print
+    exactly as before, with no reset hint."""
+    _codex_pool_with_model_cooldowns(tmp_path, monkeypatch, {"gpt-5.6-sol": -60})
+
+    from hermes_cli.auth_commands import auth_list_command
+
+    auth_list_command(type("Args", (), {"provider": "openai-codex"})())
+    out = capsys.readouterr().out
+
+    assert "cooling down" not in out
+    assert "hermes auth reset" not in out
+    assert "#1  work" in out
 
 
 def test_interactive_auth_add_normalizes_display_name_to_provider_key(

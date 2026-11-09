@@ -532,6 +532,15 @@ class TestHardenUserSiteVersion:
         result = self._run(hb, seed, 3, 11)
         assert isinstance(result, list)
 
+    def test_legacy_venv_requires_an_entire_version_directory(self):
+        """#127387: keep unrelated paths whose names only end in a Python version."""
+        hb = _fresh_import()
+        legacy = "/opt/hermes/venv/lib/python3.11/site-packages"
+        lookalike = "/opt/custom-python3.11/site-packages"
+        active = "/opt/hermes/managed/lib/python3.14/site-packages"
+        result = self._run(hb, [legacy, lookalike, active], 3, 14)
+        assert result == [lookalike, active]
+
     def test_site_packages_substring_elsewhere_not_stripped(self):
         """A path that independently contains "pythonX.Y/" and
         "site-packages" as two *unrelated* components — rather than the

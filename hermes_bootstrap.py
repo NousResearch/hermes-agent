@@ -242,7 +242,7 @@ def install_happy_eyeballs_socket_connect() -> None:
 # where the two happen to appear separately, e.g.
 # ".../python3.12/config/site-packages-notes".
 _PYVER_DIR_RE = re.compile(
-    r"python(\d+)\.(\d+)[\\/]site-packages(?=[\\/]|$)", re.IGNORECASE
+    r"(?:^|[\\/])python(\d+)\.(\d+)[\\/]site-packages(?=[\\/]|$)", re.IGNORECASE
 )
 
 

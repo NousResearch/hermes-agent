@@ -184,3 +184,30 @@ def test_a_turn_write_follows_its_session_into_a_compression_child(ports, tmp_pa
             with pytest.raises(TurnFenceRequiredError):  # a session outside the claim's lineage
                 storage.sessions.append_turn("other", [{"role": "user", "content": "x"}])
     assert [m["content"] for m in db.get_messages("child")] == ["summary", "after"]
+
+
+def test_a_compression_child_with_its_own_claim_excludes_the_originating_turns_claim(ports, tmp_path):
+    """The continuation is the originating claim's alone: once the destination session holds its
+    own claimed turn, the claim it descends from can no longer write it."""
+    db, storage = ports
+    with bind_profile_scope(tmp_path):
+        epoch = storage.admission.begin_epoch(instance_id="owner")
+        from tests.hermes_state.test_target_advance_fence import _local_session
+        sid = _local_session(db, epoch, tmp_path)
+        storage.admission.admit(epoch=epoch, principal_id="human", session_id=sid, request_id="r",
+                                payload={"text": "hi"})
+        root = storage.admission.claim_next(epoch=epoch, session_id=sid)
+        with bind_turn(sid, root["admission_id"], storage.admission.fence(root), store=db.db_path):
+            storage.sessions.publish_compression_child(
+                parent_session_id=sid, child_session_id="child", source="cli",
+                messages=[{"role": "user", "content": "summary"}], require_compression_lease=False)
+        # the child is claimed independently while the parent's turn still runs
+        storage.admission.admit(epoch=epoch, principal_id="human", session_id="child", request_id="c",
+                                payload={"text": "hi"})
+        child = storage.admission.claim_next(epoch=epoch, session_id="child")
+        with bind_turn("child", child["admission_id"], storage.admission.fence(child), store=db.db_path):
+            assert storage.sessions.append_turn("child", [{"role": "assistant", "content": "own"}]) == 1
+        with bind_turn(sid, root["admission_id"], storage.admission.fence(root), store=db.db_path):
+            with pytest.raises(TurnFenceRequiredError):
+                storage.sessions.append_turn("child", [{"role": "assistant", "content": "foreign"}])
+    assert [m["content"] for m in db.get_messages("child")] == ["summary", "own"]

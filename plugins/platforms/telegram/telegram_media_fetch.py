@@ -1,0 +1,50 @@
+"""Inbound Telegram file fetch with a bounded retry.
+
+``get_file()`` + ``download_as_bytearray()`` is a pure read: replaying it can never post anything,
+so unlike the SEND paths (``telegram_send_errors``) a timeout is safe to retry. A stalled getFile
+socket answers in milliseconds on the next attempt (#150861), so one dropped read must not cost the
+user the attachment. ``BadRequest`` (a bad file_id, a too-big file) is a permanent answer and PTB
+makes it a ``NetworkError`` subclass, so it is excluded explicitly.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Any
+
+logger = logging.getLogger("plugins.platforms.telegram.adapter")
+
+# Backoff (seconds) before each further attempt of one inbound file fetch.
+FETCH_RETRY_DELAYS = (2.0, 5.0)
+
+
+def is_retryable_fetch_error(exc: Exception) -> bool:
+    """A transport failure (PTB ``NetworkError``/``TimedOut`` or a bare httpx/OS error) other than a
+    Bot API refusal or a pool timeout (the local pool is exhausted; an immediate replay stalls too)."""
+    from plugins.platforms.telegram.adapter import TelegramAdapter as tg
+    if tg._is_bad_request_error(exc) or tg._looks_like_auth_error(exc) or tg._looks_like_pool_timeout(exc):
+        return False
+    return tg._looks_like_network_error(exc) or type(exc).__name__ in {
+        "ReadTimeout", "ReadError", "ConnectTimeout", "ConnectError", "RemoteProtocolError"}
+
+
+async def fetch_telegram_file(source: Any, what: str) -> tuple[Any, bytes]:
+    """``(file_obj, bytes)`` for one attachment. ``get_file()`` and the download retry as one unit:
+    a half-read download is not resumable."""
+    from plugins.platforms.telegram.adapter import _redact_telegram_error_text
+    delays = list(FETCH_RETRY_DELAYS)
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            file_obj = await source.get_file()
+            return file_obj, bytes(await file_obj.download_as_bytearray())
+        except Exception as exc:
+            if not delays or not is_retryable_fetch_error(exc):
+                raise
+            delay = delays.pop(0)
+            logger.warning("[Telegram] %s: fetch failed on attempt %d/%d (%s), retrying in %ss",
+                           what, attempt, len(FETCH_RETRY_DELAYS) + 1, _redact_telegram_error_text(exc), delay)
+            await asyncio.sleep(delay)
+

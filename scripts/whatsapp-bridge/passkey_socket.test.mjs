@@ -248,6 +248,28 @@ test('a superseding prologue request proves the handoff with the secret from the
   sock.ev.emit('connection.update', { connection: 'close' });
 });
 
+test('a request after the first prologue was sent still proves the handoff with the QR secret', async () => {
+  const sock = socket();
+  const qrSecret = sock.authState.creds.advSecretKey;
+  const prologues = [];
+  sock.query = async node => {
+    if (node.content[0].tag === 'passkey_prologue') prologues.push(node.content[0].content);
+    return refReply();
+  };
+  attachPasskeyFlow(sock, { logger, confirmCode: async () => {}, signAssertion: async () => assertion });
+  sock.ws.emit('CB:notification', request());
+  await settle();
+  sock.ws.emit('CB:notification', request());
+  await settle();
+  assert.equal(prologues.length, 2);
+  const key = hkdf(Buffer.from(qrSecret, 'base64'), 32, { info: 'shortcake-passkey-handoff-v1' });
+  for (const prologue of prologues) {
+    const leaf = name => prologue.find(child => child.tag === name)?.content;
+    assert.deepEqual(Buffer.from(leaf('pairing_handoff_proof')), Buffer.from(hmacSign(leaf('prologue_payload'), key)));
+  }
+  sock.ev.emit('connection.update', { connection: 'close' });
+});
+
 test('superseding an attempt whose browser call fails with a plain error keeps the bridge pairing', async () => {
   const sock = socket();
   const errors = [];

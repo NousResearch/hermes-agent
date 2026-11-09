@@ -1069,6 +1069,24 @@
       }
     },
     {
+      "name": "git.repo_refs",
+      "summary": "GitHub owner/repo behind a live session's cwd, so the transcript can link bare #N refs.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GitRepoRefsParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GitRepoRefsResult"
+        }
+      }
+    },
+    {
       "name": "groups.approve",
       "summary": "Resolve one exact pending approval raised by a local or peer room member.",
       "params": [
@@ -19257,6 +19275,105 @@
           "replay_epoch"
         ],
         "title": "GatewayReadyPayload",
+        "type": "object"
+      },
+      "GitRepoRefsParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "default": "",
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "title": "GitRepoRefsParams",
+        "type": "object"
+      },
+      "GitRepoRefsResult": {
+        "additionalProperties": false,
+        "description": "``methods_git``: ``available`` is false outside a repo, without a github.com ``origin``, or with\n``desktop.autolink_issue_refs: false``; the other keys are present only when it is true.",
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "host": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Host"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Repo"
+          },
+          "repo_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Repo Root"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          }
+        },
+        "required": [
+          "available"
+        ],
+        "title": "GitRepoRefsResult",
         "type": "object"
       },
       "GoalContractSnapshot": {

@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-import tui_gateway.server as server
+from tui_gateway import server
 
 
 def _call(method, params=None):
@@ -80,7 +80,7 @@ def test_worktree_cwd_folds_to_main_root(_git_sessions, tmp_path):
     main.mkdir()
     _init_repo(main, "https://github.com/o/r.git")
     subprocess.run(
-        ["git", "-C", str(main), "commit", "--allow-empty", "-q", "-m", "init"],
+        ["git", "-C", str(main), "-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "--allow-empty", "-q", "-m", "init"],
         check=True,
     )
     subprocess.run(
@@ -159,15 +159,9 @@ def test_kill_switch_disables(_git_sessions, tmp_path, monkeypatch):
     _init_repo(repo, "https://github.com/o/r.git")
     _git_sessions["s1"] = {"cwd": str(repo)}
 
-    import hermes_cli.config as config_mod
-
-    real_load = config_mod.load_config
-
-    def fake_load(*a, **kw):
-        cfg = real_load(*a, **kw)
-        cfg.setdefault("desktop", {})["autolink_issue_refs"] = False
-        return cfg
-
-    monkeypatch.setattr(config_mod, "load_config", fake_load)
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("desktop:\n  autolink_issue_refs: false\n")
+    monkeypatch.setattr(server, "_hermes_home", home)
     result = _call("git.repo_refs", {"session_id": "s1"})
     assert result == {"available": False}

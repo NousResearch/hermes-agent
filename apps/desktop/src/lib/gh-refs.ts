@@ -18,7 +18,20 @@
 // peeling needed, unlike `@session:` whose greedy value branch swallows it.
 export const GH_ISSUE_REF_RE = /(?<![\w/&?=#.-])(?<!]\()#(\d{1,7})\b/g
 
-const GH_REF_HREF_PREFIX = '#gh-ref/'
+// `owner/repo#123` names another repository on the same forge (GitHub's owner
+// and repo charsets). The lookbehind keeps path segments (`src/a/b#1`) and URL
+// tails from being read as an owner. A bare `#N` inside the match is already
+// skipped by GH_ISSUE_REF_RE (a word char precedes its `#`).
+const GH_CROSS_REPO_REF_RE = /(?<![\w/.@:-])([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([\w.-]{1,100})#(\d{1,7})\b/g
+
+const GH_REF_HREF_RE = /^#gh-ref\/(?:([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([\w.-]{1,100})\/)?(\d{1,7})$/
+
+/** A parsed `#gh-ref/` href: bare `#N` (the session's repo) or `owner/repo#N`. */
+export interface GhRef {
+  number: number
+  owner?: string
+  repo?: string
+}
 
 // A complete labeled markdown link (`[PR #46](https://…)`) is atomic: a `#N`
 // inside its label must not be re-linked into a nested, mangled construct.
@@ -37,19 +50,28 @@ export function linkifyGhIssueRefs(text: string): string {
   return text
     .split(MD_LINK_SPAN_RE)
     .map((part, index) =>
-      index % 2 === 1 ? part : part.replace(GH_ISSUE_REF_RE, (match, digits: string) => `[${match}](#gh-ref/${digits})`)
+      index % 2 === 1
+        ? part
+        : part
+            .replace(
+              GH_CROSS_REPO_REF_RE,
+              (match, owner: string, repo: string, digits: string) => `[${match}](#gh-ref/${owner}/${repo}/${digits})`
+            )
+            .replace(GH_ISSUE_REF_RE, (match, digits: string) => `[${match}](#gh-ref/${digits})`)
     )
     .join('')
 }
 
-export function ghRefFromMarkdownHref(href?: string): number | null {
-  if (!href?.startsWith(GH_REF_HREF_PREFIX)) {
+export function ghRefFromMarkdownHref(href?: string): GhRef | null {
+  const match = href?.match(GH_REF_HREF_RE)
+
+  if (!match) {
     return null
   }
 
-  const digits = href.slice(GH_REF_HREF_PREFIX.length)
+  const [, owner, repo, digits] = match
 
-  return /^\d{1,7}$/.test(digits) ? Number(digits) : null
+  return owner && repo ? { number: Number(digits), owner, repo } : { number: Number(digits) }
 }
 
 export function ghIssueUrl(owner: string, repo: string, number: number): string {

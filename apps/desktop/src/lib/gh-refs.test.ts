@@ -62,6 +62,13 @@ describe('linkifyGhIssueRefs', () => {
     expect(linkifyGhIssueRefs('#1234567 ok')).toBe('[#1234567](#gh-ref/1234567) ok')
   })
 
+  it('links a cross-repository owner/repo#N ref as one link', () => {
+    expect(linkifyGhIssueRefs('see NousResearch/hermes-agent#12 too')).toBe(
+      'see [NousResearch/hermes-agent#12](#gh-ref/NousResearch/hermes-agent/12) too'
+    )
+    expect(linkifyGhIssueRefs('src/lib/a.ts#12')).toBe('src/lib/a.ts#12')
+  })
+
   it('is a no-op without a hash', () => {
     expect(linkifyGhIssueRefs('no refs here')).toBe('no refs here')
   })
@@ -69,8 +76,9 @@ describe('linkifyGhIssueRefs', () => {
 
 describe('ghRefFromMarkdownHref', () => {
   it('parses valid refs', () => {
-    expect(ghRefFromMarkdownHref('#gh-ref/46')).toBe(46)
-    expect(ghRefFromMarkdownHref('#gh-ref/1234567')).toBe(1234567)
+    expect(ghRefFromMarkdownHref('#gh-ref/46')).toEqual({ number: 46 })
+    expect(ghRefFromMarkdownHref('#gh-ref/1234567')).toEqual({ number: 1234567 })
+    expect(ghRefFromMarkdownHref('#gh-ref/o/r.js/7')).toEqual({ number: 7, owner: 'o', repo: 'r.js' })
   })
 
   it('rejects everything else', () => {

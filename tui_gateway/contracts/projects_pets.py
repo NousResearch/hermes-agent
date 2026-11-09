@@ -164,6 +164,29 @@ method("projects.for_cwd", params=ProjectsForCwdParams, result=ProjectsForCwdRes
        doc="Which project (if any) owns a directory, plus the resolved cwd and its git branch.")
 
 
+# ── git: forge coordinates for `#N` transcript links ───────────────────────────────────────────
+
+
+class GitRepoRefsParams(ProfileParams):
+    session_id: str = ""
+
+
+class GitRepoRefsResult(Result):
+    """``methods_git``: ``available`` is false outside a repo, without a github.com ``origin``, or with
+    ``desktop.autolink_issue_refs: false``; the other keys are present only when it is true."""
+
+    available: bool
+    host: str | None = None
+    owner: str | None = None
+    repo: str | None = None
+    repo_root: str | None = None
+    cwd: str | None = None
+
+
+method("git.repo_refs", params=GitRepoRefsParams, result=GitRepoRefsResult,
+       doc="GitHub owner/repo behind a live session's cwd, so the transcript can link bare #N refs.")
+
+
 # ── projects: repo discovery ──────────────────────────────────────────────────────────────────
 
 

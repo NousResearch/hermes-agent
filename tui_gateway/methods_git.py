@@ -97,13 +97,8 @@ def _(rid, params: dict) -> dict:
 
 def _autolink_issue_refs_enabled() -> bool:
     """Desktop kill-switch: ``desktop.autolink_issue_refs`` (default true)."""
-    try:
-        from hermes_cli.config import load_config
-
-        desktop = load_config().get("desktop") or {}
-    except Exception:
-        return True
-    return desktop.get("autolink_issue_refs") is not False
+    desktop = _load_cfg().get("desktop")
+    return not isinstance(desktop, dict) or desktop.get("autolink_issue_refs") is not False
 
 
 def register(server) -> None:

@@ -280,7 +280,7 @@ With **Group by → Projects**, each project row previews its three most recent 
 
 #### GitHub `#issue` links in chat
 
-When a session runs inside a Git repository whose `origin` is on github.com, bare references like `#46` in the assistant's replies render as links to that repository's issue or pull request. Resolution runs where the backend runs, so remote-gateway sessions resolve against the remote host's repos. Disable it per profile in **Settings → Workspace**, or in `config.yaml`:
+When a session runs inside a Git repository whose `origin` is on github.com, bare references like `#46` in the assistant's replies render as links to that repository's issue or pull request, and `owner/repo#46` links to that repository on github.com. Resolution runs where the backend runs, so remote-gateway sessions resolve against the remote host's repos. Disable it per profile in **Settings → Workspace**, or in `config.yaml`:
 
 ```yaml
 desktop:

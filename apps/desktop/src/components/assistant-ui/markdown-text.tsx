@@ -58,8 +58,9 @@ import { cn } from '@/lib/utils'
 import { useForcedTextDirection } from '@/store/text-direction'
 
 import { ArtifactCard } from './artifact-card'
-import { GhRefLink, SessionRefLink } from './directive-text'
+import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
+import { GhRefLink } from './gh-ref-link'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
 import { ToolMediaSlot } from './tool-media-slot'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
@@ -304,6 +305,19 @@ function PreviewOnlyMarkdownLink({ children, className, href }: ComponentProps<'
   return <ExternalLink className={cn('wrap-anywhere', className)} href={target.href}>{children}</ExternalLink>
 }
 
+/** `#session/` and `#gh-ref/` hrefs written by `preprocessMarkdown`, or null. */
+function referenceLink(href: string | undefined, children: ReactNode) {
+  const sessionRef = sessionRefFromMarkdownHref(href)
+
+  if (sessionRef) {
+    return <SessionRefLink value={sessionRef} />
+  }
+
+  const ghRef = ghRefFromMarkdownHref(href)
+
+  return ghRef ? <GhRefLink label={childrenToText(children) || `#${ghRef.number}`} target={ghRef} /> : null
+}
+
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
   const mediaPath = mediaPathFromMarkdownHref(href)
 
@@ -336,16 +350,10 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     return <PreviewAttachment target={previewTarget} />
   }
 
-  const sessionRef = sessionRefFromMarkdownHref(href)
+  const refLink = referenceLink(href, children)
 
-  if (sessionRef) {
-    return <SessionRefLink value={sessionRef} />
-  }
-
-  const ghRefNumber = ghRefFromMarkdownHref(href)
-
-  if (ghRefNumber !== null) {
-    return <GhRefLink label={childrenToText(children) || `#${ghRefNumber}`} number={ghRefNumber} />
+  if (refLink) {
+    return refLink
   }
 
   const target = href ? normalizeExternalUrl(href) : href

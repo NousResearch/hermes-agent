@@ -1170,7 +1170,8 @@ export const frOverrides = {
       desktop: {
         repoScanEnabled: 'Découverte automatique de dépôts',
         repoScanRoots: 'Racines de découverte de dépôts',
-        repoScanExcludePaths: 'Chemins de dépôt exclus'
+        repoScanExcludePaths: 'Chemins de dépôt exclus',
+        autolinkIssueRefs: 'Liens #Issue GitHub'
       },
       agent: {
         maxTurns: "Étapes max. de l'agent",
@@ -1345,7 +1346,8 @@ export const frOverrides = {
       desktop: {
         repoScanEnabled: 'Analyser les dossiers locaux à la recherche de dépôts Git à afficher dans Projets.',
         repoScanRoots: 'Dossiers à analyser. Laissez vide pour analyser votre répertoire personnel.',
-        repoScanExcludePaths: 'Dossiers et leurs descendants à ignorer lors de la découverte de dépôts.'
+        repoScanExcludePaths: 'Dossiers et leurs descendants à ignorer lors de la découverte de dépôts.',
+        autolinkIssueRefs: 'Affiche les références #123 du chat comme liens github.com vers le dépôt de la session en cours. Nécessite un remote origin sur github.com.'
       },
       timezone: 'Identifiant de fuseau horaire IANA. Si vide, utilise le fuseau horaire du système.',
       browser: {

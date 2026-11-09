@@ -1166,7 +1166,8 @@ export const esOverrides = {
       desktop: {
         repoScanEnabled: 'Detección automática de repositorios',
         repoScanRoots: 'Carpetas de búsqueda de repositorios',
-        repoScanExcludePaths: 'Rutas de repositorio excluidas'
+        repoScanExcludePaths: 'Rutas de repositorio excluidas',
+        autolinkIssueRefs: 'Enlaces #Issue de GitHub'
       },
       agent: {
         maxTurns: 'Pasos máximos del agente',
@@ -1342,7 +1343,8 @@ export const esOverrides = {
         repoScanEnabled: 'Busca repositorios Git en carpetas locales para mostrarlos en Proyectos.',
         repoScanRoots: 'Carpetas que se buscarán. Déjalo vacío para buscar en tu directorio de inicio.',
         repoScanExcludePaths:
-          'Carpetas que se omitirán, junto con todos sus subdirectorios, durante la detección de repositorios.'
+          'Carpetas que se omitirán, junto con todos sus subdirectorios, durante la detección de repositorios.',
+        autolinkIssueRefs: 'Muestra las referencias #123 del chat como enlaces de github.com al repositorio de la sesión actual. Requiere un remoto origin en github.com.'
       },
       timezone: 'Identificador de zona horaria IANA. Vacío usa la zona horaria del sistema.',
       browser: {

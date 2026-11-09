@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { requestGatewayForProfile } from '@/store/gateway'
 import { $activeSessionId } from '@/store/session'
 
-import { __resetGhRepoRefsCache } from './directive-text'
+import { __resetGhRepoRefsCache } from './gh-ref-link'
 import { MarkdownTextContent } from './markdown-text'
 
 // The no-repo / gateway-down paths: `git.repo_refs` unavailable → plain text,

@@ -644,7 +644,8 @@ export const ruOverrides = {
       desktop: {
         repoScanEnabled: 'Автоматическое обнаружение репозиториев',
         repoScanRoots: 'Корни обнаружения репозиториев',
-        repoScanExcludePaths: 'Исключаемые пути репозиториев'
+        repoScanExcludePaths: 'Исключаемые пути репозиториев',
+        autolinkIssueRefs: 'Ссылки GitHub #Issue'
       },
       agent: {
         maxTurns: 'Макс. шагов агента',
@@ -815,7 +816,8 @@ export const ruOverrides = {
       desktop: {
         repoScanEnabled: 'Сканировать локальные папки на Git-репозитории, чтобы показывать их в Проектах.',
         repoScanRoots: 'Папки для сканирования. Оставьте пустым, чтобы сканировать домашний каталог.',
-        repoScanExcludePaths: 'Папки и их вложенные, которые нужно пропускать при обнаружении репозиториев.'
+        repoScanExcludePaths: 'Папки и их вложенные, которые нужно пропускать при обнаружении репозиториев.',
+        autolinkIssueRefs: 'Показывать ссылки вида #123 в чате как ссылки github.com на репозиторий текущей сессии. Требуется удалённый origin на github.com.'
       },
       timezone: 'Идентификатор часового пояса IANA. Пустое значение — системный часовой пояс.',
       agent: {

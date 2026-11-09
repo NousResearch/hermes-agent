@@ -126,7 +126,7 @@ class Stats:
     files_read: int = 0
     unparsed: list[str] = field(default_factory=list)
 
-    def add(self, other: "Stats") -> None:
+    def add(self, other: Stats) -> None:
         self.rewrites.update(other.rewrites)
         self.skips.update(other.skips)
         self.samples.extend(other.samples)
@@ -437,7 +437,7 @@ def synthetic_plan(root: Path, moves: list[str]) -> Plan:
         move = move.rstrip("/")
         hit = [p for p in tree if p == move or p.startswith(move + "/")]
         paths += [(p, f"hermes_agent/{p}") for p in hit]
-        module = move[:-3] if move.endswith(".py") else move
+        module = move.removesuffix(".py")
         renames[module.replace("/", ".")] = "hermes_agent." + module.replace("/", ".")
     return Plan(renames, paths, tree, default_config_keys(root))
 

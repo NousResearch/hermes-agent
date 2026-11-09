@@ -98,6 +98,15 @@ def validate_mcp_server_entry(name: str, entry: dict[str, Any]) -> list[str]:
     """
     if not isinstance(entry, dict):
         return []
+    if entry.get("headers_command"):
+        # A URL server's headers_command spawns a process too: scan it exactly like ``command``.
+        from tools.mcp_header_command import headers_command_argv
+        try:
+            argv = headers_command_argv(entry["headers_command"])
+        except ValueError:
+            argv = [str(entry["headers_command"])]
+        if argv and (issues := validate_mcp_server_entry(name, {"command": argv[0], "args": argv[1:]})):
+            return issues
 
     issues: list[str] = []
     flat = _entry_text(entry)

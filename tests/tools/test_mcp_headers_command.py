@@ -106,3 +106,25 @@ def test_command_output_rejects_header_injection():
     for bad in ('{"Authorization": "Bearer a\\r\\nX-Evil: 1"}', "not a header line", "", '{"bad name": "v"}'):
         with pytest.raises(HeadersCommandError):
             parse_headers_output("s", bad)
+
+
+def test_minted_headers_never_follow_a_cross_origin_redirect():
+    """Whatever its name, a headers_command header is a credential: stripped on a cross-origin hop
+    even without strict_redirect_headers; kept on a same-origin one."""
+    import httpx
+
+    from tools.mcp_tool_errors import _make_redirect_header_stripper
+
+    minted: set[str] = set()
+    client = _make_redirect_header_stripper(httpx, httpx.URL("https://mcp.example.com/mcp"),
+                                            credential_header_names=minted)()
+    minted.add("x-api-key")  # filled in after the client exists, as the auth flow does
+    request = httpx.Request("POST", "https://mcp.example.com/mcp", headers={"X-Api-Key": "k", "X-Trace": "t"})
+
+    def hop(location):
+        return client._build_redirect_request(request, httpx.Response(307, headers={"location": location},
+                                                                         request=request))
+
+    assert "x-api-key" not in hop("https://evil.example.net/mcp").headers
+    assert hop("https://evil.example.net/mcp").headers["x-trace"] == "t"
+    assert hop("https://mcp.example.com/v2/mcp").headers["x-api-key"] == "k"

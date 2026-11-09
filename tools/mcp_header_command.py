@@ -16,9 +16,8 @@ import json
 import logging
 import os
 import re
-import subprocess
 
-from hermes_cli._subprocess_compat import split_command_line, windows_hide_flags
+from hermes_cli._subprocess_compat import bounded_probe_run, split_command_line
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -56,31 +55,36 @@ def parse_headers_output(server_name: str, stdout: str) -> dict[str, str]:
     return headers
 
 
+def headers_command_argv(command) -> list[str]:
+    """*command* (one string or an argv list) as argv, ``~`` expanded in the executable. Raises
+    ValueError on unbalanced quotes. Shared with the config security scan, so both read one shape."""
+    argv = [str(part) for part in command] if isinstance(command, list) else split_command_line(str(command))
+    return [os.path.expanduser(argv[0]), *argv[1:]] if argv else []
+
+
 def run_headers_command(server_name: str, command) -> dict[str, str]:
     """Run *command* (string or argv list) and return the headers it printed; values are registered
     for redaction before they can reach a log or the model."""
     from agent.redact import register_vault_redaction_value, redact_sensitive_text
-    from tools.environments.local import build_subprocess_env
+    from tools.environments.local import served_profile_child_env
 
     try:
-        argv = ([str(part) for part in command] if isinstance(command, list)
-                else split_command_line(os.path.expanduser(str(command))))
+        argv = headers_command_argv(command)
     except ValueError as exc:
         raise HeadersCommandError(f"MCP server '{server_name}': headers_command cannot be parsed: {exc}")
     if not argv:
         raise HeadersCommandError(f"MCP server '{server_name}': headers_command is empty")
     try:
-        proc = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", timeout=HEADERS_COMMAND_TIMEOUT_SECONDS, shell=False, check=False,
-                              # Minting needs the profile's own credentials: the routed profile's
-                              # secrets, never the launch profile's .env residue.
-                              env=build_subprocess_env(scrub_secrets=False, strip_launch_profile=True),
-                              creationflags=windows_hide_flags())
-    except subprocess.TimeoutExpired:
-        raise HeadersCommandError(f"MCP server '{server_name}': headers_command timed out after "
-                                  f"{HEADERS_COMMAND_TIMEOUT_SECONDS}s")
+        # It mints FOR the served profile: that profile's secrets, never the launch profile's.
+        # Bounded: a plain run() can hang past its timeout on Windows when a grandchild holds the pipes.
+        proc = bounded_probe_run(argv, timeout=HEADERS_COMMAND_TIMEOUT_SECONDS,
+                                 env=served_profile_child_env(inherit_credentials=True),
+                                 raise_on_spawn_failure=True)
     except OSError as exc:
         raise HeadersCommandError(f"MCP server '{server_name}': headers_command could not start: {exc}")
+    if proc is None:
+        raise HeadersCommandError(f"MCP server '{server_name}': headers_command timed out after "
+                                  f"{HEADERS_COMMAND_TIMEOUT_SECONDS}s")
     if proc.returncode != 0:
         tail = redact_sensitive_text(" ".join((proc.stderr or "").split())[-300:])
         raise HeadersCommandError(f"MCP server '{server_name}': headers_command exited {proc.returncode}"
@@ -94,13 +98,15 @@ def run_headers_command(server_name: str, command) -> dict[str, str]:
 
 def build_headers_command_auth(httpx_mod, server_name: str, command):
     """An ``httpx_mod.Auth`` that stamps the command's headers on every request and, on a 401,
-    re-runs the command once and retries that request. One instance per connection attempt."""
+    re-runs the command once and retries that request. One instance per connection attempt.
+    ``minted_names`` (lowercase, live) is what the redirect stripper drops on a cross-origin hop."""
 
     class _HeadersCommandAuth(httpx_mod.Auth):
         def __init__(self) -> None:
             self._headers: dict[str, str] | None = None
             self._generation = 0
             self._lock = asyncio.Lock()
+            self.minted_names: set[str] = set()
 
         async def _current(self, stale_generation: int | None = None) -> tuple[dict[str, str], int]:
             async with self._lock:
@@ -108,6 +114,7 @@ def build_headers_command_auth(httpx_mod, server_name: str, command):
                 if self._headers is None or stale_generation == self._generation:
                     self._headers = await asyncio.to_thread(run_headers_command, server_name, command)
                     self._generation += 1
+                    self.minted_names.update(name.lower() for name in self._headers)
                 return self._headers, self._generation
 
         async def async_auth_flow(self, request):
@@ -117,7 +124,10 @@ def build_headers_command_auth(httpx_mod, server_name: str, command):
             if response.status_code != 401:
                 return
             logger.info("MCP server '%s': 401 with headers_command headers; re-running it once", server_name)
+            stale = headers
             headers, _ = await self._current(stale_generation=generation)
+            for name in stale:  # a credential the fresh output dropped must not ride along
+                request.headers.pop(name, None)
             request.headers.update(headers)
             yield request
 

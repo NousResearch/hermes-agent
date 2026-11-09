@@ -41,6 +41,10 @@ def test_astra_whole_request_price_tier_includes_cache_writes():
 _MODELS_DEV_REGISTRY = {
     "openai": {"models": {"gpt-5-nano": {"cost": {"input": 0.05, "output": 0.4, "cache_read": 0.005}}}},
     "xai": {"models": {"grok-4.3": {"cost": {"input": 1.25, "output": 2.5, "cache_read": 0.2}}}},
+    # The OpenCode gateways publish their own rate cards on models.dev, priced per
+    # route (``go`` is cheaper than ``zen`` for the same model id).
+    "opencode-go": {"models": {"deepseek-v4.1-flash": {"cost": {"input": 0.15, "output": 0.6, "cache_read": 0.003}}}},
+    "opencode": {"models": {"deepseek-v4.1-flash": {"cost": {"input": 0.3, "output": 1.2, "cache_read": 0.006}}}},
 }
 _USAGE = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
 
@@ -65,6 +69,14 @@ def models_dev_registry(monkeypatch):
     ("xai", "http://api.x.ai/v1", "grok-4.3", ("unknown", None)),
     ("xai-oauth", "https://api.x.ai/v1", "grok-4.3", ("unknown", None)),
     ("custom", "https://api.x.ai/v1", "grok-4.3", ("unknown", None)),
+    # OpenCode's gateways are the same case: their models.dev entries ARE the
+    # gateway's own rate card, so a session on opencode.ai is priced and a relay
+    # serving the same model id stays unknown. Before this, every opencode-go
+    # session was ``status=unknown`` despite the cache carrying its prices.
+    ("opencode-go", "https://opencode.ai/zen/go/v1", "deepseek-v4.1-flash", ("estimated", Decimal("0.753"))),
+    ("opencode-zen", "https://opencode.ai/zen/v1", "deepseek-v4.1-flash", ("estimated", Decimal("1.506"))),
+    ("opencode-go", "https://relay.example.com/v1", "deepseek-v4.1-flash", ("unknown", None)),
+    ("opencode-zen", "http://opencode.ai/zen/v1", "deepseek-v4.1-flash", ("unknown", None)),
 ])
 def test_direct_first_party_route_prices_models_missing_from_snapshot(models_dev_registry, provider, base_url, model, expected):
     cost = estimate_usage_cost(model, _USAGE, provider=provider, base_url=base_url)

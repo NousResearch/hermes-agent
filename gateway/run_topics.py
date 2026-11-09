@@ -174,7 +174,8 @@ class GatewayTopicThreadsMixin:
         try:
             self._record_telegram_topic_binding(source, session_entry)
         except Exception:
-            logger.debug("telegram topic binding refresh failed (%s)", reason, exc_info=True)
+            # Not silent: a stale binding makes the next message's heal switch the topic back.
+            logger.warning("telegram topic binding refresh failed (%s)", reason, exc_info=True)
 
     @staticmethod
     def _telegram_topic_key(source: SessionSource) -> tuple:
@@ -232,13 +233,22 @@ class GatewayTopicThreadsMixin:
         """Bind only while the route still names ``session_entry``: commands dispatch concurrently, and
         an older /resume that resumes after a newer one switched and bound must not restore its own
         session. One lock spans check + write, so the newer switch (which happens before its own
-        guarded write) always writes last. False = superseded (nothing written)."""
+        guarded write) always writes last. False = superseded (nothing written). Raises ValueError
+        when the session is bound to another topic: the caller must not report a switch the next
+        message's heal would undo."""
         with _TOPIC_SWITCH_BIND_LOCK:
             if self.session_store.peek_session_id(session_entry.session_key) != session_entry.session_id:
                 logger.info("Topic binding for %s not moved to %s (%s): the route switched again since",
                             session_entry.session_key, session_entry.session_id, reason)
                 return False
-            self._sync_telegram_topic_binding(source, session_entry, reason=reason)
+            if not self._is_telegram_topic_lane(source):
+                return True
+            try:
+                self._record_telegram_topic_binding(source, session_entry)
+            except ValueError:
+                raise
+            except Exception:
+                logger.warning("telegram topic binding refresh failed (%s)", reason, exc_info=True)
             return True
 
     async def _handoff_repoint_with_topic_binding(self, dest, session_key: str, cli_session_id: str) -> None:
@@ -247,10 +257,19 @@ class GatewayTopicThreadsMixin:
         on the next turn; the binding moves with the route, as /resume moves it, and only while the
         route still names the handoff. Raises when a /new, /resume or /branch --here moved the topic
         meanwhile: the synthetic turn would load the handoff's history into that newer conversation,
-        and failing keeps the CLI session."""
+        and failing keeps the CLI session. Refused up front, as /resume refuses it, when the session
+        is already bound to another topic."""
+        from gateway.session_route_recovery import conversation_head
+        _authority, _local_owner, head = await conversation_head(self, cli_session_id)
+        conflict = await self._telegram_topic_switch_conflict(dest.source, head)
+        if conflict is not None:
+            raise RuntimeError(conflict)
         with self._telegram_topic_publication(dest.source):
             entry = await self._handoff_repoint(dest, session_key, cli_session_id)
-            holds = await self._follow_telegram_topic_switch(dest.source, entry, reason="handoff")
+            try:
+                holds = await self._follow_telegram_topic_switch(dest.source, entry, reason="handoff")
+            except ValueError as exc:  # bound elsewhere after the check above
+                raise RuntimeError(t("gateway.topic.already_linked")) from exc
         if not holds:
             raise RuntimeError("the destination topic switched to another session during the handoff")
 

@@ -45,7 +45,7 @@ def local_backend(tmp_path, monkeypatch):
             yield
 
     def foreign_tenant(agent):
-        return bind_state(Scope("acme", str(homes[agent]), Principal("u"), owner=Group("g"), role="member"))
+        return bind_state(Scope("acme", str(homes[agent]), Principal("u"), owner=Group("g"), can_administer=False))
 
     @contextmanager
     def contend(agent, takeover):

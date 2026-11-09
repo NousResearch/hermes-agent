@@ -8,3 +8,40 @@ Importing it once here, before any window opens, keeps boot out of the mocked im
 """
 
 import hermes_bootstrap
+
+import threading
+import time
+
+import pytest
+
+from tests.waiting import DEFAULT_TIMEOUT
+
+
+_TURN_WORKER_PREFIXES = ("prompt-submit-", "prompt-turn-")
+
+
+@pytest.fixture(autouse=True)
+def _join_leaked_turn_workers(monkeypatch):
+    """Join the turn workers a test's prompt.submit started, before its patches undo.
+
+    prompt.submit returns while its worker (``prompt-submit-<sid>``, which then
+    starts ``prompt-turn-<sid>``) is still running. Unjoined, a worker finishes
+    in a LATER test and emits message.start/complete through that test's
+    patched ``_emit`` (seen as a stray ``row-id-trunc-sid`` message.complete in
+    test_notification_poller_live_loop_requeues_foreign_completion_for_owner
+    under load). Depending on ``monkeypatch`` makes this teardown run first, so
+    the worker ends against the fakes of the test that started it.
+    """
+    yield
+    deadline = time.monotonic() + DEFAULT_TIMEOUT
+    while workers := [
+        t
+        for t in threading.enumerate()
+        if t.name.startswith(_TURN_WORKER_PREFIXES) and t.is_alive()
+    ]:
+        for thread in workers:
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if time.monotonic() >= deadline:
+            pytest.fail(
+                f"turn workers still running at teardown: {[t.name for t in workers]}"
+            )

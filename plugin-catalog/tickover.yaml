@@ -1,0 +1,35 @@
+name: tickover
+repo: https://github.com/rapha18th/tickover
+sha: 9625e4ddd2857594b8fc3301881a1f9778bda727
+version: "0.3.0"
+description: "Ears for Hermes. Hermes can switch things on; Tickover lets it hear whether they started. tickover_verify listens before and after any action (a relay, a smart plug, a shell command, a robot move) and returns confirmed, no_change, other_change or unclear, with the level change in dB and a card. It needs no setup and no baseline. tickover_hear says what a sound is and whether the recording is usable. tickover_enroll and tickover_check remember a machine from three healthy recordings and report drift in robust sigmas with the frequency band that moved. tickover_watch puts a machine on a Hermes cron schedule, with a person sending voice notes or unattended from a stream or a recorder folder. tickover_fleet shows every machine on one card. tickover_teach (experimental) learns named states from a few recordings. tickover_selftest proves the install with synthetic sound. Training-free: frozen CED-base and EfficientAT mn10 encoders in onnxruntime, about 0.6 s per check on CPU. Benchmarks with their limits are in the README. Disclosure: first use downloads CED-base (87 MB, Apache-2.0) from huggingface.co/mispeech/ced-base at a pinned commit and verifies its sha256; the 12 MB mn10 ONNX graph ships in the repo, pinned by sha256, with the script that rebuilds it. Audio is processed locally and never uploaded. The microphone opens only during tickover_listen and a microphone tickover_verify (optional sounddevice). A source given as an rtsp:// or http:// URL is read from that URL and nowhere else. Baselines and history live in plugin-data/tickover. ffmpeg, bundled through imageio-ffmpeg, runs as a subprocess to decode audio, video and streams. Two hooks (pre_gateway_dispatch, pre_llm_call) note audio files that arrive in chat so the agent can find them; they never block a message. No credentials, no telemetry."
+maintainer: rapha18th
+tier: community
+category: tools
+title: Tickover
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/rapha18th/tickover/blob/9625e4ddd2857594b8fc3301881a1f9778bda727/README.md
+readme: true
+platforms: []
+image: https://raw.githubusercontent.com/rapha18th/tickover/9625e4ddd2857594b8fc3301881a1f9778bda727/docs/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/rapha18th/tickover/9625e4ddd2857594b8fc3301881a1f9778bda727/docs/screenshots/desktop-verify.png
+  - https://raw.githubusercontent.com/rapha18th/tickover/9625e4ddd2857594b8fc3301881a1f9778bda727/docs/screenshots/card-verify.png
+  - https://raw.githubusercontent.com/rapha18th/tickover/9625e4ddd2857594b8fc3301881a1f9778bda727/docs/screenshots/card-verify-nochange.png
+capabilities:
+  provides_tools:
+    - tickover_hear
+    - tickover_verify
+    - tickover_enroll
+    - tickover_check
+    - tickover_teach
+    - tickover_watch
+    - tickover_checkin
+    - tickover_fleet
+    - tickover_listen
+    - tickover_selftest
+  provides_hooks:
+    - pre_gateway_dispatch
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

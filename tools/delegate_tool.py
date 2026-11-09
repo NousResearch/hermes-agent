@@ -391,6 +391,7 @@ def _run_single_child(
 
     * ``"completed"``       — normal finish. See #97655.
     """
+    from tools.delegate_tool_dispatch import surface_uncollected  # sub-helpers a steer detached and nobody collected
     child_progress_cb = getattr(child, "tool_progress_callback", None)
     child_pool, leased_cred_id = _lease_child_credential(child)
     # Heartbeat keeps the parent's _last_activity_ts moving so the gateway inactivity timeout doesn't fire while the
@@ -412,7 +413,7 @@ def _run_single_child(
         run.seed_workspace()
         result, failure_entry, _child_close_deferred = run.await_child()
         if failure_entry is not None:
-            return failure_entry
+            return surface_uncollected(child, failure_entry)
 
         schema = _validate_child_output_schema(child, result, task_index, run.child_task_id, run.relay_text)
         _merge_late_steer(result, _subagent_id, child)
@@ -425,6 +426,7 @@ def _run_single_child(
         entry = _build_result_entry(child, result, task_index, duration, schema)
         run.append_sibling_write_reminder(entry)
         run.account_background_processes(entry)
+        surface_uncollected(child, entry)
         run.emit_complete(result, entry, duration)
         return run.attach_worktree(entry)
     except Exception as exc:
@@ -433,7 +435,7 @@ def _run_single_child(
         logging.exception(f"[subagent-{task_index}] failed")
         # Entry status "error" (contract), progress event status "failed" (UI vocabulary).
         return run.finish_failed(
-            _fabricated_entry(task_index, "error", str(exc), child, run.elapsed()), _late_pending_steer,
+            surface_uncollected(child, _fabricated_entry(task_index, "error", str(exc), child, run.elapsed())), _late_pending_steer,
             preview=str(exc), summary=str(exc), status="failed",
         )
     finally:
@@ -580,8 +582,11 @@ def delegate_task(
     normalized_action = (action or "").strip().lower()
     if normalized_action in _CONTROL_ACTIONS:
         return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
+    if normalized_action == "wait":
+        from tools.delegate_tool_dispatch import wait_for_detached
+        return wait_for_detached(parent_agent)
     if normalized_action and normalized_action != "spawn":
-        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
+        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, stop, or wait.")
 
     # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
     if is_spawn_paused():
@@ -856,9 +861,10 @@ DELEGATE_TASK_SCHEMA = {
                 "'list' = ids/goals/status/transcripts; 'steer' = queue "
                 "course-correction text into one child (subagent_id + "
                 "message) without stopping it; 'stop' = end one child "
-                "early (subagent_id; partial result still returns). "
-                "Control actions return immediately; goal/tasks are ignored unless spawning.",
-                enum=["spawn", "list", "steer", "stop"],
+                "early (subagent_id; partial result still returns); 'wait' = "
+                "rejoin sub-helpers a steer left running (see its note). "
+                "list/steer/stop return immediately; goal/tasks are ignored unless spawning.",
+                enum=["spawn", "list", "steer", "stop", "wait"],
             ),
             "subagent_id": _p("string", "Target for action='steer'/'stop' (ids from the spawn response or action='list')."),
             "message": _p(

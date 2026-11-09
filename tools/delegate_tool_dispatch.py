@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
 from dataclasses import dataclass, field, replace
@@ -22,6 +23,7 @@ from tools.delegate_tool_progress import (
 )
 from tools.delegate_tool_registry import _capture_gateway_steer_authority
 from tools.delegate_tool_results import _finalize_child_results
+from tools.registry import tool_error
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -136,11 +138,21 @@ def _run_gated(batch: _Batch, gate: Any, honor_parent_interrupt: bool, i: int, t
     _release_unstarted_child(batch, child)
     return _fabricated_entry(i, "interrupted", "Stopped while waiting for the batch's shared prompt cache", child)
 
-def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interrupt: bool) -> None:
+def _future_entry(future, idx: int, child: Any) -> dict[str, Any]:
+    if not future.done():
+        return _fabricated_entry(idx, "interrupted", "Parent agent interrupted — child did not finish in time", child)
+    try:
+        return future.result()
+    except Exception as exc:  # health: allow BLE001 -- a child run's exception IS its error entry (moved from the join)
+        return _fabricated_entry(idx, "error", str(exc), child)
+
+def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interrupt: bool) -> Optional[_Detached]:
     """Run the batch's children in parallel, appending entries to ``results`` (sorted by task_index on return, one
     completion line printed per child). Polls futures with a short ``wait()`` timeout instead of ``as_completed()``
     so a wedged child cannot block the parent forever after an interrupt; on parent interrupt the still-pending
-    children are reported ``interrupted`` and abandoned (they already got the interrupt signal)."""
+    children are reported ``interrupted`` and abandoned (they already got the interrupt signal). A helper below the
+    top level also stops waiting when a steer reaches it: the still-running children are returned as ``_Detached``
+    (not stopped) for ``action='wait'`` to collect."""
     # Daemon workers (tools.daemon_pool): the `with` block still joins normally, but if the parent is interrupted
     # while a child is wedged, the abandoned worker must not block interpreter exit.
     from tools.daemon_pool import DaemonThreadPoolExecutor
@@ -153,21 +165,15 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
     n_here = len(batch.children)  # a per-group unit runs a subset; ``n_tasks`` keeps the call-wide ``i/N`` slot
 
     def _entry_of(future, idx):
-        if not future.done():
-            return _fabricated_entry(
-                idx, "interrupted", "Parent agent interrupted — child did not finish in time", _child_by_index.get(idx),
-            )
-        try:
-            return future.result()
-        except Exception as exc:
-            return _fabricated_entry(idx, "error", str(exc), _child_by_index.get(idx))
+        return _future_entry(future, idx, _child_by_index.get(idx))
 
     executor = DaemonThreadPoolExecutor(max_workers=batch.max_children)
     # ``with`` would join every worker on exit, so a child wedged in an
     # uninterruptible call defeats the interrupt fast-path: the poll loop marks
     # it interrupted and returns, then the join hangs forever. Shutdown without
     # waiting on the interrupt path instead (same shape as moa_loop).
-    interrupted, futures = False, {}
+    interrupted, futures, detached = False, {}, None
+    mark = _steer_mark(parent_agent) if honor_parent_interrupt else None
     try:
         from tools.delegate_tool_config import _get_prefix_stagger_seconds
         from tools.delegate_tool_prefix_gate import PrefixCacheGate
@@ -176,9 +182,13 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
         futures = {executor.submit(contextvars.copy_context().run, run, i, t, child): i for i, t, child in batch.children}
         pending = set(futures)
         while pending:
-            if honor_parent_interrupt and getattr(parent_agent, "_interrupt_requested", False) is True:
+            # n_here == 1 only on the steerable path: a lone child keeps the in-thread contract (wait for its result).
+            if honor_parent_interrupt and n_here > 1 and getattr(parent_agent, "_interrupt_requested", False) is True:
                 results.extend(_entry_of(f, futures[f]) for f in pending)
                 interrupted = True
+                break
+            if _steer_arrived(parent_agent, mark):
+                detached = _Detached(replace(batch, refused=[]), {f: futures[f] for f in pending})
                 break
             done, pending = _cf_wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
             for future in done:
@@ -186,7 +196,8 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
                 results.append(entry)
                 # Detached unit: a crash before the join must not lose children that already finished.
                 _record_finished_child(batch, entry, honor_parent_interrupt)
-                _report_child_done(parent_agent, spinner_ref, entry, _tag, task_labels, n_tasks, n_here - len(results))
+                if n_tasks > 1:
+                    _report_child_done(parent_agent, spinner_ref, entry, _tag, task_labels, n_tasks, n_here - len(results))
                 if (not honor_parent_interrupt and batch.unit_id and entry.get("status") in SUBAGENT_FAILURE_STATUSES
                         and len(results) < n_here):
                     # Detached unit, a sibling is still running: tell the parent NOW, not when the last one finishes.
@@ -200,27 +211,39 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
     finally:
         # Abandoned workers unwind on their own (daemon threads, and the
         # child-run layer already applies the deferred-close transport drain).
-        executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
+        executor.shutdown(wait=not interrupted and detached is None, cancel_futures=interrupted)
         for future, idx in futures.items() if interrupted else ():
             if future.cancelled():  # queued behind max_concurrent_children: never started, so never cleaned up
                 _release_unstarted_child(batch, _child_by_index.get(idx))
     results.sort(key=lambda r: r["task_index"])  # match input order
+    return detached
 
 def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True) -> dict:
     """Run the batch's built children, join, finalize (hooks + cost rollup), return the combined dict. Shared by the
     sync path and the background runner; a background runner receives a per-group unit (a subset of the call's
     children) so each group JOINS only on itself. Live transcripts are finalized but retained as the full-fidelity
     record (retention pruning happens on future dispatches)."""
-    from tools.delegation_live_log import update_manifest_statuses
     results: list = []
-    if len(batch.children) == 1:
+    detached = None
+    if len(batch.children) == 1 and not (honor_parent_interrupt and _steer_mark(batch.parent_agent) is not None):
         results.append(batch.run_child(*batch.children[0]))
         # A one-child unit has no join to wait on, but everything after the child returns — host-owned finalize,
         # transcript, manifest, then the durable write — is still owner-lifetime: record before any of it (#116000).
         _record_finished_child(batch, results[-1], honor_parent_interrupt)
     else:
-        _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
+        detached = _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
+    # A detached batch is not complete until ``wait``/``surface_uncollected`` settles its last child.
+    combined = _aggregate(batch, results, background=not honor_parent_interrupt, completed=detached is None)
+    if detached is not None:
+        with _DETACHED_LOCK:
+            vars(batch.parent_agent).setdefault("_detached_joins", []).append(detached)
+        combined.update(_still_running(detached), note=_STEER_NOTE)
+    return combined
 
+def _aggregate(batch: _Batch, results: list, *, background: bool = False, completed: bool = True) -> dict:
+    """Finalize ``results`` (all or some of the batch's children) and build the combined result dict
+    (``completed=False``: children of the batch still run, so the live manifest stays open)."""
+    from tools.delegation_live_log import update_manifest_statuses
     _finalize_child_results(results, batch.task_list, batch.children, batch.parent_agent)
     total_duration = round(time.monotonic() - batch.overall_start, 2)
     for entry in results:
@@ -233,8 +256,8 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     if batch.refused:
         results.extend(batch.refused)
         results.sort(key=lambda r: r["task_index"])
-    update_manifest_statuses(batch.live_deleg_id, results, home=batch.live_home)
-    finish_delegation_unit(batch.task_list, results, background=not honor_parent_interrupt)
+    update_manifest_statuses(batch.live_deleg_id, results, home=batch.live_home, completed=completed)
+    finish_delegation_unit(batch.task_list, results, background=background)
 
     combined: dict[str, Any] = {"results": results, "total_duration_seconds": total_duration}
     # The desktop delegate card joins live subagent state by this id; without it
@@ -252,6 +275,118 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     if batch.group is not None:
         combined["group"] = batch.group
     return combined
+
+# ── Steer-interruptible joins: a helper below the top level joins its sub-helpers inside its delegate_task call. ──
+_STEER_NOTE = (
+    "A steer arrived; your sub-helpers are still running. Read the steer, optionally steer/stop them, then call "
+    "delegate_task(action=\"wait\") to collect their results.")
+_DETACHED_LOCK = threading.Lock()
+
+@dataclass
+class _Detached:
+    """Children of one joined batch still running after a steer ended the join (``action='wait'`` collects them)."""
+    batch: _Batch
+    pending: dict  # future -> task_index
+
+def _steer_mark(parent_agent: Any) -> Optional[str]:
+    """Steer text already queued when a join starts (it lands when the call returns anyway), or None when a steer
+    must not end the join: the top level, whose joined variants (one-shot, gateway inline) have no ``wait``."""
+    depth = getattr(parent_agent, "_delegate_depth", 0)
+    if not (isinstance(depth, int) and depth > 0):
+        return None
+    pending = getattr(parent_agent, "_pending_steer", None)
+    return pending if isinstance(pending, str) else ""
+
+def _steer_arrived(parent_agent: Any, mark: Optional[str]) -> bool:
+    pending = getattr(parent_agent, "_pending_steer", None)
+    return mark is not None and isinstance(pending, str) and bool(pending.strip()) and pending != mark
+
+def _still_running(d: _Detached) -> dict:
+    by_index = {i: (t, c) for i, t, c in d.batch.children}
+    running = [{"subagent_id": getattr(by_index[i][1], "_subagent_id", None), "task_index": i,
+                "goal": by_index[i][0]["goal"], **({"group": by_index[i][0]["group"]} if by_index[i][0].get("group")
+                                                     else {})} for i in sorted(d.pending.values())]
+    out: dict = {"still_running": running}
+    if any("group" in r for r in running):
+        out["still_running_by_group"] = {}
+        for r in running:
+            out["still_running_by_group"].setdefault(r.get("group") or "", []).append(r["subagent_id"])
+    return out
+
+def _settle_detached(d: _Detached, *, collect_all: bool, stop_reason: Optional[str] = None) -> dict:
+    """Aggregate the finished children of ``d`` (with ``collect_all`` also the running ones: cancelled if queued,
+    else stopped with ``stop_reason`` when given), drop them from ``d.pending``."""
+    child_of = {i: c for i, _, c in d.batch.children}
+    results = []
+    for future, idx in list(d.pending.items()):
+        if not (future.done() or collect_all):
+            continue
+        del d.pending[future]
+        stopped = bool(stop_reason) and not future.done()
+        if future.cancel():
+            _release_unstarted_child(d.batch, child_of.get(idx))
+        elif stopped:
+            _signal_child_stop(child_of.get(idx), stop_reason)
+        entry = _future_entry(future, idx, child_of.get(idx))
+        if stopped and entry.get("summary") is None:
+            entry["error"] = stop_reason
+        results.append(entry)
+    results.sort(key=lambda r: r["task_index"])
+    combined = _aggregate(d.batch, results, completed=not d.pending) if results else {"results": []}
+    if d.pending:
+        combined.update(_still_running(d))
+    return combined
+
+def wait_for_detached(parent_agent: Any) -> str:
+    """``delegate_task(action='wait')``: block until every sub-helper a steer detached from this helper's joins has
+    finished, another steer arrives (early return, same shape), or the helper is interrupted (still-running children
+    reported ``interrupted``, as a join reports them)."""
+    with _DETACHED_LOCK:
+        joins = list(vars(parent_agent).get("_detached_joins") or ())
+    if not joins:
+        return tool_error("Nothing to wait for: action='wait' collects sub-helpers a steer left running after an "
+                          "earlier delegate_task call returned early, and none are pending.")
+    mark, status = _steer_mark(parent_agent), "completed"
+    while True:
+        live = [f for d in joins for f in d.pending if not f.done()]
+        if not live:
+            break
+        if getattr(parent_agent, "_interrupt_requested", False) is True:
+            status = "interrupted"
+            break
+        if _steer_arrived(parent_agent, mark):
+            status = "steered"
+            break
+        _cf_wait(live, timeout=0.5, return_when=FIRST_COMPLETED)
+    batches = [_settle_detached(d, collect_all=status == "interrupted") for d in joins]
+    with _DETACHED_LOCK:
+        vars(parent_agent)["_detached_joins"] = [d for d in vars(parent_agent).get("_detached_joins") or () if d.pending]
+    out: dict = {"action": "wait", "status": status, "batches": batches}
+    if status == "steered":
+        out["note"] = _STEER_NOTE
+    return json.dumps(out, ensure_ascii=False)
+
+def surface_uncollected(helper: Any, entry: dict) -> dict:
+    """A helper that ended its run with detached sub-helpers uncollected: stop the running ones and attach every
+    sub-result to the helper's own entry (``uncollected_sub_results``) so none vanishes silently."""
+    with _DETACHED_LOCK:
+        joins = (getattr(helper, "__dict__", None) or {}).pop("_detached_joins", None)
+    if joins and isinstance(entry, dict):
+        reason = "Stopped: the helper finished before collecting this sub-helper (delegate_task action='wait')."
+        before = _cost_of(helper)
+        entry["uncollected_sub_results"] = [
+            r for d in joins for r in _settle_detached(d, collect_all=True, stop_reason=reason)["results"]]
+        # Settling folded the sub-results' spend into the helper's session cost AFTER ``entry`` captured it.
+        added = _cost_of(helper) - before
+        if added > 0:
+            entry["_child_cost_usd"] = float(entry.get("_child_cost_usd") or 0.0) + added
+            if "cost_usd" in entry:
+                entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
+    return entry
+
+def _cost_of(agent: Any) -> float:
+    cost = getattr(agent, "session_estimated_cost_usd", 0.0)
+    return float(cost) if isinstance(cost, (int, float)) else 0.0
 
 _SYNC_FALLBACK_NOTES = {
     "no_async": (

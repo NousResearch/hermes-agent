@@ -118,6 +118,10 @@ def requeue_drained_steer(agent, steer_text: str) -> None:
         for ticket, _ in parts:
             _steer_fates(agent).pop(ticket, None)
         _set_steer_parts(agent, _steer_parts(agent) + parts)
+    hook = getattr(agent, "_steer_drain_hook", None)  # that drain was not a delivery after all
+    if callable(hook):
+        with contextlib.suppress(Exception):
+            hook([part for _, part in parts], requeued=True)
 
 
 def _ic_codex_method(agent, name: str):
@@ -350,13 +354,7 @@ class InterruptControlMixin:
         if getattr(self, "_executing_tools", False):
             accepted = self.steer(cleaned)
             if accepted:
-                tracker = getattr(self, "_tool_worker_threads", None)
-                tracker_lock = getattr(self, "_tool_worker_threads_lock", None)
-                if tracker is not None and tracker_lock is not None:
-                    with tracker_lock:
-                        worker_tids = list(tracker)
-                    for tid in worker_tids:
-                        _request_yield(tid)
+                self.request_tool_yield()
             return accepted
 
         _model_active = getattr(self, "_model_request_active", None)
@@ -383,6 +381,17 @@ class InterruptControlMixin:
         _ic_abort_active_request(self, "redirect_abort", "Failed to abort request for redirect")
         return True
 
+    def request_tool_yield(self) -> None:
+        """Ask every running tool worker to yield so a queued steer is not parked behind it (shared by
+        ``redirect()`` and ``delegate_task`` subagent steers). Armed under the tracker lock: a pooled worker
+        that exited between a snapshot and the arm would leave the yield on its tid for the next command."""
+        tracker = getattr(self, "_tool_worker_threads", None)
+        tracker_lock = getattr(self, "_tool_worker_threads_lock", None)
+        if tracker is not None and tracker_lock is not None:
+            with tracker_lock:
+                for tid in list(tracker):
+                    _request_yield(tid)
+
     def _has_pending_redirect(self) -> bool:
         """Return whether an active-turn redirect is waiting to be applied."""
         with _ic_lock(self, "_pending_redirect_lock"):
@@ -405,6 +414,10 @@ class InterruptControlMixin:
                 if ticket is not None:
                     _steer_fates(self)[ticket] = True
             self._steer_last_drain = (text, parts)  # requeue_drained_steer restores its tickets
+        hook = getattr(self, "_steer_drain_hook", None)  # delegate_task delivery receipts
+        if parts and callable(hook):
+            with contextlib.suppress(Exception):
+                hook([part for _, part in parts])
         return text
 
     def _drain_leftover_steer(self) -> Optional[str]:

@@ -99,27 +99,26 @@ Notes:
 
 ### Cold-boot pending queue (Optional)
 
-By default the adapter drops server-side pending updates on a cold boot
-(`drop_pending_updates=True` on the first `start_polling`). That fits
-always-on servers: a restart means "clean up," and the queue is treated as
-stale. It does not fit hosts that turn off (a desktop shut down overnight):
-messages sent while the gateway is offline sit in Telegram's Bot API queue,
-and the next boot discards them before Hermes ever sees them — silently, no
-log, no retry.
+Messages sent while the gateway is off (a desktop shut down overnight, a
+restart, an update) wait in Telegram's Bot API queue for up to 24 hours. By
+default the adapter keeps that queue on a cold boot and answers the backlog
+in order once it starts; updates Hermes already handled before the restart
+are skipped by its persisted update receipts, so they are not answered twice.
 
-Set `drop_pending_on_cold_boot: false` to receive that backlog in order on
-startup instead:
+Set `drop_pending_on_cold_boot: true` to discard that backlog on startup
+instead (an always-on server where a restart means "start clean"):
 
 ```yaml
 platforms:
   telegram:
     extra:
-      drop_pending_on_cold_boot: false
+      drop_pending_on_cold_boot: true
 ```
 
 Notes:
 
-- Default is `true`: existing behavior is unchanged unless you opt in.
+- Default is `false`: the backlog is answered. An explicit value in your
+  config is respected either way.
 - Watcher reconnects (brief network outages with the process still alive)
   always preserve the queue regardless of this setting.
 - Conflict recovery (another poller holding the bot's `getUpdates` session)

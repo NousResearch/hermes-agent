@@ -37,15 +37,21 @@ class UpdatePlan:
     current: int = 0
 
 
-def plan_update_all(results: list[Any]) -> UpdatePlan:
-    """Split ``run_checks`` rows into the plugins ``update`` can move and the ones it cannot (with why)."""
+def plan_update_all(results: list[Any], installs: dict | None = None) -> UpdatePlan:
+    """Split ``run_checks`` rows into the plugins ``update`` can move and the ones it cannot (with why).
+    *installs* (the install records the check ran against) lets a catalog install held with ``--ref``
+    be skipped: only naming it (``hermes plugins update <name>``) moves it."""
+    from hermes_cli.plugins_auto_update import HELD_WITH_REF, held_with_ref
     from hermes_cli.plugins_updates import held_for_newer_hermes
     plan = UpdatePlan()
+    installs = installs or {}
     for row in results:
         if row.needs_fixing:
             plan.skipped.append((row, f"needs fixing: {row.needs_fixing}"))
         elif row.update_available is True and (held := held_for_newer_hermes(row)):
             plan.skipped.append((row, f"update available after updating Hermes ({held})"))
+        elif row.update_available is True and held_with_ref(installs.get(row.name)):
+            plan.skipped.append((row, HELD_WITH_REF.format(name=row.name)))
         elif row.update_available is True and row.klass in _UPDATE_KIND:
             plan.movable.append(row)
         elif row.update_available is True:
@@ -115,7 +121,10 @@ def cmd_update_all(*, yes: bool = False) -> None:
 
     console = _pc()._console()
     console.print("[dim]Checking installed plugins for updates...[/dim]")
-    plan = plan_update_all(run_checks(_pc()._plugins_dir()))
+    from hermes_cli.plugins_cadence import snapshot_installs
+    plugins_dir = _pc()._plugins_dir()
+    checked = snapshot_installs(plugins_dir)
+    plan = plan_update_all(run_checks(plugins_dir), checked)
     if not plan.movable:
         for row, reason in plan.skipped:
             console.print(f"  [dim]skipped {escape(row.name)} ({row.klass}): {escape(reason)}[/dim]")

@@ -138,7 +138,8 @@ class TestSetupLogging:
     @pytest.mark.parametrize("launch_redacts, routed_opt_out, routed_redacted", [
         (False, None, True),      # the launch profile opted out, the routed one did not
         (True, "env", False),     # the routed profile opted out in its own .env
-    ], ids=["launch-opt-out", "routed-env-opt-out"])
+        (True, "config", False),  # the routed profile opted out in its config
+    ], ids=["launch-opt-out", "routed-env-opt-out", "routed-config-opt-out"])
     def test_routed_records_follow_their_own_profiles_redaction_policy(
             self, hermes_home, tmp_path, monkeypatch, launch_redacts, routed_opt_out, routed_redacted):
         """The listener thread formats every record after its profile scope is gone, so a routed profile's own
@@ -147,7 +148,8 @@ class TestSetupLogging:
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         monkeypatch.setattr(redact, "_REDACT_ENABLED", launch_redacts)
-        monkeypatch.setattr(redact, "_REDACT_ENABLED_BY_HOME", {})
+        monkeypatch.setattr(redact, "_ENV_POLICY_BY_HOME", {})
+        monkeypatch.setattr(redact, "_CONFIG_POLICY_BY_HOME", {})
         routed = tmp_path / "profile-b"
         routed.mkdir()
         if routed_opt_out == "config":

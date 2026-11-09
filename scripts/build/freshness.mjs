@@ -6,6 +6,8 @@ import { parseArgs } from 'node:util'
 import { isMain } from './frontend-common.mjs'
 
 const receiptName = 'hermes-build.json'
+// What `hermes update` leaves in a product it could not rebuild (STALE_MARKER in hermes_cli/webapp.py).
+const staleMarker = '.hermes-stale'
 const workspaces = { tui: 'ui-tui', web: 'web', desktop: 'apps/desktop' }
 // Another product's output under a workspace is never this product's input.
 const generated = new Set(['node_modules', 'dist', 'dist-webapp', 'build', 'release', '.cache', '.git', 'coverage', 'test-results', 'playwright-report'])
@@ -27,7 +29,7 @@ const tuiInputs = [
   ...['ui-tui', 'ui-tui/packages/hermes-ink', 'apps/shared'].flatMap(root => [
     `${root}/src`, `${root}/package.json`, `${root}/tsconfig.json`,
   ]),
-  'tsconfig.json', 'package.json', 'package-lock.json', '.npmrc', 'pm/lock.json',
+  'tsconfig.json', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', 'pm/lock.json',
   'scripts/build/tui.mjs', 'scripts/build/frontend-common.mjs', 'scripts/build/freshness.mjs',
   'ui-tui/scripts/gateway_bootstrap.py', 'ui-tui/scripts/clipboard_image.py',
 ]
@@ -35,7 +37,7 @@ const tuiInputs = [
 // The browser renderer compiles Desktop and its shared package in a prepared
 // workspace. Release metadata (pyproject.toml, uv.lock, icons) is not its input.
 const webappInputs = [
-  'apps/desktop', 'apps/shared', 'package.json', 'package-lock.json', '.npmrc', 'pm/lock.json',
+  'apps/desktop', 'apps/shared', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', 'pm/lock.json',
   'scripts/build/webapp.mjs', 'scripts/build/node-deps.mjs', 'scripts/build/frontend-common.mjs',
   'scripts/build/freshness.mjs',
 ]
@@ -46,7 +48,7 @@ function productInputs(product) {
   const workspace = workspaces[product]
   if (!workspace) throw new Error(`Unknown frontend product: ${product}`)
   return [
-    workspace, 'apps/shared', 'package.json', 'package-lock.json', '.npmrc', 'pm/lock.json',
+    workspace, 'apps/shared', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', 'pm/lock.json',
     'scripts/build',
     'scripts/generate-icons.mjs', 'scripts/generate_icons.py',
     // The root install-stamp.json is runtime identity rewritten after every install; desktop's
@@ -102,10 +104,10 @@ export function sourceEntries(source, product) {
   return entries
 }
 
-function outputHash(out) {
+function outputHash(out, ignored = []) {
   // Native binaries can be signed after compilation. Their ABI validation is
   // owned by native preparation; renderer/main/preload bytes must stay intact.
-  return treeHash(out, readdirSync(out).sort(), name => name === receiptName || name === '.hermes-product',
+  return treeHash(out, readdirSync(out).sort(), name => name === receiptName || name === '.hermes-product' || ignored.includes(name),
     name => !name.split('/').includes('node_modules') && !name.startsWith('native/'))
 }
 
@@ -199,6 +201,16 @@ export function recordProduct({ source, product, out, inputs, stampClock }) {
     schema: 1, product, platform: process.platform, arch: process.arch, node: process.versions.node,
     inputs, stampClock, outputHash: outputHash(out),
   }) + '\n')
+}
+
+/** Validate output bytes against their receipt, independently of current inputs or host, and of
+ *  the marker ``hermes update`` leaves in a product it could not rebuild (hermes_cli/webapp.py),
+ *  which still fails productCurrent. */
+export function outputIntact(out, product) {
+  try {
+    const saved = JSON.parse(readFileSync(join(out, receiptName), 'utf8'))
+    return saved.schema === 1 && saved.product === product && saved.outputHash === outputHash(out, [staleMarker])
+  } catch { return false }
 }
 
 /** The receipt in ``out`` when it was written for ``product`` by this platform, arch and Node. */

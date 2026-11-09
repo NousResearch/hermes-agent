@@ -26,6 +26,7 @@ import {
   glassSupportedOn,
   glassSurfaceKeep,
   hudFrostFor,
+  nativeOpacityFor,
   normalizeBook,
   normalizeMaterial,
   normalizeMode,
@@ -512,6 +513,40 @@ describe('windowOpacityOptions', () => {
 
       expect(windowOpacityOptions(state), appearance).toStrictEqual({})
     }
+  })
+})
+
+// Linux gets the same 29% Clear default macOS does (`defaultTranslucencyValues`
+// only distinguishes Windows), and `translucencySupportedOn` keeps the Settings
+// row away on the strength of Electron documenting `setOpacity` as a no-op
+// there. On Linux it is not a no-op on either backend: the X11 window carries
+// the value as `_NET_WM_WINDOW_OPACITY` and a native Wayland surface composites
+// the fade into the frame, so the window renders faded forever, with the only
+// control that could undo it hidden. So the value has to be gated where it
+// reaches the window, not only where the row is drawn.
+describe('nativeOpacityFor', () => {
+  it('leaves a platform without translucency fully opaque', () => {
+    expect(nativeOpacityFor(clear(29), false)).toBe(1)
+    expect(nativeOpacityFor(clear(100), false)).toBe(1)
+    expect(nativeOpacityFor(glass(60, DEFAULT_GLASS_MATERIAL, 40), false)).toBe(1)
+  })
+
+  it('answers the ramp unchanged where translucency is supported', () => {
+    for (const state of [clear(0), clear(29), clear(100)]) {
+      expect(nativeOpacityFor(state, true)).toBe(windowOpacityFor(state))
+    }
+  })
+
+  // A window that already carries a faded opacity — an upgrade from a build
+  // that set it, or a profile imported from macOS — still has to be handed the
+  // opaque value, or it stays faded for the rest of the session.
+  it('has something to say to a window that is already faded', () => {
+    expect(opacityNeedsSetting(nativeOpacityFor(clear(29), false), 0.9372)).toBe(true)
+  })
+
+  it('keeps the constructor option off an unsupported platform', () => {
+    expect(windowOpacityOptions(clear(29), false)).toStrictEqual({})
+    expect(windowOpacityOptions(clear(100), false)).toStrictEqual({})
   })
 })
 

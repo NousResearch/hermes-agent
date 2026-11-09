@@ -20,6 +20,7 @@ import os
 import shutil
 import subprocess
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -454,6 +455,10 @@ def _killed_update_receipt() -> None:
     update_receipt.begin_update_receipt()
     current = update_receipt._current.get()
     current.data.update(pid=dead.pid, pid_create_time=None, writer_pid=dead.pid, writer_create_time=None)
+    # A killed run started well before its git took the lock. Same-instant would be a coin flip: the
+    # lock's mtime comes from the kernel's coarse clock, up to a tick BEHIND this precise started_at.
+    started = datetime.fromisoformat(current.data["started_at"]) - timedelta(seconds=5)
+    current.data["started_at"] = started.isoformat()
     payload = (json.dumps(current.data) + "\n").encode("utf-8")
     for stale in update_receipt._receipt_dir().glob(f"update_*_{current.data['update_id']}.json"):
         stale.unlink()  # the run's own archive, as its dead process last wrote it
@@ -523,7 +528,7 @@ def test_a_killed_updates_lock_stays_while_any_git_works_in_the_checkout(repo: P
         if not released:  # name which leg kept it: owner proof, an unreadable process, or a holder
             from hermes_cli import _early_recovery as er
             from hermes_cli.gitlock import _killed_update_owns
-            why = {"killed_update_owns": _killed_update_owns(lock),
+            why = {"lock_exists": lock.exists(), "killed_update_owns": _killed_update_owns(lock),
                    "held_open": er._held_open(lock, repo, any_git=True)}
         assert released is True, f"once the checkout's git is gone the killed update's lock goes: {why}"
 
@@ -618,13 +623,156 @@ def test_a_failed_retry_never_erases_the_killed_updates_claim(repo: Path) -> Non
     from hermes_cli.gitlock import release_dead_index_lock
 
     lock = repo / ".git" / "index.lock"
-    _killed_update_receipt()
-    time.sleep(0.05)
+    _killed_update_receipt()  # started before the lock, as a real killed run did
     lock.write_bytes(b"")  # the killed run's git took it, then died with it
-    time.sleep(0.05)
+    # No wait before the retry: the lock's coarse mtime never runs AHEAD of the precise clock, so
+    # the retry's started_at is always after it.
     update_receipt.begin_update_receipt()  # the retry: refused on the lock, and finalized failed
     update_receipt.finalize_update_receipt("failed")
     assert update_receipt.read_latest_receipt()["outcome"] == "failed"
 
     assert release_dead_index_lock(repo) is True
     assert not lock.exists()
+
+
+# ---- a killed fetch's ref lock (Windows crash cell mid_fetch: "reference already exists") ----
+
+# Git's own hook: it runs while the fetch holds its ref locks ("prepared") and waits for a release
+# file, so the kill lands inside the ref transaction instead of wherever a timer happens to be.
+_HOLD_IN_REF_TRANSACTION = """#!/bin/sh
+input=$(cat)
+case "$1:$input" in
+  prepared:*refs/remotes/origin/main*)
+    dir=$(git rev-parse --git-dir)  # once: a git spawned in the loop would be a live git here
+    : > "$dir/held"
+    while [ ! -e "$dir/release" ]; do sleep 0.05; done ;;
+esac
+"""
+
+
+_FETCH = ["git", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "fetch", "origin",
+          "+refs/heads/main:refs/remotes/origin/main"]
+
+
+def _fetch(clone: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(_FETCH, cwd=clone, capture_output=True, text=True, encoding="utf-8", check=False)
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="ownership proof via /proc (Linux)")
+def test_a_killed_fetchs_ref_lock_goes_and_the_next_fetch_lands(repo: Path, tmp_path: Path) -> None:
+    """A fetch killed inside its ref transaction strands ``refs/remotes/origin/main.lock`` and git
+    then refuses every later fetch ("reference already exists"): the next update must drop that
+    lock once its killed run's git is gone, and never while the fetch still runs."""
+    from hermes_cli.gitlock import release_dead_fetch_locks
+
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "branch", "-M", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "clone", "-q", f"file://{repo}", str(clone)], check=True)
+    subprocess.run(["git", "-c", "maintenance.auto=false", "commit", "-q", "--allow-empty", "-m", "next"],
+                   cwd=repo, check=True)
+    git_dir = clone / ".git"
+    hook = git_dir / "hooks" / "reference-transaction"
+    hook.write_text(_HOLD_IN_REF_TRANSACTION, encoding="utf-8")
+    hook.chmod(0o755)
+    lock = git_dir / "refs" / "remotes" / "origin" / "main.lock"
+    _killed_update_receipt()
+    err = tmp_path / "fetch.err"  # a file, not a pipe: the hook inherits it and outlives the killed git
+    with err.open("w", encoding="utf-8") as sink:
+        proc = subprocess.Popen(_FETCH, cwd=clone, stdout=subprocess.DEVNULL, stderr=sink)
+    try:
+        deadline = time.monotonic() + 30
+        while not (git_dir / "held").exists():
+            assert proc.poll() is None and time.monotonic() < deadline, \
+                f"the fetch never reached its ref transaction: {err.read_text(encoding='utf-8')}"
+            time.sleep(0.05)
+        assert lock.exists(), "premise: the held fetch holds its ref lock"
+        assert release_dead_fetch_locks(clone) == [] and lock.exists(), "the reclaim took a live fetch's lock"
+    finally:
+        proc.kill()
+        proc.wait()
+        (git_dir / "release").touch()  # the hook (not a git) exits; the dead fetch's lock stays
+
+    hook.unlink()
+
+    stuck = _fetch(clone)  # git 2.51+: "reference already exists"; older git: "...main.lock': File exists"
+    assert stuck.returncode != 0 and "origin/main" in stuck.stderr, f"premise: {stuck.stderr}"
+    assert release_dead_fetch_locks(clone) == [str(lock)]
+    landed = _fetch(clone)
+    assert landed.returncode == 0, landed.stderr
+    tips = [subprocess.run(["git", "rev-parse", ref], cwd=cwd, capture_output=True, text=True, check=True).stdout
+            for cwd, ref in ((clone, "refs/remotes/origin/main"), (repo, "HEAD"))]
+    assert tips[0] == tips[1]
+
+
+# ---- a killed shallow fetch's shallow.lock (installer checkouts are `--depth 1`) ----
+
+# Upload-pack's pack-objects hook (honored from global config only) runs after the server sent
+# its shallow-info, so the client already holds shallow.lock: the kill lands in the pack transfer.
+_HOLD_IN_PACK_TRANSFER = """#!/bin/sh
+: > "{held}"
+while [ ! -e "{release}" ]; do sleep 0.05; done
+exec "$@"
+"""
+
+
+@pytest.mark.platforms("linux")
+def test_a_killed_shallow_fetchs_shallow_lock_goes_and_the_next_fetch_lands(repo: Path, tmp_path: Path) -> None:
+    """A ``--depth 1`` fetch killed mid-transfer strands ``.git/shallow.lock`` and git refuses every
+    later fetch ("shallow.lock': File exists") until the age sweep: the next update drops it once
+    its killed run's git is gone, never while the fetch still runs."""
+    from tests.waiting import wait_until
+
+    from hermes_cli.gitlock import release_dead_fetch_locks
+
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "branch", "-M", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{repo}", str(clone)], check=True)
+    subprocess.run(["git", "-c", "maintenance.auto=false", "commit", "-q", "--allow-empty", "-m", "next"],
+                   cwd=repo, check=True)
+    held, release = tmp_path / "held", tmp_path / "release"
+    hook = tmp_path / "pack-objects-hook"
+    hook.write_text(_HOLD_IN_PACK_TRANSFER.format(held=held, release=release), encoding="utf-8")
+    hook.chmod(0o755)
+    config = tmp_path / "gitconfig"
+    config.write_text(f"[uploadpack]\n\tpackObjectsHook = {hook}\n", encoding="utf-8")
+    fetch = ["git", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "fetch", "--depth", "1", "origin",
+             "+refs/heads/main:refs/remotes/origin/main"]
+    lock = clone / ".git" / "shallow.lock"
+    _killed_update_receipt()
+    err = tmp_path / "fetch.err"
+    with err.open("w", encoding="utf-8") as sink:
+        proc = subprocess.Popen(fetch, cwd=clone, env={**os.environ, "GIT_CONFIG_GLOBAL": str(config)},
+                                stdout=subprocess.DEVNULL, stderr=sink)
+    try:
+        def reached_pack_transfer() -> bool:
+            assert proc.poll() is None, f"the fetch exited early: {err.read_text(encoding='utf-8')}"
+            return held.exists()
+
+        wait_until(reached_pack_transfer, timeout=30, what="the fetch reaching its pack transfer")
+        assert lock.exists(), "premise: the shallow fetch holds shallow.lock"
+        assert release_dead_fetch_locks(clone) == [] and lock.exists(), "the reclaim took a live fetch's lock"
+    finally:
+        proc.kill()
+        proc.wait()
+        release.touch()  # the server side (working in repo, not the clone) finishes and exits
+
+    stuck = subprocess.run(fetch, cwd=clone, capture_output=True, text=True, encoding="utf-8", check=False)
+    assert stuck.returncode != 0 and "shallow.lock" in stuck.stderr, f"premise: {stuck.stderr}"
+    assert release_dead_fetch_locks(clone) == [str(lock)]
+    landed = subprocess.run(fetch, cwd=clone, capture_output=True, text=True, encoding="utf-8", check=False)
+    assert landed.returncode == 0, landed.stderr
+    tips = [subprocess.run(["git", "rev-parse", ref], cwd=cwd, capture_output=True, text=True, check=True).stdout
+            for cwd, ref in ((clone, "refs/remotes/origin/main"), (repo, "HEAD"))]
+    assert tips[0] == tips[1]
+
+
+@pytest.mark.platforms("linux")
+def test_a_live_hermes_shallow_lock_holder_keeps_its_lock(repo: Path) -> None:
+    """Hermes's own ``_ShallowLock`` holder runs no git between its git calls: the reclaim must
+    still see it (it keeps the lock open), even after a killed update."""
+    from hermes_cli.gitlock import _ShallowLock, release_dead_fetch_locks
+
+    _killed_update_receipt()
+    with _ShallowLock(repo / ".git" / "shallow"):
+        assert release_dead_fetch_locks(repo) == []
+        assert (repo / ".git" / "shallow.lock").exists()

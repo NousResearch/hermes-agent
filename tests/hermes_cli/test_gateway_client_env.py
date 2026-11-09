@@ -114,7 +114,6 @@ def test_tui_launcher_hands_the_shell_env_to_ink(monkeypatch):
     _shell(monkeypatch)
     monkeypatch.setenv('HERMES_PYTHON', sys.executable)
     monkeypatch.setattr(main_mod, '_has_any_provider_configured', lambda: True)
-    monkeypatch.setattr(main_mod, '_oneshot_cleanup_done', False)
     captured = {}
     monkeypatch.setattr(main_tui_launch, '_make_tui_argv', lambda tui_dir, tui_dev: (['node', 'dist/entry.js'], Path('.')))
 

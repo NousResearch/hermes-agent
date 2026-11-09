@@ -544,9 +544,13 @@ def test_external_secret_values_are_isolated_between_homes(tmp_path, monkeypatch
         str(home_b.resolve()): "value-b",
     }
 
-    def _fake_apply_all(_cfg, home_path):
+    # Registered for teardown restore, then removed: the loader publishes the source's write itself.
+    monkeypatch.setenv("SHARED_API_KEY", "unset")
+    monkeypatch.delenv("SHARED_API_KEY")
+
+    def _fake_apply_all(_cfg, home_path, environ=None):
         value = values[str(Path(home_path).resolve())]
-        monkeypatch.setenv("SHARED_API_KEY", value)
+        environ["SHARED_API_KEY"] = value  # startup applies sources into a staging copy
         return ApplyReport(
             # Real apply_all always appends a SourceReport per enabled
             # source; the env_loader guard (#40597) early-returns on an

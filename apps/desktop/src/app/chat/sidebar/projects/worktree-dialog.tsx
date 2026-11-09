@@ -24,6 +24,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { SanitizedInput } from '@/components/ui/sanitized-input'
 import type { HermesGitBranch } from '@/global'
 import { useI18n } from '@/i18n'
+import type { GitOwnerRoute } from '@/lib/desktop-git'
 import { isSubmitEnter } from '@/lib/ime'
 import { gitRef } from '@/lib/sanitize'
 import { notifyError } from '@/store/notifications'
@@ -90,6 +91,8 @@ export function WorktreeDialog() {
   // This component then owns it, so the project picker can change the target
   // and the user does not reopen the dialog.
   const [repoPath, setRepoPath] = useState('')
+  // Set while `repoPath` is another gateway's project: its git and its new session run there.
+  const [owner, setOwner] = useState<GitOwnerRoute | undefined>()
   const [projectOpen, setProjectOpen] = useState(false)
 
   // Every project with a working root is a valid target. The list is deduped by
@@ -117,11 +120,16 @@ export function WorktreeDialog() {
   // name of the BRANCH. Ask which project owns the path instead, then fall back
   // to a path match: two projects can share a folder, and the dedupe above
   // keeps only the first, so the owner's own row can be the one it dropped.
+  // Another gateway's repo is none of this window's projects, even at the same path.
   const activeOption = useMemo(() => {
-    const owner = projectTree.length > 0 ? projectIdForCwd(repoPath) : null
+    if (owner) {
+      return null
+    }
 
-    return projectOptions.find(o => o.id === owner) ?? projectOptions.find(o => o.path === repoPath) ?? null
-  }, [projectOptions, projectTree, repoPath])
+    const ownerId = projectTree.length > 0 ? projectIdForCwd(repoPath) : null
+
+    return projectOptions.find(o => o.id === ownerId) ?? projectOptions.find(o => o.path === repoPath) ?? null
+  }, [owner, projectOptions, projectTree, repoPath])
 
   const activeProjectLabel = activeOption?.label ?? repoPath.split('/').pop() ?? repoPath
 
@@ -134,6 +142,7 @@ export function WorktreeDialog() {
       setConvertMode(false)
       setSelectedBase(state.base ?? '')
       setRepoPath(state.repoPath)
+      setOwner(state.owner)
       setBranches([])
     }
   }, [state])
@@ -152,17 +161,17 @@ export function WorktreeDialog() {
     setBranchesLoading(true)
 
     try {
-      setBranches(await listRepoBranches(repoPath))
+      setBranches(await listRepoBranches(repoPath, owner))
     } catch {
       setBranches([])
     } finally {
       setBranchesLoading(false)
     }
-  }, [repoPath])
+  }, [owner, repoPath])
 
   // Give the new worktree to a fresh session, then close the dialog.
   const started = (path: string) => {
-    requestStartWorkSession(path)
+    requestStartWorkSession(path, undefined, { owner })
     closeWorktreeDialog()
   }
 
@@ -176,7 +185,7 @@ export function WorktreeDialog() {
     setPending(true)
 
     try {
-      const result = await startWorkInRepo(repoPath, { base: selectedBase || undefined, branch, name: branch })
+      const result = await startWorkInRepo(repoPath, { base: selectedBase || undefined, branch, name: branch }, owner)
 
       if (result) {
         started(result.path)
@@ -202,10 +211,10 @@ export function WorktreeDialog() {
       if (branch.worktreePath) {
         result = { branch: branch.name, path: branch.worktreePath }
       } else if (branch.isDefault) {
-        await switchBranchInRepo(repoPath, branch.name)
+        await switchBranchInRepo(repoPath, branch.name, owner)
         result = { branch: branch.name, path: repoPath }
       } else {
-        result = await startWorkInRepo(repoPath, { existingBranch: branch.name })
+        result = await startWorkInRepo(repoPath, { existingBranch: branch.name }, owner)
       }
 
       if (result) {
@@ -268,6 +277,8 @@ export function WorktreeDialog() {
                         key={option.path}
                         onSelect={() => {
                           setRepoPath(option.path)
+                          // The picker lists this window's projects.
+                          setOwner(undefined)
                           // The new repo has its own branches. Drop the old
                           // list and the old base, so nothing stale stays.
                           setBranches([])
@@ -340,8 +351,9 @@ export function WorktreeDialog() {
               disabled={pending}
               // Remount on a repo change, so the picker loads the branches of
               // the new repo and does not show those of the previous project.
-              key={repoPath}
+              key={`${owner?.connectionId ?? ''}:${repoPath}`}
               onValueChange={setSelectedBase}
+              owner={owner}
               repoPath={repoPath}
               value={selectedBase}
             />

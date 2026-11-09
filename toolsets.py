@@ -41,7 +41,6 @@ _FEISHU_TOOLS = [
     "feishu_doc_read", "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
     "feishu_drive_reply_comment", "feishu_drive_add_comment",
 ]
-_YUANBAO_TOOLS = ["yb_query_group_info", "yb_query_group_members", "yb_send_dm", "yb_search_sticker", "yb_send_sticker"]
 
 
 def _ts(description, tools=(), includes=(), **extra):
@@ -163,7 +162,6 @@ TOOLSETS = {
     ),
     "discord": _ts("Discord read and participate tools (fetch messages, search members, create threads)", ["discord"]),
     "discord_admin": _ts("Discord server management (list channels/roles, pin messages, assign roles)", ["discord_admin"]),
-    "yuanbao": _ts("Yuanbao platform tools - group info, member queries, DM, stickers", _YUANBAO_TOOLS),
     "feishu_doc": _ts("Read Feishu/Lark document content", ["feishu_doc_read"]),
     "feishu_drive": _ts("Feishu/Lark document comment operations (list, reply, add)", _FEISHU_TOOLS[1:]),
 
@@ -219,12 +217,6 @@ TOOLSETS = {
     "hermes-qqbot": _bundle("QQBot toolset - QQ messaging via Official Bot API v2 (full access)"),
     "hermes-wecom": _bundle("WeCom bot toolset - enterprise WeChat messaging (full access)"),
     "hermes-wecom-callback": _bundle("WeCom callback toolset - enterprise self-built app messaging (full access)"),
-    "hermes-yuanbao": {
-        "description": "Yuanbao Bot 元宝消息平台工具集 - 群信息、成员查询、私聊、贴纸表情",
-        "tools": _HERMES_CORE_TOOLS + _YUANBAO_TOOLS,
-        "module": "tools.yuanbao_tools",
-        "includes": [],
-    },
     "hermes-sms": _bundle("SMS bot toolset - interact with Hermes via SMS (Twilio)"),
     "hermes-webhook": _ts("Webhook toolset - receive and process external webhook events", _HERMES_WEBHOOK_SAFE_TOOLS),
     "hermes-gateway": _ts(
@@ -235,7 +227,7 @@ TOOLSETS = {
             "hermes-signal", "hermes-bluebubbles", "hermes-email",
             "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk",
             "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin",
-            "hermes-qqbot", "hermes-webhook", "hermes-yuanbao",
+            "hermes-qqbot", "hermes-webhook",
         ],
     ),
 }
@@ -466,6 +458,12 @@ def session_disabled_toolsets(
     return [*(disabled or ()), *gated] if gated else disabled
 
 
+def tool_selection_key(enabled: Optional[list[str]], disabled: Optional[list[str]]) -> tuple:
+    """The toolset selection a tools[] snapshot was built from, order-free. Recorded next to the registry
+    generation: the tools[] freeze (``tools.mcp_tool_agent``) holds new tools back only while neither moved."""
+    return frozenset(enabled) if enabled is not None else None, frozenset(disabled or ())
+
+
 def agent_tool_drops(agent: Any) -> frozenset:
     """Tool names *agent* never carries, whatever its toolsets resolved to: the side-agent drops and
     the toolsets its session platform does not get. Applied at load, MCP refresh and prefix restore."""
@@ -474,13 +472,15 @@ def agent_tool_drops(agent: Any) -> frozenset:
 
 
 def agent_tool_surface(agent: Any, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """*tools* as *agent* carries them: :func:`agent_tool_drops` removed and, in a one-shot session, the
-    one-shot schema variants (``agent.oneshot_footprint.oneshot_tool_schemas``). Applied to FRESH definitions (load,
-    MCP refresh) before any merge: a pinned or carried entry keeps the bytes already sent."""
+    """*tools* as *agent* carries them: :func:`agent_tool_drops` removed and, in a one-shot session or a gateway
+    session that joins its delegations in the turn (``delegation.gateway_mode``), the joined ``delegate_task``
+    variant (``agent.oneshot_footprint.oneshot_tool_schemas``). Applied to FRESH definitions (load, MCP refresh)
+    before any merge: a pinned or carried entry keeps the bytes already sent."""
     from agent.oneshot_footprint import agent_is_oneshot, oneshot_tool_schemas
+    from tools.delegate_tool_config import agent_joins_delegation
     drops = agent_tool_drops(agent)
     tools = [tool for tool in tools if (tool.get("function") or {}).get("name") not in drops] if drops else list(tools)
-    return oneshot_tool_schemas(tools) if agent_is_oneshot(agent) else tools
+    return oneshot_tool_schemas(tools) if agent_is_oneshot(agent) or agent_joins_delegation(agent) else tools
 
 
 def validate_toolset(name: str) -> bool:

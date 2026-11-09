@@ -1,0 +1,19 @@
+name: seomatic
+title: SEOmatic
+repo: https://github.com/Minh42/seomatic-mcp
+sha: bdc8ca34601e691789e0e340ae2e9fcbd362ce71
+subdir: hermes
+version: "1.2.0"
+description: "SEO agent for your own website through SEOmatic's hosted MCP server (Streamable HTTP at https://app.seomatic.ai/api/mcp, OAuth sign-in, no keys in config): Google Search Console queries and pages, striking-distance keywords, traffic drops, site audits, keyword, backlink and SERP competitor research, AI visibility and AI citations (ChatGPT, Claude, Perplexity, Google AI Overviews), daily local rankings and Google Business Profile, plus site fixes staged in SEOmatic for WordPress, Shopify, Webflow, Wix and other connected sites. Bundles twenty workflow skills (SEO audit, striking distance, traffic drop, CTR fix, cannibalization, content refresh, keyword research, competitor gap, local SEO and more). Agent Plugins v1 package (plugin.json + mcp.json + skills/ in the repo's hermes/ folder), configuration only. Disclosure: every tool call goes to SEOmatic's hosted server (app.seomatic.ai) and acts on the user's own SEOmatic workspace with their role in it; the tool set is served by that server at runtime and is not covered by the pinned sha. Search Console, stored-data and site audit reads are free; live market data (keyword metrics and suggestions, backlinks, SERP competitors, local SERP visibility), fresh AI visibility scans and approved fixes spend SEOmatic AI credits, content generation quotes its estimate and runs only after the user confirms, and generate_article uses one prepaid article unit. Fixes proposed through the tools are staged in SEOmatic; approving, publishing, undoing and rolling back change the user's live site and require an explicit confirm from the user. SEOmatic's own background agents follow the workspace's autonomy mode set in SEOmatic: in Assisted, the default for new workspaces, reversible changes (titles, descriptions, internal links, schema, page text, articles) go live on their own with a one-click undo, while new pages, bulk changes, redirects and removals wait for the user; in Approval mode every change waits. Sign-in runs the pinned mcp-remote@0.15.2 through npx (Node.js 20.18.1+ and npm required), which registers an OAuth client, opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth; without a stored token, an unattended run fails at Hermes's connect timeout instead of hanging. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs. Users who need longer to sign in, or a headless setup, can replace the server with hermes mcp add seomatic --url https://app.seomatic.ai/api/mcp --auth oauth (or an API key header) and keep the skills."
+maintainer: SEOmatic
+tier: community
+category: tools
+docs_url: https://github.com/Minh42/seomatic-mcp#install-in-hermes-agent
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

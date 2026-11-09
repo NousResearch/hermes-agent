@@ -106,6 +106,10 @@ def _probe(root):
 
     assert ctypes.CDLL(None).prctl(36, 1, 0, 0, 0) == 0  # PR_SET_CHILD_SUBREAPER
     module._SYSTEMD_SCOPE_AVAILABLE = False  # Own the test process tree, not a host service.
+    # This process is the subreaper whose final wait collects every descendant; an idle owner-death
+    # supervisor would hold that wait for its 30 s grace.
+    from hermes_cli import process_identity
+    process_identity._SUPERVISOR_IDLE_EXIT_S = 0.0
     registry = module.ProcessRegistry()
     sessions = []
     command = f"exec {shlex.quote(sys.executable)} {shlex.quote(__file__)}"

@@ -301,6 +301,32 @@ def test_dashboard_page_writes_behind_a_host_rewriting_http_proxy_are_admitted_a
     assert out.status_code == 302, out.text
 
 
+@pytest.mark.parametrize(("origin", "fetch_site"), [
+    ("http://127.0.0.1:8080", "same-site"),
+    ("http://localhost:5173", "same-site"),
+    ("https://evil.example", "cross-site"),
+])
+def test_dashboard_refuses_cookie_writes_the_browser_marks_as_another_pages(
+        proxied_gated_dashboard, origin, fetch_site):
+    """``SameSite=Lax`` still sends the session cookies from a same-site sibling (another local
+    port or a sibling subdomain). The browser's own ``Sec-Fetch-Site`` verdict, which a page
+    cannot set, names such a write: the dashboard refuses it, sign-out included, and keeps the
+    session."""
+    _complete_stub_login(proxied_gated_dashboard)
+    headers = {"Origin": origin, "Sec-Fetch-Site": fetch_site}
+
+    write = proxied_gated_dashboard.post("/api/auth/ws-ticket", headers=headers)
+    assert write.status_code == 403, write.text
+
+    out = proxied_gated_dashboard.post("/auth/logout", headers=headers, follow_redirects=False)
+    assert out.status_code == 403, out.text
+    assert proxied_gated_dashboard.cookies.get(SESSION_AT_COOKIE)
+
+    own_page = proxied_gated_dashboard.post("/api/auth/ws-ticket", headers={
+        "Origin": "https://dash.example.com", "Sec-Fetch-Site": "same-origin"})
+    assert own_page.status_code == 200, own_page.text
+
+
 # A representative spread of the OTHER ``_require_token`` endpoints (there are
 # 14 in total). The install popup was just the reported symptom; the same bug
 # made API-key reveal, provider validation, the OAuth-provider connect flow,

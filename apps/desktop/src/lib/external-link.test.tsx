@@ -335,6 +335,21 @@ describe('external link helpers', () => {
     expect(links.some(a => (a.textContent ?? '').includes('.log'))).toBe(false)
   })
 
+  it('explicitOnly keeps www.-prefixed local filenames literal but links a standalone www. URL', () => {
+    installDesktopBridge()
+
+    render(
+      <LinkifiedText
+        explicitOnly
+        pretty={false}
+        text={'wrote /tmp/www.config and C:\\Users\\test-user\\Documents\\www.config; docs at www.example.com'}
+      />
+    )
+
+    const links = screen.getAllByRole('link')
+    expect(links.map(a => a.getAttribute('href'))).toEqual(['https://www.example.com'])
+  })
+
   it('without explicitOnly, bare filename tokens are still linkified (default behavior)', () => {
     installDesktopBridge()
 

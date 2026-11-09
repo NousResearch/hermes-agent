@@ -275,6 +275,49 @@ setxkbmap -display "$DISPLAY" us 2>/dev/null || true   # RFB keysyms + xdotool a
 xsetroot -display "$DISPLAY" -solid '#1c1f29' 2>/dev/null || true
 xset -display "$DISPLAY" s off -dpms s noblank 2>/dev/null || true
 
+# ---- idle self-stop: the screen outlives the gateway that started it (a restarted gateway re-attaches),
+# so it must also stop itself when no gateway ever comes back. tools/bot_desktop/idle_watch.py applies the
+# gateway watcher's own rule (bot_desktop.idle_stop_minutes; never while a human is using the screen) once per
+# run and prints the seconds until the next check; nothing stays resident in between. runtime.py passes the
+# install's command for it, shell-quoted (the launcher's pid is appended); skipped when it passed none (the
+# sandbox-hosted screen, whose sandbox lifetime bounds it).
+WATCH_PID=
+if [[ -n "${HERMES_BD_IDLE_CMD:-}" ]]; then
+  # A start is use: stamp it now, or an activity file left by an earlier screen could make the first check
+  # stop this one before runtime.py stamps it.
+  touch "$(dirname "$HERMES_BD_ENV_FILE")/activity"
+  # The TERM trap ends this loop at once when the screen goes down (stop()'s group signal or the EXIT trap
+  # below). Both the check and the sleep run in the background and are waited on, because `wait` is
+  # interruptible: a `$(check)` would defer the trap until the check returns, while a check that is itself
+  # stopping the screen waits for this group to empty, so every self-stop would sit out stop()'s grace and
+  # end in SIGKILL with start.lock held. The check is in a session of its own and finishes the stop alone.
+  # Sleep first: a screen just started cannot be idle, so the first check is due a window from now
+  # (runtime.py passes that delay), not while Xfce is still coming up.
+  (
+    # Not under the launcher's `set -e`: a sleep or check killed from outside (a stray pkill, the OOM killer)
+    # makes `wait` fail, and that must cost at most one slow retry, not the self-stop for the rest of the screen's life.
+    set +e
+    sleeper=
+    trap 'kill $sleeper 2>/dev/null; exit 0' TERM
+    out="$(dirname "$HERMES_BD_ENV_FILE")/idle-watch.out"
+    delay="${HERMES_BD_IDLE_FIRST_DELAY:-300}"
+    while :; do
+      [[ "$delay" =~ ^[0-9]+$ ]] || delay=300
+      sleep "$delay" & sleeper=$!
+      # Killed (status > 128): check now. A sleep that cannot sleep at all would spin the check: give up.
+      wait "$sleeper" || (( $? > 128 )) || { echo "idle self-stop: sleep failed; off for this screen" >&2; exit 0; }
+      sleeper=
+      kill -0 "$$" 2>/dev/null || exit 0
+      eval "set -- $HERMES_BD_IDLE_CMD"
+      HERMES_HOME="$HERMES_BD_HOME" "$@" "$$" >"$out" &
+      if wait "$!"; then delay=$(<"$out"); else delay=300; fi  # broken check: retry slowly
+      [[ -n "$delay" ]] || exit 0  # it stopped the screen
+    done
+  ) &
+  WATCH_PID=$!
+fi
+trap 'kill "$XVNC_PID" $WATCH_PID 2>/dev/null || true' EXIT
+
 # ---- private session bus + Xfce components (no xfce4-session) ----
 # dbus-run-session scopes the bus to this subshell: no leaked dbus-daemons on restart. The env file
 # is written from INSIDE the bus so DBUS_SESSION_BUS_ADDRESS is the real one; runtime.py and every

@@ -4,7 +4,7 @@ Run from repository root on the actual target OS:
 
 ```sh
 uv sync --locked --python 3.11 --extra dev
-npm ci
+pnpm install --frozen-lockfile
 uv run --no-sync python evals/desktop_gateway_ticket_native/run.py --output native-ticket-results
 ```
 
@@ -25,7 +25,7 @@ Assertions:
 
 ## Temporary native CI
 
-`workflow.yml` is deliberately outside `.github`. The parent can copy it to `.github/workflows/native-ticket-temp.yml` on an `e2e/native-ticket-*` branch. Its push trigger runs actual `windows-latest` and `macos-latest` jobs; dispatch on a new nondefault workflow alone is insufficient. It uses `uv sync --locked` and root `npm ci`, uploads per-OS receipts, and needs no secrets. Never merge the temporary workflow. Inspect both downloaded receipts, not just job conclusions.
+`workflow.yml` is deliberately outside `.github`. The parent can copy it to `.github/workflows/native-ticket-temp.yml` on an `e2e/native-ticket-*` branch. Its push trigger runs actual `windows-latest` and `macos-latest` jobs; dispatch on a new nondefault workflow alone is insufficient. It uses `uv sync --locked` and a root `pnpm install --frozen-lockfile`, uploads per-OS receipts, and needs no secrets. Never merge the temporary workflow. Inspect both downloaded receipts, not just job conclusions.
 
 ## Multiplex attach + cold-profile mutation probe
 

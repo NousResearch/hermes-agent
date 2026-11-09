@@ -14,6 +14,7 @@ import pytest
 # or call _send_telegram need it; tests for other platforms don't but
 # keeping the whole file consistent is simpler.
 _HAS_TELEGRAM = pytest.importorskip("telegram", reason="python-telegram-bot not installed") is not None
+from telegram.error import NetworkError
 
 
 @pytest.fixture(autouse=True)
@@ -29,10 +30,10 @@ from gateway.config import Platform
 from tools.send_message_tool import (
     _resolve_slack_user_target,
     _send_matrix_via_adapter,
-    _send_telegram,
     _send_to_platform,
     send_message_tool,
 )
+from plugins.platforms.telegram.standalone import _send_telegram
 from tools.send_message_targets import _parse_target_ref
 from plugins.platforms.signal.standalone import _send_signal
 # Discord helpers moved to the plugin in #24325.  Import from the new path
@@ -765,7 +766,7 @@ class TestSendTelegramHtmlDetection:
         bot = self._make_bot()
         bot.send_message = AsyncMock(
             side_effect=[
-                Exception("502 Bad Gateway"),
+                NetworkError("Bad Gateway"),  # what PTB raises for Telegram's JSON 502
                 SimpleNamespace(message_id=2),
             ]
         )

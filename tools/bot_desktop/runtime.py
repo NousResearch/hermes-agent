@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import math
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -24,8 +26,9 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
+from agent.deadline import poll_until
 from hermes_constants import get_hermes_home
 from tools.bot_desktop import placement
 
@@ -177,10 +180,10 @@ def _create_time(pid: int) -> Optional[float]:
         return None
 
 
-def _launcher_pid() -> Optional[int]:
-    """The live launcher's pid, or None. ``launcher.pid`` holds ``"<pid> <create_time>"``: a recycled pid
-    with a different start time is somebody else's process and must never be reported as ours nor
-    killed by :func:`stop`. The pre-identity single-number format is treated as not running."""
+def _launcher_identity() -> Optional[tuple[int, float]]:
+    """``(pid, create_time)`` of the live launcher, or None. ``launcher.pid`` holds ``"<pid> <create_time>"``:
+    a recycled pid with a different start time is somebody else's process and must never be reported as
+    ours nor killed by :func:`stop`. The pre-identity single-number format is treated as not running."""
     raw = _read(state_dir() / "launcher.pid")
     pid_s, _, born_s = (raw or "").partition(" ")
     if not pid_s.isdigit() or not born_s:
@@ -190,7 +193,13 @@ def _launcher_pid() -> Optional[int]:
     except ValueError:
         return None
     actual = _create_time(pid)
-    return pid if actual is not None and abs(actual - born) < 0.01 and _pid_alive(pid) else None
+    return (pid, born) if actual is not None and abs(actual - born) < 0.01 and _pid_alive(pid) else None
+
+
+def _launcher_pid() -> Optional[int]:
+    """The live launcher's pid, or None (see :func:`_launcher_identity`)."""
+    identity = _launcher_identity()
+    return identity[0] if identity is not None else None
 
 
 def _recorded_launcher_pid() -> Optional[int]:
@@ -294,13 +303,13 @@ def _kill_group_then_wait(pgid: Optional[int], pid: int, grace: float = 2.0) -> 
         with contextlib.suppress(ChildProcessError, OSError):
             os.waitpid(pid, os.WNOHANG)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
 
-    _signal(signal.SIGTERM)
-    deadline = time.monotonic() + grace
-    while time.monotonic() < deadline:
+    def _gone() -> bool:
         _reap_if_ours()
-        if not _anything_left():
-            return
-        time.sleep(0.05)
+        return not _anything_left()
+
+    _signal(signal.SIGTERM)
+    if poll_until(_gone, grace, 0.05):
+        return
     _signal(signal.SIGKILL)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
     time.sleep(0.1)
     _reap_if_ours()
@@ -412,9 +421,19 @@ def _should_auto_start(env: dict[str, str]) -> bool:
 # ---- idle auto-stop -------------------------------------------------------------------------------
 # A desktop nobody is using still holds ~220 MiB (plus whatever browser was left open). Every use —
 # a computer_use action, a browser spawn onto the screen, a viewer attached, a human takeover — stamps
-# ``activity``; the gateway's display watcher stops a screen idle past ``bot_desktop.idle_stop_minutes``
-# unless a human holds it. The next use starts it again (auto_start or the pane's Start).
+# ``activity``; :func:`stop_if_idle` stops a screen idle past ``bot_desktop.idle_stop_minutes`` unless a
+# human is using it (see the lease lapse below). Two callers apply it: the gateway's display watcher and
+# the screen's own launcher (``idle_watch``), so a screen whose gateway never came back still stops. The
+# next use starts it again.
 DEFAULT_IDLE_STOP_MINUTES = 30
+# A human holding the screen is never timed out while there is evidence of one: an attached viewer stamps
+# ``activity`` (every RFB update it receives, at most once a minute; the panel clock repaints every minute).
+# A human lease with no stamp for this many windows, and never less than HUMAN_LEASE_ABANDONED_MIN_S, is
+# a link that dropped and never came back, or a corrupt lease file (which reads as human): the screen is
+# stopped like any idle one. The floor keeps a short window (idle_stop_minutes: 0.1) from timing out a
+# human between two viewer stamps, which can be up to about two minutes apart.
+HUMAN_LEASE_ABANDONED_WINDOWS = 4
+HUMAN_LEASE_ABANDONED_MIN_S = 600.0
 
 
 def touch_activity() -> None:
@@ -444,23 +463,67 @@ def idle_stop_seconds() -> float:
         minutes = float(cfg.get("idle_stop_minutes", DEFAULT_IDLE_STOP_MINUTES))
     except (TypeError, ValueError):
         minutes = DEFAULT_IDLE_STOP_MINUTES
-    return max(0.0, minutes) * 60
+    # .inf ("never") is off, like 0, and so are .nan and a window too large to convert to seconds (1e308): none
+    # can ever be due, and the launcher's next-check arithmetic would raise on them and fail start().
+    seconds = minutes * 60
+    return seconds if math.isfinite(seconds) and seconds > 0 else 0.0
 
 
-def stop_if_idle() -> bool:
-    """Stop this profile's screen when it has been idle past the limit and no human holds it. True when
-    it was stopped."""
+def _idle_due(launcher: Optional[tuple[int, float]]) -> Optional[float]:
+    """Idle seconds when the screen is due for the idle stop now, else None. ``launcher`` (``(pid,
+    create_time)``) limits it to that one screen: a replacement started since is never due."""
     limit = idle_stop_seconds()
     if limit <= 0 or not is_running():
-        return False
+        return None
+    if launcher is not None:
+        current = _launcher_identity()
+        if current is None or current[0] != launcher[0] or abs(current[1] - launcher[1]) >= 0.01:
+            return None
     idle = idle_seconds()
     if idle is None or idle < limit:
+        return None
+    from tools.bot_desktop import lease as _bd_lease
+    abandoned_after = max(limit * HUMAN_LEASE_ABANDONED_WINDOWS, HUMAN_LEASE_ABANDONED_MIN_S)
+    if _bd_lease.get().holder == _bd_lease.HUMAN and idle < abandoned_after:
+        return None
+    return idle
+
+
+def stop_if_idle(launcher: Optional[tuple[int, float]] = None) -> bool:
+    """Stop this profile's screen when it has been idle past the limit and no human holds it (a human lease
+    with no use for ``HUMAN_LEASE_ABANDONED_WINDOWS`` windows, and at least ``HUMAN_LEASE_ABANDONED_MIN_S``,
+    counts as abandoned). True when it was stopped. ``launcher`` names the screen the caller judges (the
+    launcher's own check passes it). Stopping a screen for an abandoned human lease also hands that lease back
+    to the agent.
+
+    The decision is taken again under ``start.lock`` before anything is killed: a check that waited on the
+    lock while the screen was stopped and started again (or used) must not kill the screen it finds then."""
+    idle = _idle_due(launcher)
+    if idle is None:
         return False
     from tools.bot_desktop import lease as _bd_lease
-    if _bd_lease.get().holder == _bd_lease.HUMAN:
-        return False
+    held: Optional[_bd_lease.Lease] = None  # the lease the final decision saw
+
+    def still_due() -> bool:
+        nonlocal held
+        # Read before _idle_due reads it: a takeover landing between the two reads then carries a newer
+        # epoch than the one released below, so it is kept instead of being handed back.
+        held = _bd_lease.get()
+        return _idle_due(launcher) is not None
+
     logger.info("Bot Desktop for profile %s idle for %.0f min; stopping", _profile_name(), idle / 60)
-    return stop()
+    if not stop(still_due=still_due):
+        return False
+    if held is not None and held.holder == _bd_lease.HUMAN:
+        # An abandoned human lease stopped the screen. Left in place it would fence the agent out of the next
+        # screen ("a human has control"); only the lease generation judged abandoned goes, so any takeover
+        # since (another viewer, or the same one handing back and taking over again) is kept.
+        try:
+            _bd_lease.release(held.viewer_id, epoch=held.epoch)
+        except OSError as exc:  # the screen is already stopped: a full or read-only home must not undo that
+            logger.warning("Bot Desktop for profile %s stopped, but its abandoned lease was not released: %s",
+                           _profile_name(), exc)
+    return True
 
 
 def published_env() -> dict[str, str]:
@@ -727,6 +790,8 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
         child_env["HOME"] = child_env["HERMES_REAL_HOME"]
         for key in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER"):
             child_env.pop(key, None)
+        from hermes_cli._launchers import installation_command
+        from tools.bot_desktop.idle_watch import next_check_in
         child_env.update({
             "HERMES_BD_PROFILE": _profile_name(),
             "HERMES_BD_DISPLAY_NUM": str(num),
@@ -735,17 +800,32 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
             "HERMES_BD_ENV_FILE": str(env_file),
             "HERMES_BD_CONFIG_HOME": str(sd / "xdg"),
             "HERMES_BD_GEOMETRY": geometry(),
+            # The launcher's idle self-stop runs tools.bot_desktop.idle_watch through the install's stable
+            # command (the ``hermes --run-module`` launcher on a store install, which follows Python pin changes
+            # and picks the current dependency generation at every run; this interpreter elsewhere), in this
+            # home, first once the screen could be due (nothing is idle at start). The screen outlives updates,
+            # so the inherited PYTHONPATH generation is never pinned, and on a store install neither is this
+            # interpreter.
+            "HERMES_BD_IDLE_CMD": shlex.join(installation_command(
+                Path(__file__).resolve().parents[2], module="tools.bot_desktop.idle_watch")),
+            "HERMES_BD_HOME": str(get_hermes_home()),
+            "HERMES_BD_IDLE_FIRST_DELAY": str(next_check_in(idle_stop_seconds(), 0.0)),
         })
         from tools.bot_desktop.browser import dock_exec_line, dock_launch
         if (browser := dock_launch()) is not None:
             # The bare executable (the launcher checks it exists) and the ready-made, spec-quoted Exec= line.
             child_env["HERMES_BD_BROWSER_EXEC"] = browser[0]
             child_env["HERMES_BD_BROWSER_EXEC_LINE"] = dock_exec_line(*browser)
-        # Truncated per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise.
+        # A new file per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise. Not
+        # truncated in place: the old screen's idle check (in a session of its own) may still hold the old file
+        # open, and its late write would land in this one behind a run of NUL bytes.
+        (sd / "launcher.log").unlink(missing_ok=True)
         log = open(sd / "launcher.log", "wb")
+        # The profile's screen outlives whichever CLI/gateway started it, on purpose: launcher.pid carries
+        # (pid, create_time) so any later process reports/stops it, and the idle stop (idle_stop_minutes) ends it.
         proc = subprocess.Popen(  # windows-footgun: ok — Linux-only runtime (is_supported_host)
             ["bash", str(_LAUNCHER)], env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-            start_new_session=True, close_fds=True)
+            start_new_session=True, close_fds=True)  # detached-spawn: ok — per-profile screen, outlives its starter
         log.close()
         born = _create_time(proc.pid)
         (sd / "launcher.pid").write_text(f"{proc.pid} {born if born is not None else 0}", encoding="utf-8")
@@ -808,11 +888,14 @@ def _sandbox_published_env() -> dict[str, str]:
     return sandbox_host.published_env(env, _profile_name())
 
 
-def stop() -> bool:
+def stop(still_due: Optional[Callable[[], bool]] = None) -> bool:
     """Stop this profile's desktop; True when a running launcher (or the X server a dead one left behind)
-    was signalled."""
+    was signalled. ``still_due`` is asked again before anything is killed (under ``start.lock`` for a screen on
+    this host); False there leaves the screen running."""
     from tools.bot_desktop import sandbox_host
     if sandbox_host._read_marker() or placement.resolve().where == placement.TERMINAL:
+        if still_due is not None and not still_due():
+            return False
         # The marker names the sandbox that owns the screen; stop THAT one (re-attaching after a restart),
         # whatever the placement setting says now. A marker whose sandbox is gone is simply dropped.
         env = _owned_sandbox_env()
@@ -826,6 +909,9 @@ def stop() -> bool:
     sd = state_dir()
     sd.mkdir(parents=True, exist_ok=True)
     with _flocked(sd / "start.lock"):
+        if still_due is not None and not still_due():
+            logger.info("Bot Desktop for profile %s changed while the idle stop waited; kept", _profile_name())
+            return False
         return _stop_locked(sd)
 
 
@@ -837,6 +923,6 @@ def _stop_locked(sd: Path) -> bool:
         return reaped
     # The launcher runs in its own session; killing the group takes Xvnc, dbus and Xfce with it.
     _kill_group_then_wait(pid, pid, grace=5.0)
-    for name in ("launcher.pid", "env", "activity"):
+    for name in ("launcher.pid", "env", "activity", "idle-watch.out"):
         (sd / name).unlink(missing_ok=True)
     return True

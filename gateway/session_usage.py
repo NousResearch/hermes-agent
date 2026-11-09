@@ -202,6 +202,31 @@ def publish_usage(turn, agent, *, record: bool = False) -> None:
                 captured["session_usage"] = stats
 
 
+_STORED_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
+
+
+def _stored_stats(row: dict) -> dict:
+    """A session row's cumulative counters in ``usage_stats``' shape. The row's ``input_tokens`` excludes cache
+    reads and writes, so the prompt total adds them back for the cache hit rate."""
+    counts = {key: int(row.get(key) or 0) for key in _STORED_COUNTERS}
+    return {**counts, "prompt_tokens": counts["input_tokens"] + counts["cache_read_tokens"] + counts["cache_write_tokens"],
+            "completion_tokens": counts["output_tokens"], "total_tokens": counts["input_tokens"] + counts["output_tokens"],
+            "api_calls": int(row.get("api_call_count") or 0), "model": row.get("model") or ""}
+
+
+def snapshot_usage(authority, ref, agent) -> dict | None:
+    """The status-bar ``usage`` a resume / ``session.info`` snapshot carries, so a viewer switching to the
+    session paints its own cache hit and ``t/s`` instead of the last-viewed session's. An agent that has
+    called the model answers as its ``session.usage`` frames do; otherwise (no agent since a restart, or one
+    not used yet) the stored row answers, with no ``t/s`` since latency is not stored."""
+    if agent is not None and getattr(agent, "session_api_calls", 0):
+        result = usage_stats(agent)
+        result["compression_count"] = carried_compression_count(authority.sessions.get(ref.session_id), agent)
+        return tui_usage(result)
+    row = authority.db.get_session(ref.session_id)
+    return tui_usage(_stored_stats(row)) if row else None
+
+
 async def stats(connection, ref, params):
     """``session.stats {session_id}``: the same dict ``session.usage`` carries."""
     from hermes_state_runtime import RuntimeStoreError

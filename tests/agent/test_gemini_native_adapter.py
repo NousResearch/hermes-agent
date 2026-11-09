@@ -977,3 +977,66 @@ def test_long_decode_continues_across_hops_and_reports_first_hop_prompt(monkeypa
     assert [c.choices[0].finish_reason for c in finishes] == ["stop"]  # CONTINUATION is not the end
     assert "".join(c.choices[0].delta.content or "" for c in chunks) == "part one part two"
     assert (finishes[0].usage.prompt_tokens, finishes[0].usage.initial_prompt_tokens) == (32968, 100)
+
+
+def _blocking_client(monkeypatch, payload):
+    """Real GeminiNativeClient over a transport that answers HTTP 200 with ``payload`` (unary and SSE)."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    class _Stream:
+        status_code, headers = 200, {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def iter_text(self):
+            yield f"data: {json.dumps(payload)}\n\n"
+
+    class DummyHTTP:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return DummyResponse(payload=payload)
+
+        def stream(self, method, url, json=None, headers=None, timeout=None):
+            return _Stream()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
+    return GeminiNativeClient(api_key="AQ.test", base_url="https://generativelanguage.googleapis.com/v1beta")
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_prompt_block_reason_is_terminal_content_policy_error(monkeypatch, stream):
+    # Google answers a blocked prompt with HTTP 200, promptFeedback.blockReason and no candidates.
+    from agent.error_classifier import FailoverReason, classify_api_error
+    from agent.gemini_native_adapter import GeminiAPIError
+
+    payload = {"promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}, "usageMetadata": {"promptTokenCount": 7}}
+    client = _blocking_client(monkeypatch, payload)
+    kwargs = {"model": "gemini-2.5-flash", "messages": [{"role": "user", "content": "hi"}], "stream": stream}
+    with pytest.raises(GeminiAPIError) as excinfo:
+        result = client.chat.completions.create(**kwargs)
+        list(result) if stream else None
+    assert "blockReason=PROHIBITED_CONTENT" in str(excinfo.value)
+    verdict = classify_api_error(excinfo.value, provider="gemini", model="gemini-2.5-flash")
+    assert (verdict.reason, verdict.retryable, verdict.should_fallback) == (FailoverReason.content_policy_blocked, False, True)
+
+
+def test_prompt_block_surfaces_vertex_block_reason_message(monkeypatch):
+    # Vertex explains the block in promptFeedback.blockReasonMessage; the user sees that, not canned text.
+    from agent.gemini_native_adapter import GeminiAPIError
+
+    payload = {"promptFeedback": {"blockReason": "MODEL_ARMOR", "blockReasonMessage": "Blocked by Model Armor policy X."}}
+    client = _blocking_client(monkeypatch, payload)
+    with pytest.raises(GeminiAPIError, match=r"blockReason=MODEL_ARMOR\): Blocked by Model Armor policy X\."):
+        client.chat.completions.create(model="gemini-2.5-flash", messages=[{"role": "user", "content": "hi"}])
+
+
+def test_prompt_feedback_without_block_reason_keeps_empty_turn(monkeypatch):
+    client = _blocking_client(monkeypatch, {"promptFeedback": {"safetyRatings": []}})
+    out = client.chat.completions.create(model="gemini-2.5-flash", messages=[{"role": "user", "content": "hi"}])
+    assert out.choices[0].finish_reason == "stop"

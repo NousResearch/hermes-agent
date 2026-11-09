@@ -1,0 +1,100 @@
+{
+  "fixtureVersion": 1,
+  "name": "mappings-merge-key-by-key-across-levels",
+  "description": "Proves rule-5, rule-2: Nested mappings merge key by key across every level; each leaf takes the value and provenance of the lowest level that sets it.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "a": {
+          "b": {
+            "c": 1,
+            "d": 2
+          },
+          "e": 3
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {
+        "a": {
+          "b": {
+            "d": 20
+          }
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-support",
+      "values": {
+        "a": {
+          "f": 6
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {
+        "a": {
+          "b": {
+            "g": 7
+          }
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "a": {
+          "b": {
+            "c": 10
+          }
+        }
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "a": {
+        "b": {
+          "c": 10,
+          "d": 20,
+          "g": 7
+        },
+        "e": 3,
+        "f": 6
+      }
+    },
+    "provenance": {
+      "a.b.c": "profile",
+      "a.b.d": "tenant",
+      "a.b.g": "principal",
+      "a.e": "global",
+      "a.f": "group"
+    },
+    "locks": []
+  },
+  "writes": [
+    {
+      "by": "agent",
+      "op": "set",
+      "path": "a.b.c",
+      "value": 11,
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

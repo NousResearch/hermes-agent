@@ -9,7 +9,7 @@ import {
   setSurfaceVar
 } from '@/app/chat/surface-vars'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
-import { isBrowserHostedDesktop } from '@/lib/platform'
+import { hostHas } from '@/lib/host-capabilities'
 
 import {
   COMPOSER_COMPACT_PILL_PX,
@@ -67,7 +67,7 @@ const DESKTOP_CONTROL_PX = 24
  *  `--composer-control-size` token and splits into one column below two
  *  targets. Native Desktop keeps the compact stages and the row, as on main. */
 function composerFit(composer: HTMLElement, width: number): ComposerFit {
-  if (!isBrowserHostedDesktop()) {
+  if (!hostHas('touchSizedControls')) {
     return { ...fitForWidth(width, DESKTOP_CONTROL_PX), singleColumn: false }
   }
 

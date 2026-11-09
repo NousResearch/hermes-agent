@@ -2,21 +2,18 @@ name: qbo-ops
 repo: https://github.com/blackghostosint/qbo-ops
 sha: f949ab52a35fdda4bbfd71258dc9ea8cfdac9e7e
 description: 'QuickBooks Online operations for Hermes: connection health, P&L reports,
-  close audits, deposit tracing and a guarded read-only SQL query tool — with a desktop
-  status pane (local-mode desktop installs) and a bundled reconciliation skill. 5 registered
-  agent tools. Reconciliation tradecraft (close-audit reading, deposit-wash detection,
-  month-end sanity chain, failure diagnosis) ships as executable tools AND a bundled skill
-  (qbo-ops:qbo-ops-reconciliation), earned from closing real store books. Setup is guided:
-  the health tool doubles as a setup wizard and a turn-by-turn guided script (docs/SETUP.md)
-  walks first-timers through Intuit app creation click by click. Read-only by design; a
+  close audits, deposit tracing and a guarded read-only SQL query tool — with a web/desktop
+  status pane and a bundled reconciliation skill. 5 registered agent tools. Reconciliation
+  tradecraft (close-audit reading, deposit-wash detection, month-end sanity chain, failure
+  diagnosis) ships as executable tools AND a bundled skill (qbo-ops:qbo-ops-reconciliation),
+  earned from closing real store books. Setup is guided: the health tool doubles as a setup
+  wizard and a turn-by-turn guided script (docs/SETUP.md) walks first-timers through Intuit
+  app creation click by click without secrets ever transiting chat. Read-only by design; a
   per-user allow_writes config switch (default off) gates a future write tool.
-  Disclosure — makes network calls to Intuit (quickbooks.api.intuit.com,
-  oauth.platform.intuit.com) with credentials the user provides; credentials flow only
-  through Hermes secret scope (requires_env), never read from .env files or other token
-  stores; the BYO-refresh-token path refreshes tokens through the plugin''s flock-guarded
-  refresher (disclosed tradeoff pending upstream redirect_port support, #149642); the
-  desktop pane (desktop/plugin.js, SDK-only surface) renders on local-mode desktop
-  installs; on remote-backend connections the agent tools remain fully available.'
+  Disclosure — makes network calls to Intuit (quickbooks.api.intuit.com) exclusively via
+  Hermes''s oauth: grant flow (credentialed_provider_request); the plugin never holds,
+  refreshes, or stores OAuth tokens or reads .env/auth.json files; Intuit OAuth sign-in
+  (hermes auth add qbo-ops:quickbooks) tracks upstream fixed redirect_port support (#149642).'
 maintainer: blackghostosint
 tier: community
 category: tools
@@ -35,5 +32,4 @@ capabilities:
   requires_env:
     - QBO_OPS_CLIENT_ID
     - QBO_OPS_CLIENT_SECRET
-    - QBO_OPS_REFRESH_TOKEN
     - QBO_OPS_REALM_ID

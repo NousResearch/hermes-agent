@@ -156,6 +156,14 @@ names), and merge/close. Comments by your own `gh` login are skipped, so your
 replies never wake you. Comments that already existed when following started
 are history and are not replayed; an already-finished CI verdict IS reported.
 
+GitLab merge requests (gitlab.com or self-managed) use the same follower:
+pass `--gitlab-mr <merge request URL>` instead of `--pr`/`--repo`. Set
+`GITLAB_TOKEN` (personal access token, `read_api`) to get comments, diff
+comments and approve/request-changes; GitLab hides MR notes from anonymous
+callers, so without it a public MR reports only its pipeline verdict and
+merge/close. A pipeline waiting on a manual job reports as `blocked`, not
+passed.
+
 When it wakes you: handle the batch (answer the reviewer, fix the failing
 check), then start the same command again to keep following. Stop when the
 PR is merged or closed (the follower reports that and ends). Exit 3 = the

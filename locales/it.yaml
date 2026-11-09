@@ -1193,6 +1193,8 @@ platform:
       upload_too_large: "⚠️ Impossibile allegare `{filename}` — {size_mb} MB supera il limite di caricamento di Discord di {limit_mb} MB per questo canale. Comprimi il file o condividi un link."
       image_skipped_too_large: "⚠️ `{filename}` ignorato — {size_mb} MB supera il limite di caricamento di Discord di {limit_mb} MB."
   telegram:
+    limits:
+      response_truncated: "⚠️ **Risposta troncata** — questa risposta ha superato il limite di consegna ({max_messages} messaggi). {dropped_chars} caratteri non sono stati consegnati; la risposta completa è nei log della sessione."
     approval:
       action_once: "✅ Consenti una volta"
       action_session: "✅ Sessione"

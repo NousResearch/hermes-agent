@@ -1193,6 +1193,8 @@ platform:
       upload_too_large: "⚠️ Не вдалося прикріпити `{filename}` — {size_mb} МБ перевищує ліміт Discord у {limit_mb} МБ для завантажень у цьому каналі. Стисніть файл або поділіться посиланням."
       image_skipped_too_large: "⚠️ Пропущено `{filename}` — {size_mb} МБ перевищує ліміт Discord у {limit_mb} МБ для завантажень."
   telegram:
+    limits:
+      response_truncated: "⚠️ **Відповідь обрізано** — вона перевищила ліміт доставки ({max_messages} повідомлень). {dropped_chars} символів не доставлено; повна відповідь є в журналах сеансу."
     approval:
       action_once: "✅ Один раз"
       action_session: "✅ Сеанс"

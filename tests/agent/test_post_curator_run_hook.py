@@ -129,6 +129,8 @@ def test_dry_run_pass_fires_flagged_with_the_hooks_test_payload_shape(curator_en
 def test_hook_waits_for_in_flight_discovery_once_not_on_every_call(monkeypatch):
     """A hook fired mid-discovery sees the plugins it loads; a scan hung in a plugin's register()
     costs one bounded wait, not one per hook call."""
+    from hermes_cli import plugins_discovery
+
     plugins = _plugins()
     manager = plugins.get_plugin_manager()
     manager._discovered = True
@@ -142,7 +144,7 @@ def test_hook_waits_for_in_flight_discovery_once_not_on_every_call(monkeypatch):
     hung = _Scan(target=release.wait, daemon=True)
     hung.start()
     monkeypatch.setattr(plugins, "_background_discovery_thread", hung)
-    monkeypatch.setattr(plugins, "_delivery_join_abandoned", False, raising=False)
+    monkeypatch.setattr(plugins_discovery, "_delivery_join_abandoned", False)
     try:
         plugins.invoke_hook("post_curator_run", run_dir="d")
         plugins.invoke_hook("post_curator_run", run_dir="d")

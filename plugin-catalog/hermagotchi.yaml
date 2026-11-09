@@ -1,7 +1,7 @@
 name: hermagotchi
 title: Hermagotchi
 repo: https://github.com/mojomast/hermagotchi
-sha: a2f9939c8a59de901dd8a49a7f85b1ddb7e10a07
+sha: 7194166a4b652538c8e9e0eed4996e28da0c39ba
 description: >-
   Co-op virtual pets for Hermes: raise a pet, fight deterministic async battles,
   earn Bits, unlock cosmetics up to mythic tier, climb a seasonal leaderboard,
@@ -22,7 +22,7 @@ description: >-
   docs/deploy). It sends pet, battle, shop and social actions and, if agent chat
   is enabled, lobby messages, DMs and taunts, which that server stores. The
   pairing session token lives in a 0600 file under Hermes plugin data and is
-  never returned by tools or logged. The dashboard tab renders with the
+  never returned by tools or logged. Online, hermagotchi_status op=pair refuses user_code/revoke_device_id (unsupported_online); approve and revoke stay human pane actions so lobby/DM prompt injection cannot attach a stranger's device. The dashboard tab renders with the
   dashboard SDK's React and authedFetch; the Desktop pane uses ctx.rest only
   (no remote code, no host-token access). No hooks, no middleware, no
   subprocesses, no inbound ports, and no secrets are requested (requires_env is
@@ -33,16 +33,16 @@ tier: community
 category: general
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/mojomast/hermagotchi#readme
-version: "0.1.1"
+version: "0.1.2"
 screenshots:
-  - https://raw.githubusercontent.com/mojomast/hermagotchi/a2f9939c8a59de901dd8a49a7f85b1ddb7e10a07/docs/images/hero-hermes-habitat.png
-  - https://raw.githubusercontent.com/mojomast/hermagotchi/a2f9939c8a59de901dd8a49a7f85b1ddb7e10a07/docs/images/shop-don-piedro.png
-  - https://raw.githubusercontent.com/mojomast/hermagotchi/a2f9939c8a59de901dd8a49a7f85b1ddb7e10a07/docs/images/battle-teknium.png
-  - https://raw.githubusercontent.com/mojomast/hermagotchi/a2f9939c8a59de901dd8a49a7f85b1ddb7e10a07/docs/images/leaderboard-southpaw.png
-  - https://raw.githubusercontent.com/mojomast/hermagotchi/a2f9939c8a59de901dd8a49a7f85b1ddb7e10a07/docs/images/social-nous-girl.png
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/7194166a4b652538c8e9e0eed4996e28da0c39ba/docs/images/hero-hermes-habitat.png
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/7194166a4b652538c8e9e0eed4996e28da0c39ba/docs/images/shop-don-piedro.png
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/7194166a4b652538c8e9e0eed4996e28da0c39ba/docs/images/battle-teknium.png
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/7194166a4b652538c8e9e0eed4996e28da0c39ba/docs/images/leaderboard-southpaw.png
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/7194166a4b652538c8e9e0eed4996e28da0c39ba/docs/images/social-nous-girl.png
 platforms: []
 known_issues:
-  - "Agent tools default to an offline practice simulation; set network_enabled (plugin setting) to play the real shared game with the pane's paired account. pet rename/set_mode are sim-only."
+  - "Agent tools default to an offline practice simulation; set network_enabled (plugin setting) to play the real shared game with the pane's paired account. pet rename/set_mode are sim-only. Online pair approve/revoke is pane-only (tool returns unsupported_online)."
   - "Multiplayer (ranked battles, leaderboard, social) needs a game server; the hosted API has a signup cap and no self-serve account deletion yet."
 capabilities:
   provides_tools:

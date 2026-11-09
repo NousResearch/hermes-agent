@@ -211,3 +211,56 @@ def test_a_compression_child_with_its_own_claim_excludes_the_originating_turns_c
             with pytest.raises(TurnFenceRequiredError):
                 storage.sessions.append_turn("child", [{"role": "assistant", "content": "foreign"}])
     assert [m["content"] for m in db.get_messages("child")] == ["summary", "own"]
+
+
+def _claimed_root_with_child(storage, db, tmp_path):
+    epoch = storage.admission.begin_epoch(instance_id="owner")
+    from tests.hermes_state.test_target_advance_fence import _local_session
+    sid = _local_session(db, epoch, tmp_path)
+    storage.admission.admit(epoch=epoch, principal_id="human", session_id=sid, request_id="r",
+                            payload={"text": "hi"})
+    root = storage.admission.claim_next(epoch=epoch, session_id=sid)
+    with bind_turn(sid, root["admission_id"], storage.admission.fence(root), store=db.db_path):
+        storage.sessions.publish_compression_child(
+            parent_session_id=sid, child_session_id="child", source="cli",
+            messages=[{"role": "user", "content": "summary"}], require_compression_lease=False)
+    storage.admission.admit(epoch=epoch, principal_id="human", session_id="child", request_id="c",
+                            payload={"text": "hi"})
+    return epoch, sid, root
+
+
+def _append_as(storage, db, sid, claim, target, text):
+    with bind_turn(sid, claim["admission_id"], storage.admission.fence(claim), store=db.db_path):
+        return storage.sessions.append_turn(target, [{"role": "assistant", "content": text}])
+
+
+def test_a_queued_follow_up_on_the_child_leaves_the_originating_claim_its_writes(ports, tmp_path):
+    db, storage = ports
+    with bind_profile_scope(tmp_path):
+        _epoch, sid, root = _claimed_root_with_child(storage, db, tmp_path)
+        assert _append_as(storage, db, sid, root, "child", "late") == 1
+
+
+def test_a_settled_claim_on_the_child_does_not_hand_the_child_back(ports, tmp_path):
+    db, storage = ports
+    with bind_profile_scope(tmp_path):
+        epoch, sid, root = _claimed_root_with_child(storage, db, tmp_path)
+        child = storage.admission.claim_next(epoch=epoch, session_id="child")
+        storage.admission.settle(epoch=epoch, admission_id=child["admission_id"],
+                                 generation=child["generation"], outcome="completed")
+        with pytest.raises(TurnFenceRequiredError):
+            _append_as(storage, db, sid, root, "child", "foreign")
+
+
+def test_a_claim_on_an_intermediate_session_excludes_the_originating_claim_further_down(ports, tmp_path):
+    db, storage = ports
+    with bind_profile_scope(tmp_path):
+        epoch, sid, root = _claimed_root_with_child(storage, db, tmp_path)
+        child = storage.admission.claim_next(epoch=epoch, session_id="child")
+        with bind_turn("child", child["admission_id"], storage.admission.fence(child), store=db.db_path):
+            storage.sessions.publish_compression_child(
+                parent_session_id="child", child_session_id="grandchild", source="cli",
+                messages=[{"role": "user", "content": "summary2"}], require_compression_lease=False)
+            assert storage.sessions.append_turn("grandchild", [{"role": "assistant", "content": "own"}]) == 1
+        with pytest.raises(TurnFenceRequiredError):
+            _append_as(storage, db, sid, root, "grandchild", "foreign")

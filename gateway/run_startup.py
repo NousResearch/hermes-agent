@@ -27,6 +27,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_FATAL_CONFIG_EXIT_CODE, is_global_startup_conflict
 )
 from gateway.run_shutdown import _log_suppressed, _send_error
+from registry_freeze import RegistryFrozen
 from hermes_cli.observability.shared_metrics_busy import note_running_chat_owner
 from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S, DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
@@ -1103,14 +1104,23 @@ class GatewayStartupMixin:
 
     @staticmethod
     def _start_register_plugins_relay_hooks() -> None:
-        """Plugin discovery, relay registration and shell-hook/webhook registration. Never raises."""
+        """Plugin discovery, relay registration and shell-hook/webhook registration.
+
+        Never raises — except a registration the hosted freeze refused: that error says a
+        registration came too late, and swallowing it would hide exactly the bug the freeze
+        exists to catch.
+        """
         # Discover plugins before shell hooks (plugin block decisions win ties). Explicit: the gateway
         # lazily imports run_agent, so model_tools' discover_plugins() side-effect may not have run.
-        with _log_suppressed(logging.WARNING, "plugin discovery failed at gateway startup", exc_info=True):
+        try:
             from hermes_cli.plugins import discover_plugins
             from hermes_cli.plugins_cmd_remove import sweep_pending_plugin_deletes
             sweep_pending_plugin_deletes()  # trees a previous life still held when they were uninstalled
             discover_plugins()
+        except RegistryFrozen:
+            raise
+        except Exception:
+            logger.warning("plugin discovery failed at gateway startup", exc_info=True)
         # Relay entrypoints share the effective profile opt-out, including when a
         # deployment injects a URL. No URL or explicitly disabled -> no side effects.
         try:
@@ -1123,6 +1133,10 @@ class GatewayStartupMixin:
                 logger.info("relay adapter registered (connector at %s)", relay_url())
                 # Declare the relevance policy to the connector so the SAME behavior governs relay delivery.
                 send_relay_policy()
+        except RegistryFrozen:
+            # A registration after the hosted freeze propagates: startup must not swallow the one
+            # error that says an adapter registration came too late.
+            raise
         except Exception:
             logger.warning("relay adapter registration failed at gateway startup", exc_info=True)
         GatewayStartupMixin._register_launch_profile_config_hooks()

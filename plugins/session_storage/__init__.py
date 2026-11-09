@@ -68,11 +68,16 @@ def load_session_storage(name: str) -> Optional[SessionStorageProvider]:
     if not _is_bundled(provider_dir):
         from hermes_cli.plugin_isolation import in_process_import_refusal
         refusal = in_process_import_refusal(f"session storage provider {name!r}")
+        if not refusal:
+            # A hosted process resolves named providers only from the bundled tree; the shared
+            # loader refuses a user dir before any import, and the boot reports the reason.
+            refusal = _loader.hosted_user_dir_refusal(provider_dir, bundled_root=_PLUGINS_DIR)
         if refusal:
             logger.error("%s", refusal)
             raise SessionStorageRefused(refusal)
     return _loader.load_named(name, provider_dir, _load_provider_from_dir,
-                              kind="Session storage provider", noun="provider", logger=logger)
+                              kind="Session storage provider", noun="provider", logger=logger,
+                              bundled_root=_PLUGINS_DIR)
 
 
 def _is_bundled(provider_dir: Path) -> bool:

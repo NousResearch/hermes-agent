@@ -68,3 +68,21 @@ def test_under_host_isolation_a_user_provider_is_refused_with_the_reason(tmp_pat
         with pytest.raises(LookupError, match="plugins.isolation is 'host'"):
             resolve_session_storage("hostprobe")
     assert not (plugin / "imported").exists()  # its code never ran, in this process or a host
+
+
+def test_a_hosted_process_refuses_a_user_dir_provider_before_import(tmp_path, monkeypatch):
+    """A hosted process resolves named providers only from the bundled tree: a provider that
+    exists in the deployment home's writable dirs is refused BEFORE its module imports (no
+    marker), with the reason."""
+    from hermes_cli import hosted_mode
+
+    monkeypatch.setattr(hosted_mode, "_VERDICT",
+                        {"hosted": None, "config": None, "plugins_permitted": False})
+    home = tmp_path / "hosted-home"
+    plugin = _install(home, "HOSTED", name="homeprobe")
+    (home / "config.yaml").write_text("hosted:\n  enabled: true\n", encoding="utf-8")
+    with bind_profile_scope(home, hydrate_secrets=False):
+        assert hosted_mode.is_hosted() is True
+        with pytest.raises(LookupError, match="bundled with Hermes"):
+            resolve_session_storage("homeprobe")
+    assert not (plugin / "imported").exists()  # its code never ran

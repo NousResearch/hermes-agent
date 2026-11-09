@@ -525,10 +525,16 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
     gateway_platforms = gateway_section.get("platforms") if isinstance(gateway_section, dict) else None
     platforms_data = merge_platform_sections(yaml_cfg, gateway_section, gw_data)
 
+    from registry_freeze import RegistryFrozen  # a registration after the hosted freeze propagates
+
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry as registry
+    except RegistryFrozen:
+        # A registration after the hosted freeze propagates: config resolution must not swallow
+        # the one error that says a registration came too late.
+        raise
     except Exception as e:
         logger.debug("plugin discovery skipped: %s", e)
         registry = None

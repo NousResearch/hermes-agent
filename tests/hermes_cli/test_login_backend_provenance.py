@@ -175,9 +175,10 @@ def test_verified_entry_installed_with_allow_removed_is_refused(world, caplog):
 
 
 @pytest.mark.parametrize("source, accepted", [("bundled", True), ("project", False), ("entrypoint", False)])
-def test_bundled_plugins_register_and_project_or_pip_plugins_do_not(tmp_path, source, accepted):
+def test_bundled_plugins_register_and_project_or_pip_plugins_do_not(tmp_path, monkeypatch, source, accepted):
     from agent import vault_backend_registry as registry
     from agent.vault_backends.base import LoginBackend
+    import hermes_cli.plugins as plugins_mod
     from hermes_cli.plugins import PluginContext, PluginManager
     from hermes_cli.plugins_manifest import PluginManifest
 
@@ -193,11 +194,65 @@ def test_bundled_plugins_register_and_project_or_pip_plugins_do_not(tmp_path, so
         def resolve_password(self, handle):
             raise AssertionError("never resolved")
 
+    # The bundled source is real: a directory inside the plugins tree shipped with Hermes (a
+    # manifest whose path is outside that tree does not get the bundled trust).
+    bundled_root = tmp_path / "bundled"
+    bundled_root.mkdir()
+    (bundled_root / "acme-vault").mkdir()
+    monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: bundled_root)
+
     scope = str(tmp_path / "home")
-    manifest = PluginManifest(name="acme-vault", source=source, path=str(tmp_path / "acme-vault"))
+    manifest = PluginManifest(name="acme-vault", source=source, path=str(bundled_root / "acme-vault"))
     handle = PluginContext(manifest, PluginManager(scope_key=scope)).register_login_backend(Backend())
     try:
         assert (registry.get_provider("acme", scope=scope) is not None) is accepted
     finally:
         if handle is not None:
             handle.dispose()
+
+
+def test_a_symlink_in_the_bundled_dir_does_not_get_the_bundled_trust(tmp_path, monkeypatch):
+    """A bundled-labelled directory that is a symlink (or whose realpath leaves the plugins tree
+    shipped with Hermes) is operator-unreviewed code wearing the bundled label: provenance
+    refuses it."""
+    import hermes_cli.plugins as plugins_mod
+    from hermes_cli.plugins_manifest import PluginManifest
+
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (target / "__init__.py").write_text("def register(ctx):\n    pass\n")
+    bundled_root = tmp_path / "bundled"
+    bundled_root.mkdir()
+    (bundled_root / "acme-vault").symlink_to(target)
+    monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: bundled_root)
+
+    manifest = PluginManifest(name="acme-vault", source="bundled", path=str(bundled_root / "acme-vault"))
+    error = cat.login_backend_provenance_error(manifest)
+    assert "claims the bundled source" in error and "leaves the plugins tree shipped with Hermes" in error
+
+
+def test_a_fabricated_install_record_is_refused(world, monkeypatch, caplog):
+    """The install record lives in the profile-writable home, so its claims decide nothing on
+    their own: a record naming an entry the shipped catalog has no pin for is a fabricated
+    record, and the plugin it vouches for never registers its backend."""
+    import logging
+
+    cat.install_catalog_entry(world["entry"](), force=False)
+    monkeypatch.setattr(pc_cat, "load_catalog", lambda catalog_dir=None: [])  # no shipped entry
+    with caplog.at_level(logging.WARNING):
+        assert world["load"]() is None
+    assert "not in the catalog shipped with Hermes" in caplog.text
+
+
+def test_a_tree_edited_after_install_is_refused(world, caplog):
+    """The record pins the code digest of the tree the installer published: edit one file of a
+    verified install afterwards and the plugin no longer counts as the code the catalog
+    reviewed, so its backend never registers."""
+    import logging
+
+    cat.install_catalog_entry(world["entry"](), force=False)
+    target = world["plugins_dir"] / "acme-vault" / "__init__.py"
+    target.write_text(target.read_text(encoding="utf-8") + "# an edit after install\n")
+    with caplog.at_level(logging.WARNING):
+        assert world["load"]() is None
+    assert "code digest" in caplog.text

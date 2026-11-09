@@ -19,6 +19,38 @@ from typing import Any, Callable, List, Optional, Tuple
 _log = logging.getLogger(__name__)
 
 _PLUGINS_ROOT = Path(__file__).parent
+
+
+class NamedProviderRefused(RuntimeError):
+    """A named provider that exists but may not load in this process (the reason is the message)."""
+
+
+def hosted_user_dir_refusal(provider_dir: Path, bundled_root: Optional[Path] = None) -> str:
+    """Why plugin code at *provider_dir* may not be imported in a hosted process (``""`` when it
+    may). A hosted process serves many tenants from one interpreter, and the deployment home's
+    plugin directories are tenant-writable, so a named provider resolves only from the tree
+    bundled with Hermes (hosted providers ship bundled or as installed packages).
+    *bundled_root* is the directory the kind's own providers ship in (a kind directory inside the
+    bundled plugin tree); the plugin tree's root when a caller names none. The check runs before
+    any import, so refused code never executes."""
+    from hermes_cli.hosted_mode import is_hosted
+
+    if not is_hosted():
+        return ""
+    root = Path(bundled_root) if bundled_root is not None else _PLUGINS_ROOT
+    try:
+        resolved = provider_dir.resolve()
+        root = root.resolve()
+    except OSError:
+        resolved = None  # a path that cannot be resolved is not provably bundled: refuse
+    if resolved is not None and (resolved == root or root in resolved.parents):
+        return ""
+    return (
+        f"a hosted process loads named providers only from the plugins bundled with Hermes "
+        f"(installed hosted providers ship bundled or as installed packages); {provider_dir} is in "
+        f"the deployment home's writable plugin directories")
+
+
 _MODULE_LOAD_LOCKS: dict[str, threading.RLock] = {}
 _MODULE_LOAD_LOCKS_GUARD = threading.Lock()
 # Inside bounded_load_wait(), how long a second caller waits for another thread's in-flight load of
@@ -257,8 +289,17 @@ def instance_from_module(mod: Any, *, collector: Any, collected_attr: str, base_
 
 
 def load_named(name: str, plugin_dir: Path, load_from_dir: Callable[[Path], Optional[Any]], *, kind: str,
-               noun: str, logger: logging.Logger) -> Optional[Any]:
-    """Shared body of ``load_<kind>(name)``: load from *plugin_dir*, warn + None on failure."""
+               noun: str, logger: logging.Logger, bundled_root: Optional[Path] = None) -> Optional[Any]:
+    """Shared body of ``load_<kind>(name)``: load from *plugin_dir*, warn + None on failure.
+
+    A user-directory provider is refused in a hosted process BEFORE its module is imported —
+    the deployment home's plugin directories are tenant-writable, so hosted named providers
+    resolve only from the bundled tree (*bundled_root*, the kind's own directory; the plugin
+    tree's root when a caller names none). :exc:`NamedProviderRefused` names the reason."""
+    refusal = hosted_user_dir_refusal(plugin_dir, bundled_root=bundled_root)
+    if refusal:
+        logger.error("%s %s: %s", kind, name, refusal)
+        raise NamedProviderRefused(refusal)
     try:
         instance = load_from_dir(plugin_dir)
     except Exception as e:

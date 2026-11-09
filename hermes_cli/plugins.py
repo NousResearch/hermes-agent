@@ -1200,6 +1200,12 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             # Safe workers never discover; a config-only read of a profile this process must not
             # load plugins for is suppressed too.
             return
+        from hermes_cli.hosted_mode import plugin_loading_permitted
+
+        if not plugin_loading_permitted():
+            # Hosted: plugin code loads only after the import-free boot preflight refused every
+            # uncurated plugin; until then discovery is a no-op.
+            return
         if self._discovered and not force and in_plugin_load_worker():
             # A plugin whose register() re-enters discovery (importing model_tools does) runs on a
             # deadline worker that cannot re-acquire the sweep's RLock; the flag is already set for the

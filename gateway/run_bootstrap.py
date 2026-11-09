@@ -738,6 +738,18 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     # Config verdicts come before the duplicate-instance guard: `--replace` must not stop a healthy
     # gateway for a launch that cannot start.
+    # Hosted preflight FIRST: resolving gateway config discovers and imports plugins, and a plugin
+    # the process must refuse must be refused before its module-level code can run. The preflight
+    # reads manifests, config and provenance records only (a no-op on a local install, where
+    # discovery below runs exactly as before).
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+    from hermes_cli.hosted_mode import HostedBootRefused, hosted_boot_preflight
+    try:
+        hosted_boot_preflight()
+    except HostedBootRefused as refusal:
+        logger.error("Hosted boot refused: %s", refusal)
+        print(f"Hosted boot refused: {refusal}", flush=True)
+        raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE) from refusal
     resolved_config = config if config is not None else load_gateway_config_for_runner()
     # The first turn's prompt needs the host toolchain probe (five subprocess calls); start it now
     # so it runs beside the boot imports instead of serially inside the pre-READY warm-up.

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
 from hermes_constants import hermes_home_key, normalize_scope
-from registry_freeze import refuse_if_frozen, seal_at_freeze
+from registry_freeze import RegistryFrozen, refuse_if_frozen, seal_at_freeze
 from registry_sealed import STORAGE, seal
 
 logger = logging.getLogger(__name__)
@@ -174,6 +174,10 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> list[str]:
             importlib.import_module(mod_name)
             imported.append(mod_name)
         except Exception as e:
+            if isinstance(e, RegistryFrozen):
+                # A registration after the hosted freeze propagates: discovery must not swallow
+                # the very error that says a registration came too late.
+                raise
             logger.warning("Could not import tool module %s: %s", mod_name, e)
     return imported
 

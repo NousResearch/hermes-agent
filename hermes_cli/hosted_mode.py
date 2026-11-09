@@ -32,8 +32,13 @@ class HostedBootRefused(RuntimeError):
 # The boot verdict: read once (by the first reader), then frozen for the process. Which kind of
 # process this is decides what the turn paths may do, so a config edit must not flip it mid-process.
 # Tenant-neutral by construction: it is a property of the deployment, identical for every tenant.
-_VERDICT: dict[str, Optional[bool]] = tenant_neutral(
-    {"hosted": None}, reason="the hosted boot verdict is decided once per process from deployment config")
+# ``config`` is the effective config the boot recorded when it resolved the deployment's own
+# settings; while it is set, every hosted-mode read consults it and re-reads nothing.
+# ``plugins_permitted`` is the discovery gate: a hosted process imports plugin code only after the
+# import-free preflight (:func:`hosted_boot_preflight`) refused everything uncurated.
+_VERDICT: dict[str, Any] = tenant_neutral(
+    {"hosted": None, "config": None, "plugins_permitted": False},
+    reason="the hosted boot verdict is decided once per process from deployment config")
 
 
 def _hosted_root(config: Mapping[str, Any] | Any) -> Any:
@@ -61,6 +66,25 @@ def _effective_config() -> dict[str, Any]:
     return load_user_config_effective()
 
 
+def _boot_or_effective_config() -> dict[str, Any]:
+    """The config the boot recorded when it resolved the deployment's settings, else one effective
+    read. Recording exists so the boot's first read is the ONLY one: every later hosted-mode
+    consultation (the boot checks, the discovery gate, the freeze) reads the recorded mapping
+    with no further file I/O."""
+    recorded = _VERDICT.get("config")
+    if isinstance(recorded, Mapping):
+        return dict(recorded)
+    return _effective_config()
+
+
+def record_boot_config(config: Mapping[str, Any]) -> None:
+    """Record the effective config the boot itself resolved, so every later hosted-mode read
+    (:func:`is_hosted`, the boot checks) consults it instead of re-reading the profile's files.
+    The verdict stays frozen for the process either way."""
+    _VERDICT["config"] = config
+    _VERDICT["hosted"] = _hosted_enabled(config)
+
+
 def is_hosted() -> bool:
     """Whether this process runs the hosted boot profile (``hosted.enabled`` in config.yaml).
 
@@ -70,7 +94,7 @@ def is_hosted() -> bool:
     """
     cached = _VERDICT.get("hosted")
     if cached is None:
-        cached = _hosted_enabled(_effective_config())
+        cached = _hosted_enabled(_boot_or_effective_config())
         _VERDICT["hosted"] = bool(cached)
     return cached
 
@@ -215,15 +239,16 @@ def _refuse_uncurated_inprocess_code(config: Mapping[str, Any]) -> None:
             "sandbox); remove the mcp_servers entries, and install operator MCP servers as "
             "catalog plugins")
     from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
-    from hermes_cli.plugins_cmd_catalog import login_backend_provenance_error
+    from hermes_cli.plugins_cmd_catalog import bundled_dir_is_genuine, login_backend_provenance_error
     from hermes_cli.plugins_discovery import IN_BOTH_LISTS, _get_disabled_plugins, _get_enabled_plugins, gate_manifest
 
     out_of_process = isolation_mode() == ISOLATION_HOST
     disabled, enabled = _get_disabled_plugins(), _get_enabled_plugins()
     for manifest in _plugins_that_would_load_inprocess():
-        if manifest.source == "bundled" or out_of_process:
-            # Bundled plugins ship with this process; under plugins.isolation: host every
-            # non-bundled plugin runs on the profile's host instead of in this process.
+        if (manifest.source == "bundled" and bundled_dir_is_genuine(manifest.path)) or out_of_process:
+            # Bundled plugins ship with this process (a symlink that leaves the bundled tree is
+            # not one of them); under plugins.isolation: host every non-bundled plugin runs on the
+            # profile's host instead of in this process.
             continue
         gate = gate_manifest(manifest, disabled, enabled)
         if gate.action == "placeholder" and gate.error is not None and (
@@ -274,6 +299,36 @@ def _require_hosted_backends(config: Mapping[str, Any]) -> None:
             "bypasses row security fails this); use the provider's isolating role")
 
 
+def hosted_boot_preflight(*, profile_homes: tuple[Path, ...] = (),
+                          config: Mapping[str, Any] | None = None,
+                          env: Mapping[str, str] | None = None) -> None:
+    """The import-free hosted checks, run before anything resolves config through the plugin
+    loader: a config read discovers and imports plugins, and a plugin this process must refuse
+    must be refused before its module-level code can run. No-op when this process is not hosted.
+
+    Passing clears the discovery gate (:func:`plugin_loading_permitted`); a refusal raises before
+    any plugin code loaded. Checks manifests, config and provenance records only — nothing is
+    imported here.
+    """
+    if not is_hosted():
+        return
+    if config is None:
+        config = _boot_or_effective_config()
+    record_boot_config(config)
+    _refuse_credential_environment(env)
+    _refuse_profile_secret_files(profile_homes)
+    _refuse_uncurated_inprocess_code(config)
+    _VERDICT["plugins_permitted"] = True
+
+
+def plugin_loading_permitted() -> bool:
+    """Whether plugin code may load in this process yet. Never gated on a local install; on a
+    hosted one, not until the import-free preflight (:func:`hosted_boot_preflight`) passed —
+    before that, every discovery path is a no-op, so no plugin's module-level code runs ahead of
+    the boot's refusal."""
+    return not is_hosted() or _VERDICT.get("plugins_permitted") is True
+
+
 def assert_hosted_boot(gateway_config: Any = None, *, profile_homes: tuple[Path, ...] = (),
                        config: Mapping[str, Any] | None = None,
                        env: Mapping[str, str] | None = None) -> None:
@@ -284,15 +339,16 @@ def assert_hosted_boot(gateway_config: Any = None, *, profile_homes: tuple[Path,
     *gateway_config* is the gateway's own resolved config (its connected platforms); when it is
     ``None`` the platform check is skipped (a caller that serves nothing has no direct adapter).
     *profile_homes* are the profile directories the caller would serve besides the launch home.
+
+    The import-free checks run first (they are the preflight — an uncurated plugin is refused
+    before the discovery below can import it); then the checks that need loaded things run.
     """
     if not is_hosted():
         return
     if config is None:
-        config = _effective_config()
-    _refuse_credential_environment(env)
-    _refuse_profile_secret_files(profile_homes)
+        config = _boot_or_effective_config()
+    hosted_boot_preflight(profile_homes=profile_homes, config=config, env=env)
     _refuse_direct_platform_adapters(gateway_config)
-    _refuse_uncurated_inprocess_code(config)
     # Discovery loads what the process serves, so the sandbox backend can be checked as
     # registered. Anything non-curated that would load was already refused above, before import.
     from hermes_cli.plugins import discover_plugins
@@ -306,6 +362,25 @@ def assert_hosted_boot(gateway_config: Any = None, *, profile_homes: tuple[Path,
 # The end of hosted boot: materialise what the process serves, then freeze the registries.
 
 
+def _refuse_incomplete_builtin_toolset() -> None:
+    """Builtin tool discovery is part of hosted boot, not of the first turn: every ``tools/*.py``
+    module self-registers at import, and a registration after the freeze raises, so a tool whose
+    module was never imported would be missing for every tenant until restart. The boot imports
+    them synchronously and refuses unless the core set is registered."""
+    import model_tools  # importing runs builtin discovery: each tools/*.py self-registers
+    from toolsets import _HERMES_CORE_TOOLS
+    from tools.registry import registry
+
+    registered = set(registry.get_all_tool_names())
+    missing = sorted({*_HERMES_CORE_TOOLS, "terminal", "read_file", "write_file"} - registered)
+    if missing:
+        _refuse(
+            f"builtin tool discovery did not register: {', '.join(missing)}",
+            "A hosted process freezes the registries once boot ends, so every builtin tool must be "
+            "registered before that; check the tool-discovery log lines above for the module that "
+            "failed to import")
+
+
 def finish_hosted_boot() -> None:
     """Materialise the registrations this process serves, then freeze the registries
     (:func:`registry_freeze.freeze_registries`): from here on every registration entry point
@@ -313,16 +388,19 @@ def finish_hosted_boot() -> None:
     process is not hosted.
 
     Called once the boot has loaded everything it serves (plugins, providers, MCP servers,
-    adapters). Two registrations are still pending at that point and must be settled here, or the
-    freeze would refuse and the boot would die: provider discovery (materialised by listing the
-    providers once) and the deferred platform loaders (the bundled platforms this process does
-    not serve are dropped — after the freeze their first lookup could not register them)."""
+    adapters). Registrations still pending at that point are settled here, or the freeze would
+    refuse and the boot would die: builtin tool discovery (mandatory and synchronous — the
+    freeze would refuse each tool module's later import), provider discovery (materialised by
+    listing the providers once) and the deferred platform loaders (the bundled platforms this
+    process does not serve are dropped — after the freeze their first lookup could not register
+    them)."""
     if not is_hosted():
         return
     import providers
     from gateway.platform_registry import platform_registry
     from registry_freeze import freeze_registries
 
+    _refuse_incomplete_builtin_toolset()
     providers.list_providers()  # provider discovery is one of the freeze's completeness checks
     dropped = platform_registry.drop_pending_deferred()
     if dropped:

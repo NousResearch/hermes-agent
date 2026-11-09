@@ -242,7 +242,8 @@ def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -
             return None
         return _load_provider_from_entry_point(entry_point, register_skills=register_skills)
 
-    return _loader.load_named(name, provider_dir, _load, kind="Memory provider", noun="provider", logger=logger)
+    return _loader.load_named(name, provider_dir, _load, kind="Memory provider", noun="provider",
+                              logger=logger, bundled_root=_MEMORY_PLUGINS_DIR)
 
 
 def import_memory_provider_module(name: Optional[str] = None) -> bool:

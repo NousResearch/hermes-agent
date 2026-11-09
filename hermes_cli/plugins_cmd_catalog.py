@@ -210,6 +210,67 @@ LOGIN_BACKEND_RULE = ("password-manager login backends are accepted only from pl
 _NON_CATALOG_SOURCES = {"project": "a project .hermes/plugins directory", "entrypoint": "a pip entry point"}
 
 
+def bundled_dir_is_genuine(plugin_dir) -> bool:
+    """Whether a manifest that claims the ``bundled`` source really is a directory inside the
+    plugins tree shipped with Hermes: not a symlink, and its realpath stays inside the bundled
+    root. A symlink planted in the bundled dir (or a dir whose realpath leaves the tree) is
+    operator-unreviewed code wearing the bundled label, so every trust decision that consults
+    the bundled source must consult this, not the label alone."""
+    from hermes_cli.plugins import get_bundled_plugins_dir
+
+    if not plugin_dir:
+        return False
+    path = Path(plugin_dir)
+    try:
+        if path.is_symlink():
+            return False
+        resolved = path.resolve()
+        root = get_bundled_plugins_dir().resolve()
+    except OSError:
+        return False
+    return resolved == root or root in resolved.parents
+
+
+def installed_code_digest(plugin_dir) -> Optional[str]:
+    """Content digest of an installed plugin's code tree: a deterministic sha256 over the sorted
+    ``(relative path, file bytes)`` pairs of every regular file, skipping ``.git`` (churning
+    metadata, never imported) and ``__pycache__`` (runtime state). This is what an install record
+    pins: a tree edited after install no longer matches its record, and a fabricated record that
+    names no digest never matches at all."""
+    import hashlib
+
+    path = Path(plugin_dir)
+    if not path.is_dir():
+        return None
+    entries: list[tuple[str, Path]] = []
+    for dirpath, dirnames, filenames in os.walk(path):
+        dirnames[:] = sorted(name for name in dirnames if name not in (".git", "__pycache__"))
+        for filename in filenames:
+            file_path = Path(dirpath) / filename
+            if file_path.is_symlink() or is_junction(file_path):
+                continue
+            entries.append((file_path.relative_to(path).as_posix(), file_path))
+    digest = hashlib.sha256()
+    for relative, file_path in sorted(entries):
+        digest.update(relative.encode("utf-8", "surrogatepass"))
+        digest.update(b"\0")
+        try:
+            digest.update(file_path.read_bytes())
+        except OSError:
+            return None
+    return digest.hexdigest()
+
+
+def install_record_matches_tree(record, plugin_dir) -> bool:
+    """Whether the installer-owned record pins the tree that is actually installed: the record
+    carries the code digest of the tree it installed, and the tree on disk still hashes to it."""
+    if not isinstance(record, dict):
+        return False
+    digest = installed_code_digest(plugin_dir)
+    recorded = record.get("tree_digest")
+    return bool(digest) and isinstance(recorded, str) and digest == recorded
+
+
 BROWSER_PAGE_BACKEND_RULE = ("browser page backends (which carry browser_vault fill scripts) are accepted only from "
                              "plugins bundled with Hermes or installed from the Hermes plugin catalog at tier "
                              "verified or official")
@@ -222,13 +283,22 @@ def browser_page_backend_provenance_error(manifest) -> str:
 
 
 def login_backend_provenance_error(manifest, rule: str = LOGIN_BACKEND_RULE) -> str:
-    """Why *manifest*'s plugin may not register a login backend, or "" when it may.
+    """Why *manifest*'s plugin may not register a login backend, or ``""`` when it may.
 
     Read from the installer-owned ``.install-metadata.json`` record of the CURRENT home's plugins dir, never
     from the tree (a repo can commit a ``.hermes-catalog.json``). No config key relaxes it. This decides
-    which plugins Hermes offers the seam to; code already running in-process is not sandboxed by it."""
+    which plugins Hermes offers the seam to; code already running in-process is not sandboxed by it.
+
+    A catalog install is trusted only when the record's pin matches the entry in the catalog SHIPPED
+    with Hermes (the record's claimed tier proves nothing — the shipped entry's tier decides), and the
+    installed tree still matches the code digest the installer recorded. A fabricated record fails both
+    ways: it names no entry the shipped catalog pins, and its tree does not hash to a digest it carries.
+    """
     if manifest.source == "bundled":
-        return ""
+        if bundled_dir_is_genuine(manifest.path):
+            return ""
+        return (f"{rule}; this plugin claims the bundled source but its directory is a symlink or "
+                f"leaves the plugins tree shipped with Hermes")
     if manifest.source in _NON_CATALOG_SOURCES:
         return f"{rule}; this plugin was loaded from {_NON_CATALOG_SOURCES[manifest.source]}"
     record = _install_record(Path(manifest.path)) if manifest.source == "user" and manifest.path else None
@@ -238,11 +308,19 @@ def login_backend_provenance_error(manifest, rule: str = LOGIN_BACKEND_RULE) -> 
                 "(a local directory or Git URL install)")
     if record.get("allow_removed"):
         return f"{rule}; this plugin was installed with --allow-removed"
-    tier = str(block.get("tier") or "community")
-    if tier not in LOGIN_BACKEND_TIERS:
-        return f"{rule}; catalog entry '{block['name']}' is tier {tier}"
-    if not block.get("pin"):
-        return f"{rule}; this install is not at the catalog's reviewed pin (installed with --ref)"
+    from hermes_cli.plugin_catalog import get_catalog_entry
+
+    entry = get_catalog_entry(str(block.get("name")))
+    if entry is None:
+        return (f"{rule}; catalog entry {str(block.get('name'))!r} is not in the catalog shipped "
+                f"with Hermes")
+    if entry.tier not in LOGIN_BACKEND_TIERS:
+        return f"{rule}; catalog entry '{entry.name}' is tier {entry.tier}"
+    if not at_catalog_pin({"sha": block.get("sha"), "pin": block.get("pin")}, entry.sha):
+        return f"{rule}; this install is not at the reviewed pin the shipped catalog records"
+    if not install_record_matches_tree(record, manifest.path):
+        return (f"{rule}; the installed tree does not match the code digest the installer recorded "
+                f"(the tree changed after install, or the record was fabricated)")
     return ""
 
 

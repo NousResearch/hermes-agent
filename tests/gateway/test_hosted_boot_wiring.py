@@ -123,6 +123,82 @@ async def test_a_hosted_refusal_stops_the_boot_before_anything_serves(_startup, 
     assert _startup == []  # no runner, no adapters, nothing served
 
 
+# A user plugin whose module-level code writes a marker file: the boot-level probe for whether
+# plugin code can run before the hosted refusal (config resolution discovers and imports plugins,
+# so the refusal must come first) — and for a local boot importing it exactly as before.
+_MARKER_PLUGIN = '''
+from pathlib import Path
+
+Path(__file__).with_name("imported").write_text("ran")
+
+
+def register(ctx):
+    pass
+'''
+
+
+def _marker_plugin(name):
+    """Install an enabled, non-curated user plugin under the test home; its marker is a file the
+    plugin's own directory never gets unless its module really imported."""
+    import hermes_yaml as yaml
+
+    from hermes_constants import get_hermes_home
+
+    plugin = get_hermes_home() / "plugins" / name
+    plugin.mkdir(parents=True, exist_ok=True)
+    (plugin / "__init__.py").write_text(_MARKER_PLUGIN, encoding="utf-8")
+    (plugin / "plugin.yaml").write_text(
+        yaml.safe_dump({"name": name, "version": "1.0"}, sort_keys=False), encoding="utf-8")
+    (get_hermes_home() / "config.yaml").write_text(
+        yaml.safe_dump({"plugins": {"enabled": [name]}}, sort_keys=False), encoding="utf-8")
+    return plugin / "imported"
+
+
+@pytest.mark.asyncio
+async def test_uncurated_user_plugin_code_never_runs_before_the_hosted_refusal(_startup, monkeypatch):
+    """An enabled, non-curated user plugin whose module-level code writes a marker: the hosted
+    boot refuses BEFORE the config resolution that would import it — the marker never appears,
+    nothing starts, and the exit is the fatal-config one."""
+    import hermes_yaml as yaml
+
+    from hermes_constants import get_hermes_home
+    from hermes_cli import hosted_mode
+
+    marker = _marker_plugin("boot-hosted-probe")
+    config_path = get_hermes_home() / "config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    config["hosted"] = {"enabled": True}
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr(hosted_mode, "_VERDICT",
+                        {"hosted": None, "config": None, "plugins_permitted": False})
+    # The runner's own environment carries credential-shaped tool settings that are this test's
+    # noise, not the probe's subject (the environment check has its own tests): skip it here so
+    # the refusal under test is the plugin's.
+    monkeypatch.setattr(hosted_mode, "_refuse_credential_environment", lambda env=None: None)
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+
+    with pytest.raises(SystemExit) as exit_info:
+        await run_bootstrap.start_gateway(replace=False, verbosity=None)
+    assert exit_info.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
+    assert _startup == []  # no runner, no adapters, nothing served
+    assert not marker.exists()  # its module-level code never ran
+
+
+@pytest.mark.asyncio
+async def test_a_local_boot_still_runs_user_plugin_code(_startup, monkeypatch):
+    """The same enabled user plugin on a local install: the boot resolves config (which imports
+    it) exactly as before — the marker is written and the gateway serves."""
+    from hermes_cli import hosted_mode
+
+    marker = _marker_plugin("boot-local-probe")
+    monkeypatch.setattr(hosted_mode, "_VERDICT",
+                        {"hosted": None, "config": None, "plugins_permitted": False})
+
+    assert await run_bootstrap.start_gateway(replace=False, verbosity=None) is True
+    assert _startup == ["runner_started", "ready"]
+    assert marker.exists()  # a local boot imported it, exactly as before
+
+
 @pytest.mark.asyncio
 async def test_the_registries_freeze_at_the_end_of_hosted_boot(_startup, monkeypatch):
     """Hosted boot finishes once everything the process serves is loaded: the freeze runs after
@@ -131,6 +207,7 @@ async def test_the_registries_freeze_at_the_end_of_hosted_boot(_startup, monkeyp
 
     events = _startup
     monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
+    monkeypatch.setattr(hosted_mode, "hosted_boot_preflight", lambda **kwargs: None)
     monkeypatch.setattr(hosted_mode, "assert_hosted_boot", lambda *a, **k: None)
     monkeypatch.setattr(hosted_mode, "finish_hosted_boot",
                         lambda: events.append("registries_frozen"))

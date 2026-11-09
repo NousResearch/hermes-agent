@@ -153,6 +153,8 @@ discover_builtin_tools()
 # MCP discovery is deliberately NOT run here: it blocks up to 120 s and the
 # gateway lazy-imports this module inside its event loop; each entry point
 # (gateway/run.py, cli.py, tui_gateway, acp_adapter) runs it at startup.
+from registry_freeze import RegistryFrozen  # a registration after the hosted freeze propagates
+
 try:  # plugin tool discovery (user/project/pip plugins)
     # MCP tool discovery (external MCP servers from config) used to run here as a module-level side effect.
     # It was removed because discover_mcp_tools() internally uses a blocking future.result(timeout=120)
@@ -162,6 +164,10 @@ try:  # plugin tool discovery (user/project/pip plugins)
     # acp_adapter/server.py     -> asyncio.to_thread on session init
     from hermes_cli.plugins import discover_plugins
     discover_plugins()
+except RegistryFrozen:
+    # A registration after the hosted freeze is an error that propagates; discovery must not
+    # swallow it (a silently missing registration is exactly what the freeze exists to prevent).
+    raise
 except Exception as e:
     logger.debug("Plugin discovery failed: %s", e)
 

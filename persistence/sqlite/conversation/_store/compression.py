@@ -9,6 +9,8 @@ import time
 from typing import Any, Optional
 from hermes_state_common import _BOUNDARY_END_REASONS, _ended_by_compression, is_automatic_end_reason
 from persistence.sqlite._schema_ddl import _RESET_CHILD_SQL, _sql_json_extract
+from persistence.sqlite.conversation._store.core import _session_row_dict
+from persistence.sqlite.conversation._store.messages import _carry_parent_timestamps, _clone_message_rows, _execute_transcript_write, _insert_message_rows, _is_explicit_fork_child_row, _tail_rows_after_watermark
 from persistence.sqlite.conversation._store.sql_common import (
     _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _non_continuation_child_sql, _sql_session_last_active,
 )
@@ -151,6 +153,7 @@ def reopen_if_explicitly_closed(
     cannot: the TUI starts its worker before it reaches ``run_conversation()``, so ``session.close`` can
     stamp ``tui_close`` in between and a late lease would clear a deliberate close. Call it under the
     lock that makes the host's registry claim atomic with its teardown (#54878 on the routing table)."""
+    from persistence.sqlite.conversation._store.sessions import _NON_CONTINUATION_CHILD_FILTER_SQL
     if not session_id:
         return None
 
@@ -199,6 +202,7 @@ def find_live_compression_child(holder: StoreHolder, parent_session_id: str) -> 
     """The unique live direct child of a compression-ended session, else None. A stale
     agent whose parent was rotated elsewhere may recover only when the lineage names
     exactly one live continuation; more than one fails closed."""
+    from persistence.sqlite.conversation._store.sessions import _NON_CONTINUATION_CHILD_FILTER_SQL
     if not parent_session_id:
         return None
     with holder._read_ctx() as conn:
@@ -228,6 +232,7 @@ def reopen_orphaned_compression_session(holder: StoreHolder, session_id: str) ->
     """Reopen a compression parent only when no continuation was published (older
     builds could leave a closed parent after an interrupted handoff). Conservative:
     an active lease or any canonical child means another path owns the lineage."""
+    from persistence.sqlite.conversation._store.sessions import _NON_CONTINUATION_CHILD_FILTER_SQL
     if not session_id:
         return False
     def _do(conn):
@@ -287,7 +292,7 @@ def _publish_child_session_row(holder: StoreHolder, conn, parent, *, parent_sess
     """INSERT the compression child's ``sessions`` row copied from *parent*. Same contract as
     _insert_session_row's compression-fork backfill: the child stays on the parent's profile and keeps
     gateway routing/origin columns; no owner on either side -> this store's profile."""
-    from persistence.sqlite.conversation._store.sessions import _parse_model_config
+    from persistence.sqlite.conversation._store.sessions import _own_profile_name, _parse_model_config
     # Pin/archive and the conversation keys are compression-lineage state; canonical branch/reset
     # verbs also publish through here, and their child is its own conversation.
     continuation = not any(k in (model_config or {}) for k in ("_branched_from", "_reset_from"))
@@ -370,6 +375,7 @@ def _publish_compression_child_on_conn(
     """:meth:`publish_compression_child` on the caller's write transaction (never commits). The
     owner and the worker/canonical-mutation verbs share this one body so they cannot drift."""
     from hermes_state_errors import CompressionSessionBusyError
+    from persistence.sqlite.conversation._store.sessions import _unarchive_auto_archived_lineage
     if require_lease_refresh and compression_lock_holder:
         conn.execute(
             "UPDATE compression_locks SET expires_at = ? WHERE session_id = ? AND holder = ?",
@@ -697,6 +703,7 @@ def _compression_tip_on(holder: StoreHolder, conn, session_id: str) -> str:
 
 
 def _is_compression_child_row(holder: StoreHolder, child: dict[str, Any]) -> bool:
+    from persistence.sqlite.conversation._store.sessions import get_session
     parent_id = child.get("parent_session_id")
     # A reset fork of a compression-ended parent is its own conversation, not the continuation (#114271).
     if not parent_id or _is_explicit_fork_child_row(holder, child, include_reset=True):
@@ -707,6 +714,7 @@ def _is_compression_child_row(holder: StoreHolder, child: dict[str, Any]) -> boo
 
 def get_compression_lineage(holder: StoreHolder, session_id: str) -> list[str]:
     """Return compression ancestors through tip in chronological order."""
+    from persistence.sqlite.conversation._store.sessions import get_session
     session = get_session(holder, session_id)
     if not session or _is_explicit_fork_child_row(holder, session):
         return [session_id] if session else []
@@ -743,6 +751,7 @@ def get_tool_rotation_root(holder: StoreHolder, session_id: str) -> str:
     fork, but rotation copies the parent's source onto its continuation, so climb only hops where both rows are
     ``tool`` and the child is an unmarked continuation of a compression-ended parent. A ``tool`` fork of another
     source's session keeps its own id."""
+    from persistence.sqlite.conversation._store.sessions import get_session
     row, seen = get_session(holder, session_id), {session_id}
     while row and row.get("source") == "tool" and (parent_id := row.get("parent_session_id")) not in seen:
         parent = get_session(holder, parent_id) if parent_id else None
@@ -751,9 +760,3 @@ def get_tool_rotation_root(holder: StoreHolder, session_id: str) -> str:
         seen.add(parent_id)
         row = parent
     return row["id"] if row else session_id
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.core import _session_row_dict
-from persistence.sqlite.conversation._store.messages import _carry_parent_timestamps, _clone_message_rows, _execute_transcript_write, _insert_message_rows, _is_explicit_fork_child_row, _tail_rows_after_watermark
-from persistence.sqlite.conversation._store.sessions import _NON_CONTINUATION_CHILD_FILTER_SQL, _own_profile_name, _unarchive_auto_archived_lineage, get_session

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional
 from persistence.sqlite.conversation._store.sql_common import _sql_session_last_active
 from persistence.sqlite._holder import StoreHolder
+from persistence.sqlite.conversation._store.core import _session_row_dict
 
 
 def list_gateway_sessions(
@@ -31,7 +32,3 @@ def list_gateway_sessions(
     query += (" AND LOWER(source) = LOWER(?)" if platform else "") + (
         " AND ended_at IS NULL" if active_only else "") + " ORDER BY last_active DESC"
     return [_session_row_dict(r) for r in holder._read_all(query, params)]
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.core import _session_row_dict

@@ -160,6 +160,29 @@ def test_emphasis_pairing_does_not_rescan_a_distant_opener(adapter):
     assert mdv2_error(out) is None
 
 
+def test_one_line_link_quote_edge_does_not_scan_the_message_prefix(adapter):
+    """A short one-line link must not re-walk the text before it (#151728 review).
+
+    The newline scan is bounded by the link span, but locating the link's own line ran an
+    unconditional ``text.rfind("\\n", 0, start)``, so a long single line carrying many short
+    links reintroduced quadratic work: measured 0.006 s / 0.017 s / 0.065 s / 0.235 s for 250 /
+    500 / 1000 / 2000 links on one line. Answering "no newline, no crossing" first keeps it linear.
+    """
+
+    class PrefixGuard(str):
+        def rfind(self, *_args, **_kwargs):
+            raise AssertionError("a one-line span must not scan the message prefix")
+
+    prefix = "a" * 32000
+    message = PrefixGuard(prefix + "[docs](https://example.com)")
+    assert telegram_markdown._crosses_quote_edge(message, len(prefix), len(message)) is False
+
+    # The same shape through the public formatter still converts every link on the line.
+    out = adapter.format_message("x" * 8 + " [d_i](https://e.co/p)" * 500)
+    assert out.count("[d\\_i](https://e.co/p)") == 500
+    assert mdv2_error(out) is None
+
+
 @pytest.mark.parametrize(
     "markdown",
     [

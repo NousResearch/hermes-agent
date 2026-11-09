@@ -122,9 +122,21 @@ _STALL_FIELD_MAP = (("_stall_quiet_seconds", "stalled_after_quiet_seconds"),
 
 
 # ── Durable ledger (the profile store's async_delegations) ──────────────────
+def _scope():
+    from persistence_assembly import profile_scope
+    return profile_scope()
+
+
 def _db_path():
-    from persistence_assembly import profile_scope, store_location
-    return store_location(profile_scope())
+    """The store file main's raw boot recovery opens (``store_location`` of the ledger's scope)."""
+    from persistence_assembly import store_location
+    return store_location(_scope())
+
+
+def _ledger_exists():
+    """Whether the ledger's store exists yet; a read or a sweep never creates it."""
+    from persistence_assembly import store_exists
+    return store_exists(_scope())
 
 
 def _ledger():
@@ -132,8 +144,8 @@ def _ledger():
     from agent.runtime_session_store import WorkerPersistenceError, is_worker_process
     if is_worker_process():
         raise WorkerPersistenceError('worker_delegation_ledger_unavailable')
-    from persistence_assembly import open_persistence, profile_scope
-    return open_persistence(profile_scope(home=_db_path().parent))
+    from persistence_assembly import open_persistence
+    return open_persistence(_scope())
 
 
 def _connect() -> sqlite3.Connection:
@@ -219,7 +231,7 @@ def _transaction():
 def _ledger_reader():
     """A read-only handle on the ledger's store, which opens no store writer; the caller closes it."""
     from persistence_assembly import open_persistence_reader
-    return open_persistence_reader(_db_path())
+    return open_persistence_reader(_scope().profile_dir)
 
 
 def _capture_routing_origin() -> dict[str, Any]:
@@ -410,7 +422,7 @@ def restore_undelivered_completions(target_queue) -> int:
         # The ordinary owner restores delivery-only results; a compute import
         # must neither reap that owner's ledger nor steal its delivery queue.
         return 0
-    if not _db_path().exists():
+    if not _ledger_exists():
         return 0  # nothing to replay; a replay must not create (or migrate) the ledger (#123265)
     recover_abandoned_delegations()
     with _ledger_reader() as reader:
@@ -547,7 +559,7 @@ def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> 
     deliver twice. Rows past the delivery budget or the replay age converge to ``dropped``. Reads the
     current profile's ledger: callers bind the owning profile first."""
     alive = _owner_liveness()
-    if alive is None or not _db_path().exists():
+    if alive is None or not _ledger_exists():
         return 0  # never create a ledger just to sweep it
     recover_abandoned_delegations()
     now = time.time() if now is None else now

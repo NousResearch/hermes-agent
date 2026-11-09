@@ -48,7 +48,10 @@ async def _build_profile_authority(runner, name, home, *, register):
         if persistence is None:
             raise RuntimeError(_store_open_failure(runner, home))
         from persistence_assembly import open_persistence, store_location
-        if (await asyncio.to_thread(Path(store_location(persistence.scope)).resolve)).parent != home:
+        location = store_location(persistence.scope)
+        owner = (persistence.scope.profile_dir if location is None
+                 else (await asyncio.to_thread(Path(location).resolve)).parent)
+        if owner != home:
             raise RuntimeError(f'session authority database does not belong to the reserved profile {home}')
         registry.add(home, None, name=name)
         # The authority reads and writes through its own reference on its store, held until it retires: the stop

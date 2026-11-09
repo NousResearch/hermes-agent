@@ -3511,20 +3511,20 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     @staticmethod
     def _with_partial_send(
         result: SendResult, undelivered: list[str], delivered: list[str], *, tail_certain: bool = True) -> SendResult:
-        """Mark a split-send failure that happened after earlier chunks landed with the ``partial_overflow``
-        contract (the same key ``_edit_overflow_split`` sets and the stream consumer reads), so no caller
-        re-sends the already-visible head. ``undelivered`` (the formatted remainder, for
-        :meth:`_resume_partial_send`) is attached only when ``tail_certain``. No-op when nothing landed."""
-        if not delivered:
-            return result
+        """Mark a split-send failure after earlier chunks landed with the ``partial_overflow`` contract (the key
+        ``_edit_overflow_split`` sets and the stream consumer reads), so no caller re-sends the visible head;
+        ``undelivered`` (for :meth:`_resume_partial_send`) is attached only when ``tail_certain``. An uncertain
+        failure reports ``unattempted_chunks``: messages after the one in flight that never left."""
         raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
-        raw.update({
-            "partial_overflow": True, "delivered_chunks": len(delivered), "total_chunks": len(delivered) + len(undelivered),
-            "last_message_id": delivered[-1], "continuation_message_ids": tuple(delivered[1:])})
-        if tail_certain and undelivered:
-            raw["undelivered_chunks"] = tuple(undelivered)
-            raw["delivered_message_ids"] = tuple(delivered)
-        result.raw_response = raw
+        if not tail_certain and len(undelivered) > 1:
+            raw["unattempted_chunks"] = len(undelivered) - 1
+        if delivered:
+            raw.update({
+                "partial_overflow": True, "delivered_chunks": len(delivered), "total_chunks": len(delivered) + len(undelivered),
+                "last_message_id": delivered[-1], "continuation_message_ids": tuple(delivered[1:])})
+            if tail_certain and undelivered:
+                raw["undelivered_chunks"], raw["delivered_message_ids"] = tuple(undelivered), tuple(delivered)
+        result.raw_response = raw or result.raw_response
         return result
 
     async def _resume_partial_send(

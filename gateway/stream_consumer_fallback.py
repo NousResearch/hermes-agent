@@ -145,10 +145,10 @@ class StreamFallbackMixin:
                 content=chunk, reply_to=None if sent_any_chunk else anchor,
                 retry_log="Flood control on fallback send, retrying in %.1fs")
             if (result and not result.success and self._send_failure_may_have_delivered(result)
-                    and self._fits_one_platform_message(chunk)):
+                    and not self._send_left_text_unattempted(result)):
                 # This chunk may be on screen: count it, so neither it nor the whole answer is
                 # sent again; later chunks still go out and must land on their own. A chunk the
-                # platform splits again is not counted: its later messages were never attempted.
+                # adapter split again and stopped on is not counted: its later messages never left.
                 sent_any_chunk = True
                 last_successful_chunk = chunk
                 continue
@@ -250,15 +250,13 @@ class StreamFallbackMixin:
                 logger.debug("per-chat limit resolution failed: %s", e)
         return _len_fn, raw_limit
 
-    def _fits_one_platform_message(self, chunk: str) -> bool:
-        """True when the adapter sends ``chunk`` as ONE message (Telegram's MarkdownV2 escaping can
-        grow a raw chunk past the cap, and its send then splits it again)."""
-        fmt = getattr(self.adapter, "format_message", None)
-        formatted = fmt(chunk) if callable(fmt) else chunk
-        if not isinstance(formatted, str):
-            return True
-        len_fn, limit = self._fallback_len_budget()
-        return len_fn(formatted) <= limit
+    @staticmethod
+    def _send_left_text_unattempted(result: Any) -> bool:
+        """True when the adapter reports that its uncertain send stopped before later messages of the
+        same content were attempted (Telegram's legacy path re-splits a chunk escaping grew past the
+        cap). Adapters that report nothing sent the content in one call."""
+        raw = getattr(result, "raw_response", None)
+        return isinstance(raw, dict) and bool(raw.get("unattempted_chunks"))
 
     async def _send_with_flood_retry(self, *, content: str, retry_log: str, reply_to=None):
         """adapter.send(final metadata) with ONE bounded flood retry; returns the last

@@ -1210,6 +1210,8 @@ platform:
       upload_too_large: "⚠️ Nem sikerült csatolni: `{filename}` — {size_mb} MB meghaladja a Discord {limit_mb} MB-os feltöltési limitjét ebben a csatornában. Tömörítsd a fájlt, vagy ossz meg egy linket helyette."
       image_skipped_too_large: "⚠️ Kihagyva: `{filename}` — {size_mb} MB meghaladja a Discord {limit_mb} MB-os feltöltési limitjét."
   telegram:
+    limits:
+      response_truncated: "⚠️ **A válasz csonkolva** — ez a válasz túllépte a kézbesítési limitet ({max_messages} üzenet). {dropped_chars} karakter nem lett kézbesítve; a teljes válasz a munkamenet naplóiban található."
     approval:
       action_once: "✅ Egyszer"
       action_session: "✅ Munkamenet"

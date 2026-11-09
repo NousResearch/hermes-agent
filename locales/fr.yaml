@@ -1397,6 +1397,8 @@ platform:
       upload_too_large: "⚠️ Impossible de joindre `{filename}` — {size_mb} Mo dépasse la limite d'envoi Discord de {limit_mb} Mo pour ce canal. Compressez le fichier ou partagez plutôt un lien."
       image_skipped_too_large: "⚠️ `{filename}` ignoré — {size_mb} Mo dépasse la limite d'envoi Discord de {limit_mb} Mo."
   telegram:
+    limits:
+      response_truncated: "⚠️ **Réponse tronquée** — cette réponse a dépassé la limite d'envoi ({max_messages} messages). {dropped_chars} caractères n'ont pas été transmis ; la réponse complète se trouve dans les journaux de la session."
     approval:
       action_once: "✅ Une fois"
       action_session: "✅ Session"

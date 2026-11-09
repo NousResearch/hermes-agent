@@ -1193,6 +1193,8 @@ platform:
       upload_too_large: "⚠️ `{filename}` konnte nicht angehängt werden — {size_mb} MB überschreiten das Discord-Upload-Limit von {limit_mb} MB für diesen Kanal. Komprimieren Sie die Datei oder teilen Sie stattdessen einen Link."
       image_skipped_too_large: "⚠️ `{filename}` übersprungen — {size_mb} MB überschreiten das Discord-Upload-Limit von {limit_mb} MB."
   telegram:
+    limits:
+      response_truncated: "⚠️ **Antwort gekürzt** — diese Antwort hat das Zustellungslimit ({max_messages} Nachrichten) überschritten. {dropped_chars} Zeichen wurden nicht zugestellt; die vollständige Antwort steht in den Sitzungs-Logs."
     approval:
       action_once: "✅ Einmalig"
       action_session: "✅ Sitzung"

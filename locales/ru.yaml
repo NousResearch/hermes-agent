@@ -1193,6 +1193,8 @@ platform:
       upload_too_large: "⚠️ Не удалось прикрепить `{filename}` — {size_mb} МБ превышает лимит загрузки Discord {limit_mb} МБ для этого канала. Сжмите файл или поделитесь ссылкой."
       image_skipped_too_large: "⚠️ Пропущен `{filename}` — {size_mb} МБ превышает лимит загрузки Discord {limit_mb} МБ."
   telegram:
+    limits:
+      response_truncated: "⚠️ **Ответ обрезан** — этот ответ превысил лимит доставки ({max_messages} сообщений). Не доставлено символов: {dropped_chars}; полный ответ есть в логах сеанса."
     approval:
       action_once: "✅ Разрешить один раз"
       action_session: "✅ На сеанс"

@@ -8,6 +8,7 @@ modules keep their own subclass (logger name, disk-watch hooks) on top of it.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import TYPE_CHECKING, Any
@@ -71,6 +72,27 @@ def _with_discovery_context(exc: Exception, failures: list[str]):
 
 class _RefreshCompletedByPeer(Exception):
     """Restart the SDK auth flow: a peer rotated the grant we were about to present."""
+
+
+async def _refresh_error_code(response) -> str | None:
+    """The RFC 6749 §5.2 ``error`` code of a refused refresh response, or None when unreadable.
+
+    Only ``invalid_grant`` says the refresh grant itself is dead. The HTTP status does not: a
+    ``invalid_client`` (400/401) is a client-auth or registration failure, a WAF/proxy 403 is not the
+    issuer answering at all, and some issuers spell a dead grant as a 403 (Auth0's rotated-token
+    reuse answers ``{"error": "invalid_grant"}`` with 403) — so classify on the body, never on the
+    status alone.
+    """
+    from httpx import HTTPError
+    try:
+        payload = json.loads(await response.aread())
+    except (HTTPError, ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    code = payload.get("error")
+    return code if isinstance(code, str) else None
+
 
 class HermesProviderMixin:
     """Token-endpoint fixes layered over the SDK's ``OAuthClientProvider`` (must precede it in
@@ -467,9 +489,12 @@ class HermesProviderMixin:
                     "Recovered a peer-rotated refresh token instead of clearing the session"
                 )
                 return True
-            # A 4xx (a throttle aside) is the authorization server saying the grant is dead: record
-            # WHICH one, so a rollback after a failed or cancelled re-login cannot restore it.
-            if 400 <= response.status_code < 500 and response.status_code not in (408, 425, 429):
+            # Only an ``invalid_grant`` body says this refresh grant is dead — that is the one a
+            # rollback after a failed or cancelled re-login must not put back. The status alone
+            # cannot tell: ``invalid_client`` is a client-auth/registration failure and a WAF 403 is
+            # not the issuer answering, while Auth0 answers a dead grant with 403 ``invalid_grant``
+            # (#150075 review).
+            if 400 <= response.status_code < 500 and await _refresh_error_code(response) == "invalid_grant":
                 mark = getattr(getattr(self.context, "storage", None), "mark_refresh_refused", None)
                 if mark is not None:
                     mark(getattr(self.context.current_tokens, "refresh_token", None))

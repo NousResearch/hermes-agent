@@ -898,3 +898,58 @@ async def test_refresh_refusal_is_recorded_so_a_rollback_cannot_restore_it(tmp_p
         _fake_response(429, endpoint, b'{"error":"slow_down"}')
     )
     assert not storage.refused_refresh_token("R-throttled"), "a throttle must not be recorded as a refusal"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status, body",
+    [
+        (400, b'{"error":"invalid_client"}'),
+        (401, b'{"error":"invalid_client"}'),
+        (403, b"<html><body>Request blocked</body></html>"),
+        (400, b"not json at all"),
+    ],
+)
+async def test_non_grant_refresh_error_keeps_grant_on_failed_relogin(
+    tmp_path, monkeypatch, status, body
+):
+    """A rejected refresh attempt is not proof the saved grant is dead (#150009).
+
+    ``invalid_client`` is a client-auth/registration failure and a WAF page is not the issuer
+    answering — both are fixable without rotating the user's grant, so a re-login that then fails or
+    is cancelled must still restore that grant (PR #150075 review).
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = "https://idp.example.com/oauth/token"
+    provider = _provider_with_token_endpoint(tmp_path, {}, endpoint, monkeypatch)
+    storage = provider.context.storage
+    provider.context.current_tokens = _token("A1", "R-live")
+    await storage.set_tokens(provider.context.current_tokens)
+    snapshot = storage.snapshot()
+
+    assert await provider._handle_refresh_response(_fake_response(status, endpoint, body)) is False
+    storage.remove()  # a re-login starts by removing the old token files
+    storage.restore(snapshot)  # browser approval fails or is cancelled
+
+    restored = await storage.get_tokens()
+    assert restored is not None
+    assert restored.refresh_token == "R-live", (
+        f"HTTP {status} did not reject the grant; the rollback must keep it")
+
+
+@pytest.mark.asyncio
+async def test_invalid_grant_is_recognised_beyond_the_400(tmp_path, monkeypatch):
+    """The body decides, not the status: Auth0 answers a dead refresh token with 403 + ``invalid_grant``.
+
+    A status allowlist of 400/401 would call that a live grant and restore it after a failed
+    re-login (#150075 review).
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = "https://idp.example.com/oauth/token"
+    provider = _provider_with_token_endpoint(tmp_path, {}, endpoint, monkeypatch)
+    storage = provider.context.storage
+    provider.context.current_tokens = _token("A1", "R-dead")
+
+    body = b'{"error":"invalid_grant","error_description":"Unknown or invalid refresh token."}'
+    assert await provider._handle_refresh_response(_fake_response(403, endpoint, body)) is False
+    assert storage.refused_refresh_token("R-dead"), "403 invalid_grant is still a dead grant"

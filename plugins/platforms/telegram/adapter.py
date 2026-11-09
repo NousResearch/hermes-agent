@@ -401,9 +401,7 @@ _POLLING_PROGRESS_TIMEOUT = 60.0  # generation unhealthy until getUpdates return
 # #92991) and no other probe can see it. ~3x the worst-case poll window leaves ample margin against false
 # positives while still recovering within a few heartbeat intervals.
 _POLLING_STALL_TIMEOUT = 150.0
-# Sustained getUpdates progress this long, counted from the first progress after the last 409's restart, ends a
-# conflict episode; it exceeds the gap between two conflicts of one storm (the next poll), so the ladder can climb.
-_POLLING_CONFLICT_QUIET_PERIOD = 120.0
+_POLLING_CONFLICT_QUIET_PERIOD = 120.0  # sustained progress since the last 409 that ends a conflict episode
 # Ingress dispatch stall (#102260, #130407): the transport probes prove getUpdates round-trips complete, not
 # that PTB's dispatcher ever handed the fetched updates to a handler. A backlog with no dispatch progress for
 # four heartbeats (360s) hands the adapter to the supervisor for a rebuild (an in-place restart keeps the
@@ -1585,10 +1583,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self._polling_progress_event = asyncio.Event()
         self._polling_progress_accepting = True
         self._send_path_degraded = True
-        # No proven progress yet: stall-watchdog age (#92991) and the conflict quiet window restart
-        # here, so a network recovery's downtime never counts as sustained healthy polling.
+        # No proven progress yet: stall-watchdog age (#92991) restarts here; the conflict quiet window pauses.
+        self._bank_conflict_quiet_window()
         self._polling_generation_started_monotonic = time.monotonic()
-        self._polling_last_progress_monotonic = self._polling_conflict_quiet_since = None
+        self._polling_last_progress_monotonic = None
         # Re-base the backlog per generation. On an in-place updater restart PTB keeps the old
         # update_queue, so old dispatches can briefly exceed received; the check treats that as no backlog.
         self._updates_received_total = self._updates_dispatched_total = 0
@@ -1607,16 +1605,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self._polling_progress_event.set()
         self._polling_last_progress_monotonic = time.monotonic()
         self._polling_network_error_count = 0
-        # A conflict episode ends only after a quiet period: getUpdates also succeeds between the 409s of a
-        # live storm, so resetting on any progress pinned the ladder at (1/5) forever (#82303). The window opens
-        # at the first progress after the restart, so recovery downtime (stop, backoff, drain) never counts.
-        if self._polling_conflict_count:
-            quiet_since = self._polling_conflict_quiet_since
-            if quiet_since is None:
-                self._polling_conflict_quiet_since = self._polling_last_progress_monotonic
-            elif self._polling_last_progress_monotonic - quiet_since >= _POLLING_CONFLICT_QUIET_PERIOD:
-                self._polling_conflict_count = 0
-                self._polling_conflict_quiet_since = None
+        self._note_conflict_quiet_progress(self._polling_last_progress_monotonic)
         mark_send_path_recovered(self)
         return True
 
@@ -2247,7 +2236,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
             return
         self._polling_conflict_count += 1
-        self._polling_conflict_quiet_since = None
+        self._polling_conflict_quiet_since, self._polling_conflict_quiet_banked = None, 0.0
         MAX_CONFLICT_RETRIES = 5
         # 15s, 25s, 35s, 45s, 55s — clears Telegram's ~30s session window without hammering the API.
         RETRY_DELAY = 10 + (self._polling_conflict_count * 10)  # seconds

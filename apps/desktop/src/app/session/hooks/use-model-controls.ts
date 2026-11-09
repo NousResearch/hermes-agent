@@ -282,11 +282,34 @@ export function useModelControls({
       const composerScope = getComposerSelectionScope()
       const liveGatewayProfile = cacheProfile || $activeGatewayProfile.get()
 
+      // The primary live session's slice must be painted too, not just the
+      // composer globals: the collapsed pill reads the LIVE session state
+      // (state.model) and prefers it over the draft atom, so a globals-only
+      // paint leaves the pill on the old name while the expanded menu — fed by
+      // the optimistic options cache — already shows the new one. session.info
+      // confirms (and re-stamps the wire) when the switch lands.
+      const paintLiveSession = (model: string, provider: string, reasoningEffortWire: string) => {
+        if (!liveSessionId) {
+          return
+        }
+
+        sessionTileDelegate()?.updateSession(liveSessionId, state => {
+          if (state.model === model && state.provider === provider && state.reasoningEffortWire === reasoningEffortWire) {
+            return state
+          }
+
+          return { ...state, model, provider, reasoningEffortWire }
+        })
+      }
+
       const paintSelection = () => {
         if (touchesPrimary) {
           setCurrentModel(selection.model)
           setCurrentProvider(selection.provider)
           markComposerSelectionManual()
+          // The wire stamp belongs to the old route, so it is withdrawn until
+          // session.info re-stamps it.
+          paintLiveSession(selection.model, selection.provider, '')
         } else if (liveSessionId) {
           // Optimistic tile paint — session.info will confirm; rollback on error. The wire stamp
           // belongs to the old route, so it is withdrawn until session.info re-stamps it.
@@ -312,6 +335,7 @@ export function useModelControls({
           setCurrentModelTransient(snapshot.model)
           setCurrentProviderTransient(snapshot.provider)
           setCurrentReasoningEffortWire(snapshot.reasoningEffortWire)
+          paintLiveSession(snapshot.model, snapshot.provider, snapshot.reasoningEffortWire)
         } else if (liveSessionId) {
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
             ...state,

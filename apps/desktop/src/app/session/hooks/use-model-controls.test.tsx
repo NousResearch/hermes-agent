@@ -763,6 +763,72 @@ describe('useModelControls', () => {
     expect(tileState).toMatchObject({ model: 'gpt-6.1-luna', reasoningEffortWire: '' })
   })
 
+  it('repaints the primary live session slice so the collapsed pill follows the pick', async () => {
+    // The composer pill reads view.$model, which prefers the LIVE session
+    // slice (state.model) over the composer draft atom. Painting only the
+    // globals leaves the pill on the old model until the next session.info
+    // heartbeat — the expanded menu, fed by the optimistic options cache,
+    // already shows the new one. The slice must be painted optimistically,
+    // exactly like a tile pick.
+    let primaryState: Record<string, unknown> = {
+      model: 'fast-model',
+      provider: 'workbuddy',
+      reasoningEffortWire: 'high'
+    }
+    tile.delegate = {
+      updateSession: (_id: string, update: (state: Record<string, unknown>) => Record<string, unknown>) => {
+        primaryState = update(primaryState)
+      }
+    }
+    $activeSessionId.set('runtime-a')
+    setCurrentModel('fast-model')
+    setCurrentProvider('workbuddy')
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'deep-model' }) as never)
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    try {
+      await expect(result.current.selectModel({ model: 'deep-model', provider: 'workbuddy' })).resolves.toBe(true)
+    } finally {
+      tile.delegate = null
+    }
+
+    expect(primaryState).toMatchObject({ model: 'deep-model', provider: 'workbuddy', reasoningEffortWire: '' })
+    expect($currentModel.get()).toBe('deep-model')
+    expect($currentProvider.get()).toBe('workbuddy')
+  })
+
+  it('restores the primary live session slice when the switch fails', async () => {
+    let primaryState: Record<string, unknown> = {
+      model: 'fast-model',
+      provider: 'workbuddy',
+      reasoningEffortWire: 'high'
+    }
+    tile.delegate = {
+      updateSession: (_id: string, update: (state: Record<string, unknown>) => Record<string, unknown>) => {
+        primaryState = update(primaryState)
+      }
+    }
+    $activeSessionId.set('runtime-a')
+    SessionStates.$sessionStates.set({
+      'runtime-a': { model: 'fast-model', provider: 'workbuddy', reasoningEffortWire: 'high' }
+    } as never)
+    setCurrentModel('fast-model')
+    setCurrentProvider('workbuddy')
+    setCurrentReasoningEffortWire('high')
+    const requestGateway = vi.fn(async () => {
+      throw new Error('no such model')
+    })
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    try {
+      await expect(result.current.selectModel({ model: 'bogus', provider: 'workbuddy' })).resolves.toBe(false)
+    } finally {
+      tile.delegate = null
+    }
+
+    expect(primaryState).toMatchObject({ model: 'fast-model', provider: 'workbuddy', reasoningEffortWire: 'high' })
+  })
+
   it('rolls a failed focused-B selection back only in B cache', async () => {
     const queryClient = new QueryClient()
     const ownerBKey = modelOptionsQueryKey('profile-b', 'runtime-b', 'connection-b')

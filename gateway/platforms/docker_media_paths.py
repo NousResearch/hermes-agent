@@ -7,9 +7,12 @@ gone, and scanning every ``*_ws_*`` directory would serve another session's file
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _WORKSPACE_KEY_RE = re.compile(r"^[0-9a-f]{16}$")
 
@@ -158,3 +161,16 @@ def _default_docker_workspace_host_roots(
         if root not in roots:
             roots.append(root)
     return roots
+
+
+def hand_back_unreadable_media(path: Path) -> None:
+    """A MEDIA file a root Docker sandbox restricted (``chmod 600``) is unreadable to the gateway
+    while the container lives (teardown hands files back only on removal): give that one file to
+    the host user through the container itself; the sandbox keeps ``no-new-privileges``."""
+    from gateway.platforms.base import _docker_env_active
+    if os.access(path, os.R_OK) or not _docker_env_active():
+        return
+    from tools.environments.docker import find_docker
+    from tools.environments.docker_ownership import hand_back_media_file
+    if (docker_exe := find_docker()) and hand_back_media_file(docker_exe, str(path)):
+        logger.info("Handed Docker sandbox MEDIA file %s back to the gateway user", path.name)

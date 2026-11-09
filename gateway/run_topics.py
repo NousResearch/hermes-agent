@@ -267,35 +267,6 @@ class GatewayTopicThreadsMixin:
 
         return {"checked": True, **{k: _field(k) for k in ("has_topics_enabled", "allows_users_to_create_topics")}}
 
-    async def _ensure_telegram_system_topic(self, source: SessionSource) -> None:
-        """Create/pin the managed System topic after /topic activation when possible."""
-        adapter = self._delivery_adapter_for(source)
-        create_topic = getattr(adapter, "_create_dm_topic", None) if adapter is not None and source.chat_id else None
-        if not callable(create_topic):
-            return
-        try:
-            thread_id = await create_topic(int(source.chat_id), t("gateway.topic.system_topic_name"))
-        except Exception:
-            logger.debug("Failed to create Telegram System topic", exc_info=True)
-            return
-        if not thread_id:
-            return
-        try:
-            send_result = await adapter.send(
-                source.chat_id, t("gateway.topic.system_topic_intro"), metadata={"thread_id": str(thread_id)},
-            )
-            message_id = getattr(send_result, "message_id", None)
-        except Exception:
-            logger.debug("Failed to send Telegram System topic intro", exc_info=True)
-            return
-        bot = getattr(adapter, "_bot", None)
-        if not message_id or bot is None or not hasattr(bot, "pin_chat_message"):
-            return
-        try:
-            await bot.pin_chat_message(chat_id=int(source.chat_id), message_id=int(message_id), disable_notification=True)
-        except Exception:
-            logger.debug("Failed to pin Telegram System topic intro", exc_info=True)
-
     async def _send_telegram_topic_setup_image(self, source: SessionSource) -> None:
         """Send the bundled BotFather Threads Settings screenshot when available."""
         adapter = self._delivery_adapter_for(source)

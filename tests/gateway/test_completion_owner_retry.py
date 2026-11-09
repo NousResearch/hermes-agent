@@ -15,6 +15,7 @@ from tools import async_delegation as ad
 from tools.process_registry import process_registry
 from tests.fixtures.storage_read import session_row
 from tests.fixtures.storage_seed import seed_session
+from persistence_assembly import store_location
 
 
 @pytest.mark.asyncio
@@ -92,7 +93,7 @@ async def test_transient_ownership_ancestor_failure_retries_durable_delivery_onc
             pending = ad.get_durable_delegation(event["delegation_id"])
             assert pending is not None
             assert (pending["delivery_state"], pending["delivery_attempts"]) == ("pending", 0)
-            with sqlite3.connect(ad._db_path()) as conn:
+            with sqlite3.connect(store_location(ad._scope())) as conn:
                 assert conn.execute(
                     "SELECT delivery_claim FROM async_delegations WHERE delegation_id=?",
                     (event["delegation_id"],),

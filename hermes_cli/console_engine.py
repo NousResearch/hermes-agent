@@ -729,6 +729,8 @@ def _sessions_repair(_engine: HermesConsoleEngine, args: list[str]) -> int | Non
     from persistence.core.admin import AdminUnsupported, HealthCheckUnavailable
     from persistence_assembly import open_store_admin, profile_scope, store_location
     db_path = store_location(profile_scope())
+    if db_path is None:
+        raise ConsoleCommandError("sessions repair needs a file-backed session store; this profile's store has no file.")
     if not db_path.exists():
         print(f"No session database at {db_path} (nothing to repair).")
         return

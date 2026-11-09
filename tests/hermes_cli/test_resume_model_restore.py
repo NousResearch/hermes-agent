@@ -548,3 +548,12 @@ def test_stored_session_route_heals_an_empty_provider_to_the_entry_serving_the_m
     route = stored_session_route(_row(model="GLM-5.3"), current_model="claude-opus-5-5", current_provider="anthropic")
 
     assert route[:2] == ("GLM-5.3", "custom:glm")
+
+
+def test_stored_session_route_keeps_a_row_the_main_slot_still_serves(monkeypatch):
+    """An empty provider on the profile's own model ran on the main slot: a custom entry that also
+    lists the model must not take it over."""
+    from hermes_cli.cli_model_switch_mixin import stored_session_route
+    _custom_config(monkeypatch, {"name": "proxy", "base_url": GLM_NEW, "api_key": "***", "model": "claude-opus-5-5"})
+
+    assert stored_session_route(_row(model="claude-opus-5-5"), current_model="x", current_provider="anthropic")[1] is None

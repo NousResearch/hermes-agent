@@ -551,8 +551,8 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         override_base_url = model_override.get("base_url")
         resolve_kwargs = {}
         provider_norm = str(requested_provider or "").strip().lower()
-        # An empty provider names no route either; unhealed, the model lands on the main slot (#132648).
-        if provider_norm in ("", "custom"):
+        # An empty provider names no route either; once the main slot targets another model it 404s (#132648).
+        if provider_norm == "custom" or (not provider_norm and _config_model_target()[0] != model):
             from hermes_cli.runtime_provider import canonical_custom_identity
             if recovered := canonical_custom_identity(base_url=override_base_url or None, model=model or None):
                 requested_provider = recovered
@@ -561,6 +561,9 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
             resolve_kwargs["explicit_base_url"] = override_base_url
         resolve_kwargs.update(requested=requested_provider, target_model=model or None)
         overrides = {k: model_override.get(k) for k in ("base_url", "api_key", "api_mode")}
+        if not provider_norm and requested_provider:
+            # The healed entry resolves its own current endpoint; the row's URL may be retired.
+            overrides["base_url"] = None
     else:
         model, requested_provider = _resolve_startup_runtime()
         if isinstance(model_override, str) and model_override:

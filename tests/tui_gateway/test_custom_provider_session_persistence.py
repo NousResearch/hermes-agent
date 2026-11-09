@@ -1038,3 +1038,15 @@ class TestEmptyProviderHealsFromModel:
 
         assert kwargs["base_url"] == "https://b.example/v1"
         assert kwargs["api_key"] == "sk-entry-b"
+
+
+def test_empty_provider_row_with_a_retired_url_reaches_the_entrys_current_endpoint(monkeypatch):
+    """#132648 review: the entry serving the model moved. Healing by model must not keep the row's old URL."""
+    config = {"custom_providers": [{"name": "glm", "base_url": "https://new.example/v1", "api_key": "sk-glm",
+                                    "api_mode": "chat_completions", "models": {"GLM-5.3": {}}}]}
+    override = {"model": "GLM-5.3", "provider": None, "base_url": "https://old.example/v1", "api_mode": None}
+
+    kwargs = _make_agent_with_override(override, monkeypatch, config)
+
+    assert kwargs["base_url"] == "https://new.example/v1"
+    assert kwargs["api_key"] == "sk-glm"

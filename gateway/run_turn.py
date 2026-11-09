@@ -1669,16 +1669,20 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             self._requeue_at_depth_cap(session_key, source, pending_event, pending)
             return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
 
-        # Interrupted: still deliver a reasoned interrupt notice so surfaces never
-        # show silence or bare "Operation interrupted." Control-follow-up turns
-        # still recurse after delivery.
+        # A user steer already has a queued reply: an extra stop notice is noise.
+        # A system interruption needs its reason delivered before the follow-up.
+        _exit_reason = str(result.get("turn_exit_reason") or "")
+        _system_stop = (
+            _exit_reason.startswith("interrupted_by_system(")
+            or _exit_reason.startswith("interrupted_during_api_call(")
+        )
         if not result.get("interrupted"):
             # Register this turn's bubble cleanup BEFORE the first-response delivery pops and awaits
             # the post-delivery callback: the follow-up returns early, so the normal-path
             # registration after it would never run and the bubbles stayed up.
             register_bubble_cleanup(response, turn_ctx)
             await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
-        else:
+        elif _system_stop:
             from agent.interrupt_control import is_bare_interrupt_text
 
             _interrupt_text = response if isinstance(response, str) else (result.get("final_response") or "")

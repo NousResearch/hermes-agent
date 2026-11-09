@@ -1,0 +1,32 @@
+name: frontend-sensei
+repo: https://github.com/daniels-martins/frontend-sensei
+sha: 7afab52b1fd58f614e05eaa073cf66e240b1d869
+description: >-
+  Professional frontend expertise plugin — gives Hermes Agent real UI/UX
+  knowledge through six MCP audit tools and ten curated skill files. Tools
+  audit accessibility (WCAG 2.2 with DOMDocument parsing), CSS quality,
+  WCAG color contrast (with alpha compositing, hsl, 8-digit hex), animation
+  performance, and full component quality (weighted scoring, A-F grades).
+  Skill files cover UI fundamentals, accessibility, CSS architecture,
+  animation (Disney's 12 principles, AOS, GSAP), Three.js and 3D, React
+  patterns, Vue patterns, responsive design, performance (Core Web Vitals),
+  and design systems. Built with Laravel 13 and laravel/mcp v1 (stdio
+  transport). Requires PHP 8.4, Composer, and a one-time setup (composer
+  install, migrate). Includes an MCP prompt for one-shot component audits.
+maintainer: daniels-martins
+tier: community
+category: tools
+docs_url: https://github.com/daniels-martins/frontend-sensei#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - audit-accessibility-tool
+    - audit-css-tool
+    - check-color-contrast-tool
+    - audit-animation-tool
+    - audit-component-tool
+    - frontend-score-tool
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -27,6 +27,7 @@ class _FakePTBUpdater:
         cb = getattr(self, "_Updater__polling_cleanup_cb", None)
         if cb is not None:
             await cb()
+            self._Updater__polling_cleanup_cb = None
 
 
 @pytest.mark.asyncio

@@ -1965,9 +1965,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                     # deadline, so every transient error wedges stop() for the whole budget and escalates
                     # to a full adapter rebuild (#131783). A same-Updater restart resumes from
                     # _last_update_id, and admission receipts (#120257) dedupe the at-most-one unconfirmed
-                    # batch, so dropping this receipt costs no redelivery.
+                    # batch, so a no-op receipt costs no redelivery (None logs PTB's false refetch WARNING).
                     if getattr(app.updater, "_Updater__polling_cleanup_cb", None) is not None:
-                        app.updater._Updater__polling_cleanup_cb = None
+                        app.updater._Updater__polling_cleanup_cb = lambda: asyncio.sleep(0)
                 try:
                     await _await_with_thread_deadline(app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
                 except TimeoutError:

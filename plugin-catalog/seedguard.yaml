@@ -2,8 +2,8 @@ name: seedguard
 title: Seedguard
 description: "Secret firewall: private keys, seed phrases, API keys and 2FA codes become placeholders before they reach the model; armed tools can still use them."
 repo: https://github.com/Investorquab/Seedguard
-sha: "f61f05fe753661221807a91e0dc13e649c6668cc"
-version: "0.1.0"
+sha: "ee0c9dae0c45c0967ec1f039db51445c71e58419"
+version: "0.1.1"
 tier: community
 category: general
 maintainer: Investorquab
@@ -12,7 +12,7 @@ docs_url: https://github.com/Investorquab/Seedguard#readme
 readme: true
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/Investorquab/Seedguard/f61f05fe753661221807a91e0dc13e649c6668cc/assets/seedguard-redaction.png
+  - https://raw.githubusercontent.com/Investorquab/Seedguard/ee0c9dae0c45c0967ec1f039db51445c71e58419/assets/seedguard-redaction.png
 capabilities:
   provides_tools: []
   provides_hooks:

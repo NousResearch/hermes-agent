@@ -252,6 +252,23 @@ class VoiceLiveSessionRequest(BaseModel):
     text turns (``{"type":"message","role":..,"content":[..]}``) to seed the live voice model."""
     sdp: str
     history: Optional[list[dict[str, Any]]] = None
+    instructions: Optional[str] = Field(default=None, max_length=32768)
+    voice: Optional[str] = Field(default=None, max_length=128)
+
+    @field_validator("instructions", "voice")
+    @classmethod
+    def _nonblank_live_override(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not value.strip():
+            raise ValueError("GPT-Live session override must not be blank")
+        return value
+
+    @field_validator("voice")
+    @classmethod
+    def _single_line_live_voice(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and (value != value.strip() or any(ord(ch) < 32 for ch in value)):
+            raise ValueError("GPT-Live voice must be a single-line name without surrounding spaces")
+        return value
+
 
 class TTSLeaseRequest(BaseModel):
     """POST /api/audio/tts-lease: ``lease`` names the toggle/surface holding the lease

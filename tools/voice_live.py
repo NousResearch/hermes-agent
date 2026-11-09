@@ -144,14 +144,21 @@ def resolve_gpt_live_status() -> dict[str, Any]:
     }
 
 
-def build_session_config(history: Optional[list] = None) -> dict[str, Any]:
+def build_session_config(
+    history: Optional[list] = None, *, instructions: Optional[str] = None, voice: Optional[str] = None,
+) -> dict[str, Any]:
     """The ``session`` object for ``POST /v1/live/sessions`` (client delegation, WebRTC — the
     transport negotiates the audio format, so none is set)."""
     live = _live_section()
+    prompt = live_instructions(live)
+    if instructions is not None:
+        prompt = f"{prompt}\n\n{instructions}"
     config: dict[str, Any] = {
         "model": str(live.get("model") or DEFAULT_LIVE_MODEL),
-        "instructions": live_instructions(live),
-        "audio": {"output": {"voice": str(live.get("voice") or DEFAULT_LIVE_VOICE)}},
+        "instructions": prompt,
+        "audio": {"output": {
+            "voice": voice if voice is not None else str(live.get("voice") or DEFAULT_LIVE_VOICE),
+        }},
         "delegation": {"type": "client"},
     }
     if history:
@@ -159,7 +166,10 @@ def build_session_config(history: Optional[list] = None) -> dict[str, Any]:
     return config
 
 
-def create_webrtc_session(sdp_offer: str, history: Optional[list] = None) -> dict[str, Any]:
+def create_webrtc_session(
+    sdp_offer: str, history: Optional[list] = None, *,
+    instructions: Optional[str] = None, voice: Optional[str] = None,
+) -> dict[str, Any]:
     """Exchange the renderer's SDP offer for the Live session answer.
 
     Returns the vendor response ``{"session": {"id": ...}, "transport": {"type": "webrtc",
@@ -171,7 +181,7 @@ def create_webrtc_session(sdp_offer: str, history: Optional[list] = None) -> dic
     if not api_key:
         raise ValueError("GPT-Live needs an OpenAI API key (OPENAI_API_KEY or voice.gpt_live.api_key)")
     body = json.dumps({
-        "session": build_session_config(history),
+        "session": build_session_config(history, instructions=instructions, voice=voice),
         "transport": {"type": "webrtc", "sdp": sdp_offer},
     }).encode("utf-8")
     req = urllib.request.Request(

@@ -135,6 +135,7 @@ class ApprovalRequest:
     severity: str = ""
     timeout_sec: int = 120
     allow_permanent: bool = True
+    request_id: str = ""  # the tools.approval request this card answers (and only that one)
 
 
 _SEVERITY_ICONS = {"critical": "🔴", "info": "🔵"}

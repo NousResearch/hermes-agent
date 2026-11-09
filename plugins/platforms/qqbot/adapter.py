@@ -1472,7 +1472,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         """Send a 3-button approval request (allow-once / allow-always / deny);
         clicks come back as INTERACTION_CREATE decoded by parse_approval_button_data."""
         from .keyboards import build_approval_text
-        keyboard = build_approval_keyboard(req.session_key, allow_permanent=getattr(req, "allow_permanent", True))
+        keyboard = build_approval_keyboard(
+            req.session_key, allow_permanent=getattr(req, "allow_permanent", True), request_id=req.request_id)
         return await self.send_with_keyboard(chat_id, build_approval_text(req), keyboard, reply_to=reply_to)
 
     # Cross-adapter gateway contract: gateway/run.py detects send_exec_approval /

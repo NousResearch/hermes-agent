@@ -813,11 +813,24 @@ def _invoke_agent(
     _usage_stop, _usage_thread = _start_usage_ticker(sid, agent)
     try:
         from agent.notification_presentation import notification_turn, event_presentation_muted
-        with notification_turn(agent, muted=event_presentation_muted("message.delta", sid), session_id=sid):
-            st.result = agent.run_conversation(run_message, **st.run_kwargs)
-            # A held last line that never became a marker is part of the reply: deliver it.
-            if hold is not None and (rest := hold.finish()) and not getattr(agent, "_mute_notification_reply", False):
-                _emit_delta(rest)
+        # The slot gate already passed. Stamp the lease the claim must recheck: a desktop
+        # resume can drop it before admit_durable_turn_lease returns.
+        agent._turn_slot_lease = session.get("active_session_lease")
+        try:
+            with notification_turn(agent, muted=event_presentation_muted("message.delta", sid), session_id=sid):
+                st.result = agent.run_conversation(run_message, **st.run_kwargs)
+                # A held last line that never became a marker is part of the reply: deliver it.
+                if hold is not None and (rest := hold.finish()) and not getattr(agent, "_mute_notification_reply", False):
+                    _emit_delta(rest)
+        finally:
+            agent._turn_slot_lease = None
+        if isinstance(st.result, dict) and st.result.get("failure_reason") == "SESSION_NOT_OWNED":
+            # Same sticky end state as the slot gate: no fresh claim on the adopted transcript.
+            held = session.get("active_session_lease")
+            if held is not None:
+                held.released = True
+            session.pop("active_session_lease", None)
+            session["_slot_handed_over"] = True
     finally:
         # Stop AND join before anything emits: a tick surviving past message.complete would
         # roll the client's usage back to a stale snapshot (unbounded join: same worst case).

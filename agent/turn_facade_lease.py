@@ -491,3 +491,52 @@ def _lease_not_acquired_result(agent, session_id: str, conversation_history, *, 
         "failure_reason": "session_busy",
         "failure_retryable": True,
     }
+
+
+def _slot_still_registered(slot) -> bool:
+    """Whether the slot the turn gate already passed is still in the registry.
+
+    Fail open on an unreadable registry, same as the gate's revalidation: this is a
+    second look at a slot the caller holds, and the claim path is where uncertainty
+    fails closed. A disabled or already-released token cannot contradict itself.
+    """
+    from hermes_cli.active_sessions import lease_is_registered
+    try:
+        return lease_is_registered(slot)
+    except Exception:
+        logger.warning(
+            "Could not revalidate the active-session slot after turn-lease admission",
+            exc_info=True,
+        )
+        return True
+
+
+def refuse_if_slot_retired(agent, conversation_history) -> Optional[dict[str, Any]]:
+    """Refusal when the slot was dropped between the gate and this claim, else None.
+
+    The desktop's probe, drop and commit already hold the registry lock. This read
+    takes that lock too, so it cannot land between the probe and the drop: a slot
+    that is gone is released here (the façade's finally drops the turn-lease row);
+    a slot that is still registered means a live turn lease will make the probe refuse.
+    """
+    slot = getattr(agent, "_turn_slot_lease", None)
+    if slot is None or _slot_still_registered(slot):
+        return None
+    session_id = str(getattr(agent, "session_id", None) or "")
+    logger.info(
+        "Refusing turn for %s: active-session slot was retired after the durable lease was claimed",
+        session_id or "?",
+    )
+    from hermes_cli.active_sessions import SESSION_NOT_OWNED
+    return {
+        "messages": list(conversation_history or []),
+        "api_calls": 0,
+        "completed": False,
+        "failed": True,
+        "final_response": (
+            "This chat is now open in another Hermes window. Use it there, or start a new chat here."
+        ),
+        "error": SESSION_NOT_OWNED,
+        "failure_reason": SESSION_NOT_OWNED,
+        "failure_retryable": False,
+    }

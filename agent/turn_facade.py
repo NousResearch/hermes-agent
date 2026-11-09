@@ -53,7 +53,9 @@ class TurnFacadeMixin:
         from agent.review_idle_queue import QUEUE as _review_queue
         from agent.subagent_lifecycle import bind_subagent_parent
         from agent.interrupt_scope import track_in_interrupt_scope
-        from agent.turn_facade_lease import admit_durable_turn_lease, carry_unadmitted_user_message
+        from agent.turn_facade_lease import (
+            admit_durable_turn_lease, carry_unadmitted_user_message, refuse_if_slot_retired,
+        )
         from hermes_cli.observability.relay_shared_metrics import finish_task_run, start_task_run
 
         effective_task_id = task_id or str(uuid.uuid4())
@@ -95,6 +97,13 @@ class TurnFacadeMixin:
                 )
                 return admission.early_result
             lease = admission.lease
+            # The slot gate and this claim are not one decision. A desktop resume can drop the
+            # idle slot under the registry lock after the gate passed and before this claim.
+            # Recheck while the claim is held: lease_is_registered takes that same lock, so it
+            # either sees the drop and we release, or a still-live slot means the desktop's
+            # probe will refuse. Leave ``lease`` set so the finally releases the row.
+            if (retired := refuse_if_slot_retired(self, admission.conversation_history)) is not None:
+                return retired
             conversation_history = admission.conversation_history
 
             relay_session_cwd, relay_turn_cwd = resolve_relay_scope_cwds(

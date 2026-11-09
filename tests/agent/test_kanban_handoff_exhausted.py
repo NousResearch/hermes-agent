@@ -19,7 +19,11 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from agent.kanban_stop import kanban_handoff_exhausted, session_called_kanban_terminal
+from agent.kanban_stop import (
+    build_kanban_stop_nudge,
+    kanban_handoff_exhausted,
+    session_called_kanban_terminal,
+)
 
 _ENV_WORKER = {"HERMES_KANBAN_TASK": "t_probe"}
 
@@ -330,7 +334,157 @@ class FinishTextResponseHandoffFailureTests(unittest.TestCase):
         self.assertEqual(result.get("failure_reason"), "loop_error")
         self.assertIn("This kanban task could not be handed off", str(result.get("error")))
         agent._cleanup_task_resources.assert_called_once_with("t_probe")
-        agent._persist_session.assert_called_once()
+        agent._persist_session.assert_called_once_with(messages, [])
+        self.assertEqual(messages, _NARRATED)
+
+
+class TerminalResultContractTests(unittest.TestCase):
+    """Only a correlated, successful response releases the worker's card."""
+
+    @staticmethod
+    def transcript(content, *, name="kanban_complete", arguments=None):
+        return [
+            {"role": "assistant", "tool_calls": [{
+                "id": "handoff", "type": "function", "function": {
+                    "name": name,
+                    "arguments": arguments if arguments is not None else {"task_id": "t_probe"},
+                },
+            }]},
+            {"role": "tool", "name": name, "tool_call_id": "handoff", "content": content},
+        ]
+
+    def test_each_terminal_action_accepts_text_and_structured_success(self):
+        for name in (
+            "kanban_complete", "kanban_request_review", "kanban_request_changes",
+            "kanban_schedule", "kanban_block",
+        ):
+            for content in ("Task handed off", {"ok": True, "task_id": "t_probe"},
+                            json.dumps({"success": True, "id": "t_probe"})):
+                with self.subTest(name=name, content=content):
+                    self.assertTrue(session_called_kanban_terminal(
+                        self.transcript(content, name=name), task_id="t_probe",
+                    ))
+
+    def test_error_and_empty_results_do_not_release_card(self):
+        for content in (
+            None, "", "  \n", {"error": "missing artifacts"}, {"ok": False},
+            {"success": False}, '{"success": false}', '{"error": "denied"}',
+            "  ERROR: denied", "Error executing tool", "SCHEMA_VALIDATION_ERROR: content",
+            "Tool error: rejected", "Failed: invalid state", "Rejected: wrong owner",
+            "Exception: unavailable", "{invalid json}",
+        ):
+            with self.subTest(content=content):
+                self.assertFalse(session_called_kanban_terminal(
+                    self.transcript(content), task_id="t_probe",
+                ))
+
+    def test_result_id_alias_cannot_release_another_card(self):
+        for content in ({"ok": True, "id": "t_other"},
+                        json.dumps({"success": True, "id": "t_other"})):
+            with self.subTest(content=content):
+                self.assertFalse(session_called_kanban_terminal(
+                    self.transcript(content), task_id="t_probe",
+                ))
+
+    def test_explicit_task_takes_precedence_over_environment(self):
+        messages = self.transcript("done")
+        with patch.dict(os.environ, {"HERMES_KANBAN_TASK": "t_other"}):
+            self.assertTrue(session_called_kanban_terminal(messages, task_id="t_probe"))
+            self.assertFalse(session_called_kanban_terminal(messages))
+
+    def test_sdk_and_flat_calls_preserve_task_matching(self):
+        for arguments in ({"task_id": "t_other"}, json.dumps({"task_id": "t_other"})):
+            for call in (
+                SimpleNamespace(id="handoff", function=SimpleNamespace(
+                    name="kanban_complete", arguments=arguments)),
+                SimpleNamespace(id="handoff", name="kanban_complete", arguments=arguments),
+                {"id": "handoff", "name": "kanban_complete", "arguments": arguments},
+            ):
+                with self.subTest(arguments=arguments, call=call):
+                    messages = self.transcript("done")
+                    messages[0]["tool_calls"] = [call]
+                    self.assertFalse(session_called_kanban_terminal(messages, task_id="t_probe"))
+                    self.assertTrue(session_called_kanban_terminal(messages, task_id="t_other"))
+
+    def test_implicit_task_can_use_result_identity(self):
+        # Legacy adapters omit task_id and let the tool default to the owned card.
+        for arguments in ("{}", {}):
+            with self.subTest(arguments=arguments):
+                messages = self.transcript({"ok": True, "task_id": "t_probe"})
+                messages[0]["tool_calls"][0]["function"]["arguments"] = arguments
+                self.assertTrue(session_called_kanban_terminal(messages, task_id="t_probe"))
+
+    def test_nonterminal_tool_success_does_not_release_card(self):
+        self.assertFalse(session_called_kanban_terminal(
+            self.transcript("done", name="write_file"), task_id="t_probe",
+        ))
+
+    def test_missing_call_id_cannot_match_a_result(self):
+        for call_id in (None, "", "  "):
+            with self.subTest(call_id=call_id):
+                messages = self.transcript("done")
+                messages[0]["tool_calls"][0]["id"] = call_id
+                messages[1]["tool_call_id"] = call_id
+                self.assertFalse(session_called_kanban_terminal(messages, task_id="t_probe"))
+
+    def test_empty_or_unrelated_transcript_is_not_handoff(self):
+        for messages in (None, [], [None, "done", {"role": "user", "content": "done"}]):
+            with self.subTest(messages=messages):
+                self.assertFalse(session_called_kanban_terminal(messages, task_id="t_probe"))
+
+    def test_transcript_iterator_matches_success(self):
+        self.assertTrue(session_called_kanban_terminal(
+            iter(self.transcript("done")), task_id="t_probe",
+        ))
+
+
+class HandoffBudgetBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        env = patch.dict(os.environ, {
+            "HERMES_KANBAN_TASK": "t_probe", "HERMES_KANBAN_STOP_NUDGE": "1",
+            "HERMES_DELEGATED_CHILD_CONTEXT": "",
+        })
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_custom_budget_switches_from_nudge_to_failure_at_boundary(self):
+        for maximum in (0, 1, 3):
+            for attempts in (maximum - 1, maximum, maximum + 1):
+                with self.subTest(maximum=maximum, attempts=attempts):
+                    exhausted = attempts >= maximum
+                    self.assertEqual(kanban_handoff_exhausted(
+                        _NARRATED, attempts=attempts, max_attempts=maximum,
+                    ), exhausted)
+                    self.assertEqual(build_kanban_stop_nudge(
+                        messages=_NARRATED, attempts=attempts, max_attempts=maximum,
+                    ) is None, exhausted)
+
+    def test_disabled_guard_neither_nudges_nor_fails(self):
+        for value in ("0", "false", "NO", " Off "):
+            with self.subTest(value=value), patch.dict(os.environ, {"HERMES_KANBAN_STOP_NUDGE": value}):
+                self.assertIsNone(build_kanban_stop_nudge(messages=_NARRATED))
+                self.assertFalse(kanban_handoff_exhausted(_NARRATED, attempts=99))
+
+    def test_inherited_task_does_not_fail_non_dispatcher_execution(self):
+        from agent.delegation_context import non_dispatcher_owned_context
+
+        with non_dispatcher_owned_context():
+            self.assertIsNone(build_kanban_stop_nudge(messages=_NARRATED))
+            self.assertFalse(kanban_handoff_exhausted(_NARRATED, attempts=99))
+        self.assertTrue(kanban_handoff_exhausted(_NARRATED, attempts=99))
+
+    def test_successful_handoff_suppresses_nudge_even_with_budget_remaining(self):
+        for name in ("kanban_request_review", "kanban_request_changes", "kanban_schedule"):
+            with self.subTest(name=name):
+                messages = TerminalResultContractTests.transcript("done", name=name)
+                self.assertIsNone(build_kanban_stop_nudge(messages=messages, attempts=0))
+                self.assertFalse(kanban_handoff_exhausted(messages, attempts=99))
+
+    def test_failed_result_remains_eligible_for_recovery_nudge(self):
+        messages = TerminalResultContractTests.transcript({"success": False})
+        nudge = build_kanban_stop_nudge(messages=messages, attempts=1)
+        self.assertIsNotNone(nudge)
+        self.assertIn("t_probe", nudge)
 
 
 if __name__ == "__main__":

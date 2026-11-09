@@ -71,5 +71,60 @@ class KanbanLengthContinuationTests(unittest.TestCase):
         self.assertNotIn("REAL tool calls", prompt)
 
 
+    def test_worker_prompt_survives_session_round_trip_without_metadata(self):
+        import json
+        from agent.context_compressor import ContextCompressor
+
+        with patch("agent.delegation_context.owned_kanban_task", return_value="t_probe"):
+            prompt = self.continue_prompt(False)
+        for content in (prompt, "  " + prompt + "\n", [{"type": "text", "text": prompt}]):
+            with self.subTest(content=content):
+                restored = json.loads(json.dumps({"role": "user", "content": content}))
+                self.assertTrue(ContextCompressor._is_synthetic_compression_user_turn(restored))
+                self.assertFalse(ContextCompressor._transcript_has_real_user_turn([restored]))
+                self.assertTrue(ContextCompressor._transcript_has_real_user_turn([
+                    restored, {"role": "user", "content": "Please finish the report."},
+                ]))
+
+    def test_worker_prompt_is_only_internal_in_user_role(self):
+        from agent.context_compressor import ContextCompressor
+
+        with patch("agent.delegation_context.owned_kanban_task", return_value="t_probe"):
+            prompt = self.continue_prompt(False)
+        for role in ("assistant", "tool", "system"):
+            with self.subTest(role=role):
+                self.assertFalse(ContextCompressor._is_synthetic_compression_user_turn(
+                    {"role": role, "content": prompt},
+                ))
+        self.assertFalse(ContextCompressor._is_synthetic_compression_user_turn(
+            {"role": "user", "content": "Explain this prompt: " + prompt},
+        ))
+
+    def test_dropped_tools_only_override_worker_prompt_for_transport_stub(self):
+        with patch("agent.delegation_context.owned_kanban_task", return_value="t_probe"):
+            for partial in (False, True):
+                with self.subTest(partial=partial):
+                    prompt = self.continue_prompt(partial, ["write_file", "terminal"])
+                    if partial:
+                        self.assertIn("write_file", prompt)
+                        self.assertIn("terminal", prompt)
+                        self.assertIn("multiple smaller tool", prompt)
+                        self.assertNotIn("Plain-text promises", prompt)
+                    else:
+                        self.assertEqual(prompt, self.continue_prompt(False))
+
+    def test_inherited_worker_environment_uses_generic_prompt_in_non_owner_context(self):
+        import os
+        from agent.delegation_context import non_dispatcher_owned_context
+
+        with patch.dict(os.environ, {"HERMES_KANBAN_TASK": "t_probe", "HERMES_DELEGATED_CHILD_CONTEXT": ""}):
+            worker_prompt = self.continue_prompt(False)
+            with non_dispatcher_owned_context():
+                generic_prompt = self.continue_prompt(False)
+            self.assertNotEqual(worker_prompt, generic_prompt)
+            self.assertIn("Finish the answer directly", generic_prompt)
+            self.assertEqual(self.continue_prompt(False), worker_prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -449,23 +449,27 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
             _stop_state_server()
 
         try:
-            from hermes_cli.local_runtime.binaries import installed_engine
+            from hermes_cli.local_runtime import engines as engine_registry
             from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
-            engine = installed_engine(section.get("backend", "auto"))
-            if engine is None:
-                logger.info("local runtime enabled but no PM engine installed; use the Local Models pane")
-                return None
+            # The active engine: the PM build ("managed", today's behavior) or a
+            # user-registered binary with its own launch args/env. Failures are logged
+            # and swallow the boot — chat falls back to configured providers.
+            engine, engine_args, engine_env = engine_registry.resolve(section)
             _SERVING_ENGINE = engine
 
             mdir = models_dir()
             mdir.mkdir(parents=True, exist_ok=True)
-            models_max = _admitted_models_max(mdir, int(section.get("models_max", 4)), engine.tag)
+            # A registered binary has no PM version pin: pass tag=None so residency policy
+            # stays version-agnostic instead of parsing a fake tag.
+            engine_tag = engine.tag or None
+            models_max = _admitted_models_max(mdir, int(section.get("models_max", 4)), engine_tag)
             preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini", models_max,
-                                            engine_tag=engine.tag)
+                                            engine_tag=engine_tag)
 
             sup = LlamaServerSupervisor(engine.binary, mdir, preset_path=preset_path,
                                         models_max=models_max,
+                                        extra_args=engine_args, extra_env=engine_env,
                                         port=int(section.get("port", 0)) or None)
             try:
                 sup.start()

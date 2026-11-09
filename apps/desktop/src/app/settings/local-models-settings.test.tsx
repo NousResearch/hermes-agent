@@ -41,7 +41,26 @@ vi.mock('@/hermes', () => ({
   // The page imports the profile store (settings-scope chip), whose module
   // body subscribes $activeGatewayProfile → setApiRequestProfile at load.
   getProfiles: vi.fn(async () => ({ profiles: [] })),
+  addLocalEngine: vi.fn(),
+  deleteLocalEngine: vi.fn(),
+  getLocalEngines: vi.fn(async () => ({ engines: [
+    {
+      active: true,
+      args: [],
+      backend: 'auto',
+      builtin: true,
+      env: {},
+      id: 'managed',
+      installed: false,
+      kind: 'managed',
+      name: 'Hermes managed llama.cpp',
+      path: ''
+    }
+  ] })),
   installLocalRuntime: vi.fn(),
+  probeLocalEngine: vi.fn(),
+  selectLocalEngine: vi.fn(),
+  updateLocalEngine: vi.fn(),
   listHFRepoFiles: vi.fn(),
   pauseLocalDownload: vi.fn(),
   quickstartLocalModels: vi.fn(),

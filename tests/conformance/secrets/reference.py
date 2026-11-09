@@ -77,7 +77,13 @@ class MemorySecretStore(SecretStore):
         return "tenant", None
 
     def set(self, name: str, value: str, *, level: str) -> None:
-        where, key = self._place(level)
+        try:
+            where, key = self._place(level)
+        except PermissionError:
+            # The refusal propagates with the value bound in no frame this store owns
+            # (error reporters render traceback locals): clear it before re-raising.
+            del value
+            raise
         self.state[where].setdefault(key, {})[name] = value
 
     def delete(self, name: str, *, level: str) -> bool:
@@ -93,7 +99,12 @@ class MemorySecretStore(SecretStore):
         return None
 
     def set_auth(self, provider: str, record: dict[str, Any]) -> None:
-        key = self._pin(administering=True).agent
+        try:
+            key = self._pin(administering=True).agent
+        except PermissionError:
+            # As set(): the record is cleared from this frame before the refusal re-raises.
+            del record
+            raise
         self.state["auth"]["agent"].setdefault(key, {})[provider] = dict(record)
 
 

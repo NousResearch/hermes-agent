@@ -20,7 +20,9 @@ Covered:
 - indistinguishability: a secret, a name and an auth record held only by another agent look the
   same as ones defined nowhere;
 - no leakage: through every refusal path, and a missing name under the agent's own pin, a
-  secret's value never appears in a log line or in an exception message the store raises;
+  secret's value never appears in a log line or in an exception message the store raises,
+  and a refused write leaves it bound in no frame its traceback passes through below this
+  suite (error reporters render traceback locals);
 - resolution (backends that hold the owner-wide and tenant-wide levels,
   :class:`LeveledSecretConformance`): an owner-wide secret resolves on every agent its owner owns
   and on no other; a tenant-wide secret resolves on every agent of the tenant; the agent level
@@ -243,6 +245,40 @@ class SecretPinningConformance:
         for exc in raised:
             text = str(exc) + "".join(str(note) for note in getattr(exc, "__notes__", []))
             assert marker not in text, f"a refusal leaked a secret value: {exc!r}"
+
+    def test_no_refusal_traceback_frame_holds_the_value_or_record(self, backend):
+        """Through every refusal of a credential write — a foreign pin, a scope without the
+        administration right, a level the backend does not hold — the value (or record) the
+        caller asked to store is bound in no frame the refusal's traceback passes through
+        below this suite: error reporters render traceback frame locals, so a refused write
+        must clear the plaintext from every frame it unwinds, wherever that code lives. This
+        suite's own frames are skipped: it planted the value."""
+        marker = "zRefusedFrameLocals3b8c"
+        store = _seed(backend)
+        record = {"token": marker, "refresh": marker}
+
+        def refused_without_the_value(call):
+            with pytest.raises(PermissionError) as refused:
+                call()
+            tb = refused.value.__traceback__
+            while tb is not None:
+                if tb.tb_frame.f_code.co_filename != __file__:
+                    leak = repr(tb.tb_frame.f_locals)
+                    assert marker not in leak, (
+                        f"a refusal kept the value in the locals of "
+                        f"{tb.tb_frame.f_code.co_name!r}: {leak}")
+                tb = tb.tb_next
+
+        for bind in _foreign_pins(backend):
+            with bind():
+                refused_without_the_value(lambda: store.set(NEW_NAME, marker, level="agent"))
+                refused_without_the_value(lambda: store.set_auth(SEED_PROVIDER, record))
+        with backend.bind_member("a"):
+            refused_without_the_value(lambda: store.set(NEW_NAME, marker, level="agent"))
+            refused_without_the_value(lambda: store.set_auth(SEED_PROVIDER, record))
+        with backend.bind("a"):
+            for level in sorted(LEVELS - backend.levels):
+                refused_without_the_value(lambda level=level: store.set(NEW_NAME, marker, level=level))
 
 
 class LeveledSecretConformance:

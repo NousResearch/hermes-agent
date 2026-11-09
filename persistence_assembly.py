@@ -48,7 +48,7 @@ _shared: dict[str, list[Any]] = {}
 class Persistence:
     """A caller's handle on one profile's store. ``scope`` and ``read_only`` (True for a reader's handle) are known at
     open; ``capabilities``, ``aio``, ``ready`` and every repository attribute are the bound store's, bound on the
-    first access to any of them. ``close`` releases this handle's reference once."""
+    first access to any of them. ``close`` releases this handle's reference once; any of them read after it raises."""
 
     def __init__(self, scope: ProfileScope, *, read_only: bool, bind: Callable[[], Any], release: Callable[[], None]) -> None:
         self.scope = scope
@@ -62,9 +62,9 @@ class Persistence:
         if name.startswith("_"):
             raise AttributeError(name)
         with self._lock:
+            if self._release is None:
+                raise RuntimeError("persistence handle used after close")
             if self._store is None:
-                if self._release is None:
-                    raise RuntimeError("persistence handle used after close")
                 self._store = self._bind()
             store = self._store
         return getattr(store, name)

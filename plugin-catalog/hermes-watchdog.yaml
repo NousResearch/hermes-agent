@@ -1,9 +1,9 @@
 name: hermes-watchdog
 repo: https://github.com/33hodl/hermes-watchdog
-sha: c76edf16bd7caf57b48a144c2901fa12c3b6c16c
+sha: 4354e8dda66960ed6c3e85d63ec68e501b0a6a10
 title: Hermes Watchdog
 description: "Scheduled jobs break without telling you. A job fails at 3am, so Hermes Watchdog tries the fix that fits (retry it, restart what broke, or pause it), then checks whether the next run worked. You only hear about it when the fix didn't take. Free, no API keys, one command to install. Disclosure - reads this profile's local cron store read-only, fires the failing job through Hermes's own cronjob tool or pauses it, and runs only the argv-list check steps a user-authored playbook declares; writes only its own plugin-data directory."
-image: "https://raw.githubusercontent.com/33hodl/hermes-watchdog/c76edf16bd7caf57b48a144c2901fa12c3b6c16c/docs/banner.png"
+image: "https://raw.githubusercontent.com/33hodl/hermes-watchdog/4354e8dda66960ed6c3e85d63ec68e501b0a6a10/docs/banner.png"
 maintainer: 33hodl
 tier: community
 category: automation

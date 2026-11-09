@@ -266,3 +266,50 @@ def test_servers_with_new_inputs_is_a_read_only_detection(core, calls, monkeypat
     assert calls == {"shutdown": [], "discover": []} and "srv" in core._servers
     monkeypatch.setattr(discovery._registration, "_adopter_identity_digest", lambda name, config: "connected-with")
     assert discovery.mcp_servers_with_new_inputs({"srv"}) == []
+
+
+def test_servers_with_new_inputs_counts_a_lazy_registration(core, calls, monkeypatch):
+    """A lazy registration never connected, so no live server records its identity: its first use
+    connects with the launch inputs captured at registration. A settings save that changes those
+    must be named by the read-only detection (frozen: that is the restart warning), and a save that
+    changed nothing keeps the quiet answer."""
+    from tools import mcp_tool_discovery as discovery
+    core._lazy_server_configs["lazy"] = {"command": "srv", "env": {"KEY": "old"}}
+    core._lazy_server_fingerprints["lazy"] = "fp"
+    core._lazy_server_tool_names["lazy"] = ["mcp__lazy__t"]
+    monkeypatch.setattr(discovery._config, "_load_mcp_config",
+                        lambda: {"lazy": {"command": "srv", "env": {"KEY": "new"}}})
+    monkeypatch.setattr(discovery._config, "_interpolate_env_vars", lambda cfg: cfg)
+    monkeypatch.setattr(discovery._registration, "_adopter_identity_digest",
+                        lambda name, cfg: cfg["env"]["KEY"])
+    registry_freeze.freeze_registries()
+    assert discovery.mcp_servers_with_new_inputs({"lazy", "absent"}) == ["lazy"]
+    assert calls == {"shutdown": [], "discover": []}  # read-only: the registration is untouched
+    assert core._lazy_server_configs == {"lazy": {"command": "srv", "env": {"KEY": "old"}}}
+    monkeypatch.setattr(discovery._config, "_load_mcp_config",
+                        lambda: {"lazy": {"command": "srv", "env": {"KEY": "old"}}})
+    assert discovery.mcp_servers_with_new_inputs({"lazy"}) == []
+
+
+def test_restart_drops_a_lazy_registration_whose_inputs_changed(core, calls, monkeypatch):
+    """Unfrozen, a settings save restarts what changed: a lazy registration is dropped (its cached
+    tools go with it) so the trailing discovery re-registers it from the current config, and a live
+    server on the same save is shut down and re-discovered as before."""
+    from tools import mcp_tool_discovery as discovery
+    deregistered = []
+    core._lazy_server_configs["lazy"] = {"command": "srv", "env": {"KEY": "old"}}
+    core._lazy_server_fingerprints["lazy"] = "fp"
+    core._lazy_server_tool_names["lazy"] = ["mcp__lazy__t"]
+    core._servers["live"] = SimpleNamespace(session=object(), _resolved_identity="connected-old")
+    core._server_scope_keys["live"] = None
+    monkeypatch.setattr(discovery._config, "_load_mcp_config", lambda: {
+        "lazy": {"command": "srv", "env": {"KEY": "new"}},
+        "live": {"command": "live", "env": {"KEY": "new"}}})
+    monkeypatch.setattr(discovery._config, "_interpolate_env_vars", lambda cfg: cfg)
+    monkeypatch.setattr(discovery._registration, "_adopter_identity_digest",
+                        lambda name, cfg: "connected-new" if name == "live" else cfg["env"]["KEY"])
+    monkeypatch.setattr(discovery._registration, "_deregister_mcp_tool_all_scopes",
+                        lambda key, tool: deregistered.append((key, tool)))
+    assert discovery.restart_mcp_servers_with_new_inputs({"lazy", "live"}) == ["lazy", "live"]
+    assert core._lazy_server_configs == {} and deregistered == [("lazy", "mcp__lazy__t")]
+    assert calls["shutdown"] == [{"scope": None, "names": {"live"}}] and calls["discover"] == [1]

@@ -780,8 +780,10 @@ _RESTART_LOCK = threading.Lock()
 
 
 def _servers_with_new_inputs(names: set[str], scope) -> tuple[list[tuple], list[tuple]]:
-    """``(owned, borrowed)`` ``(name, key)`` pairs of live servers in *names* whose resolved launch
-    inputs no longer hash to what they connected with. Read-only."""
+    """``(owned, borrowed)`` ``(name, key)`` pairs of servers in *names* — live, or lazily
+    registered and not yet connected — whose resolved launch inputs no longer hash to what they
+    connected with (a lazy registration: to what its first use will connect with, the inputs
+    captured at registration). Read-only."""
     owned, borrowed = [], []
     with _owner_secret_scope():
         servers = _config._load_mcp_config()
@@ -790,8 +792,16 @@ def _servers_with_new_inputs(names: set[str], scope) -> tuple[list[tuple], list[
             with _core._lock:
                 key = _resolve_server_key(name, scope, current=False)
                 server = _core._servers.get(key)
-            recorded = getattr(server, "_resolved_identity", None)
-            if config is None or recorded is None or not mcp_server_enabled(config):
+                lazy_config = _core._lazy_server_configs.get(key)
+            if config is None or not mcp_server_enabled(config):
+                continue
+            if server is not None:
+                recorded = getattr(server, "_resolved_identity", None)
+            elif lazy_config is not None:
+                recorded = _registration._adopter_identity_digest(name, lazy_config)
+            else:
+                continue
+            if recorded is None:
                 continue
             # Render as the connect path does (plugin servers join the config after load's render pass).
             if _registration._adopter_identity_digest(name, _config._interpolate_env_vars(config)) != recorded:
@@ -810,7 +820,9 @@ def restart_mcp_servers_with_new_inputs(names: set[str]) -> list[str]:
     """Reconnect each live server in *names* whose resolved launch inputs (stdio command/env/cwd,
     HTTP url/headers) no longer hash to what it connected with, e.g. after a plugin settings form
     saved a new ``${VAR}`` its ``env`` passes through. A server whose inputs did not change keeps
-    its connection. Returns the names restarted.
+    its connection. A lazily registered one (never connected) whose captured inputs changed is
+    dropped instead — its cached tools go with it — so the trailing discovery re-registers it from
+    the current config. Returns the names restarted.
 
     Serialized: a second save waits for the first reconnect, then compares against what THAT one
     connected with, so a newer key is never lost to an older in-flight start. A connection this
@@ -829,8 +841,15 @@ def restart_mcp_servers_with_new_inputs(names: set[str]) -> list[str]:
         refuse_if_frozen("MCP registry")
         changed = sorted(name for name, _key in owned + borrowed)
         logger.info("MCP server(s) %s: launch inputs changed; reconnecting", ", ".join(changed))
+        with _core._lock:
+            lazy_keys = {key for _name, key in owned if key in _core._lazy_server_configs}
         if owned:
-            _lifecycle.shutdown_mcp_servers(scope=scope, names={name for name, _key in owned})
+            _lifecycle.shutdown_mcp_servers(scope=scope, names={name for name, _key in owned
+                                                                 if _key not in lazy_keys})
+        for key in lazy_keys:
+            # Nothing live to shut down: dropping the registration sends its first use (or the
+            # trailing discovery) back to the current config instead of the captured inputs.
+            _forget_lazy_server(key)
         for _name, key in borrowed:
             _registration._remove_server_scope(key, scope)
         for name in changed:

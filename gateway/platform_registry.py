@@ -7,6 +7,7 @@ registry first, then the legacy built-in path. Plugin side: ``platform_registry
 .register(PlatformEntry(...))``; gateway side: ``create_adapter("irc", platform_config)``.
 """
 
+import contextlib
 import contextvars
 import logging
 import sys
@@ -17,6 +18,9 @@ from typing import Any, Awaitable, Callable, Optional
 from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
+# The verdict of an ``ensure_deps`` an async gateway caller already ran in an executor (#125607).
+_OFF_LOOP_DEPS_RESULT: contextvars.ContextVar[Optional[bool]] = contextvars.ContextVar(
+    "platform_off_loop_deps_result", default=None)
 
 _LoadKey = tuple[Optional[str], str]
 _Loader = Callable[[], None]
@@ -492,12 +496,27 @@ class PlatformRegistry:
             entries, _deferred = self._scope_maps(scope)
             return name in entries or name in self._entries or self._load_pending(scope, name)
 
-    def create_adapter(self, name: str, config: Any) -> Optional[Any]:
-        """Create an adapter instance for *name*; None when no entry exists, deps are missing
-        and cannot be installed, ``validate_config`` fails, or the factory raises."""
+    @staticmethod
+    @contextlib.contextmanager
+    def deps_resolved_off_loop(deps_ok: Optional[bool]):
+        """Scope in which ``create_adapter`` reuses *deps_ok* from an ``ensure_deps`` the caller already
+        ran in an executor, so neither the probe nor a failed install re-runs on the event loop."""
+        token = _OFF_LOOP_DEPS_RESULT.set(deps_ok)
+        try:
+            yield
+        finally:
+            _OFF_LOOP_DEPS_RESULT.reset(token)
+
+    def ensure_deps(self, name: str) -> Optional[bool]:
+        """Passive probe, then the ACTIVE installer when deps are missing; None when *name* has no
+        entry. Blocking (``ensure_deps_fn`` may run a pm install for minutes): the gateway calls it
+        through an executor before ``create_adapter`` so the install never stalls its event loop."""
         entry = self.get(name)
         if entry is None:
             return None
+        resolved = _OFF_LOOP_DEPS_RESULT.get()
+        if resolved is not None:
+            return resolved
         def _probe(fn: Callable[[], Any], failure_msg: str) -> bool:
             try:
                 return bool(fn())
@@ -513,6 +532,13 @@ class PlatformRegistry:
         if not deps_ok:
             hint = f" ({entry.install_hint})" if entry.install_hint else ""
             logger.warning("Platform '%s' requirements not met%s", entry.label, hint)
+        return deps_ok
+
+    def create_adapter(self, name: str, config: Any) -> Optional[Any]:
+        """Create an adapter instance for *name*; None when no entry exists, deps are missing
+        and cannot be installed, ``validate_config`` fails, or the factory raises."""
+        entry = self.get(name)
+        if entry is None or not self.ensure_deps(name):
             return None
         if entry.validate_config is not None:
             try:

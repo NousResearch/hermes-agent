@@ -9,6 +9,7 @@ tenant, or a group's agents: the ownership-level rules run against the reference
 """
 
 from contextlib import contextmanager
+import json
 
 import pytest
 
@@ -117,3 +118,32 @@ def test_the_local_backend_refuses_tenant_wide_entries(tmp_path):
         with pytest.raises(ValueError, match="owner-wide"):
             install(reg, name="org-tool", level="tenant")
     assert not (home / REGISTRY_FILE).exists()  # refused before anything was written
+
+
+def test_removing_an_entry_drops_only_its_own_switch(tmp_path):
+    """A switch row belongs to one entry — its level, owner and name — so removing an entry
+    drops its own switch alone. The local install refuses tenant-wide entries, so the other
+    entry this name resolves to is written the way the file records it, the shape a hosted
+    store holds."""
+    home = tmp_path / "a"
+    home.mkdir()
+    reg = LocalExtensionRegistryProvider().open(home)
+    (home / REGISTRY_FILE).write_text(json.dumps({
+        "entries": [
+            {"name": "dup", "kind": "plugin", "version": "tenant", "content_hash": "h1",
+             "manifest": {}, "scan_result": None, "enabled": True, "level": "tenant",
+             "owner": None},
+            {"name": "dup", "kind": "plugin", "version": "owner", "content_hash": "h2",
+             "manifest": {}, "scan_result": None, "enabled": True, "level": "owner",
+             "owner": {"kind": "principal", "id": LOCAL_OWNER.id}},
+        ],
+        "switches": {"tenant:dup": True}}), encoding="utf-8")
+    with bind_profile_scope(home):
+        owner_row = reg.get("dup")
+        assert owner_row is not None and owner_row["version"] == "owner"
+        assert reg.set_agent_enabled("dup", True) is True  # the owner-wide one's own switch
+        assert reg.agent_enabled("dup") is True
+        assert reg.remove("dup") is True                    # the owner-wide entry alone
+        tenant_row = reg.get("dup")
+        assert tenant_row is not None and tenant_row["version"] == "tenant"
+        assert reg.agent_enabled("dup") is True             # the tenant row's switch survived

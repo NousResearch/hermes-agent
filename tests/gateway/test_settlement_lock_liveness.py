@@ -187,10 +187,12 @@ async def test_submit_claim_and_discard_behind_a_held_writer_leave_the_loop_free
 async def test_input_admitted_while_an_idle_claim_is_in_flight_still_runs(tmp_path, monkeypatch):
     """The claim's transaction runs off-loop: an admission that commits after it read an empty
     FIFO must not be stranded by the drain exiting idle (its ``_schedule`` saw the drain alive)."""
-    from gateway import session_authority as sa
+    import hermes_state_runtime as rt
     db, authority = _authority(tmp_path, monkeypatch)
     ran, read_empty, admitted = [], threading.Event(), threading.Event()
-    claim = sa.claim_session_input
+    # The claim runs through the session storage port now: its local backend resolves
+    # claim_session_input at call time from hermes_state_runtime, the seam production calls.
+    claim = rt.claim_session_input
 
     def racing_claim(*args, **kwargs):
         row = claim(*args, **kwargs)
@@ -198,7 +200,7 @@ async def test_input_admitted_while_an_idle_claim_is_in_flight_still_runs(tmp_pa
             read_empty.set()
             admitted.wait(5)  # the submit commits and schedules while this claim reports idle
         return row
-    monkeypatch.setattr(sa, 'claim_session_input', racing_claim)
+    monkeypatch.setattr(rt, 'claim_session_input', racing_claim)
 
     async def execute(owner, ref, row):
         ran.append(row['request_id'])

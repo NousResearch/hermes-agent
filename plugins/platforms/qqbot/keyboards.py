@@ -19,6 +19,7 @@ UPDATE_PROMPT_PREFIX = "update_prompt:"
 # encodings never collide and a tap resolves its own request, not the session's oldest (#124974).
 _APPROVAL_DATA_RE = re.compile(r"^approve:(.+):(allow-once|allow-always|deny)$")
 _APPROVAL_DATA_V2_RE = re.compile(r"^approve:v2:(.+):([0-9a-f]{32}):(allow-once|allow-always|deny)$")
+_REQUEST_ID_RE = re.compile(r"[0-9a-f]{32}")
 _UPDATE_PROMPT_RE = re.compile(r"^update_prompt:(y|n)$")
 
 def _to_dict(value: Any) -> Any:
@@ -106,10 +107,21 @@ def _single_row_keyboard(group_id: str, *buttons: tuple) -> InlineKeyboard:
     return InlineKeyboard(content=KeyboardContent(rows=[row]))
 
 
+def _card_request_id(request_id: str) -> str:
+    """Normalise a card's request id to the lower-case 32-hex form the button parser reads back."""
+    rid = (request_id or "").strip().lower()
+    if rid and not _REQUEST_ID_RE.fullmatch(rid):
+        raise ValueError(f"approval request_id must be a uuid4().hex, got {request_id!r}")
+    return rid
+
+
 def build_approval_keyboard(session_key: str, *, allow_permanent: bool = True, request_id: str = "") -> InlineKeyboard:
     """Build ``[✅ 允许一次] [⭐ 始终允许] [❌ 拒绝]`` (one group, so a click greys the rest). ⭐ is hidden when
     persistent scope is unavailable; *session_key* (+ *request_id*) rides in ``button_data`` so the decision
-    resolves this card's own request."""
+    resolves this card's own request. *request_id* is a ``uuid4().hex`` (32 hex, either case; it is written
+    lower-case, the only form the parser reads back); any other non-empty id raises ``ValueError`` rather than
+    build a card whose taps resolve nothing."""
+    request_id = _card_request_id(request_id)
     prefix = (f"{APPROVAL_BUTTON_PREFIX}v2:{session_key}:{request_id}" if request_id
               else f"{APPROVAL_BUTTON_PREFIX}{session_key}")
     buttons = [("allow", "✅ 允许一次", "已允许", f"{prefix}:allow-once", 1)]

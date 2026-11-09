@@ -85,3 +85,13 @@ def test_legacy_card_whose_session_ends_in_hex_keeps_its_whole_session():
     hex_session = "agent:main:qqbot:dm:" + "ab" * 16
     assert parse_approval_button_data(f"approve:{hex_session}:deny") == (hex_session, "", "deny")
     assert parse_approval_button_data(f"approve:v2:{hex_session}:nothex:deny") is None
+
+
+def test_card_built_with_an_upper_case_request_id_reads_back_its_request():
+    """The builder normalises the id to the parser's form; an id it can never read back is refused."""
+    import uuid
+    rid = uuid.uuid4().hex
+    data = build_approval_keyboard(SESSION, request_id=rid.upper()).content.rows[0].buttons[0].action.data
+    assert parse_approval_button_data(data) == (SESSION, rid, "allow-once")
+    with pytest.raises(ValueError):
+        build_approval_keyboard(SESSION, request_id="req-1")

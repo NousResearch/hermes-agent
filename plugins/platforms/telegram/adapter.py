@@ -182,7 +182,7 @@ from plugins.platforms.telegram.telegram_dm_topic_send import dead_topic_may_rer
 from plugins.platforms.telegram.telegram_entities import (
     addressing_sources, addressing_text, expand_link_entities, expand_quote_link_entities, rich_message_filter, rich_message_text)
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
-from plugins.platforms.telegram.telegram_ingress import TelegramContactMixin, discard_session_media_buffers
+from plugins.platforms.telegram.telegram_ingress import TelegramContactMixin
 from plugins.platforms.telegram.telegram_polling_probe import TelegramPendingProbeMixin
 from plugins.platforms.telegram.telegram_intake import effective_update_message
 from plugins.platforms.telegram.telegram_media_group import add_item_note, flush_media_group_event, queue_media_group_event, tracking_album_items
@@ -2767,7 +2767,6 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramTo
 
     async def handle_message(self, event: MessageEvent) -> None:
         self._accept_update()
-        discard_session_media_buffers(self, event)  # /stop, /new, /reset: buffered photos die with the turn (#81370)
         await apply_root_dm_topic_transfer(self, event)  # opt-in dm_topic_auto_transfer (#139136)
         await super().handle_message(event)
 

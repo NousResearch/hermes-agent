@@ -51,6 +51,12 @@ class TelegramContactMixin:
             return
         await self.handle_message(self._apply_telegram_group_observe_attribution(event))
 
+    def _discard_text_debounce(self, session_key: str) -> None:
+        """Base calls this where it honours ``/stop``, ``/new`` or ``/reset`` for the session (and on a
+        stale-lock heal); the photo/album buffers are this adapter's debounce, so they go too (#81370)."""
+        super()._discard_text_debounce(session_key)
+        discard_session_media_buffers(self, session_key)
+
 
 def _drop_matching(adapter: Any, pending: dict, tasks: dict, session_key: str) -> int:
     """Drop every buffered event in ``pending`` whose session is ``session_key``; cancel its flush."""
@@ -66,13 +72,8 @@ def _drop_matching(adapter: Any, pending: dict, tasks: dict, session_key: str) -
     return dropped
 
 
-def discard_session_media_buffers(adapter: Any, event: MessageEvent) -> int:
-    """For a reset-like command (``/stop``, ``/new``, ``/reset``), drop that session's buffered photo
-    bursts and albums so they cannot surface as a turn after the boundary. Returns the count dropped."""
-    from hermes_cli.commands import is_interrupt_then_dispatch
-
-    if not is_interrupt_then_dispatch(event.get_command()):
-        return 0
-    session_key = adapter._event_session_key(event)
+def discard_session_media_buffers(adapter: Any, session_key: str) -> int:
+    """Drop ``session_key``'s buffered photo bursts and albums so they cannot surface as a turn after a
+    reset boundary. Returns the count dropped."""
     return (_drop_matching(adapter, adapter._pending_photo_batches, adapter._pending_photo_batch_tasks, session_key)
             + _drop_matching(adapter, adapter._media_group_events, adapter._media_group_tasks, session_key))

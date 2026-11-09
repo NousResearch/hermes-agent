@@ -128,12 +128,9 @@ def test_exact_ref_installs_old_commit_and_normalizes_uppercase(monkeypatch, tmp
     assert _git(target, "rev-parse", "HEAD") == old_sha
     assert old_sha != new_sha
     assert (target / "marker.txt").read_text() == "old"
-    from hermes_cli.plugins_cmd_catalog import installed_code_digest
-
-    record = _metadata(home)["demo"]
-    assert {key: value for key, value in record.items() if key != "tree_digest"} == {
-        "pinned": True, "revision": old_sha, "source": repo.as_uri()}
-    assert record["tree_digest"] == installed_code_digest(target)  # the record pins the tree
+    assert _metadata(home) == {
+        "demo": {"pinned": True, "revision": old_sha, "source": repo.as_uri()}
+    }
 
 
 @pytest.mark.parametrize("ref", ["", "main", "abc", "g" * 40, "a" * 39, "a" * 41])
@@ -178,15 +175,11 @@ def test_subdir_pin_records_source_identity_and_installs_requested_tree(
     )
 
     assert (target / "value.txt").read_text() == "old"
-    from hermes_cli.plugins_cmd_catalog import installed_code_digest
-
-    record = _metadata(home)["nested-demo"]
-    assert {key: value for key, value in record.items() if key != "tree_digest"} == {
+    assert _metadata(home)["nested-demo"] == {
         "pinned": True,
         "revision": old_sha,
         "source": identifier,
     }
-    assert record["tree_digest"] == installed_code_digest(target)  # the record pins the tree
 
 
 def test_clone_timeout_applies_to_every_network_step_of_a_pinned_install(monkeypatch, tmp_path):

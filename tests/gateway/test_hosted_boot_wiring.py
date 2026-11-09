@@ -199,6 +199,63 @@ async def test_a_local_boot_still_runs_user_plugin_code(_startup, monkeypatch):
     assert marker.exists()  # a local boot imported it, exactly as before
 
 
+_LOCAL_LOGIN_PLUGIN = '''
+from agent.vault_backends.base import LoginBackend
+
+
+class Backend(LoginBackend):
+    name, prefix, display_name = "probevault", "probevault:", "Probe Vault"
+
+    def list_items(self):
+        return []
+
+    def get_meta(self, handle):
+        return None
+
+    def resolve_password(self, handle):
+        raise AssertionError("registry tests never resolve passwords")
+
+
+def register(ctx):
+    ctx.register_login_backend(Backend())
+'''
+
+
+@pytest.mark.asyncio
+async def test_a_local_boot_loads_a_login_backend_from_a_legacy_catalog_record(_startup, monkeypatch):
+    """A catalog install whose installer record predates any newer record fields still
+    registers its login backend on a local boot: the record's own tier and pin decide
+    (the installer wrote it, not the plugin), and a local home is its user's own machine.
+    Driven through the real ``start_gateway`` — config resolution discovers and imports
+    the plugin, which registers through the real PluginManager."""
+    import json
+
+    import hermes_yaml as yaml
+
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    plugin = home / "plugins" / "probe-vault"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text('name: probe-vault\nversion: "1.0"\n', encoding="utf-8")
+    (plugin / "__init__.py").write_text(_LOCAL_LOGIN_PLUGIN, encoding="utf-8")
+    sha = "a" * 40
+    record = {"source": "https://github.com/example/probe-vault", "revision": sha, "pinned": True,
+              "catalog": {"name": "probe-vault", "repo": "https://github.com/example/probe-vault",
+                          "tier": "verified", "pin": sha, "sha": sha}}
+    (home / "plugins" / ".install-metadata.json").write_text(json.dumps({"probe-vault": record}),
+                                                             encoding="utf-8")
+    (home / "config.yaml").write_text(
+        yaml.safe_dump({"plugins": {"enabled": ["probe-vault"]}, "vault": {"probevault": {"enabled": True}}},
+                       sort_keys=False), encoding="utf-8")
+
+    assert await run_bootstrap.start_gateway(replace=False, verbosity=None) is True
+    assert _startup == ["runner_started", "ready"]
+    from agent import vault_backend_registry
+
+    assert vault_backend_registry.get_provider("probevault", scope=str(home)) is not None
+
+
 @pytest.mark.asyncio
 async def test_the_registries_freeze_at_the_end_of_hosted_boot(_startup, monkeypatch):
     """Hosted boot finishes once everything the process serves is loaded: the freeze runs after

@@ -231,46 +231,6 @@ def bundled_dir_is_genuine(plugin_dir) -> bool:
     return resolved == root or root in resolved.parents
 
 
-def installed_code_digest(plugin_dir) -> Optional[str]:
-    """Content digest of an installed plugin's code tree: a deterministic sha256 over the sorted
-    ``(relative path, file bytes)`` pairs of every regular file, skipping ``.git`` (churning
-    metadata, never imported) and ``__pycache__`` (runtime state). This is what an install record
-    pins: a tree edited after install no longer matches its record, and a fabricated record that
-    names no digest never matches at all."""
-    import hashlib
-
-    path = Path(plugin_dir)
-    if not path.is_dir():
-        return None
-    entries: list[tuple[str, Path]] = []
-    for dirpath, dirnames, filenames in os.walk(path):
-        dirnames[:] = sorted(name for name in dirnames if name not in (".git", "__pycache__"))
-        for filename in filenames:
-            file_path = Path(dirpath) / filename
-            if file_path.is_symlink() or is_junction(file_path):
-                continue
-            entries.append((file_path.relative_to(path).as_posix(), file_path))
-    digest = hashlib.sha256()
-    for relative, file_path in sorted(entries):
-        digest.update(relative.encode("utf-8", "surrogatepass"))
-        digest.update(b"\0")
-        try:
-            digest.update(file_path.read_bytes())
-        except OSError:
-            return None
-    return digest.hexdigest()
-
-
-def install_record_matches_tree(record, plugin_dir) -> bool:
-    """Whether the installer-owned record pins the tree that is actually installed: the record
-    carries the code digest of the tree it installed, and the tree on disk still hashes to it."""
-    if not isinstance(record, dict):
-        return False
-    digest = installed_code_digest(plugin_dir)
-    recorded = record.get("tree_digest")
-    return bool(digest) and isinstance(recorded, str) and digest == recorded
-
-
 BROWSER_PAGE_BACKEND_RULE = ("browser page backends (which carry browser_vault fill scripts) are accepted only from "
                              "plugins bundled with Hermes or installed from the Hermes plugin catalog at tier "
                              "verified or official")
@@ -289,10 +249,10 @@ def login_backend_provenance_error(manifest, rule: str = LOGIN_BACKEND_RULE) -> 
     from the tree (a repo can commit a ``.hermes-catalog.json``). No config key relaxes it. This decides
     which plugins Hermes offers the seam to; code already running in-process is not sandboxed by it.
 
-    A catalog install is trusted only when the record's pin matches the entry in the catalog SHIPPED
-    with Hermes (the record's claimed tier proves nothing — the shipped entry's tier decides), and the
-    installed tree still matches the code digest the installer recorded. A fabricated record fails both
-    ways: it names no entry the shipped catalog pins, and its tree does not hash to a digest it carries.
+    A catalog install is trusted at the tier and pin its own installer-owned record claims:
+    the record is written by the installer, not the plugin, and a local home is its user's own
+    machine. (A hosted process never consults this for trust at all — in hosted mode only what
+    the deployment image ships loads in-process; see ``plugins.plugin_loader``.)
     """
     if manifest.source == "bundled":
         if bundled_dir_is_genuine(manifest.path):
@@ -308,19 +268,11 @@ def login_backend_provenance_error(manifest, rule: str = LOGIN_BACKEND_RULE) -> 
                 "(a local directory or Git URL install)")
     if record.get("allow_removed"):
         return f"{rule}; this plugin was installed with --allow-removed"
-    from hermes_cli.plugin_catalog import get_catalog_entry
-
-    entry = get_catalog_entry(str(block.get("name")))
-    if entry is None:
-        return (f"{rule}; catalog entry {str(block.get('name'))!r} is not in the catalog shipped "
-                f"with Hermes")
-    if entry.tier not in LOGIN_BACKEND_TIERS:
-        return f"{rule}; catalog entry '{entry.name}' is tier {entry.tier}"
-    if not at_catalog_pin({"sha": block.get("sha"), "pin": block.get("pin")}, entry.sha):
-        return f"{rule}; this install is not at the reviewed pin the shipped catalog records"
-    if not install_record_matches_tree(record, manifest.path):
-        return (f"{rule}; the installed tree does not match the code digest the installer recorded "
-                f"(the tree changed after install, or the record was fabricated)")
+    tier = str(block.get("tier") or "community")
+    if tier not in LOGIN_BACKEND_TIERS:
+        return f"{rule}; catalog entry '{block['name']}' is tier {tier}"
+    if not block.get("pin"):
+        return f"{rule}; this install is not at the catalog's reviewed pin (installed with --ref)"
     return ""
 
 

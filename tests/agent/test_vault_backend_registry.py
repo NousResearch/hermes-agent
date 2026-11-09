@@ -17,40 +17,15 @@ class Example(LoginBackend):
         raise AssertionError("registry tests must never resolve passwords")
 
 
-_SHIPPED_CATALOG: dict = {}
-
-
-@pytest.fixture(autouse=True)
-def _shipped_catalog(monkeypatch):
-    """The catalog entries the deployment image ships: the trust checks read an install's tier
-    and reviewed pin from the shipped entry, never from the record's own claims."""
-    from hermes_cli import plugin_catalog as pc_cat
-
-    _SHIPPED_CATALOG.clear()
-    monkeypatch.setattr(pc_cat, "get_catalog_entry",
-                        lambda name, catalog_dir=None: _SHIPPED_CATALOG.get(name))
-    yield _SHIPPED_CATALOG
-    _SHIPPED_CATALOG.clear()
-
-
 def _record_verified_install(home, dirname):
-    """The installer-owned record a catalog install at tier ``verified`` leaves (login backends
-    need one): the shipped entry's name, tier and reviewed pin, plus the code digest of the tree
-    the installer published."""
-    from hermes_cli import plugin_catalog as pc_cat
-    from hermes_cli.plugins_cmd_catalog import installed_code_digest
-
+    """The installer-owned record a catalog install at tier ``verified`` leaves (login backends need one)."""
     path = home / "plugins" / ".install-metadata.json"
     records = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     sha = "a" * 40
     records[dirname] = {"source": f"https://github.com/example/{dirname}", "revision": sha, "pinned": True,
                         "catalog": {"name": dirname, "repo": f"https://github.com/example/{dirname}",
-                                    "tier": "verified", "pin": sha, "sha": sha},
-                        "tree_digest": installed_code_digest(home / "plugins" / dirname)}
+                                    "tier": "verified", "pin": sha, "sha": sha}}
     path.write_text(json.dumps(records), encoding="utf-8")
-    _SHIPPED_CATALOG[dirname] = pc_cat.PluginCatalogEntry(
-        name=dirname, repo=f"https://github.com/example/{dirname}", sha=sha,
-        description="d", maintainer="t", tier="verified")
 
 
 def test_registration_requires_explicit_profile_enablement():

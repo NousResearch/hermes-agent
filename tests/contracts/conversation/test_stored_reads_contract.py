@@ -55,6 +55,23 @@ def test_reads_inside_a_snapshot_see_one_generation(backend, scope_a):
     assert store.messages.display_count(S) == before + 1
 
 
+def test_a_snapshot_sees_a_write_that_leaves_the_transcript_alone(backend, scope_a):
+    store, _ = _store(backend, scope_a, "q1", "a1")
+    store.runtime.begin_epoch(instance_id="before")
+    store.state_meta.set("stored-reads:key", "one")
+    with store.messages.read_snapshot() as consistent:
+        before = store.messages.display_count(S)
+        store.runtime.begin_epoch(instance_id="inside")
+        assert store.messages.display_count(S) == before
+        if not consistent.pinned:
+            assert consistent() is False
+    with store.messages.read_snapshot() as consistent:
+        store.state_meta.set("stored-reads:key", "two")
+        store.state_meta.set("stored-reads:key", "one")
+        if not consistent.pinned:
+            assert consistent() is False
+
+
 def test_a_snapshot_without_a_write_is_consistent(backend, scope_a):
     store, _ = _store(backend, scope_a, "q1", "a1")
     with store.messages.read_snapshot() as consistent:

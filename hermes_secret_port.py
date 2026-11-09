@@ -27,7 +27,11 @@ whether the target exists, and no refusal, log line or error the store raises ev
 secret's value — nor is one still bound in any frame such an error's traceback passes through,
 not the raising implementation's own frames, not the frames of any helper the failed write
 handed it to, and not the frames of any exception chained to the error as context or cause:
-some error reporters render traceback frame locals. The design is structural, not a cleanup
+some error reporters render traceback frame locals. Caller-supplied arguments other than the
+key's own name are caller text that can alias the value, so a port-authored message interpolates
+none of them: the port's errors name the valid choices (the secret levels) instead, and the
+failed write clears its own binding of such an alias before any error leaves its frame. The
+design is structural, not a cleanup
 pass — an implementation never mutates any frame it does not own. Every load and validation
 that can fail — the pin, the level, the write lock, the store a record's write merges into —
 runs BEFORE the value (or record) is bound in any frame below the port's own write method, and

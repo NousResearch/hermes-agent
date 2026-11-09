@@ -82,7 +82,10 @@ class MemorySecretStore(SecretStore):
 
     def _place(self, level: str) -> tuple[str, Any]:
         if level not in LEVELS:
-            raise ValueError(f"not a secret level: {level!r}")
+            # The caller's text never rides in a port-authored message and never survives in
+            # a frame this refusal's traceback keeps: the valid levels are all the error names.
+            del level
+            raise ValueError("not a secret level; the secret levels are 'agent', 'owner' and 'tenant'")
         if level == "agent":
             return "agent", self._pin(administering=True).agent
         if level == "owner":
@@ -96,7 +99,9 @@ class MemorySecretStore(SecretStore):
         try:
             # Every check and validation that can fail — the placement (the level, the pin and
             # the administration right), the fixture's pinned-key write lock — runs before the
-            # value is bound in any frame below this one, each keeping its own message.
+            # value is bound in any frame below this one, each keeping its own message. The
+            # level is caller-supplied text that can alias the value, so it leaves this frame
+            # before any error does too.
             where, key = self._place(level)
             if name in self.provider.locked_keys:
                 # The managed-key write lock: an administrator pinned this key, and the store
@@ -111,6 +116,7 @@ class MemorySecretStore(SecretStore):
             except BaseException as exc:  # health: allow BLE001 -- the fresh error below is all that survives
                 failure = fresh_write_error(exc)
         del value
+        del level
         if refusal is not None:
             raise refusal
         if failure is not None:
@@ -129,7 +135,17 @@ class MemorySecretStore(SecretStore):
         self.state[where].setdefault(key, {})[name] = value
 
     def delete(self, name: str, *, level: str) -> bool:
-        where, key = self._place(level)
+        # As set: the level is caller-supplied text that can alias a value, so it leaves this
+        # frame before any error does.
+        refusal = None
+        where = key = None
+        try:
+            where, key = self._place(level)
+        except BaseException as exc:  # health: allow BLE001 -- re-raised below
+            refusal = exc
+        del level
+        if refusal is not None:
+            raise refusal
         return self.state[where].setdefault(key, {}).pop(name, None) is not None
 
     def get_auth(self, provider: str) -> Optional[dict[str, Any]]:

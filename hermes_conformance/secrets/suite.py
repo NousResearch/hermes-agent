@@ -292,6 +292,30 @@ class SecretPinningConformance:
                 with pytest.raises(ValueError):
                     store.set("X", "v", level=level)
 
+    def test_an_invalid_level_never_echoes_the_callers_text(self, backend):
+        """The level is caller-supplied text, so no port-authored message carries it: a caller
+        that passes its own value as the level — the aliasing that turns write metadata into a
+        leak — reads a programming error that names the valid levels and nothing of its own,
+        and the level binding survives in no frame the error's traceback passes through below
+        this suite, nor in any frame of an exception chained to it."""
+        marker = 'zAliased\nLevel "Echo" 6f2b'
+        store = _seed(backend)
+
+        def refused_without_the_callers_text(call):
+            with pytest.raises(ValueError) as refused:
+                call()
+            message = str(refused.value)
+            for form in _plaintext_forms(marker):
+                assert form not in message + repr(refused.value) + repr(refused.value.args), (
+                    f"the refusal echoes the caller's own text: {refused.value!r}")
+            assert all(level in message for level in LEVELS), (
+                f"the refusal names no valid level: {refused.value!r}")
+            assert_no_frame_holds(refused.value, marker)
+
+        with backend.bind("a"):
+            refused_without_the_callers_text(lambda: store.set(NEW_NAME, marker, level=marker))
+            refused_without_the_callers_text(lambda: store.delete(NEW_NAME, level=marker))
+
     def test_a_write_at_a_level_the_backend_does_not_hold_is_refused(self, backend):
         """A backend holding every level has nothing unheld to refuse here; its refusals are
         exercised by the rest of the suite. A backend that holds less must refuse the rest."""

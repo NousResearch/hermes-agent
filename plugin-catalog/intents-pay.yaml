@@ -1,0 +1,33 @@
+name: intents-pay
+repo: https://github.com/ayinmodeolarewaju-bot/hermes-intents-pay
+sha: 6196da5fe2ce7125bd008d81656839efd2bed5f9
+description: >
+  Crypto invoices and cross-chain payment quotes for a NEAR account via the
+  NEAR Intents 1-Click API. Dry quotes by default. Never moves funds and never
+  handles signing keys.
+maintainer: ayinmodeolarewaju-bot
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "1.0.0"
+title: Intents Pay
+docs_url: https://github.com/ayinmodeolarewaju-bot/hermes-intents-pay
+image: https://raw.githubusercontent.com/ayinmodeolarewaju-bot/hermes-intents-pay/6196da5fe2ce7125bd008d81656839efd2bed5f9/docs/screenshots/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/ayinmodeolarewaju-bot/hermes-intents-pay/6196da5fe2ce7125bd008d81656839efd2bed5f9/docs/screenshots/dry-quote.png
+  - https://raw.githubusercontent.com/ayinmodeolarewaju-bot/hermes-intents-pay/6196da5fe2ce7125bd008d81656839efd2bed5f9/docs/screenshots/usdt-quote.png
+readme: true
+platforms: []
+known_issues:
+  - "Dry quotes on EVM and Solana send a public placeholder refund address so 1-Click can check the format. No deposit is created. A live quote rejects that placeholder and requires the payer's own refund address plus a one-time confirmation token."
+  - "Verification for this release used live dry quotes only. Completing a mainnet deposit address is gated and was not part of the test run."
+capabilities:
+  provides_tools:
+    - intents_list_tokens
+    - intents_quote
+    - intents_create_invoice
+    - intents_invoice_status
+    - intents_verify_quote
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

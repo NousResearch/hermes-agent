@@ -1071,8 +1071,10 @@ class GatewaySlashCommandsMixin(
         example = ""
         if new_state:
             # Show a preview using current agent state if available.
+            _channel = self._channel_override_for(event.source)
             preview = format_runtime_footer(
-                model=_resolve_gateway_model(user_config) or None, context_tokens=0, context_length=None,
+                model=(_channel.model if _channel is not None and _channel.model else None)
+                or _resolve_gateway_model(user_config) or None, context_tokens=0, context_length=None,
                 fields=effective.get("fields") or ["model", "context_pct", "cwd"])
             if preview:
                 example = t("gateway.footer.example_line", preview=preview)

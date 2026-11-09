@@ -622,6 +622,10 @@ class GatewayModelCommandsMixin:
         ctx.read_config()
         if request.is_reset:
             return await self._handle_model_reset(event, ctx)
+        # Turn precedence: session /model > channel_overrides > config.yaml.
+        _channel = self._channel_override_for(source)
+        if _channel is not None and _channel.model:
+            ctx.apply_override({"model": _channel.model, **({"provider": _channel.provider, "base_url": ""} if _channel.provider else {})})
         ctx.apply_override(self._session_model_overrides.get(session_key, {}))
         if not request.target and not request.explicit_provider:
             return await self._model_listing_reply(event, ctx, profile_home)

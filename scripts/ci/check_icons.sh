@@ -15,9 +15,10 @@ if [ "${GITHUB_ACTIONS:-}" = true ]; then
     changed() { git status --porcelain --untracked-files=all; }
 else
     # The renderer runs isolated (-I, no PYTHONPATH), so it needs an interpreter that carries
-    # Pillow and resvg-py itself: the runtime venv, not the toolchain `python` on PATH.
+    # Pillow and resvg-py itself: the runtime venv, not the toolchain `python` on PATH. No
+    # trailing newline: on Windows print() ends in CRLF, and $(...) strips only the LF.
     HERMES_PYTHON="$(scripts/hermes-python -c \
-        'from pathlib import Path; from pm.environments import project_python; print(project_python(Path(".")))')"
+        'from pathlib import Path; from pm.environments import project_python; print(project_python(Path(".")), end="")')"
     export HERMES_PYTHON
     index="$(mktemp)"
     trap 'rm -f "$index"' EXIT

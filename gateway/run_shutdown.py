@@ -2107,62 +2107,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         logger.info("Shutdown phase: SessionDB close done at +%.2fs", ctx.elapsed())
 
     async def _stop_persist_exit_state(self, ctx: GatewayShutdownMixin._StopContext) -> None:
-        """Clean-shutdown marker, restart markers, terminal runtime status; process bootstrap
-        releases PID/lock ownership after the writer drain."""
-        from gateway.run import _hermes_home, _shutdown_gateway_health_export
-        if getattr(self, "_startup_cleanup_only", False):  # start never ran: keep startup_failed + crash markers
-            return _shutdown_gateway_health_export(self)
-        # Clean-shutdown marker skips crash-turn recovery next boot; a timed-out drain left
-        # half-finished sessions, so no marker — the next startup recovers their turn markers.
-        if not ctx.timed_out:
-            with suppress(Exception):
-                (_hermes_home / ".clean_shutdown").touch()
-        else:
-            logger.info("Skipping .clean_shutdown marker — drain timed out with interrupted agents; "
-                        "next startup will recover their interrupted turns.")
-        # Stuck-loop counter: sessions active across 3 consecutive restarts are auto-suspended next boot.
-        if ctx.active_agents:
-            self._increment_restart_failure_counts(set(ctx.active_agents.keys()))
-        if self._restart_requested and self._restart_command_source is None:
-            # One writer for the marker (gateway/restart_notice.py): the CLI restart stamps the same
-            # file, and a rename on either side must not strand the other's write.
-            from gateway.restart_notice import write_planned_restart_marker
-            with _log_suppressed(logging.DEBUG, "Failed to write planned restart notification marker: %s"):
-                write_planned_restart_marker(
-                    via_service=bool(self._restart_via_service),
-                    detached=bool(self._restart_detached),
-                )
-        if self._restart_requested and self._restart_via_service:
-            # Exit 75 + ``RestartForceExitStatus=75``: systemd replaces us without a racing helper.
-            self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
-            self._exit_reason = self._exit_reason or "Gateway restart requested"
-        self._draining = False
-        # Terminal gateway_state: "stopped", or "running" on an UNEXPECTED signal (docker restart,
-        # OOM) — container_boot.py only auto-starts gateways last seen "running".
-        if getattr(self, "_signal_initiated_shutdown", False) and not self._restart_requested:
-            logger.info(
-                "Gateway stopped by an unexpected signal — persisting "
-                "gateway_state=running so container_boot auto-starts on the next boot (issue #42675)"
-            )
-            self._update_runtime_status("running", self._exit_reason)
-        else:
-            self._update_runtime_status("stopped", self._exit_reason)
-        try:
-            from gateway.status import flush_runtime_status_async
-            # Never outlive the launchd exit budget (``_launchd_exit_timeout_s`` is set by the
-            # supervised-restart path when it exists; a plain 2 s bound otherwise). The cap only
-            # applies to signal-driven stops — a programmatic stop is not racing the supervisor.
-            flush_timeout = 2.0
-            budget = getattr(self, "_launchd_exit_timeout_s", None)
-            signal_stop = getattr(self, "_stop_requested_by_signal", False)
-            if signal_stop and isinstance(budget, (int, float)) and budget > 0:
-                flush_timeout = max(0.0, min(flush_timeout, budget - ctx.elapsed()))
-            if not await flush_runtime_status_async(timeout=flush_timeout):
-                logger.warning("Timed out flushing terminal gateway runtime status")
-        except Exception:
-            logger.debug("Failed to flush terminal gateway runtime status", exc_info=True)
-        _shutdown_gateway_health_export(self)
-        logger.info("Gateway stopped (total teardown %.2fs)", ctx.elapsed())
+        from gateway.run_shutdown_exit_state import persist_exit_state
+        await persist_exit_state(self, ctx)
 
     def _shutdown_watchdog_snapshot(self, ctx: GatewayShutdownMixin._StopContext) -> dict:
         """State dumped by the thread-based shutdown watchdog when teardown hangs."""
@@ -2199,6 +2145,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             arm_shutdown_watchdog(
                 _effective_watchdog_leash(self), done_event=_watchdog_done,
                 snapshot_fn=lambda: GatewayRunner._shutdown_watchdog_snapshot(self, ctx), exit_code=1,
+                mark_lifecycle=not getattr(self, "control_only", False),
+                write_diagnostics=not getattr(self, "control_only", False),
             )
         try:
             await GatewayRunner._stop_begin_teardown(self, ctx)

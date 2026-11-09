@@ -6,6 +6,11 @@ import logging
 logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.py
 
 class GatewayRuntimeInitMixin:
+    @property
+    def control_only(self) -> bool:
+        """Lifetime mode selected before startup; reloads cannot promote this process."""
+        return self._runtime_mode == "control_only"
+
     def _init_runtime_settings(self) -> None:
         """Load ephemeral per-call config (prefill, reasoning, busy modes, timeouts, routing)."""
         from gateway.run import (Dict, Optional, _load_gateway_config)
@@ -46,9 +51,10 @@ class GatewayRuntimeInitMixin:
         self._async_session_store = AsyncSessionStore(self.session_store)
         self.delivery_router = DeliveryRouter(self.config)
 
-    def _init_lifecycle_state(self) -> None:
+    def _init_lifecycle_state(self, control_only: bool = False) -> None:
         """Initialise run/exit/restart flags, per-session state, and completion-delivery bookkeeping."""
         from gateway.run import (Dict, List, MessageEvent, Optional, OrderedDict, Platform, SessionSource, SessionState, SessionTurnLeaseRegistry, asyncio, concurrent, threading, time)
+        self._runtime_mode = "control_only" if control_only else "serving"
         self._running = self._exit_cleanly = self._exit_with_failure = self._draining = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
         self._shutdown_event = asyncio.Event()
@@ -194,12 +200,13 @@ class GatewayRuntimeInitMixin:
         # against the construction-time launch home only, so a multiplexed secondary profile's
         # state.db was never pruned or vacuumed by anybody, and the launch profile's
         # retention_days/auto_prune decided whether it happened at all.
-        from gateway.run_profile_reconcile import _for_each_served_profile
-        _launch_sessions = _launch_sessions_dir(self.config)  # resolved OUTSIDE any profile scope
-        _housekeeping_chore(
-            "state.db startup maintenance",
-            lambda: _for_each_served_profile(
-                self, lambda _label: _housekeeping_state_db_maintenance(_launch_sessions)))
+        if not getattr(self, "control_only", False):
+            from gateway.run_profile_reconcile import _for_each_served_profile
+            _launch_sessions = _launch_sessions_dir(self.config)  # resolved OUTSIDE any profile scope
+            _housekeeping_chore(
+                "state.db startup maintenance",
+                lambda: _for_each_served_profile(
+                    self, lambda _label: _housekeeping_state_db_maintenance(_launch_sessions)))
         # Checkpoint store pruning is a housekeeping chore (``_housekeeping_checkpoint_prune``), not a
         # constructor step: its ``git gc`` repacks the whole store (tens of seconds on a GB store) and
         # here it ran before the control socket, adapters and the code_sha stamp — so the first

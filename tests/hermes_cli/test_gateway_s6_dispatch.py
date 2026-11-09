@@ -290,3 +290,20 @@ def test_missing_slot_stays_an_error_outside_the_repair_case(
     assert mgr.registered == []
     assert mgr.calls == []
     assert "no such gateway 'coder'" in capsys.readouterr().out
+
+
+def test_control_only_run_does_not_redirect_to_serving_s6_gateway(monkeypatch):
+    """The explicit recovery mode must remain the caller's process command under the image entrypoint."""
+    from argparse import Namespace
+    from hermes_cli import gateway as gw
+
+    called = []
+    monkeypatch.setattr(gw, "_maybe_redirect_run_to_s6_supervision",
+                        lambda _args: pytest.fail("control-only run was redirected to serving service"))
+    monkeypatch.setattr(gw, "run_gateway", lambda *args, **kwargs: called.append(kwargs))
+
+    gw._cmd_run(Namespace(control_only=True, verbose=0, quiet=False, replace=False, force=False,
+                          idle_exit=False, external_supervisor=False))
+
+    assert called == [{"control_only": True, "force": False, "idle_exit": False,
+                       "quiet": False, "replace": False}]

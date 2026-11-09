@@ -3334,58 +3334,10 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     return norm(installed) == norm(expected)
 
 
-def _retire_hermes_replace_dropin(system: bool = False) -> bool:
-    """Remove only the legacy ``--replace`` drop-in written by Hermes."""
-    unit_path = get_systemd_unit_path(system=system)
-    dropin = unit_path.parent / f"{unit_path.name}.d" / "20-replace.conf"
-    try:
-        text = dropin.read_text(encoding="utf-8-sig")
-    except OSError:
-        return False
-    if not all(token in text for token in ("Added to end the gateway respawn storm", "--replace", "ExecStart=")):
-        return False
-    dropin.unlink()
-    return True
-
-
 def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
-    """Rewrite the installed systemd unit when the generated definition has changed."""
-    unit_path = get_systemd_unit_path(system=system)
-    if not unit_path.exists():
-        return False
-
-    # Every boot/start/restart lands here: never rewrite a unit pinning another home (checked before
-    # systemd_unit_is_current adopts the unit's home into os.environ).
-    from hermes_cli.gateway_service_owner import unit_belongs_to_caller
-    if not unit_belongs_to_caller(unit_path, system, "rewrite"):
-        return False
-    # systemd_unit_is_current is the HERMES_HOME-sync chokepoint; its env mutation persists for the regenerate below.
-    current = systemd_unit_is_current(system=system)
-    if _retire_hermes_replace_dropin(system=system):
-        _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
-        print(f"↻ Removed the stale Hermes --replace drop-in from the gateway {_service_scope_label(system)} service")
-        if current:
-            return True
-    elif current:
-        return False
-
-    expected_user = _read_systemd_user_from_unit(unit_path) if system else None
-    new_unit = generate_systemd_unit(system=system, run_as_user=expected_user)
-
-    # Test safety belt: the user unit path is under Path.home(), which conftest does NOT sandbox, and a
-    # pytest-tmp HERMES_HOME baked into the developer's real unit breaks their gateway on next reboot.
-    if not system and any(m in new_unit for m in ("/pytest-of-", '/hermes_test"', "/hermes_test/")):
-        return False
-
-    # Structural variant: refuse ANY temp-dir HERMES_HOME (manual E2E homes lack the pytest markers).
-    if gateway_service_owner.refuse_temp_home_service_write(new_unit, "systemd unit"):
-        return False
-
-    _prepare_service_launcher(system=system, run_as_user=expected_user)
-    unit_path.write_text(new_unit, encoding="utf-8")
-    _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
-    print(f"↻ Updated gateway {_service_scope_label(system)} service definition to match the current Hermes install")
-    return True
+    """Refresh a recognized serving unit; control-only and custom definitions stay untouched."""
+    from hermes_cli.gateway_service_install import refresh_systemd_unit_if_needed as refresh
+    return refresh(system=system)
 
 
 def _print_linger_enable_warning(username: str, detail: str | None = None, *, system: bool = False) -> None:
@@ -3557,6 +3509,9 @@ def systemd_install(
     from hermes_cli.gateway_service_owner import unit_belongs_to_caller
     if not force_unit_path and not unit_belongs_to_caller(unit_path, system, "overwrite", run_as_user):
         sys.exit(1)
+    from hermes_cli.gateway_service_mode import refuse_unsafe_service_action
+    if unit_path.exists() and refuse_unsafe_service_action(unit_path, "systemd", "install or rewrite"):
+        sys.exit(1)
 
     # Offer to remove legacy units first: alongside the new unit they flap-fight for the bot token.
     if has_legacy_hermes_units():
@@ -3704,6 +3659,10 @@ def _require_service_installed(action: str, system: bool = False) -> None:
 def systemd_start(system: bool = False):
     system = _systemd_scope_preamble("start", system, preflight_user=True)
     gateway_service_owner.refuse_foreign_systemd_unit("start", system)
+    unit_path = get_systemd_unit_path(system=system)
+    from hermes_cli.gateway_service_mode import refuse_unsafe_service_action
+    if unit_path.exists() and refuse_unsafe_service_action(unit_path, "systemd", "start"):
+        sys.exit(1)
     # HERMES_HOME sync happens in refresh's systemd_unit_is_current gate; the unit is guaranteed to exist here.
     refresh_systemd_unit_if_needed(system=system)
     _run_systemctl(["start", get_service_name()], system=system, check=True, timeout=30)
@@ -3729,6 +3688,10 @@ def systemd_stop(system: bool = False):
 def systemd_restart(system: bool = False):
     system = _systemd_scope_preamble("restart", system, preflight_user=True)
     gateway_service_owner.refuse_foreign_systemd_unit("restart", system)
+    unit_path = get_systemd_unit_path(system=system)
+    from hermes_cli.gateway_service_mode import refuse_unsafe_service_action
+    if unit_path.exists() and refuse_unsafe_service_action(unit_path, "systemd", "restart"):
+        sys.exit(1)
     # HERMES_HOME sync happens in refresh's systemd_unit_is_current gate; its os.environ mutation
     # persists for the get_running_pid / drain-timeout reads below.
     refresh_systemd_unit_if_needed(system=system)
@@ -4548,7 +4511,7 @@ def _respawn_storm_backoff() -> None:
 
 
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, force: bool = False,
-                idle_exit: bool = False):
+                idle_exit: bool = False, control_only: bool = False):
     """Run the gateway in foreground. verbose 1=INFO/2+=DEBUG on stderr; quiet: no stderr logs; replace:
     kill an existing instance first (avoids systemd restart loops); force: skip the supervised guard;
     idle_exit: a client auto-started this unsupervised gateway, so it exits once idle
@@ -4558,9 +4521,11 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _guard_supervised_gateway_conflict(force=force)
     _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
-    _apply_startup_watchdog_config()
-    from hermes_cli.observability.shared_metrics_process import begin_process
-    begin_process("gateway")
+    if not control_only:
+        _apply_startup_watchdog_config()
+    if not control_only:
+        from hermes_cli.observability.shared_metrics_process import begin_process
+        begin_process("gateway")
 
     # Detached Windows runs (HERMES_GATEWAY_DETACHED=1, or non-TTY for older wrappers) ignore
     # console-control broadcasts from sibling CLIs; foreground runs keep Ctrl+C-to-stop.
@@ -4578,7 +4543,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 
     # Refresh the systemd unit on every boot so restart settings stay current even after an
     # exit-code-75 respawn (stale-code or /restart), which bypasses `hermes gateway restart`.
-    if supports_systemd_services():
+    if not control_only and supports_systemd_services():
         try:
             refresh_systemd_unit_if_needed(system=False)
         except Exception:
@@ -4601,44 +4566,49 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 
     import atexit as _atexit
     import traceback as _traceback
-    _exit_diag = _make_exit_diag()
-    _exit_diag(
-        "gateway.start", replace=replace, argv=sys.argv, stdin_is_tty=stdin_is_tty,
-        console_window_attached=_console_window_attached, detached=_gateway_detached_env(),
-        breakaway=_breakaway, absorb_windows_console_controls=_absorb,
-    )
-    _atexit.register(lambda: _exit_diag("atexit.hook", sys_exc=repr(sys.exc_info())))
+    _exit_diag = None
+    if not control_only:
+        _exit_diag = _make_exit_diag()
+        _exit_diag(
+            "gateway.start", replace=replace, argv=sys.argv, stdin_is_tty=stdin_is_tty,
+            console_window_attached=_console_window_attached, detached=_gateway_detached_env(),
+            breakaway=_breakaway, absorb_windows_console_controls=_absorb,
+        )
+        _atexit.register(lambda: _exit_diag("atexit.hook", sys_exc=repr(sys.exc_info())))
 
-    _respawn_storm_backoff()
+    if not control_only:
+        _respawn_storm_backoff()
+    from hermes_cli.gateway_run_command import record_exit_event
 
     def _hard_exit_after_gateway_teardown(code: int) -> None:
         # Mirror gateway.run.main()'s wedge-proof exit: bypass Python finalization so non-daemon
         # threads (in-flight cron jobs) can't delay a /restart by minutes.
-        from gateway.run import _exit_after_graceful_shutdown
-        _exit_after_graceful_shutdown(code)
+        from gateway.run_exit import exit_after_graceful_shutdown
+        exit_after_graceful_shutdown(code, mark_lifecycle=not control_only)
 
     success = False
     try:
         success = asyncio.run(start_gateway(replace=replace, force=force, verbosity=verbosity,
-                                            idle_exit=idle_exit))
-        _exit_diag("asyncio.run.returned", success=success)
+                                            idle_exit=idle_exit, control_only=control_only))
+        record_exit_event(_exit_diag, "asyncio.run.returned", success=success)
     except KeyboardInterrupt:
         # Detached Windows runs absorb SIGINT above; keep the handler for console runs.
-        _exit_diag("asyncio.run.KeyboardInterrupt", traceback=_traceback.format_exc())
+        record_exit_event(_exit_diag, "asyncio.run.KeyboardInterrupt", traceback=_traceback.format_exc())
         print("\nGateway stopped.")
         _hard_exit_after_gateway_teardown(0)
         return  # unreachable in production (os._exit); guard for test stubs
     except SystemExit as e:
-        _exit_diag("asyncio.run.SystemExit", code=e.code, traceback=_traceback.format_exc())
+        record_exit_event(_exit_diag, "asyncio.run.SystemExit", code=e.code, traceback=_traceback.format_exc())
         _hard_exit_after_gateway_teardown(0 if e.code is None else e.code if isinstance(e.code, int) else 1)
     except BaseException as e:
         # Everything else (CancelledError, exotic BaseExceptions): log the cause, then re-raise.
-        _exit_diag("asyncio.run.exception", exc_type=type(e).__name__, exc_repr=repr(e), traceback=_traceback.format_exc())
+        record_exit_event(_exit_diag, "asyncio.run.exception", exc_type=type(e).__name__,
+                          exc_repr=repr(e), traceback=_traceback.format_exc())
         raise
     if not success:
-        _exit_diag("gateway.exit_nonzero")
+        record_exit_event(_exit_diag, "gateway.exit_nonzero")
         _hard_exit_after_gateway_teardown(1)
-    _exit_diag("gateway.exit_clean")
+    record_exit_event(_exit_diag, "gateway.exit_clean")
     _hard_exit_after_gateway_teardown(0)
 
 
@@ -5039,15 +5009,8 @@ def _print_runtime_health() -> None:
 
 
 def _cmd_run(args):
-    if _maybe_redirect_run_to_s6_supervision(args):
-        return  # unreachable; execvp doesn't return
-    if getattr(args, "external_supervisor", False):
-        os.environ[EXTERNAL_GATEWAY_SUPERVISOR_ENV] = "1"
-    run_gateway(
-        getattr(args, "verbose", 0), quiet=getattr(args, "quiet", False),
-        replace=getattr(args, "replace", False), force=getattr(args, "force", False),
-        idle_exit=getattr(args, "idle_exit", False),
-    )
+    from hermes_cli.gateway_run_command import run_command
+    return run_command(args)
 
 
 def _cmd_setup(args):

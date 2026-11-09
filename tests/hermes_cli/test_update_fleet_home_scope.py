@@ -48,6 +48,12 @@ def test_systemd_unit_of_another_home_is_left_alone(monkeypatch, own_home):
             return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
         if "show" in cmd and "--property=MainPID" in cmd:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{main_pid['value']}\n", stderr="")
+        if "show" in cmd and "--property=ExecStart" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout="{ path=/opt/hermes ; argv[]=/opt/hermes gateway run ; ignore_errors=no ; start_time=[n/a]; }\n",
+                stderr="",
+            )
         if "show" in cmd:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         write_verbs.append(cmd)

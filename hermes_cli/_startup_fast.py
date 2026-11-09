@@ -24,11 +24,13 @@ toward the slow path, which then does the authoritative parse).
 
 from __future__ import annotations
 
+import itertools
 import os
 import sys
 
 __all__ = [
     "active_profile_may_override_home",
+    "argv_is_gateway_run",
     "container_mode_may_be_active",
     "ensure_project_root_on_path",
     "is_container_startup_environment",
@@ -41,6 +43,12 @@ __all__ = [
     "read_openai_version",
     "try_fast_version",
 ]
+
+
+def argv_is_gateway_run(argv: list[str]) -> bool:
+    """Whether argv starts an ordinary gateway run that needs the startup watchdog."""
+    return any(a == "gateway" and b == "run" and "--control-only" not in argv[index + 2:]
+               for index, (a, b) in enumerate(itertools.pairwise(argv)))
 
 
 def _read_text(path: str) -> str | None:

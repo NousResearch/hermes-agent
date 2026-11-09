@@ -6,7 +6,7 @@ from contextvars import ContextVar
 from types import SimpleNamespace
 
 import pytest
-from aiohttp import web
+from aiohttp import WSServerHandshakeError, web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import GatewayConfig, PlatformConfig
@@ -50,7 +50,7 @@ def _adapter(runner, db):
     return adapter
 
 
-async def _restarted_api_runs(tmp_path, monkeypatch, *, idempotent=True):
+async def _restarted_api_runs(tmp_path, monkeypatch, *, idempotent=True, control_only_restart=False):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     store = SessionStore(tmp_path / "sessions", GatewayConfig())
     db = SessionDB(tmp_path / "state.db")
@@ -105,10 +105,16 @@ async def _restarted_api_runs(tmp_path, monkeypatch, *, idempotent=True):
         head = claim_session_input(db, epoch=first.epoch, session_id="api-session")
         assert head["admission_id"] == rows[0]["admission_id"]
 
+        if control_only_restart:
+            # The real API execution appends this user row before invoking the provider. The
+            # simplified executor above does not, so seed the same transcript boundary here.
+            db.append_message("api-session", "user", "HEAD")
+            runner.control_only = True
         restarted = await initialize_session_authority(
-            runner, profile_id="default", instance_id="api-owner-2"
+            runner, profile_id="default", instance_id="api-owner-2", control_only=control_only_restart
         )
-        restore_api_session(restarted, "api-session")
+        if not control_only_restart:
+            restore_api_session(restarted, "api-session")
         rows = list_session_admissions(db, session_id="api-session")
         assert [row["status"] for row in rows] == ["unknown", "queued"]
         await client.close()
@@ -140,6 +146,152 @@ async def _close_fixture(client, adapters, store, tasks):
         adapter._run_idempotency_store.close()
     adapters[-1].gateway_runner.session_authority.db.close()
     store.close_all_db_handles()
+
+
+def _control_client(adapter):
+    @web.middleware
+    async def select_owner(request, handler):
+        token = _OWNER.set(request.headers.get("X-Test-Owner", "owner"))
+        try:
+            return await handler(request)
+        finally:
+            _OWNER.reset(token)
+
+    adapter._expected_api_key = lambda: _API_KEYS[_OWNER.get()]
+    app = web.Application(middlewares=[select_owner])
+    for method, path, handler in adapter._http_route_table():
+        app.router.add_route(method, path, handler)
+    return TestClient(TestServer(app))
+
+
+@pytest.mark.asyncio
+async def test_control_only_denies_turn_ingress_and_resolves_unknown_without_running_fifo(
+    tmp_path, monkeypatch
+):
+    """The API control plane remains useful while every turn path stays closed."""
+    client, adapters, store, owner, unknown, follower, executed, tasks = (
+        await _restarted_api_runs(tmp_path, monkeypatch, control_only_restart=True)
+    )
+    await client.close()
+    client = _control_client(adapters[-1])
+    await client.start_server()
+    try:
+        before_admissions = [
+            (row["admission_id"], row["status"], row["generation"])
+            for row in list_session_admissions(owner.db, session_id="api-session", pending_only=False)
+        ]
+        with owner.db._read_ctx() as conn:
+            before_transcript = [tuple(row) for row in conn.execute(
+                "SELECT role, content FROM messages WHERE session_id=? ORDER BY id", ("api-session",)
+            )]
+
+        unauthenticated = await client.get("/health")
+        assert unauthenticated.status == 401
+        health = await client.get("/health", headers=_AUTH_HEADERS)
+        assert health.status == 200
+        assert (await health.json())["status"] == "control_only"
+        detailed = await client.get("/health/detailed", headers=_AUTH_HEADERS)
+        assert (await detailed.json())["mode"] == "control_only"
+
+        run_path = "/v1/runs/" + unknown["request_id"]
+        status = await client.get(run_path, headers=_AUTH_HEADERS)
+        assert status.status == 200
+        evidence = await status.json()
+        assert evidence["status"] == "unknown"
+        assert evidence["admission_id"] == unknown["admission_id"]
+        assert evidence["execution_generation"] == unknown["generation"]
+
+        inference_requests = [
+            ("POST", "/v1/runs", {"input": "do not execute"}),
+            ("POST", "/v1/responses", {"input": "do not execute"}),
+            ("POST", "/v1/chat/completions", {"messages": [{"role": "user", "content": "do not execute"}]}),
+            ("POST", "/api/sessions", {"session_id": "new"}),
+            ("POST", "/api/sessions/api-session/chat", {"message": "do not execute"}),
+            ("POST", "/api/sessions/api-session/chat/stream", {"message": "do not execute"}),
+            ("POST", "/api/sessions/api-session/fork", {"message": "do not execute"}),
+            ("POST", "/api/cron/fire", {"prompt": "do not execute"}),
+            ("POST", "/api/platforms/telegram/events", {"text": "do not execute"}),
+        ]
+        for method, path, body in inference_requests:
+            denied = await client.request(method, path, json=body, headers=_AUTH_HEADERS)
+            assert denied.status == 503, (path, await denied.text())
+            assert "do not execute" not in await denied.text()
+        with pytest.raises(WSServerHandshakeError) as websocket_denied:
+            await client.ws_connect("/api/sessions/api-session/events", headers=_AUTH_HEADERS)
+        assert websocket_denied.value.status == 503
+        bad_auth = await client.post("/v1/runs", json={"input": "secret"})
+        assert bad_auth.status == 401
+        assert "secret" not in await bad_auth.text()
+
+        resolve_path = run_path + "/resolve-unknown"
+        wrong = await client.post(resolve_path, headers=_AUTH_HEADERS, json={
+            "admission_id": unknown["admission_id"],
+            "execution_generation": unknown["generation"] + 1,
+        })
+        assert wrong.status == 409
+        assert (await wrong.json())["error"]["code"] == "stale_generation"
+        foreign = await client.post(resolve_path, headers=_OTHER_AUTH_HEADERS, json={
+            "admission_id": unknown["admission_id"],
+            "execution_generation": unknown["generation"],
+        })
+        assert foreign.status == 404
+
+        body = {"admission_id": unknown["admission_id"],
+                "execution_generation": unknown["generation"]}
+        resolved = await client.post(resolve_path, headers=_AUTH_HEADERS, json=body)
+        assert resolved.status == 200
+        receipt = await resolved.json()
+        assert receipt["outcome"] == "interrupted"
+        retry = await client.post(resolve_path, headers=_AUTH_HEADERS, json=body)
+        assert retry.status == 200
+        assert await retry.json() == receipt
+
+        still_closed = await client.post("/v1/runs", json={"input": "still forbidden"}, headers=_AUTH_HEADERS)
+        assert still_closed.status == 503
+        health_after_resolution = await client.get("/health", headers=_AUTH_HEADERS)
+        assert (await health_after_resolution.json())["mode"] == "control_only"
+        after_admissions = [
+            (row["admission_id"], row["status"], row["generation"])
+            for row in list_session_admissions(owner.db, session_id="api-session", pending_only=False)
+        ]
+        with owner.db._read_ctx() as conn:
+            after_transcript = [tuple(row) for row in conn.execute(
+                "SELECT role, content FROM messages WHERE session_id=? ORDER BY id", ("api-session",)
+            )]
+        assert after_admissions == [
+            (unknown["admission_id"], "terminal", unknown["generation"]),
+            (follower["admission_id"], "queued", follower["generation"]),
+        ]
+        assert before_admissions[0][1] == "unknown" and before_admissions[1][1] == "queued"
+        assert before_transcript == after_transcript
+        assert executed == []
+        assert owner.sessions == {}
+        assert after_transcript == [("user", "HEAD")]
+        with owner.db._read_ctx() as conn:
+            marker_count = conn.execute(
+                "SELECT COUNT(*) FROM state_meta WHERE key LIKE 'control_only_resolution_boundary:%'"
+            ).fetchone()[0]
+        assert marker_count == 1
+
+        # The transcript boundary is deferred until a later serving boot, and is written before
+        # that authority can claim any queued successor.
+        owner.runner.control_only = False
+        await initialize_session_authority(
+            owner.runner, profile_id="default", instance_id="api-owner-3"
+        )
+        with owner.db._read_ctx() as conn:
+            serving_transcript = [tuple(row) for row in conn.execute(
+                "SELECT role, content FROM messages WHERE session_id=? ORDER BY id", ("api-session",)
+            )]
+            marker_count = conn.execute(
+                "SELECT COUNT(*) FROM state_meta WHERE key LIKE 'control_only_resolution_boundary:%'"
+            ).fetchone()[0]
+        assert serving_transcript[0] == ("user", "HEAD")
+        assert serving_transcript[-1][0] == "assistant"
+        assert "turn did not complete" in serving_transcript[-1][1]
+        assert marker_count == 0
+    finally:
+        await _close_fixture(client, adapters, store, tasks)
 
 
 @pytest.mark.asyncio

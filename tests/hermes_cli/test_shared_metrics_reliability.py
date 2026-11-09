@@ -265,8 +265,9 @@ def test_graceful_gateway_exit_stamps_the_marker_clean(marks, monkeypatch):
         raise _Exited(code)
 
     monkeypatch.setattr(gateway_run.os, "_exit", fake_exit)  # os._exit skips atexit: no stamp from there
+    from gateway.run_exit import exit_after_graceful_shutdown
     with pytest.raises(_Exited):
-        gateway_run._exit_after_graceful_shutdown(1)
+        exit_after_graceful_shutdown(1)
     marker = process_metrics.markers_dir(marks.home) / f"gateway-{os.getpid()}.json"
     assert json.loads(marker.read_text())["state"] == "clean"
 

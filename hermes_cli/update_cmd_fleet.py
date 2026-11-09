@@ -955,6 +955,12 @@ def _restart_macos_launchd_gateways(
         if (foreign_home := launchd_label_foreign_home(label)) is not None:
             print(describe_skipped_runtime("launchd job", label, foreign_home))
             continue
+        plist_path = get_launchd_plist_path().with_name(f"{label}.plist")
+        from hermes_cli.gateway_service_mode import launchd_definition_mode
+        if not plist_path.exists() or launchd_definition_mode(plist_path) != "serving":
+            failed_or_stale_units.append(label)
+            print(f"  ⚠ {label}: preserving its nonstandard or control-only ProgramArguments; restart skipped")
+            continue
         try:
             # Locate = liveness + domain in one probe; kickstart and fresh-PID checks
             # reuse that domain so a sibling is never probed in one and restarted in another.
@@ -1249,6 +1255,13 @@ def _restart_one_systemd_gateway_unit(
         return
     if not _systemd_unit_owned_by_update(scope_cmd, svc_name):
         return
+    if _service_unit_supports_graceful_sigusr1_restart(svc_name):
+        from hermes_cli.gateway_service_mode import systemd_execstart_property_mode
+        effective = _systemctl(scope_cmd + ["show", svc_name, "--property=ExecStart", "--value"], timeout=5)
+        if systemd_execstart_property_mode(effective.stdout or "") != "serving":
+            failed_or_stale_units.append(svc_name)
+            print(f"  ⚠ {svc_name}: preserving its nonstandard or control-only ExecStart; restart skipped")
+            return
     _repair_unit_without_fatal_exit_park(svc_name, scope)
 
     # None ⇒ no non-interactive privilege path; avoid manage-units verbs

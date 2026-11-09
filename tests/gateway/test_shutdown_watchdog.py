@@ -73,6 +73,37 @@ def test_arm_shutdown_watchdog_fires_with_dump_and_exit(tmp_path):
     assert get_shutdown_watchdog_dump_path(tmp_path).name == "gateway-shutdown-watchdog.log"
 
 
+def test_control_only_shutdown_watchdog_exits_without_lifecycle_diagnostics(tmp_path, monkeypatch):
+    from gateway import lifecycle_ledger
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    sentinel = lifecycle_ledger.get_lifecycle_sentinel_path(tmp_path)
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text('{"phase":"running","pid":123}', encoding="utf-8")
+    dump = tmp_path / "logs" / "watchdog.log"
+    snapshot_calls = []
+    exited = threading.Event()
+
+    def fake_exit(code):
+        assert code == 9
+        exited.set()
+
+    with patch("gateway.shutdown_watchdog.os._exit", side_effect=fake_exit):
+        arm_shutdown_watchdog(
+            0.05,
+            snapshot_fn=lambda: snapshot_calls.append(True) or {"active_agents": 1},
+            dump_path=dump,
+            exit_code=9,
+            mark_lifecycle=False,
+            write_diagnostics=False,
+        )
+        assert exited.wait(timeout=5.0), "watchdog did not fire"
+
+    assert sentinel.read_text(encoding="utf-8") == '{"phase":"running","pid":123}'
+    assert not dump.exists()
+    assert snapshot_calls == []
+
+
 
 
 async def _run_heartbeat_until_payload(tmp_path, timeout_s=10.0):

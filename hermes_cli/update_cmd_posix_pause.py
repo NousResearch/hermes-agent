@@ -357,12 +357,16 @@ def _start_unit(unit: dict) -> int:
         _repair_unit_without_fatal_exit_park, _systemctl, _unit_main_pid, _wait_for_service_active,
     )
     from hermes_cli.update_cmd_fleet_unit_budget import run_unit_job
+    from hermes_cli.gateway_service_mode import systemd_execstart_property_mode
     cmd = _manage_cmd(unit["scope"])
     if cmd is None:
         raise RuntimeError(f"no privilege to start system unit {unit['unit']}")
+    scope_cmd = _scope_cmd(unit)
+    effective = _systemctl(scope_cmd + ["show", unit["unit"], "--property=ExecStart", "--value"], timeout=5)
+    if systemd_execstart_property_mode(effective.stdout or "") != "serving":
+        raise PauseRefused(f"{unit['unit']} has a non-serving or unrecognized launcher; update resume skipped")
     _repair_unit_without_fatal_exit_park(unit["unit"], unit["scope"])
     _systemctl(cmd + ["reset-failed", unit["unit"]], timeout=10)
-    scope_cmd = _scope_cmd(unit)
     result = run_unit_job(cmd, scope_cmd, "start", unit["unit"], timeout=_STOP_TIMEOUT_S)
     if result.returncode != 0 or not _wait_for_service_active(scope_cmd, unit["unit"], timeout=15.0):
         raise RuntimeError(f"{unit['unit']} did not start: {(result.stderr or '').strip() or 'not active'}")
@@ -391,6 +395,9 @@ def _start_job(job: dict) -> None:
     from hermes_cli.gateway import (
         _launchctl_bootstrap, _wait_for_launchd_service_pid, get_launchd_label, refresh_launchd_plist_if_needed,
     )
+    from hermes_cli.gateway_service_mode import refuse_unsafe_service_action
+    if refuse_unsafe_service_action(Path(job["plist"]), "launchd", "resume"):
+        raise PauseRefused(f"{job['label']} has a non-serving or unrecognized launcher; update resume skipped")
     if not (job["label"] == get_launchd_label() and refresh_launchd_plist_if_needed()):
         _launchctl_bootstrap(job["domain"], job["plist"], job["label"])
     subprocess.run(["launchctl", "kickstart", f"{job['domain']}/{job['label']}"],

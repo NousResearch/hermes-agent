@@ -3408,7 +3408,7 @@ class GatewayRunner(
     _platform_lock_takeover_on_start: bool = False
     _reconnect_watcher_task: Optional[asyncio.Task] = None
 
-    def __init__(self, config: Optional[GatewayConfig] = None):
+    def __init__(self, config: Optional[GatewayConfig] = None, *, control_only: bool = False):
         global _gateway_runner_ref
         # With multiplex_profiles on, load under the default profile secret scope so bot tokens in its
         # .env resolve as secondary profiles' do; explicit config= injection (tests) is left untouched.
@@ -3443,7 +3443,7 @@ class GatewayRunner(
 
         self._init_runtime_settings()
         self._init_session_store()
-        self._init_lifecycle_state()
+        self._init_lifecycle_state(control_only)
         self._init_runtime_caches()
         self._init_session_db()
         self._init_registries_and_clocks()
@@ -5050,10 +5050,10 @@ async def _host_attach_or_none(replace: bool, force: bool = False) -> Optional[b
 
 
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False,
-                        verbosity: Optional[int] = 0, force: bool = False, idle_exit: bool = False) -> bool:
-    """Run the process lifecycle; the runner facade remains the public entrypoint."""
+                        verbosity: Optional[int] = 0, force: bool = False, idle_exit: bool = False,
+                        control_only: bool = False) -> bool:
     from gateway.run_bootstrap import start_gateway as bootstrap
-    return await bootstrap(config, replace, verbosity, force, idle_exit)
+    return await bootstrap(config, replace, verbosity, force, idle_exit, control_only)
 
 
 def _guard_corrupt_user_config() -> None:
@@ -5152,52 +5152,8 @@ def main():
     except SystemExit as e:
         # e.code may be None (→ 0), an int, or a str (→ 1, like CPython).
         exit_code = 0 if e.code is None else e.code if isinstance(e.code, int) else 1
-    _exit_after_graceful_shutdown(exit_code)
-
-
-def _exit_after_graceful_shutdown(exit_code: int) -> None:
-    """Flush stdio, release the PID file + lock, stamp the clean exit, flush opt-in metrics, hard-exit.
-    ``os._exit`` (not ``sys.exit``): SystemExit runs ``Py_FinalizeEx``, which joins every non-daemon
-    thread — exactly the hang a wedged worker causes. It bypasses ``atexit``, so the metrics flush,
-    PID/lock release, CPU profile and bounded log drain (``QueueListener`` thread) are done here explicitly.
-    The atexit ``remove_pid_file`` / ``release_gateway_runtime_lock`` (``start_gateway``) never run either:
-    ``_stop_impl`` releases both on full shutdown, but the EARLY exits (clean-fatal-config #51228,
-    startup-aborted) raise ``SystemExit`` without it, so this idempotent backstop does (#53107).
-    """
-    for stream in (sys.stdout, sys.stderr):
-        with suppress(Exception):
-            stream.flush()
-    def _release_locks() -> None:
-        # BEFORE the log drain (bounded, but could take its full timeout on a wedged disk); idempotent.
-        from gateway.status import remove_pid_file, release_gateway_runtime_lock
-        remove_pid_file()
-        release_gateway_runtime_lock()
-
-    def _mark_exited() -> None:
-        # Single funnel every graceful exit passes through, so the next boot's unclean-death detector
-        # fires only for genuine SIGKILL/OOM/VM deaths. Ownership-guarded against an old --replace life.
-        from hermes_cli.observability.shared_metrics_process import stamp_exit
-        stamp_exit("clean")  # the exit-metrics marker too: os._exit skips its atexit stamp (never raises)
-        from gateway.lifecycle_ledger import mark_exited
-        mark_exited(exit_code, reason="graceful_shutdown")
-
-    def _flush_metrics() -> None:  # after the clean stamp: a supervisor kill mid-flush is no unclean death
-        from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
-        flush_before_hard_exit()  # the runtimes' atexit flush: open sessions + queued opt-in rows (bounded)
-
-    def _write_cpu_profile() -> None:  # --cpu-profile's atexit writer never runs past os._exit; no-op when off
-        from hermes_cli.cpu_profile import write_cpu_profile
-        write_cpu_profile()
-
-    def _drain_logs() -> None:
-        # os._exit bypasses the listener's atexit drain. Bounded, no restart — NOT flush_log_queue():
-        # a listener wedged on the rotation lock would re-freeze shutdown in an unbounded stop() join.
-        from hermes_logging import drain_log_queue
-        drain_log_queue(timeout=1.0)
-
-    for _step in (_release_locks, _mark_exited, _flush_metrics, _write_cpu_profile, _drain_logs):
-        _best_effort(_step)
-    os._exit(exit_code)
+    from gateway.run_exit import exit_after_graceful_shutdown
+    exit_after_graceful_shutdown(exit_code)
 
 
 if __name__ == "__main__":

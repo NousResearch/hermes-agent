@@ -139,6 +139,23 @@ def test_a_named_profile_slot_is_registered_but_never_autostarted(tmp_path: Path
     assert default.action == "started"
 
 
+def test_control_only_container_command_suppresses_every_s6_gateway_autostart(tmp_path: Path) -> None:
+    """The official image starts s6 before its CMD; no serving gateway may race the control process."""
+    _make_profile(tmp_path, "solo", state="running")
+    solo = tmp_path / "profiles" / "solo"
+    (solo / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
+    (tmp_path / "gateway_state.json").write_text('{"gateway_state": "running"}', encoding="utf-8")
+    container_argv = (
+        "/init", "/opt/hermes/docker/main-wrapper.sh", "hermes", "gateway", "run", "--control-only"
+    )
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=tmp_path / "svc", dry_run=True, container_argv=container_argv)
+
+    assert [action.action for action in actions] == ["registered", "registered"]
+    assert not any(action.folded_into_root for action in actions)
+
+
 @pytest.mark.parametrize("config_value,env_value", [
     pytest.param("false", None, id="config-false"),
     pytest.param("true", "false", id="env-false-overrides-config"),

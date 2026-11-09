@@ -15,7 +15,7 @@ from hermes_cli import gateway_service_owner
 
 UNIT = (
     "[Service]\n"
-    "ExecStart=/home/ace/.hermes/hermes-agent/.hermes/bin/hermes gateway run\n"
+    "ExecStart=hermes gateway run\n"
     "WorkingDirectory={home}\n"
     'Environment="HERMES_HOME={home}"\n'
 )
@@ -35,7 +35,6 @@ def unit(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_service_owner, "refuse_temp_home_service_write", lambda definition, kind: False)
     monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: path)
     monkeypatch.setattr(gw, "systemd_unit_is_current", lambda system=False: False)
-    monkeypatch.setattr(gw, "_retire_hermes_replace_dropin", lambda system=False: False)
     monkeypatch.setattr(gw, "_prepare_service_launcher", lambda system=False, run_as_user=None: None)
     monkeypatch.setattr(gw, "generate_systemd_unit", lambda system=False, run_as_user=None: "ExecStart=new\n")
     monkeypatch.setattr(gw, "_run_systemctl", lambda args, **kw: calls.append(tuple(args)) or

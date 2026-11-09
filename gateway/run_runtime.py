@@ -52,7 +52,8 @@ async def _build_profile_authority(runner, name, home, *, register):
         registry.add(home, None, name=name)
         try:
             authority = await initialize_session_authority(
-                runner, profile_id=str(home), instance_id=instance_id, db=db, register=register)
+                runner, profile_id=str(home), instance_id=instance_id, db=db, register=register,
+                control_only=getattr(runner, "control_only", False))
         except BaseException:
             registry.remove(home)
             raise
@@ -205,7 +206,8 @@ async def initialize_gateway_runtime(runner):
     # Publish this boot's verdict (an empty map clears a previous run's parked set).
     _record_parked_profiles(parked_profile_map(runner))
     runner.session_ticket_store = TicketStore(instance_id, registry.profile_ids())
-    release_unknown_turn_markers(runner)
+    if not getattr(runner, "control_only", False):
+        release_unknown_turn_markers(runner)
 
 
 def release_unknown_turn_markers(runner):
@@ -690,7 +692,17 @@ async def recover_profile_native_sessions(runner, authority):
 
 def publish_gateway_runtime_ready(runner):
     descriptor = runner.session_runtime_descriptor
-    if runner.session_api.task.done() or not runner._running or runner._draining:
+    if not runner._running or runner._draining:
+        raise RuntimeError('gateway stopped before session API readiness')
+    if getattr(runner, "control_only", False):
+        from gateway.config import Platform as _Platform
+        adapter = runner.adapters.get(_Platform.API_SERVER)
+        if adapter is None or not adapter.is_connected:
+            raise RuntimeError('gateway stopped before control API readiness')
+        descriptor.update(state='control_only', capabilities=[
+            'run-status-v1', 'resolve-unknown-v1'])
+        return
+    if runner.session_api.task.done():
         raise RuntimeError('gateway stopped before session API readiness')
     descriptor.update(state='ready', capabilities=[
         'session-authority-v1', 'durable-admission-v1', 'event-replay-v1'])
@@ -700,6 +712,9 @@ def publish_gateway_runtime_ready(runner):
 
 async def wait_gateway_runtime(runner):
     """A vanished interactive listener is fatal, not a healthy headless runtime."""
+    if getattr(runner, "control_only", False):
+        await runner.wait_for_shutdown()
+        return
     shutdown = asyncio.create_task(runner.wait_for_shutdown())
     listener = runner.session_api.task
     try:

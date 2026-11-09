@@ -264,7 +264,8 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float, snapshot: Optional[
 def arm_shutdown_watchdog(
     delay_s: float, *, done_event: Optional[threading.Event] = None,
     snapshot_fn: Optional[Callable[[], dict[str, Any]]] = None, exit_code: int = 1,
-    dump_path: Optional[Path] = None, name: str = "gateway-shutdown-watchdog") -> threading.Event:
+    dump_path: Optional[Path] = None, name: str = "gateway-shutdown-watchdog",
+    mark_lifecycle: bool = True, write_diagnostics: bool = True) -> threading.Event:
     """Arm a daemon-thread hard-exit backstop for a wedged shutdown path: exits quietly if
     ``done_event`` is set within ``delay_s``, else dumps diagnostics and ``os._exit(exit_code)``.
     Never raises; returns ``done_event`` for disarming."""
@@ -280,15 +281,16 @@ def arm_shutdown_watchdog(
                 return
         if done.is_set():
             return
-        try:
-            snapshot = snapshot_fn() if snapshot_fn is not None else None
-        except Exception as exc:
-            snapshot = {"snapshot_error": repr(exc)}
-        target = dump_path if dump_path is not None else get_shutdown_watchdog_dump_path()
-        _write_watchdog_dump(target, delay_s=delay, snapshot=snapshot)
-        with contextlib.suppress(Exception):
-            logger.critical("Shutdown watchdog fired after %.0fs — forcing process exit "
-                            "(asyncio drain path appears wedged; see %s)", delay, target)
+        if write_diagnostics:
+            try:
+                snapshot = snapshot_fn() if snapshot_fn is not None else None
+            except Exception as exc:
+                snapshot = {"snapshot_error": repr(exc)}
+            target = dump_path if dump_path is not None else get_shutdown_watchdog_dump_path()
+            _write_watchdog_dump(target, delay_s=delay, snapshot=snapshot)
+            with contextlib.suppress(Exception):
+                logger.critical("Shutdown watchdog fired after %.0fs — forcing process exit "
+                                "(asyncio drain path appears wedged; see %s)", delay, target)
         for stream in (sys.stdout, sys.stderr):
             with contextlib.suppress(Exception):
                 stream.flush()
@@ -304,7 +306,8 @@ def arm_shutdown_watchdog(
         with contextlib.suppress(Exception):
             from hermes_logging import drain_log_queue
             drain_log_queue(timeout=1.0)
-        _mark_exited_quietly(exit_code, "shutdown_watchdog")
+        if mark_lifecycle:
+            _mark_exited_quietly(exit_code, "shutdown_watchdog")
         _hard_exit(exit_code)
     try:
         threading.Thread(target=_watchdog, daemon=True, name=name).start()

@@ -1248,6 +1248,23 @@ def _load_owned_run(self, request, *, _api_server, permission: Optional[str], ac
 
 async def _handle_get_run(self, request: web.Request, *, _api_server) -> web.Response:
     """GET /v1/runs/{run_id} — return pollable run status for external UIs."""
+    if getattr(self.gateway_runner, "control_only", False):
+        auth_err = self._check_run_auth(request, permission="status")
+        if auth_err:
+            return auth_err
+        run_id = request.match_info["run_id"]
+        if not self._request_owns_run(request, run_id):
+            return _run_not_found(_api_server._openai_error, run_id)
+        from gateway.platforms.api_server_authority_runs import run_projection
+        try:
+            status = run_projection(self, run_id)
+        except Exception:
+            logger.exception("Control-only run status lookup failed")
+            return web.json_response({"error": {"code": "storage_unavailable",
+                                                   "message": "Run status is temporarily unavailable"}}, status=503)
+        if status is None:
+            return _run_not_found(_api_server._openai_error, run_id)
+        return web.json_response({"object": "hermes.run", **status})
     _, status, _, _, err = _load_owned_run(
         self, request, _api_server=_api_server, permission="status", active_fallback=True)
     return err or web.json_response(status)
@@ -1532,10 +1549,19 @@ async def _handle_resolve_unknown_run(
     self, request: web.Request, *, _api_server
 ) -> web.Response:
     """POST /v1/runs/{run_id}/resolve-unknown — acknowledge one lost owner epoch."""
-    run_id, _, _, _, err = _load_owned_run(
-        self, request, _api_server=_api_server, permission="stop", active_fallback=False)
-    if err is not None:
-        return err
+    control_only = getattr(self.gateway_runner, "control_only", False)
+    run_id = request.match_info["run_id"]
+    if control_only:
+        auth_err = self._check_run_auth(request, permission="stop")
+        if auth_err:
+            return auth_err
+        if not self._request_owns_run(request, run_id):
+            return _run_not_found(_api_server._openai_error, run_id)
+    else:
+        run_id, _, _, _, err = _load_owned_run(
+            self, request, _api_server=_api_server, permission="stop", active_fallback=False)
+        if err is not None:
+            return err
     try:
         body = await request.json()
     except (ValueError, LookupError):  # bad JSON/UTF-8 (ValueError) or unknown charset: no body

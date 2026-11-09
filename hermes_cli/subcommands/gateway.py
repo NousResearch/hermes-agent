@@ -71,6 +71,11 @@ def build_gateway_parser(
         "run", help="Run gateway in foreground (recommended for WSL and Docker)"
     )
     gateway_run.add_argument(
+        "--control-only", action="store_true",
+        help=("Start an immutable control-only gateway process for inspecting and resolving "
+              "unknown API runs; this process never serves turns."),
+    )
+    gateway_run.add_argument(
         "-v",
         "--verbose",
         action="count",

@@ -1709,6 +1709,8 @@ class GatewayStartupMixin:
             await self._start_flush_runtime_status()
 
     async def _start_impl(self) -> bool:
+        if getattr(self, "control_only", False):
+            return await self._start_control_only()
         logger.info("Starting Hermes Gateway...")
         self._start_install_faulthandler()
         await self._start_log_startup_environment()
@@ -1769,6 +1771,11 @@ class GatewayStartupMixin:
         record_process_ready("gateway_boot", background=True)
         logger.info("Press Ctrl+C to stop")
         return True
+
+    async def _start_control_only(self) -> bool:
+        """Open only the authenticated API control surface; never enter serving startup recovery."""
+        from gateway.run_control_only_startup import start_control_only
+        return await start_control_only(self)
 
     @dataclasses.dataclass
     class _HandoffDestination:

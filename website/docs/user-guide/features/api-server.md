@@ -634,6 +634,30 @@ is active. Legacy API execution mode does not advertise it. Ordinary
 `POST /v1/runs/{run_id}/stop` deliberately remains separate and returns
 `409 unknown_execution` for an unknown admission.
 
+### Control-only recovery process
+
+After the previous gateway process has been authoritatively confirmed stopped, start a separate
+gateway with `hermes gateway run --control-only`. This process opens only the authenticated API
+control surface for health, `GET /v1/runs/{run_id}`, and exact `resolve-unknown` requests. It does
+not accept turns, create runs, replay queued work, adopt live workers, connect messaging platforms,
+or start cron and memory workers. Health reports `status: control_only`; resolving an unknown run
+does not change this process mode or write to the transcript. Queued work stays paused. If a normal
+gateway is later started, it writes the interrupted-turn transcript boundary before it can claim a
+queued admission. To serve turns again, stop this process and start a normal gateway after the external
+supervisor has cleared its gate.
+
+The mode is a process lifetime choice and the API server must already be enabled with a valid
+`API_SERVER_KEY`. Normal API-server authentication, run ownership, profile scope, admission ID, and
+execution-generation checks remain in force. The command is compatible with the official Docker
+entrypoint: pass `hermes gateway run --control-only` as the container command, without replacing
+the image entrypoint. `--replace` and `--force` are refused in this mode so this process cannot stop
+or bypass ownership of another gateway.
+
+Control-only recovery does not stop an older gateway process. Before starting it, an external
+authoritative supervisor must verify that the former process has exited. An `unknown` result
+preserves evidence that external effects may already have occurred; resolving it records an
+interruption but does not promise exactly-once execution or token refund.
+
 For admissions created by this version, the opaque run-owner scope is stored
 atomically with the canonical admission and retained for that admission's
 control/status lifetime, including terminal state. It is private server state,

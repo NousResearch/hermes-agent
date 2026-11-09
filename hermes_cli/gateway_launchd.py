@@ -568,7 +568,12 @@ def _bootout_drain_and_rebootstrap(domain, plist_path, label, old_pid, budget: f
 def _rewrite_stale_launchd_plist() -> bool:
     """Write the generated plist over a stale installed one this home owns; True when written."""
     plist_path = _gw().get_launchd_plist_path()
-    if not plist_path.exists() or _gw().launchd_plist_is_current():
+    if not plist_path.exists():
+        return False
+    from hermes_cli.gateway_service_mode import launchd_definition_mode
+    if launchd_definition_mode(plist_path) != "serving":
+        return False
+    if _gw().launchd_plist_is_current():
         return False
     # Runs on every gateway start/restart: a plist pinning another home is another install's gateway.
     from hermes_cli.gateway_service_owner import definition_belongs_to_home
@@ -651,6 +656,9 @@ def launchd_install(force: bool = False, *, start_now: bool = True, force_unit_p
     # A plist pinning another home is another install's gateway, --force included; --force-unit-path repoints.
     from hermes_cli.gateway_service_owner import definition_belongs_to_home
     if not force_unit_path and not definition_belongs_to_home(plist_path, _gw().get_hermes_home(), "overwrite"):
+        sys.exit(1)
+    from hermes_cli.gateway_service_mode import refuse_unsafe_service_action
+    if plist_path.exists() and refuse_unsafe_service_action(plist_path, "launchd", "install or rewrite"):
         sys.exit(1)
     # Loading the plist starts the gateway (RunAtLoad), so a no-start install writes it without
     # loading it. A gateway that launchd already runs is still reloaded; this install did not start it.
@@ -765,6 +773,10 @@ def launchd_start():
             _launchd_ok("✓ Service started")
         return
 
+    from hermes_cli.gateway_service_mode import refuse_unsafe_service_action
+    if refuse_unsafe_service_action(plist_path, "launchd", "start"):
+        sys.exit(1)
+
     _gw().refresh_launchd_plist_if_needed()
     try:
         _launchctl_kickstart_current(label)
@@ -837,6 +849,10 @@ def _wait_for_launchd_service_pid(
 
 def launchd_restart():
     gateway_service_owner.refuse_foreign_launchd_plist("restart")
+    plist_path = _gw().get_launchd_plist_path()
+    from hermes_cli.gateway_service_mode import refuse_unsafe_service_action
+    if plist_path.exists() and refuse_unsafe_service_action(plist_path, "launchd", "restart"):
+        sys.exit(1)
     label = _gw().get_launchd_label()
     domain = _gw()._launchd_domain()
     target = f"{domain}/{label}"

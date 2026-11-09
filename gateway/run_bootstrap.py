@@ -134,14 +134,15 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
     return True
 
 
-def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
+def _start_gateway_configure_logging(verbosity: Optional[int], *, sync_skills: bool = True) -> None:
     """Sync bundled skills, set up file logging + startup security audit, and the -v/-q stderr handler."""
     from gateway.run import (_best_effort, _gateway_stderr_formatter, _hermes_home, logging)
     def _sync_skills() -> None:
         from tools.skills_sync import sync_skills
         sync_skills(quiet=True)
 
-    _best_effort(_sync_skills)
+    if sync_skills:
+        _best_effort(_sync_skills)
 
     # Centralized logging (agent.log INFO+, errors.log WARNING+, gateway.log gateway-only); idempotent.
     from hermes_logging import setup_logging, _safe_stderr
@@ -489,7 +490,8 @@ async def _start_gateway_shutdown_tail(
         from hermes_cli.nous_auth_keepalive import stop_nous_auth_keepalive
         stop_nous_auth_keepalive()
 
-    _best_effort(_stop_keepalive)
+    if not getattr(runner, "control_only", False):
+        _best_effort(_stop_keepalive)
 
     # Never join(): an in-flight cron delivery is a coroutine on THIS loop; a sync join would drop it.
     # Stop cron scheduler + housekeeping cleanly. These MUST be awaited cooperatively, not join()ed. A cron
@@ -498,12 +500,13 @@ async def _start_gateway_shutdown_tail(
     # cron_thread.join() would block the loop, so that delivery could never run — it timed out and the
     # message was silently dropped (#58818). Awaiting keeps the loop alive so the in-flight delivery
     # finishes before we tear down.
-    cron_stop.set()
-    _stop_cron_provider(cron_provider)
-    if not await _await_thread_exit(cron_thread, timeout=_CRON_SHUTDOWN_DRAIN_TIMEOUT):
-        logger.warning("Cron ticker did not exit within %.0fs of shutdown — an in-flight "
-                       "delivery may have been dropped.", _CRON_SHUTDOWN_DRAIN_TIMEOUT)
-    await _await_thread_exit(housekeeping_thread, timeout=_HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT)
+    if cron_stop is not None:
+        cron_stop.set()
+        _stop_cron_provider(cron_provider)
+        if not await _await_thread_exit(cron_thread, timeout=_CRON_SHUTDOWN_DRAIN_TIMEOUT):
+            logger.warning("Cron ticker did not exit within %.0fs of shutdown — an in-flight "
+                           "delivery may have been dropped.", _CRON_SHUTDOWN_DRAIN_TIMEOUT)
+        await _await_thread_exit(housekeeping_thread, timeout=_HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT)
 
     # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).
     _planned_stop_watcher_stop.set()
@@ -511,10 +514,11 @@ async def _start_gateway_shutdown_tail(
 
     # Never suppressed: a raise here is a real teardown failure (it once hid a changed signature,
     # leaving every MCP connection and the shared loop up while the gateway reported a clean exit).
-    try:
-        await _shutdown_mcp_servers_nonblocking(config=getattr(runner, "config", None))
-    except Exception:
-        logger.warning("MCP shutdown failed; connections may be left open", exc_info=True)
+    if not getattr(runner, "control_only", False):
+        try:
+            await _shutdown_mcp_servers_nonblocking(config=getattr(runner, "config", None))
+        except Exception:
+            logger.warning("MCP shutdown failed; connections may be left open", exc_info=True)
 
     # The failure verdict comes AFTER the cooperative teardown: returning early here leaked the
     # cron ticker + housekeeping threads (and open MCP connections) for embedded callers (#12175).
@@ -679,7 +683,8 @@ async def _start_gateway_run_runner(runner, _signal_initiated_shutdown: list) ->
         # configured MCP server is slow or unreachable.  discover_mcp_tools() uses a blocking 120s wait
         # internally; calling it from the loop thread would freeze platform heartbeats (Discord shard,
         # Telegram polling) until it returned. See #16856.
-        await _discover_gateway_mcp_tools(runner.config)
+        if not getattr(runner, "control_only", False):
+            await _discover_gateway_mcp_tools(runner.config)
     except Exception:
         logger.debug("MCP tool discovery failed (non-fatal)", exc_info=True)
 
@@ -729,7 +734,8 @@ def _start_gateway_early_environment_probe() -> None:
 
 
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False,
-                        verbosity: Optional[int] = 0, force: bool = False, idle_exit: bool = False) -> bool:
+                        verbosity: Optional[int] = 0, force: bool = False, idle_exit: bool = False,
+                        control_only: bool = False) -> bool:
     """Start the gateway and run until interrupted; False if it failed to start (non-zero exit so
     systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop
     deadlocks); ``force`` starts without consulting the host owner at all; ``idle_exit`` arms the
@@ -751,11 +757,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         os,
         threading,
     )
+    if control_only and (replace or force):
+        logger.error("Control-only mode cannot replace or bypass an existing gateway owner")
+        return False
     # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
     os.environ["HERMES_EXEC_ASK"] = "1"
     from hermes_cli.update_proxy_env import restore_user_proxy_env
     restore_user_proxy_env()  # a gateway an update restarted keeps the user's proxy env, not the update's
-    _start_gateway_resolve_terminal_cwd()
+    from gateway.run_bootstrap_control import (
+        configure_gateway_startup_mode, open_gateway_control_channels,
+        recover_gateway_startup_state, set_gateway_process_mode,
+        start_gateway_mode_background, start_gateway_mode_cron,
+        start_gateway_mode_surface)
+    set_gateway_process_mode(control_only)
 
     from hermes_cli.resource_limits import apply_nofile_soft_limit
     apply_nofile_soft_limit()
@@ -769,7 +783,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     resolved_config = config if config is not None else load_gateway_config_for_runner()
     # The first turn's prompt needs the host toolchain probe (five subprocess calls); start it now
     # so it runs beside the boot imports instead of serially inside the pre-READY warm-up.
-    _start_gateway_early_environment_probe()
+    configure_gateway_startup_mode(control_only)
     profile_homes = (_multiplex_profile_homes(resolved_config)
                      if getattr(resolved_config, 'multiplex_profiles', False) else [])
     if profile_homes and not _launch_home_may_multiplex(resolved_config):
@@ -810,16 +824,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     runner = None
     _planned_stop_watcher_stop = None
     try:
-        _start_gateway_configure_logging(verbosity)
-
-        from gateway.run_startup import recover_left_core_at_gateway_start
-        if await asyncio.to_thread(recover_left_core_at_gateway_start) and config is None:
-            resolved_config = _reload_config_keeping_multiplex_verdict(resolved_config)
+        _start_gateway_configure_logging(verbosity, sync_skills=not control_only)
+        resolved_config = await recover_gateway_startup_state(control_only, resolved_config, config)
 
         from gateway.run_runtime import initialize_gateway_runtime, pin_launch_store, unpin_launch_store
         _launch_store_pin = await asyncio.to_thread(pin_launch_store)
         try:
-            runner = GatewayRunner(resolved_config)
+            runner = GatewayRunner(resolved_config, control_only=control_only)
         finally:
             unpin_launch_store(_launch_store_pin)
         await initialize_gateway_runtime(runner)
@@ -871,16 +882,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
         # Right after the PID claim (which makes us authoritative). Fatal: local clients attach only
         # with tickets minted on this listener, so startup aborts without it.
-        _control_server = await _start_gateway_start_control_socket(runner)
-        if _control_server is None:
-            raise RuntimeError("gateway session bootstrap control listener unavailable")
-        # Now the attach channel answers: republish the host record with the settled served set.
-        _refresh_host_gateway_record(runner)
-        _log_standalone_profiles_at_boot(runner)
-        from gateway.run_runtime import start_gateway_runtime_api
-        await start_gateway_runtime_api(runner)
+        _control_server = await open_gateway_control_channels(
+            runner, control_only, _start_gateway_start_control_socket,
+            _refresh_host_gateway_record, _log_standalone_profiles_at_boot)
         from gateway.run_api import await_session_socket_preload, preload_session_socket
-        ws_preload = preload_session_socket() if idle_exit else None  # overlaps the adapter/cron start
+        ws_preload = preload_session_socket() if idle_exit and not control_only else None
 
         def _lifecycle_record_startup() -> Optional[dict]:
             # Report if the previous life died uncleanly (SIGKILL / OOM / VM death), then claim the
@@ -893,19 +899,22 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
             start_nous_auth_keepalive()
 
-        _unclean_exit = _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
-        _best_effort(_start_keepalive, "Nous auth keepalive did not start: %s")
-        _ensure_windows_gateway_venv_imports()
+        _unclean_exit = None
+        if not control_only:
+            _unclean_exit = _best_effort(
+                _lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
+        start_gateway_mode_background(control_only, _best_effort, _start_keepalive,
+                                       _ensure_windows_gateway_venv_imports)
 
         _early_verdict = await _start_gateway_run_runner(runner, _signal_initiated_shutdown)
         if _early_verdict is not None:
             await await_session_socket_preload(ws_preload)  # never left unawaited on the way out
             return _early_verdict
-        if _unclean_exit is not None:
+        if not control_only and _unclean_exit is not None:
             _start_deferred_state_db_integrity_check(_unclean_exit)
 
-        cron_stop, cron_provider, cron_thread, housekeeping_thread = (
-            _start_gateway_start_cron_and_housekeeping(runner))
+        cron_stop, cron_provider, cron_thread, housekeeping_thread = start_gateway_mode_cron(
+            runner, control_only, _start_gateway_start_cron_and_housekeeping)
         # From here every exit (a READY publication that raises included) runs the shutdown tail,
         # which stops the cron ticker and housekeeping before the adapters they deliver through close.
         from gateway.run_runtime import publish_gateway_runtime_ready, wait_gateway_runtime
@@ -914,15 +923,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
             publish_gateway_runtime_ready(runner)
             runner._start_systemd_watchdog()
-            if idle_exit:
-                from gateway.run_idle_exit import arm_unmanaged_idle_exit
-                arm_unmanaged_idle_exit(runner)
-            else:
-                # A supervised/explicit gateway serves Desktop and the dashboard SPA, which call the
-                # dashboard routes right away: mount them now, after READY. A client's own idle-exit
-                # gateway (chat -q, TUI) only uses the native WebSocket; it mounts on first request.
-                from gateway.run_api import warm_gateway_dashboard
-                warm_gateway_dashboard(runner)
+            start_gateway_mode_surface(runner, control_only, idle_exit)
             await wait_gateway_runtime(runner)
         finally:
             try:

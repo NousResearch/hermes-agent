@@ -123,9 +123,14 @@ def reconcile_profile_gateways(
     # booted with ZERO gateways: it has no root state (or "stopped"), every named slot is now
     # registered down unconditionally, and every action reported "registered" — a container that
     # looks healthy while nothing is listening.
+    argv = tuple(container_argv) if container_argv is not None else _read_container_argv()
+    control_only = _is_control_only_gateway_request(argv)
     fold = fold_named_slot_intent(
         default_prior_state, ((name, prior) for name, _dir, prior in named if name not in standalone))
     folded, default_should_start = list(fold.folded), fold.root_should_start
+    if control_only:
+        log.info("control-only gateway command detected; suppressing s6 gateway autostart")
+        folded, default_should_start = [], False
     if folded and default_prior_state not in _AUTOSTART_STATES:
         log.warning("%s", boot_notice(folded))
     if not dry_run:
@@ -136,7 +141,7 @@ def reconcile_profile_gateways(
 
     for name, entry, prior_state in named:
         # Registered down unless standalone: any other started named slot IS a second gateway on this host.
-        should_start = name in standalone and prior_state in _AUTOSTART_STATES
+        should_start = not control_only and name in standalone and prior_state in _AUTOSTART_STATES
         if not dry_run:
             _cleanup_stale_runtime_files(entry)
             _register_service(scandir, name, start=should_start)
@@ -164,6 +169,8 @@ def _maybe_migrate_legacy_gateway_run_state(
     if os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes"):
         return None
     argv = tuple(container_argv) if container_argv is not None else _read_container_argv()
+    if _is_control_only_gateway_request(argv):
+        return None
     if not _is_legacy_gateway_run_request(argv):
         return None
     if not dry_run:
@@ -229,6 +236,13 @@ def _is_legacy_gateway_run_request(argv: Sequence[str]) -> bool:
     if "--no-supervise" in args:
         return False
     return len(args) >= 2 and args[0] == "gateway" and args[1] == "run"
+
+
+def _is_control_only_gateway_request(argv: Sequence[str]) -> bool:
+    """True for an image CMD that explicitly starts the turn-disabled gateway process."""
+    args = _strip_container_argv_prefix(argv)
+    return any(args[index:index + 2] == ["gateway", "run"] and "--control-only" in args[index + 2:]
+               for index in range(max(0, len(args) - 1)))
 
 
 def _is_dashboard_container(argv: Sequence[str]) -> bool:

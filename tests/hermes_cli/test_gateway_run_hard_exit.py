@@ -22,6 +22,7 @@ class _HardExitObserved(BaseException):
 def _prepare(monkeypatch):
     import hermes_cli.gateway as gateway_cli
     import gateway.run as gateway_run
+    from gateway import run_exit
 
     monkeypatch.setattr(gateway_cli, "_guard_official_docker_root_gateway", lambda: None)
     monkeypatch.setattr(gateway_cli, "_guard_named_profile_under_multiplexer", lambda force=False: None)
@@ -35,11 +36,11 @@ def _prepare(monkeypatch):
     async def _start_gateway(*args, **kwargs):  # pragma: no cover - never awaited by fake run
         return True
 
-    def _hard_exit(code: int) -> None:
+    def _hard_exit(code: int, *, mark_lifecycle: bool = True) -> None:
         raise _HardExitObserved(code)
 
     monkeypatch.setattr(gateway_run, "start_gateway", _start_gateway)
-    monkeypatch.setattr(gateway_run, "_exit_after_graceful_shutdown", _hard_exit)
+    monkeypatch.setattr(run_exit, "exit_after_graceful_shutdown", _hard_exit)
     return gateway_cli
 
 

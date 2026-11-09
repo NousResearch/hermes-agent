@@ -654,13 +654,19 @@ def import_legacy_session_admissions(db, *, epoch: int, source_path, principal_i
         return db._execute_write(write)
 
 
+_CONTROL_ONLY_RESOLUTION_BOUNDARY_PREFIX = 'control_only_resolution_boundary:'
+
+
 def resolve_unknown_session_input(db, *, epoch: int, admission_id: str, generation: int,
-                                  _terminal_write=None, _captured=None) -> dict:
+                                  _terminal_write=None, _captured=None,
+                                  _defer_transcript_boundary=False) -> dict:
     """Explicit operator acknowledgement; resolves uncertainty, never requeues it.
 
     ``_terminal_write(conn, row)`` is the owner's same-transaction effect (the discarded turn's
     transcript boundary): it must not commit, may run again on SQLite retry, and raising rolls
     the whole resolution back, so the FIFO can never advance past an unclosed lost turn.
+    ``_defer_transcript_boundary`` records an exact marker in this same transaction for a
+    control-only owner; serving startup closes that transcript boundary before claiming a FIFO.
     ``_captured=(outcome, stored_result)`` is the exact result this owner captured for the turn
     before its settlement write failed; it commits with the resolution (only for an ``unknown``
     row stamped by this same owner epoch), so the finished answer is not thrown away."""
@@ -686,6 +692,10 @@ def resolve_unknown_session_input(db, *, epoch: int, admission_id: str, generati
                              stored, user_message=json.loads(row['payload_json']).get('text'))))))
         if _terminal_write is not None:
             _terminal_write(conn, row)
+        if _defer_transcript_boundary:
+            conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
+                         (_CONTROL_ONLY_RESOLUTION_BOUNDARY_PREFIX + admission_id,
+                          row['target_session_id']))
         _retire_admission_workers(conn, row, row['owner_epoch'])
         conn.execute("UPDATE session_admissions SET status='terminal',outcome=? WHERE admission_id=?",
                      (outcome, admission_id))

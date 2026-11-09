@@ -481,6 +481,8 @@ class SessionAuthority:
         wake_bot_receipts(self, ref.session_id)
 
     def _schedule(self, ref):
+        if getattr(self.runner, "control_only", False):
+            return
         from gateway.session_retirement import restore_retired
         restore_retired(self, ref.session_id)
         live = self.sessions[ref.session_id]
@@ -872,8 +874,19 @@ class SessionAuthority:
         it resumes. Never requeues the input. A turn that finished in THIS owner but whose
         settlement write failed (its exact result is still in ``pending_results``) commits that
         result instead of discarding it: the answer was produced, only its receipt was lost."""
-        self.authorize(actor, ref, 'session:control')
-        await self.receipt(actor, ref, admission_id)
+        if getattr(self.runner, "control_only", False):
+            # The ordinary authorize/receipt path restores a LiveSession. That would make a
+            # control boot an adoption path even though it never schedules the FIFO.
+            if actor.profile_id != self.profile_id or ref.profile_id != self.profile_id:
+                raise RuntimeStoreError('profile_mismatch')
+            if 'session:control' not in actor.capabilities:
+                raise RuntimeStoreError('permission_denied')
+            row = get_session_admission(self.db, admission_id=admission_id)
+            if row is None or row['target_session_id'] != ref.session_id:
+                raise RuntimeStoreError('not_found')
+        else:
+            self.authorize(actor, ref, 'session:control')
+            await self.receipt(actor, ref, admission_id)
         return await self.resolve_unknown_as_owner(ref, admission_id, generation)
 
     async def resolve_unknown_as_owner(self, ref, admission_id, generation, *, notice=None):
@@ -892,17 +905,21 @@ class SessionAuthority:
         # result the answer is normally already the transcript tail, so the closer is a no-op.
         from gateway.session_results import close_discarded_turn
         from gateway.session_runtime_workers import tracked_write
+        control_only = getattr(self.runner, "control_only", False)
         return await tracked_write(self, partial(
             resolve_unknown_session_input, self.db, epoch=self.epoch, admission_id=admission_id,
             generation=generation, _captured=prepared,
+            _defer_transcript_boundary=control_only,
             # ``notice`` says the turn was interrupted: only when that is the outcome, never beside a
             # captured result this resolution commits as the turn's own answer.
-            _terminal_write=lambda conn, lost: close_discarded_turn(self.db, conn, lost, None if (
-                prepared is not None and lost['owner_epoch'] == self.epoch) else notice)),
+            _terminal_write=None if control_only else lambda conn, lost: close_discarded_turn(
+                self.db, conn, lost, None if prepared is not None and lost['owner_epoch'] == self.epoch else notice)),
             then=partial(self._resolved_unknown, ref, admission_id, prepared, captured))
 
     async def _resolved_unknown(self, ref, admission_id, prepared, captured, row):
         self.pending_results.pop(admission_id, None)
+        if getattr(self.runner, "control_only", False):
+            return self._receipt(row)
         # A resolution racing recovery leaves publication, delivery and collection to the drain. A
         # conversation idle retirement let go between the commit and this follow-up has no drain:
         # bring it back first, so the captured answer reaches its viewers.
@@ -1441,7 +1458,8 @@ def backfill_compression_created_sources(db):
     return stamped
 
 
-async def initialize_session_authority(runner, *, profile_id, instance_id, db=None, register=True):
+async def initialize_session_authority(runner, *, profile_id, instance_id, db=None, register=True,
+                                       control_only=False):
     """Call after exclusive profile ownership, before connecting adapters/API.
 
     ``register=False`` builds a served secondary's authority without making it the runner's
@@ -1456,6 +1474,12 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     epoch = await asyncio.to_thread(begin_runtime_epoch, db, instance_id=instance_id)
     # Hot-serve builds a profile while the loop serves the others: both writes stay off it.
     await asyncio.to_thread(recover_session_inputs, db, epoch=epoch)
+    if control_only:
+        authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
+        if register:
+            runner.session_authority = authority
+        return authority
+    await asyncio.to_thread(_settle_deferred_control_only_resolution_boundaries, db)
     # A lost automation turn has nobody to resolve it: it settles interrupted before any FIFO runs.
     from gateway.session_unattended_unknown import settle_recovered_unattended
     await asyncio.to_thread(settle_recovered_unattended, db, epoch)
@@ -1487,3 +1511,27 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     from gateway.session_local_recovery import recover_local_sessions
     recover_local_sessions(authority)
     return authority
+
+
+def _settle_deferred_control_only_resolution_boundaries(db):
+    """Close transcript tails deferred by control-only resolution before serving can claim a FIFO."""
+    from hermes_state_runtime import _CONTROL_ONLY_RESOLUTION_BOUNDARY_PREFIX, _row
+
+    def write(conn):
+        markers = conn.execute(
+            "SELECT key,value FROM state_meta WHERE substr(key,1,?)=?",
+            (len(_CONTROL_ONLY_RESOLUTION_BOUNDARY_PREFIX), _CONTROL_ONLY_RESOLUTION_BOUNDARY_PREFIX),
+        ).fetchall()
+        for marker in markers:
+            admission_id = marker['key'][len(_CONTROL_ONLY_RESOLUTION_BOUNDARY_PREFIX):]
+            row = conn.execute(
+                'SELECT * FROM session_admissions WHERE admission_id=?', (admission_id,),
+            ).fetchone()
+            if row is None or row['status'] != 'terminal' or row['outcome'] != 'interrupted':
+                raise RuntimeStoreError('invalid_control_only_resolution_boundary')
+            from gateway.session_results import close_discarded_turn
+            close_discarded_turn(db, conn, _row(row))
+            conn.execute('DELETE FROM state_meta WHERE key=?', (marker['key'],))
+        return len(markers)
+
+    return db._execute_write(write)

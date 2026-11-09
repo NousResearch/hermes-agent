@@ -1054,6 +1054,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.API_SERVER)
         extra = config.extra or {}
+        self._control_only = bool(extra.get("_hermes_control_only", False))
         self._host, self._port = listen_address(extra)
         self._api_key: str = extra.get("key", _get_scoped_secret("API_SERVER_KEY", ""))
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
@@ -1080,11 +1081,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
         from hermes_constants import get_hermes_home
-        self._response_store = ResponseStore()  # this home's; a /p/<profile>/ route gets its own
+        self._response_store = ResponseStore(
+            db_path=":memory:" if self._control_only else None)  # this home's; /p routes get their own
         self._response_store_home = str(get_hermes_home())
         self._response_stores: dict[str, ResponseStore] = {}
         self._response_store_lock = threading.Lock()
-        _api_runs._initialize_run_state(self, store_factory=RunIdempotencyStore)
+        store_factory = (lambda: RunIdempotencyStore(":memory:")) if self._control_only else RunIdempotencyStore
+        _api_runs._initialize_run_state(self, store_factory=store_factory)
         self._session_db: Optional[Any] = None  # explicit override (tests/manual wiring)
         self._session_dbs: dict[str, Any] = {}  # per-profile-home SessionDB cache
         self._session_db_cache_lock = threading.Lock()
@@ -1551,6 +1554,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _http_route_table(self) -> list[tuple]:
         """(method, path, handler) rows registered by ``connect()`` (a method so multiplex tests
         can assert the /p/<profile>/ mirrors without a listener)."""
+        if getattr(self.gateway_runner, "control_only", False):
+            return [
+                ("GET", "/health", self._handle_health),
+                ("GET", "/health/detailed", self._handle_health_detailed),
+                ("GET", "/v1/health", self._handle_health),
+                ("GET", "/v1/runs/{run_id}", self._handle_get_run),
+                ("POST", "/v1/runs/{run_id}/resolve-unknown", self._handle_resolve_unknown_run),
+                ("*", "/{tail:.*}", self._handle_control_only_refusal),
+            ]
         routes: list[tuple] = [
             ("GET", "/health", self._handle_health),
             ("GET", "/health/detailed", self._handle_health_detailed),
@@ -2265,52 +2277,27 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     async def _handle_health(self, request: web.Request) -> web.Response:
         """GET /health — simple health check."""
+        if getattr(self.gateway_runner, "control_only", False):
+            auth_err = self._check_auth(request)
+            if auth_err:
+                return auth_err
+            return web.json_response({"status": "control_only", "mode": "control_only",
+                                      "platform": "hermes-agent", "version": _hermes_version()})
         return web.json_response({"status": "ok", "platform": "hermes-agent", "version": _hermes_version()})
+
+    async def _handle_control_only_refusal(self, request: web.Request) -> web.Response:
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        return web.json_response(
+            {"error": {"code": "control_only", "message": "Gateway is in control-only mode"}},
+            status=503, headers={"x-should-retry": "false"})
 
     @_require_auth
     async def _handle_health_detailed(self, request: web.Request) -> web.Response:
         """GET /health/detailed — gateway state, platforms, PID for dashboard probing (Bearer auth)."""
-        from gateway.status import (
-            derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
-            read_runtime_status)
-        runtime = read_runtime_status() or {}
-        gw_state = runtime.get("gateway_state")
-        gw_active = parse_active_agents(runtime.get("active_agents", 0))
-# Serve the live adapter's own metrics alongside the persisted platform map: the
-        # heartbeat loop keeps the file fresh, but a just-booted or wedged writer would
-        # otherwise show boot-time values here too (#52323).
-        platforms = runtime.get("platforms", {})
-        if not isinstance(platforms, dict):
-            platforms = {}
-        platforms = dict(platforms)
-        api_status = self._api_server_status_payload(heartbeat_at=time.time())
-        api_platform = dict(platforms.get("api_server", {}))
-        api_platform.setdefault("state", "connected" if self.is_connected else "disconnected")
-        api_platform["metrics"] = api_status
-        platforms["api_server"] = api_platform
-        # Served BY the gateway process, so gateway_running is True by definition; busy/
-        # drainable use the same shared contract as /api/status so the two never disagree.
-        active_api_runs, process_depth, active_delegations = self._readiness_work_counts()
-        from gateway.run import _resolve_gateway_model
-        readiness = collect_runtime_readiness(
-            configured_model=_resolve_gateway_model(), runtime_status=runtime,
-            active_api_runs=active_api_runs, process_completion_queue_depth=process_depth,
-            active_delegations=active_delegations)
-        return web.json_response({
-"status": readiness["status"], "readiness": readiness, "platform": "hermes-agent",
-            "version": _hermes_version(), "gateway_state": gw_state,
-            "platforms": platforms,
-            "api_server": api_status,
-            "metrics_today": api_status["metrics_today"],
-            "last_heartbeat": api_status["last_heartbeat"],
-            "active_agents": gw_active,
-            "gateway_busy": derive_gateway_busy(
-                gateway_running=True, gateway_state=gw_state, active_agents=gw_active),
-            "gateway_drainable": derive_gateway_drainable(
-                gateway_running=True, gateway_state=gw_state),
-            "exit_reason": runtime.get("exit_reason"),
-            # Contract: RFC3339 string | null, never a number (legacy epoch floats exist).
-            "updated_at": normalize_updated_at(runtime.get("updated_at")), "pid": os.getpid()})
+        from gateway.platforms.api_server_health import handle_health_detailed
+        return await handle_health_detailed(self)
 
     @_require_auth
     async def _handle_models(self, request: web.Request) -> web.Response:
@@ -3973,15 +3960,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             for method, path, handler in self._http_route_table():
                 self._app.router.add_route(method, path, handler)
                 self._app.router.add_route(method, f"/p/{{profile}}{path}", handler)
-            # Registered LAST so every native mirror above wins: anything else under /p/<profile>/ is a
-            # secondary profile's inbound-port platform (Twilio, LINE, Teams, ...) served on this listener.
-            self._app.router.add_route("*", "/p/{profile}/{tail:.*}", self._handle_profile_ingress)
+            if not getattr(self.gateway_runner, "control_only", False):
+                # Registered LAST so every native mirror above wins: anything else under /p/<profile>/ is a
+                # secondary profile's inbound-port platform (Twilio, LINE, Teams, ...) served on this listener.
+                self._app.router.add_route("*", "/p/{profile}/{tail:.*}", self._handle_profile_ingress)
             # After native routes: Relay bootstrap shims feature-detect on this key and must
             # no-op rather than shadow the native session-control handlers.
             self._app["api_server_adapter"] = self
             if self.gateway_runner is not None:
                 self._app["gateway_runner"] = self.gateway_runner
-            self._track_background_task(asyncio.create_task(self._sweep_orphaned_runs()))
+            if not getattr(self.gateway_runner, "control_only", False):
+                self._track_background_task(asyncio.create_task(self._sweep_orphaned_runs()))
             # Network-accessible + unsandboxed local terminal backend = host-user RCE surface;
             # warn, don't refuse (the operator may have a firewall / strong key).
             if is_network_accessible(self._host):
@@ -4000,7 +3989,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         self.name, self._host)
 
             # Plugin-registered native handlers, wired before AppRunner.setup() freezes the router.
-            self._wire_plugin_handlers(self._app)
+            if not getattr(self.gateway_runner, "control_only", False):
+                self._wire_plugin_handlers(self._app)
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
 # Bind directly instead of probing 127.0.0.1 first — the old single-family pre-probe raced the

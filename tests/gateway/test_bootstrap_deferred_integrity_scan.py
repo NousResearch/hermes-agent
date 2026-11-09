@@ -35,10 +35,10 @@ def _startup(monkeypatch, tmp_path):
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     events, release, scan_entered = [], threading.Event(), threading.Event()
-    state = {"evidence": None}
+    state = {"evidence": None, "real_record_startup": ledger.record_startup}
 
     class _LiveRunner:
-        def __init__(self, config):
+        def __init__(self, config, *, control_only=False):
             from gateway.session import SessionStore
             from hermes_constants import get_hermes_home
             from hermes_state import SessionDB
@@ -49,6 +49,8 @@ def _startup(monkeypatch, tmp_path):
             self._running = False
             self._closed = False
             self.config = config
+            self.control_only = control_only
+            state["runner"] = self
             self.should_exit_cleanly = False
             self.exit_reason = None
             self.exit_code = None
@@ -128,3 +130,88 @@ async def test_clean_previous_exit_launches_no_scan(_startup):
 
     assert events == ["runner_started", "ready", ("runtime_waited", False)]
     assert not scan_entered.is_set()
+
+
+@pytest.mark.asyncio
+async def test_control_only_preserves_unclean_lifecycle_evidence_and_defers_scan(
+    _startup, monkeypatch, tmp_path
+):
+    import json
+    import os
+
+    from gateway import lifecycle_ledger as ledger
+    from gateway.config import GatewayConfig
+
+    events, state, scan_entered = _startup
+    home = tmp_path
+    sentinel_path = ledger.get_lifecycle_sentinel_path(home)
+    sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+    sentinel = {
+        "phase": "running", "pid": os.getpid() + 100000, "start_time": 1.0,
+        "started_at": "2026-11-08T00:00:00+00:00", "prior_unclean_exit": True,
+    }
+    sentinel_path.write_text(json.dumps(sentinel), encoding="utf-8")
+    diag_path = home / "logs" / "gateway-exit-diag.log"
+    diag_path.parent.mkdir(parents=True, exist_ok=True)
+    diag = '{"tag":"preserved-prior-exit"}\n'
+    diag_path.write_text(diag, encoding="utf-8")
+
+    # Keep the real lifecycle writer: if the control boot calls it, both artifacts change.
+    monkeypatch.setattr(ledger, "record_startup", state["real_record_startup"])
+    assert await run_bootstrap.start_gateway(
+        config=GatewayConfig(), replace=False, verbosity=None, control_only=True
+    ) is True
+
+    assert json.loads(sentinel_path.read_text(encoding="utf-8")) == sentinel
+    assert diag_path.read_text(encoding="utf-8") == diag
+    assert not scan_entered.is_set()
+    assert "scan_launched" not in events
+    assert state.get("scanned") is None
+    from gateway.run_shutdown import GatewayShutdownMixin
+    await GatewayShutdownMixin._stop_persist_exit_state(state["runner"], None)
+    assert json.loads(sentinel_path.read_text(encoding="utf-8")) == sentinel
+    assert diag_path.read_text(encoding="utf-8") == diag
+
+    # The next genuine serving startup must still observe and publish the retained crash evidence.
+    evidence = state["real_record_startup"](home=home)
+    assert evidence is not None and evidence["prior_pid"] == sentinel["pid"]
+    claimed = json.loads(sentinel_path.read_text(encoding="utf-8"))
+    assert claimed["phase"] == "running" and claimed["pid"] == os.getpid()
+    assert claimed["prior_unclean_exit"] is True
+    records = [json.loads(line) for line in diag_path.read_text(encoding="utf-8").splitlines()]
+    assert [row["tag"] for row in records] == [
+        "preserved-prior-exit", "gateway.previous_unclean_exit"]
+
+    # Cleanly stopping the serving owner retains the project's normal lifecycle contract.
+    ledger.mark_exited(0, home=home)
+    assert json.loads(sentinel_path.read_text(encoding="utf-8"))["phase"] == "exited"
+
+
+def test_graceful_finalizer_preserves_control_only_lifecycle_sentinel(tmp_path, monkeypatch):
+    import json
+    import os
+
+    from gateway import lifecycle_ledger as ledger, run_exit
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    sentinel_path = ledger.get_lifecycle_sentinel_path(tmp_path)
+    sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+    sentinel = {"phase": "running", "pid": os.getpid(), "start_time": 1.0}
+    sentinel_path.write_text(json.dumps(sentinel), encoding="utf-8")
+    exits = []
+    import os
+    monkeypatch.setattr(os, "_exit", exits.append)
+
+    def run_lifecycle_stamp_only(step, *args, **kwargs):
+        if step.__name__ == "_mark_exited":
+            step()
+    from gateway import run
+    monkeypatch.setattr(run, "_best_effort", run_lifecycle_stamp_only)
+
+    run_exit.exit_after_graceful_shutdown(0, mark_lifecycle=False)
+    assert exits == [0]
+    assert json.loads(sentinel_path.read_text(encoding="utf-8")) == sentinel
+
+    run_exit.exit_after_graceful_shutdown(0, mark_lifecycle=True)
+    assert exits == [0, 0]
+    assert json.loads(sentinel_path.read_text(encoding="utf-8"))["phase"] == "exited"

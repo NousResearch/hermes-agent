@@ -28,7 +28,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Uni
 
 from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_home_key
 from registration_lifecycle import replacement_coordinator
-from registry_freeze import refuse_if_frozen
+from registry_freeze import refuse_if_frozen, seal_at_freeze
 from utils import env_var_enabled
 from hermes_cli.config import load_config_readonly
 from hermes_cli.middleware import VALID_MIDDLEWARE
@@ -1105,6 +1105,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._portable_mcp_servers: dict[str, dict[str, Any]] = {}
         self._portable_mcp_server_plugins: dict[str, str] = {}
         self._aux_tasks: dict[str, dict[str, Any]] = {}
+        seal_at_freeze(self._seal_storage)  # after the maps it seals exist
         self._approval_transports: dict[str, Any] = {}
         self._slack_action_handlers: list[tuple] = []
         self._platform_handler_factories: dict[str, list[tuple]] = {}

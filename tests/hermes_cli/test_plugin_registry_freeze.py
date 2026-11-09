@@ -264,6 +264,60 @@ def test_registration_release_refuses_after_freeze(manager, context):
     assert manager._hooks["post_tool_call"] == [_callback]
 
 
+def test_payloads_a_getter_hands_out_refuse_after_freeze(manager, context, monkeypatch, tmp_path):
+    """``get_plugin_commands()`` and ``get_plugin_auxiliary_tasks()`` hand out the manager's own
+    entries, and the skill-metadata and portable-MCP getters copy only each entry's outer dict:
+    after the freeze, none of them can be changed in place."""
+    import hermes_cli.plugins as plugins_mod
+    monkeypatch.setattr(plugins_mod, "_ensure_plugins_discovered", lambda: manager)
+    context.register_command("frozen-probe-cmd", _callback, description="d")
+    manager._portable_mcp_servers["probe-srv"] = {"command": "probe", "args": ["--a"]}
+    manager._aux_tasks["probe.task"] = {"key": "probe.task", "defaults": {"model": "m"}}
+    manager._plugin_skills["probe:s"] = {"bare_name": "s", "description": "", "path": tmp_path,
+                                         "frontmatter": {"tags": ["a"]}}
+    from cron.blueprint_catalog import AutomationBlueprint, BlueprintSlot
+    manager._automation_blueprints["probe:bp"] = AutomationBlueprint(
+        key="probe:bp", title="t", description="d", category="c", schedule_template="0 9 * * *",
+        prompt_template="p", plugin="probe",
+        slots=[BlueprintSlot(name="days", type="weekdays", label="Days", default=["mon"])])
+    freeze_registries()
+    commands = plugins_mod.get_plugin_commands()
+    with pytest.raises(RegistryFrozen):
+        commands["frozen-probe-cmd"]["handler"] = print
+    with pytest.raises(RegistryFrozen):
+        commands["added-after-freeze"] = {"handler": print, "description": "", "plugin": "x"}
+    with pytest.raises(RegistryFrozen):
+        manager.get_portable_mcp_servers()["probe-srv"]["args"].append("--b")
+    with pytest.raises(RegistryFrozen):
+        plugins_mod.get_plugin_auxiliary_tasks()[0]["defaults"]["model"] = "other"
+    with pytest.raises(RegistryFrozen):
+        manager.list_plugin_skill_metadata()[0]["frontmatter"]["tags"].append("b")
+    with pytest.raises(RegistryFrozen):
+        manager.list_automation_blueprints()[0].slots.append("slot")
+    with pytest.raises(RegistryFrozen):
+        manager.list_automation_blueprints()[0].slots[0].default.append("tue")
+    assert plugins_mod.get_plugin_command_handler("frozen-probe-cmd") is _callback
+    assert "added-after-freeze" not in plugins_mod.get_plugin_commands()
+    assert manager.get_portable_mcp_servers()["probe-srv"]["args"] == ["--a"]
+    assert plugins_mod.get_plugin_auxiliary_tasks()[0]["defaults"] == {"model": "m"}
+    assert manager.list_plugin_skill_metadata()[0]["frontmatter"] == {"tags": ["a"]}
+    assert [(s.name, s.default) for s in manager.list_automation_blueprints()[0].slots] == [("days", ["mon"])]
+    PluginManager()  # one built after the freeze seals its own (empty) maps at once
+
+
+def test_a_context_engine_loaded_after_freeze_adds_no_command(manager, monkeypatch):
+    """Context engines load on every agent build (``agent_init``), so after a hosted boot froze the
+    registries. Their ctx is a ``NoopPluginContext`` the freeze wrappers don't cover, and its
+    ``register_command`` writes the process-wide command map itself: the engine loads, the command
+    does not."""
+    import hermes_cli.plugins as plugins_mod
+    from plugins.context_engine import _EngineCollector
+    monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
+    freeze_registries()
+    _EngineCollector(engine_name="probe").register_command("engine-probe-cmd", _callback)
+    assert "engine-probe-cmd" not in manager._plugin_commands
+
+
 def test_registration_kind_and_inverse_cannot_be_rebound(manager, context):
     """``kind`` decides the background-task exemption; rebinding it (or the inverse) on a retained
     handle would let the plugin release a registry entry after the freeze."""

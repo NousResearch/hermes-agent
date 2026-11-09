@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Unio
 
 from registration_lifecycle import replacement_coordinator
 from registry_freeze import refuse_if_frozen
+from registry_sealed import seal
 from hermes_cli.plugins_loader import _plugin_home_scope
 from hermes_cli.plugins_manifest import PluginManifest, manifest_key
 
@@ -84,6 +85,21 @@ class PluginRegistration:
 
 
 class PluginLedgerMixin:
+    def _seal_storage(self) -> None:
+        """At the hosted freeze: the maps whose entries a getter hands out by reference or by shallow
+        copy (plugin commands, auxiliary tasks, plugin skills, automation blueprints, portable MCP
+        server configs) become read-only, so a caller holding one cannot change what every tenant
+        sees. Dispatch bookkeeping (hook timeouts, the event queue) stays live."""
+        for blueprint in self._automation_blueprints.values():
+            # Frozen dataclasses refuse rebinding already; their container fields (a blueprint's
+            # ``slots``, a slot's ``default``) do not.
+            for record in (*blueprint.slots, blueprint):
+                for field_name, value in list(vars(record).items()):
+                    object.__setattr__(record, field_name, seal(value))
+        for name in ("_plugin_commands", "_aux_tasks", "_plugin_skills", "_automation_blueprints",
+                     "_portable_mcp_servers"):
+            setattr(self, name, seal(getattr(self, name)))
+
     def _track_registration(
         self, manifest: PluginManifest, kind: str, key: str, release: Callable[[], None], *,
         persistent: bool = False,

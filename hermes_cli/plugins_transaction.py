@@ -47,25 +47,6 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
         "old_metadata": old_metadata, "new_metadata": new_metadata,
         "target_digest": target_digest if target_digest is not None else (tree_digest(target) if target.exists() else None),
     }))
-    _grant_published_tree(target)
-
-
-def _grant_published_tree(target: Path) -> None:
-    """Give the user's normal token the tree an elevated (UAC) process just published; else a no-op.
-
-    The tree was staged under a ``tempfile`` directory, whose Python 3.13+ DACL an elevated owner
-    makes Administrators-only (``hermes_dir_acl``), and the move into ``plugins/`` keeps it.
-    """
-    import logging
-
-    from hermes_dir_acl import grant_tree_user_access, unusable_dir_remedy
-
-    _, _, failed = grant_tree_user_access(target)
-    if failed:
-        logging.getLogger(__name__).warning(
-            "Could not give the current user access to %d entr%s of %s (e.g. %s: %s); a non-elevated "
-            "Hermes will skip this plugin. To repair, %s", len(failed), "y" if len(failed) == 1 else "ies",
-            target, failed[0][0], failed[0][1], unusable_dir_remedy(target))
 
 
 def _refresh_declared_dependencies(target: Path, staged: Path, manifest: dict, *, interactive: bool) -> None:

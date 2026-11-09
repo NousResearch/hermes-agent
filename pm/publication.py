@@ -123,6 +123,25 @@ class PluginSelection:
         durable_write_bytes(self.path, self.proposed)
 
 
+def _grant_published_tree(target: Path) -> None:
+    """Grant the filtered UAC token access before the PM publication can commit.
+
+    A killed caller never reaches its post-sync cleanup, so repair must happen at the
+    worker-owned move, while the elevated token still holds the installation lock.
+    """
+    import logging
+
+    from hermes_dir_acl import grant_tree_user_access, unusable_dir_remedy
+
+    _, _, failed = grant_tree_user_access(target)
+    if failed:
+        logging.getLogger(__name__).warning(
+            "Could not give the current user access to %d entr%s of %s (e.g. %s: %s); a non-elevated "
+            "Hermes will skip this plugin. To repair, %s", len(failed), "y" if len(failed) == 1 else "ies",
+            target, failed[0][0], failed[0][1], unusable_dir_remedy(target))
+
+
+
 class StagedPlugin:
     def __init__(self, plugin: dict):
         from pm.store import tree_digest
@@ -193,4 +212,5 @@ class StagedPlugin:
             if self.target.exists():
                 os.replace(self.target, backup)
             os.replace(self.staged, self.target)
+            _grant_published_tree(self.target)
             durable_write_bytes(self.metadata, proposed)

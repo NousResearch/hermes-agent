@@ -122,16 +122,17 @@ via `copy_context()` and unwind deterministically — nothing is written to
 
 The scope, the home override, the secret scope and the terminal policy are one
 immutable value, `hermes_scope.ScopeState`, in a single contextvar. The scope is
-`hermes_scope.Scope(tenant, agent, actor, owner=, role=)`:
+`hermes_scope.Scope(tenant, agent, actor, owner=, can_administer=)`:
 
 - `actor` is `Principal(id)` (a person) or `System(reason)` (cron, kanban,
   housekeeping).
-- `owner` is the agent's one owner: a `Principal` for a personal agent, used only
-  by that person, or a `Group` for a shared one.
-- `role` is what the activity may do on the agent: `owner` (personal agents),
-  `manager` or `member` (group agents). `Scope.can_administer` is true for owners
-  and managers. A hosted scope must name both; a local scope defaults to the local
-  person as owner with role `owner`.
+- `owner` is the agent's one owner: a `Principal` for a personal agent or a
+  `Group` for a shared one. Other people may use a personal agent when its owner
+  shares it.
+- `can_administer` says whether the activity may change the agent itself (keys,
+  settings, plugins, cron, deletion). Every turn still updates the agent's memory
+  and skills. A hosted scope must name both, from the signed claim; a local scope
+  defaults to the local person as owner, administering.
 - A `TurnScope` adds `session`, `turn` and `fence`: the `Fence(epoch, generation)`
   the turn's admission was claimed under (`agent.runtime_scope.claim_fence(row)`).
 
@@ -146,7 +147,8 @@ state:
   across calls (the TUI turn, the managed worker) or deliberately binds less.
 - `bind_turn(session_id, turn_id, fence)` marks a turn inside a bound scope.
 
-Inside a hosted scope, a bind must keep the tenant, agent, actor, owner and role;
+Inside a hosted scope, a bind must keep the tenant, agent, actor, owner and
+administration right;
 anything else raises `ScopeSwitchRefused`.
 
 A reset removes its own change and replays the later ones, except those made

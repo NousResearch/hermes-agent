@@ -57,7 +57,33 @@ with a name allows that one name only.
 | `hermes_cli.plugin_provider_requests` | whole module | developer-guide / plugins docs |
 | `hermes_constants` | whole module | developer-guide / plugins docs |
 | `hermes_platform` | whole module | developer-guide / plugins docs |
-| `hermes_state` | whole module | developer-guide / plugins docs |
+| `hermes_state` | `AsyncSessionDB` | developer-guide / plugins docs |
+| `hermes_state` | `DEFAULT_DB_PATH` | developer-guide / plugins docs |
+| `hermes_state` | `DeletedWalGenerationError` | developer-guide / plugins docs |
+| `hermes_state` | `SessionCompressionInProgressError` | developer-guide / plugins docs |
+| `hermes_state` | `SessionDB` | developer-guide / plugins docs |
+| `hermes_state` | `SessionExportTooLargeError` | developer-guide / plugins docs |
+| `hermes_state` | `SessionResumeTooLargeError` | developer-guide / plugins docs |
+| `hermes_state` | `StateDbCorruptError` | developer-guide / plugins docs |
+| `hermes_state` | `StateDbReplacedError` | developer-guide / plugins docs |
+| `hermes_state` | `apply_database_pragmas` | developer-guide / plugins docs |
+| `hermes_state` | `apply_wal_with_fallback` | developer-guide / plugins docs |
+| `hermes_state` | `classify_persistence_error` | developer-guide / plugins docs |
+| `hermes_state` | `divert_session_transcript_jsonl` | developer-guide / plugins docs |
+| `hermes_state` | `format_session_db_unavailable` | developer-guide / plugins docs |
+| `hermes_state` | `get_hermes_home` | developer-guide / plugins docs |
+| `hermes_state` | `get_last_init_error` | developer-guide / plugins docs |
+| `hermes_state` | `holder_pid_checkable` | developer-guide / plugins docs |
+| `hermes_state` | `is_malformed_db_error` | developer-guide / plugins docs |
+| `hermes_state` | `is_sqlite_lock_error` | developer-guide / plugins docs |
+| `hermes_state` | `make_user_dir` | developer-guide / plugins docs |
+| `hermes_state` | `mkdir_under_hermes_home` | developer-guide / plugins docs |
+| `hermes_state` | `preflight_db_writability` | developer-guide / plugins docs |
+| `hermes_state` | `read_only_db_uri` | developer-guide / plugins docs |
+| `hermes_state` | `resolved_max_export_messages` | developer-guide / plugins docs |
+| `hermes_state` | `resolved_max_resume_messages` | developer-guide / plugins docs |
+| `hermes_state` | `storage_corrupt_reason` | developer-guide / plugins docs |
+| `hermes_state` | `storage_state` | developer-guide / plugins docs |
 | `plugins.plugin_storage` | whole module | developer-guide / plugins docs |
 | `plugins.plugin_utils` | whole module | developer-guide / plugins docs |
 | `pm` | whole module | developer-guide / plugins docs |
@@ -76,9 +102,18 @@ with a name allows that one name only.
 | `persistence_assembly` | whole module | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
 | `sqlite_support` | `apply_wal_with_fallback` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
 | `sqlite_support` | `apply_database_pragmas` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `sqlite_support` | `preflight_db_writability` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `sqlite_support` | `read_only_db_uri` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
 | `storage_errors` | `classify_persistence_error` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
 | `storage_errors` | `is_sqlite_lock_error` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
 | `storage_errors` | `is_malformed_db_error` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `session_rescue` | `divert_session_transcript_jsonl` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `storage_user_copy` | `format_session_db_unavailable` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `storage_user_copy` | `get_last_init_error` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `storage_limits` | `resolved_max_export_messages` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `storage_limits` | `resolved_max_resume_messages` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `process_identity` | `holder_pid_checkable` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `hermes_dir_acl` | `make_user_dir` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
 | `agent.context_references` | whole module | PluginContext (hermes_cli/plugins_context.py) |
 | `agent.plugin_llm` | whole module | PluginContext (hermes_cli/plugins_context.py) |
 | `agent.transcription_provider` | whole module | PluginContext (hermes_cli/plugins_context.py) |

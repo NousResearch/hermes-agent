@@ -1,4 +1,4 @@
-"""``hermes gateway migrate --backends``: the read-only serve/dashboard service report.
+"""``hermes gateway migrate --backends``: the serve/dashboard service report (changes no service).
 
 A fake host (process table, cgroups, systemctl, launchctl) drives the real detection code. Every
 test also proves the report is read-only: no signal, no file write/rename/delete and no mutating
@@ -301,3 +301,71 @@ def test_scan_failure_still_exits_zero(host, no_writes, monkeypatch, capsys):
     monkeypatch.setattr(subprocess, "run", broken)
     gm.cmd_migrate(SimpleNamespace(backends=True, json=True, dry_run=True, yes=False, multiplex=False))
     assert json.loads(capsys.readouterr().out)["backends"] == []
+
+
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Recording shims: every call is appended to $SHIM_LOG. ``ps`` reports one hand-started serve
+# process so the report's classification path (ppid lookups, systemd/launchd queries) runs too.
+_SHIM = """#!/bin/sh
+printf '%s' "$(basename "$0")" >> "$SHIM_LOG"
+for a in "$@"; do printf ' %s' "$a" >> "$SHIM_LOG"; done
+printf '\\n' >> "$SHIM_LOG"
+if [ "$(basename "$0")" = ps ]; then
+  case "$*" in
+    "-A -o pid=,command="*) echo "424242 /opt/venv/bin/python -m hermes_cli.main serve --port 9119" ;;
+    *ppid=*) echo 1 ;;
+  esac
+fi
+exit 0
+"""
+_SHIMMED = ("ps", "systemctl", "launchctl", "kill", "pkill", "killall", "docker")
+
+
+def _fresh_hermes(tmp_path, name, *cli):
+    """Run ``python -m hermes_cli.main <cli>`` in a fresh process with its own homes and shimmed tools."""
+    root = tmp_path / name
+    shims = root / "bin"
+    shims.mkdir(parents=True)
+    for tool in _SHIMMED:
+        (shims / tool).write_text(_SHIM)
+        (shims / tool).chmod(0o755)
+    log = root / "calls.log"
+    log.touch()
+    homes = {"hermes_home": root / "hermes-home", "home": root / "home"}
+    homes["home"].mkdir()
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("HERMES_", "TERMUX_"))}
+    env.update({"HERMES_HOME": str(homes["hermes_home"]), "HOME": str(homes["home"]), "PYTHONPATH": _REPO,
+                "PATH": f"{shims}{os.pathsep}{env.get('PATH', '/usr/bin:/bin')}", "SHIM_LOG": str(log),
+                "PYTHONDONTWRITEBYTECODE": "1"})
+    proc = subprocess.run([sys.executable, "-m", "hermes_cli.main", *cli], cwd=_REPO, env=env,
+                          capture_output=True, text=True, timeout=180, check=False)
+    trees = {key: sorted(str(p.relative_to(path)) for p in path.rglob("*")) if path.exists() else []
+             for key, path in homes.items()}
+    return proc, [line.split() for line in log.read_text().splitlines()], trees
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell shims")
+def test_real_entry_point_report_writes_only_what_plain_migrate_dry_run_writes(tmp_path):
+    """Through the real entry point, ``--backends`` issues no mutating service/kill command and leaves
+    the same files behind as the existing read-only ``gateway migrate --dry-run`` (normal startup)."""
+    base, base_calls, base_trees = _fresh_hermes(tmp_path, "dry-run", "gateway", "migrate", "--dry-run")
+    report, calls, trees = _fresh_hermes(tmp_path, "backends", "gateway", "migrate", "--backends",
+                                         "--dry-run", "--json")
+
+    assert base.returncode == 0, base.stderr
+    assert report.returncode == 0, report.stderr
+    payload = json.loads(report.stdout)
+    assert payload["applied"] is False
+    assert [b["pid"] for b in payload["backends"]] == [424242]
+
+    assert calls and calls[0][:2] == ["ps", "-A"]
+    for call in calls:
+        tool, rest = call[0], [a for a in call[1:] if a != "--user"]
+        assert tool not in {"kill", "pkill", "killall", "docker"}, call
+        if tool == "systemctl":
+            assert rest and rest[0] in _READ_ONLY_SYSTEMCTL, call
+        if tool == "launchctl":
+            assert rest and rest[0] in _READ_ONLY_LAUNCHCTL, call
+    assert not any(c[0] in {"kill", "pkill", "killall"} for c in base_calls)
+
+    assert trees == base_trees

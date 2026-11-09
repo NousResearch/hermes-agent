@@ -50,6 +50,7 @@ mcp_servers:
 | `env` | mapping | stdio | Environment passed to the subprocess |
 | `url` | string | HTTP | Remote MCP endpoint |
 | `headers` | mapping | HTTP | Headers for remote server requests |
+| `headers_command` | string or list | HTTP | A command that prints the headers to send, for servers behind short-lived tokens. See [Headers from a command](#headers-from-a-command) |
 | `ssl_verify` | bool or string | HTTP | TLS verification. `true` (default) uses system CAs, `false` disables verification (insecure), or a string path to a custom CA bundle (PEM) |
 | `client_cert` | string or list | HTTP | mTLS client certificate. String = path to a PEM file containing cert + key. List `[cert, key]` = separate files. List `[cert, key, password]` = encrypted key |
 | `client_key` | string | HTTP | Path to the client private key, when `client_cert` is a string and the key is in a separate file |
@@ -73,6 +74,19 @@ mcp_servers:
 | `tool_costs` | mapping | both | What each tool spends, keyed by the MCP tool name: a non-negative number, a `[min, max]` range, or `{credits: <number or range>, note: "per animation"}`. The approval prompt names the cost and the chat's running total. Undeclared and zero-cost tools are unaffected. See [Tool costs and spend limits](../user-guide/features/mcp.md#tool-costs-and-spend-limits) |
 | `spend_limit` | number | both | Per-chat budget for this server's costed tools (`0`/absent = no limit). A costed call that would take the chat past it asks first, even on a `trust: full` server, and is refused where nobody can answer (cron, `chat -q`) |
 | `cost_unit` | string | both | Label shown with costs and totals (default: `credits`) |
+
+## Headers from a command
+
+A static `headers:` value suits a long-lived API key. For a server behind a token that expires (a cloud IAM token, an OAuth `client_credentials` grant, a token your vault mints), set `headers_command` instead and Hermes asks your command for the headers:
+
+```yaml
+mcp_servers:
+  internal-api:
+    url: https://mcp.internal.example.com/mcp
+    headers_command: ["~/bin/mint-mcp-token", "--audience", "mcp"]   # or one string: "~/bin/mint-mcp-token --audience mcp"
+```
+
+The command prints either a JSON object (`{"Authorization": "Bearer eyJ…"}`) or `Name: value` lines, and must exit 0 within 30 seconds. Hermes runs it on the first request of a connection and reuses its headers; when the server answers `401`, it runs the command once more and retries that request, so an expired token is replaced without a reconnect or a restart. A second `401` with the fresh headers fails the request as usual. The headers it prints are added to the redaction list, so they never appear in logs or tool output. Its headers override a `headers:` entry with the same name. It cannot be combined with `auth: oauth`, and the command runs with your normal environment (under a multiplexed gateway, with that profile's secrets only).
 
 ## Environment variable references
 

@@ -529,6 +529,16 @@ class MCPServerTransportMixin:
             logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
             raise
 
+    def _request_auth(self, url: str, config: dict):
+        """The httpx ``auth=`` for this attempt: OAuth, else a ``headers_command`` runner, else None."""
+        command = config.get("headers_command")
+        if command and self._auth_type == "oauth":
+            raise ValueError(f"MCP server '{self.name}': headers_command and auth: oauth are exclusive; pick one")
+        if command:
+            from tools.mcp_header_command import build_headers_command_auth
+            return build_headers_command_auth(_core.sdk_httpx(), self.name, command)
+        return self._build_oauth_auth(url, config)
+
     def _sse_transport(self, url: str, headers: dict, connect_timeout: float,
                        ssl_verify, client_cert, oauth_auth, strict_cfg_headers: bool):
         """``sse_client`` context manager for ``transport: sse`` entries."""
@@ -619,7 +629,7 @@ class MCPServerTransportMixin:
             headers["mcp-protocol-version"] = _core.LATEST_HANDSHAKE_VERSION
         connect_timeout = config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT)
         common = (url, headers, connect_timeout, config.get("ssl_verify", True), _resolve_client_cert(self.name, config),
-                  self._build_oauth_auth(url, config), bool(config.get("strict_redirect_headers")))
+                  self._request_auth(url, config), bool(config.get("strict_redirect_headers")))
         if config.get("transport") == "sse":
             return await self._serve_transport(self._sse_transport(*common), "SSE", float(connect_timeout))
         if self._sse_fallback:

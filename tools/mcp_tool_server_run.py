@@ -304,7 +304,7 @@ class MCPServerRunMixin:
         self._error = exc
         self._ready.set()
 
-    _REMOTE_REBIND_KEYS = ("url", "auth", "oauth", "headers", "transport")
+    _REMOTE_REBIND_KEYS = ("url", "auth", "oauth", "headers", "headers_command", "transport")
 
     def _refresh_remote_config(self, config: dict) -> dict:
         """Before rebuilding a remote transport, re-read this server's definition from config.yaml and

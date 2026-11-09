@@ -854,6 +854,8 @@ def cmd_mcp_test(args):
     headers = cfg.get("headers", {})
     if cfg.get("auth", "") == "oauth":
         _info("Auth: OAuth 2.0")
+    elif cfg.get("headers_command"):
+        _info("Auth: headers from headers_command")
     elif headers:
         for k, v in headers.items():
             if isinstance(v, str) and ("key" in k.lower() or "auth" in k.lower()):

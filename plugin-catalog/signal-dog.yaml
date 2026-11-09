@@ -1,6 +1,6 @@
 name: signal-dog
 repo: https://github.com/scottleimroth/signal-dog
-sha: ff54ff7de6886c173b27d4e64eaf85ef5d06b0bf
+sha: 28bcd0a67398d9d9cdd48cd692f940c902fc99f7
 title: Signal Dog
 description: >-
   Listens through the microphone for household sounds (a door knock, an appliance beeping, a smoke alarm
@@ -30,11 +30,11 @@ maintainer: scottleimroth
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-image: https://raw.githubusercontent.com/scottleimroth/signal-dog/ff54ff7de6886c173b27d4e64eaf85ef5d06b0bf/docs/demo-scene.png
+image: https://raw.githubusercontent.com/scottleimroth/signal-dog/28bcd0a67398d9d9cdd48cd692f940c902fc99f7/docs/demo-scene.png
 screenshots:
-  - https://raw.githubusercontent.com/scottleimroth/signal-dog/ff54ff7de6886c173b27d4e64eaf85ef5d06b0bf/docs/demo-scene.png
-  - https://raw.githubusercontent.com/scottleimroth/signal-dog/ff54ff7de6886c173b27d4e64eaf85ef5d06b0bf/docs/measured.png
-docs_url: https://github.com/scottleimroth/signal-dog/blob/ff54ff7de6886c173b27d4e64eaf85ef5d06b0bf/README.md
+  - https://raw.githubusercontent.com/scottleimroth/signal-dog/28bcd0a67398d9d9cdd48cd692f940c902fc99f7/docs/demo-scene.png
+  - https://raw.githubusercontent.com/scottleimroth/signal-dog/28bcd0a67398d9d9cdd48cd692f940c902fc99f7/docs/measured.png
+docs_url: https://github.com/scottleimroth/signal-dog/blob/28bcd0a67398d9d9cdd48cd692f940c902fc99f7/README.md
 version: "0.1.1"
 platforms:
   - linux

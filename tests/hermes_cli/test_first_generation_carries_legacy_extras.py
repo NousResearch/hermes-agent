@@ -290,15 +290,37 @@ def test_a_bare_venv_holds_no_old_install(legacy_tree):
 
     assert _recorded(legacy_tree) == ["slack"]
 
-def test_repair_without_a_recorded_selection_preserves_pre_pm_extras(legacy_tree):
-    """Repair cannot replace an unrecorded legacy selection with [all] and silently drop SDKs."""
-    import pm
-    from pm.package import InstallError
-    from pm.recovery import repair_dependencies
 
-    with pytest.raises(InstallError, match="no recorded dependency selection to repair"):
-        repair_dependencies(legacy_tree)
+def _pm_repair(root: Path, tmp_path: Path, monkeypatch) -> None:
+    """`hermes pm repair`, in the PM runtime it re-executes into."""
+    import pm.cli
 
-    assert _recorded(legacy_tree) is None
-    pm.sync_venv(["all"], explicit=True)
-    assert {"all", "telegram", "discord", "fal"} <= set(_recorded(legacy_tree) or ())
+    monkeypatch.setattr("pm.runtime.is_runtime", lambda: True)
+    assert pm.cli.main(["repair"]) == 0
+
+
+def _launch_recovery(root: Path, tmp_path: Path, monkeypatch) -> None:
+    """A launch that finds the marker a main-era update left behind when it was interrupted."""
+    from hermes_cli._early_recovery import recover_if_needed
+
+    (root / ".update-incomplete").write_text("", encoding="utf-8")
+    assert recover_if_needed(root, argv=["chat"])
+
+
+@pytest.mark.parametrize("repair", [_pm_repair, _launch_recovery], ids=lambda entry: entry.__name__.strip("_"))
+def test_a_repair_before_any_recorded_selection_restores_the_old_venv(legacy_tree, tmp_path, monkeypatch, repair):
+    """Repair restores what the install ran. With no recorded selection that is the main-era venv,
+    so its generation keeps the old venv's extras instead of reporting success on ``[all]``."""
+    repair(legacy_tree, tmp_path, monkeypatch)
+
+    assert {"all", "telegram", "discord", "fal"} <= set(_recorded(legacy_tree) or ()), _recorded(legacy_tree)
+
+
+def test_a_repair_with_no_old_venv_restores_the_default(legacy_tree, tmp_path, monkeypatch):
+    import shutil
+
+    shutil.rmtree(legacy_tree / "venv")
+
+    _pm_repair(legacy_tree, tmp_path, monkeypatch)
+
+    assert _recorded(legacy_tree) == ["all"]

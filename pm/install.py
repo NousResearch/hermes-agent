@@ -812,19 +812,17 @@ def _publish_inactive(change) -> None:
 def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool, shipped, frozen):
     """Return (enabled extras, expected stamp, package inputs) this sync must reach."""
     if repair:
-        if not fact:
-            from pm.extras import pre_pm_baseline
-
-            if len(pre_pm_baseline(package.project_root())) > 1:
-                raise InstallError(
-                    "venv", "no recorded dependency selection to repair; the old checkout venv has extras",
-                    "run `hermes pm install` to carry them into PM before using `hermes pm repair`",
-                )
         if fact and (not isinstance(fact.get("extras"), list)
                      or any(not isinstance(extra, str) for extra in fact["extras"])
                      or not isinstance(fact.get("stamp"), str) or not fact["stamp"]):
             raise InstallError("venv", "recorded dependency selection is incomplete; refusing to change its graph")
-        enabled = list(fact.get("extras", frozen if frozen is not None else ["all"]))
+        if fact:
+            enabled = list(fact["extras"])
+        else:
+            from pm.extras import pre_pm_baseline
+
+            # Nothing recorded yet: a tree still on its main-era venv restores that venv's extras.
+            enabled = frozen if frozen is not None else pre_pm_baseline(package.project_root()) or ["all"]
         stamp = fact.get("stamp") or package.expected_stamp(enabled, plugin_dirs=[])
         return enabled, stamp, {"repair": True}
     # The first writable generation replaces, rather than layers on,

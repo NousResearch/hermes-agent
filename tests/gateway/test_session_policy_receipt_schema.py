@@ -57,9 +57,15 @@ async def test_a_receipt_carrying_a_key_this_build_dropped_restores_on_restart(t
         second = await _authority(tmp_path, monkeypatch, 'second')
         assert ref.session_id in second.sessions, 'cold recovery refused the receipt'
         assert restore_local_session(second, ref.session_id) == ref
+        assert restore_local_session(second, ref.session_id) == ref
+        # A different dropped-key set is named on its own line.
+        restore_policy({**receipt['policy'], 'some_future_field': 1})
     lines = [record.getMessage() for record in caplog.records]
     assert not any('receipt refused' in line for line in lines), lines
-    assert any('fallback_providers' in line for line in lines), lines
+    adopted = [line for line in lines if 'keys this build dropped' in line]
+    # Every restore adopts, but each key set is named once per process, not on every turn/claim.
+    assert [line.rsplit(': ', 1)[1] for line in adopted] == [
+        'fallback_providers', 'fallback_providers, some_future_field'], lines
     assert not any('secret-route' in line or 'sk-x' in line for line in lines), lines
     second.db.close()
 

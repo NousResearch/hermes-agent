@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 
 import { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
+import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { Codicon } from '@/components/ui/codicon'
 import {
   ContextMenu,
@@ -39,6 +40,7 @@ const RAIL_ACTION =
  *  terminal exists. Each square is a tab (name + hotkey on hover); close via the
  *  shell's `exit`, middle-click, or the context menu. */
 export function TerminalRail() {
+  const redesigned = usePortalRedesign()
   const { t } = useI18n()
   const terminals = useStore($terminals)
   const activeId = useStore($activeTerminalId)
@@ -76,11 +78,14 @@ export function TerminalRail() {
         <Tip label={t.rightSidebar.terminalHide} placement="right-rail">
           <button
             aria-label={t.rightSidebar.terminalHide}
-            className={cn(RAIL_ACTION, 'opacity-0 transition-opacity focus-visible:opacity-100 group-hover/rail:opacity-100')}
+            className={cn(
+              RAIL_ACTION,
+              !redesigned && 'opacity-0 transition-opacity focus-visible:opacity-100 group-hover/rail:opacity-100'
+            )}
             onClick={() => setTerminalTakeover(false)}
             type="button"
           >
-            <Codicon name="chevron-down" size="0.8125rem" />
+            <Codicon name={redesigned ? 'close' : 'chevron-down'} size="0.8125rem" />
           </button>
         </Tip>
       </div>

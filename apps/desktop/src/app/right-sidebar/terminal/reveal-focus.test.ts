@@ -9,11 +9,12 @@ vi.mock('@/themes/context', () => ({
 
 import { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
 import { useKeybinds } from '@/app/hooks/use-keybinds'
-import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
+import { $terminalCollapsedRail, $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { terminalPaletteToggle } from '@/app/right-sidebar/terminal/reveal-focus'
 import { useStatusbarItems } from '@/app/shell/hooks/use-statusbar-items'
 import { group, split } from '@/components/pane-shell/tree/model'
 import {
+  $hiddenTreePanes,
   $layoutTree,
   bindToolPaneCollapse,
   collapseTreePane,
@@ -22,7 +23,10 @@ import {
   setPaneCollapsed
 } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
-import { $showsAdvancedChrome } from '@/store/interface-mode'
+import { $interfaceMode } from '@/store/interface-mode'
+import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+
+import { $activeTerminalId, $terminals } from './terminals'
 
 // Ctrl+`, the ⌘K row, and the statusbar pill reveal the terminal. That reveal
 // must make the on-screen xterm the keyboard target, and the claim has to
@@ -66,7 +70,7 @@ beforeAll(() => {
     $terminalTakeover,
     () => setTerminalTakeover(false),
     () => setTerminalTakeover(true),
-    $showsAdvancedChrome
+    $terminalCollapsedRail
   )
 })
 
@@ -330,4 +334,29 @@ describe('terminal reveal keyboard focus', () => {
     frame()
     expect(document.activeElement).toBe(visible)
   })
+})
+
+it.each([false, true])('hides the closed terminal rail only in the redesign (%s), preserving shells on reopen', redesigned => {
+  installRaf()
+  $interfaceMode.set('advanced')
+  $agentSidebarChoice.set(redesigned)
+  const terminal = { id: 'retained-shell', kind: 'user' as const, title: 'Shell', cwd: '/tmp', auto: true }
+  $terminals.set([terminal])
+  $activeTerminalId.set(terminal.id)
+
+  try {
+    showTerminalPane()
+    paletteRun()
+    expect(isPaneVisible('terminal')).toBe(false)
+    expect($hiddenTreePanes.get().has('terminal')).toBe(redesigned)
+    paletteRun()
+    expect(isPaneVisible('terminal')).toBe(true)
+    expect($hiddenTreePanes.get().has('terminal')).toBe(false)
+    expect($terminals.get()).toEqual([terminal])
+    expect($activeTerminalId.get()).toBe(terminal.id)
+  } finally {
+    $terminals.set([])
+    $activeTerminalId.set(null)
+    $agentSidebarChoice.set(null)
+  }
 })

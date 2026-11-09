@@ -74,8 +74,7 @@ async def admit_message(authority, event):
         adopters[receipt.admission_id] = event
     # A drain already running can claim, run and settle the row before this caller resumes; one
     # that settled it already sent (or owes) the reply itself and resolves no waiter registered now.
-    from hermes_state_runtime import get_session_admission
-    row = get_session_admission(authority.db, admission_id=receipt.admission_id)
+    row = authority.admission().get(receipt.admission_id)
     status = 'terminal' if row is None else row['status']  # None: deleted with its chat, nothing owed
     note_busy_admitted(event, receipt.admission_id, status, None if row is None else row.get('outcome'))
     if status in ('terminal', 'unknown'):
@@ -90,7 +89,7 @@ async def admit_message(authority, event):
     try:
         return await asyncio.shield(waiter)
     except RuntimeStoreError as exc:
-        row = get_session_admission(authority.db, admission_id=receipt.admission_id)
+        row = authority.admission().get(receipt.admission_id)
         if row is not None and row['status'] == 'terminal':
             # The drain refused this head (``_refuse_head``): cancelled, not saved behind a pause.
             return (f'⚠️ Hermes did not answer this message ({exc.reason}): the conversation it was '

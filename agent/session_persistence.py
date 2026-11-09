@@ -360,10 +360,40 @@ def _db_flush_collect(agent, messages: list[dict], conversation_history: Optiona
     return batch_rows, batch_msgs
 
 
-def _db_flush_write(agent, batch_rows: list[dict[str, Any]], batch_msgs: list[dict], messages: list[dict]) -> None:
-    """One transaction for the turn's new rows: on failure nothing lands and no markers are stamped."""
+def _db_flush_write(agent, batch_rows: list[dict[str, Any]], batch_msgs: list[dict], messages: list[dict],
+                    storage=None) -> None:
+    """One transaction for the turn's new rows: on failure nothing lands and no markers are stamped.
+
+    A claimed turn's rows go through the storage port (``sessions.storage``): its append checks
+    the turn's fence inside the write's own transaction and reaches a named provider. A turn with
+    no claimed turn of this store bound (the CLI/TUI durable lease) keeps the store's own append."""
     if not batch_rows:
         return
+    from hermes_state_fence import store_turn, writing_turn
+    session_db = getattr(agent, "_session_db", None)
+    mark = store_turn(session_db) if session_db is not None else None
+    if mark is None:
+        from hermes_scope import current_scope
+        scope = current_scope()
+        # A turn with no local store of its own (a hosted agent, or the store is another
+        # profile's) is still the claimed turn whose rows route through the port.
+        if session_db is None or (scope is not None and not scope.is_local):
+            mark = writing_turn()
+    if mark is not None:
+        if storage is None:
+            from agent.session_storage import session_storage
+            storage = session_storage(session_db)
+        if storage is not None:
+            storage.sessions.append_turn(agent.session_id, batch_rows)
+            sync_flushed_message_markers(batch_msgs, batch_rows)
+            _db_flush_store_uids(agent).update(
+                uid for msg in batch_msgs if (uid := message_uid_or_none(msg)) is not None)
+            if _newest_checkpoint_carrier(batch_msgs, "codex_reasoning_items") >= 0:
+                # The insert already rewrote the older rows (SessionDB._drop_shadowed_checkpoint_rows); mirror it on
+                # the live transcript so forks/compaction built from memory carry one checkpoint too. Markers stay:
+                # the rows are durable exactly as the dicts now read.
+                drop_shadowed_checkpoints(messages)
+            return
     agent._session_db.append_messages_batch(
         session_id=agent.session_id, messages=batch_rows,
         compression_lock_holder=getattr(agent, "_active_compression_lock_holder", None),
@@ -562,8 +592,16 @@ class SessionPersistenceMixin:
         """
         # Persistence-isolated agents (background review fork) share the parent's session_id for cache warmth;
         # a write here would land the curator's turn in the user's real history.
-        if getattr(self, "_persist_disabled", False) or not self._session_db:
+        if getattr(self, "_persist_disabled", False):
             return None
+        storage = None
+        if not self._session_db:
+            # No local store: a configured storage provider still receives the turn's rows; the
+            # local backend has nothing to persist to (unchanged).
+            from agent.session_storage import session_storage
+            storage = session_storage(None)
+            if storage is None:
+                return None
         batch_rows: list[dict[str, Any]] = []
         try:
             if not self._session_db_created:  # retry row creation if the earlier attempt failed transiently
@@ -571,7 +609,7 @@ class SessionPersistenceMixin:
             # getattr: object.__new__ test agents flush without running AIAgent init.
             replay = getattr(self, "_session_row_replay_pending", None) == self.session_id
             batch_rows, batch_msgs = _db_flush_collect(self, messages, conversation_history, replay)
-            _db_flush_write(self, batch_rows, batch_msgs, messages)
+            _db_flush_write(self, batch_rows, batch_msgs, messages, storage)
             self._session_row_replay_pending = None
             # Markers are now the sole truth; reset the one-shot seed so no id() outlives this flush.
             self._flushed_db_message_ids = set()

@@ -48,8 +48,9 @@ def _record(op, **fields):
 
 
 class Sessions:
-    def append_turn(self, session_id, messages):
-        _record("append_turn", session_id=session_id, messages=messages)
+    def append_turn(self, session_id, messages, *, turn_lease_holder=None, turn_lease_ttl_seconds=300.0):
+        _record("append_turn", session_id=session_id, messages=messages,
+                turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
         return len(messages)
 
     def create(self, session_id, source, **fields):

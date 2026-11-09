@@ -151,14 +151,14 @@ class SessionAuthority:
         # The session storage this authority's admission ledger runs through, chosen by the
         # owning profile's ``sessions.storage`` (``agent.session_storage``). Resolved once here
         # and retained (``initialize_session_authority`` resolves it off-loop first and passes
-        # it in), so no admission operation below ever re-reads the profile's config.
+        # it in), so no admission operation below ever re-reads the profile's config. A store
+        # the local backend has nothing to persist to (no db) keeps refusing at admission()
+        # with storage_missing, exactly as its per-call resolution always did.
         if storage is None:
             from agent.session_storage import session_storage
             storage = session_storage(db)
-        if storage is None:
-            raise RuntimeStoreError('storage_missing')
         self.storage = storage
-        self._admission_port = storage.admission
+        self._admission_port = None if storage is None else storage.admission
         self.sessions = {}
         self.waiters = {}
         self.events = {}
@@ -284,6 +284,8 @@ class SessionAuthority:
         the port, or the provider the owning profile's ``sessions.storage`` names. Resolved
         once when the authority was built and retained, so reads and claims below follow the
         profile's choice, never the ambient one, with no per-operation config read."""
+        if self._admission_port is None:
+            raise RuntimeStoreError('storage_missing')
         return self._admission_port
 
     def logical_owner(self, session_id):

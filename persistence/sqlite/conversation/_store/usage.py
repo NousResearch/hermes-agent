@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 from persistence.sqlite._holder import StoreHolder
+from persistence.sqlite.conversation._store.sessions import _insert_session_row, _is_explicit_branch_session, _own_profile_name, _session_lineage_root_to_tip
 
 
 _TOKEN_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
@@ -285,7 +286,3 @@ def usage_totals(holder: StoreHolder, *, min_message_count: int = 1, include_arc
              WHERE {' AND '.join(where)}
             """, params)
     return {"tokens": int(row[0] or 0), "cost_usd": float(row[1] or 0.0)}
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.sessions import _insert_session_row, _is_explicit_branch_session, _own_profile_name, _session_lineage_root_to_tip

@@ -239,6 +239,44 @@ describe('requestGatewayForProfile', () => {
     expect($gateway.get()).toBe(primary)
   })
 
+  it("names the primary's own profile when main marks its route shared", async () => {
+    // A window opened for one profile (`?profile=`) adopts that profile as its primary label, but a
+    // global remote's socket is homed at the gateway's launch profile, which answers a bare request.
+    // Main scopes even the primary label on such a route (resolveProfileBackendRoute).
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'venture')
+
+    const getConnection = vi.fn(async (profile: null | string) => ({
+      port: 4242,
+      ...(profile ? { profile, sharedPrimary: true } : {}),
+      token: 'primary-token'
+    }))
+
+    installDesktop(getConnection)
+
+    await requestGatewayForProfile('venture', 'clarify.lock', { answer: 'a', question_id: 'q0', request_id: 'srq-1' })
+
+    expect(getConnection).toHaveBeenCalledWith('venture')
+    expect(primary.request).toHaveBeenCalledWith('clarify.lock', {
+      answer: 'a',
+      profile: 'venture',
+      question_id: 'q0',
+      request_id: 'srq-1'
+    })
+    expect(secondaryGateways).toHaveLength(0)
+  })
+
+  it("leaves the primary's own profile unnamed when its route is the primary's own backend", async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop(vi.fn(async (profile: null | string) => ({ port: 4242, profile: profile ?? 'default', token: 't' })))
+
+    await requestGatewayForProfile('default', 'session.list', { limit: 20 })
+
+    expect(primary.request).toHaveBeenCalledWith('session.list', { limit: 20 })
+    expect(secondaryGateways).toHaveLength(0)
+  })
+
   it('serializes concurrent requests while a secondary gateway is connecting', async () => {
     let releaseConnect: () => void = () => undefined
     connectGate = new Promise<void>(resolve => {

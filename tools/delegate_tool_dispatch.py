@@ -221,6 +221,11 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     else:
         _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
 
+    children_by_index = {i: child for i, _, child in batch.children}
+    for entry in results:
+        sid = getattr(children_by_index.get(entry.get("task_index")), "_subagent_id", None)
+        if isinstance(sid, str) and sid:
+            entry["subagent_id"] = sid
     _finalize_child_results(results, batch.task_list, batch.children, batch.parent_agent)
     total_duration = round(time.monotonic() - batch.overall_start, 2)
     for entry in results:

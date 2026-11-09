@@ -56,8 +56,8 @@ def _register_subagent(record: dict[str, Any]) -> None:
     with _active_subagents_lock:
         _active_subagents[sid] = record
 
-def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
-    """Drop the live record (exact agent identity when given) and keep a bounded attribution stub."""
+def _unregister_subagent(subagent_id: str, *, agent: Any = None, stopping: bool = False) -> Optional[dict[str, Any]]:
+    """Retain attribution and trusted owners; cleanup callers hold readiness at stopping until resources close."""
     with _active_subagents_lock:
         record = _active_subagents.get(subagent_id)
         if record is None or not (agent is None or record.get("agent") is agent):
@@ -66,12 +66,38 @@ def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
         sid = record.get("subagent_id")
         if not sid:
             return
-        _recent_subagents[sid] = {k: record.get(k) for k in ("goal", "delegation_id", "owner_agent_session_id")}
+        retained = {k: record.get(k) for k in ("goal", "delegation_id", "owner_agent_session_id")}
+        owners = set()
+        prev = _recent_subagents.get(sid)
+        if prev is not None:
+            owners.update(owner for owner in prev.get("ancestor_owner_session_ids", ()) if owner)
+            if prev.get("owner_agent_session_id"):
+                owners.add(prev["owner_agent_session_id"])
+        cur = record.get("agent")
+        for _ in range(8):
+            ref = getattr(cur, "_delegate_parent_ref", None)
+            cur = ref() if callable(ref) else None
+            if cur is None:
+                break
+            owner_sid = getattr(cur, "session_id", None)
+            if isinstance(owner_sid, str) and owner_sid:
+                owners.add(owner_sid)
+        retained["ancestor_owner_session_ids"] = owners
+        retained["state"] = "stopping" if stopping else "resumable"
+        _recent_subagents[sid] = retained
         resume = _resume_spec(record)
         if resume is not None:
             _recent_subagents[sid]["resume"] = resume
         while len(_recent_subagents) > _RECENT_SUBAGENTS_CAP:
             _recent_subagents.pop(next(iter(_recent_subagents)), None)
+        return retained
+
+
+def _mark_subagent_resumable(subagent_id: str, retained: Optional[dict[str, Any]]) -> None:
+    """Publish readiness only for this cleanup's retained generation, never a replacement run."""
+    with _active_subagents_lock:
+        if retained is not None and _recent_subagents.get(subagent_id) is retained:
+            retained["state"] = "resumable"
 
 def _resume_spec(record: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Route, toolsets, goal/context (its system prompt), model and the session holding its transcript: what
@@ -230,7 +256,7 @@ def _owns_subagent_record(record: dict[str, Any], parent_agent: Any) -> bool:
 
     Tier 1: identity — the ``_delegate_parent_ref`` weakref chain reaches
     *parent_agent* (fast path while the parent AIAgent survives the run). Tier 2:
-    durable lineage — the record's ``owner_agent_session_id`` matches the caller's
+    durable lineage — the record's immediate or retained ancestor owner matches the caller's
     ``session_id`` after resolving compression-rotation lineage on both sides.
     Tier 2 exists because the identity chain is BRITTLE across parent rebuilds:
     the CLI sets ``self.agent = None`` mid-session (route change, credential
@@ -240,14 +266,17 @@ def _owns_subagent_record(record: dict[str, Any], parent_agent: Any) -> bool:
     """
     if _is_descendant_of(record.get("agent"), parent_agent):
         return True
-    owner_sid = str(record.get("owner_agent_session_id") or "")
+    owners = set(record.get("ancestor_owner_session_ids") or ())
+    owners.add(str(record.get("owner_agent_session_id") or ""))
+    owners.discard("")
     parent_sid = str(getattr(parent_agent, "session_id", "") or "")
-    if not owner_sid or not parent_sid:
+    if not owners or not parent_sid:
         return False
-    if owner_sid == parent_sid:
+    if parent_sid in owners:
         return True
     # Compression rotation on either side: compare lineage tips.
-    return _resolve_session_lineage(owner_sid, parent_agent) in {parent_sid, _resolve_session_lineage(parent_sid, parent_agent)}
+    tips = {parent_sid, _resolve_session_lineage(parent_sid, parent_agent)}
+    return any(_resolve_session_lineage(owner_sid, parent_agent) in tips for owner_sid in owners)
 
 def _list_payload(parent_agent: Any) -> dict[str, Any]:
     with _active_subagents_lock:

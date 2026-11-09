@@ -1,26 +1,28 @@
 name: herd
 repo: https://github.com/welliv/hermes-herd
-sha: ac25f3d67d3b4d6f613ab8726fb93b583d884372
+sha: fcb3f56334789c133068cc5a93f5d8510c1e8551
+requires_hermes: ">=0.23"
 description: >-
-  Keep one Hermes across every machine. Settings, skills, memory and API keys
-  follow the user between devices while each machine keeps what belongs to it —
-  Docker paths, ports, bot tokens. `config.yaml` is merged per key against a
-  stored base, with machine-bound paths resolved locally before any comparison,
-  so a pull cannot delete the section the machine is running on. Secrets are
-  encrypted with a key stretched from a recovery code before they leave the
-  device; every pull leaves a restorable backup and `hermes sync undo` puts it
-  back. Ships a per-device manifest store over any folder or git remote, three
-  agent tools (`sync_status`, `sync_diff`, `sync_now`), session hooks that sync
-  in the background, and a `hermes sync` CLI. Disclosure — reads the profile's
-  config, `.env`, memory, SOUL.md and skills and writes the ones that changed;
-  `.env` values are copied to the chosen store in encrypted form; the store is
-  any folder or git remote the user names, and nothing is sent anywhere else.
-  Sessions and cron are not synced by default.
+  Keep one Hermes across every machine. Settings, skills and memory follow the
+  user between devices, and API keys once the user turns that on, while each
+  machine keeps what belongs to it — Docker paths, ports, bot tokens.
+  `config.yaml` is merged per key against a stored base, with machine-bound paths
+  resolved locally before any comparison, so a pull cannot delete the section the
+  machine is running on. Secrets are encrypted with a key stretched from a
+  recovery code before they leave the device; every pull leaves a restorable
+  backup and `hermes sync undo` puts it back. Ships a per-device manifest store
+  over any folder or git remote, three agent tools (`sync_status`, `sync_diff`,
+  `sync_now`), session hooks that sync in the background, and a `hermes sync`
+  CLI. Disclosure — reads the profile's config, memory, SOUL.md and skills and
+  writes the ones that changed; credentials are off by default and, when enabled
+  with `hermes sync secrets on`, `.env` values are copied to the chosen store in
+  encrypted form; the store is any folder or git remote the user names, and
+  nothing is sent anywhere else. Sessions and cron are not synced by default.
 maintainer: welliv
 tier: community
 category: tools
 docs_url: https://github.com/welliv/hermes-herd#readme
-version: "1.0.0"
+version: "1.0.1"
 platforms: []
 capabilities:
   provides_tools:

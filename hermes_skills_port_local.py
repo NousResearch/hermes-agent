@@ -15,7 +15,14 @@ The index's identity is frozen when it opens: the canonical skills directory and
 home that holds it, taken from the absolute path it was given, never recomputed against a later
 working directory (a relative path is refused). A directory alias of the profile (a symlinked
 home) is the same profile; a skills directory that is a link into another directory is refused at
-open, since its files belong to whichever profile owns that directory.
+open, since its files belong to whichever profile owns that directory. That identity is
+re-verified before every operation: the directory must still resolve to the one the index opened
+(its real path, and — when one existed at open — the same directory, ``st_dev``/``st_ino``), so a
+root renamed away and replaced by a link into another profile is refused with
+``StoragePinRefused`` before anything is read or written, not served as this profile's skills.
+The check and the operation's own I/O are two moments: a link swapped in between them is
+outside the local threat model (the machine's owner rearranging their own files under a running
+process), as with the local state store.
 
 Offer-time gates (platform, environment, app availability, the disabled list), the same-name
 tier resolution across project, create-dir and external roots, and the write gates of
@@ -62,6 +69,17 @@ def index_identity(skills_dir) -> tuple[Path, Path]:
             f"skills index {named} is a link into {canonical.parent}, not a directory of its "
             f"profile {home}")
     return canonical, home
+
+
+def root_stat(path) -> Optional[tuple[int, int]]:
+    """``(st_dev, st_ino)`` of a skills root directory, or None: the profile may have no skills
+    directory yet (the first write creates it at that path), and a filesystem that reports no
+    stable identity cannot anchor one."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino) if st.st_dev and st.st_ino else None
 
 
 def _validate_name(name: str) -> Optional[str]:
@@ -116,10 +134,34 @@ class LocalSkillIndex(SkillIndex):
         from hermes_constants import hermes_home_key
         self.skills_dir, self.home = index_identity(skills_dir)
         self._home_key = hermes_home_key(self.home)
+        # The directory this handle serves, as it resolved at open: its real path, and the
+        # directory itself when one was already there (st_dev/st_ino — a directory replaced
+        # in place is a different one). None: the profile has no skills directory yet; the
+        # first write creates it at that path, never elsewhere.
+        self._root_realpath = os.path.realpath(str(self.skills_dir))
+        self._root_stat = root_stat(self.skills_dir)
 
     # --- the pin and the level
 
+    def _check_root(self) -> None:
+        """Refuse (``StoragePinRefused``) before anything is read or written when the skills
+        directory no longer resolves to the one this index opened: its real path changed (a
+        root renamed away and replaced by a link names another profile's directory — the
+        refusal a fresh open of that root would get), or, for a root that existed at open, it
+        is another directory now (st_dev/st_ino; a root replaced in place is not the one it
+        opened). A root that did not exist at open is the path itself: still absent, or created
+        there by a later write, it stays this index's root; resolving anywhere else it does
+        not. The check and the operation's I/O are two moments: a link swapped in between them
+        is outside the local threat model (the machine's owner rearranging their own files
+        under a running process), as with the local state store."""
+        if os.path.realpath(str(self.skills_dir)) != self._root_realpath or (
+                self._root_stat is not None and root_stat(self.skills_dir) != self._root_stat):
+            raise StoragePinRefused(
+                f"skills directory {str(self.skills_dir)!r} no longer resolves to the one "
+                "this index opened")
+
     def _pin(self) -> None:
+        self._check_root()
         from hermes_constants import get_hermes_home, hermes_home_key
         scope = current_scope()
         if scope is not None and scope.tenant != LOCAL_TENANT:

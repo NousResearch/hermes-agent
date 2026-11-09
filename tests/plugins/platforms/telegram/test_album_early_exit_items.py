@@ -60,3 +60,22 @@ async def test_album_item_on_an_early_exit_path_joins_the_album_turn(second_item
     event = adapter.handle_message.await_args.args[0]
     assert "see both" in event.text
     assert any(url.endswith("report.pdf") for url in event.media_urls), event.media_urls
+
+
+@pytest.mark.asyncio
+async def test_caption_on_an_album_item_too_large_to_download_reaches_the_album_turn():
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="t", extra={"media_group_wait_seconds": 0.05}))
+    adapter.handle_message = AsyncMock()
+    adapter._is_callback_user_authorized = lambda user_id, **_kw: True
+    big = _make_message(document=_make_document("huge.zip", "application/zip", file_size=TOO_BIG),
+                        caption="see both", media_group_id="mg")
+    pdf = _make_message(document=_make_document("report.pdf"), media_group_id="mg")
+
+    await adapter._handle_media_message(_make_update(big), MagicMock())
+    await adapter._handle_media_message(_make_update(pdf), MagicMock())
+    await async_wait_until(lambda: adapter.handle_message.await_count, timeout=5)
+    await async_wait_until(lambda: not adapter._media_group_events, timeout=5)
+
+    adapter.handle_message.assert_awaited_once()
+    text = adapter.handle_message.await_args.args[0].text
+    assert "see both" in text and "too large" in text, text

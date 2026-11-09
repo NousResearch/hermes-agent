@@ -19,8 +19,8 @@ _CODE_TYPES = frozenset({"code", "pre"})
 
 def _rich_inline(value: Any, depth: int = 0, skip_code: bool = False) -> str:
     """Plain text of a rich ``text`` value: a string, a list of runs, or a span dict (bold, link…)
-    whose content sits in ``text`` or ``children``, falling back to a link's ``url``. ``skip_code``
-    blanks ``code``/``pre`` spans."""
+    whose content sits in ``text`` or ``children``, falling back to a link's ``url``, a math
+    ``expression`` or a custom emoji's ``alternative_text``. ``skip_code`` blanks ``code``/``pre`` spans."""
     if depth > _MAX_RICH_DEPTH:
         return ""
     if isinstance(value, str):
@@ -32,8 +32,12 @@ def _rich_inline(value: Any, depth: int = 0, skip_code: bool = False) -> str:
             return " "
         for key in ("text", "children"):
             if value.get(key) is not None:
-                return _rich_inline(value[key], depth + 1, skip_code)
-        return str(value.get("url") or "")
+                text = _rich_inline(value[key], depth + 1, skip_code)
+                # A hidden link keeps its URL, as ``expand_link_entities`` inlines a ``text_link``; the
+                # mention scan leaves it out so ``?u=@bot`` in a URL cannot wake the bot.
+                url = None if skip_code else value.get("url")
+                return f"{text} ({url})" if isinstance(url, str) and url and url != text else text
+        return str(value.get("url") or value.get("expression") or value.get("alternative_text") or "")
     return ""
 
 

@@ -66,6 +66,12 @@ class OwnerUnconfirmed(OwnerUnavailable):
     may still be (or already be) queued there: never "nothing was sent", never a retry."""
 
 
+class OwnerAttachFailed(OwnerUnavailable):
+    """The owner was dialed but the attach answer never arrived (the connection dropped). Nothing
+    reached ``prompt.submit``, so nothing is queued and a retry is safe: never a refusal (the owner
+    is healthy) and never ``OwnerUnconfirmed`` (which may already be queued there)."""
+
+
 def discover_owner(home: Path):
     """The ready gateway endpoint serving ``home``. Discovery only: never starts one."""
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
@@ -76,10 +82,11 @@ def discover_owner(home: Path):
 
 
 @contextlib.asynccontextmanager
-async def connect_owner(home: Path, endpoint, *, scope=None, max_size: int = 2 ** 20):
+async def connect_owner(home: Path, endpoint, *, scope=None, max_size: int = 8 * 1024 * 1024):
     """A ``GatewayClient`` on ``endpoint``, the ready gateway serving ``home``; ``scope``: the
     ticket's profile scope (``"host"``: the one native Desktop holds); ``max_size``: the largest
-    answer frame accepted (websockets' 1 MiB default)."""
+    answer frame accepted. Not websockets' 1 MiB default: a ``session.resume`` answer carries a
+    transcript, which is why ``connect_gateway`` allows 8 MiB for the same verb."""
     from hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, GatewayClient, _session_ticket, gateway_ws_target
     from websockets.asyncio.client import connect
 
@@ -137,8 +144,7 @@ class _Relay:
 
     async def _run(self) -> None:
         async with connect_owner(self.home, self.endpoint) as client:
-            attached = await client.rpc("session.resume", session_id=self.key)
-            target = str(attached.get("session_id") or self.key)
+            target = await self._attach(client)
             receipt = await self._submit(client, target)
             if receipt.get("voice_stopped") is True:
                 # TUI-26: the owner took a typed stop phrase as the end of its LOCAL voice chat and
@@ -152,6 +158,23 @@ class _Relay:
             logger.info("forwarded Desktop prompt for %s to the owner FIFO: admission=%s",
                         self.key, admission_id)
             await self._relay(client, admission_id)
+
+    async def _attach(self, client) -> str:
+        """``session.resume`` on the owner: the id ``prompt.submit`` takes.
+
+        ``omit_messages``: this relay submits a prompt and relays that admission's frames, never the
+        transcript. A long Bot Chat's whole display history is ONE answer frame far past the socket's
+        limit, and the client's 1009 close then looked like a refusal from a healthy owner. A
+        transport failure here is before ``prompt.submit``: nothing was admitted, so it is retryable
+        (``OwnerAttachFailed``), never a refusal — and never ``OwnerUnconfirmed`` either."""
+        from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
+        try:
+            attached = await client.rpc("session.resume", session_id=self.key, omit_messages=True)
+        except GatewayRPCError:
+            raise  # the owner answered and refused it: it saw the request, so this is not transport
+        except GatewayClientError as exc:
+            raise OwnerAttachFailed("the connection to it dropped before your message was queued") from exc
+        return str(attached.get("session_id") or self.key)
 
     async def _submit(self, client, target: str) -> dict:
         """``prompt.submit`` on the owner. Once the request is handed to the socket, only a received

@@ -1,7 +1,7 @@
 name: plan-mode
 title: Plan mode
 repo: https://github.com/100yenadmin/hermes-plan-mode
-sha: 6ac579e8109c915d3d0428f8df720ab563a89622
+sha: 9f63349e606835a9ebc1d0e3e95eb4a8f7605d2c
 description: 'Claude Code-style plan mode for Hermes: the agent explores and writes a plan, and edits nothing else until you
   approve it. It works on every interactive Hermes surface: /plan or /planmode on blocks mutating Hermes tools dispatched
   through pre_tool_call (writes outside .hermes/plans, terminal, code execution, delegation, MCP) while the agent
@@ -47,13 +47,13 @@ tier: community
 category: tools
 requires_hermes: '>=0.21.3'
 docs_url: https://github.com/100yenadmin/hermes-plan-mode#readme
-version: "1.3.0"
-image: https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/6ac579e8109c915d3d0428f8df720ab563a89622/docs/media/banner.jpg
+version: "1.3.1"
+image: https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/9f63349e606835a9ebc1d0e3e95eb4a8f7605d2c/docs/media/banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/6ac579e8109c915d3d0428f8df720ab563a89622/docs/media/cli-card.png
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/6ac579e8109c915d3d0428f8df720ab563a89622/docs/media/cli-edit-review.png
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/6ac579e8109c915d3d0428f8df720ab563a89622/docs/media/cli-card-implement.png
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/6ac579e8109c915d3d0428f8df720ab563a89622/docs/media/cli-edit-approve.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/9f63349e606835a9ebc1d0e3e95eb4a8f7605d2c/docs/media/cli-card.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/9f63349e606835a9ebc1d0e3e95eb4a8f7605d2c/docs/media/cli-edit-review.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/9f63349e606835a9ebc1d0e3e95eb4a8f7605d2c/docs/media/cli-card-implement.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/9f63349e606835a9ebc1d0e3e95eb4a8f7605d2c/docs/media/cli-edit-approve.png
 platforms: []
 capabilities:
   provides_tools:

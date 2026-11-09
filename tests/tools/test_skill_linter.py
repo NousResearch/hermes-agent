@@ -139,6 +139,8 @@ def test_reference_shapes_that_name_no_single_file_are_not_dangling(tmp_path):
     (skill_dir / "references" / "foo-1.md").write_text("x")
     for ref in (
         "references/foo-*.md",
+        "references/foo-?.md",
+        "references/foo-[12].md",
         "{output-dir}/references/NN-ref-{slug}.md",
         "references/...",
     ):
@@ -151,9 +153,29 @@ def test_a_real_missing_reference_is_still_flagged_beside_a_glob(tmp_path):
     skill_dir = tmp_path / "my-skill"
     (skill_dir / "references").mkdir(parents=True)
     (skill_dir / "references" / "foo-1.md").write_text("x")
-    content = CLEAN + "\nSee references/foo-*.md and references/missing.md.\n"
+    content = CLEAN + (
+        "\nSee references/foo-*.md, references/foo-?.md, references/foo-[12].md "
+        "and references/missing.md.\n"
+    )
     messages = [f.message for f in lint_content(content, skill_dir=skill_dir) if f.rule == "dangling-reference"]
     assert messages == ["body references 'references/missing.md' but that file does not exist in the skill directory."]
+
+
+def test_markdown_link_and_trailing_question_still_name_the_file(tmp_path):
+    """A link's `]` and a sentence's own `?` are punctuation, not part of the path."""
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    for body in (
+        "\nSee [references/missing.md](references/missing.md).\n",
+        "\nHave you read references/missing.md?\n",
+    ):
+        messages = [
+            f.message for f in lint_content(CLEAN + body, skill_dir=skill_dir)
+            if f.rule == "dangling-reference"
+        ]
+        assert messages == [
+            "body references 'references/missing.md' but that file does not exist in the skill directory."
+        ], body
 
 
 def test_posix_primitive_without_platforms_warns(tmp_path):

@@ -3277,17 +3277,16 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                            stop_event: asyncio.Event | None = None) -> None:
         """Refresh the typing indicator every ``interval`` seconds until cancelled (platform typing
         state expires after ~5s). Chats in ``_typing_paused`` are skipped (approval waits — Slack's
-        setStatus disables the compose box). Each ``send_typing`` is bounded by a sub-interval
-        timeout so one slow round-trip is abandoned before the next tick, not the bubble lapsing."""
+        setStatus disables the compose box). Each ``send_typing`` is bounded by a sub-interval timeout."""
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
                     return
                 if chat_id not in self._typing_paused:
-                    try:
-                        await asyncio.wait_for(self.send_typing(chat_id, metadata=metadata),
-                                               timeout=_send_typing_timeout)
+                    try:  # asyncio.timeout: 3.11's wait_for swallows a same-tick cancel (stuck "typing")
+                        async with asyncio.timeout(_send_typing_timeout):
+                            await self.send_typing(chat_id, metadata=metadata)
                     except TimeoutError:
                         pass  # Slow network — abandon this tick, stay on schedule.
                     except Exception as typing_err:

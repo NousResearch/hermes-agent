@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
 
-import { reachablePreviewUrl } from './preview-reach'
+import { reachablePreviewTarget, reachablePreviewUrl } from './preview-reach'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 
@@ -73,6 +73,41 @@ describe('reachablePreviewUrl', () => {
     installBridge(bridge)
 
     expect(await reachablePreviewUrl('')).toBe('')
+    expect(bridge).not.toHaveBeenCalled()
+  })
+})
+
+describe('reachablePreviewTarget', () => {
+  // Every in-app open (chips, context menu, attachments, note links) hands the
+  // pane this target: the loaded URL is the reached one, but what the user
+  // reads (label, source) stays the address the link said.
+  it('rewrites only the loaded url of a web target on a remote gateway', async () => {
+    $connection.set({ mode: 'remote' } as never)
+    installBridge(vi.fn(async () => 'http://127.0.0.1:45173/app'))
+
+    expect(
+      await reachablePreviewTarget({
+        kind: 'url',
+        label: '',
+        source: 'http://localhost:5173/app',
+        url: 'http://localhost:5173/app'
+      })
+    ).toEqual({
+      kind: 'url',
+      label: 'http://localhost:5173/app',
+      source: 'http://localhost:5173/app',
+      url: 'http://127.0.0.1:45173/app'
+    })
+  })
+
+  it('never asks main about a file target', async () => {
+    const bridge = vi.fn()
+
+    $connection.set({ mode: 'remote' } as never)
+    installBridge(bridge)
+    const file = { kind: 'file' as const, label: 'a.md', path: '/x/a.md', source: '/x/a.md', url: 'file:///x/a.md' }
+
+    expect(await reachablePreviewTarget(file)).toBe(file)
     expect(bridge).not.toHaveBeenCalled()
   })
 })

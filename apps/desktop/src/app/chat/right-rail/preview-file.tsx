@@ -47,6 +47,7 @@ import {
   remarkPreviewFileLinks,
   scrollPreviewHeading
 } from '@/lib/preview-markdown-links'
+import { reachablePreviewTarget } from '@/lib/preview-reach'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { cn } from '@/lib/utils'
 import { markPreviewTabMissing, openPreview, type PreviewTarget } from '@/store/preview'
@@ -409,7 +410,7 @@ async function openLinkedNote(target: string, filePath?: string) {
   const preview = await normalizeOrLocalPreviewTarget(target, noteDirectory(filePath))
 
   if (preview) {
-    openPreview(preview)
+    openPreview(await reachablePreviewTarget(preview))
   }
 }
 

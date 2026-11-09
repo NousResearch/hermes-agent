@@ -3,7 +3,7 @@ import { useCallback } from 'react'
 
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
-import { reachablePreviewUrl } from '@/lib/preview-reach'
+import { reachablePreviewTarget, reachablePreviewUrl } from '@/lib/preview-reach'
 import {
   $previewTabs,
   beginPreviewServerRestart,
@@ -119,8 +119,7 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
               // The agent's loopback is the GATEWAY's loopback. Give the pane a
               // URL this machine can load, keeping the original as the label so
               // the user still sees the address the agent named.
-              const url = resolved.kind === 'url' ? await reachablePreviewUrl(resolved.url) : resolved.url
-              const reached = url === resolved.url ? resolved : { ...resolved, label: resolved.label || target, url }
+              const reached = await reachablePreviewTarget(resolved)
 
               openPreview(
                 renderedHtmlTarget(trimmedLabel ? { ...reached, label: trimmedLabel } : reached),

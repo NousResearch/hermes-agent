@@ -100,8 +100,8 @@ def test_cli_stdin_exit_codes_and_output(tmp_path, release, results, code, repor
 
 
 # --allow-superseded: a cancelled duplicate pull_request run of one push.
-_OWN = {"id": 1, "workflow_id": 7, "head_sha": "abc", "event": "pull_request",
-        "status": "in_progress", "conclusion": None}
+_OWN = {"id": 1, "run_attempt": 1, "workflow_id": 7, "head_sha": "abc",
+        "event": "pull_request", "status": "in_progress", "conclusion": None}
 _CANCELLED_DETECT = {"detect": {"result": "cancelled", "outputs": {}}, "tests": {"result": "skipped"}}
 
 
@@ -110,7 +110,7 @@ def _fake_fetch(runs, own=_OWN):
 
     def fetch(path):
         calls.append(path)
-        if path == "repos/o/r/actions/runs/1":
+        if path == f"repos/o/r/actions/runs/{own['id']}":
             return own
         if path == "repos/o/r/actions/workflows/7/runs?head_sha=abc&per_page=100":
             return {"workflow_runs": [own, *runs]}
@@ -118,9 +118,9 @@ def _fake_fetch(runs, own=_OWN):
     return fetch, calls
 
 
-def _run_main(monkeypatch, capsys, needs, argv, fetch):
+def _run_main(monkeypatch, capsys, needs, argv, fetch, run_id=1):
     monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
-    monkeypatch.setenv("GITHUB_RUN_ID", "1")
+    monkeypatch.setenv("GITHUB_RUN_ID", str(run_id))
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
     monkeypatch.setattr(sys, "stdin", __import__("io").StringIO(json.dumps(needs)))
     code = required_results.main(argv, fetch=fetch)
@@ -156,6 +156,35 @@ def test_cancelled_run_without_live_twin_still_fails(monkeypatch, capsys, other)
     code, out = _run_main(monkeypatch, capsys, _CANCELLED_DETECT, ["--allow-superseded"], fetch)
     assert code == 1
     assert "::error::1 job(s) failed: detect" in out
+
+
+@pytest.mark.parametrize("own,other", [
+    # newer -> older: the older run cannot carry the verdict for the run that superseded it
+    ({**_OWN, "id": 2}, _dup(id=1)),
+    ({**_OWN, "id": 2}, _dup(id=1, status="completed", conclusion="success")),
+    # a rerun of the cancelled run never delegates, even to a newer live twin
+    ({**_OWN, "run_attempt": 2}, _dup()),
+    ({**_OWN, "run_attempt": None}, _dup()),
+])
+def test_delegation_only_points_forward_from_a_first_attempt(monkeypatch, capsys, own, other):
+    fetch, _ = _fake_fetch([other], own=own)
+    code, out = _run_main(monkeypatch, capsys, _CANCELLED_DETECT, ["--allow-superseded"], fetch,
+                          run_id=own["id"])
+    assert code == 1
+    assert "::error::1 job(s) failed: detect" in out
+
+
+def test_two_cancelled_duplicates_cannot_vouch_for_each_other(monkeypatch, capsys):
+    # A (id 1) is cancelled by B (id 2); B is then cancelled while A's always() gate still
+    # runs, so each gate sees the other run still in progress. At most one may pass.
+    run_a = {**_OWN, "id": 1}
+    run_b = {**_OWN, "id": 2}
+    codes = {}
+    for own, other in ((run_a, run_b), (run_b, run_a)):
+        fetch, _ = _fake_fetch([other], own=own)
+        codes[own["id"]], _ = _run_main(monkeypatch, capsys, _CANCELLED_DETECT,
+                                        ["--allow-superseded"], fetch, run_id=own["id"])
+    assert codes == {1: 0, 2: 1}
 
 
 @pytest.mark.parametrize("needs", [

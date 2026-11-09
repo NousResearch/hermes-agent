@@ -39,6 +39,12 @@ def launch_review(ctx):
 Requests and handles may also arrive as mappings, including plugin-host wire records.
 Pass a handle back to `status`, `wait`, `cancel`, `steer`, `result`, or `reconnect`; malformed
 or forged handles return `UNKNOWN`/`UNKNOWN_HANDLE` and cannot access a child.
+The handle's `role` is the effective role. When a request supplies
+`allowed_toolsets`, `effective_toolsets` records the effective named ceiling;
+both fields are covered by the opaque capability and are repeated through
+`status` and `result`. The view contains names only, never credentials, tool
+objects, or private agent state. `effective_toolsets` is `None` when the request
+uses the default inherited toolset policy.
 
 `steer(handle, text)` queues text for the child's next iteration boundary and
 returns `True` while the child accepts steering. It returns `False` for empty
@@ -69,8 +75,17 @@ Requests are fail-closed: goal/context/metadata sizes are capped, unknown or
 parent-broadening toolsets are rejected (plugin-registered toolsets count as
 known), and per-tool blocks, working-directory overrides, and per-launch
 timeouts are explicitly rejected until Hermes can
-support them without weakening isolation. Use `allowed_toolsets` to narrow a
-child; Hermes's existing unsafe-tool block remains enforced.
+support them without weakening isolation. The lifecycle request's role is
+authoritative: a `leaf` is never promoted by `delegation.max_spawn_depth` or
+`delegation.orchestrator_enabled`. An `orchestrator` request must be permitted
+by both settings and, when `allowed_toolsets` is explicit, that ceiling must
+itself grant `delegate_task`; conflicts are rejected before the child starts.
+
+An explicit `allowed_toolsets` tuple is the complete upper bound on the
+child's named toolsets. Hermes does not inherit extra MCP toolsets or add
+`delegation` outside that ceiling. The existing child unsafe-tool deny list can
+still remove capabilities from the requested set. Omitting `allowed_toolsets`
+preserves the default inherited-toolset behavior.
 
 ## Routing
 

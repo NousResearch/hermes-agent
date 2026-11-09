@@ -26,6 +26,8 @@ _MAX_GOAL_CHARS = 16_000
 _MAX_CONTEXT_CHARS = 32_000
 _MAX_METADATA_BYTES = 8_192
 _MAX_RESULT_CHARS = 32_000
+_MAX_POLICY_TOOLSETS = 64
+_MAX_TOOLSET_NAME_CHARS = 128
 _TERMINAL_RETENTION_SECONDS = 3_600
 
 
@@ -73,6 +75,7 @@ class SubagentHandle:
     role: str
     depth: int
     capability: str
+    effective_toolsets: Optional[tuple[str, ...]] = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -80,7 +83,10 @@ class SubagentHandle:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> SubagentHandle:
         try:
-            return cls(**dict(value))
+            fields = dict(value)
+            if isinstance(fields.get("effective_toolsets"), list):
+                fields["effective_toolsets"] = tuple(fields["effective_toolsets"])
+            return cls(**fields)
         except (TypeError, ValueError) as exc:
             raise SubagentLifecycleError("Malformed subagent handle.") from exc
 
@@ -213,6 +219,10 @@ _HANDLE_FIELD_CHECKS: tuple[tuple[str, Callable[[Any], bool]], ...] = (
     ("role", lambda v: isinstance(v, str)),
     ("depth", lambda v: type(v) is int),
     ("capability", lambda v: isinstance(v, str)),
+    ("effective_toolsets", lambda v: v is None or (
+        isinstance(v, tuple) and len(v) <= _MAX_POLICY_TOOLSETS
+        and all(isinstance(name, str) and 0 < len(name) <= _MAX_TOOLSET_NAME_CHARS for name in v)
+    )),
 )
 
 # Launch-request rejections in check order: (predicate, error). The type check leads so later predicates may
@@ -223,6 +233,13 @@ _REQUEST_REJECTIONS: tuple[tuple[Callable[[Any], bool], str], ...] = (
     (lambda r: r.context is not None and (not isinstance(r.context, str) or len(r.context) > _MAX_CONTEXT_CHARS),
      "context must be a string of at most 32000 characters."),
     (lambda r: r.role not in {"leaf", "orchestrator"}, "role must be 'leaf' or 'orchestrator'."),
+    (lambda r: r.allowed_toolsets is not None and (
+        not isinstance(r.allowed_toolsets, tuple) or len(r.allowed_toolsets) > _MAX_POLICY_TOOLSETS
+        or any(
+            not isinstance(name, str) or not name or len(name) > _MAX_TOOLSET_NAME_CHARS
+            for name in r.allowed_toolsets
+        )
+    ), "allowed_toolsets must contain at most 64 non-empty names of at most 128 characters."),
     (lambda r: r.provider is not None and (not isinstance(r.provider, str) or not r.provider.strip() or len(r.provider) > 64),
      "provider must be a non-empty string of at most 64 characters."),
     (lambda r: r.timeout_seconds is not None, "Per-launch timeout is not supported; configure delegation timeout explicitly."),
@@ -299,20 +316,35 @@ class SubagentLifecycleService:
             creds = _resolve_delegation_credentials(routing_cfg, parent)
         except ValueError as exc:
             raise SubagentLifecycleError(str(exc)) from exc
-        child = _build_child_preserving_parent_tools(
-            task_index=0, goal=request.goal, context=request.context,
-            toolsets=list(request.allowed_toolsets) if request.allowed_toolsets else None,
-            model=request.model or creds["model"], max_iterations=DEFAULT_MAX_ITERATIONS,
-            task_count=1, parent_agent=parent, role=request.role, **_credential_overrides(creds, routing_cfg),
-        )
+        try:
+            child = _build_child_preserving_parent_tools(
+                task_index=0, goal=request.goal, context=request.context,
+                toolsets=list(request.allowed_toolsets) if request.allowed_toolsets is not None else None,
+                model=request.model or creds["model"], max_iterations=DEFAULT_MAX_ITERATIONS,
+                task_count=1, parent_agent=parent, role=request.role, role_is_authoritative=True,
+                toolsets_are_ceiling=request.allowed_toolsets is not None,
+                **_credential_overrides(creds, routing_cfg),
+            )
+        except ValueError as exc:
+            raise SubagentLifecycleError(str(exc)) from exc
         subagent_id = str(getattr(child, "_subagent_id", "") or "")
         if not subagent_id:
             raise SubagentLifecycleError("Hermes failed to assign a child identity.")
         created = time.time()
+        effective_role = str(getattr(child, "_delegate_role", request.role))
+        effective_toolsets = (
+            tuple(getattr(child, "enabled_toolsets", ()) or ())
+            if request.allowed_toolsets is not None else None
+        )
         handle = SubagentHandle(
-            PUBLIC_CONTRACT_VERSION, subagent_id, parent_session_id, request.correlation_id, created,
-            getattr(child, "provider", None), getattr(child, "model", None), getattr(child, "_delegate_role", request.role),
-            int(getattr(child, "_delegate_depth", 1) or 1), self._capability(subagent_id, parent_session_id, created),
+            contract_version=PUBLIC_CONTRACT_VERSION, subagent_id=subagent_id,
+            parent_session_id=parent_session_id, correlation_id=request.correlation_id, created_at=created,
+            provider=getattr(child, "provider", None), model=getattr(child, "model", None), role=effective_role,
+            depth=int(getattr(child, "_delegate_depth", 1) or 1),
+            capability=self._capability(
+                subagent_id, parent_session_id, created, effective_role, effective_toolsets,
+            ),
+            effective_toolsets=effective_toolsets,
         )
         record = _Record(handle, SubagentState.PENDING, created, agent=child)
         with _REGISTRY.lock:
@@ -391,7 +423,10 @@ class SubagentLifecycleService:
         handle = _coerce_handle(handle)
         if not _handle_is_well_formed(handle):
             return None
-        expected = self._capability(handle.subagent_id, handle.parent_session_id, handle.created_at)
+        expected = self._capability(
+            handle.subagent_id, handle.parent_session_id, handle.created_at,
+            handle.role, handle.effective_toolsets,
+        )
         if not hmac.compare_digest(handle.capability, expected):
             return None
         if _session_id_of(self._parent_agent_resolver()) != handle.parent_session_id:
@@ -445,8 +480,12 @@ class SubagentLifecycleService:
             record.completed_at = record.updated_at = result.completed_at
 
     @staticmethod
-    def _capability(subagent_id: str, parent_session_id: Optional[str], created_at: float) -> str:
-        value = f"{subagent_id}|{parent_session_id or ''}|{created_at:.6f}".encode()
+    def _capability(
+        subagent_id: str, parent_session_id: Optional[str], created_at: float,
+        role: str, effective_toolsets: Optional[tuple[str, ...]],
+    ) -> str:
+        policy = json.dumps([role, effective_toolsets], separators=(",", ":"))
+        value = f"{subagent_id}|{parent_session_id or ''}|{created_at:.6f}|{policy}".encode()
         return hmac.new(_SECRET, value, hashlib.sha256).hexdigest()
 
     @staticmethod
@@ -460,7 +499,7 @@ class SubagentLifecycleService:
             raise SubagentLifecycleError("metadata must be JSON-serializable.") from exc
         if metadata_bytes > _MAX_METADATA_BYTES:
             raise SubagentLifecycleError("metadata exceeds 8192 bytes.")
-        if not request.allowed_toolsets:
+        if request.allowed_toolsets is None:
             return
         # Plugin and registry-alias toolsets count as known, as they do for delegate_task.
         from toolsets import validate_toolset

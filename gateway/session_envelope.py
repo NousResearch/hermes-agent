@@ -299,6 +299,11 @@ def restore_native_source(payload, runner=None):
         runner = runner or callback_runner()
         if runner is not None:
             restore_provenance(runner, source, envelope['provenance'])
+            # A live source is identity-pinned at ingress; the admitted route's session entry persists
+            # that identity's receiving bot (``SessionEntry.transport_profile``), so a rebuilt source is
+            # pinned the same way or the entry is written without it and boot recovery cannot bind its adapter.
+            from gateway.session_identity import canonical_identity
+            canonical_identity(source, runner=runner, transport_profile=envelope['provenance'].get('transport_profile'))
     return source
 
 

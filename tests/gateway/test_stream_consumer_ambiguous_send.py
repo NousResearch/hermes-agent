@@ -174,3 +174,26 @@ async def test_timed_out_continuation_is_not_followed_by_the_whole_answer_again(
     assert delivered == ["first part ", "second part."]
     assert consumer.final_content_delivered is True
     assert consumer.delivered_final_matches("first part second part.") is not False
+
+
+@pytest.mark.asyncio
+async def test_timed_out_continuation_that_telegram_splits_again_is_not_counted_as_shown():
+    """3,000 periods fit one fallback chunk raw but escape to two MarkdownV2 messages: when that send
+    times out, the second message was never attempted, so the turn must stay undelivered for the
+    gateway's final send instead of silently losing that text."""
+    from plugins.platforms.telegram.telegram_markdown import to_markdown_v2
+
+    delivered: list = []
+    adapter = _telegram_flagged(_landing_adapter(delivered))
+    adapter.format_message = to_markdown_v2
+    adapter.send.side_effect = lambda **kw: delivered.append(kw["content"]) or _TIMED_OUT
+    consumer = GatewayStreamConsumer(
+        adapter, "chat", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=""))
+    consumer.on_delta("first part ")
+    task = asyncio.create_task(consumer.run())
+    await async_wait_until(lambda: delivered, timeout=5)
+    consumer.on_delta("." * 3000)
+    consumer.finish()
+    await asyncio.wait_for(task, timeout=10)
+
+    assert consumer.final_content_delivered is False

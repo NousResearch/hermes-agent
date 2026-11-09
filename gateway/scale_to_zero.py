@@ -102,7 +102,8 @@ def gateway_is_idle(runner) -> bool:
 
     def relay_reply_in_flight() -> bool:
         adapter = runner._relay_adapter_for_dormancy()
-        # Relay tasks are registered before handling inbound and stay live through the reply send.
+        # Classic inbound tasks stay live through the reply send. Durable delivery is
+        # covered separately by managed_turn_count below.
         return any(not task.done() for task in getattr(adapter, "_background_tasks", ()))
 
     cron_count = read_or_awake("cron work count", runner._running_cron_job_count, 1)

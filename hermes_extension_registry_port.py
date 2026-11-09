@@ -67,8 +67,11 @@ class RegistryPinRefused(PermissionError):
 
 class RegistryAdminRefused(PermissionError):
     """The bound scope may not administer this agent, so it may not install, remove, disable or
-    switch on an extension. Raised before the target is looked up, so the refusal is the same
-    whether the entry exists, is foreign, or is missing."""
+    switch on an extension. Refused for every write before the target is looked up, so the
+    refusal is the same whether the entry exists, is foreign, or is missing. The one
+    refusal that follows resolution — a named write whose resolved entry is tenant-wide,
+    wider than the administration right reaches — names an entry the same scope's reads
+    already return, so it discloses nothing ``get`` would not."""
 
 
 def require_provisioning(scope) -> None:
@@ -121,8 +124,12 @@ class ExtensionRegistry(ABC):
     :data:`~hermes_extension_registry_port.PROVISIONING_ACTOR`; any principal actor attempting
     one is refused with :class:`RegistryAdminRefused`, checked before the target is looked up,
     and for a named write once the resolved entry is known to be tenant-wide, before anything
-    is changed. No tenant-administration claim exists yet; :func:`require_provisioning` is the
-    one place that changes when one does.
+    is changed. A write refusal may follow resolution, because it refuses only names the
+    scope can already read: a tenant-wide entry is visible to every agent of the tenant
+    through :meth:`get`, :meth:`list` and :meth:`enabled_extensions` — whatever its ``enabled``
+    flag and this agent's switch, which resolution never looks at — so a refusal for one says
+    nothing the reads would not. No tenant-administration claim exists yet;
+    :func:`require_provisioning` is the one place that changes when one does.
     """
 
     def _check_install_args(self, *, name: str, kind: str, version: str, content_hash: str,
@@ -171,15 +178,18 @@ class ExtensionRegistry(ABC):
         """Offer or withdraw the resolved entry for its whole level; ``False`` when no visible
         entry has that name (a foreign entry answers the same as a missing one). The agent's
         administration right reaches the resolved entry when it is owner-wide; a tenant-wide
-        one needs the provisioning actor (the v1 rule), refused once the entry is known to be
-        tenant-wide, before anything is changed."""
+        one needs the provisioning actor (the v1 rule), refused once the entry is known to
+        be tenant-wide, before anything is changed — a refusal that names only an entry the
+        same scope's reads already return."""
 
     @abstractmethod
     def remove(self, name: str) -> bool:
         """Delete the resolved entry and every per-agent switch for it; ``False`` when no
         visible entry has that name. The agent's administration right reaches the resolved
         entry when it is owner-wide; a tenant-wide one needs the provisioning actor (the v1
-        rule), refused once the entry is known to be tenant-wide, before anything is changed."""
+        rule), refused once the entry is known to be tenant-wide, before anything is
+        changed — a refusal that names only an entry the same scope's reads already
+        return."""
 
     @abstractmethod
     def set_agent_enabled(self, name: str, enabled: bool) -> bool:

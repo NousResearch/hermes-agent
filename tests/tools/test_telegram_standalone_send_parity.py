@@ -214,11 +214,13 @@ def test_refused_first_album_keeps_the_photos_in_order(standalone) -> None:
 
 
 def test_album_to_a_stale_topic_retries_once_without_the_thread(standalone) -> None:
+    """A dead private topic still gets the album into the chat, as one album, never photo by photo.
+    The route steps (same topic, its native id, then the chat root) are the adapter's DM-topic retry."""
     calls = []
 
     async def send_media_group(**kwargs):
         calls.append(kwargs)
-        if len(calls) == 1:
+        if kwargs.get("message_thread_id") or kwargs.get("direct_messages_topic_id"):
             raise BadRequest("Bad Request: message thread not found")
         return [SimpleNamespace(message_id=11)]
     standalone.bot.send_media_group = AsyncMock(side_effect=send_media_group)
@@ -227,7 +229,8 @@ def test_album_to_a_stale_topic_retries_once_without_the_thread(standalone) -> N
     result = standalone.run("", media_files=_photos(standalone.home, 2), thread_id="77")
 
     assert result["success"] is True and "warnings" not in result
-    assert [c.get("message_thread_id") for c in calls] == [77, None]
+    assert calls[0].get("message_thread_id") == 77
+    assert not calls[-1].get("message_thread_id") and not calls[-1].get("direct_messages_topic_id")
     standalone.bot.send_photo.assert_not_awaited()
 
 

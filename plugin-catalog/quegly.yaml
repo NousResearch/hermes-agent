@@ -1,8 +1,8 @@
 name: quegly
 title: Quegly
 repo: https://github.com/quegly/agent
-sha: 3aade9636c3080eff42045c7713daf5e3535ea92
-version: "1.0.0"
+sha: 6a16be804680eeeef98043675d708f591b27a001
+version: "1.1.0"
 description: "Schedule, publish and measure social media posts from Hermes through Quegly's hosted MCP server (Streamable HTTP at https://api.quegly.com/mcp, API key header): one post to any mix of Instagram, TikTok, YouTube, Facebook, X, Threads, LinkedIn, Bluesky, Pinterest and Telegram accounts, scheduled up to 90 days ahead, published now or saved as a draft, with photos, videos, carousels, stories, Pins, video covers and per-platform or per-account captions, retries of failed platforms, and post analytics. Bundles the quegly workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: every tool call goes to Quegly's hosted server (api.quegly.com) and acts on the user's Quegly account with the permissions of the API key they set; the tool set is served by that server at runtime and is not covered by the pinned sha. The key is a config_schema secret (QUEGLY_API_KEY) kept by Hermes and sent only as the Authorization header to api.quegly.com. Write tools publish or schedule posts to the user's connected social accounts and delete scheduled posts, drafts and video covers. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs. No local code, no telemetry."
 maintainer: Quegly
 tier: community
@@ -16,3 +16,4 @@ capabilities:
   provides_hooks: []
   provides_middleware: []
   requires_env: []
+

@@ -186,7 +186,7 @@ def test_a_gate_that_closes_while_the_claim_waits_for_the_writer_refuses_it(queu
 
 
 def _foreign(home):
-    return bind_state(Scope("acme", str(home), Principal("u"), owner=Group("g"), role="member"))
+    return bind_state(Scope("acme", str(home), Principal("u"), owner=Group("g"), can_administer=False))
 
 
 def test_every_further_operation_is_pinned(queued, tmp_path):

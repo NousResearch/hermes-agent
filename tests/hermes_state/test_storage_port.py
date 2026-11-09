@@ -103,7 +103,7 @@ def test_the_local_backend_is_todays_store(ports, tmp_path):
 
 @pytest.mark.parametrize("pin", [
     # A hosted tenant naming this very path as its agent is still not this local store's.
-    lambda home: Scope("acme", str(home), Principal("u"), owner=Group("support"), role="member"),
+    lambda home: Scope("acme", str(home), Principal("u"), owner=Group("support"), can_administer=False),
     lambda home: Scope("local", str(home.parent / "elsewhere"), Principal("owner")),
 ], ids=["another_tenant", "another_profile"])
 def test_the_local_backend_refuses_any_pin_but_its_own_profile(ports, tmp_path, pin):

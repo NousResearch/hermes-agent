@@ -119,9 +119,14 @@ async def test_timed_out_preview_with_no_more_text_is_not_sent_again_on_telegram
 
 
 @pytest.mark.asyncio
-async def test_timed_out_preview_inside_open_code_block_sends_only_the_unseen_code():
+@pytest.mark.parametrize("rest,expected", [
+    ("y = 2\n```\nDone.", "```python\ny = 2\n```\nDone."),
+    ("```", None),  # only the closing fence follows: the closed preview already showed it all
+])
+async def test_timed_out_preview_inside_open_code_block_sends_only_the_unseen_code(rest, expected):
     """The preview was shown with a display-only closing fence; more code streamed after it. The
-    unseen tail is all that follows, never the whole answer again."""
+    unseen tail is all that follows, never the whole answer again, and a bare closing fence is
+    never a message of its own."""
     delivered: list = []
     consumer = GatewayStreamConsumer(
         _telegram_flagged(_landing_adapter(delivered)), "chat",
@@ -129,10 +134,9 @@ async def test_timed_out_preview_inside_open_code_block_sends_only_the_unseen_co
     consumer.on_delta("Code:\n```python\nx = 1\n")
     task = asyncio.create_task(consumer.run())
     await async_wait_until(lambda: delivered, timeout=5)
-    consumer.on_delta("y = 2\n```\nDone.")
+    consumer.on_delta(rest)
     consumer.finish()
     await asyncio.wait_for(task, timeout=10)
 
-    assert len(delivered) == 2, delivered
-    assert delivered[1] == "```python\ny = 2\n```\nDone."
+    assert delivered[1:] == ([expected] if expected else []), delivered
     assert consumer.final_content_delivered is True

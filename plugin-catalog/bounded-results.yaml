@@ -1,0 +1,17 @@
+name: bounded-results
+repo: https://github.com/1anter/hermes-research-plugins
+sha: 48befeaf71f0bfed7916553d1a511c81a37a9c4b
+subdir: plugins/bounded-results
+description: Bounded tool outputs with hash-addressed full-result retrieval.
+maintainer: 1anter
+tier: community
+category: tools
+requires_hermes: '>=0.23.0'
+version: 0.1.1
+capabilities:
+  provides_tools:
+  - bounded_read
+  provides_hooks:
+  - transform_tool_result
+  provides_middleware: []
+  requires_env: []

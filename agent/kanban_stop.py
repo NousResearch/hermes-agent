@@ -61,7 +61,7 @@ def _is_tool_error_content(content: Any) -> bool:
             try:
                 data = json.loads(trimmed)
                 if isinstance(data, dict):
-                    if "error" in data or data.get("ok") is False:
+                    if data.get("error") or data.get("ok") is False:
                         return True
             except Exception:
                 pass

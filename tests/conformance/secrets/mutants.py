@@ -13,7 +13,13 @@ reads it. The same leak, one frame of the whole exception chain deeper:
 value in the frames of a failure chained to it as context, ``local_managed_key_refusal_keeps_the_value``
 keeps it on the write lock's plain refusal of an administrator-pinned key, and
 ``local_write_failure_keeps_the_value_in_the_writer_frames`` keeps it in the writer's own frames
-on a mid-write I/O error. Against the
+on a mid-write I/O error. Three more failures of the write path:
+``local_failure_clears_the_callers_own_binding`` reaches out of the store's own frames and
+nulls the caller's live value binding (a caller retrying from an error handler finds its
+variable gone), ``local_failure_keeps_the_escaped_secret`` clears the raw value but keeps the
+serialized, escaped form a writer quoted it into, and
+``local_failure_keeps_the_original_failure_as_context`` raises a fresh error but chains the
+original failure to it, frames and all. Against the
 leveled reference backend: ``reference_reads_ignore_tenant`` drops the tenant half of the pin,
 ``reference_writes_skip_the_administration_check`` drops the administration check,
 ``reference_owner_wide_resolves_everywhere`` resolves another owner's entries,
@@ -24,6 +30,7 @@ mutant declares, next to how it is applied, the suite test that must kill it; th
 ``backend`` fixtures when ``HERMES_SECRETS_MUTANT`` names it.
 """
 
+import json
 import logging
 
 
@@ -205,6 +212,99 @@ def local_write_failure_keeps_the_value_in_the_writer_frames(monkeypatch):
     monkeypatch.setattr(LocalSecretStore, "set", set)
 
 
+def local_failure_clears_the_callers_own_binding(monkeypatch):
+    """The failed write reaches out of its own frames and clears the caller's live value
+    binding — the frames of the caller and of every exception chained to the failure are
+    scrubbed too, so a caller retrying the write from inside an error handler finds its
+    variable nulled. The store's own frames are cleared as well, so only the check on the
+    caller's untouched bindings catches it."""
+    from hermes_secret_port_local import LocalSecretStore
+    original = LocalSecretStore.set
+
+    def clear_the_value(exc, value):
+        # The scrubber runs in a frame the error's traceback never passes through, so it
+        # survives scrubbing the wrapper's own frames and reaches the caller's.
+        needle = str(value)
+        pending = [exc]
+        while pending:
+            linked = pending.pop()
+            tb = linked.__traceback__
+            while tb is not None:
+                for key in list(tb.tb_frame.f_locals):
+                    try:
+                        if needle in repr(tb.tb_frame.f_locals[key]):
+                            tb.tb_frame.f_locals[key] = None
+                    except Exception:  # health: allow BLE001 -- a binding that cannot render holds nothing
+                        continue
+                tb = tb.tb_next
+            for chained in (linked.__context__, linked.__cause__):
+                if chained is not None:
+                    pending.append(chained)
+
+    def set(self, name, value, *, level):
+        try:
+            return original(self, name, value, level=level)
+        except BaseException as exc:  # health: allow BLE001 -- scrubbed and re-raised below
+            clear_the_value(exc, value)
+            raise
+
+    monkeypatch.setattr(LocalSecretStore, "set", set)
+
+
+def local_failure_keeps_the_escaped_secret(monkeypatch):
+    """The failed write clears the raw value from every surviving frame but keeps the
+    serialized, escaped form — the multiline secret the way a writer quotes it into a line —
+    bound in a frame of a failure chained to the error: only a check that renders frame
+    locals under their escaped forms too catches it."""
+    from hermes_secret_port_local import LocalSecretStore
+    original = LocalSecretStore.set
+
+    def set(self, name, value, *, level):
+        try:
+            return original(self, name, value, level=level)
+        except OSError:
+            def the_writers_serialized_line():
+                line = json.dumps(value)  # the value, escaped the way a writer serialized it
+                raise OSError(f"the write failed part-way ({len(line)} characters in)")
+
+            try:
+                the_writers_serialized_line()
+            except OSError as chained:
+                fresh = OSError("the credential write failed")
+                fresh.__context__ = chained
+                del value
+                raise fresh
+
+    monkeypatch.setattr(LocalSecretStore, "set", set)
+
+
+def local_failure_keeps_the_original_failure_as_context(monkeypatch):
+    """The failed write raises its own fresh error with clean frames of its own, but leaves
+    the original failure chained to it as context — the original's traceback still holds the
+    value in the writer's frames, so only a check that walks the whole chained graph catches
+    it."""
+    from hermes_secret_port_local import LocalSecretStore
+    original = LocalSecretStore.set
+
+    def set(self, name, value, *, level):
+        try:
+            return original(self, name, value, level=level)
+        except OSError:
+            def the_writers_last_frame():
+                held = value  # the writer's own frame, still holding the caller's value
+                raise OSError(f"the write failed part-way ({len(held)} characters in)")
+
+            try:
+                the_writers_last_frame()
+            except OSError as chained:
+                fresh = OSError("the credential write failed")
+                fresh.__context__ = chained  # the original failure rides along, frames and all
+                del value
+                raise fresh
+
+    monkeypatch.setattr(LocalSecretStore, "set", set)
+
+
 def reference_reads_ignore_tenant(monkeypatch):
     """The reference pin keeps the agent half but drops the tenant: another tenant naming the
     agent reads its secrets."""
@@ -359,6 +459,15 @@ MUTANTS = {
         _local("test_no_failure_traceback_frame_holds_the_value_or_record")),
     "local_write_failure_keeps_the_value_in_the_writer_frames": (
         local_write_failure_keeps_the_value_in_the_writer_frames,
+        _local("test_no_failure_traceback_frame_holds_the_value_or_record")),
+    "local_failure_clears_the_callers_own_binding": (
+        local_failure_clears_the_callers_own_binding,
+        _local("test_a_failed_write_from_an_error_handler_leaves_the_callers_bindings_untouched")),
+    "local_failure_keeps_the_escaped_secret": (
+        local_failure_keeps_the_escaped_secret,
+        _local("test_no_failure_traceback_frame_holds_the_value_or_record")),
+    "local_failure_keeps_the_original_failure_as_context": (
+        local_failure_keeps_the_original_failure_as_context,
         _local("test_no_failure_traceback_frame_holds_the_value_or_record")),
     "reference_reads_ignore_tenant": (
         reference_reads_ignore_tenant,

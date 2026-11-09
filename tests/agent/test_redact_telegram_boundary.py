@@ -116,3 +116,13 @@ def test_cron_stdout_preserves_identity_and_masks_adjacent_token(tmp_path, monke
     assert "### Current output" in outcome.context_block
     assert identity in outcome.context_block
     assert token not in outcome.context_block
+
+
+@pytest.mark.parametrize("mode", ["normal", "code", "terminal", "egress"])
+@pytest.mark.parametrize("color", ["\x1b[32m", "\x1b[1;32m", "\x1b[0m"])
+def test_token_right_after_an_ansi_color_code_is_masked(color, mode):
+    token = "987654321:" + "Qa_7-" * 7
+    for payload in (color + token + "\x1b[0m", json.dumps(color + token)):
+        result = _redact(payload, mode)
+        assert "Qa_7-" not in result
+        assert "987654321:***" in result

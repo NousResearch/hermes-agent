@@ -675,8 +675,8 @@ def _candidates(root: Path, paths: list[str], plan: Plan) -> list[str]:
     needle = re.compile("|".join(re.escape(w) for w in sorted(words, key=len, reverse=True)))
     out = []
     for path in listed:
-        if PurePosixPath(path).parts[-2:] == ("compat", "moves.py"):
-            continue
+        if PurePosixPath(path).parts[-2:] == ("compat", "moves.py") or path.startswith("scripts/move/"):
+            continue  # old names as data: the MOVES table, and the exclusion anchors and move tools themselves
         file = root / path
         if not file.is_file() or (PurePosixPath(path).suffix not in ("", ".py")):
             continue

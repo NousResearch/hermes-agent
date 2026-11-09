@@ -288,6 +288,55 @@ def test_mentions_select_handles_or_everyone(
     assert _next_task(room, db).member.profile == expected_profile
 
 
+@pytest.mark.parametrize(
+    ("text", "expected_profile"),
+    [
+        ("@build: please inspect this", "build"),
+        ("Thanks @build.", "build"),
+        ("@review... take a look", "review"),
+        ("@BUILD: ask about the release", "build"),
+    ],
+)
+def test_a_mention_written_in_prose_addresses_its_member(
+    room_db: tuple[Path, dict],
+    text: str,
+    expected_profile: str,
+):
+    """#151802: the capture includes the sentence punctuation after a handle, so an addressed member was
+    never cited and the room fell back to naming nobody (or to the default first member)."""
+    db, room = room_db
+    _append_user(db, event_id="user-1", text=text)
+
+    assert _next_task(room, db).member.profile == expected_profile
+
+
+@pytest.mark.parametrize("text", ["@everyone.", "@all:", "@Everyone please"])
+def test_a_broadcast_handle_written_in_prose_addresses_the_room(text: str):
+    """#151802: `@everyone.`/`@all:` captured the punctuation and named no broadcast handle."""
+    members = discussion.validate_roster(MEMBERS, local_profiles=LOCAL_PROFILES)
+
+    assert discussion.resolve_mentions((text,), members, default_all=False) == members
+
+
+@pytest.mark.parametrize(
+    ("handle", "text"),
+    [("docs.trailing.", "@docs.trailing. please"), ("docs.colon:", "@docs.colon: please")],
+)
+def test_a_handle_that_ends_in_punctuation_itself_still_resolves(handle: str, text: str):
+    """The prose trim must not hide a roster handle whose own last character is `.` or `:`."""
+    extra = discussion.DiscussionMember("member-extra", "docs", handle)
+    members = (*discussion.validate_roster(MEMBERS, local_profiles=LOCAL_PROFILES), extra)
+
+    assert discussion.resolve_mentions((text,), members, default_all=False) == (extra,)
+
+
+def test_a_longer_non_member_name_does_not_resolve_a_member():
+    """No prefix matching: `@build-x:` names nobody, and must not cite `build`."""
+    members = discussion.validate_roster(MEMBERS, local_profiles=LOCAL_PROFILES)
+
+    assert discussion.resolve_mentions(("@build-x: hi",), members, default_all=False) == ()
+
+
 def test_member_mention_joins_the_next_round_not_the_current_round(
     room_db: tuple[Path, dict],
 ):
@@ -303,6 +352,21 @@ def test_member_mention_joins_the_next_round_not_the_current_round(
     assert second.round_index == 1
     assert "@research lead this" in second.payload["prompt"]
     assert "@build can add the implementation detail." in second.payload["prompt"]
+
+
+def test_a_member_mention_written_in_prose_joins_the_next_round(
+    room_db: tuple[Path, dict],
+):
+    """#151802: a peer handed work on as `@build: ...` was never cited, so no next round was scheduled and
+    the room settled after the reply that addressed somebody."""
+    db, room = room_db
+    _append_user(db, event_id="user-1", text="@research lead this")
+
+    first = _settle_next(room, db, text="@build: can add the implementation detail.")
+    second = _next_task(room, db)
+
+    assert (first.member.profile, first.round_index) == ("research", 0)
+    assert (second.member.profile, second.round_index) == ("build", 1)
 
 
 def test_member_control_frames_are_relabelled_before_the_next_prompt(

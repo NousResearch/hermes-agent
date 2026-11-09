@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from functools import partial
 from typing import Any, Literal
@@ -39,6 +39,7 @@ Payload = Mapping[str, Any]
 DecisionStatus = Literal["idle", "task", "settled", "bounded", "route"]
 TerminalKind = Literal["settled", "failed", "cancelled", "deferred"]
 
+_BROADCAST_HANDLES = frozenset({"all", "everyone"})  # reserved mention handles: they address the whole room
 _MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._:-]*)", re.IGNORECASE)
 # Openers of Hermes' own control frames (agent.prompt_builder.CONTROL_FRAME_OPENERS: the steer marker, the
 # compaction handoff, runtime/system notes, background-process and prior-context frames). A member reply is
@@ -304,7 +305,7 @@ def validate_roster(value: Any, *, local_profiles: Iterable[str]) -> tuple[Discu
     known_profiles = {_identifier(profile, label="local profile") for profile in local_profiles}
     members: list[DiscussionMember] = []
     targets: set[str] = set()
-    handles: set[str] = {"all", "everyone"}  # reserved mention handles
+    handles: set[str] = set(_BROADCAST_HANDLES)
     member_ids: set[str] = set()
     for index, raw in enumerate(value):
         member = _validate_member(raw, index, known_profiles)
@@ -343,6 +344,24 @@ def is_pass_text(value: Any) -> bool:
     return not text or re.fullmatch(r"\(?\s*pass\s*\)?\.?", text, re.IGNORECASE) is not None
 
 
+def mention_handles(text: Any, known: Iterable[str]) -> Iterator[str]:
+    """Yield the known handle every ``@`` token in ``text`` names, tolerating prose punctuation (#151802).
+
+    ``common.IDENTIFIER_RE`` admits ``.`` and ``:`` inside a handle, so a mention written in prose captures
+    its trailing punctuation too (``@build: please``, ``Thanks @build.``) and then matched no roster member,
+    which settled a room that had just addressed a peer. Each capture is matched verbatim first — a handle
+    may legitimately end in either character — then with trailing ``.``/``:`` trimmed. ``@all``/``@everyone``
+    always address the whole room.
+    """
+    handles = {handle.casefold() for handle in known} | _BROADCAST_HANDLES
+    for match in _MENTION_RE.finditer(str(text or "")):
+        handle = match.group(1).casefold()
+        while handle and handle not in handles and handle[-1] in ".:":
+            handle = handle[:-1]
+        if handle in handles:
+            yield handle
+
+
 def resolve_mentions(
     texts: Iterable[str], members: Sequence[DiscussionMember], *, default_all: bool = True
 ) -> tuple[DiscussionMember, ...]:
@@ -351,11 +370,10 @@ def resolve_mentions(
     mentioned: set[str] = set()
     everyone = False
     for text in texts:
-        for match in _MENTION_RE.finditer(str(text or "")):
-            handle = match.group(1).casefold()
-            if handle in {"all", "everyone"}:
+        for handle in mention_handles(text, by_handle):
+            if handle in _BROADCAST_HANDLES:
                 everyone = True
-            elif handle in by_handle:
+            else:
                 mentioned.add(handle)
     if everyone or (default_all and not mentioned):
         return tuple(members)

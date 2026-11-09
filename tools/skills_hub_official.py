@@ -273,7 +273,8 @@ class OptionalSkillSource(SkillSource):
             except (OSError, UnicodeDecodeError):
                 continue
             fm = _parse_frontmatter(content)
-            tags = _hermes_tags(fm)
+            # Top-level ``tags:`` is an accepted spelling (skills/AGENTS.md) — mirror GitHubSource.inspect().
+            tags = _hermes_tags(fm) or (fm["tags"] if isinstance(fm.get("tags"), list) else [])
             results.append(self._meta(parent.relative_to(self._optional_dir).as_posix(), fm.get("name", parent.name),
                                       fm.get("description", "")[:200], tags if isinstance(tags, list) else []))
         return results

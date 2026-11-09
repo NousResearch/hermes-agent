@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 _MAX_ENGINES_NAMED = 10
 
 
-def _unresponsive_engines(data: Dict[str, Any]) -> List[Dict[str, str]]:
+def _unresponsive_engines(data: dict[str, Any]) -> list[dict[str, str]]:
     """SearXNG's ``unresponsive_engines`` is a list of ``[engine, reason]`` pairs
     (searx/webutils.py ``get_translated_errors``). Anything that is not a >=2-item
     list/tuple with a truthy first element is ignored, so a future shape change

@@ -18,8 +18,8 @@ from agent.backend_identity import (
 )
 
 
-def _id(provider="", model="", base_url=""):
-    return BackendIdentity.build(provider=provider, model=model, base_url=base_url)
+def _id(provider="", model="", base_url="", api_key=None):
+    return BackendIdentity.build(provider=provider, model=model, base_url=base_url, api_key=api_key)
 
 
 class TestSameDeployment:
@@ -128,3 +128,76 @@ class TestUnknownAxesNeverStrand:
         failed = _id("custom")
         candidate = _id("custom", "some-model")
         assert not should_skip_candidate(candidate, failed, FailureScope.MODEL)
+
+
+class TestCredentialAxis:
+    """#151321: two accounts on one URL+model are two quotas, not one backend."""
+
+    def test_incident_151321_second_account_is_not_the_same_deployment(self):
+        """A 429 against account A must not skip account B on the same endpoint."""
+        failed = _id("custom", "agnes-3.0-flash", "https://apihub.agnes-ai.com/v1", api_key="sk-account-a")
+        second = _id("custom", "agnes-3.0-flash", "https://apihub.agnes-ai.com/v1", api_key="sk-account-b")
+        assert not same_deployment(second, failed)
+        assert not should_skip_candidate(second, failed, FailureScope.MODEL)
+
+    def test_incident_151321_same_key_is_still_a_duplicate(self):
+        """The same account listed twice must still be skipped — no wasted round trip."""
+        failed = _id("custom", "agnes-3.0-flash", "https://apihub.agnes-ai.com/v1", api_key="sk-account-a")
+        dupe = _id("custom", "agnes-3.0-flash", "https://apihub.agnes-ai.com/v1", api_key="sk-account-a")
+        assert same_deployment(dupe, failed)
+        assert should_skip_candidate(dupe, failed, FailureScope.MODEL)
+
+    def test_incident_151321_unknown_credential_stays_conservative(self):
+        """An unknown fingerprint proves nothing: the historical answer (skip) survives."""
+        failed = _id("custom", "agnes-3.0-flash", "https://apihub.agnes-ai.com/v1")
+        keyed = _id("custom", "agnes-3.0-flash", "https://apihub.agnes-ai.com/v1", api_key="sk-account-b")
+        assert same_deployment(keyed, failed)
+        assert should_skip_candidate(keyed, failed, FailureScope.MODEL)
+        assert same_deployment(failed, keyed)
+        assert same_deployment(_id("custom", "m"), _id("custom", "m"))
+
+    def test_incident_151321_distinct_keys_are_separate_credential_surfaces(self):
+        """A 401 on one account says nothing about another account of the same provider."""
+        failed = _id("custom", "agnes-3.0-flash", "", api_key="sk-account-a")
+        second = _id("custom", "agnes-3.0-flash", "", api_key="sk-account-b")
+        assert not same_credential_surface(second, failed)
+        assert not should_skip_candidate(second, failed, FailureScope.CREDENTIAL)
+
+    def test_incident_151321_same_key_shares_the_credential_surface(self):
+        failed = _id("custom", "agnes-3.0-flash", "", api_key="sk-account-a")
+        dupe = _id("custom", "agnes-3.0-flash", "", api_key="sk-account-a")
+        assert same_credential_surface(dupe, failed)
+
+    def test_endpoint_scope_ignores_credentials(self):
+        """DNS/refused is about the host: two accounts on one host share the endpoint."""
+        failed = _id("custom", "m", "http://box1:1234/v1", api_key="sk-account-a")
+        second = _id("custom", "m", "http://box1:1234/v1", api_key="sk-account-b")
+        assert same_endpoint(second, failed)
+        assert should_skip_candidate(second, failed, FailureScope.ENDPOINT)
+
+
+class TestCredentialFingerprint:
+    def test_fingerprint_is_not_the_key(self):
+        from agent.backend_identity import credential_fingerprint
+
+        key = "sk-live-account-a-0123456789"
+        fingerprint = credential_fingerprint(key)
+        assert fingerprint and fingerprint != key
+        assert key not in fingerprint
+        # The identity keeps only the digest: a repr/log line cannot leak the key.
+        assert key not in repr(_id("custom", "m", api_key=key))
+
+    def test_unknown_or_unhashable_credentials_are_blank(self):
+        from agent.backend_identity import credential_fingerprint
+
+        assert credential_fingerprint(None) == ""
+        assert credential_fingerprint("") == ""
+        assert credential_fingerprint("   ") == ""
+        # Entra ID resolves a callable per call; it is not a static key.
+        assert credential_fingerprint(lambda: "sk-rotating") == ""
+        assert credential_fingerprint(12345) == ""
+
+    def test_whitespace_is_not_a_second_account(self):
+        from agent.backend_identity import credential_fingerprint
+
+        assert credential_fingerprint(" sk-a ") == credential_fingerprint("sk-a")

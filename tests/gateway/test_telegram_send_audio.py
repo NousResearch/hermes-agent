@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
+import plugins.platforms.telegram.adapter as telegram_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 _needs_ffmpeg = pytest.mark.skipif(
@@ -136,3 +137,23 @@ async def test_mp3_tall_cover_thumbnail_fits_telegram_320_box(tmp_path):
     assert result.success is True
     (width, height), = dims
     assert width <= 320 and height <= 320 and height > width
+
+
+@pytest.mark.asyncio
+async def test_mp3_player_fields_reach_send_audio_and_the_cover_is_removed(tmp_path, monkeypatch):
+    """Runs without ffmpeg (as on CI): whatever the tag reader found reaches sendAudio, then the cover is deleted."""
+    track, cover = tmp_path / "song.mp3", tmp_path / "cover.jpg"
+    track.write_bytes(b"not really an mp3")
+    cover.write_bytes(b"\xff\xd8 cover")
+    monkeypatch.setattr(telegram_adapter, "audio_player_fields", lambda _path: {
+        "performer": "Hermes Band", "title": "Probe Song", "thumbnail_path": str(cover)})
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._bot = MagicMock()
+    adapter._bot.send_audio = AsyncMock(return_value=MagicMock(message_id=12))
+
+    result = await adapter.send_voice("123", str(track), caption="track")
+
+    assert result.success is True
+    kwargs = adapter._bot.send_audio.await_args.kwargs
+    assert (kwargs["performer"], kwargs["title"], kwargs["thumbnail"]) == ("Hermes Band", "Probe Song", str(cover))
+    assert not cover.exists()

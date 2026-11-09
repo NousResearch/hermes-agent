@@ -22,7 +22,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import re
+import sqlite3
 import subprocess
 import sys
 import time
@@ -163,6 +165,34 @@ def render_table(results: list[TargetResult]) -> str:
     return "\n".join(rows)
 
 
+def host_line() -> str:
+    """One-line host description for baseline tables (OS, arch, Python, SQLite)."""
+    system = platform.system()
+    if system == "Darwin":
+        os_name = f"macOS {platform.mac_ver()[0]}"
+    elif system == "Linux":
+        try:
+            os_name = platform.freedesktop_os_release().get("PRETTY_NAME", "Linux")
+        except OSError:
+            os_name = "Linux"
+    else:
+        os_name = f"{system} {platform.release()}"
+    return (
+        f"{os_name} {platform.machine()}, Python {platform.python_version()}, "
+        f"SQLite {sqlite3.sqlite_version}, {os.cpu_count() or 1} CPUs"
+    )
+
+
+def render_markdown(results: list[TargetResult]) -> str:
+    """Host line, results table, and failing node ids, ready for a doc or CI summary."""
+    parts = [f"Measured on {host_line()}:", "", render_table(results)]
+    failing = [(r.target, node) for r in results for node in r.failures]
+    if failing:
+        parts += ["", "Failures:", ""]
+        parts += [f"- `{target}`: `{node}`" for target, node in failing]
+    return "\n".join(parts) + "\n"
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     extra: list[str] = []
@@ -175,6 +205,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("targets", nargs="*", help="test paths (default: fast baseline set)")
     parser.add_argument("--timeout", type=int, default=900, help="timeout in seconds per pytest process")
     parser.add_argument("--json", type=Path, help="also write results as JSON to this path")
+    parser.add_argument(
+        "--markdown",
+        type=Path,
+        help="also append the host line + results table to this path (e.g. $GITHUB_STEP_SUMMARY)",
+    )
     parser.add_argument(
         "--per-dir",
         action="store_true",
@@ -205,6 +240,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         payload = [dict(asdict(r), status=r.status) for r in results]
         args.json.write_text(json.dumps(payload, indent=2) + "\n")
+    if args.markdown:
+        with args.markdown.open("a", encoding="utf-8") as fh:
+            fh.write(render_markdown(results))
     if not results:
         return 1
     return 0 if all(r.status in ("pass", "no tests") for r in results) else 1

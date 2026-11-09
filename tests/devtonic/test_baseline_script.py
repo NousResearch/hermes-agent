@@ -86,10 +86,27 @@ def test_run_isolated_aggregates_per_file_results(baseline, monkeypatch):
 
 def test_main_runs_real_target_and_writes_json(baseline, tmp_path):
     out = tmp_path / "out.json"
+    md = tmp_path / "summary.md"
+    md.write_text("existing\n")
     # A single passing node from this file, run through the real subprocess path.
     node = f"{Path(__file__).resolve().relative_to(baseline.REPO_ROOT)}::test_status_mapping"
-    rc = baseline.main([node, "--json", str(out), "--timeout", "300"])
+    rc = baseline.main([node, "--json", str(out), "--markdown", str(md), "--timeout", "300"])
     assert rc == 0
     data = json.loads(out.read_text())
     assert data[0]["status"] == "pass"
     assert data[0]["counts"]["passed"] == 1
+    # --markdown appends (GITHUB_STEP_SUMMARY semantics) rather than overwriting.
+    text = md.read_text()
+    assert text.startswith("existing\n")
+    assert "| pass | 1 | 0 | 0 | 0 |" in text
+
+
+def test_render_markdown_includes_host_and_failures(baseline):
+    ok = baseline.TargetResult("tests/a", 0, 1.0, {"passed": 2}, "", [])
+    bad = baseline.TargetResult("tests/b", 1, 1.0, {"failed": 1}, "", ["tests/b/test_x.py::t"])
+    text = baseline.render_markdown([ok, bad])
+    first = text.splitlines()[0]
+    assert first.startswith("Measured on ") and "Python " in first and "SQLite " in first
+    assert "| `tests/a` | pass |" in text
+    assert "- `tests/b`: `tests/b/test_x.py::t`" in text
+    assert "Failures:" not in baseline.render_markdown([ok])

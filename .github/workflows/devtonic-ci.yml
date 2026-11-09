@@ -14,6 +14,15 @@ jobs:
         run: uv sync --frozen --group dev --group test
       - name: Import smoke
         run: uv run python -c "import run_agent, cli, model_tools, toolsets; print('ok')"
+      - name: Baseline (default targets, one process per file)
+        run: uv run python scripts/devtonic/baseline.py --json baseline-linux.json --markdown "$GITHUB_STEP_SUMMARY"
+      - name: Upload baseline results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-linux
+          path: baseline-linux.json
+          if-no-files-found: ignore
       - name: Lint changed Python files
         if: github.event_name == 'pull_request'
         run: |

@@ -155,6 +155,10 @@ def _installed_units() -> list[tuple[str, str, str]]:
     return found
 
 
+def _on_macos() -> bool:
+    return sys.platform == "darwin"
+
+
 def _launchd_plists() -> dict[str, tuple[str, Optional[str], list[str]]]:
     """``label -> (plist path, EnvironmentVariables.HERMES_HOME, ProgramArguments)`` across the
     launchd plist dirs (read-only)."""
@@ -311,8 +315,12 @@ def collect_backends() -> list[BackendItem]:
     from hermes_cli.main_dashboard import _loaded_launchd_backend_jobs
     from hermes_constants import get_hermes_home
     own_home = str(get_hermes_home())
-    plists = _launchd_plists()  # no plist dir off macOS
-    launchd_jobs = _loaded_launchd_backend_jobs() + _nix_launcher_jobs(plists)  # empty off macOS
+    launchd_jobs = _loaded_launchd_backend_jobs()  # empty off macOS
+    # ``_launchd_plist_dirs`` returns its dirs on every OS, so only scan them, and only look
+    # for Nix launcher jobs (``launchctl print``), when launchd can exist.
+    plists = _launchd_plists() if launchd_jobs or _on_macos() else {}
+    if _on_macos():
+        launchd_jobs = launchd_jobs + _nix_launcher_jobs(plists)
     seen_units: set[str] = set()
     items = [_classify_running(pid, cmd, launchd_jobs=launchd_jobs, plists=plists,
                                ssh_pids=_lock_owned_serve_pids(), desktop_pids=_exclude_pids_from_env(),

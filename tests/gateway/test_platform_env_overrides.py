@@ -40,3 +40,40 @@ def test_env_override_secrets_stay_in_terminal_secret_blocklist():
                if name.upper().endswith(PLATFORM_SECRET_ENV_SUFFIXES)}
     assert "WEIXIN_TOKEN" in secrets  # the rows were actually read
     assert sorted(secrets - _ADAPTER_SECRET_ENV) == []
+
+
+def test_enable_plugin_platform_sets_token_and_api_key():
+    """_enable_plugin_platform must bridge env-seeded token/api_key onto PlatformConfig."""
+    from gateway.config import GatewayConfig, PlatformConfig, Platform
+    from gateway.config_env import _enable_plugin_platform
+    from gateway.platform_registry import platform_registry, PlatformEntry
+
+    entry_name = "test_custom_creds_platform"
+    # Register temporary entry in platform_registry so Platform(entry_name) accepts it
+    entry = PlatformEntry(
+        name=entry_name,
+        label="Test Platform",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        env_enablement_fn=lambda: {
+            "token": "test-token-xyz",
+            "api_key": "test-api-key-123",
+            "home_channel": {"chat_id": "998877", "name": "TestHome"},
+        },
+    )
+    platform_registry.register(entry)
+    try:
+        cfg = GatewayConfig()
+        _enable_plugin_platform(cfg, entry)
+
+        plat = Platform(entry.name)
+        pcfg = cfg.platforms.get(plat)
+        assert pcfg is not None
+        assert pcfg.enabled is True
+        assert pcfg.token == "test-token-xyz"
+        assert pcfg.api_key == "test-api-key-123"
+        assert pcfg.home_channel is not None
+        assert pcfg.home_channel.chat_id == "998877"
+    finally:
+        platform_registry._entries.pop(entry_name, None)
+

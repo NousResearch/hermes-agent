@@ -105,20 +105,34 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-def _telegram_bot(token):
-    """Bot honouring TELEGRAM_PROXY (standalone sends time out where api.telegram.org is
-    blocked); falls back to a direct connection."""
+def _telegram_bot(token, base_url=None, proxy_var=None, target_hosts=None):
+    """Bot honouring TELEGRAM_PROXY (or custom proxy_var/base_url); falls back to a direct connection."""
     from telegram import Bot
+    from os import environ as _env
+    from gateway.platforms.base import resolve_proxy_url
+    from telegram.request import HTTPXRequest
+
+    proxy_var = proxy_var or "TELEGRAM_PROXY"
+    targets = target_hosts or ["api.telegram.org"]
+
     try:
-        from gateway.platforms.base import resolve_proxy_url
-        proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
-        if not proxy:
-            return Bot(token=token)
-        from telegram.request import HTTPXRequest
-        logger.info("send_message: standalone Telegram send routed through proxy %s", proxy)
-        return Bot(token=token, request=HTTPXRequest(proxy=proxy), get_updates_request=HTTPXRequest(proxy=proxy))
+        proxy = resolve_proxy_url(proxy_var, target_hosts=targets)
+        req = HTTPXRequest(proxy=proxy) if proxy else None
+        if proxy:
+            logger.info("send_message: standalone send routed through proxy %s", proxy)
+        kwargs = {}
+        if base_url:
+            kwargs["base_url"] = base_url
+            kwargs["base_file_url"] = base_url
+        if req:
+            kwargs["request"] = req
+            kwargs["get_updates_request"] = req
+        return Bot(token=token, **kwargs)
     except Exception as proxy_err:
-        logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", proxy_err)
+        logger.warning("send_message: failed to attach proxy (%s), falling back to direct connection", proxy_err)
+
+    if base_url:
+        return Bot(token=token, base_url=base_url, base_file_url=base_url)
     return Bot(token=token)
 
 
@@ -256,7 +270,7 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, base_url=None, proxy_var=None, target_hosts=None):
     """One-shot Telegram Bot API send; parse failures fall back to plain text."""
     if str(thread_id or "").strip() and not str(thread_id).strip().lstrip("-").isdigit():
         # ``<chat>:<topic name>`` parses for every caller, but only the live gateway's cron router
@@ -266,7 +280,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                       "through a cron job while the gateway is running.")
     try:
         formatted, send_parse_mode, _has_html = _telegram_format(message)
-        bot = _telegram_bot(token)
+        bot = _telegram_bot(token, base_url=base_url, proxy_var=proxy_var, target_hosts=target_hosts)
         from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
         from gateway.platforms.base import BasePlatformAdapter, utf16_len
         # Telegram accepts a numeric chat_id OR an @username string; never force-int.

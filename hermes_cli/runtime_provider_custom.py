@@ -402,6 +402,20 @@ def _endpoint_identity(base_url: str) -> Optional[str]:
     return None
 
 
+def empty_provider_identity(base_url: Optional[str], model: Optional[str]) -> Optional[str]:
+    """The entry a row with a model but no provider ran on (#132648): the endpoint's owner when it can
+    serve the model, else the entry that declares the model. A row can carry the main slot's URL from
+    the turns that already went to the wrong provider."""
+    target = str(model or "").strip().lower()
+    url = _route_key(base_url)
+    if url:
+        identity = _find_custom_identity(lambda entry: _route_key(_entry_url(entry)) == url and (
+            _entry_serves_model(entry, target) or not any(entry.get(k) for k in ("model", "default_model", "models"))))
+        if identity:
+            return identity
+    return find_custom_provider_identity_by_model(target) if target else None
+
+
 def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider: Optional[str] = None,
                               model: Optional[str] = None, requested: Optional[str] = None) -> Optional[str]:
     """Recover the durable menu identity for a bare custom provider. Match a configured

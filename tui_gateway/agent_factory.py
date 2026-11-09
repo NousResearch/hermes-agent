@@ -552,10 +552,13 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         resolve_kwargs = {}
         provider_norm = str(requested_provider or "").strip().lower()
         # An empty provider names no route either; once the main slot targets another model it 404s (#132648).
-        if provider_norm == "custom" or (not provider_norm and _config_model_target()[0] != model):
+        if provider_norm == "custom":
             from hermes_cli.runtime_provider import canonical_custom_identity
             if recovered := canonical_custom_identity(base_url=override_base_url or None, model=model or None):
                 requested_provider = recovered
+        elif not provider_norm and _config_model_target()[0] != model:
+            from hermes_cli.runtime_provider_custom import empty_provider_identity
+            requested_provider = empty_provider_identity(override_base_url, model) or requested_provider
         if provider_norm == "custom" and override_base_url:
             # Failing identity recovery, still hand base_url to the direct-alias branch so pool/env credentials resolve.
             resolve_kwargs["explicit_base_url"] = override_base_url

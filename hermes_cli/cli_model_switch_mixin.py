@@ -102,8 +102,11 @@ def _heal_bare_custom_provider(provider, *, base_url, model):
     (#132648): recover the durable ``custom:<name>`` menu key from the endpoint or model, else None."""
     if str(provider or "").strip().lower() not in ("", "custom"):
         return provider
-    if not str(provider or "").strip() and _main_slot_serves(model):
-        return None
+    if not str(provider or "").strip():
+        if _main_slot_serves(model):
+            return None
+        from hermes_cli.runtime_provider_custom import empty_provider_identity
+        return empty_provider_identity(base_url, model)
     try:
         # Heal bare "custom" persisted by older builds / gateway turns: it's the resolved billing class, not
         # a routable identity. (Stricter than the TUI gateway's recovery, which keeps bare "custom" when a

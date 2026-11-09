@@ -41,6 +41,24 @@ function onGatewayReady(ready: GatewayEvent<'gateway.ready'>['payload'], activeS
   }
 }
 
+// A shared backend watches every served profile database, but its global
+// notification carries the socket's profile rather than the changed store's.
+// Invalidate within this connection; transcript reads remain owner-scoped.
+function handleSessionChange(event: GatewayEventContext['event']): boolean {
+  if (event.type !== 'sessions.changed') {
+    return false
+  }
+
+  if (
+    registryBackendScopeKey(event.connectionId ?? null, null) ===
+    registryBackendScopeKey(activeGatewayConnectionId(), null)
+  ) {
+    notifySessionsChanged()
+  }
+
+  return true
+}
+
 /** gateway.ready / setup.ready / skin.changed / change-watcher broadcasts / session.reclaimed. */
 export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, fromActiveSource } = ctx
@@ -75,17 +93,7 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  // The shared backend watches every served profile database, but global
-  // notifications carry the socket's profile, not the changed store's profile.
-  // Invalidate within this connection; transcript reads remain owner-scoped.
-  if (event.type === 'sessions.changed') {
-    if (
-      registryBackendScopeKey(event.connectionId ?? null, null) ===
-      registryBackendScopeKey(activeGatewayConnectionId(), null)
-    ) {
-      notifySessionsChanged()
-    }
-
+  if (handleSessionChange(event)) {
     return true
   }
 

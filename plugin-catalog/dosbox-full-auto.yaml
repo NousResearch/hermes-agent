@@ -12,4 +12,3 @@ capabilities:
   requires_env:
     - VLLM_API_KEY
 tier: community
-maintainer: papa

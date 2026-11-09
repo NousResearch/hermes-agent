@@ -784,7 +784,9 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
                     detail=_NOTIFY_ONLY_DETAIL), record, label))
             command = _delivery_command(argv, dm_file, stdin_file=False, profile_home=profile_home, author=author)
             notification = json.loads(_spawn_delivery(command, label, delivery_id=record["delivery_id"],
-                                                      task_id=task_id, agent=agent, wake=wake))
+                                                      task_id=task_id, agent=agent, wake=wake,
+                                                      bot_reply_receipt={"home": str(profile_home),
+                                                                         "delivery_id": record["delivery_id"]}))
             result = dict(status=record["status"], delivery_id=record["delivery_id"], to=label,
                           detail="Durably queued for the live Bot Chat owner. Do NOT wait or resend; finish your turn.")
             if notification.get("error"):
@@ -827,7 +829,8 @@ def _with_target_state(result: dict, record: dict, label: str) -> dict:
 
 def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, delivery_id: Optional[str] = None,
                     task_id: Optional[str], agent: Any, wake: Any = "notify",
-                    completion_chars: int = REPLY_COMPLETION_CHARS) -> str:
+                    completion_chars: int = REPLY_COMPLETION_CHARS,
+                    bot_reply_receipt: Optional[dict[str, str]] = None) -> str:
     """Launch the cleanup-owning runner and transfer file ownership on ack. ``dm_file``
     is None for relay deliveries (the waiter watches a reply file; envelope artifacts
     are owned/swept by ``tools/bot_relay.py``), which pass the envelope id as ``delivery_id``
@@ -844,7 +847,7 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, 
 
         raw = terminal_tool(command, background=True, notify_on_complete=wake != "none", task_id=task_id,
                             workdir=str(Path(__file__).resolve().parent.parent), _host_local=True,
-                            _completion_output_chars=completion_chars)
+                            _completion_output_chars=completion_chars, _bot_reply_receipt=bot_reply_receipt)
         try:
             parsed = json.loads(raw)
         except (ValueError, TypeError):

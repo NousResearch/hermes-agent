@@ -69,7 +69,7 @@ def prepare_result(row, response, outcome, result=None):
     return outcome, _redacted(compact_result(result, user_message=row['payload'].get('text')))
 
 
-def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=None, transfers=None):
+def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=None, transfers=None, stopping=False):
     """Delivery failure cannot rewrite an already committed execution outcome.
 
     `result` is the exact structured result captured in-process; the managed
@@ -103,6 +103,10 @@ def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=No
         notice, display_metadata = refusal
     write = None if notice is None else (lambda conn, _current: close_discarded_turn(
         db, conn, row, notice, replace_after=row.get('transcript_mark'), display_metadata=display_metadata))
+    if outcome == 'interrupted' and stopping:
+        from gateway.session_bot_reply_recovery import close_with_saved_reply, saved_bot_reply
+        if reply := saved_bot_reply(row):
+            write = lambda conn, _current: close_with_saved_reply(db, conn, row, reply)
     settled = settle_session_input(db, epoch=epoch, admission_id=row['admission_id'],
         generation=row['generation'], outcome=outcome, result=stored, _transfers=transfers,
         _terminal_write=write)

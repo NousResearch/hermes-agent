@@ -42,6 +42,7 @@ def settle_recovered_unattended(db, epoch) -> int:
     """Boot recovery, right after ``recover_session_inputs`` fenced lost turns ``unknown`` and before
     any FIFO is scheduled: settle every unattended one. Synchronous; runs off the owner loop."""
     from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
+    from gateway.session_bot_reply_recovery import close_with_saved_reply, saved_bot_reply
     from gateway.session_ingress_media import release_admission_media
     from gateway.session_results import close_discarded_turn
     from hermes_state_runtime import RuntimeStoreError, _row, resolve_unknown_session_input
@@ -50,10 +51,17 @@ def settle_recovered_unattended(db, epoch) -> int:
             "SELECT * FROM session_admissions WHERE status='unknown' ORDER BY seq").fetchall()]
     settled = 0
     for row in _unattended_unknown(rows):
+        def close_lost(conn, lost):
+            if reply:
+                close_with_saved_reply(db, conn, row, reply)
+            else:
+                close_discarded_turn(db, conn, lost, AUTOMATION_INTERRUPTED_NOTICE)
+
         try:
+            reply = saved_bot_reply(row)
             resolve_unknown_session_input(
                 db, epoch=epoch, admission_id=row['admission_id'], generation=row['generation'],
-                _terminal_write=lambda conn, lost: close_discarded_turn(db, conn, lost, AUTOMATION_INTERRUPTED_NOTICE))
+                _terminal_write=close_lost)
         except RuntimeStoreError as exc:
             logger.warning('Lost automation admission %s left unknown: %s', row['admission_id'], exc.reason)
             continue

@@ -183,3 +183,78 @@ def test_unreadable_plugin_dir_is_skipped_by_every_manifest_scan(monkeypatch, tm
     assert loader_names == ["good"]
     assert listed_names == ["good"]
     assert caplog.text.count("Skipping unreadable plugin directory") == 2
+
+
+def test_discover_all_plugins_dedupes_hermes_prefixed_dir_and_entrypoint(monkeypatch, tmp_path):
+    """A plugin installed both as a user-dir copy (manifest name `hermes-mnemosyne`)
+    and as an entry point (`mnemosyne`) lists once, keeping the directory entry.
+    See https://github.com/NousResearch/hermes-agent/issues/139252."""
+    bundled_dir = tmp_path / "bundled"
+    user_dir = tmp_path / "user"
+    bundled_dir.mkdir()
+    plugin_dir = user_dir / "mnemosyne"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text("name: hermes-mnemosyne\nversion: 0.7.3\n")
+
+    dist = SimpleNamespace(
+        version="0.7.3",
+        metadata={"Summary": "Memory provider"},
+    )
+    entry_point = SimpleNamespace(
+        name="mnemosyne",
+        value="hermes_mnemosyne.plugin:register",
+        group="hermes_agent.plugins",
+        dist=dist,
+    )
+
+    monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: user_dir)
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_bundled_plugins_dir",
+        lambda: bundled_dir,
+    )
+    monkeypatch.setattr(
+        importlib.metadata,
+        "entry_points",
+        lambda: [entry_point],
+    )
+
+    entries = plugins_cmd._discover_all_plugins()
+
+    assert len(entries) == 1
+    name, version, _desc, source, _dir, key = entries[0]
+    assert name == "hermes-mnemosyne"
+    assert version == "0.7.3"
+    assert source == "user"
+    assert key == "hermes-mnemosyne"
+
+
+def test_discover_all_plugins_keeps_unrelated_entrypoint(monkeypatch, tmp_path):
+    """An entry point whose normalized name matches no directory plugin still lists."""
+    bundled_dir = tmp_path / "bundled"
+    user_dir = tmp_path / "user"
+    bundled_dir.mkdir()
+    user_dir.mkdir()
+
+    dist = SimpleNamespace(version="1.0", metadata={"Summary": ""})
+    entry_point = SimpleNamespace(
+        name="mnemosyne",
+        value="hermes_mnemosyne.plugin:register",
+        group="hermes_agent.plugins",
+        dist=dist,
+    )
+
+    monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: user_dir)
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_bundled_plugins_dir",
+        lambda: bundled_dir,
+    )
+    monkeypatch.setattr(
+        importlib.metadata,
+        "entry_points",
+        lambda: [entry_point],
+    )
+
+    entries = plugins_cmd._discover_all_plugins()
+
+    assert [e[0] for e in entries] == ["mnemosyne"]
+    assert entries[0][3] == "entrypoint"

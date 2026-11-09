@@ -1,0 +1,22 @@
+# Disclosure (catalog rule 13): ArtifactGuard is fully local and offline — it
+# makes no network calls, spawns no processes, stores no credentials and
+# collects no telemetry. It only reads artifact files the agent points it at
+# (tool arguments, or paths named in a load call intercepted by its hook).
+name: artifactguard
+repo: https://github.com/Mahgal/artifactguard
+sha: "1dbed03645fc54dee833446e4c78566934f07d40"
+description: "Pre-load security scan for serialized model artifacts (pickle, torch, joblib, numpy, safetensors): disassembles pickle opcodes and reports the globals an artifact would invoke — os.system, subprocess.Popen, builtins.eval — before any loader runs it. Includes a pre_tool_call guard that blocks loads of dangerous artifacts, and a directory audit for plugin bundles."
+maintainer: Mahgal
+tier: community
+category: tools
+requires_hermes: ">=0.19"
+version: "0.1.0"
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - artifact_scan
+    - artifact_audit_plugin
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

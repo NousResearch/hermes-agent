@@ -1,3 +1,13 @@
+name: provider-endpoint-healer
+title: Provider Endpoint Healer
+description: "Status and health listing for configured model endpoints. Probes endpoints on session start and reports via /peh."
+maintainer: Alvinagustus
+tier: community
+docs_url: https://github.com/Alvinagustus/provider-endpoint-healer
+capabilities:
+  tools: []
+  hooks:
+    - on_session_start
 repo: https://github.com/Alvinagustus/provider-endpoint-healer
-sha: df1ed250323f434089bc55d902b197282b4f5846
+sha: 6cd2009fd68aa459389926e0e2929c31df9d0979
 version: "0.1.0"

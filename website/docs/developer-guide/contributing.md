@@ -194,12 +194,12 @@ script or tool in this repository, so the commands below also work without
 | `just setup` | `setup-hermes.sh --runtime-only --test-environment` (PowerShell: `setup-hermes.ps1 -RuntimeOnly`) |
 | `just check` | `scripts/check`, every blocking lint check; `just check --only health` selects checks |
 | `just fix` | the pinned ruff with `--fix`, then `pnpm -r fix` |
-| `just test <paths>` | `scripts/run_tests.sh <paths>`; refuses to start with no path |
+| `just test <paths>` | `scripts/run_tests.sh <paths>`; refuses to start without a path, even with flags |
 | `just test-all` | the full Python suite |
-| `just js-install`, `just check-js`, `just test-js` | `pnpm install --frozen-lockfile`, `pnpm -r check`, `pnpm -r test` |
+| `just js-install`, `just check-js`, `just test-js` | `pnpm install --frozen-lockfile`, `pnpm -r check`, `pnpm -r test` (after building `@hermes/ink`) |
 | `just desktop`, `just tui` | the desktop and TUI dev servers |
 | `just docs-install`, `just docs-build` | the website's `npm ci` and `build:fast` |
-| `just lock` | `python -m pm.cli lock` after a dependency change |
+| `just lock` | `scripts/relock.sh`: refreshes `uv.lock` after a `pyproject.toml` change, then re-syncs |
 
 Recipes that run Python go through `scripts/run-in-hermes-env`, so they work in
 a shell that was never activated. A new developer command is a script under

@@ -12,7 +12,7 @@ setup:
 [group('setup')]
 [windows]
 setup:
-    pwsh -NoProfile -File setup-hermes.ps1 -RuntimeOnly
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File setup-hermes.ps1 -RuntimeOnly
 
 # Install the JS workspaces from pnpm-lock.yaml
 [group('setup')]
@@ -36,20 +36,21 @@ fix:
 check-js:
     pnpm -r check
 
-# Run the named test files or directories
+# Run the named test files or directories (pytest flags pass through)
 [group('test')]
 [positional-arguments]
-test +files:
-    scripts/run_tests.sh "$@"
+test +args:
+    scripts/run_tests.sh --require-paths "$@"
 
 # Run the full Python test suite (about 34k tests)
 [group('test')]
 test-all:
     scripts/run_tests.sh
 
-# Run every JS workspace's tests
+# Run every JS workspace's tests (builds @hermes/ink first, as the TUI's check does)
 [group('test')]
 test-js:
+    pnpm --dir ui-tui run build:ink
     pnpm -r test
 
 # Start the desktop app in development mode
@@ -83,10 +84,10 @@ docs-install:
 docs-build:
     npm run build:fast --prefix website
 
-# Re-lock every PM target after a dependency change
+# Refresh uv.lock after a pyproject.toml change, then re-sync the environment
 [group('deps')]
 lock:
-    scripts/run-in-hermes-env python -m pm.cli lock
+    scripts/relock.sh
 
 # Pre-commit: the pinned ruff with ruff.pre-commit.toml on the given files
 [group('hooks')]

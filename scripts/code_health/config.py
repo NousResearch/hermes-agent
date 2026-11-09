@@ -131,8 +131,8 @@ RULES: tuple[Rule, ...] = (
          " `agent.runtime_scope.bind_profile_scope(home)` moves home, secrets and terminal policy"
          " together (`turn=(session_id, turn_id)` for a turn); `bind_state(scope, ...)` for a host"
          " that binds less on purpose. A raw `set_hermes_home_override` / `set_secret_scope` /"
-         " `set_terminal_scope` / `install_profile_terminal_scope` call is migrated when its function"
-         " is next edited", "ast",
+         " `set_terminal_scope` / `install_profile_terminal_scope` call blocks only when it is new: an"
+         " existing call stays until someone migrates it", "ast",
          exclude=SINGLE_PROFILE + ("agent/runtime_scope.py", "hermes_constants.py",
                                    "agent/secret_scope.py", "tools/terminal_scope.py")),
     # Process identity.

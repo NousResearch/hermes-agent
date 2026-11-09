@@ -1095,7 +1095,7 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
         from tools.skills_tool import _clear_signature_memo
         _clear_signature_memo()
     except Exception:
-        pass
+        logger.debug("Could not clear the skills scan-signature memo", exc_info=True)
     try:
         if clear_snapshot:
             _skills_prompt_snapshot_path().unlink(missing_ok=True)

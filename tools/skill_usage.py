@@ -785,6 +785,7 @@ def _catalog_skill_dirs() -> Optional[list[tuple[str, Path, str]]]:
         from tools.skills_tool import cached_skill_rows
         rows = cached_skill_rows()
     except Exception:
+        logger.debug("Cached catalog rows unavailable for the provenance fast path", exc_info=True)
         return None
     if not rows:
         # Nothing scanned in this process yet (a plugin registration clears the catalog). Fill it
@@ -795,6 +796,7 @@ def _catalog_skill_dirs() -> Optional[list[tuple[str, Path, str]]]:
         try:
             rows = cached_skill_rows()
         except Exception:
+            logger.debug("Shared scan unavailable for the provenance fast path", exc_info=True)
             return None
     if not rows:
         return None

@@ -96,32 +96,57 @@ def test_a_skill_write_re_walks_inside_the_window(skills_root, monkeypatch):
 
 
 def test_the_config_key_is_honored(monkeypatch):
+    import agent.skill_utils as su
     import tools.skills_tool as st
-    import hermes_cli.config as cfg
 
-    monkeypatch.setattr(cfg, "load_config_readonly", lambda *a, **k: {"skills": {"signature_ttl_s": 3}})
+    monkeypatch.setattr(su, "_load_raw_config", lambda: {"skills": {"signature_ttl_s": 3}})
+    st._SIG_TTL.clear()
     assert st._signature_ttl_s() == 3.0
 
 
 def test_a_broken_config_falls_back_to_exact(monkeypatch):
+    import agent.skill_utils as su
     import tools.skills_tool as st
-    import hermes_cli.config as cfg
 
-    def boom(*a, **k):
+    def boom():
         raise RuntimeError("config unavailable")
 
     st._SIG_TTL.clear()
-    monkeypatch.setattr(cfg, "load_config_readonly", boom)
+    monkeypatch.setattr(su, "_load_raw_config", boom)
     assert st._signature_ttl_s() == 0.0
 
 
 def test_negative_values_are_treated_as_exact(monkeypatch):
+    import agent.skill_utils as su
     import tools.skills_tool as st
-    import hermes_cli.config as cfg
 
     st._SIG_TTL.clear()
-    monkeypatch.setattr(cfg, "load_config_readonly", lambda *a, **k: {"skills": {"signature_ttl_s": -5}})
+    monkeypatch.setattr(su, "_load_raw_config", lambda: {"skills": {"signature_ttl_s": -5}})
     assert st._signature_ttl_s() == 0.0
+
+
+def test_the_ttl_knob_is_per_profile_home(tmp_path):
+    """One process serves several profiles and each owns its own reuse window: a process-wide
+    memo would serve the first profile read to every other one (a 60 s window to a profile that
+    opted into exact freshness, and vice versa). Both orderings must hold."""
+    import hermes_constants as hc
+    import tools.skills_tool as st
+
+    home_a = tmp_path / "cache" / "profile-a"  # a cache-named ancestor is just a path
+    home_b = tmp_path / "profiles" / "profile-b"
+    for home, ttl in ((home_a, 60), (home_b, 0)):
+        home.mkdir(parents=True)
+        (home / "config.yaml").write_text(f"skills:\n  signature_ttl_s: {ttl}\n", encoding="utf-8")
+
+    st._SIG_TTL.clear()
+    for home, expected in ((home_a, 60.0), (home_b, 0.0), (home_a, 60.0), (home_b, 0.0)):
+        token = hc.set_hermes_home_override(home)
+        try:
+            assert st._signature_ttl_s() == expected, (
+                f"{home.name}: the TTL memo crossed profile boundaries"
+            )
+        finally:
+            hc.reset_hermes_home_override(token)
 
 
 def test_a_skills_own_tree_stays_out_of_the_walk(skills_root):

@@ -221,9 +221,9 @@ def _resolve_skill_dir(name: str, category: str | None = None) -> Path:
 
 
 def _iter_skill_dirs(root: Path):
-    from agent.skill_utils import is_excluded_skill_path
+    from agent.skill_utils import excluded_below_root
     for skill_md in root.rglob("SKILL.md"):
-        if not is_excluded_skill_path(skill_md):
+        if not excluded_below_root(skill_md, root):
             yield skill_md.parent
 
 

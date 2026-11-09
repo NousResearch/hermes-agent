@@ -1451,14 +1451,13 @@ DEFAULT_CONFIG = {
         # host-unapproved skill-author code; community hub installs never auto-execute (#63307).
         "inline_shell": False,
         "inline_shell_timeout": 10,  # seconds per !`cmd` snippet
-        # Security-scan skills the agent writes via skill_manage. Off: the agent can run the same
-        # code via terminal() ungated, so it mostly blocks prose with risky keywords. On: a
-        # dangerous verdict is a tool error the agent can retry. Hub installs are always scanned.
+        # Security-scan skills the agent writes via skill_manage. Off: terminal() runs the same
+        # code ungated, so it mostly blocks prose; on: a dangerous verdict is a retryable tool
+        # error. Hub installs are always scanned.
         "guard_agent_created": False,
         # Advisory NVIDIA SkillEvaluator Tier 1 scan on `hermes skills install` (alongside the
-        # enforcing built-in guard), only if `skillevaluator` is on PATH (uv tool install
-        # "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git"). Informational, never
-        # blocking; secrets-class findings shown red. No-op without it.
+        # enforcing built-in guard), only with `skillevaluator` on PATH. Informational, never
+        # blocking; secrets-class findings shown red.
         "tier1_advisory": True,
         # Approval gate for skill_manage mutations on BOTH foreground turns and the background
         # review fork. true = ALWAYS stage (SKILL.md too large for an inline prompt): /skills
@@ -1466,18 +1465,13 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         # Audit ledger: every skill mutation appends to ~/.hermes/skills/.curator_ledger.jsonl with
         # before/after hashes (blobs under ~/.hermes/.curator_backups/blobs/); powers `hermes
-        # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.
-        # See #79686.
+        # curator ledger` / `rollback <entry-id>` (#79686). Never a gate — failures can't block.
         "ledger": True,
-        # Size cap for that ledger: once the file grows past this, the next append rewrites it
-        # through the unchanged-file dedup and, if still over, drops the oldest entries (0 = keep
-        # the ledger append-only forever, the previous behaviour).
+        # Size cap for that ledger: past it the next append rewrites it (dedup, then drop oldest;
+        # 0 = append-only forever, the previous behaviour).
         "ledger_max_bytes": 5 * 1024 * 1024,
-        # Reuse window for the catalog's freshness check, in seconds. 0 (default) = exact: every
-        # slash-completion RPC re-walks the skills tree (~20 ms on a 930-skill install), so a skill
-        # written by another process shows up on the next palette open. > 0 reuses one walk inside
-        # the window (palette open ~24 ms -> ~4 ms), and an out-of-process edit can take up to that
-        # long to appear. Skills written by this process always invalidate immediately.
+        # Catalog freshness reuse window (s): 0 = exact (every palette open re-walks; an
+        # out-of-process skill appears next open), >0 serves one walk inside the window.
         "signature_ttl_s": 0.0,
     },
 

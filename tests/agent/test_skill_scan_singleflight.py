@@ -143,3 +143,101 @@ def test_cache_freshness_without_ttl(tmp_path):
         assert any("Edited in place." in (s["description"] or "") for s in rows), (
             "the edited description must be visible immediately, not after a TTL"
         )
+
+
+def _two_scope_patches(tmp_path, box):
+    """Patch the command-map scope so ``box.home`` (a threading.local) names the profile.
+
+    Fresh lock objects per test: a waiter that deadlocks on the pre-fix code parks forever on
+    whatever lock instances it captured, and a later test must not inherit that freeze."""
+    import threading
+
+    import agent.skill_commands as sc_mod
+
+    def _home():
+        return getattr(box, "home", "home-a")
+
+    return (
+        patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
+        patch.object(sc_mod, "_skill_commands_sig_by_key", {}),
+        patch.object(sc_mod, "_publish_lock", threading.Lock()),
+        patch.object(sc_mod, "_SCAN_SINGLEFLIGHT", threading.Lock()),
+        patch.object(sc_mod, "_resolve_skill_commands_home", _home),
+        patch.object(sc_mod, "_resolve_skill_commands_project", lambda: None),
+    )
+
+
+def test_waiter_of_an_unpublished_scope_scans_outside_the_publish_lock(tmp_path):
+    """Cold cross-profile single-flight: profile A publishes while cold B waits, B has no slot
+    and must rescan — OUTSIDE the publication lock (the scan publishes under it, so scanning
+    inside would self-deadlock the non-reentrant lock and park every profile behind ours)."""
+    import threading
+
+    import agent.skill_commands as sc_mod
+    import tools.skills_tool as st
+    from agent.skill_commands import get_skill_commands
+
+    _make_skill(tmp_path, "alpha")
+    box = threading.local()
+    results = {}
+
+    def worker():
+        box.home = "home-b"
+        results["b"] = get_skill_commands()
+
+    patches = _two_scope_patches(tmp_path, box)
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+        st.clear_skills_cache()
+        b = threading.Thread(target=worker, daemon=True)
+        with sc_mod._SCAN_SINGLEFLIGHT:  # B enters, snapshots the generation, parks on our flight
+            b.start()
+            box.home = "home-a"
+            sc_mod.scan_skill_commands()  # another profile publishes while B waits
+        b.join(timeout=10)  # a deadlocked waiter cannot be event-synced; bound it instead
+
+    assert not b.is_alive(), (
+        "the waiter deadlocked rescanning under the publication lock: another profile "
+        "published while it held the single-flight"
+    )
+    assert set(results["b"]) == {"/alpha"}, "the waiter must return its own scope's scan"
+
+
+def test_a_published_empty_map_is_reused_not_rescanned(tmp_path):
+    """An empty command map is a published scan of a skill-less scope, not a miss: after another
+    profile publishes, the identity recheck reuses the empty map, and freshness still holds on
+    the next lookup once the tree has moved."""
+    import threading
+
+    import agent.skill_commands as sc_mod
+    import tools.skills_tool as st
+    from agent.skill_commands import get_skill_commands
+
+    box = threading.local()
+    results = {}
+
+    def worker():
+        box.home = "home-b"
+        results["b"] = get_skill_commands()
+
+    patches = _two_scope_patches(tmp_path, box)
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+        st.clear_skills_cache()
+        box.home = "home-b"
+        assert get_skill_commands() == {}  # the skill-less scope publishes its (empty) map
+        _make_skill(tmp_path, "beta")  # the tree moves AFTER that publish
+
+        b = threading.Thread(target=worker, daemon=True)
+        with sc_mod._SCAN_SINGLEFLIGHT:  # the fast path sees a stale signature -> parks here
+            b.start()
+            box.home = "home-a"
+            sc_mod.scan_skill_commands()  # other profile publishes; generation moves under B
+        b.join(timeout=10)
+
+        assert not b.is_alive(), "rescanning an empty published scope deadlocked under the publish lock"
+        assert results["b"] == {}, "an empty map is the published answer for the scope, not a miss"
+
+        box.home = "home-b"
+        assert set(get_skill_commands()) == {"/beta"}, (
+            "the reused empty map is one lookup stale at most: the next lookup must rescan"
+        )

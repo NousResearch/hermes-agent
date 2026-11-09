@@ -19,8 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from hermes_constants import get_hermes_home
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
-from agent.skill_utils import (
-    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
+from agent.skill_utils import is_skill_support_path as _is_skill_support_path
 from tools.skills_tool_setup import (
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
     _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
@@ -37,13 +36,17 @@ logger = logging.getLogger(__name__)
 # directory's child-dir names (an install under an existing category such as ``mlops/training/``
 # changes that dir's names) + each dir's top-level SKILL.md ``(mtime, size)`` (an in-place edit) +
 # platform. File facts mean an edit re-scans immediately: there is no TTL to wait out. The disabled
-# set and the two visibility flags are read-time filters, so one parse serves every caller.
+# set and the offer-time gates are read-time filters, so one parse serves every caller.
 _SKILLS_CACHE: dict = {}
 # One cached scan per tree signature (the flags are applied on the way out), bounded so a host
 # serving several profiles and repos keeps the recent trees and rebuilds the rest.
 _SKILLS_CACHE_MAX = 4
 # Deepest directory the signature descends to below a root (a skill sits at <cat>/<sub>/<skill>/).
 _SIGNATURE_MAX_DEPTH = 6
+# Frontmatter keys the offer-time gates read, stored per row so visibility is decided at READ
+# time: the gates are context-dependent (kanban/docker/apps) and can flip between two listings
+# of one unchanged tree, which a scan-time verdict persisted to disk would freeze forever.
+_VISIBILITY_GATE_KEYS = ("platforms", "environments", "requires_apps")
 
 
 # Single-flight for the catalog scan: completion RPCs run on asyncio.to_thread workers, so a
@@ -59,13 +62,14 @@ def clear_skills_cache() -> None:
     _SKILLS_CACHE.clear()
     _clear_signature_memo()
     _SIG_TTL.clear()  # a reload re-reads the knob
+    _FLAT_MD_INDEX.clear()  # keyed by (root, signature): the signature can repeat after a clear
     with suppress(OSError):
         _catalog_cache_path().unlink(missing_ok=True)
 
 
-_CATALOG_DISK_CACHE_NAME = "skills-catalog-v1.json"
-# One disk entry per tree: rows are unfiltered (visible/disabled filter on the way out), so the
-# filtered and the with-disabled callers share it instead of storing the same library twice.
+_CATALOG_DISK_CACHE_NAME = "skills-catalog-v2.json"  # v2: rows persist gate inputs, not verdicts
+# One disk entry per tree: rows are unfiltered (offer gates/disabled filter on the way out), so
+# the filtered and the with-disabled callers share it instead of storing the same library twice.
 _DISK_CATALOG_KEY = ("catalog",)
 
 
@@ -169,14 +173,19 @@ def cached_skill_rows() -> list | None:
 
 
 def _dir_tree_signature(root, sig, depth=_SIGNATURE_MAX_DEPTH) -> None:
-    """Append ``(dir, skill_md_mtime_ns, child names, owns_skill_md)`` for *root* and the dirs below.
+    """Append ``(dir, child dir names, flat .md names, skill_md facts)`` for *root* and the dirs below.
 
     Child names catch an install+uninstall inside one coarse mtime tick, so no directory needs its own
     mtime; only a ``SKILL.md``'s does (an edit to an existing skill). A root's own mtime is ignored:
     it moves when Hermes writes its metadata there (``.usage.json`` on every load), which must not
-    invalidate a fresh scan."""
+    invalidate a fresh scan. Flat ``<name>.md`` filenames are recorded for every directory the flat
+    index serves from (the walked, non-skill ones): a legacy flat skill added to an unchanged
+    directory must move the signature too, or a warmed locate keeps answering "not found". A skill
+    directory's own files are support content and stay out — renaming a reference there must not
+    invalidate the catalog."""
     from agent.skill_utils import EXCLUDED_SKILL_DIRS
     names: list[str] = []
+    md_names: list[str] = []
     skill_md: tuple[int, int] | None = None
     try:
         with os.scandir(root) as it:  # iterated, not materialized: one less list per directory
@@ -187,12 +196,16 @@ def _dir_tree_signature(root, sig, depth=_SIGNATURE_MAX_DEPTH) -> None:
                     elif entry.name == "SKILL.md":
                         md_stat = entry.stat()  # follows symlinks: an edit at a linked target shows
                         skill_md = (md_stat.st_mtime_ns, md_stat.st_size)
+                    elif entry.name.endswith(".md"):
+                        md_names.append(entry.name)  # names only: content is read fresh per view
                 except OSError:
                     continue
     except OSError:
         return
     names.sort()
-    sig.append((str(root), tuple(names), skill_md))
+    # A skill dir is a leaf: the catalog only reads its top-level SKILL.md, so its subdirectories are
+    # bulk the signature must not pay for.
+    sig.append((str(root), tuple(names), () if skill_md is not None else tuple(sorted(md_names)), skill_md))
     if depth <= 0:
         return
     # A skill dir is a leaf: the catalog only reads its top-level SKILL.md, so its subdirectories are
@@ -222,25 +235,29 @@ def _clear_signature_memo() -> None:
     _SIG_MEMO.clear()
 
 
-_SIG_TTL: list = []
+_SIG_TTL: dict[str, float] = {}
 
 
 def _signature_ttl_s() -> float:
     """The signature's reuse window, in seconds (0 = always re-walk). Fail-open to exact.
 
-    Read once per process and re-read by ``clear_skills_cache()``: consulting the config from the
-    scan path perturbs the per-identity command slots that key on the same signature, so the knob
-    applies on a reload (``/skills reload``, an edit, a restart) rather than mid-scan.
-    """
-    if _SIG_TTL:
-        return _SIG_TTL[0]
+    Memoized per owning Hermes home and re-read by ``clear_skills_cache()``: one process serves
+    several profiles and each owns its own knob — a process-wide memo would serve the first
+    profile's window to an exact-freshness profile (and vice versa). The knob is read through
+    the raw config reader (``agent.skill_utils``), never ``hermes_cli.config``: the full loader
+    bootstraps a fresh home mid-scan (creating ``<home>/skills`` after the signature was taken),
+    which would move the very tree this window gates."""
+    home = str(get_hermes_home())
+    if home in _SIG_TTL:
+        return _SIG_TTL[home]
     value = 0.0
     try:
-        from hermes_cli.config import load_config_readonly
-        value = max(0.0, float((load_config_readonly().get("skills") or {}).get("signature_ttl_s", 0.0)))
+        from agent.skill_utils import _skills_cfg_get
+        value = max(0.0, float(_skills_cfg_get("signature_ttl_s") or 0.0))
     except Exception:
+        logger.debug("skills.signature_ttl_s read failed; failing open to exact", exc_info=True)
         value = 0.0
-    _SIG_TTL.append(value)
+    _SIG_TTL[home] = value
     return value
 
 
@@ -469,7 +486,8 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
     The scan ignores the two flags, so one parse per tree signature serves every caller; the flags
     select a fresh copy of the cached view."""
     from agent.skill_utils import (
-        TIER_PROJECT, is_disabled_entry, iter_project_skill_files, iter_skill_index_files, resolve_skill_catalog)
+        TIER_PROJECT, excluded_below_root, is_disabled_entry, iter_project_skill_files,
+        iter_skill_index_files, resolve_skill_catalog)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
     roots, _ = skill_search_dirs()
     dirs = [d for _t, d in roots]
@@ -481,10 +499,17 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
     def _rows_for(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for row in rows:
-            if not (row["visible"] or include_hidden) or is_disabled_entry(row, disabled):
+            # Read-time visibility (per-lookup selection, #146644): the tree signature proves the
+            # files unchanged, never the execution context the offer gates consult.
+            if not include_hidden:
+                gates = row.get("_gates") or {}
+                if not (skill_matches_platform(gates) and skill_matches_environment(gates)
+                        and skill_matches_apps(gates)):
+                    continue
+            if is_disabled_entry(row, disabled):
                 continue
             copy = dict(row)
-            copy.pop("visible", None)
+            copy.pop("_gates", None)
             out.append(copy)
         return out
 
@@ -511,7 +536,9 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
         for tier, scan_dir in roots:  # project dirs go through the quarantine chokepoint
             _iter = iter_project_skill_files if tier == TIER_PROJECT else lambda d: iter_skill_index_files(d, "SKILL.md")
             for skill_md in _iter(scan_dir):
-                if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+                # Excluded dirs are judged BELOW the configured root: an excluded-named ANCESTOR
+                # of the root is layout, not runtime state, and must not drop the whole tree.
+                if excluded_below_root(skill_md, scan_dir):
                     continue
                 try:
                     frontmatter, body = _parse_frontmatter(_read_skill_text(skill_md)[:4000])
@@ -531,9 +558,8 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
                         "_cmd_name": frontmatter.get("name", skill_md.parent.name),
                         "_cmd_desc": cmd_description,
                         "category": _get_category_from_path(skill_md), "tier": tier, "root": scan_dir,
-                        "path": skill_md, "visible": bool(skill_matches_platform(frontmatter)
-                                                          and skill_matches_environment(frontmatter)
-                                                          and skill_matches_apps(frontmatter))})
+                        "path": skill_md, "_gates": {k: frontmatter[k] for k in _VISIBILITY_GATE_KEYS
+                                                     if k in frontmatter}})
                 except (UnicodeDecodeError, PermissionError) as e:
                     logger.debug("Failed to read skill file %s: %s", skill_md, e)
                 except Exception as e:

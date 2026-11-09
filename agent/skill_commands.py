@@ -657,8 +657,14 @@ def get_skill_commands() -> dict[str, dict[str, Any]]:
         # Single-flight: a caller that waited while another thread scanned reuses that scan's
         # published map instead of walking and parsing the same tree again.
         with _publish_lock:
-            if _skill_commands_generation != generation:
-                return _skill_commands_by_key.get(key) or scan_skill_commands()
+            # Another scope published while we held the single-flight (generation moved): reuse
+            # OUR identity's published map — `is not None`, never truthiness, because an empty
+            # map is a published scan of a skill-less scope, not a miss. Anything else rescans
+            # OUTSIDE this lock: the scan publishes under it, so scanning in here would
+            # self-deadlock the non-reentrant lock and park every profile's scan behind ours.
+            reused = _skill_commands_by_key.get(key) if _skill_commands_generation != generation else None
+        if reused is not None:
+            return reused
         # Scan outside the publish lock — file I/O and deferred imports; concurrent scans
         # are safe since each builds its own map.
         return scan_skill_commands()

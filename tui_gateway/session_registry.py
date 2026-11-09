@@ -110,6 +110,11 @@ def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
     else:
         if override := current.get("model_override"):
             kw["model_override"] = override
+        stored = resume_overrides if isinstance(resume_overrides, dict) else {}
+        kw.update({k: v for k, v in (
+            ("reasoning_config_override", stored.get("reasoning_config_override")),
+            ("service_tier_override", stored.get("service_tier_override")))
+            if v is not None})
         kw.update({k: v for k, v in (("reasoning_config_override", current.get("create_reasoning_override")),
                                      ("service_tier_override", current.get("create_service_tier_override")))
                    if v is not None})

@@ -1046,6 +1046,16 @@ platform:
       clarify_already_answered: "Este prompt ya fue respondido~"
       answered_by: "Respondido por {user}: {choice}"
       awaiting_typed: "Esperando la respuesta escrita de {user}…"
+    vault_code:
+      title: "🔐 Código de verificación de {site}"
+      body: "{site} pide un código de un solo uso (SMS o correo). Pulsa el botón y escríbelo en el formulario que se abre: va directo a la página y nunca se publica aquí."
+      button: "Introducir código"
+      modal_title: "Código de {site}"
+      input_label: "Código de un solo uso"
+      submitted: "Código enviado; se está introduciendo en la página."
+      ended: "Esta solicitud de código ha terminado; no se introdujo nada."
+      not_author: "Solo quien inició esta solicitud puede introducir el código."
+      submitted_footer: "✓ Código enviado"
     picker:
       title: "⚙ Configuración del modelo"
       select_provider: "Modelo actual: `{model}`\nProveedor: {provider}\n\nSelecciona un proveedor:"

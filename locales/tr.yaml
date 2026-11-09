@@ -1046,6 +1046,16 @@ platform:
       clarify_already_answered: "Bu istem zaten yanıtlandı~"
       answered_by: "{user} yanıtladı: {choice}"
       awaiting_typed: "{user} kullanıcısının yazılı yanıtı bekleniyor…"
+    vault_code:
+      title: "🔐 {site} doğrulama kodu"
+      body: "{site} tek kullanımlık bir kod istiyor (SMS veya e-posta). Düğmeye bas ve açılan forma yaz: kod doğrudan sayfaya girilir, buraya asla gönderilmez."
+      button: "Kodu gir"
+      modal_title: "{site} kodu"
+      input_label: "Tek kullanımlık kod"
+      submitted: "Kod gönderildi; sayfaya giriliyor."
+      ended: "Bu kod isteği sona erdi; hiçbir şey girilmedi."
+      not_author: "Kodu yalnızca bu isteği başlatan kişi girebilir."
+      submitted_footer: "✓ Kod gönderildi"
     picker:
       title: "⚙ Model Yapılandırması"
       select_provider: "Geçerli model: `{model}`\nSağlayıcı: {provider}\n\nBir sağlayıcı seçin:"

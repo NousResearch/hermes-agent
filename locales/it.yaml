@@ -1046,6 +1046,16 @@ platform:
       clarify_already_answered: "A questa richiesta è già stata data risposta~"
       answered_by: "Risposta di {user}: {choice}"
       awaiting_typed: "In attesa della risposta digitata da {user}…"
+    vault_code:
+      title: "🔐 Codice di verifica per {site}"
+      body: "{site} chiede un codice monouso (SMS o email). Premi il pulsante e inseriscilo nel modulo che si apre: va direttamente nella pagina e non viene mai pubblicato qui."
+      button: "Inserisci codice"
+      modal_title: "Codice per {site}"
+      input_label: "Codice monouso"
+      submitted: "Codice inviato; lo sto inserendo nella pagina."
+      ended: "Questa richiesta di codice è terminata; non è stato inserito nulla."
+      not_author: "Solo chi ha avviato questa richiesta può inserire il codice."
+      submitted_footer: "✓ Codice inviato"
     picker:
       title: "⚙ Configurazione modello"
       select_provider: "Modello attuale: `{model}`\nProvider: {provider}\n\nSeleziona un provider:"

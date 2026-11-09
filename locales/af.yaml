@@ -1046,6 +1046,16 @@ platform:
       clarify_already_answered: "Hierdie prompt is reeds beantwoord~"
       answered_by: "Beantwoord deur {user}: {choice}"
       awaiting_typed: "Wag vir getikte antwoord van {user}…"
+    vault_code:
+      title: "🔐 Verifikasiekode vir {site}"
+      body: "{site} vra 'n eenmalige kode (SMS of e-pos). Druk die knoppie en tik dit in die vorm wat oopmaak: dit gaan reguit na die bladsy en word nooit hier geplaas nie."
+      button: "Voer kode in"
+      modal_title: "Kode vir {site}"
+      input_label: "Eenmalige kode"
+      submitted: "Kode ingedien; dit word in die bladsy ingevoer."
+      ended: "Hierdie kodeversoek is verby; niks is ingevoer nie."
+      not_author: "Slegs die persoon wat hierdie versoek begin het, kan die kode invoer."
+      submitted_footer: "✓ Kode ingedien"
     picker:
       title: "⚙ Modelkonfigurasie"
       select_provider: "Huidige model: `{model}`\nVerskaffer: {provider}\n\nKies 'n verskaffer:"

@@ -1046,6 +1046,16 @@ platform:
       clarify_already_answered: "这个提示已经回答过了~"
       answered_by: "{user} 已回答：{choice}"
       awaiting_typed: "等待 {user} 输入回答…"
+    vault_code:
+      title: "🔐 {site} 的验证码"
+      body: "{site} 要求输入一次性验证码（短信或邮件）。点击按钮，在弹出的表单里输入：验证码会直接填进网页，不会发到这里。"
+      button: "输入验证码"
+      modal_title: "{site} 的验证码"
+      input_label: "一次性验证码"
+      submitted: "验证码已提交，正在填入网页。"
+      ended: "这个验证码请求已结束，没有填入任何内容。"
+      not_author: "只有发起这次请求的人可以输入验证码。"
+      submitted_footer: "✓ 验证码已提交"
     picker:
       title: "⚙ 模型配置"
       select_provider: "当前模型：`{model}`\n提供方：{provider}\n\n请选择提供方："

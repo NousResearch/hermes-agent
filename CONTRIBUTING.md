@@ -180,6 +180,12 @@ returning the new interpreter. The `test` group includes native launcher test
 dependencies and does not enter the application runtime. If tests require
 another declared feature, add its `--extra`.
 
+Cross-surface compression tests include ACP and the HTTP gateway. Build their
+test environment with both `--extra acp` and `--extra sms` (the latter provides
+`aiohttp`); `--group dev --group test` alone does not install these adapters.
+Use a fresh output directory and point `HERMES_PYTHON` at its interpreter rather
+than adding packages to the application environment.
+
 The output must not exist, even as an empty directory or symlink. To regenerate
 it after a dependency change, stop its processes and intentionally remove only
 that disposable environment first. PM does not delete an existing destination.

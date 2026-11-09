@@ -15,6 +15,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from agent.system_prompt import invalidate_system_prompt
 
 
@@ -79,7 +81,7 @@ def _init_repo(path, first_commit):
     (path / "main.py").write_text("print(1)\n")
     subprocess.run(["git", "add", "-A"], cwd=path, check=True)
     subprocess.run(["git", "commit", "-qm", first_commit], cwd=path, check=True)
-    return path
+    return path.resolve()
 
 
 
@@ -225,6 +227,53 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
             _environment_probe=False, _bot_mode_protocol=False, _kanban_worker_guidance="",
             pass_session_id=False, session_id="s1", _emit_status=lambda *a, **k: None, **over,
         )
+
+    @pytest.mark.platforms("posix")
+    def test_workspace_alias_replays_the_live_snapshot_after_compaction(self):
+        import tempfile
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt
+
+        for alias_first in (False, True):
+            with self.subTest(alias_first=alias_first), tempfile.TemporaryDirectory(prefix="test-ws-alias-") as directory:
+                repo = _init_repo(Path(directory) / "proj", "init commit")
+                alias = repo.parent / "alias"
+                alias.symlink_to(repo, target_is_directory=True)
+                first, second = (alias, repo) if alias_first else (repo, alias)
+                agent = self._pin_agent()
+                with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                     patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"):
+                    with patch("agent.system_prompt.resolve_context_cwd", return_value=first):
+                        stored = build_system_prompt(agent)
+                    self.assertIn("- Status: clean", stored)
+                    (repo / "untracked.txt").write_text("changed after snapshot\n")
+                    invalidate_system_prompt(agent)
+                    with patch("agent.system_prompt.resolve_context_cwd", return_value=second):
+                        self.assertEqual(build_system_prompt(agent), stored)
+
+    @pytest.mark.platforms("posix")
+    def test_workspace_alias_replays_the_persisted_snapshot_after_compaction(self):
+        import tempfile
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt
+
+        for alias_first in (False, True):
+            with self.subTest(alias_first=alias_first), tempfile.TemporaryDirectory(prefix="test-ws-resume-") as directory:
+                repo = _init_repo(Path(directory) / "proj", "init commit")
+                alias = repo.parent / "alias"
+                alias.symlink_to(repo, target_is_directory=True)
+                first, second = (alias, repo) if alias_first else (repo, alias)
+                hints = f"Host: x\nUser home directory: /h\nCurrent working directory: {first}"
+                with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                     patch("agent.prompt_builder.build_environment_hints", return_value=hints):
+                    with patch("agent.system_prompt.resolve_context_cwd", return_value=first):
+                        stored = build_system_prompt(self._pin_agent())
+                    self.assertIn("- Status: clean", stored)
+                    (repo / "untracked.txt").write_text("changed after snapshot\n")
+                    db = SimpleNamespace(get_session=lambda sid: {"system_prompt": stored})
+                    resumed = self._pin_agent(_cached_system_prompt=None, _session_db=db)
+                    with patch("agent.system_prompt.resolve_context_cwd", return_value=second):
+                        self.assertEqual(build_system_prompt(resumed), stored)
 
     def test_binding_the_launch_dir_explicitly_replays_the_pin(self):
         """CLI-shaped first build (no cwd bound -> launch dir), then TUI /compress binds that same dir:

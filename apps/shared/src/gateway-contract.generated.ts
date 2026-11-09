@@ -4899,9 +4899,10 @@ export interface SessionStats {
 export interface SessionAccountUsageParams {
   session_id: string
 }
-/** ``gateway/session_usage.py::account_usage``: the provider plan-limits block of ``/usage``. */
+/** ``gateway/session_usage.py::account_usage``: the provider plan-limits block of ``/usage``. ``nous_route``: the route is Nous inference, so the Nous balance and ``/topup`` CTA apply. */
 export interface SessionAccountUsage {
   lines: string[]
+  nous_route: boolean
 }
 export interface RollbackSessionDiffParams {
   session_id: string

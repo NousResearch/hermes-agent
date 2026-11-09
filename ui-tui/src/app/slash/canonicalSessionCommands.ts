@@ -262,13 +262,21 @@ export function canonicalUsage(ctx: SlashRunCtx) {
         ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), usageTotalsSections(usage))
       }
 
-      const limitLines = (await limits)?.lines ?? []
+      const account = await limits
 
       if (ctx.stale()) {
         return
       }
 
-      limitLines.forEach(line => ctx.transcript.sys(line))
+      for (const line of account?.lines ?? []) {
+        ctx.transcript.sys(line)
+      }
+
+      // The Nous CTA and plan bars apply to a Nous route only (an older owner sends no flag).
+      if (account?.nous_route === false) {
+        return
+      }
+
       ctx.transcript.sys(t('slashCmd.session.usage.cta'))
 
       // Usage-window plans: the allowance bars, after the lines above (every other account: nothing).

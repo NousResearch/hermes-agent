@@ -36154,7 +36154,7 @@
       },
       "SessionAccountUsage": {
         "additionalProperties": false,
-        "description": "``gateway/session_usage.py::account_usage``: the provider plan-limits block of ``/usage``.",
+        "description": "``gateway/session_usage.py::account_usage``: the provider plan-limits block of ``/usage``.\n``nous_route``: the route is Nous inference, so the Nous balance and ``/topup`` CTA apply.",
         "properties": {
           "lines": {
             "items": {
@@ -36162,10 +36162,15 @@
             },
             "title": "Lines",
             "type": "array"
+          },
+          "nous_route": {
+            "title": "Nous Route",
+            "type": "boolean"
           }
         },
         "required": [
-          "lines"
+          "lines",
+          "nous_route"
         ],
         "title": "SessionAccountUsage",
         "type": "object"

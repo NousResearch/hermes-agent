@@ -53,5 +53,6 @@ async def test_account_usage_returns_the_plugin_plan_limits_for_the_session_agen
         lines = reply['result']['lines']
         assert lines[0] == "📈 Claude plan limits"
         assert "Current session: 99% remaining (1% used)" in lines
+        assert reply["result"]["nous_route"] is False  # a process provider: no Nous balance or /topup CTA
     finally:
         await connection.close()

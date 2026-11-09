@@ -239,14 +239,18 @@ async def account_usage(connection, ref, params):
     agent = authority.agent(ref)
 
     def fetch():
+        from agent.billing_links import is_nous_inference_route
         with owner_scope(authority):
             if agent is not None:
-                return account_limit_lines(getattr(agent, "provider", None), base_url=getattr(agent, "base_url", None),
-                                           api_key=getattr(agent, "api_key", None))
-            policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
-            model = (policy.config(authority) if policy is not None else {}).get("model") or {}
-            return account_limit_lines(model.get("provider"), base_url=model.get("base_url"))
-    return {"lines": await asyncio.to_thread(fetch)}
+                provider, base_url = getattr(agent, "provider", None), getattr(agent, "base_url", None)
+                lines = account_limit_lines(provider, base_url=base_url, api_key=getattr(agent, "api_key", None))
+            else:
+                policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
+                model = (policy.config(authority) if policy is not None else {}).get("model") or {}
+                provider, base_url = model.get("provider"), model.get("base_url")
+                lines = account_limit_lines(provider, base_url=base_url)
+        return {"lines": lines, "nous_route": is_nous_inference_route(provider or "", base_url or "")}
+    return await asyncio.to_thread(fetch)
 
 
 async def stats(connection, ref, params):

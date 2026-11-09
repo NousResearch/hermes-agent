@@ -31,7 +31,7 @@ def calls(monkeypatch):
 
 
 def _session(state):
-    agent = SimpleNamespace(model="m", _credits_state=state)
+    agent = SimpleNamespace(model="m", provider="nous", _credits_state=state)
     return {"agent": agent, "history": [], "history_lock": threading.Lock()}
 
 

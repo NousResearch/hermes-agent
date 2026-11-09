@@ -625,6 +625,11 @@ class CLIInfoMixin:
             return
         self._show_usage()
 
+    def _on_nous_route(self) -> bool:
+        """The Nous balance and /topup CTA apply only to a Nous route, not to another provider's session."""
+        from agent.billing_links import is_nous_inference_route
+        return is_nous_inference_route(self._agent_or_self("provider") or "", self._agent_or_self("base_url") or "")
+
     def _agent_or_self(self, name: str):
         """Provider-ish attribute from the live agent, falling back to the CLI's own value."""
         return (getattr(self.agent, name, None) if self.agent else None) or getattr(self, name, None)
@@ -726,7 +731,7 @@ class CLIInfoMixin:
             # Account limits (e.g. Codex subscription windows) need only the configured provider
             # plus on-disk credentials, so they render without a live agent too (#42904).
             shown = self._print_account_limits()
-            if self._print_nous_credits_block():
+            if self._on_nous_route() and self._print_nous_credits_block():
                 self._print_usage_cta()
             elif not shown:
                 print(fallback)
@@ -783,7 +788,7 @@ class CLIInfoMixin:
 
         self._print_account_limits()
 
-        if self._print_nous_credits_block():
+        if self._on_nous_route() and self._print_nous_credits_block():
             self._print_usage_cta()
 
         if self.verbose:

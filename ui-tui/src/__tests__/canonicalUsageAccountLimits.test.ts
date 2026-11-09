@@ -6,7 +6,8 @@ import { patchUiState, resetUiState } from '../app/uiStore.js'
 const flush = () => new Promise(resolve => setTimeout(resolve, 5))
 
 // The shared gateway's /usage shows the route's provider plan limits (a plugin's
-// fetch_account_usage: Claude plan limits on DirectSDK) the way the classic CLI does.
+// fetch_account_usage: Claude plan limits on DirectSDK) the way the classic CLI does, and the Nous
+// CTA only on a Nous route.
 const STATS = {
   api_calls: 2,
   compression_count: 0,
@@ -61,7 +62,7 @@ function run(answers: Record<string, () => unknown>) {
 
 it('/usage prints the plan limits from session.account_usage before the CTA', async () => {
   const { request, slash, sys } = run({
-    'session.account_usage': () => ({ lines: LIMITS }),
+    'session.account_usage': () => ({ lines: LIMITS, nous_route: false }),
     'session.stats': () => STATS
   })
 
@@ -69,8 +70,22 @@ it('/usage prints the plan limits from session.account_usage before the CTA', as
   await flush()
 
   expect(request).toHaveBeenCalledWith('session.account_usage', { session_id: 'owner' })
+  // Another provider's route: no Nous /subscription · /topup CTA and no Nous plan bars.
+  expect(sys.mock.calls.map(([line]) => String(line))).toEqual(LIMITS)
+  expect(request).not.toHaveBeenCalledWith('billing.state', expect.anything())
+})
+
+it('/usage on a Nous route keeps the CTA after the limits', async () => {
+  const { slash, sys } = run({
+    'billing.state': () => ({ ok: true }),
+    'session.account_usage': () => ({ lines: [], nous_route: true }),
+    'session.stats': () => STATS
+  })
+
+  slash('/usage')
+  await flush()
+
   expect(sys.mock.calls.map(([line]) => String(line))).toEqual([
-    ...LIMITS,
     'Run /subscription to change plan · /topup to add to your balance'
   ])
 })

@@ -131,19 +131,30 @@ def _format_live_refine_output(sid: str, session: Optional[dict], arg: str) -> s
     )
 
 
+def _usage_on_nous_route(session: dict, provider: str | None = None) -> bool:
+    """The Nous balance and /topup CTA apply to a Nous route only, never another provider's session."""
+    from agent.billing_links import is_nous_inference_route
+    agent = session.get("agent")
+    provider = provider or getattr(agent, "provider", None) or _config_model_target()[1]
+    return is_nous_inference_route(provider or "", getattr(agent, "base_url", None) or "")
+
+
 def _usage_account_blocks(session: dict) -> list[str]:
     """Provider limits then Nous credits, as CLI/messaging /usage show them; neither needs an agent.
     Both read the session profile's credentials, unreadable outside its scope when multiplexed (#132422).
-    Before the first turn the route is the session's composer pick, else the profile's provider."""
+    Before the first turn the route is the session's composer pick, else the profile's provider.
+    The Nous block shows only on a Nous route."""
     from agent.account_usage import account_limit_lines, nous_credits_lines
     agent = session.get("agent")
     pick = session.get("model_override") or {}
     lines: list[str] = []
     with _session_profile_runtime_scope(session):
+        provider = getattr(agent, "provider", None) or pick.get("provider") or _config_model_target()[1]
         with contextlib.suppress(Exception):
-            provider = getattr(agent, "provider", None) or pick.get("provider") or _config_model_target()[1]
             lines += account_limit_lines(provider, base_url=getattr(agent, "base_url", None),
                                          api_key=getattr(agent, "api_key", None))
+        if not _usage_on_nous_route(session, provider):
+            return lines
         with contextlib.suppress(Exception):
             # Window plans: the last reply's gauges lift the portal's lagging percents (``is True``: a
             # Mock agent's attribute is not a plan). Every other account: exactly main's call.

@@ -265,9 +265,11 @@ class SessionAccountUsageParams(Params):
 
 
 class SessionAccountUsage(Result):
-    """``gateway/session_usage.py::account_usage``: the provider plan-limits block of ``/usage``."""
+    """``gateway/session_usage.py::account_usage``: the provider plan-limits block of ``/usage``.
+    ``nous_route``: the route is Nous inference, so the Nous balance and ``/topup`` CTA apply."""
 
     lines: list[str]
+    nous_route: bool
 
 
 canonical_method("session.account_usage", params=SessionAccountUsageParams, result=SessionAccountUsage,

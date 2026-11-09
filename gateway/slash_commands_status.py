@@ -607,15 +607,15 @@ class GatewayStatusCommandsMixin:
             render_account_usage_lines(account_snapshot, markdown=True) if account_snapshot else []
         )
 
-        # Nous credits + monthly-grant gauge (shared with CLI/TUI). Gates on "a Nous account is
-        # logged in" — NOT the inference provider — so a Nous user inferring elsewhere still sees
-        # a balance. Fail-open: never break /usage.
+        # Nous credits + monthly-grant gauge (shared with CLI/TUI), on a Nous route only: another
+        # provider's session has no Nous balance to top up. Fail-open: never break /usage.
         from agent.account_usage import nous_credits_lines
+        from agent.billing_links import is_nous_inference_route
         credits_state = getattr(agent, "_credits_state", None) if agent else None
         credits_lines = await _quiet(
             lambda: asyncio.to_thread(nous_credits_lines, markdown=True, credits_state=credits_state),
             [],
-        )
+        ) if is_nous_inference_route(provider or "", base_url or "") else []
         # Window plans: a chat's /topup has no Keep going control, so point the setting at the Portal.
         from agent.plan_limits import portal_wording
         credits_lines = [portal_wording(line) for line in credits_lines]

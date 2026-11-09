@@ -60,12 +60,9 @@ export const frOverrides = {
     },
     card: {
       kindManaged: 'Géré',
-      kindCatalog: 'MCP · Catalogue',
       kindCustom: 'MCP · Personnalisé',
       kindPlugin: (plugin: string) => `MCP · Plugin ${plugin}`,
       inCatalog: 'Dans le catalogue Hermes',
-      hostedTwin: 'Version gérée disponible',
-      alsoLocal: 'Fonctionne aussi sur cet appareil',
       open: (name: string) => `Ouvrir ${name}`,
       turnServerOn: (name: string) => `Activer ${name}`,
       turnServerOff: (name: string) => `Désactiver ${name}`,
@@ -94,7 +91,6 @@ export const frOverrides = {
       verb: {
         authenticate: "S'authentifier",
         connect: 'Connecter',
-        install: 'Installer',
         openLogs: 'Ouvrir les journaux',
         reconnect: 'Reconnecter',
         stopWaiting: "Arrêter l'attente",
@@ -174,11 +170,6 @@ export const frOverrides = {
       removeServerTitle: (name: string) => `Supprimer ${name} ?`,
       removeServerBody: "L'entrée est retirée de mcp.json sur cet ordinateur. Rien d'autre n'est supprimé.",
       appSwitch: (name: string) => `Hermes peut utiliser ${name}`,
-      waysTitle: (name: string) => `Où ${name} s'exécute`,
-      wayNotConnected: (name: string) => `Pas encore connecté. Connectez-vous à ${name} dans votre navigateur.`,
-      wayHosted: 'Géré',
-      bothOn: (name: string) => `Les deux sont activés : Hermes voit donc chaque outil ${name} en double.`,
-      turnOffLocal: 'Désactiver le serveur local',
       providedByPlugin: (plugin: string) => `Fourni par le plugin ${plugin}`,
       openPlugins: "Ouvrir l'onglet Plugins",
       nousLine: 'Les applications Nous suivent votre compte, pas le profil.',
@@ -199,7 +190,6 @@ export const frOverrides = {
 
     tools: {
       title: 'Outils',
-      notInstalledBody: "Installez-le sur cet appareil pour voir les outils qu'il apporte.",
       summaryTitle: (name: string) => `Ce que Hermes peut faire avec ${name}`,
       summaryPreviewTitle: (name: string) => `Ce que Hermes pourra faire avec ${name} une fois connecté`,
       summaryCount: (count: number) => `${count} outil${count > 1 ? 's' : ''}`,
@@ -1891,9 +1881,6 @@ export const frOverrides = {
       serverJson: 'JSON du serveur',
       remove: 'Supprimer',
       test: 'Tester la connexion',
-      catalogLoading: 'Chargement du catalogue MCP...',
-      catalogInstallFailed: name => `Échec de l'installation de ${name}`,
-      catalogEnvRequired: "Remplissez les valeurs requises avant d'installer.",
       capabilitySummary: (tools, prompts, resources) =>
         `${[`${tools} outils`, ...(prompts ? [`${prompts} invites`] : []), ...(resources ? [`${resources} ressources`] : [])].join(', ')} activés`,
       costTokens: tokens => `~${tokens} jetons/appel`,

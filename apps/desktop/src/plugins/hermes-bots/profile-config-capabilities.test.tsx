@@ -126,7 +126,7 @@ const advancedState: {
   dirtySoul: false,
   dirtyToolsets: false,
   loaded: true,
-  mcp: [{ enabled: false, fromCatalog: true, installed: false, name: 'remote-mcp', requires: ['TOKEN'] }],
+  mcp: [{ enabled: false, name: 'remote-mcp' }],
   model: '',
   provider: '',
   skills: [],
@@ -261,10 +261,9 @@ describe('a connection-aware CapabilitiesView', () => {
 describe('a build with no Capabilities exports at all', () => {
   const bareBuild = { ConnectorsTab: undefined, CapabilitiesView: undefined, ToolsetConfigPanel: undefined }
 
-  it('keeps the checkbox MCP list with its inline setup button', async () => {
+  it('keeps the checkbox MCP list', async () => {
     await renderEditor(bareBuild, localBot)
 
-    expect(screen.getByText('remote-mcp')).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Set up/ })).toBeTruthy()
+    expect(screen.getByRole('checkbox', { name: 'remote-mcp' })).toBeTruthy()
   })
 })

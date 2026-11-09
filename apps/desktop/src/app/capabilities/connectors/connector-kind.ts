@@ -11,7 +11,7 @@ export function connectorKindWord(card: ConnectorCardModel, copy: Translations['
     return copy.kindPlugin(card.plugin)
   }
 
-  return card.ways.local?.inCatalog === true ? copy.kindCatalog : copy.kindCustom
+  return copy.kindCustom
 }
 
 export function showsCatalogMark(card: ConnectorCardModel): boolean {

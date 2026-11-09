@@ -23,7 +23,6 @@ import { useState } from 'react'
 import { $lastRoster, ROSTER_KEY } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import { botsText, useBots } from './i18n'
-import { McpSetupButton } from './mcp-setup'
 import { ModelPicker } from './model-picker'
 import { botBackendProfileScope, requestForBot, resolveBotConnectionRoute } from './routing'
 import { HubSkillsSection } from './skills-hub'
@@ -49,17 +48,13 @@ export const capabilitiesViewRoutesConnections = Boolean(CapabilitiesView && Cap
 // profiles.describe / profiles.configure; feature-detects older gateways.
 
 /** One toggleable capability row. Skills, toolsets, and MCP servers all
- *  arrive from `profiles.describe` / `mcp.catalog` in this shape and run
+ *  arrive from `profiles.describe` in this shape and run
  *  through the same toggle handlers, so they share one entry type. */
 export interface CapabilityEntry {
-  auth?: string
   connector?: string | null
   description?: string
   enabled?: boolean
-  fromCatalog?: boolean
-  installed?: boolean
   name: string
-  requires?: string[]
   tool_count?: number
 }
 interface CheckListProps {
@@ -102,10 +97,6 @@ export interface ProfileDescribeResponse {
   soul?: string
   toolsets?: CapabilityEntry[]
 }
-/** `mcp.catalog` — the bundled, installable MCP menu. */
-export interface McpCatalogResponse {
-  servers?: CapabilityEntry[]
-}
 /** Staged advanced-config edits. Each `dirty*` flag gates one section of the
  *  `profiles.configure` payload, so an untouched section is never written. */
 interface AdvancedConfigState {
@@ -144,16 +135,16 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
     // The user just opened this editor: a cold backend takes the pool's
     // reserved slot instead of queuing behind warm roster backends.
     const opened = { spawnPriority: 'foreground' } as const
-    Promise.all([
-      requestForBot(bot, 'profiles.describe', { name: bot.name }, opened) as Promise<ProfileDescribeResponse>,
-      (requestForBot(bot, 'mcp.catalog', { profile: bot.name }, opened) as Promise<McpCatalogResponse>).catch(
-        () => null
-      )
-    ])
-      .then(([res, cat]) => {
-        const configured = res.mcp_servers || []
-        const have = new Set(configured.map(m => m.name))
-        const catalog = ((cat && cat.servers) || []).filter(s => !have.has(s.name))
+
+    const described = requestForBot(
+      bot,
+      'profiles.describe',
+      { name: bot.name },
+      opened
+    ) as Promise<ProfileDescribeResponse>
+
+    described
+      .then(res => {
         setState(prev => ({
           ...prev,
           provider: res.model?.provider || '',
@@ -161,21 +152,10 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
           soul: res.soul || '',
           skills: res.skills || [],
           toolsets: res.toolsets || [],
-          mcp: [
-            ...configured.map(m => ({
-              ...m,
-              enabled: m.enabled !== false
-            })),
-            ...catalog.map(s => ({
-              name: s.name,
-              enabled: false,
-              fromCatalog: true,
-              installed: s.installed,
-              auth: s.auth,
-              requires: s.requires || [],
-              description: s.description || ''
-            }))
-          ],
+          mcp: (res.mcp_servers || []).map(m => ({
+            ...m,
+            enabled: m.enabled !== false
+          })),
           loaded: true
         }))
       })
@@ -448,38 +428,19 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
               }}
             >
               <div className="grid gap-1 p-2">
-                {mcpList.map(m => {
-                  const needsSetup =
-                    m.fromCatalog &&
-                    !m.installed &&
-                    ((m.requires || []).length > 0 || (m.auth || '').toLowerCase() === 'oauth')
-
-                  return (
-                    <label className="flex items-start gap-2 text-xs text-(--ui-text-secondary)" key={m.name}>
-                      <Checkbox
-                        checked={!!m.enabled}
-                        disabled={needsSetup}
-                        onCheckedChange={value => toggleMcp(m.name, Boolean(value))}
-                      />
-                      <span className="min-w-0">
-                        <span>{m.name}</span>
-                        {m.fromCatalog && !needsSetup ? (
-                          <span className="ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)">
-                            {m.installed ? b.editor.catalogInstalled : b.editor.catalog}
-                          </span>
-                        ) : null}
-                        {needsSetup ? (
-                          <McpSetupButton entry={m} onDone={() => toggleMcp(m.name, true)} profile={backendScope} />
-                        ) : null}
-                        {m.description ? (
-                          <div className="truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)">
-                            {m.description}
-                          </div>
-                        ) : null}
-                      </span>
-                    </label>
-                  )
-                })}
+                {mcpList.map(m => (
+                  <label className="flex items-start gap-2 text-xs text-(--ui-text-secondary)" key={m.name}>
+                    <Checkbox checked={!!m.enabled} onCheckedChange={value => toggleMcp(m.name, Boolean(value))} />
+                    <span className="min-w-0">
+                      <span>{m.name}</span>
+                      {m.description ? (
+                        <div className="truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)">
+                          {m.description}
+                        </div>
+                      ) : null}
+                    </span>
+                  </label>
+                ))}
               </div>
             </div>
           )}

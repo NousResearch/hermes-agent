@@ -125,12 +125,9 @@ export interface Translations extends NoticeTranslations {
     }
     card: {
       kindManaged: string
-      kindCatalog: string
       kindCustom: string
       kindPlugin: (plugin: string) => string
       inCatalog: string
-      hostedTwin: string
-      alsoLocal: string
       open: (name: string) => string
       turnServerOn: (name: string) => string
       turnServerOff: (name: string) => string
@@ -159,7 +156,6 @@ export interface Translations extends NoticeTranslations {
       verb: {
         authenticate: string
         connect: string
-        install: string
         openLogs: string
         reconnect: string
         stopWaiting: string
@@ -236,11 +232,6 @@ export interface Translations extends NoticeTranslations {
       removeServerTitle: (name: string) => string
       removeServerBody: string
       appSwitch: (name: string) => string
-      waysTitle: (name: string) => string
-      wayNotConnected: (name: string) => string
-      wayHosted: string
-      bothOn: (name: string) => string
-      turnOffLocal: string
       providedByPlugin: (plugin: string) => string
       openPlugins: string
       nousLine: string
@@ -259,7 +250,6 @@ export interface Translations extends NoticeTranslations {
     accounts: ConnectorAccountsTranslations
     tools: {
       title: string
-      notInstalledBody: string
       summaryTitle: (name: string) => string
       summaryPreviewTitle: (name: string) => string
       summaryCount: (count: number) => string
@@ -1296,9 +1286,6 @@ export interface Translations extends NoticeTranslations {
       serverJson: string
       remove: string
       test: string
-      catalogLoading: string
-      catalogInstallFailed: (name: string) => string
-      catalogEnvRequired: string
       capabilitySummary: (tools: number, prompts: number, resources: number) => string
       costTokens: (tokens: string) => string
       usage30d: (uses: string) => string

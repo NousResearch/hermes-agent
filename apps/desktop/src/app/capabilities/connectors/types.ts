@@ -28,10 +28,7 @@ export interface HostedConnectorInput {
 
 export interface LocalServerInput {
   canAuthenticate?: boolean
-  connectorSlug?: string
-  description?: string
   enabled: boolean
-  inCatalog?: boolean
   name: string
   plugin?: string
   status: LocalServerStatus
@@ -40,16 +37,6 @@ export interface LocalServerInput {
   toolsOn?: number
   toolsTotal?: number
   unused?: boolean
-}
-
-export type ConnectorAuthType = 'apiKey' | 'none' | 'oauth'
-
-export interface BundledEntryInput {
-  authType: ConnectorAuthType
-  connectorSlug?: string
-  description?: string
-  name: string
-  needsEnv: boolean
 }
 
 export interface ToolInput {
@@ -96,7 +83,7 @@ export interface ConnectorReason {
 }
 
 export type ConnectorVerb =
-  'authenticate' | 'connect' | 'install' | 'openLogs' | 'reconnect' | 'stopWaiting' | 'tryAgain' | 'turnBackOn'
+  'authenticate' | 'connect' | 'openLogs' | 'reconnect' | 'stopWaiting' | 'tryAgain' | 'turnBackOn'
 
 export interface ConnectorWayHosted {
   accountLabel?: string
@@ -113,12 +100,7 @@ export interface ConnectorWayHosted {
 }
 
 export interface ConnectorWayLocal {
-  authType?: ConnectorAuthType
-  entryName?: string
   fact?: ConnectorFact
-  inCatalog?: boolean
-  installed?: boolean
-  needsEnv?: boolean
   plugin?: string
   reason?: ConnectorReason
   serverEnabled?: boolean
@@ -129,8 +111,7 @@ export interface ConnectorWayLocal {
   verb?: ConnectorVerb
 }
 
-export type ConnectorWays =
-  { hosted: ConnectorWayHosted; local: ConnectorWayLocal | null } | { hosted: null; local: ConnectorWayLocal }
+export type ConnectorWays = { hosted: ConnectorWayHosted; local: null } | { hosted: null; local: ConnectorWayLocal }
 
 export interface ConnectorCardModel {
   description?: string

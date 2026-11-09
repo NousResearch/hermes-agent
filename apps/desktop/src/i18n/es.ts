@@ -60,12 +60,9 @@ export const esOverrides = {
     },
     card: {
       kindManaged: 'Administrado',
-      kindCatalog: 'MCP · Catálogo',
       kindCustom: 'MCP · Personalizado',
       kindPlugin: (plugin: string) => `MCP · Plugin ${plugin}`,
       inCatalog: 'En el catálogo de Hermes',
-      hostedTwin: 'Versión administrada disponible',
-      alsoLocal: 'También se ejecuta en este dispositivo',
       open: (name: string) => `Abrir ${name}`,
       turnServerOn: (name: string) => `Activar ${name}`,
       turnServerOff: (name: string) => `Desactivar ${name}`,
@@ -95,7 +92,6 @@ export const esOverrides = {
       verb: {
         authenticate: 'Autenticar',
         connect: 'Conectar',
-        install: 'Instalar',
         openLogs: 'Abrir registros',
         reconnect: 'Volver a conectar',
         stopWaiting: 'Dejar de esperar',
@@ -174,11 +170,6 @@ export const esOverrides = {
       removeServerTitle: (name: string) => `¿Quitar ${name}?`,
       removeServerBody: 'La entrada se quita de mcp.json en este equipo. No se elimina nada más.',
       appSwitch: (name: string) => `Hermes puede usar ${name}`,
-      waysTitle: (name: string) => `Dónde se ejecuta ${name}`,
-      wayNotConnected: (name: string) => `Aún no está conectado. Inicia sesión en ${name} desde tu navegador.`,
-      wayHosted: 'Administrado',
-      bothOn: (name: string) => `Ambos están activados, así que Hermes ve cada herramienta de ${name} dos veces.`,
-      turnOffLocal: 'Desactivar el servidor local',
       providedByPlugin: (plugin: string) => `Proporcionado por el plugin ${plugin}`,
       openPlugins: 'Abrir la pestaña Plugins',
       nousLine: 'Las apps de Nous siguen a tu cuenta, no al perfil.',
@@ -199,7 +190,6 @@ export const esOverrides = {
 
     tools: {
       title: 'Herramientas',
-      notInstalledBody: 'Instálalo en este dispositivo para ver las herramientas que incluye.',
       summaryTitle: (name: string) => `Lo que Hermes puede hacer con ${name}`,
       summaryPreviewTitle: (name: string) => `Lo que Hermes podría hacer con ${name} cuando lo conectes`,
       summaryCount: (count: number) => `${count} herramienta${count === 1 ? '' : 's'}`,
@@ -1879,9 +1869,6 @@ export const esOverrides = {
       serverJson: 'JSON del servidor',
       remove: 'Quitar',
       test: 'Probar conexión',
-      catalogLoading: 'Cargando catálogo MCP...',
-      catalogInstallFailed: name => `No se pudo instalar ${name}`,
-      catalogEnvRequired: 'Completa los valores obligatorios antes de instalar.',
       capabilitySummary: (tools, prompts, resources) =>
         `Habilitado: ${[`${tools} herramientas`, ...(prompts ? [`${prompts} prompts`] : []), ...(resources ? [`${resources} recursos`] : [])].join(', ')}`,
       costTokens: tokens => `~${tokens} tok/llamada`,

@@ -3,15 +3,13 @@ import { queryClient } from '@/lib/query-client'
 import { readJson, writeJson } from '@/lib/storage'
 import { $freeTierStatus } from '@/store/free-tier'
 
-import { MCP_CATALOG_KEY } from '../../mcp/mcp-status'
 import type { LocalServerInput } from '../types'
 
 import { CONNECTOR_LIFETIMES, type ConnectorRead, CONNECTORS_QUERY_ROOT } from './keys'
 
-export type PersistedRead = 'bundled' | 'servers' | ConnectorRead
+export type PersistedRead = 'servers' | ConnectorRead
 
-const persists = (read: PersistedRead): boolean =>
-  read === 'bundled' || read === 'servers' || CONNECTOR_LIFETIMES[read].persist
+const persists = (read: PersistedRead): boolean => read === 'servers' || CONNECTOR_LIFETIMES[read].persist
 
 const STORAGE_PREFIX = 'hermes.connectors.v4.'
 
@@ -29,7 +27,6 @@ interface PersistedEntry {
 type PersistedValue = PersistedEntry['data']
 
 interface PersistedBlob {
-  bundled?: PersistedEntry
   catalog?: PersistedEntry
   identity: PersistedIdentity
   list?: PersistedEntry
@@ -68,7 +65,6 @@ function readBlob(scopeKey: string): PersistedBlob | null {
 }
 
 const SLOTS = {
-  bundled: 'bundled',
   catalog: 'catalog',
   list: 'list',
   servers: 'servers'
@@ -167,10 +163,6 @@ function targetOf(queryKey: readonly unknown[]): null | ReadTarget {
 
   if (typeof scopeKey !== 'string') {
     return null
-  }
-
-  if (root === MCP_CATALOG_KEY[0]) {
-    return { read: 'bundled', scopeKey, slug: undefined }
   }
 
   if (root !== CONNECTORS_QUERY_ROOT || !READS.has(read)) {

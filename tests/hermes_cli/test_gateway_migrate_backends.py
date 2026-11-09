@@ -321,6 +321,35 @@ exit 0
 _SHIMMED = ("ps", "systemctl", "launchctl", "kill", "pkill", "killall", "docker")
 
 
+def _wait_for_detached_prune(scratch, timeout=60.0):
+    """Wait until the scratch-prune child startup detached (``hermes_constants_scratch_detach``) has
+    exited. It outlives the command and may still create ``logs/`` under the home, so the trees are
+    compared only once it is gone. It is spawned before the command exits, so it is either still in
+    the process table (its argv names *scratch*) or already finished; a zombie counts as finished."""
+    import time
+
+    needles = {os.fsencode(str(scratch)), os.fsencode(os.path.realpath(scratch))}
+    deadline = time.monotonic() + timeout
+    while True:
+        alive = []
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                with open(f"/proc/{entry}/cmdline", "rb") as fh:
+                    argv = fh.read().split(b"\0")
+                with open(f"/proc/{entry}/stat", "rb") as fh:
+                    state = fh.read().rsplit(b")", 1)[1].split()[0]
+            except OSError:
+                continue
+            if needles.intersection(argv) and state != b"Z":
+                alive.append(int(entry))
+        if not alive:
+            return
+        assert time.monotonic() < deadline, f"detached scratch prune still running: {alive}"
+        time.sleep(0.05)
+
+
 def _fresh_hermes(tmp_path, name, *cli):
     """Run ``python -m hermes_cli.main <cli>`` in a fresh process with its own homes and shimmed tools."""
     root = tmp_path / name
@@ -333,18 +362,22 @@ def _fresh_hermes(tmp_path, name, *cli):
     log.touch()
     homes = {"hermes_home": root / "hermes-home", "home": root / "home"}
     homes["home"].mkdir()
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("HERMES_", "TERMUX_"))}
+    # No inherited temp vars (TMPDIR/TMP/TEMP, HERMES_SCRATCH_DIR): a user-set one makes startup
+    # skip scratch setup, so both children run the default boot — scratch dir plus its detached prune.
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("HERMES_", "TERMUX_")) and k not in {"TMPDIR", "TMP", "TEMP"}}
     env.update({"HERMES_HOME": str(homes["hermes_home"]), "HOME": str(homes["home"]), "PYTHONPATH": _REPO,
                 "PATH": f"{shims}{os.pathsep}{env.get('PATH', '/usr/bin:/bin')}", "SHIM_LOG": str(log),
                 "PYTHONDONTWRITEBYTECODE": "1"})
     proc = subprocess.run([sys.executable, "-m", "hermes_cli.main", *cli], cwd=_REPO, env=env,
                           capture_output=True, text=True, timeout=180, check=False)
+    _wait_for_detached_prune(homes["hermes_home"] / "cache" / "scratch")
     trees = {key: sorted(str(p.relative_to(path)) for p in path.rglob("*")) if path.exists() else []
              for key, path in homes.items()}
     return proc, [line.split() for line in log.read_text().splitlines()], trees
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell shims")
+@pytest.mark.platforms("linux")  # POSIX shell shims; the detached prune child is found via /proc
 def test_real_entry_point_report_writes_only_what_plain_migrate_dry_run_writes(tmp_path):
     """Through the real entry point, ``--backends`` issues no mutating service/kill command and leaves
     the same files behind as the existing read-only ``gateway migrate --dry-run`` (normal startup)."""
@@ -358,7 +391,7 @@ def test_real_entry_point_report_writes_only_what_plain_migrate_dry_run_writes(t
     assert payload["applied"] is False
     assert [b["pid"] for b in payload["backends"]] == [424242]
 
-    assert calls and calls[0][:2] == ["ps", "-A"]
+    assert ["ps", "-A"] in [c[:2] for c in calls]
     for call in calls:
         tool, rest = call[0], [a for a in call[1:] if a != "--user"]
         assert tool not in {"kill", "pkill", "killall", "docker"}, call
@@ -368,4 +401,5 @@ def test_real_entry_point_report_writes_only_what_plain_migrate_dry_run_writes(t
             assert rest and rest[0] in _READ_ONLY_LAUNCHCTL, call
     assert not any(c[0] in {"kill", "pkill", "killall"} for c in base_calls)
 
+    assert any(p.startswith("cache/scratch") for p in trees["hermes_home"]), trees  # default startup ran
     assert trees == base_trees

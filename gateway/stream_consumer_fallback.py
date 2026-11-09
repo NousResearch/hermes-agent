@@ -144,9 +144,11 @@ class StreamFallbackMixin:
             result = await self._send_with_flood_retry(
                 content=chunk, reply_to=None if sent_any_chunk else anchor,
                 retry_log="Flood control on fallback send, retrying in %.1fs")
-            if result and not result.success and self._send_failure_may_have_delivered(result):
+            if (result and not result.success and self._send_failure_may_have_delivered(result)
+                    and self._fits_one_platform_message(chunk)):
                 # This chunk may be on screen: count it, so neither it nor the whole answer is
-                # sent again; later chunks still go out and must land on their own.
+                # sent again; later chunks still go out and must land on their own. A chunk the
+                # platform splits again is not counted: its later messages were never attempted.
                 sent_any_chunk = True
                 last_successful_chunk = chunk
                 continue
@@ -247,6 +249,16 @@ class StreamFallbackMixin:
             except Exception as e:
                 logger.debug("per-chat limit resolution failed: %s", e)
         return _len_fn, raw_limit
+
+    def _fits_one_platform_message(self, chunk: str) -> bool:
+        """True when the adapter sends ``chunk`` as ONE message (Telegram's MarkdownV2 escaping can
+        grow a raw chunk past the cap, and its send then splits it again)."""
+        fmt = getattr(self.adapter, "format_message", None)
+        formatted = fmt(chunk) if callable(fmt) else chunk
+        if not isinstance(formatted, str):
+            return True
+        len_fn, limit = self._fallback_len_budget()
+        return len_fn(formatted) <= limit
 
     async def _send_with_flood_retry(self, *, content: str, retry_log: str, reply_to=None):
         """adapter.send(final metadata) with ONE bounded flood retry; returns the last

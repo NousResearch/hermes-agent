@@ -16,6 +16,7 @@
 
 import { atom, batch } from 'nanostores'
 
+import { NEW_SESSION_TITLE } from '@/lib/chat-runtime'
 import { readJson, writeJson } from '@/lib/storage'
 
 import type { WorkspaceMode } from '../../contrib/types'
@@ -101,7 +102,7 @@ export function workspaceOwnerTitle(title: string, scope: WorkspaceTabScope | un
     scope?.workspaceMode !== 'bots' ||
     !scope.workspaceOwnerKey ||
     !scope.workspaceTabTitle ||
-    (title !== scope.workspaceTabTitle && title !== 'New session')
+    (title !== scope.workspaceTabTitle && title !== NEW_SESSION_TITLE)
   ) {
     return title
   }

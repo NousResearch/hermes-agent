@@ -1055,6 +1055,7 @@ class KubernetesEnvironment(BaseEnvironment):
         timeout: int = 60,
         api=None,
         sync_files: bool = True,
+        probe_only: bool = False,
     ):
         super().__init__(cwd=cwd, timeout=timeout)
         self._provisioner = provisioner
@@ -1065,6 +1066,7 @@ class KubernetesEnvironment(BaseEnvironment):
         # over an API call.
         self._provision_lock = threading.RLock()
         self._sync_manager = None
+        self._probe_only = probe_only
         # Captured once: the synced ~/.hermes tree stays where the first sync
         # put it, even after the agent cds away.
         self._hermes_base = posixpath.join(cwd or "/workspace", ".hermes")
@@ -1086,7 +1088,7 @@ class KubernetesEnvironment(BaseEnvironment):
             self._best_effort_destroy(task_id)
             raise
 
-        if sync_files:
+        if sync_files and not probe_only:
             # No bind mounts, so skills/credentials/caches get pushed in.
             # One-way on purpose: the synced set is host-authored.
             self._sync_manager = FileSyncManager(
@@ -1100,7 +1102,11 @@ class KubernetesEnvironment(BaseEnvironment):
             except Exception as exc:
                 logger.warning("initial file sync failed: %s", exc)
 
-        self.init_session()
+        if probe_only:
+            # uname needs neither a login shell nor the gateway's cache tree.
+            self._prefer_nonlogin = True
+        else:
+            self.init_session()
 
     # -- provisioning ---------------------------------------------------
     def _best_effort_destroy(self, task_id: str) -> None:
@@ -1168,7 +1174,8 @@ class KubernetesEnvironment(BaseEnvironment):
         self._snapshot_ready = False
         # Bare, as __init__ does: init_session() swallows and logs its own
         # failures.
-        self.init_session()
+        if not self._probe_only:
+            self.init_session()
         return pod_ref
 
     def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
@@ -1677,6 +1684,15 @@ class KubernetesEnvironment(BaseEnvironment):
         timed_out = False
         # Set before the write loop: writes are the phase most likely to hang.
         deadline = time.monotonic() + max(1, timeout)
+
+        def write_stdin(chunk: str) -> None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("kubernetes file sync: upload deadline expired")
+            # A deadline checked between writes cannot interrupt a blocked send.
+            resp.sock.settimeout(remaining)
+            resp.write_stdin(chunk)
+
         try:
             for block in (encoded,) if isinstance(encoded, str) else encoded:
                 if not block.endswith("\n"):
@@ -1685,12 +1701,12 @@ class KubernetesEnvironment(BaseEnvironment):
                     if time.monotonic() >= deadline:
                         timed_out = True
                         break
-                    resp.write_stdin(block[offset:offset + _STDIN_CHUNK_BYTES])
+                    write_stdin(block[offset:offset + _STDIN_CHUNK_BYTES])
                     self._drain(resp, chunks)
                 if timed_out:
                     break
             if not timed_out:
-                resp.write_stdin(f"{_SYNC_SENTINEL}\n")
+                write_stdin(f"{_SYNC_SENTINEL}\n")
             if getattr(resp, "subprotocol", None) == V5_CHANNEL_PROTOCOL:
                 try:
                     resp.close_channel(STDIN_CHANNEL)
@@ -1706,6 +1722,10 @@ class KubernetesEnvironment(BaseEnvironment):
                 resp.update(timeout=1)
                 self._drain(resp, chunks)
             self._drain(resp, chunks)
+        except Exception:
+            if time.monotonic() < deadline:
+                raise
+            timed_out = True
         finally:
             try:
                 resp.close()

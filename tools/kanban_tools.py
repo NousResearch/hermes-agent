@@ -1004,12 +1004,15 @@ _MAX_ATTACH_URL_REDIRECTS = 5
 def _download_url_with_cap(url: str, max_bytes: int) -> tuple[bytes, Optional[str]]:
     """Fetch ``url`` over http(s) capped at ``max_bytes`` -> ``(data, content_type)``.
     Every hop is SSRF-checked (redirects followed manually) so a model-controlled URL, or a
-    public host 302ing, cannot reach loopback/private/cloud-metadata ranges. ``ValueError``
+    public host 302ing, cannot reach loopback/private/cloud-metadata ranges. The pre-flight
+    ``is_safe_url`` check is only advisory: the actual connection goes through
+    ``create_ssrf_safe_client``, which resolves the host once at connect time, validates every
+    answer, and dials the vetted IP (Host/SNI stay on the hostname), so a DNS-rebinding answer
+    that flips between the check and the connect cannot reach a private address. ``ValueError``
     for bad scheme, blocked target, too many redirects, or a body over the cap (checked
     while streaming, so nothing oversize is buffered)."""
     from urllib.parse import urljoin, urlparse
-    import httpx
-    from tools.url_safety import is_safe_url
+    from tools.url_safety import create_ssrf_safe_client, is_safe_url
     current_url = url
     for _ in range(_MAX_ATTACH_URL_REDIRECTS + 1):
         scheme = (urlparse(current_url).scheme or "").lower()
@@ -1020,8 +1023,9 @@ def _download_url_with_cap(url: str, max_bytes: int) -> tuple[bytes, Optional[st
                 f"URL blocked by SSRF protection (private/internal address): {current_url}")
         chunks: list[bytes] = []
         total = 0
-        with httpx.stream("GET", current_url, headers={"User-Agent": "hermes-kanban/attach"},
-                          timeout=30, follow_redirects=False) as resp:
+        with create_ssrf_safe_client(timeout=30, follow_redirects=False) as client, \
+                client.stream("GET", current_url,
+                              headers={"User-Agent": "hermes-kanban/attach"}) as resp:
             if resp.is_redirect:
                 location = resp.headers.get("location")
                 if not location:

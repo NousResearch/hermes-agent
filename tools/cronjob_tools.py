@@ -876,8 +876,8 @@ def _update_core_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[st
         updates["deliver"] = _resolve_update_deliver(job, _normalize_deliver_param(deliver))
     if a["failure_deliver"] is not None:
         # '' clears the override (failures fall back to deliver); non-empty values share
-        # deliver's validation AND its cron-context origin resolution (a job created from
-        # inside a cron run must never store literal 'origin').
+        # deliver's validation AND its update-path origin resolution (an origin-less job edited
+        # from inside a cron run still resolves the running job's ephemeral origin).
         _norm_fd = _normalize_deliver_param(a["failure_deliver"])
         if _norm_fd:
             bot_chat_error = _validate_bot_chat_deliver(_norm_fd)

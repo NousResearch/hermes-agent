@@ -924,6 +924,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _handle_approval_tap(self, to: str, inner: dict[str, Any], parts: list) -> bool:
         _, approval_id, choice = parts
+        from gateway.approval_actor import approval_refusal, refusal_text
+        if requester := approval_refusal(self._exec_approval_state.get(approval_id) or "", to, extra=self.config.extra,
+                                         request_id=self._approval_request_ids().get(approval_id)):
+            await self._reply_best_effort(to, refusal_text(requester), "[whatsapp_cloud] approval refusal reply failed")
+            return True  # left pending for the requester
         session_key = self._pop_tap_state(
             self._exec_approval_state, approval_id,
             "[whatsapp_cloud] approval tap with no matching state (approval_id=%s) — likely stale; falling back to text",
@@ -935,7 +940,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         approval = _optional_module("tools.approval", "[whatsapp_cloud] approval resolver unavailable")
         if approval is None:
             return False
-        count = approval.resolve_gateway_approval_card(session_key, choice, request_id)
+        count = approval.resolve_gateway_approval_card(session_key, choice, request_id, actor_id=to,
+                                                       extra=self.config.extra)
         # A tap after the wait timed out (count == 0) must not claim approval:
         # the command was already denied fail-closed.
         if count:

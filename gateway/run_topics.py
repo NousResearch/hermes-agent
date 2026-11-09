@@ -10,7 +10,7 @@ import logging
 import re
 import threading
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Tuple
 
@@ -176,21 +176,56 @@ class GatewayTopicThreadsMixin:
         except Exception:
             logger.debug("telegram topic binding refresh failed (%s)", reason, exc_info=True)
 
-    async def _follow_telegram_topic_switch(self, source: SessionSource, session_entry, title: str, *,
-                                            reason: str) -> None:
+    @staticmethod
+    def _telegram_topic_key(source: SessionSource) -> tuple:
+        return (str(source.chat_id), str(source.thread_id))
+
+    @contextmanager
+    def _telegram_topic_publication(self, source: SessionSource):
+        """Brackets a command's route switch and its topic-binding write. Between the two the route
+        names the new session while the binding still names the old one, and the binding heal would
+        switch the route straight back; the heal reads this marker and never acts across it.
+        Synchronous bookkeeping only: never spans the remote topic rename."""
+        state = self.__dict__.setdefault("_topic_publications", {}).setdefault(
+            self._telegram_topic_key(source), [0, 0])
+        state[0] += 1  # in flight
+        state[1] += 1  # publications begun (kept per topic so a finished one is still seen)
+        try:
+            yield
+        finally:
+            state[0] -= 1
+
+    def _telegram_topic_publication_token(self, source: SessionSource) -> tuple:
+        """(in flight, begun) for this topic; the heal snapshots it before reading the binding."""
+        return tuple(self.__dict__.get("_topic_publications", {}).get(self._telegram_topic_key(source), (0, 0)))
+
+    def _telegram_topic_publication_moved(self, source: SessionSource, token: tuple) -> bool:
+        """True when a switch was in flight at ``token`` or began since: a binding read under it may
+        predate that switch's own write, so acting on it would undo the switch."""
+        return bool(token[0]) or self._telegram_topic_publication_token(source) != token
+
+    async def _follow_telegram_topic_switch(self, source: SessionSource, session_entry, *, reason: str) -> bool:
         """A command that repoints a topic lane at another session (/branch --here, /resume) rewrites
         the persisted topic binding, else the next message's binding heal switches the topic straight
-        back to the old session (#58850); the topic is then renamed to the session it now holds."""
+        back to the old session (#58850). Call inside ``_telegram_topic_publication`` right after the
+        route switch. False = a newer switch superseded this one (nothing written); True otherwise,
+        including when ``source`` is not a topic lane."""
         if not await asyncio.to_thread(self._is_telegram_topic_lane, source):
+            return True
+        return await asyncio.to_thread(self._bind_telegram_topic_if_route_holds, source, session_entry,
+                                       reason=reason)
+
+    async def _rename_telegram_topic_after_switch(self, source: SessionSource, session_entry, title: str) -> None:
+        """Rename the topic to the session a switch moved it to. Per topic, renames land in switch
+        order and only while the route still names ``session_entry``: an older /resume parked in its
+        rename would otherwise land its title after a newer switch renamed the topic."""
+        if not title or not await asyncio.to_thread(self._is_telegram_topic_lane, source):
             return
-        # Per topic, one switch's bind + rename finishes before the next starts: an older /resume
-        # parked in its rename would otherwise land its title after a newer switch renamed the topic.
         from gateway.session_authority import keyed_turn
         locks = self.__dict__.setdefault("_topic_switch_locks", {})
-        async with keyed_turn(locks, (str(source.chat_id), str(source.thread_id))):
-            holds = await asyncio.to_thread(self._bind_telegram_topic_if_route_holds, source, session_entry,
-                                            reason=reason)
-            if title and holds:
+        async with keyed_turn(locks, self._telegram_topic_key(source)):
+            route = await asyncio.to_thread(self.session_store.peek_session_id, session_entry.session_key)
+            if route == session_entry.session_id:
                 await self._rename_telegram_topic_for_session_title(source, session_entry.session_id, title)
 
     def _bind_telegram_topic_if_route_holds(self, source: SessionSource, session_entry, *, reason: str) -> bool:

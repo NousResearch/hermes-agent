@@ -17,14 +17,18 @@ from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from tests.waiting import async_wait_until
 
 _TIMED_OUT = SimpleNamespace(success=False, message_id=None, error="Timed out", retryable=False)
+# A reset after the write: no "timeout" in the text, the adapter marks the result uncertain instead.
+_RESET = SimpleNamespace(success=False, message_id=None, retryable=False,
+                         error="Server disconnected without sending a response.",
+                         raw_response={"delivery_uncertain": True})
 
 
-def _landing_adapter(delivered: list, *, fail_first: bool = True) -> MagicMock:
-    """Every send reaches the chat; the first one reports a post-write timeout."""
+def _landing_adapter(delivered: list, *, fail_first: bool = True, failure=_TIMED_OUT) -> MagicMock:
+    """Every send reaches the chat; the first one reports a post-write failure."""
     async def send(**kw):
         delivered.append(kw["content"])
         if fail_first and len(delivered) == 1:
-            return _TIMED_OUT
+            return failure
         return SimpleNamespace(success=True, message_id=f"m{len(delivered)}")
 
     adapter = MagicMock()
@@ -37,14 +41,15 @@ def _landing_adapter(delivered: list, *, fail_first: bool = True) -> MagicMock:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [_TIMED_OUT, _RESET], ids=["timeout", "reset_after_write"])
 @pytest.mark.parametrize("shape", ["short_final", "streamed_preview"])
-async def test_timed_out_stream_send_is_shown_once_and_nothing_is_lost(shape):
+async def test_timed_out_stream_send_is_shown_once_and_nothing_is_lost(shape, failure):
     """A short answer whose only send times out goes out once and counts as the turn's delivery
     (the gateway's normal final send stays suppressed). A timed-out preview is followed by its
     unseen tail only, never by a second full copy."""
     delivered: list = []
     consumer = GatewayStreamConsumer(
-        _landing_adapter(delivered), "chat",
+        _landing_adapter(delivered, failure=failure), "chat",
         StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=""))
     if shape == "short_final":
         consumer.on_delta("Short answer.")

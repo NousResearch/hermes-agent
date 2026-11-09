@@ -282,9 +282,13 @@ class StreamFallbackMixin:
 
     @staticmethod
     def _send_failure_may_have_delivered(result_or_exc: Any) -> bool:
-        """Return True for timeout failures where retrying may duplicate."""
+        """Return True for timeout failures where retrying may duplicate, or a result the adapter
+        marked ``raw_response["delivery_uncertain"]`` (e.g. a connection reset after the write)."""
         if getattr(result_or_exc, "retryable", None) is True:
             return False
+        raw = getattr(result_or_exc, "raw_response", None)
+        if isinstance(raw, dict) and raw.get("delivery_uncertain"):
+            return True
         error = str(getattr(result_or_exc, "error", None) or result_or_exc).lower()
         name = result_or_exc.__class__.__name__.lower()
         return "timeout" in error or "timed out" in error or "timeout" in name

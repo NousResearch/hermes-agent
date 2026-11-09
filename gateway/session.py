@@ -670,9 +670,9 @@ def is_shared_multi_user_session(
     isolation rules in :func:`build_session_key`)."""
     if source.chat_type == "dm":
         return False
-    if getattr(source, "shared_session", False):
+    if getattr(source, "shared_session", False) or not group_sessions_per_user:
         return True
-    return not (thread_sessions_per_user if source.thread_id else group_sessions_per_user)
+    return bool(source.thread_id) and not thread_sessions_per_user
 
 
 def _session_key_namespace(profile: Optional[str]) -> str:

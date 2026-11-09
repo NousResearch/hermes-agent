@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
-import json
 import logging
 import os
 import shlex
@@ -332,17 +331,11 @@ class GatewaySessionCommandsMixin:
             org_pid = str(origin.user_id_alt or origin.user_id or "")
             return bool(cur_pid) and cur_pid == org_pid
         # Non-DM: a shared key is one session for everyone; a per-user key compares the participant
-        # it is built from, failing closed when either side lacks one. The TARGET's key decides: a
-        # caller on a shared key (Telegram observe-mode commands) may still not take over another
-        # member's per-user session in the same chat (#151756). A participant-less origin (observe
-        # sessions stored before ``shared_session`` existed) is the shared key for a shared caller,
-        # as ``_row_is_shared_session`` rules for stored rows; a per-user caller still fails closed.
-        if self._is_shared_session_source(origin):
+        # it is built from, failing closed when either side lacks one.
+        if self._target_is_shared(current, origin):
             return True
         cur_pid = current.user_id_alt or current.user_id
         org_pid = origin.user_id_alt or origin.user_id
-        if not org_pid and getattr(current, "shared_session", False):
-            return True
         return bool(cur_pid and org_pid) and cur_pid == org_pid
 
     def _is_shared_session_source(self, source: SessionSource) -> bool:
@@ -352,21 +345,13 @@ class GatewaySessionCommandsMixin:
             source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False))
 
-    def _row_is_shared_session(self, source: SessionSource, row: dict) -> bool:
-        """Whether a same-chat persisted *row* is on a shared key. The caller's own ``shared_session``
-        flag (Telegram observe-mode commands) says nothing about the row: the chat can still hold
-        members' per-user rows. The row is shared when the config shares this chat shape, its stored
-        origin carries the flag, or a shared caller meets a participant-less row (the observe source
-        stores none)."""
-        if self._is_shared_session_source(dataclasses.replace(source, shared_session=False)):
+    def _target_is_shared(self, caller: SessionSource, target: SessionSource) -> bool:
+        """Whether same-chat *target* is on its chat's shared key. The target decides, never the caller:
+        an observe-mode caller is shared while the chat still holds members' per-user sessions (#151756).
+        A participant-less target from before the ``shared_session`` flag counts only for a shared caller."""
+        if self._is_shared_session_source(target):
             return True
-        try:
-            origin = json.loads(row.get("origin_json") or "{}")
-        except (TypeError, ValueError):
-            origin = {}
-        if isinstance(origin, dict) and origin.get("shared_session"):
-            return True
-        return not row.get("user_id") and bool(getattr(source, "shared_session", False))
+        return bool(getattr(caller, "shared_session", False)) and not (target.user_id_alt or target.user_id)
 
     def _resume_caller_is_admin(self, source: SessionSource) -> bool:
         """Whether *source* is an EXPLICITLY-configured admin (cross-origin /resume, /sessions).
@@ -407,10 +392,10 @@ class GatewaySessionCommandsMixin:
         if not (row_chat and caller_chat and row_chat == caller_chat):
             return False
         # A SHARED group/thread is one session for everyone: same-chat proof suffices (a user-id
-        # check would block co-members). A per-user key still requires the same owner. The ROW's key
-        # decides, not the caller's: an observe-mode caller is shared but the chat still holds
-        # members' per-user rows (#151756).
-        if self._row_is_shared_session(source, row):
+        # check would block co-members). A per-user key still requires the same owner.
+        from gateway.session_route_recovery import _row_source
+        target = _row_source(row, source.platform, None)
+        if target is not None and self._target_is_shared(source, target):
             return True
         if caller_keys_on_alt:
             return False

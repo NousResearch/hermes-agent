@@ -551,10 +551,7 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         override_base_url = model_override.get("base_url")
         resolve_kwargs = {}
         provider_norm = str(requested_provider or "").strip().lower()
-        # A resumed row can persist a model with an EMPTY provider (no gateway_runtime /
-        # billing_provider recorded for it): heal the identity for "" as well as bare "custom",
-        # or the model falls through to the config main slot, which does not serve it and every
-        # turn 404s (#132648).
+        # An empty provider names no route either; unhealed, the model lands on the main slot (#132648).
         if provider_norm in ("", "custom"):
             from hermes_cli.runtime_provider import canonical_custom_identity
             if recovered := canonical_custom_identity(base_url=override_base_url or None, model=model or None):

@@ -91,10 +91,9 @@ def stored_session_route(session_meta, *, current_model, current_provider):
 
 
 def _heal_bare_custom_provider(provider, *, base_url, model):
-    """Bare ``custom`` is a billing class, not a routable identity: persisting/restoring it makes a
-    later resume hard-fail once the config default leaves the custom endpoint. Recover the durable
-    ``custom:<name>`` menu key from the endpoint, else drop the provider (None)."""
-    if str(provider or "").strip().lower() != "custom":
+    """Bare ``custom`` is a billing class, not a routable identity, and an empty provider names none
+    (#132648): recover the durable ``custom:<name>`` menu key from the endpoint or model, else None."""
+    if str(provider or "").strip().lower() not in ("", "custom"):
         return provider
     try:
         # Heal bare "custom" persisted by older builds / gateway turns: it's the resolved billing class, not

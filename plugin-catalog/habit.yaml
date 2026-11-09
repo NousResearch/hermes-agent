@@ -1,9 +1,9 @@
 name: habit
 repo: https://github.com/scottleimroth/habit
-sha: 973100abb772c2663685f24d8e08eb1a2ebe125d
+sha: a37b3e7349c1947cba899cad1f7356267faed62b
 title: Habit
 description: >-
-  Learns which commands you already approve, proposes a safe allowlist pattern after a few matching approvals, and only
+  Learns which commands you already approve, proposes an allowlist entry after a few matching approvals (the exact command, or any-container docker stop|restart), and only
   writes it to Hermes's command_allowlist after you run /habit accept. Wipes, download-and-execute pipes, git push and
   secret paths are never proposed, and /habit undo or /habit uninstall take every entry back.
   Disclosure: uses Hermes's public config load/save functions to store accepted rules and remove them.
@@ -16,9 +16,9 @@ maintainer: scottleimroth
 tier: community
 category: automation
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/scottleimroth/habit/blob/973100abb772c2663685f24d8e08eb1a2ebe125d/README.md
-version: "0.1.2"
-image: https://raw.githubusercontent.com/scottleimroth/habit/973100abb772c2663685f24d8e08eb1a2ebe125d/docs/banner.png
+docs_url: https://github.com/scottleimroth/habit/blob/a37b3e7349c1947cba899cad1f7356267faed62b/README.md
+version: "0.1.3"
+image: https://raw.githubusercontent.com/scottleimroth/habit/a37b3e7349c1947cba899cad1f7356267faed62b/docs/banner.png
 platforms:
   - linux
 capabilities:

@@ -61,3 +61,16 @@ def test_offer_gates_are_decided_at_read_time(tmp_path, monkeypatch):
         monkeypatch.setitem(su._ENV_DETECTORS, "kanban", lambda: True)
         names = [s["name"] for s in st.find_all_skills()]
     assert "gated" in names, "scan-time eligibility was persisted: the flipped context never applied"
+
+
+def test_kanban_gate_runs_the_real_detector(tmp_path):
+    """The kanban gate must survive its own call-out: an explicitly selected kanban toolset
+    surfaces a kanban-gated skill through the real catalog (stubbing ``_ENV_DETECTORS`` hides
+    a TypeError in ``_detect_kanban``, whose silent ``except`` would hide every kanban skill)."""
+    _skill_md(tmp_path, "kanban-play", frontmatter_extra="environments: [kanban]")
+    from tools.kanban_toolset_context import scoped_kanban_toolset_selection
+
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path), scoped_kanban_toolset_selection(["kanban"]):
+        st.clear_skills_cache()
+        names = [s["name"] for s in st.find_all_skills()]
+    assert "kanban-play" in names, "an explicitly selected kanban toolset hid its own skills"

@@ -154,9 +154,9 @@ def _detect_kanban() -> bool:
             return True
     try:
         from tools.kanban_tools import _profile_has_kanban_toolset
-        # Offer-time gate: never import every plugin to decide whether a menu entry is relevant
-        # (~7 s on a large install). A stale key set costs a menu entry, never a tool.
-        return bool(_profile_has_kanban_toolset(await_plugin_discovery=False))
+        # Read-time gate, paid per kanban-tagged row per lookup: a contextvar read plus the
+        # signature-cached config — no plugin discovery anywhere on this path.
+        return bool(_profile_has_kanban_toolset())
     except Exception:
         return False
 

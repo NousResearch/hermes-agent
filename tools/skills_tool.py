@@ -203,8 +203,6 @@ def _dir_tree_signature(root, sig, depth=_SIGNATURE_MAX_DEPTH) -> None:
     except OSError:
         return
     names.sort()
-    # A skill dir is a leaf: the catalog only reads its top-level SKILL.md, so its subdirectories are
-    # bulk the signature must not pay for.
     sig.append((str(root), tuple(names), () if skill_md is not None else tuple(sorted(md_names)), skill_md))
     if depth <= 0:
         return

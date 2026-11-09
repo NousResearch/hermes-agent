@@ -130,6 +130,38 @@ def _render_emphasis(tokens: list, stash, escape) -> str:
     return "".join(parts)
 
 
+# A link target Telegram can open: a scheme URL (https:, tg:, mailto:) or a bare domain. A schemeless
+# title ("[Title](Title)") or Hermes' desktop-only "@session:" reference is shown as raw syntax.
+_RENDERABLE_LINK_TARGET_RE = re.compile(
+    r'(?i)^(?:[a-z][a-z0-9+.-]*:[^\s@]\S*|[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:[/?#:]\S*)?)$')
+_MD_LINK_RE = re.compile(r'\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)')
+# Fences, then inline spans closed by a backtick run of the SAME width (CommonMark, as
+# ``_RICH_DOLLAR_RE``'s code branch): ``a [k](v w)`` is one span, not two empty ones.
+_MD_CODE_RE = re.compile(r'```[\s\S]*?(?:```|$)|(?P<ticks>`+)[^\n]*?(?<!`)(?P=ticks)(?!`)')
+
+
+def link_target_renders(target: str) -> bool:
+    return bool(_RENDERABLE_LINK_TARGET_RE.match(target.strip()))
+
+
+def degrade_unrenderable_links(markdown: str) -> str:
+    """``[label](target)`` → ``label`` when Telegram cannot open ``target`` (rich-message path; code
+    spans and fences stay verbatim)."""
+    if '](' not in markdown:
+        return markdown
+    out, pos = [], 0
+    for code in _MD_CODE_RE.finditer(markdown):
+        out.append(_MD_LINK_RE.sub(_link_or_label, markdown[pos:code.start()]))
+        out.append(code.group(0))
+        pos = code.end()
+    out.append(_MD_LINK_RE.sub(_link_or_label, markdown[pos:]))
+    return ''.join(out)
+
+
+def _link_or_label(m) -> str:
+    return m.group(0) if link_target_renders(m.group(2)) else m.group(1)
+
+
 def _escape_mdv2(text: str) -> str:
     """Escape Telegram MarkdownV2 special characters with a preceding backslash."""
     return _MDV2_ESCAPE_RE.sub(r'\\\1', text)
@@ -195,10 +227,12 @@ def to_markdown_v2(content: str) -> str:
     def _convert_link(m):
         if _crosses_quote_edge(text, m.start(), m.end()):
             return m.group(0)  # Telegram ends the quote at the newline, cutting the link: keep it literal
+        if not link_target_renders(m.group(2)):
+            return _ph(_escape_mdv2(m.group(1)))  # Telegram would show the raw [label](target) syntax
         url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
         return _ph(f'[{_escape_mdv2(m.group(1))}]({url})')
 
-    text = re.sub(r'\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)', _convert_link, text)
+    text = _MD_LINK_RE.sub(_convert_link, text)
     # 4) Headers (## Title) → bold *Title*, stripping redundant ** inside the header
     def _convert_header(m):
         inner = re.sub(r'\*\*(.+?)\*\*', r'\1', m.group(1).strip())

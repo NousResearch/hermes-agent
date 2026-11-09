@@ -35,6 +35,7 @@ from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
 )
+from gateway.session_context import scoped_turn_actor
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
@@ -1788,10 +1789,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         # whole _run_agent chain unwinds — too late for the in-band follow-up. Use the same (session_key,
         # session_id) the recursive call runs under so the snapshot matches exactly what the follow-up's
         # guard will consult. Fail-safe in helper.
-        # Acknowledge the follow-up the way an idle-session message is: this in-band drain is the only
-        # place a queued/interrupting message ever runs, so base.py's hook site is never entered for it.
-        # Resolve the adapter from the follow-up's OWN source — a multiplexed gateway can route it to a
-        # different profile's adapter, and only that instance holds the per-message reaction state.
+        # Acknowledge the follow-up like an idle-session message (base.py's hook site never sees an in-band
+        # drain), via the adapter of its OWN source: only that profile's instance holds its reaction state.
         from gateway.run_turn_followup_ack import _followup_cancel_outcome, _run_followup_processing_hook
         _hook_adapter = self._intake_adapter_for(next_source) if pending_event is not None else None
         await _run_followup_processing_hook(_hook_adapter, pending_event, "on_processing_start")
@@ -1799,20 +1798,19 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         # (the helper's own ``except Exception`` does not catch cancellation).
         try:
             await self._refresh_agent_cache_message_count(session_key, session_id)
-
-            followup_result = await self._run_agent(
-                message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
-                source=next_source, session_id=session_id, session_key=next_session_key,
-                run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
-                event_message_id=next_message_id, inbound_message_id=next_inbound_id,
-                channel_prompt=next_channel_prompt, message_type=next_message_type,
-                persist_user_message=next_persist_message,
-                persist_user_display_kind=next_display_kind,
-                reply_expected=next_reply_expected,
-                persist_user_display_metadata={
-                    **display_metadata_for_event(pending_event),
-                    **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
-            )
+            # The follow-up is its own sender's turn: approvals it raises name that sender, not the opener.
+            with scoped_turn_actor(pending_event, self._session_state(session_key).turn) if pending_event is not None else nullcontext():
+                followup_result = await self._run_agent(
+                    message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
+                    source=next_source, session_id=session_id, session_key=next_session_key,
+                    run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
+                    event_message_id=next_message_id, inbound_message_id=next_inbound_id,
+                    channel_prompt=next_channel_prompt, message_type=next_message_type,
+                    persist_user_message=next_persist_message, persist_user_display_kind=next_display_kind,
+                    reply_expected=next_reply_expected, persist_user_display_metadata={
+                        **display_metadata_for_event(pending_event),
+                        **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+                )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
                 _hook_adapter, pending_event, "on_processing_complete", _followup_cancel_outcome(_hook_adapter))

@@ -76,7 +76,8 @@ def stored_session_route(session_meta, *, current_model, current_provider,
         # A healed entry resolves its own current endpoint. A route that didn't heal is gone with its
         # endpoint and wire, which must not ride on the ambient provider.
         base_url = None
-        if provider is None:
+        if provider is None or not stored_provider:
+            # An empty provider's saved wire came from turns that went to the wrong provider (#132648).
             api_mode = None
     provider_changed = bool(provider) and provider != current_provider
     from hermes_cli.runtime_provider import is_foreign_provider_endpoint
@@ -102,13 +103,23 @@ def stored_session_route(session_meta, *, current_model, current_provider,
     return stored_model, provider, base_url, api_mode, provider_changed
 
 
-def _heal_bare_custom_provider(provider, *, base_url, model, allow_unmatched_endpoint=False):
-    """Resolve named custom routes; keep bare custom only for a fresh explicit route.
+def _main_slot_serves(model) -> bool:
+    """An empty provider means the row ran on the profile's route; it is lost only once that route
+    targets another model (#132648)."""
+    from hermes_cli.runtime_provider import _get_model_config
+    return str(_get_model_config().get("default") or "").strip() == str(model or "").strip()
 
-    Legacy billing-only rows with no complete saved route still drop to ambient.
-    """
-    if str(provider or "").strip().lower() != "custom":
+
+def _heal_bare_custom_provider(provider, *, base_url, model, allow_unmatched_endpoint=False):
+    """Bare ``custom`` is a billing class, not a routable identity, and an empty provider names none
+    (#132648): recover a named route, preserving fresh explicit unmatched custom endpoints."""
+    if str(provider or "").strip().lower() not in ("", "custom"):
         return provider
+    if not str(provider or "").strip():
+        if _main_slot_serves(model):
+            return None
+        from hermes_cli.runtime_provider_custom import empty_provider_identity
+        return empty_provider_identity(base_url, model)
     try:
         # Heal bare "custom" persisted by older builds / gateway turns: it's the resolved billing class, not
         # a routable identity. (Stricter than the TUI gateway's recovery, which keeps bare "custom" when a

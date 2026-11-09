@@ -9,7 +9,7 @@ including the reconnect-watcher case that *replaces* the adapter object.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -121,3 +121,28 @@ async def test_send_permanent_fatal_fails_immediately_without_wait():
     assert result.success is False
     assert result.error == "Not connected"
     assert result.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_reset_after_the_request_was_written_is_never_resent():
+    """A connection reset after sendMessage was written may already be in the chat (#64238)."""
+    import httpx
+    from telegram.error import NetworkError
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._bot = MagicMock()
+    lost = NetworkError("httpx.RemoteProtocolError: Server disconnected without sending a response.")
+    lost.__cause__ = httpx.RemoteProtocolError("Server disconnected without sending a response.")
+    adapter._bot.send_message = AsyncMock(side_effect=lost)
+    adapter._bot.send_chat_action = AsyncMock()
+
+    result = await adapter._send_with_retry("4242", "hello", max_retries=2, base_delay=0)
+
+    assert result.success is False and result.retryable is False
+    assert adapter._bot.send_message.await_count == 1  # no in-loop resend, no gateway retry, no plain fallback
+
+    refused = NetworkError("httpx.ConnectError: All connection attempts failed")
+    refused.__cause__ = httpx.ConnectError("All connection attempts failed")
+    adapter._bot.send_message = AsyncMock(side_effect=[refused, MagicMock(message_id=9)])
+    with patch("plugins.platforms.telegram.adapter.asyncio.sleep", AsyncMock()):
+        assert (await adapter.send("4242", "hello")).success  # never left: retried and delivered

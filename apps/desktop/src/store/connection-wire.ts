@@ -56,5 +56,11 @@ export function primaryWireSource(route: PrimaryGatewayRoute, windowConnection: 
 export function recordSecondaryWire(connectionId: null | string, resolved: null | Pick<HermesConnection, 'connectionId' | 'mode'>, wire: GatewaySessionWire | null): void {
   const key = connectionId || resolved?.connectionId || (resolved?.mode === 'local' ? LOCAL_CONNECTION_ID : null)
 
+  // A profile's remote override (`connection.json` → `profiles.<name>.mode: remote`) is dialed
+  // under the local scope, so both ids still say `local`. It is a different backend: recording
+  // its wire there would flip the local source to `legacy` when the remote predates session
+  // authority, sending local image attaches down the legacy `image.attach` RPC.
+  if (resolved?.mode === 'remote' && key === LOCAL_CONNECTION_ID) { return }
+
   if (key) { recordConnectionWire(key, wire) }
 }

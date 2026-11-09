@@ -176,6 +176,12 @@ class AuthorityConnection:
         every profile this process serves; any other grant is bound to its own profile."""
         return self._identity.get('profile_scope') == 'host'
 
+    def answering_connections(self):
+        """This connection and the sibling-profile connections on its socket. An answer that names no
+        profile (a response frame, a ``clarify.lock``) settles an owner request as whichever of them
+        attached the request's session; a profile-bound socket has no siblings."""
+        return (self, *self._siblings.values())
+
     def _sibling_for(self, profile):
         """Connection bound to the sibling authority a ``profile`` param names, or None for our own
         home. Only a host-scoped grant (the Desktop's shared-primary socket, the dashboard gate)
@@ -959,7 +965,7 @@ class AuthorityConnection:
             # response frame names no profile: a host-scoped socket answers a sibling's request as the
             # sibling connection that attached it.
             return any(may_settle(connection.authority, connection.actor, session_id, events)
-                       for connection in (self, *self._siblings.values()))
+                       for connection in self.answering_connections())
         if not resolve(frame, session_ok=entitled):
             import logging
             what = 'a server request this connection may not settle' if asked else 'unknown server request'

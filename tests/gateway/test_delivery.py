@@ -7,6 +7,7 @@ from typing import Any, cast
 
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.delivery import DeliveryRouter, DeliveryTarget
+from gateway.degenerate_output import DEFAULT_MAX_DELIVERY_CHARS
 from gateway.platforms.base import SendResult
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
@@ -413,11 +414,15 @@ def test_local_delivery_writes_non_ascii_on_windows_codepage(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_relay_fronted_telegram_target_receives_payload_above_its_own_limit(tmp_path, monkeypatch):
-    """The gateway does not pre-truncate for a relay-fronted Telegram chat.
+async def test_relay_fronted_telegram_target_is_capped_before_chunking(tmp_path, monkeypatch):
+    """The universal delivery cap applies to a relay-fronted Telegram chat too.
 
-    The connector splits egress against the negotiated max_message_length
-    (4096 for Telegram), so the full payload must reach the transport intact.
+    A relay connector splits egress against the negotiated max_message_length
+    (4096 for Telegram), so historically the whole payload reached the transport
+    and got fanned out one chunk at a time. The 2026-11-02 incident showed
+    that path turns a single degenerate cron response into a chat flood, so the
+    cap now runs BEFORE any adapter-specific chunking: the relay receives a
+    capped payload plus a footer pointing at the full audit copy on disk.
     """
     monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
     transport = _RelayDeliveryTransport(platform="telegram")
@@ -448,8 +453,12 @@ async def test_relay_fronted_telegram_target_receives_payload_above_its_own_limi
     assert getattr(result, "success", False) is True
     action, wire_platform = transport.sent[0]
     assert wire_platform == "telegram"
-    assert action["content"] == content
-    assert len(action["content"]) > 4096
+    # Capped to the configured limit, still well above Telegram's 4096 — the
+    # relay's own splitting is untouched, it just never sees an unbounded body.
+    assert len(action["content"]) <= DEFAULT_MAX_DELIVERY_CHARS
+    assert action["content"] != content
+    # The footer resolves to the audit copy holding the COMPLETE original.
     saved_files = list(tmp_path.glob("cron/output/cron-2_*.txt"))
     assert len(saved_files) == 1
+    assert str(saved_files[0]) in action["content"]
     assert saved_files[0].read_text(encoding="utf-8") == content

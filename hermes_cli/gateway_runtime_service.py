@@ -218,10 +218,26 @@ def _launchd(home: Path, deadline: float) -> ExistingService | None:
     return None
 
 
+def _windows_task_name(home: Path) -> str:
+    suffix = service_suffix(home)
+    return f"Hermes_Gateway{'_' + suffix if suffix else ''}"
+
+
+def refresh_ready_owner_launcher(home: Path, observed) -> None:
+    """Repair a ready owner's logon launcher (``refresh_dead_launcher``). Ensure returns a ready owner
+    before discovery, yet one can run on the new payload while its launcher still names the deleted
+    interpreter: started by ``hermes gateway start``, or the old payload removed once it outlived it."""
+    if observed.state != "ready" or sys.platform != "win32":
+        return
+    from hermes_cli.gateway_runtime import control_home_for
+    from hermes_cli.gateway_windows import refresh_dead_launcher
+    owner = control_home_for(home, observed.endpoint)
+    refresh_dead_launcher(owner, _windows_task_name(owner))
+
+
 def _windows(home: Path, deadline: float) -> ExistingService | None:
     from hermes_cli.gateway_windows import _decode_schtasks_output, refresh_dead_launcher
-    suffix = service_suffix(home)
-    name = f"Hermes_Gateway{'_' + suffix if suffix else ''}"
+    name = _windows_task_name(home)
     # Before the task runs it, and for the next logon: a Store update deletes the launcher's interpreter.
     refresh_dead_launcher(home, name)
 

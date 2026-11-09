@@ -28,7 +28,7 @@ class StreamFallbackMixin:
                 chat_id=self.chat_id, content=text, reply_to=reply_to_id,
                 metadata=self._metadata_for_send(final=final, expect_edits=not final))
         except Exception as e:
-            logger.error("Stream send chunk error: %s", e)
+            logger.error("Stream send chunk error: %s", e, exc_info=True)
             if await self._uncertain_send_fully_shown(e):
                 self._already_sent = True
                 self._last_sent_text = text

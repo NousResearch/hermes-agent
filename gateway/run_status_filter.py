@@ -36,6 +36,12 @@ def _template_regex(template: str) -> re.Pattern[str]:
 _DM_ONLY_STATUS_RES = (_template_regex(CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE),)
 
 
+def status_chat_type(source: Any) -> Any:
+    """The chat type DM-only statuses are filtered on: a session every participant shares is never a DM,
+    even one its adapter keys ``dm`` (a Slack group DM: ``shared_session`` on a ``dm`` source)."""
+    return "group" if getattr(source, "shared_session", False) else getattr(source, "chat_type", None)
+
+
 def hidden_outside_dm(chat_type: Any, message: str) -> bool:
     """True when ``message`` is a DM-only status and ``chat_type`` is not a DM."""
     kind = str(getattr(chat_type, "value", chat_type) or "").strip().lower()

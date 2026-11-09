@@ -1,0 +1,17 @@
+name: ballast
+repo: https://github.com/1momoh/ballast
+sha: 1a4fe09cb742a308903d20cdbed486f4e65923a4
+subdir: plugin/ballast
+description: Free a target amount of disk space by clearing the developer and AI caches you'll miss least, with Hermes approval and rebuild recipes.
+maintainer: 1momoh
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+platforms: [macos]
+title: Ballast
+capabilities:
+  provides_tools: [ballast_scan, ballast_plan, ballast_apply, ballast_ledger, ballast_status]
+  provides_hooks: [pre_tool_call, pre_approval_request, post_approval_response]
+  provides_middleware: []
+  requires_env: []

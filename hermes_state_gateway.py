@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from hermes_state_common import (
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract,
     _sql_session_last_active)
+from hermes_state_local import API_BINDING_PREFIX, POLICY_PREFIX, _receipt
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -171,61 +172,16 @@ def _optional_table_columns(conn) -> dict[str, set[str]]:
     }
 
 
-def _rekey_state_meta_policies(
-    conn, old: str, new: str, old_ns: str, new_ns: str, ns_len: int,
-) -> int:
-    """Rewrite local session receipts and record legacy roots for a renamed profile."""
-    from hermes_state_local import POLICY_PREFIX
-    from hermes_state_local_migration import LEGACY_PREFIX
-    from hermes_cli.profiles import get_profile_dir
-
-    old_dir_str = str(get_profile_dir(old))
-    new_dir_str = str(get_profile_dir(new))
-    meta_policies = conn.execute(
-        "SELECT key, value FROM state_meta WHERE key LIKE ?",
-        (POLICY_PREFIX + "%",)).fetchall()
-    meta_count = 0
-    for m_key, m_val in meta_policies:
-        try:
-            payload = json.loads(m_val)
-        except (ValueError, TypeError):
-            continue
-        if not isinstance(payload, dict):
-            continue
-        prof_id = payload.get("profile_id")
-        if not (prof_id and (prof_id == old_dir_str
-                             or prof_id.endswith(f"/profiles/{old}")
-                             or prof_id.endswith(f"\\profiles\\{old}"))):
-            continue
-        payload["profile_id"] = new_dir_str
-        sid = payload.get("session_id") or m_key[len(POLICY_PREFIX):]
-        payload["legacy_session_id"] = sid
-        if isinstance(payload.get("route"), str) and payload["route"].startswith(old_ns):
-            payload["route"] = new_ns + payload["route"][ns_len:]
-        entry = payload.get("entry")
-        if isinstance(entry, dict):
-            if isinstance(entry.get("session_key"), str) and entry["session_key"].startswith(old_ns):
-                entry["session_key"] = new_ns + entry["session_key"][ns_len:]
-            origin = entry.get("origin")
-            if isinstance(origin, dict) and origin.get("profile") == old:
-                origin["profile"] = new
-        if "lineage" not in payload or not payload["lineage"]:
-            payload["lineage"] = [sid]
-        conn.execute("UPDATE state_meta SET value = ? WHERE key = ?",
-                     (json.dumps(payload, ensure_ascii=False), m_key))
-        legacy_payload = {
-            "session_id": sid,
-            "profile_id": new_dir_str,
-            "principal_id": payload.get("principal_id"),
-            "legacy_session_id": sid,
-        }
-        conn.execute("INSERT OR REPLACE INTO state_meta (key, value) VALUES (?, ?)",
-                     (LEGACY_PREFIX + sid, json.dumps(legacy_payload, ensure_ascii=False)))
-        meta_count += 1
-    return meta_count
-
-
 _HANDOFF_FAIL_SQL = "UPDATE sessions SET handoff_state = 'failed', handoff_error = ? WHERE "
+
+
+def _moved_key(key: object, old: str, new: str) -> Optional[str]:
+    """*key* moved from the ``agent:<old>:`` session-key namespace to ``agent:<new>:``, or None when
+    it is not a string in that namespace."""
+    old_ns = f"agent:{old}:"
+    if isinstance(key, str) and key.startswith(old_ns):
+        return f"agent:{new}:" + key[len(old_ns):]
+    return None
 
 
 def _rekey_entry(entry: dict, old: str, new: str) -> bool:
@@ -233,10 +189,8 @@ def _rekey_entry(entry: dict, old: str, new: str) -> bool:
     to *new*: its ``agent:<old>:`` session-key namespace and its ``origin.profile``. True when
     either changed."""
     changed = False
-    old_ns = f"agent:{old}:"
-    session_key = entry.get("session_key")
-    if isinstance(session_key, str) and session_key.startswith(old_ns):
-        entry["session_key"] = f"agent:{new}:" + session_key[len(old_ns):]
+    if (session_key := _moved_key(entry.get("session_key"), old, new)) is not None:
+        entry["session_key"] = session_key
         changed = True
     origin = entry.get("origin")
     if isinstance(origin, dict) and origin.get("profile") == old:
@@ -245,28 +199,33 @@ def _rekey_entry(entry: dict, old: str, new: str) -> bool:
     return changed
 
 
-def _rekey_api_binding_receipts(conn, old: str, new: str) -> int:
-    """Rewrite the API-binding receipts a profile rename would strand; returns how many changed.
+def _rekey_session_receipts(conn, prefix: str, old: str, new: str) -> int:
+    """Rewrite the session receipts under *prefix* a profile rename would strand; returns how many
+    changed.
 
-    ``restore_api_session`` checks a receipt minted under an older home against the served profile
-    (``entry.origin.profile``) and compares ``entry.session_key`` with the key derived from that
-    origin, so a receipt still naming the old profile is refused with ``profile_mismatch`` /
-    ``admission_conflict`` although its session row and routing key were rekeyed. ``profile_id`` is
-    left as stored: the resume gate accepts a receipt minted under an older home of this store
-    when its origin names this profile (#150633).
+    Every receipt stores the route it was minted on, as its top-level ``route`` and in its
+    ``entry``. Local resume compares both with the key it derives for the serving profile
+    (``_checked_entry``: ``route mismatch`` / ``entry mismatch`` otherwise); API resume checks ``entry.origin.profile``
+    against the served profile and ``entry.session_key`` against the key derived from it
+    (``restore_api_session``; the API receipt's top-level ``route`` has no reader and moves only to
+    stay equal to its entry). Only the ``agent:<old>:`` namespace and ``origin.profile`` move.
+    ``profile_id`` stays as stored: it is the home that minted the receipt, a local session id hashes
+    it (``local_identity``), and resume binds the profile by route and origin, not by that path
+    (#150633).
     """
-    from hermes_state_local import API_BINDING_PREFIX
-
     rewritten = 0
-    rows = conn.execute(
-        "SELECT key, value FROM state_meta WHERE key GLOB ?", (API_BINDING_PREFIX + "*",)).fetchall()
+    rows = conn.execute("SELECT key, value FROM state_meta WHERE key GLOB ?", (prefix + "*",)).fetchall()
     for key, raw in rows:
-        try:
-            payload = json.loads(raw)
-        except (TypeError, ValueError):
+        if (payload := _receipt(raw)) is None:
             continue
-        entry = payload.get("entry") if isinstance(payload, dict) else None
+        changed = False
+        if (route := _moved_key(payload.get("route"), old, new)) is not None:
+            payload["route"] = route
+            changed = True
+        entry = payload.get("entry")
         if isinstance(entry, dict) and _rekey_entry(entry, old, new):
+            changed = True
+        if changed:
             conn.execute("UPDATE state_meta SET value=? WHERE key=?",
                          (json.dumps(payload, ensure_ascii=False), key))
             rewritten += 1
@@ -770,8 +729,8 @@ class SessionGatewayMixin:
         self._write_sql("DELETE FROM gateway_hygiene_state WHERE session_key = ?", (session_key,))
 
     def rekey_profile_state(self, old_name: str, new_name: str) -> dict[str, int]:
-        """Atomically rewrite exact profile identity in this state database, API-binding session
-        receipts included (local-policy receipts, ``gateway.local_policy.v1:*``, are not yet)."""
+        """Atomically rewrite exact profile identity in this state database, the API-binding and
+        local-policy session receipts included (``_rekey_session_receipts``)."""
         old, new = (old_name or "").strip(), (new_name or "").strip()
         counts: dict[str, int] = {}
         if not old or not new or old == new:
@@ -871,11 +830,8 @@ class SessionGatewayMixin:
                     "UPDATE gateway_routing SET session_key = ?, entry_json = ? WHERE rowid = ?",
                     (new_session_key, new_json, rowid))
             counts["gateway_routing"] = len(routing)
-            counts["api_binding_receipts"] = _rekey_api_binding_receipts(conn, old, new)
-
-            if "state_meta" in existing:
-                counts["state_meta_policies"] = _rekey_state_meta_policies(
-                    conn, old, new, old_ns, new_ns, ns_len)
+            counts["api_binding_receipts"] = _rekey_session_receipts(conn, API_BINDING_PREFIX, old, new)
+            counts["local_policy_receipts"] = _rekey_session_receipts(conn, POLICY_PREFIX, old, new)
 
         self._execute_write(_do)
         return counts

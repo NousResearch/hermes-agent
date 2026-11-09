@@ -46,7 +46,7 @@ F1 = Fence(1, 1)
 
 def _hosted(tenant: str = "acme", agent: str = "agent-7", who: str = "u1") -> Scope:
     """A hosted scope on a personal agent: the person acting is its owner."""
-    return Scope(tenant, agent, Principal(who), owner=Principal(who), role="owner")
+    return Scope(tenant, agent, Principal(who), owner=Principal(who), can_administer=True)
 
 
 def _profile(root: Path, name: str, backend: str) -> Path:
@@ -503,44 +503,41 @@ def test_a_managed_reference_in_the_terminal_policy_resolves_against_the_target_
         managed_scope.invalidate_managed_cache()
 
 
-# --- owner, role and fence ---
+# --- owner, administration and fence ---
 
-def test_local_scope_defaults_owner_and_role_to_the_local_person():
+def test_local_scope_defaults_owner_and_administration_to_the_local_person():
     assert Scope("local", "/h", LOCAL_OWNER).owner == LOCAL_OWNER
     assert Scope("local", "/h", Principal("alice")).owner == Principal("alice")
     boot = Scope("local", "/h", System("boot"))
-    assert (boot.owner, boot.role, boot.can_administer) == (LOCAL_OWNER, "owner", True)
+    assert (boot.owner, boot.can_administer) == (LOCAL_OWNER, True)
 
 
-def test_hosted_scope_must_name_owner_and_role():
-    with pytest.raises(ValueError, match="owner and role"):
+def test_hosted_scope_must_name_owner_and_administration():
+    with pytest.raises(ValueError, match="owner and whether it may administer"):
         Scope("acme", "agent-7", Principal("u1"))
-    with pytest.raises(ValueError, match="owner and role"):
+    with pytest.raises(ValueError, match="owner and whether it may administer"):
         Scope("acme", "agent-7", Principal("u1"), owner=Principal("u1"))
+    with pytest.raises(ValueError, match="owner and whether it may administer"):
+        Scope("acme", "agent-7", Principal("u1"), can_administer=True)
 
 
-def test_personal_agent_is_used_only_by_its_owner():
-    with pytest.raises(ValueError, match="only by its owner"):
-        Scope("acme", "x", Principal("bob"), owner=Principal("alice"), role="owner")
-    with pytest.raises(ValueError, match="only role is 'owner'"):
-        Scope("acme", "x", Principal("alice"), owner=Principal("alice"), role="member")
-    # Work no person started (a cron tick) still runs on the owner's agent.
-    assert Scope("acme", "x", System("cron"), owner=Principal("alice"), role="owner").can_administer
-
-
-def test_group_agent_roles_decide_administration():
-    team = Group("support")
-    manager = Scope("acme", "bot", Principal("m"), owner=team, role="manager")
-    member = Scope("acme", "bot", Principal("u"), owner=team, role="member")
-    assert manager.can_administer and not member.can_administer
-    with pytest.raises(ValueError, match="'manager' and 'member'"):
-        Scope("acme", "bot", Principal("m"), owner=team, role="owner")
-    with pytest.raises(ValueError, match="role must be one of"):
-        Scope("acme", "bot", Principal("m"), owner=team, role="admin")  # type: ignore[arg-type]
+def test_scope_values_are_checked():
+    with pytest.raises(TypeError, match="can_administer must be a bool"):
+        Scope("acme", "bot", Principal("m"), owner=Group("g"), can_administer=1)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="owner must be"):
-        Scope("acme", "bot", Principal("m"), owner="support", role="member")  # type: ignore[arg-type]
+        Scope("acme", "bot", Principal("m"), owner="support", can_administer=False)  # type: ignore[arg-type]
     with pytest.raises(ValueError):
         Group("")
+
+
+def test_a_shared_personal_agent_takes_a_teammate_who_cannot_administer_it():
+    """A personal agent its owner shared: the teammate's turn runs on it, as the teammate, and
+    may not change the agent; the owner's own turn may."""
+    shared = Scope("acme", "x", Principal("bob"), owner=Principal("alice"), can_administer=False)
+    assert (shared.actor, shared.owner, shared.can_administer) == (Principal("bob"), Principal("alice"), False)
+    assert Scope("acme", "x", Principal("alice"), owner=Principal("alice"), can_administer=True).can_administer
+    # Work no person started (a cron tick) still runs on the owner's agent.
+    assert Scope("acme", "x", System("cron"), owner=Principal("alice"), can_administer=True).can_administer
 
 
 def test_fence_is_two_positive_ints():
@@ -551,15 +548,14 @@ def test_fence_is_two_positive_ints():
         TurnScope("local", "/h", LOCAL_OWNER, "s1", "t1", (1, 1))  # type: ignore[arg-type]
 
 
-def test_a_turn_keeps_owner_and_role_and_carries_its_fence(two_profiles):
+def test_a_turn_keeps_owner_and_administration_and_carries_its_fence(two_profiles):
     a, _b = two_profiles
-    member = Scope("acme", "bot", Principal("u"), owner=Group("support"), role="member")
+    member = Scope("acme", "bot", Principal("u"), owner=Group("support"), can_administer=False)
     with bind_state(member):
         with bind_turn("s1", "t1", Fence(4, 9)) as turn:
-            assert (turn.owner, turn.role, turn.fence) == (Group("support"), "member", Fence(4, 9))
-            assert not turn.can_administer
+            assert (turn.owner, turn.can_administer, turn.fence) == (Group("support"), False, Fence(4, 9))
     with bind_profile_scope(a), bind_turn("s1", "t1", Fence(2, 3)) as turn:
-        assert (turn.owner, turn.role, turn.fence) == (LOCAL_OWNER, "owner", Fence(2, 3))
+        assert (turn.owner, turn.can_administer, turn.fence) == (LOCAL_OWNER, True, Fence(2, 3))
         # A turn re-marked inside a turn (a nested drain) carries the newer claim's fence.
         with bind_turn("s1", "t2", Fence(2, 4)) as inner:
             assert (inner.turn, inner.fence) == ("t2", Fence(2, 4))
@@ -568,12 +564,12 @@ def test_a_turn_keeps_owner_and_role_and_carries_its_fence(two_profiles):
 
 @pytest.mark.parametrize("change", [
     dict(actor=Principal("other")),
-    dict(role="manager"),
+    dict(can_administer=True),
     dict(owner=Group("other-team")),
 ])
 def test_hosted_scope_refuses_a_bind_that_changes_who_it_acts_for(change):
     from dataclasses import replace
-    member = Scope("acme", "bot", Principal("u"), owner=Group("support"), role="member")
+    member = Scope("acme", "bot", Principal("u"), owner=Group("support"), can_administer=False)
     with bind_state(member):
         with pytest.raises(ScopeSwitchRefused):
             bind_state(replace(member, **change))

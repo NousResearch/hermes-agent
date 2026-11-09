@@ -9,9 +9,10 @@ Every activity a gateway runs for a profile binds a :class:`Scope`: a turn, cach
 cron tick, a notifier, a deferred callback. A turn binds a :class:`TurnScope`, which adds the
 session, the turn and the turn's :class:`Fence`. The actor is always present: the person a turn
 serves, or a :class:`System` reason for work no person started. Every scope also names the agent's
-owner (one :class:`Principal` for a personal agent, one :class:`Group` for a shared one) and the
-role the activity holds on it. On a local install the tenant is :data:`LOCAL_TENANT`, the agent is
-the profile home path, and the actor, owner and role are :data:`LOCAL_OWNER` / ``"owner"``.
+owner (one :class:`Principal` for a personal agent, one :class:`Group` for a shared one) and
+whether the activity may administer the agent. On a local install the tenant is
+:data:`LOCAL_TENANT`, the agent is the profile home path, the actor and owner are
+:data:`LOCAL_OWNER`, and it may administer.
 
 The scope and the profile state readers use (the ``HERMES_HOME`` override behind
 ``get_hermes_home()``, the secret mapping behind ``get_secret()``, the terminal policy) are ONE
@@ -28,7 +29,7 @@ from __future__ import annotations
 import weakref
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Literal, Mapping, NamedTuple
+from typing import Any, Callable, Mapping, NamedTuple
 
 LOCAL_TENANT = "local"
 
@@ -57,8 +58,8 @@ class System:
 
 @dataclass(frozen=True)
 class Group:
-    """A set of a tenant's principals that owns shared agents. Membership and each member's role
-    live with the identity provider, not here: a scope carries only the role it was granted."""
+    """A set of a tenant's principals that owns shared agents. Membership lives with the identity
+    provider, not here: a scope carries only what the signed claim granted."""
 
     id: str
 
@@ -69,12 +70,6 @@ class Group:
 
 Actor = Principal | System
 Owner = Principal | Group
-
-# The role an activity holds on its agent. A personal agent's only user is its owner ("owner"); a
-# group agent's users are its managers and members. Owners and managers administer the agent (its
-# keys, settings, plugins, cron, deletion); a member's turns still update its memory and skills.
-Role = Literal["owner", "manager", "member"]
-ROLES: frozenset[str] = frozenset({"owner", "manager", "member"})
 
 # The single user of a local install. Local installs have one person, so every local activity
 # acts for them; a shared deployment resolves the actor from the signed inbound frame instead.
@@ -102,22 +97,21 @@ class Fence:
 
 @dataclass(frozen=True)
 class Scope:
-    """Who an activity serves: ``(tenant, agent, actor)``, plus the agent's owner and the role
-    the activity holds on it.
+    """Who an activity serves: ``(tenant, agent, actor)``, plus the agent's owner and whether the
+    activity may administer the agent (its keys, settings, plugins, cron, deletion). Any turn,
+    administering or not, still updates the agent's memory and skills.
 
-    ``owner`` and ``role`` are keyword-only. A local scope may omit them: the owner is the local
-    person (the actor when it is a person, else :data:`LOCAL_OWNER`) and the role is ``"owner"``.
-    A hosted scope must name both, as its identity verifier read them from a signed claim.
-
-    A personal agent (a :class:`Principal` owner) is used only by that principal, so its role is
-    ``"owner"`` and a person acting on it is its owner. A group agent's role is ``"manager"`` or
-    ``"member"``."""
+    ``owner`` and ``can_administer`` are keyword-only. A local scope may omit them: the owner is
+    the local person (the actor when it is a person, else :data:`LOCAL_OWNER`) and it may
+    administer. A hosted scope must name both, as its identity verifier read them from a signed
+    claim; who administers is decided there (in Hermes Cloud: a personal agent's owner, and the
+    org's owners and admins for an agent owned by the org or a group), never here."""
 
     tenant: str
     agent: str
     actor: Actor
     owner: Owner = field(default=None, kw_only=True)  # type: ignore[assignment]
-    role: Role = field(default=None, kw_only=True)  # type: ignore[assignment]
+    can_administer: bool = field(default=None, kw_only=True)  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if not isinstance(self.tenant, str) or not self.tenant:
@@ -126,34 +120,21 @@ class Scope:
             raise ValueError("Scope.agent must be a non-empty string")
         if not isinstance(self.actor, (Principal, System)):
             raise TypeError("Scope.actor must be a Principal or a System")
-        if self.owner is None or self.role is None:
+        if self.owner is None or self.can_administer is None:
             if not self.is_local:
-                raise ValueError("a hosted Scope must name its owner and role")
+                raise ValueError("a hosted Scope must name its owner and whether it may administer")
             if self.owner is None:
                 object.__setattr__(self, "owner", self.actor if isinstance(self.actor, Principal) else LOCAL_OWNER)
-            if self.role is None:
-                object.__setattr__(self, "role", "owner")
+            if self.can_administer is None:
+                object.__setattr__(self, "can_administer", True)
         if not isinstance(self.owner, (Principal, Group)):
             raise TypeError("Scope.owner must be a Principal or a Group")
-        if self.role not in ROLES:
-            raise ValueError(f"Scope.role must be one of {sorted(ROLES)}")
-        if isinstance(self.owner, Principal):
-            if self.role != "owner":
-                raise ValueError("a personal agent's only role is 'owner'")
-            if isinstance(self.actor, Principal) and self.actor != self.owner:
-                raise ValueError("a personal agent is used only by its owner")
-        elif self.role == "owner":
-            raise ValueError("a group agent's roles are 'manager' and 'member'")
+        if type(self.can_administer) is not bool:
+            raise TypeError("Scope.can_administer must be a bool")
 
     @property
     def is_local(self) -> bool:
         return self.tenant == LOCAL_TENANT
-
-    @property
-    def can_administer(self) -> bool:
-        """Whether this activity may change the agent itself (keys, settings, plugins, cron,
-        deletion): a personal agent's owner or a group agent's manager."""
-        return self.role in ("owner", "manager")
 
     def home(self) -> str | None:
         """The profile home this scope's state lives in: the agent path on a local install.
@@ -165,7 +146,7 @@ class Scope:
     def for_turn(self, session: str, turn: str, fence: Fence) -> TurnScope:
         """This scope as one turn of *session*, run under *fence*."""
         return TurnScope(self.tenant, self.agent, self.actor, session, turn, fence,
-                         owner=self.owner, role=self.role)
+                         owner=self.owner, can_administer=self.can_administer)
 
 
 @dataclass(frozen=True)

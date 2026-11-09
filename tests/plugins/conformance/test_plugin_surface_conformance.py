@@ -183,4 +183,6 @@ def test_cli_command_runs_from_the_hermes_entry_point(tmp_path):
            "HOME": str(tmp_path / "os-home"), "PYTHONPATH": str(_ROOT)}
     proc = subprocess.run([sys.executable, "-m", "hermes_cli.main", "conformance-cli", "--word", "hi"],
                           cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120, check=False)
-    assert "conformance-cli:hi" in proc.stdout, (proc.returncode, proc.stdout[-2000:], proc.stderr[-2000:])
+    diagnostics = (proc.returncode, proc.stdout[-2000:], proc.stderr[-2000:])
+    assert "conformance-cli:hi" in proc.stdout, diagnostics
+    assert proc.returncode == 0, diagnostics

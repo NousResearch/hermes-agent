@@ -165,7 +165,7 @@ def _google_deps_importable() -> bool:
     for anchor in _GOOGLE_ANCHORS:
         try:
             importlib.import_module(anchor)
-        except Exception:
+        except ImportError:
             return False
     return True
 

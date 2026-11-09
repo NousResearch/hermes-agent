@@ -81,7 +81,8 @@ only once the install and the Electron preparation succeed; a failed install put
 back, and the run after a killed one recovers them. Both generations are on disk while
 pnpm runs. A tree that cannot be moved (a mount point, or a `.cache` on another
 filesystem) is deleted in place as before and cannot be restored. Runs in one checkout
-are serialised by `.cache/node-deps.lock`. Its owner refreshes the lock's mtime every
+are serialised by `.cache/node-deps.lock` (`node-deps-lock.mjs`, with its heartbeat,
+watcher and relay programs beside it). Its owner refreshes the lock's mtime every
 second (a failed refresh is retried on the next beat), and a lock that nobody has
 refreshed for 30 s is broken, whatever pid, host or PID namespace it names; the run that
 breaks it replaces it in one rename and waits 2 s before touching the trees. An owner
@@ -455,7 +456,8 @@ These locations define the interfaces described here:
 | TUI product and development output | `tui.mjs:25–103` |
 | Web inputs and TypeScript check | `web.mjs:8–71` |
 | Desktop inputs and native checks | `desktop.mjs:11–69` |
-| Locked workspace union | `node-deps.mjs:84–149` |
+| Locked workspace union | `node-deps.mjs` (`dependencyInputs`, `prepareNodeDependencies`) |
+| Checkout lock and child supervision | `node-deps-lock.mjs`, `node-deps-heartbeat.mjs`, `node-deps-watcher.mjs`, `node-deps-relay.mjs` |
 | Python provider | `../../pm/operations.py`, `../../pm/environment.py` |
 | Agent input fields and checks | `inputs.py:30–115` |
 | Agent assembly and outputs | `agent.py:76–168` |

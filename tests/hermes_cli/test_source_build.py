@@ -165,8 +165,9 @@ def source_checkout(tmp_path, monkeypatch):
     scripts = root / "scripts" / "build"
     scripts.mkdir(parents=True)
     repository = Path(__file__).resolve().parents[2]
-    for name in ("node-deps.mjs", "electron-runtime.mjs", "freshness.mjs", "frontend-common.mjs", "pnpm-lock.mjs"):
-        shutil.copy2(repository / "scripts/build" / name, scripts / name)
+    for name in ("node-deps*.mjs", "electron-runtime.mjs", "freshness.mjs", "frontend-common.mjs", "pnpm-lock.mjs"):
+        for script in (repository / "scripts/build").glob(name):
+            shutil.copy2(script, scripts / script.name)
     (root / ".gitignore").write_text("node_modules/\n**/dist/\n", encoding="utf-8")
     # node-deps requires PM's pnpm pin: pin the pnpm this test runs.
     (root / "pm").mkdir()

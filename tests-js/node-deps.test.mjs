@@ -6,7 +6,8 @@ import { hostname, tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, expect, test } from 'vitest'
-import { lockTiming, pnpmCommand, prepareNodeDependencies } from '../scripts/build/node-deps.mjs'
+import { lockTiming } from '../scripts/build/node-deps-lock.mjs'
+import { pnpmCommand, prepareNodeDependencies } from '../scripts/build/node-deps.mjs'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const roots = []

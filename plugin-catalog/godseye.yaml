@@ -1,7 +1,7 @@
 name: godseye
 title: Eye Of Hermes (EOH)
 repo: https://github.com/mojomast/EOH
-sha: 1e11faed291d2fe63260bd7b35437fef52863b4a
+sha: 6e58b8e28bac0640ef0d4a629dc5a7eb457ce5a4
 description: >-
   Eye Of Hermes (EOH), built on God's Eye View (bilawalsidhu/gods-eye-view, MIT):
   the same 11 composable godseye_* tools (godseye_view, godseye_query, godseye_layers,
@@ -45,13 +45,13 @@ category: tools
 docs_url: https://github.com/mojomast/EOH#readme
 version: "0.2.8"
 screenshots:
-  - https://raw.githubusercontent.com/mojomast/EOH/1e11faed291d2fe63260bd7b35437fef52863b4a/docs/images/eoh-sdr-waterfall-berlin.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/1e11faed291d2fe63260bd7b35437fef52863b4a/docs/images/eoh-sdr-layers-europe.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/1e11faed291d2fe63260bd7b35437fef52863b4a/docs/screenshots/hermes-chat-tokyo-nvg.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/1e11faed291d2fe63260bd7b35437fef52863b4a/docs/screenshots/pane-full-ui.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/1e11faed291d2fe63260bd7b35437fef52863b4a/docs/screenshots/live-fly-to-tokyo.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/1e11faed291d2fe63260bd7b35437fef52863b4a/docs/screenshots/hud-via-hermes.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/1e11faed291d2fe63260bd7b35437fef52863b4a/docs/screenshots/pane-globe-only.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/6e58b8e28bac0640ef0d4a629dc5a7eb457ce5a4/docs/images/eoh-sdr-waterfall-berlin.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/6e58b8e28bac0640ef0d4a629dc5a7eb457ce5a4/docs/images/eoh-sdr-layers-europe.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/6e58b8e28bac0640ef0d4a629dc5a7eb457ce5a4/docs/screenshots/hermes-chat-tokyo-nvg.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/6e58b8e28bac0640ef0d4a629dc5a7eb457ce5a4/docs/screenshots/pane-full-ui.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/6e58b8e28bac0640ef0d4a629dc5a7eb457ce5a4/docs/screenshots/live-fly-to-tokyo.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/6e58b8e28bac0640ef0d4a629dc5a7eb457ce5a4/docs/screenshots/hud-via-hermes.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/6e58b8e28bac0640ef0d4a629dc5a7eb457ce5a4/docs/screenshots/pane-globe-only.jpg
 platforms: []
 known_issues:
   - "Full UI in the pane and the in-app HUD via Hermes need two opt-in God's Eye View patches (shipped in patches/, upstream PRs #1571 and #1572); stock upstream gets the globe-only pane."

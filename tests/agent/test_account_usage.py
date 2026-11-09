@@ -1,3 +1,7 @@
+"""Account usage behavior tests, including the two-account Codex reset regression (#138121)."""
+
+import json
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -348,6 +352,55 @@ def test_redeem_retries_401_with_forced_refresh(monkeypatch):
         ("POST", "Bearer fresh-token"),
     ]
     assert client_count == 2
+
+
+def test_redeem_clears_only_the_redeeming_credential_pool_cooldown(tmp_path, monkeypatch):
+    """Regression for #138121: a reset restores one account, not every pool account."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    reset_at = time.time() + 6 * 24 * 3600
+    frozen = {
+        "auth_type": "oauth",
+        "source": "device_code",
+        "last_status": "exhausted",
+        "last_status_at": time.time(),
+        "last_error_code": 429,
+        "last_error_reason": "usage_limit_reached",
+        "last_error_message": "The usage limit has been reached",
+        "last_error_reset_at": reset_at,
+    }
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {"openai-codex": [
+            {**frozen, "id": "cred-restored", "priority": 0, "access_token": "tok-restored"},
+            {**frozen, "id": "cred-still-exhausted", "priority": 1, "access_token": "tok-other"},
+        ]},
+    }))
+
+    monkeypatch.setattr(
+        account_usage,
+        "_resolve_codex_usage_credentials",
+        lambda base_url, api_key, **kwargs: (
+            "tok-restored", "https://chatgpt.com/backend-api/codex", None),
+    )
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeResetClient(
+            [], _usage_payload_with_resets(100, 40, 1), {"code": "reset", "windows_reset": 2}),
+    )
+
+    result = account_usage.redeem_codex_reset_credit()
+
+    assert result.status == "reset"
+    rows = json.loads((hermes_home / "auth.json").read_text())["credential_pool"]["openai-codex"]
+    by_id = {row["id"]: row for row in rows}
+    assert by_id["cred-restored"]["last_status"] is None
+    assert by_id["cred-restored"]["last_error_reset_at"] is None
+    assert by_id["cred-still-exhausted"]["last_status"] == "exhausted"
+    assert by_id["cred-still-exhausted"]["last_error_reset_at"] == reset_at
 
 
 def test_redeem_missing_credentials_reports_unavailable(monkeypatch):

@@ -51,6 +51,11 @@ check-js:
 check-js-ci:
     node .github/scripts/run-workspace-checks.mjs
 
+# Fail when the committed icons differ from the generator's output (scripts/ci/check_icons.sh)
+[group('check')]
+check-icons:
+    scripts/ci/check_icons.sh
+
 # Run the named test files or directories (pytest flags pass through)
 [group('test')]
 [positional-arguments]

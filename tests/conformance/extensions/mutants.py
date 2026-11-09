@@ -4,10 +4,14 @@ Each passed an earlier version of the suite. The local backend's pin forgets the
 (``local_pin_forgets_agent``: another profile's scope, and the ambient pin of a scopeless
 caller, are served), the tenant (``local_pin_forgets_tenant``) or the owner
 (``local_pin_forgets_owner``), ``local_admin_not_required`` lets a scope that may not
-administer install and switch, and ``local_accepts_tenant_entries`` stores tenant-wide
-entries despite the registry's local exception. The reference backend accepts a principal administrator's
+administer install and switch, ``local_accepts_tenant_entries`` stores tenant-wide
+entries despite the registry's local exception, and ``local_skips_the_switch_key_migration``
+opens a file whose switch rows are keyed by the bare name without rewriting them. The
+reference backend accepts a principal administrator's
 tenant-wide writes (``reference_tenant_writes_without_provisioning``: the tenant gate is gone),
-its resolution ignores the owner
+its named writes refuse a missing name as if it were taken
+(``reference_refuses_names_the_reads_do_not_return``: a refusal for a name the scope's reads do
+not return), its resolution ignores the owner
 (``reference_owner_blind``: every entry of the tenant reaches every principal), the per-agent
 switch forgets its agent (``reference_switch_forgets_agent``: one switch shared by every
 agent), owner-wide entries resolve by the actor instead of the agent's owner
@@ -86,11 +90,54 @@ def _local_accepts_tenant_entries(monkeypatch):
     monkeypatch.setattr(LocalExtensionRegistry, "_check_levels", lambda self, level: None)
 
 
+def _local_skips_the_switch_key_migration(monkeypatch):
+    """The local backend opens a file whose switch rows are keyed by the bare name and leaves
+    them bare: the rows the head's keying reads are never reached, and an extension an
+    existing user had switched on reads off."""
+    from hermes_extension_registry_port_local import LocalExtensionRegistry
+    monkeypatch.setattr(LocalExtensionRegistry, "_migrate_switch_keys", lambda self: None)
+
+
 def _reference_tenant_writes_without_provisioning(monkeypatch):
     """A principal administering its own agent installs, disables and removes tenant-wide
     entries anyway: the tenant gate is gone."""
     from hermes_conformance.extensions import reference
     monkeypatch.setattr(reference, "require_provisioning", lambda scope: None)
+
+
+def _reference_refuses_names_the_reads_do_not_return(monkeypatch):
+    """The named writes' tenant gate refuses a missing name as if it were taken, before
+    anything is resolved: a refusal for a name the same scope's ``get`` does not return,
+    saying the name exists when the reads say it does not."""
+    from hermes_conformance.extensions import reference
+    from hermes_extension_registry_port import require_provisioning
+
+    def _set_enabled(self, name, enabled):
+        scope = self._pin()
+        self._administer(scope)
+        with self.store.lock:
+            row = self._resolve(scope, name)
+            if row is None or row["level"] == "tenant":
+                require_provisioning(scope)
+            assert row is not None  # the refusal above raised for the missing name
+            row["enabled"] = bool(enabled)
+            return True
+
+    def _remove(self, name):
+        scope = self._pin()
+        self._administer(scope)
+        with self.store.lock:
+            row = self._resolve(scope, name)
+            if row is None or row["level"] == "tenant":
+                require_provisioning(scope)
+            assert row is not None  # the refusal above raised for the missing name
+            del self.store.entries[(owner_key(row["owner"]), name)]
+            for agent in {key[0] for key in self.store.switches}:
+                self.store.switches.pop(self._switch_key(agent, row), None)
+            return True
+
+    monkeypatch.setattr(reference.ReferenceExtensionRegistry, "set_enabled", _set_enabled)
+    monkeypatch.setattr(reference.ReferenceExtensionRegistry, "remove", _remove)
 
 
 def _reference_owner_blind(monkeypatch):
@@ -210,9 +257,11 @@ MUTANTS = {
     "local_pin_forgets_owner": _local_pin_forgets_owner,
     "local_admin_not_required": _local_admin_not_required,
     "local_accepts_tenant_entries": _local_accepts_tenant_entries,
+    "local_skips_the_switch_key_migration": _local_skips_the_switch_key_migration,
     "local_switch_forgets_entry_identity": _local_switch_forgets_entry_identity,
     "local_offers_every_visible_entry": _local_offers_every_visible_entry,
     "reference_tenant_writes_without_provisioning": _reference_tenant_writes_without_provisioning,
+    "reference_refuses_names_the_reads_do_not_return": _reference_refuses_names_the_reads_do_not_return,
     "reference_owner_blind": _reference_owner_blind,
     "reference_switch_forgets_agent": _reference_switch_forgets_agent,
     "reference_switch_forgets_entry_identity": _reference_switch_forgets_entry_identity,

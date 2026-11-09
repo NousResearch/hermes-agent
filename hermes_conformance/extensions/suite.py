@@ -515,6 +515,34 @@ class ProvisioningConformance:
             assert theirs.get("org-tool")["enabled"] is True  # untouched by the other owner's admin
             assert _names(theirs.enabled_extensions()) == []  # its own switch is off
 
+    def test_a_write_refusal_after_resolution_names_only_what_the_reads_already_return(self, level):
+        """A named write's tenant gate fires once the target is resolved, and that is no
+        disclosure: every name it refuses — an administering principal attempting a
+        tenant-wide entry — is a name the same scope's ``get`` returns, however the entry is
+        offered: switched on, switched off for this agent, or withdrawn at its level, for
+        resolution looks at none of that. A missing name answers ``False``, never a
+        refusal, so a refusal always says ``get`` would say."""
+        a1 = level.open("a1")
+        with level.bind_provisioning("a1"):
+            install(a1, name="org-tool", level="tenant")    # switched on below
+            install(a1, name="quiet", level="tenant")      # switched off for this agent
+            install(a1, name="withdrawn", level="tenant")  # never offered: withdrawn at its level
+            a1.set_enabled("withdrawn", False)
+        with level.bind("a1"):
+            assert a1.set_agent_enabled("org-tool", True) is True
+            assert a1.set_agent_enabled("quiet", False) is True
+            for name in ("org-tool", "quiet", "withdrawn"):
+                row = a1.get(name)
+                assert row is not None and row["level"] == "tenant"
+                for write in (lambda n=name: a1.set_enabled(n, False),
+                              lambda n=name: a1.remove(n)):
+                    with pytest.raises(RegistryAdminRefused):
+                        write()
+                    assert a1.get(name) is not None  # the refusal names a readable entry
+            for write in (lambda: a1.set_enabled("absent", False),
+                          lambda: a1.remove("absent")):
+                assert write() is False  # a missing name is never refused
+
     def test_the_provisioning_actor_administers_tenant_wide_entries(self, level):
         a1 = level.open("a1")
         with level.bind_provisioning("a1"):

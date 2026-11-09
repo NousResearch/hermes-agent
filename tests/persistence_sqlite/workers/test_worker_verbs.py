@@ -243,7 +243,7 @@ CASES = [
     Case("compression_lineage_view", "compression.lineage", {"target": SESSION},
          _w("compression_lineage_view", target_session_id=SESSION),
          wire=lambda r: {"readable_ids": list(r.readable_ids), "lineage": list(r.lineage), "root": r.root, "tip": r.tip,
-                         "resume": r.resume, "identity": r.identity}),
+                         "resume": r.resume, "identity": r.identity, "tool_root": r.tool_root}),
     Case("compression_history", "compression.history",
          {"target": SESSION, "include_ancestors": True, "include_inactive": False, "repair_alternation": True,
           "include_row_ids": True, "include_compacted": False},

@@ -29,7 +29,7 @@ ROWS = (
     ("chat-2", "cli", "user", "广 字", None),
     ("cron-1", "cron", "user", "定时迁移内容 payment report", None),
 )
-# (query, the path main names for it without the CJK bigram index, whether hits carry FTS snippet markers).
+# (query, the path main names for it, whether hits carry FTS snippet markers).
 ROUTES = (
     ("payment", "fts5", True),
     ("ayment", "fts5", True),  # a unicode61 miss, answered by the trigram retry
@@ -128,8 +128,6 @@ def test_appended_rows_land_in_the_indexes_m1_fills(stores):
 @pytest.mark.parametrize(("query", "path_name", "marked"), ROUTES, ids=[query for query, _, _ in ROUTES])
 def test_search_takes_m1s_route(stores, query, path_name, marked):
     m1, store, _, _ = stores
-    if m1._fts_cjk_available and path_name in ("trigram", "like_scan") and query != "广":
-        path_name, marked = "fts_cjk", True
     assert m1._describe_search_path(query) == path_name
     hits = _backend_hits(store, query)
     assert hits == _m1_hits(m1, query)

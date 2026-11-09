@@ -21,7 +21,11 @@
   "gateway/session_hosted_transport.py::install_hosted_transport",
   "hermes_state_runtime.py::_epoch",
   "gateway/hosted_room_context.py",
-  "gateway/session_hosted_service.py::probe_native_room_owner"
+  "gateway/session_hosted_service.py::probe_native_room_owner",
+  "gateway/session_hosted_member_homes.py",
+  "tui_gateway/hosted_room_router_call.py::RouterCalls._transaction",
+  "tui_gateway/hosted_room_router_call.py::RouterCalls._claim",
+  "tui_gateway/hosted_room_router_call.py::RouterCalls._release"
  ],
  "wrappers": {
   "_hosted_write": {
@@ -284,7 +288,7 @@
   },
   {
    "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.upsert_room_link_record",
-   "legacy": "gateway/hosted_rooms.py::upsert_room_link_record#0,1,2",
+   "legacy": "gateway/hosted_rooms.py::upsert_room_link_record#0,1,2,3",
    "names": {
     "db_path": "placement"
    },
@@ -295,6 +299,45 @@
     ],
     "reason": "The verb takes a typed RoomLinkRecord the caller has validated and reads its fields as attributes where main indexes a mapping; it binds the same values in main's order inside _hosted_write(..., immediate=True), main's BEGIN IMMEDIATE."
    }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::_owe_revoke_locked",
+   "legacy": "gateway/hosted_rooms.py::_owe_revoke_locked#0,1,2,3,4,5"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.retire_room_link_records",
+   "legacy": "gateway/hosted_rooms.py::retire_room_link_records#0,1,2,3,4"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.hold_room_grant_revoke",
+   "legacy": "gateway/hosted_rooms.py::hold_room_grant_revoke#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.settle_room_grant_revoke",
+   "legacy": "gateway/hosted_rooms.py::settle_room_grant_revoke#0,1"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.drop_remote_run_receipt",
+   "legacy": "gateway/hosted_rooms.py::drop_remote_run_receipt#0",
+   "names": {
+    "record": "identity"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.room_has_peer_obligations",
+   "legacy": "gateway/hosted_rooms.py::room_has_peer_obligations#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.owes_room_grant_revokes",
+   "legacy": "gateway/hosted_rooms.py::owes_room_grant_revokes#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.due_room_grant_revokes",
+   "legacy": "gateway/hosted_rooms.py::due_room_grant_revokes#0,1,2"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_room_peers.py::SQLiteHostedRoomPeerRepository.held_room_grant_revokes",
+   "legacy": "gateway/hosted_rooms.py::held_room_grant_revokes#0,1"
   },
   {
    "backend": "persistence/sqlite/gateway/hosted_room_replicas.py::SQLiteHostedRoomReplicaRepository.demote_room",
@@ -390,10 +433,51 @@
   },
   {
    "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.disband_room",
-   "legacy": "gateway/hosted_rooms.py::disband_room#0,1,2",
+   "legacy": "gateway/hosted_rooms.py::disband_room#0,1,2,3,4",
    "names": {
     "db_path": "placement"
    }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.record_member_home",
+   "legacy": "gateway/session_hosted_member_homes.py::record_member_home#0,1"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.record_attempt_home",
+   "legacy": "gateway/session_hosted_member_homes.py::record_attempt_home#0,1"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.member_homes",
+   "legacy": "gateway/session_hosted_member_homes.py::_recorded_homes#0",
+   "names": {
+    "_key": "_member_homes_key"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.attempt_home",
+   "legacy": "gateway/session_hosted_member_homes.py::stopping_attempt_home#0"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_attempt_homes",
+   "legacy": "gateway/session_hosted_member_homes.py::_attempt_homes#0,1"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::_forget_room_member_homes_locked",
+   "legacy": "gateway/session_hosted_member_homes.py::forget_room_member_homes_locked#1"
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.claim_router_call",
+   "legacy": [
+    "tui_gateway/hosted_room_router_call.py::RouterCalls._transaction#0",
+    "tui_gateway/hosted_room_router_call.py::RouterCalls._claim#0"
+   ]
+  },
+  {
+   "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.release_router_call",
+   "legacy": [
+    "tui_gateway/hosted_room_router_call.py::RouterCalls._transaction#0",
+    "tui_gateway/hosted_room_router_call.py::RouterCalls._release#0"
+   ]
   },
   {
    "backend": "persistence/sqlite/gateway/hosted_rooms.py::SQLiteHostedRoomRepository.ensure_room_member_session",

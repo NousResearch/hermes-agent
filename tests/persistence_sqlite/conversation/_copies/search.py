@@ -2,7 +2,7 @@ from . import Copy
 
 COPY = Copy(
     legacy='hermes_state_search',
-    doc='Message search over the FTS5, trigram and CJK indexes with the LIKE fallbacks, and the index rebuild.',
+    doc='Message search over the FTS5 and trigram indexes with the LIKE fallbacks, and the index rebuild.',
     names=(
         'logger',
         '_BackfillProgress',
@@ -32,7 +32,6 @@ COPY = Copy(
     legacy_class='SessionSearchMixin',
     members=(
         '_SEARCH_MESSAGE_RESULT_FIELDS',
-        '_BOUNDARY_SWEEP_SQL',
         '_BASE_BOUNDARY_SWEEP_SQL',
         '_TRIGRAM_BOUNDARY_SWEEP_SQL',
         '_CHUNK_INSERT_SQL',
@@ -42,13 +41,11 @@ COPY = Copy(
         '_HOLDER_SCAN_INTERVAL_S',
         '_search_message_fields',
         'fts_rebuild_status',
-        '_rebuild_status',
         '_backfill_progress',
         'get_anchored_view',
         '_sanitize_fts5_query',
         '_contains_cjk',
         '_count_cjk',
-        '_has_lone_cjk_run',
         '_or_relaxed_query',
         '_trigram_eligible_tokens',
         '_has_short_cjk_token',

@@ -1,6 +1,6 @@
 from . import Copy
 
-COPY = Copy(
+COPY = (Copy(
     legacy='hermes_state_messages',
     doc='Transcript rows: append with the write guards, replace, compact, single-row edits, reactions and the transcript reads.',
     legacy_class='SessionMessagesMixin',
@@ -68,7 +68,6 @@ COPY = Copy(
         'get_messages_around',
         'resolve_resume_session_id',
         '_fetch_conversation_rows',
-        '_with_removed_identities',
         'get_messages_as_conversation',
         'conversation_revision',
         '_dedupe_replayed_user',
@@ -102,4 +101,10 @@ COPY = Copy(
          "        if max_messages is None:\n"
          "            max_messages = resolved_max_resume_messages()\n", ""),
     )},
-)
+), Copy(
+    # The display set and its removed identities, read in one transaction, beside the transcript reads.
+    legacy='hermes_state_stored_reads',
+    names=('_REMOVED_IDENTITIES_SQL',),
+    legacy_class='SessionStoredReadsMixin',
+    members=('_with_removed_identities', '_display_set'),
+))

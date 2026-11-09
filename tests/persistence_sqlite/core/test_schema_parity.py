@@ -53,11 +53,12 @@ CONSTANTS = {
         "_BRANCH_CHILD_SQL", "_COMPRESSION_CHILD_SQL", "_RESET_END_REASONS_SQL", "_RESET_CHILD_SQL",
         "SCHEMA_VERSION", "FTS_STORAGE_VERSION", "FTS_TOOL_CONTENT_PREFIX_CHARS", "_FTS_NEW_INDEXED_CONTENT_SQL",
         "_FTS_OLD_INDEXED_CONTENT_SQL", "_FTS_TRIGGERS", "SCHEMA_SQL", "DEFERRED_INDEX_SQL", "FTS_SQL",
-        "FTS_TRIGRAM_EXCLUDED_SOURCES", "FTS_TRIGRAM_SESSION_SQL", "FTS_TRIGRAM_SQL", "_FTS_CJK_TRIGGERS",
-        "FTS_CJK_STALE_KEY", "FTS_STALE_KEY", "LEGACY_FTS_SQL", "LEGACY_FTS_TRIGRAM_SQL",
+        "FTS_TRIGRAM_EXCLUDED_SOURCES", "FTS_TRIGRAM_SESSION_SQL", "FTS_TRIGRAM_SQL",
+        "FTS_STALE_KEY", "LEGACY_FTS_SQL", "LEGACY_FTS_TRIGRAM_SQL", "_MERGE_DISPLAY_META",
     ),
     "hermes_state_fts": (
-        "FTS_CJK_TABLE_SQL", "FTS_CJK_TRIGGER_SQL", "_FTS_DDL_TABLES", "FTS_VTABLE_LAYOUTS", "_FTS5_SHADOW_SUFFIXES",
+        "_FTS_DDL_TABLES", "FTS_VTABLE_LAYOUTS", "_FTS5_SHADOW_SUFFIXES", "_RETIRED_CJK_OBJECTS",
+        "_RETIRED_CJK_TRIGGERS",
     ),
     "hermes_state_titles": ("_NUMBERED_TITLE_RE",),
     # Every constant the schema module declares; its probe cache is compared through its function below.
@@ -80,10 +81,11 @@ FUNCTIONS = {
     "hermes_state_search": ("_meta_row", "_delete_meta", "_positive_int"),
     "hermes_state_titles": ("next_title_in_lineage",),
     "hermes_state_fts": (
-        "fts5_cjk_so_path", "_cjk_fts_config_enabled", "load_fts5_cjk_extension", "_stored_form",
+        "_stored_form",
         "_expected_stored_sql", "_expected_vtable_sql", "_stored_vtables", "_is_older_layout",
         "base_index_recognised", "base_index_realigned_on_open", "fts_layout_drift", "fts_layout_current",
-        "base_source_view_is_stale", "_drop_orphan_fts_shadow_tables",
+        "base_source_view_is_stale", "_drop_orphan_fts_shadow_tables", "retired_cjk_index_present",
+        "_stage_retired_cjk_index", "drop_retired_cjk_index",
     ),
     "hermes_state_schema": (
         "_holder_cmdline", "_legacy_inline_reinsert_sql", "_q", "apply_declared_schema", "reconcile_state_schema",
@@ -100,7 +102,7 @@ METHODS = {
         "_fts_update_trigger_needs_narrowing", "_heal_gateway_routing_pk", "_heal_session_model_usage_pk", "_init_fts",
         "_init_schema", "_live_pk_columns", "_migrate_broad_fts_update_triggers", "_migrate_misaligned_fts_source",
         "_migrate_trigram_cron_exclusion", "_migrate_v22_session_model_usage", "_parse_schema_columns",
-        "_quarantine_cjk_after_update_of_migration", "_rebuild_fts_indexes", "_rebuild_table",
+        "_rebuild_fts_indexes", "_rebuild_table",
         "_rebuild_table_statements", "_reconcile_columns", "_recover_stale_fts", "_recover_stale_fts_locked",
         "_run_admitted_startup_rebuild", "_run_data_migrations", "_sqlite_supports_fts5", "_sqlite_table_exists",
         "_stamp_settled_fts_layout", "_trigram_tokenizer_available", "retry_deferred_fts_recovery",
@@ -108,7 +110,7 @@ METHODS = {
     "hermes_state_fts.SessionFtsSetupMixin": (
         "_is_fts5_unavailable_error", "_is_trigram_unavailable_error", "_db_has_legacy_inline_fts",
         "_db_has_trigram_tool_calls_projection", "_db_needs_fts_storage_upgrade", "_warn_trigram_unavailable",
-        "_warn_fts5_unavailable", "_ensure_fts_cjk_schema", "_drop_fts_triggers", "_ensure_fts_schema",
+        "_warn_fts5_unavailable", "_drop_fts_triggers", "_ensure_fts_schema",
         "_is_fts_write_corruption_error", "_enter_fts_fail_open", "_has_fts_trash",
     ),
     "hermes_state_search.SessionSearchMixin": (
@@ -164,7 +166,7 @@ SUBSTITUTIONS = {
             "def apply_declared_schema(cursor: sqlite3.Cursor, home: Path) -> None:",
         "shim._reconcile_columns(cursor)": "_reconcile_columns(cursor, home)",
     },
-    # The schema probes, the raw-connection reconciler and the CJK tokenizer take the store's folder.
+    # The schema probes and the raw-connection reconciler take the store's folder.
     "schema_read_probe_statements": {
         "def schema_read_probe_statements() -> tuple:": "def schema_read_probe_statements(home: Path) -> tuple:",
         "tables = SessionSchemaMixin._parse_schema_columns(SCHEMA_SQL)":
@@ -174,21 +176,6 @@ SUBSTITUTIONS = {
         "def reconcile_state_schema(conn: sqlite3.Connection) -> None:":
             "def reconcile_state_schema(conn: sqlite3.Connection, home: Path) -> None:",
         "apply_declared_schema(conn.cursor())": "apply_declared_schema(conn.cursor(), home)",
-    },
-    "fts5_cjk_so_path": {
-        "def fts5_cjk_so_path() -> Path:": "def fts5_cjk_so_path(home: Path) -> Path:",
-        '"""Location of the cjk_unicode61 loadable extension."""':
-            '"""Location of the cjk_unicode61 loadable extension for the store in the folder ``home``."""',
-        'return Path(env).expanduser() if env else get_hermes_home() / "lib" / "libfts5_cjk.so"':
-            'return Path(env).expanduser() if env else home / "lib" / "libfts5_cjk.so"',
-    },
-    "load_fts5_cjk_extension": {
-        "def load_fts5_cjk_extension(conn: sqlite3.Connection) -> bool:":
-            "def load_fts5_cjk_extension(conn: sqlite3.Connection, home: Path) -> bool:",
-        "path = fts5_cjk_so_path()": "path = fts5_cjk_so_path(home)",
-    },
-    "_ensure_fts_cjk_schema": {
-        "fts5_cjk_so_path(),": "fts5_cjk_so_path(self.db_path.parent),",
     },
     "_reap_inactive_orphan_desktop_holders": {
         "from hermes_state import psutil": None,
@@ -268,7 +255,7 @@ def test_constant_equals_m1(legacy_store, module, name):
 def test_versions_equal_m1(legacy_store):
     import hermes_state_common
 
-    assert _schema.SCHEMA_VERSION == hermes_state_common.SCHEMA_VERSION == 32
+    assert _schema.SCHEMA_VERSION == hermes_state_common.SCHEMA_VERSION == 33
     assert _schema.FTS_STORAGE_VERSION == hermes_state_common.FTS_STORAGE_VERSION == 3
 
 

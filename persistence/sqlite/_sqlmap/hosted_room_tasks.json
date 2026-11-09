@@ -1525,6 +1525,13 @@
       }
     },
     {
+      "backend": "persistence/sqlite/gateway/hosted_room_driver.py::SQLiteHostedRoomDriverRepository.mark_attempt_indeterminate",
+      "legacy": "gateway/hosted_room_driver.py::mark_attempt_indeterminate",
+      "names": {
+        "attempt.identity": "identity"
+      }
+    },
+    {
       "backend": "persistence/sqlite/gateway/hosted_room_driver.py::SQLiteHostedRoomDriverRepository.settle_stopping_task",
       "legacy": "gateway/hosted_room_driver.py::settle_stopping_task",
       "names": {
@@ -2218,6 +2225,10 @@
         ],
         "reason": "After the same sync, main reads in the checkpoint's self._transaction(), a deferred transaction on a connection with a 10 s busy wait that runs only SELECTs and never takes the write lock; the verb reads in _hosted_read on the placement's file with the same lock wait."
       }
+    },
+    {
+      "backend": "persistence/sqlite/gateway/hosted_room_policy.py::_apply_continued",
+      "legacy": "gateway/hosted_room_policy_checkpoint.py::HostedRoomPolicyCheckpoint._apply_continued"
     },
     {
       "backend": "persistence/sqlite/gateway/hosted_room_policy.py::_apply_discussion_event",

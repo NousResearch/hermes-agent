@@ -5,11 +5,10 @@
   "hermes_state_maintenance.py::SessionMaintenanceMixin._try_checkpoint",
   "hermes_state_maintenance.py::SessionMaintenanceMixin.vacuum",
   "hermes_state_search.py::SessionSearchMixin.optimize_fts",
-  "hermes_state_search.py::SessionSearchMixin._rebuild_finish",
-  "hermes_state_search.py::SessionSearchMixin._rebuild_step",
+  "hermes_state_search.py::SessionSearchMixin._fts_rebuild_finish",
+  "hermes_state_search.py::SessionSearchMixin.fts_rebuild_step",
   "hermes_state_search.py::SessionSearchMixin._fts_teardown_trash_step",
   "hermes_state_search.py::SessionSearchMixin._fts_teardown_start_table",
-  "hermes_state_search.py::SessionSearchMixin._fts_cjk_reset_if_stale",
   "hermes_state_search.py::SessionSearchMixin._fts_index_known_empty",
   "hermes_state_search.py::SessionSearchMixin._reset_fts_index_to_empty",
   "hermes_state_search.py::SessionSearchMixin._seed_fts_rebuild_markers",
@@ -153,8 +152,8 @@
    }
   },
   {
-   "backend": "persistence/sqlite/admin/_maintenance.py::_FtsStorageOptimizer._rebuild_finish",
-   "legacy": "hermes_state_search.py::SessionSearchMixin._rebuild_finish",
+   "backend": "persistence/sqlite/admin/_maintenance.py::_FtsStorageOptimizer._fts_rebuild_finish",
+   "legacy": "hermes_state_search.py::SessionSearchMixin._fts_rebuild_finish",
    "names": {
     "self._execute_write": "self._holder._execute_write",
     "self._read_ctx": "self._holder._read_ctx",
@@ -185,8 +184,8 @@
    }
   },
   {
-   "backend": "persistence/sqlite/admin/_maintenance.py::_FtsStorageOptimizer._rebuild_step",
-   "legacy": "hermes_state_search.py::SessionSearchMixin._rebuild_step",
+   "backend": "persistence/sqlite/admin/_maintenance.py::_FtsStorageOptimizer.fts_rebuild_step",
+   "legacy": "hermes_state_search.py::SessionSearchMixin.fts_rebuild_step",
    "names": {
     "self._execute_write": "self._holder._execute_write",
     "self._read_ctx": "self._holder._read_ctx",
@@ -219,38 +218,6 @@
   {
    "backend": "persistence/sqlite/admin/_maintenance.py::_FtsStorageOptimizer._seed_fts_rebuild_markers",
    "legacy": "hermes_state_search.py::SessionSearchMixin._seed_fts_rebuild_markers",
-   "names": {
-    "self._execute_write": "self._holder._execute_write",
-    "self._read_ctx": "self._holder._read_ctx",
-    "self._lock": "self._holder._lock",
-    "self._conn": "self._holder._conn",
-    "self.set_meta": "self._holder.set_meta",
-    "self.get_meta": "self._holder.get_meta",
-    "self._FTS_TRASH_PREFIX": "_FTS_TRASH_PREFIX",
-    "self._raise_if_db_corrupt": "self._holder._raise_if_db_corrupt",
-    "self._raise_if_db_replaced": "self._holder._raise_if_db_replaced",
-    "self._reopen_after_close_locked": "self._holder._reopen_after_close_locked",
-    "self._record_db_file_identity": "self._holder._record_db_file_identity",
-    "self._trigram_available": "self._holder._trigram_available",
-    "self._fts_enabled": "self._holder._fts_enabled",
-    "self._fts_cjk_loaded": "self._holder._fts_cjk_loaded",
-    "self._foreign_state_db_holders": "self._holder._foreign_state_db_holders",
-    "self.read_only": "self._holder.read_only",
-    "self.db_path": "self._holder.db_path",
-    "self._BASE_BOUNDARY_SWEEP_SQL": "_BASE_BOUNDARY_SWEEP_SQL",
-    "self._TRIGRAM_BOUNDARY_SWEEP_SQL": "_TRIGRAM_BOUNDARY_SWEEP_SQL",
-    "self._BOUNDARY_SWEEP_SQL": "_BOUNDARY_SWEEP_SQL",
-    "self._CHUNK_INSERT_SQL": "_CHUNK_INSERT_SQL",
-    "self._TRIGRAM_CHUNK_INSERT_SQL": "_TRIGRAM_CHUNK_INSERT_SQL",
-    "self._try_checkpoint": "_try_checkpoint",
-    "self.optimize_fts": "_optimize_fts",
-    "self._rebuild_status": "_rebuild_status",
-    "self._backfill_progress": "_backfill_progress"
-   }
-  },
-  {
-   "backend": "persistence/sqlite/admin/_maintenance.py::_FtsStorageOptimizer._fts_cjk_reset_if_stale",
-   "legacy": "hermes_state_search.py::SessionSearchMixin._fts_cjk_reset_if_stale",
    "names": {
     "self._execute_write": "self._holder._execute_write",
     "self._read_ctx": "self._holder._read_ctx",
@@ -568,7 +535,7 @@
   },
   {
    "backend": "persistence/sqlite/admin/_maintenance.py::MaintenanceAdmin.fts_storage_notice",
-   "legacy": "hermes_cli/update_cmd_maint.py::_print_fts_optimize_available_notice#0,1,2"
+   "legacy": "hermes_cli/update_cmd_maint.py::_print_fts_optimize_available_notice#0,1"
   }
  ],
  "builders": [

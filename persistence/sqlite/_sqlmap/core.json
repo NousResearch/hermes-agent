@@ -20,7 +20,6 @@
   "hermes_state_fts.py::SessionFtsSetupMixin._db_has_legacy_inline_fts",
   "hermes_state_fts.py::SessionFtsSetupMixin._db_has_trigram_tool_calls_projection",
   "hermes_state_fts.py::SessionFtsSetupMixin._drop_fts_triggers",
-  "hermes_state_fts.py::SessionFtsSetupMixin._ensure_fts_cjk_schema",
   "hermes_state_fts.py::SessionFtsSetupMixin._ensure_fts_schema",
   "hermes_state_fts.py::SessionFtsSetupMixin._enter_fts_fail_open",
   "hermes_state_fts.py::SessionFtsSetupMixin._has_fts_trash",
@@ -28,12 +27,16 @@
   "hermes_state_fts.py::_stored_vtables",
   "hermes_state_fts.py::base_source_view_is_stale",
   "hermes_state_fts.py::fts_layout_current",
+  "hermes_state_fts.py::_stage_retired_cjk_index",
+  "hermes_state_fts.py::drop_retired_cjk_index",
+  "hermes_state_fts.py::retired_cjk_index_present",
+  "hermes_state_stored_reads.py::SessionStoredReadsMixin._write_generation",
+  "hermes_state_stored_reads.py::SessionStoredReadsMixin.transcript_read_snapshot",
   "hermes_state_schema.py",
   "hermes_state_schema.py::SessionSchemaMixin._advance_message_uid_backfill",
   "hermes_state_schema.py::SessionSchemaMixin._backfill_gateway_metadata_from_sessions_json",
   "hermes_state_schema.py::SessionSchemaMixin._dedupe_legacy_system_prompts",
   "hermes_state_schema.py::SessionSchemaMixin._defer_stale_fts_for_holders",
-  "hermes_state_schema.py::SessionSchemaMixin._drop_all_fts_triggers",
   "hermes_state_schema.py::SessionSchemaMixin._ensure_unique_title_index",
   "hermes_state_schema.py::SessionSchemaMixin._execute_ddl_script_transactional",
   "hermes_state_schema.py::SessionSchemaMixin._execute_ddl_skipping_settled_triggers",
@@ -50,7 +53,6 @@
   "hermes_state_schema.py::SessionSchemaMixin._migrate_trigram_cron_exclusion",
   "hermes_state_schema.py::SessionSchemaMixin._migrate_v22_session_model_usage",
   "hermes_state_schema.py::SessionSchemaMixin._parse_schema_columns",
-  "hermes_state_schema.py::SessionSchemaMixin._quarantine_cjk_after_update_of_migration",
   "hermes_state_schema.py::SessionSchemaMixin._rebuild_fts_indexes",
   "hermes_state_schema.py::SessionSchemaMixin._rebuild_table",
   "hermes_state_schema.py::SessionSchemaMixin._rebuild_table_statements",
@@ -172,6 +174,26 @@
    "legacy": "hermes_state.py::SessionDB.set_meta"
   },
   {
+   "backend": "persistence/sqlite/_holder.py::StoreHolder._write_generation",
+   "legacy": "hermes_state_stored_reads.py::SessionStoredReadsMixin._write_generation"
+  },
+  {
+   "backend": "persistence/sqlite/_holder.py::StoreHolder.transcript_read_snapshot",
+   "legacy": "hermes_state_stored_reads.py::SessionStoredReadsMixin.transcript_read_snapshot"
+  },
+  {
+   "backend": "persistence/sqlite/_schema.py::_stage_retired_cjk_index",
+   "legacy": "hermes_state_fts.py::_stage_retired_cjk_index"
+  },
+  {
+   "backend": "persistence/sqlite/_schema.py::drop_retired_cjk_index",
+   "legacy": "hermes_state_fts.py::drop_retired_cjk_index"
+  },
+  {
+   "backend": "persistence/sqlite/_schema.py::retired_cjk_index_present",
+   "legacy": "hermes_state_fts.py::retired_cjk_index_present"
+  },
+  {
    "backend": "persistence/sqlite/_schema.py::_advance_message_uid_backfill",
    "legacy": "hermes_state_schema.py::SessionSchemaMixin._advance_message_uid_backfill"
   },
@@ -196,16 +218,8 @@
    "legacy": "hermes_state_schema.py::SessionSchemaMixin._defer_stale_fts_for_holders"
   },
   {
-   "backend": "persistence/sqlite/_schema.py::_drop_all_fts_triggers",
-   "legacy": "hermes_state_schema.py::SessionSchemaMixin._drop_all_fts_triggers"
-  },
-  {
    "backend": "persistence/sqlite/_schema.py::_drop_fts_triggers",
    "legacy": "hermes_state_fts.py::SessionFtsSetupMixin._drop_fts_triggers"
-  },
-  {
-   "backend": "persistence/sqlite/_schema.py::_ensure_fts_cjk_schema",
-   "legacy": "hermes_state_fts.py::SessionFtsSetupMixin._ensure_fts_cjk_schema"
   },
   {
    "backend": "persistence/sqlite/_schema.py::_ensure_fts_schema",
@@ -294,10 +308,6 @@
   {
    "backend": "persistence/sqlite/_schema.py::_parse_schema_columns",
    "legacy": "hermes_state_schema.py::SessionSchemaMixin._parse_schema_columns"
-  },
-  {
-   "backend": "persistence/sqlite/_schema.py::_quarantine_cjk_after_update_of_migration",
-   "legacy": "hermes_state_schema.py::SessionSchemaMixin._quarantine_cjk_after_update_of_migration"
   },
   {
    "backend": "persistence/sqlite/_schema.py::_rebuild_fts_indexes",

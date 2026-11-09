@@ -1,0 +1,33 @@
+from . import Copy
+
+COPY = Copy(
+    legacy='hermes_state_legacy_refusal',
+    doc='One-time repair of chats a stored safety refusal still locks.',
+    names=(
+        'logger',
+        'LEGACY_REFUSAL_REPAIR_DONE',
+        '_SCAN_CURSOR',
+        '_SCAN_COMPLETE',
+        '_PENDING',
+        '_DISCOVER_BATCH',
+        '_SCAN_BUDGET_S',
+        '_CODE',
+        '_NON_CHAT_SOURCES',
+        '_discover_sql',
+        '_DISCOVER_SQL',
+        '_meta',
+        '_set_meta',
+        '_is_refusal_boundary',
+        '_is_final_reply',
+        '_continued_parent_sql',
+        '_compaction_holds_refusal',
+        '_locked_tail',
+        '_repair_session',
+        '_discover',
+        '_write_txn',
+        '_pending',
+        'repair_legacy_refused_turns',
+        'advance_legacy_refusal_repair',
+        '__all__',
+    ),
+)

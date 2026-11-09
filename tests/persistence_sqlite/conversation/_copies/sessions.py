@@ -115,7 +115,7 @@ SUBSTITUTIONS = {
     ),
 }
 
-COPY = Copy(
+COPY = (Copy(
     legacy='hermes_state_sessions',
     doc='Session rows: create, end and reopen, metadata and model config, lifecycle flags, listing and counting, delete.',
     names=(
@@ -216,4 +216,8 @@ COPY = Copy(
         'delete_empty_sessions',
     ),
     substitutions=SUBSTITUTIONS,
-)
+), Copy(
+    # The delegate subagents a lineage owns, beside the lineage walk it reads.
+    legacy='hermes_state_delegate_children',
+    names=('delegate_descendant_ids',),
+))

@@ -27,7 +27,7 @@ MEMBERS = [{"member_id": "m1", "profile": "p1"}]
 USER = {"kind": "user", "id": "u1"}
 # The tables the rooms step creates in every file a room verb opens.
 SCHEMA = {"hosted_rooms", "hosted_room_events", "hosted_room_retired_ids", "hosted_room_links", "hosted_room_remote_runs",
-          "hosted_room_revoked_grants", "hosted_room_peer_reservations"}
+          "hosted_room_revoked_grants", "hosted_room_peer_reservations", "hosted_room_owed_revokes"}
 PAYLOAD = {"target_profile": "p1", "target_member_id": "m1", "prompt": "go", "source_event_seq": 1}
 DRAFT_DRIVER = (
     "CREATE TABLE hosted_room_driver_leases (room_id TEXT PRIMARY KEY)",

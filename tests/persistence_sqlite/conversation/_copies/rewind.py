@@ -13,6 +13,8 @@ COPY = Copy(
     ),
     legacy_class='SessionRewindMixin',
     members=(
+        'retain_refused_turn_for_display',
+        '_plan_refused_retention',
         'rewind_user_turn',
         'plan_user_turn_rewind',
     ),

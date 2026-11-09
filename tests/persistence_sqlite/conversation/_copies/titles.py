@@ -4,6 +4,7 @@ COPY = Copy(
     legacy='hermes_state_titles',
     doc='Session titles: set with conflict resolution, auto titles, title reads and lineage numbering.',
     names=(
+        'bot_chat_title_released',
         '_TITLE_CONTROL_RE',
         '_TITLE_INVISIBLE_RE',
     ),
@@ -21,6 +22,7 @@ COPY = Copy(
         'set_session_title_source',
         'get_session_by_title',
         'resolve_session_by_title',
+        '_retire_canonical_bot_chat_in_transaction',
         'get_next_title_in_lineage',
     ),
     # The title limit is the copied ``MAX_TITLE_LENGTH``, so the legacy class is not imported for it.

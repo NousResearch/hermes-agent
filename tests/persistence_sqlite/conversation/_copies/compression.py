@@ -51,5 +51,6 @@ COPY = Copy(
         '_compression_tip_on',
         '_is_compression_child_row',
         'get_compression_lineage',
+        'get_tool_rotation_root',
     ),
 )

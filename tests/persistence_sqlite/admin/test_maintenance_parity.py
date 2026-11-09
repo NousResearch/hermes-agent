@@ -475,8 +475,8 @@ def _legacy_notice(path: Path, monkeypatch, capsys) -> str:
 
 
 @pytest.mark.parametrize("seed", [_current_store, _legacy_inline_store, _with_meta("fts_rebuild_high_water"),
-                                  _with_meta("fts_cjk_rebuild_high_water"), _with_trash],
-                         ids=["current", "legacy-inline", "backfill-marker", "cjk-marker", "trash-table"])
+                                  _with_trash],
+                         ids=["current", "legacy-inline", "backfill-marker", "trash-table"])
 def test_fts_storage_notice_reads_what_the_update_notice_decides_on(tmp_path, monkeypatch, capsys, seed,
                                                                     legacy_store):
     legacy_path, admin_path = _copies(tmp_path, seed)

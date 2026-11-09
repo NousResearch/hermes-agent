@@ -1,0 +1,18 @@
+name: linear-digest
+repo: https://github.com/TakeshiTGAL/hermes-plugin-linear-digest
+sha: cb8cac04dbe3839bf75557757df56d3f3c31e3e9
+description: 'Schedule a model-free morning list of open Linear issues assigned to you, with linear_digest. Disclosure — LINEAR_API_KEY is read from this profile on each request and sent as the Authorization value with no Bearer prefix, as up to ten HTTPS POSTs to host api.linear.app path /graphql; redirects are not followed and proxies are not used; nothing is downloaded at run time and the schema file shipped here is about 1.3 MB; the tool and the script are read-only; archived issues are left out; tools are on for every surface, including gateways, so anyone you allow there can call linear_digest with your key, and hermes tools turns a surface off; schedule writes a no-agent cron at 08:00 delivered to local, empty stdout sends nothing, and there is no daily cap; unschedule removes the saved job, while the script stays only when another job is also named linear-digest; a leftover job is removed with hermes cron remove, and that command leaves the script file; settings stay in <HERMES_HOME>/plugin-data/linear-digest; the skill linear-issues is registered with the tool; bot-chat puts the list into another model turn and that turn is not model-free; an http loopback LINEAR_DIGEST_REHEARSAL URL receives the key in clear text, and any other value fetches nothing.'
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+requires_hermes: '>=0.21.4'
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-linear-digest#readme
+version: '0.1.0'
+title: Linear digest
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-linear-digest/cb8cac04dbe3839bf75557757df56d3f3c31e3e9/assets/catalog-banner.png
+platforms: []
+capabilities:
+  provides_tools:
+  - linear_digest
+  provides_hooks: []
+  provides_middleware: []

@@ -29,8 +29,9 @@ def notify(message: str) -> bool:
 
 
 def extend_start_timeout(seconds: float) -> bool:
-    """Ask systemd for ``seconds`` more start time (from now) while a Type=notify boot is still progressing."""
-    return seconds > 0 and notify(f"EXTEND_TIMEOUT_USEC={int(seconds * 1_000_000)}")
+    """Ask systemd for ``seconds`` more start time (from now) while a Type=notify boot is still progressing.
+    A non-finite budget (an ``inf`` connect-timeout override) sends nothing rather than raising mid-boot."""
+    return math.isfinite(seconds) and seconds > 0 and notify(f"EXTEND_TIMEOUT_USEC={int(seconds * 1_000_000)}")
 
 
 def watchdog_interval_seconds() -> float | None:

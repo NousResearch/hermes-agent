@@ -82,6 +82,10 @@ _DISPATCH_KINDS = frozenset({_CHAT_KIND, 45001, 45003})
 _UNRESOLVED_MENTION_ERROR_RE = re.compile(r"mention '@(?P<name>[^']+)' does not match a current channel member")
 _BUZZ_PRESENTATION_MENTION_SEPARATOR = "\u200b"
 _HEX64_RE = re.compile(r"[0-9a-f]{64}")
+_MENTION_DATA_REGION_RE = re.compile(
+    r"```.*?```|`[^`\n]*`|(?m:^[ \t]*>[^\n]*)|\b[a-z][a-z0-9+.-]*://[^\s<>\[\](){}]+",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _escape_unresolved_presentation_mention(content: str, error: str) -> Optional[str]:
@@ -94,6 +98,15 @@ def _escape_unresolved_presentation_mention(content: str, error: str) -> Optiona
     token = re.compile(rf"(?<!\S)@{re.escape(name)}(?=$|[^A-Za-z0-9._-])", re.IGNORECASE)
     escaped, count = token.subn(lambda m: "@" + _BUZZ_PRESENTATION_MENTION_SEPARATOR + m.group(0)[1:], content)
     return escaped if count else None
+
+
+def _mentionable_text(content: str) -> str:
+    """Mask non-address regions without changing the message that is dispatched or sent.
+
+    Repository URLs, Markdown code, and block quotes often carry identities as data. They are not
+    requests for an agent, so both inbound wakeup detection and outbound p-tag resolution ignore them.
+    """
+    return _MENTION_DATA_REGION_RE.sub(lambda match: " " * len(match.group()), content)
 
 
 _FETCH_LIMIT = 50  # events per poll / seed call
@@ -757,7 +770,8 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         """Resolve ``@Name`` tokens to member pubkeys so genuine mentions notify while @-prose stays text.
         Word-bounded ("email@Fizz", "@@Fizz", "@FizzBuzz" don't wake Fizz; "@Riley!!" does); longer names
         match first and consume their span; ambiguous names tag nobody."""
-        if "@" not in content:
+        text = _mentionable_text(content)
+        if "@" not in text:
             return []
         by_name: dict[str, list[str]] = {}
         display: dict[str, str] = {}
@@ -774,7 +788,6 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
                 pks.append(pk)
             display.setdefault(key, name)
         found: list[str] = []
-        text = content
         for key in sorted(by_name, key=len, reverse=True):
             pattern = re.compile(r"(?<![\w@])@" + re.escape(display[key]) + r"(?!\w)", re.IGNORECASE)
             if pattern.search(text):
@@ -1544,7 +1557,7 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
 
     def _is_mentioned(self, content: str) -> bool:
         """True when text explicitly addresses this agent (npub, hex, or @name)."""
-        lowered = content.lower()
+        lowered = _mentionable_text(content).lower()
         patterns = []
         if self._self_pubkey and _HEX64_RE.fullmatch(self._self_pubkey):
             patterns.append(rf"(?<![0-9a-f]){re.escape(self._self_pubkey)}(?![0-9a-f])")

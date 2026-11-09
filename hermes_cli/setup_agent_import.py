@@ -199,6 +199,17 @@ def _plugin_enabled(hermes_home: Path) -> bool:
     return PLUGIN in set(plugins.get("enabled") or ()) and PLUGIN not in set(plugins.get("disabled") or ())
 
 
+def _preview_args(extra_args: tuple[str, ...]) -> tuple[str, ...]:
+    """The preview child's argv: ``--dry-run`` present exactly once.
+
+    ``hermes migrate --dry-run`` forwards the flag itself, but *dry_run* is also an API contract of
+    ``migrate_from_agents``: a caller that passes only ``("--yes",)`` would otherwise launch the
+    importer in APPLY mode and write the home the preview promised to leave alone."""
+    if any(arg == "--dry-run" or arg.startswith("--dry-run=") for arg in extra_args):
+        return extra_args
+    return (*extra_args, "--dry-run")
+
+
 def _dry_run_import(source: ImportSource, hermes_home: Path, extra_args: tuple[str, ...]) -> int:
     """``--dry-run``'s preview, with no write of our own: the plugin has to be installed and enabled
     already, because installing, enabling and the exit-2 update are all writes. When one of them would
@@ -214,7 +225,8 @@ def _dry_run_import(source: ImportSource, hermes_home: Path, extra_args: tuple[s
         print_warning(f"--dry-run writes nothing, so it cannot enable the '{PLUGIN}' plugin it needs. "
                       f"Enable it with: hermes plugins enable {PLUGIN}, then re-run with --dry-run.")
         return 1
-    return 1 if _import_child(source, hermes_home, extra_args, from_setup=False, allow_update=False) else 0
+    return 1 if _import_child(source, hermes_home, _preview_args(extra_args),
+                              from_setup=False, allow_update=False) else 0
 
 
 def migrate_from_agents(hermes_home: Path, source_name: str = "", extra_args: tuple[str, ...] = (),

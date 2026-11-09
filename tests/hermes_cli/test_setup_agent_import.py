@@ -255,6 +255,29 @@ def test_dry_run_does_not_update_an_outdated_plugin(homes, monkeypatch, capsys):
     assert "hermes plugins update agent-importers" in capsys.readouterr().out
 
 
+def test_a_direct_dry_run_caller_previews_even_without_the_cli_flag(homes, monkeypatch):
+    """``dry_run=True`` is the API contract, not the ``--dry-run`` spelling in *extra_args*:
+    ``hermes migrate`` builds both, but a direct caller that forwards only ``("--yes",)`` used to
+    launch the child in APPLY mode and write the home the preview promised to leave alone."""
+    _user_home, hermes_home, calls, _answers = homes
+    _installed_but_disabled(hermes_home, enabled=True)
+    before = _tree(hermes_home)
+
+    def apply_unless_preview(argv, env, check=False):
+        hermes_args = argv[argv.index("hermes_cli.main") + 1:]
+        calls.append(("import", hermes_args, env["HERMES_HOME"]))
+        if "--dry-run" not in hermes_args:  # the plugin's importer writes unless asked to preview
+            (hermes_home / "config.yaml").write_text("imported: applied\n", encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(step.subprocess, "run", apply_unless_preview)
+
+    assert step.migrate_from_agents(hermes_home, "openbot", ("--yes",), dry_run=True) == 0
+    assert calls == [("import", ["--profile", "default", "import-agent", "openbot", "--yes", "--dry-run"],
+                      str(hermes_home))]
+    assert _tree(hermes_home) == before
+
+
 def test_hermes_migrate_names_an_agent_installs_the_plugin_and_forwards_its_flags(homes, monkeypatch):
     """`hermes migrate grok-bot ...` through the real parser: the plugin is installed from the catalog
     when missing, and the import runs as its own command (no --from-setup) with the user's flags."""

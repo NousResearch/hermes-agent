@@ -1,33 +1,79 @@
 name: nanlmind-hermes
 title: NaNLMind Hermes
 repo: https://github.com/shemshallah/NaNLMind_HERMES
-sha: 314219d6b094ca90172579639efa55088488e7ad
-description: Connect Hermes to a local NaNLMind 256-head universe for chat, explicit native training,
-  mathematical memory, and approved CLOCKED evidence plans. The plugin registers 33 tools for conversation,
-  native logic/word/sentence training, memory ingest and assessment, NaN16DE routing, NANNET identity,
-  and CLOCKED plan/execute/scratch/head-process/candidate flows. Training runs through the user's local
-  nanlm-universal executable; NANNET is the identity and authorization boundary; CLOCKED results are evidence,
-  not ground truth, and candidates cannot promote canonical state. Disclosure - runs a local native binary;
-  makes HTTPS calls to configured NANNET authority, CLOCKED gateway and head-cortex endpoints; stores
-  transcripts, corpora, scratch, encrypted installation identity and paired token under the configured
-  state directory; approved CLOCKED execution sends source text to the configured gateway while planning
-  excludes it; no telemetry, self-update or credential-store scraping.
+sha: d7a27e9da81a08e599d3ae6e807a1128aea3320d
+description: >-
+  Link Hermes to a local NaNLMind NaN16 universe for conversation,
+  mathematical-memory inspection, bounded native graph-reasoning evidence,
+  explicit native training, NANNET identity and CLOCKED evidence plans.
+  Registers 64 tools and a pre_tool_call human-approval hook.
+  Four sensitive CLOCKED/candidate tools require Hermes human confirmation;
+  model-supplied approved=true cannot bypass that gate. Native execution
+  launches a locally installed nanlm-universal process with a minimal
+  environment, not Hermes provider secrets. Model-chosen corpus paths are
+  confined to the configured plugin corpora directory. Network calls use
+  configured NANNET, CLOCKED and head-cortex endpoints. The plugin stores
+  corpora, transcript/scratch journals, state artifacts, encrypted
+  installation identity and paired tokens under state_dir. Use a separate
+  absolute state_dir per Hermes profile; the default is not profile-isolated.
+  Planning does not transmit CLOCKED source text; an approved execution
+  sends the reviewed source text to the configured gateway. CLOCKED and
+  native graph results remain evidence, not proven truth or automatic
+  learning authority. No telemetry, self-update, arbitrary credential-file
+  reads or vendor-password-manager integration. For protected credentials,
+  use the optional [auth] cryptography backend: the pure-Python fallback
+  has not been audited for constant-time operation.
 maintainer: shemshallah
 tier: community
 category: tools
 requires_hermes: '>=0.23.0'
-docs_url: https://github.com/shemshallah/NaNLMind_HERMES/blob/314219d6b094ca90172579639efa55088488e7ad/docs/DEMO.md
-version: "1.2.3"
-platforms: []
+docs_url: https://github.com/shemshallah/NaNLMind_HERMES/blob/d7a27e9da81a08e599d3ae6e807a1128aea3320d/docs/HERMES_CATALOG_ADMISSION.md
+version: "1.5.1"
+platforms: [linux, macos]
+known_issues:
+  - Configure a distinct absolute state_dir for each Hermes profile.
+  - Native training requires a locally built nanlm-universal executable.
+  - Prefer the optional cryptography [auth] extra for protected identity operations.
 capabilities:
   provides_tools:
   - nanlm_status
+  - nanlm_learning_cycle
+  - nanlm_learning_status
+  - nanlm_learning_sync
+  - nanlm_wordnet_ingest
+  - nanlm_scratch_register
+  - nanlm_mirror_topology
+  - nanlm_router_graph_verify
+  - nanlm_router_graph_walk
+  - nanlm_self_modify
+  - nanlm_mth_tools
+  - nanlm_teacher_teach
+  - nanlm_chart_storage
   - nanlm_chat
   - nanlm_chat_history
+  - nanlm_phone_call
   - nanlm_auth_init
   - nanlm_auth_status
   - nanlm_auth_pair
   - nanlm_auth_revoke
+  - nanlm_hw_register
+  - nanlm_hw_status
+  - nanlm_hw_heartbeat
+  - nanlm_hw_release
+  - nanlm_hw_report
+  - nanlm_universe_status
+  - nanlm_universe_open
+  - nanlm_universe_resolve
+  - nanlm_universe_renew
+  - nanlm_universe_release
+  - nanlm_universe_dispatch
+  - nanlm_universe_ack
+  - nanlm_universe_inspect
+  - nanlm_native_mth_u32
+  - nanlm_chat_train
+  - nanlm_tree_inspect
+  - nanlm_tree_mutate
+  - nanlm_tree_audit
   - nanlm_generate_curriculum
   - nanlm_curriculum_experiment
   - nanlm_logic_session
@@ -54,7 +100,8 @@ capabilities:
   - nanlm_head_candidate
   - nanlm_head_candidate_evaluate
   - nanlm_head_learn_candidate
-  provides_hooks: []
+  provides_hooks:
+  - pre_tool_call
   provides_middleware: []
   requires_env:
   - CLOCKED_GATEWAY_TOKEN

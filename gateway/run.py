@@ -3088,6 +3088,15 @@ def _normalize_empty_agent_response(
         # Persistence failures: suggesting /reset would destroy context without fixing storage.
         failure_reason = str(agent_result.get("failure_reason") or "")
         if failure_reason.startswith("session_persistence_failed") or "session storage" in error_str:
+            # This branch returns before the sanitized-failure log below, so a persistence
+            # failure used to be the one failure nobody could find afterwards: the user got
+            # the storage notice and the log said nothing at all. Record the reason and the
+            # detail here, keeping raw exception text out of chat.
+            logger.warning(
+                "Agent turn failed on session persistence (%s); reply replaced with the storage "
+                "notice. detail=%s",
+                failure_reason or "session storage", str(error_detail)[:500],
+            )
             if failure_reason.endswith(":disk") or "disk" in error_str:
                 return t("gateway.errors.session_storage_unavailable_disk")
             return t("gateway.errors.session_storage_unavailable")

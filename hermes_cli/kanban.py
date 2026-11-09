@@ -505,6 +505,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--reason", default=None,
         help="Human-readable reason (recorded on the reclaimed event)",
     )
+    p_reclaim.add_argument(
+        "--force", action="store_true",
+        help="Release the claim even if the worker survived termination. "
+             "By default a reclaim is deferred when the worker is still "
+             "alive, because releasing it spawns a duplicate alongside it.",
+    )
 
     p_reassign = sub.add_parser(
         "reassign",
@@ -600,6 +606,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_complete.add_argument("--metadata", default=None,
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
+    p_complete.add_argument(
+        "--force", action="store_true",
+        help="Complete even when another worker holds a live claim on the "
+             "task. Without this, closing a running task from outside its "
+             "own worker is refused so a reclaimed worker cannot finish a "
+             "card its successor is working on.",
+    )
 
     p_edit = sub.add_parser(
         "edit",
@@ -636,6 +649,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
             "Repeated same-kind re-blocks after unblock route the task to "
             "triage to break unblock loops. Omit for a generic block."
         ),
+    )
+    p_block.add_argument(
+        "--force", action="store_true",
+        help="Block even when another worker holds a live claim on the task. "
+             "Without this, blocking a running task from outside its own "
+             "worker is refused so a reclaimed worker cannot block a card "
+             "its successor is working on.",
     )
 
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
@@ -1898,10 +1918,13 @@ def _cmd_reclaim(args: argparse.Namespace) -> int:
         ok = kb.reclaim_task(
             conn, args.task_id,
             reason=getattr(args, "reason", None),
+            force=bool(getattr(args, "force", False)),
         )
     if not ok:
         print(
-            f"cannot reclaim {args.task_id} (not running or unknown id)",
+            f"cannot reclaim {args.task_id} (not running, unknown id, or its "
+            f"worker is still alive: see the reclaim_deferred event; "
+            f"re-run with --force to release the claim anyway)",
             file=sys.stderr,
         )
         return 1
@@ -2204,6 +2227,9 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
     raw = os.environ.get("HERMES_KANBAN_RUN_ID")
     if not raw:
+        # No run id in env. Ownership is still enforced inside kanban_db via
+        # HERMES_KANBAN_CLAIM_LOCK (see _revoked_worker_terminal_write), so
+        # there is nothing to resolve here.
         return None
     try:
         return int(raw)
@@ -2298,6 +2324,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 summary=summary,
                 metadata=metadata,
                 expected_run_id=_worker_run_id_for(tid),
+                force=getattr(args, "force", False),
             ):
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
@@ -2350,6 +2377,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 reason=reason,
                 kind=kind,
                 expected_run_id=_worker_run_id_for(tid),
+                force=getattr(args, "force", False),
             ):
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)

@@ -5116,6 +5116,7 @@ def reclaim_task(
     task_id: str,
     *,
     reason: Optional[str] = None,
+    force: bool = False,
     signal_fn=None,
 ) -> bool:
     """Operator-driven reclaim: release the claim and restore its source phase.
@@ -5126,8 +5127,23 @@ def reclaim_task(
     when an operator wants to abort a running worker without waiting
     for the TTL to expire (e.g. after seeing a hallucination warning).
 
+    Like its two siblings (:func:`release_stale_claims` and the
+    heartbeat-stale backstop in :func:`detect_stale_running`), this refuses
+    to release a claim whose host-local worker survived termination:
+    releasing it lets the dispatcher spawn a second worker alongside the
+    first, which is the duplication loop. The claim is held with a
+    ``reclaim_deferred`` event instead and the next attempt retries the kill.
+    ``reclaim_task`` used to skip that check, so every manual reclaim of a
+    worker that ignored SIGTERM produced a duplicate.
+
+    ``force=True`` releases the claim anyway, for the operator who has looked
+    at the box and wants the card back regardless. The release is recorded
+    with ``forced: true`` on the ``reclaimed`` event so the resulting
+    concurrency is attributable.
+
     Returns True if a reclaim happened, False if the task isn't in a
-    reclaimable state (not running, or doesn't exist).
+    reclaimable state (not running, doesn't exist, or its worker is still
+    alive and ``force`` was not set).
     """
     row = conn.execute(
         "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
@@ -5142,6 +5158,12 @@ def reclaim_task(
     termination = _terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
     )
+    if not force and _worker_survived_termination(termination):
+        _defer_reclaim_for_live_worker(
+            conn, task_id, prev_lock, int(time.time()), termination,
+            reason="manual_reclaim_worker_alive",
+        )
+        return False
     with write_txn(conn):
         retry_status = _retry_status_for_run(conn, task_id)
         cur = conn.execute(
@@ -5168,6 +5190,8 @@ def reclaim_task(
             "prev_lock": prev_lock,
             "retry_status": retry_status,
         }
+        if force:
+            payload["forced"] = True
         payload.update(termination)
         _append_event(
             conn, task_id, "reclaimed",
@@ -5358,6 +5382,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    force: bool = False,
     fire_lifecycle_hook: bool = True,
 ) -> bool:
     """Transition ``running|ready|blocked|review -> done`` and record ``result``.
@@ -5391,11 +5416,22 @@ def complete_task(
     Any suspected phantom references are recorded as a
     ``suspected_hallucinated_references`` event. This pass is advisory
     and never blocks.
+
+    When this process is a dispatcher-spawned worker for ``task_id`` whose
+    claim has been revoked, the completion is refused unless ``force=True``.
+    See :func:`_revoked_worker_terminal_write`; non-worker callers (humans on
+    the CLI, the dashboard, reviewers approving a ``review`` card) are
+    unaffected and still need no ``force``.
     """
     now = int(time.time())
     # Fail before validating cards or staging artifacts; re-check inside the
     # final write transaction below to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
+        return False
+
+    if not force and _revoked_worker_terminal_write(
+        conn, task_id, expected_run_id
+    ):
         return False
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
@@ -6243,6 +6279,64 @@ def edit_completed_task_result(
     return True
 
 
+def _revoked_worker_terminal_write(
+    conn: sqlite3.Connection,
+    task_id: str,
+    expected_run_id: Optional[int],
+) -> bool:
+    """True when THIS process is a worker writing to a card it has lost.
+
+    The reclaim-without-termination bug (t_f16a7cec) let a worker keep
+    executing after its card had been reclaimed and handed to a successor.
+    ``expected_run_id`` already closed the guarded path: the UPDATE's
+    ``AND current_run_id = ?`` fails for a superseded run. But a worker that
+    reached a terminal mutator without one matched on status alone and could
+    close the successor's run with its own stale summary.
+
+    This fires only on positive evidence of revocation, never on absence of
+    evidence. Three things can identify the caller's run, in order:
+    ``expected_run_id``, ``HERMES_KANBAN_RUN_ID``, and
+    ``HERMES_KANBAN_CLAIM_LOCK``. If at least one is present and contradicts
+    the task's live owner, this is a revoked worker and the write is refused.
+    If none is present we cannot tell owner from impostor, so the call is
+    allowed through unchanged: a false refusal would strand a worker's own
+    handoff, which is worse than the duplicate write being guarded against.
+
+    Non-worker callers (``HERMES_KANBAN_TASK`` unset or naming a different
+    card) are never gated, so humans on the CLI, the dashboard, reviewers,
+    and library callers keep their existing behaviour with no ``force``.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return False
+    row = conn.execute(
+        "SELECT status, claim_lock, current_run_id FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    if row["status"] != "running" or row["claim_lock"] is None:
+        # No live claim to displace (ready / blocked / review / done).
+        return False
+
+    live_run_id = row["current_run_id"]
+    if expected_run_id is not None:
+        return live_run_id is None or int(expected_run_id) != int(live_run_id)
+
+    env_run_id = os.environ.get("HERMES_KANBAN_RUN_ID")
+    if env_run_id:
+        try:
+            return live_run_id is None or int(env_run_id) != int(live_run_id)
+        except ValueError:
+            pass
+
+    env_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
+    if env_lock:
+        return env_lock != row["claim_lock"]
+
+    # No ownership evidence at all: cannot distinguish owner from impostor.
+    return False
+
+
 def block_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -6250,6 +6344,7 @@ def block_task(
     reason: Optional[str] = None,
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    force: bool = False,
 ) -> bool:
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
 
@@ -6277,11 +6372,19 @@ def block_task(
 
     Returns True on any successful transition (to ``blocked``, ``todo``, or
     ``triage``), False when the task wasn't in a blockable state.
+
+    When this process is a dispatcher-spawned worker for ``task_id`` whose
+    claim has been revoked, the block is refused unless ``force=True``. See
+    :func:`_revoked_worker_terminal_write`; non-worker callers are unaffected.
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
+    if not force and _revoked_worker_terminal_write(
+        conn, task_id, expected_run_id
+    ):
+        return False
     recurrences = 0
     with write_txn(conn):
         cur_row = conn.execute(

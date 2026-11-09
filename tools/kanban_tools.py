@@ -159,6 +159,9 @@ def _worker_run_id(task_id: str) -> Optional[int]:
         return None
     raw = os.environ.get("HERMES_KANBAN_RUN_ID")
     if not raw:
+        # No run id in env (older dispatcher, or the task had no
+        # current_run_id at spawn). kanban_db still enforces ownership via
+        # HERMES_KANBAN_CLAIM_LOCK, so there is nothing to resolve here.
         return None
     try:
         return int(raw)

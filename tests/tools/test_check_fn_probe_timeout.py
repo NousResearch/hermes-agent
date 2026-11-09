@@ -100,6 +100,42 @@ def test_a_probe_thread_that_cannot_start_does_not_park_the_check(monkeypatch):
     assert [d["function"]["name"] for d in reg.get_definitions({"flaky_host"}, quiet=True)] == ["flaky_host"]
 
 
+def test_an_uncached_check_answers_for_its_own_caller_while_another_runs(monkeypatch):
+    """``no_cache_check_fn`` probes may answer per caller context (Kanban refuses a delegated child),
+    so a concurrent caller must never inherit another caller's verdict."""
+    from contextlib import nullcontext
+
+    from agent.delegation_context import delegated_child_context
+    from tools import kanban_tools
+
+    entered, release, results = threading.Event(), threading.Event(), {}
+
+    def configured_profile():
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(5)
+        return True
+
+    monkeypatch.setattr(kanban_tools, "_profile_has_kanban_toolset", configured_profile)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    reg = ToolRegistry()
+    _register(reg, "kanban_probe", kanban_tools._check_kanban_mode)
+
+    def build(name, child):
+        with delegated_child_context() if child else nullcontext():
+            results[name] = [d["function"]["name"] for d in reg.get_definitions({"kanban_probe"}, quiet=True)]
+
+    parent = threading.Thread(target=build, args=("parent", False), daemon=True)
+    parent.start()
+    assert entered.wait(5)
+    child = threading.Thread(target=build, args=("child", True), daemon=True)
+    child.start()
+    child.join(5)
+    release.set()
+    parent.join(5)
+    assert results == {"parent": ["kanban_probe"], "child": []}
+
+
 def test_a_bounded_probe_keeps_scope_errors_and_contextvar_publication():
     from agent.secret_scope import get_secret, reset_secret_scope, set_secret_scope
 

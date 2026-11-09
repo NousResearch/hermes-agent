@@ -375,26 +375,33 @@ class CheckFnTimeout(Exception):
     """A ``check_fn`` did not answer within ``_CHECK_FN_PROBE_TIMEOUT_SECONDS``."""
 
 
-def _call_check_fn(fn: Callable) -> bool:
+def _call_check_fn(fn: Callable, *, shared: bool = True) -> bool:
     """``bool(fn())`` on a daemon worker under the caller's contextvars, bounded. The probe's
     contextvar writes are published back (``memory_tool`` hands its availability snapshot to the
-    schema build that follows). Concurrent callers for one key share a single worker, reserved
-    under the lock before it starts. Raises what the probe raised, or ``CheckFnTimeout``."""
+    schema build that follows). ``shared`` callers for one key (cached probes: profile-invariant by
+    contract) join a single worker, reserved under the lock before it starts; an unshared probe
+    (``no_cache_check_fn`` or an unresolved cache scope) answers for its own caller's context only,
+    and is recorded only once it times out. Raises what the probe raised, or ``CheckFnTimeout``."""
     key = (fn, hermes_home_key())
     with _check_fn_inflight_lock:
         current = _check_fn_inflight.get(key)
         if current is not None and current.timed_out:
             raise CheckFnTimeout("is still not answering")
-        probe, start = (current, False) if current is not None else (_Probe(), True)
-        _check_fn_inflight[key] = probe
+        if shared and current is not None:
+            probe, start = current, False
+        else:
+            probe, start = _Probe(), True
+            if shared:
+                _check_fn_inflight[key] = probe
 
     def _settle() -> None:
         # A settled probe leaves the table (MCP refreshes register a fresh check_fn each time, so a
         # kept record would never be replaced); callers already waiting keep their reference.
+        # ``done`` flips under the lock so a timed-out caller cannot park an already-settled probe.
         with _check_fn_inflight_lock:
             if _check_fn_inflight.get(key) is probe:
                 del _check_fn_inflight[key]
-        probe.done.set()
+            probe.done.set()
 
     if start:
         def _probe() -> None:
@@ -412,7 +419,11 @@ def _call_check_fn(fn: Callable) -> bool:
             _settle()
             raise
     if not probe.done.wait(_CHECK_FN_PROBE_TIMEOUT_SECONDS):
-        probe.timed_out = True
+        with _check_fn_inflight_lock:
+            probe.timed_out = True
+            if not probe.done.is_set():
+                # Park it so later calls answer at once instead of starting another worker.
+                _check_fn_inflight.setdefault(key, probe)
         raise CheckFnTimeout(f"did not answer within {_CHECK_FN_PROBE_TIMEOUT_SECONDS:.0f}s")
     caller = copy_context()
     for var, value in probe.ctx.items():
@@ -427,7 +438,7 @@ def _run_check_fn_uncached(fn: Callable) -> bool:
     """Run an availability check without cache/grace handling."""
     from agent.secret_scope import UnscopedSecretError, current_secret_scope
     try:
-        return _call_check_fn(fn)
+        return _call_check_fn(fn, shared=False)
     except CheckFnTimeout as exc:
         logger.warning("check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), exc)
     except UnscopedSecretError:

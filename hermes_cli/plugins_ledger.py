@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import weakref
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Union
 
@@ -46,6 +47,7 @@ class PluginRegistration:
     # Staged change applied only once the plugin's load succeeded (``_publish_staged_registrations``); a failed
     # or timed-out load disposes the handle first, so the change is never applied.
     publish: Optional[Callable[[], Any]] = None
+    value: Any = field(default=None, repr=False, compare=False)
     _disposed: bool = field(default=False, init=False, repr=False)
     _on_dispose: Optional[Callable[[PluginRegistration], None]] = field(default=None, init=False, repr=False)
 
@@ -67,6 +69,12 @@ class PluginRegistration:
 
 
 class PluginLedgerMixin:
+    @cached_property
+    def _dashboard_token_plugins(self) -> list:
+        """Mount owners for this load sweep, without importing the web app or any plugin API."""
+        from hermes_cli.web_server_dashboard import _discover_dashboard_plugins
+        return _discover_dashboard_plugins()
+
     def _track_registration(
         self, manifest: PluginManifest, kind: str, key: str, release: Callable[[], None], *,
         persistent: bool = False,
@@ -333,4 +341,5 @@ class PluginLedgerMixin:
             self._hook_abandoned.clear()
             self._hook_timeout_suppressed_until.clear()
         self._hook_failures_reported.clear()
+        self.__dict__.pop("_dashboard_token_plugins", None)
         self._discovered = False

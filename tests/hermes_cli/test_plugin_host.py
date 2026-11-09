@@ -110,7 +110,13 @@ def test_isolation_host_keeps_every_user_import_path_out_of_process(tmp_path, mo
     from hermes_cli.plugin_isolation_audit import audit_plugin_dir
     from plugins import plugin_loader
 
-    home = _home_with_plugins(tmp_path, monkeypatch, {"platformprobe": PLATFORM_PLUGIN, "fine": PROBE_PLUGIN})
+    token_plugin = (
+        "def register(ctx):\n"
+        "    ctx.register_dashboard_token_route('/api/plugins/tokenprobe/probe', provider='tokenprobe')\n"
+    )
+    home = _home_with_plugins(tmp_path, monkeypatch, {
+        "platformprobe": PLATFORM_PLUGIN, "fine": PROBE_PLUGIN, "tokenprobe": token_plugin,
+    })
     # Category loaders' in-process import refuses user code under host isolation (the backstop
     # behind the memory / context-engine / cron host routes).
     import logging
@@ -122,6 +128,11 @@ def test_isolation_host_keeps_every_user_import_path_out_of_process(tmp_path, mo
     assert audit_plugin_dir(home / "plugins" / "fine").verdict == "host"
     blocked = audit_plugin_dir(home / "plugins" / "platformprobe")
     assert blocked.verdict == "in_process" and "register_platform" in blocked.reasons[0]
+    token_routes = audit_plugin_dir(home / "plugins" / "tokenprobe")
+    assert token_routes.verdict == "in_process"
+    assert any("register_dashboard_token_route" in reason
+               and "dashboard token routes are owned by the launch process, not a profile" in reason
+               for reason in token_routes.reasons)
 
 
 

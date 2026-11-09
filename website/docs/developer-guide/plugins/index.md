@@ -1137,6 +1137,58 @@ Four files, clear separation:
 
 ## What else can plugins do?
 
+### Provider-bound dashboard token routes
+
+Register a token-capable `DashboardAuthProvider` with `ctx.register_dashboard_auth_provider()`,
+then bind each exact machine endpoint to that same plugin's registered provider with
+`ctx.register_dashboard_token_route(path, *, provider, required_scopes=())`:
+
+```python
+from .provider import MachineTokenProvider  # supports_token = True; implements verify_token
+
+def register(ctx):
+    provider = MachineTokenProvider()
+    if ctx.register_dashboard_auth_provider(provider) is None:
+        return
+    ctx.register_dashboard_token_route(
+        "/api/plugins/machine/status", provider=provider.name, required_scopes=("read",))
+    ctx.register_dashboard_token_route(
+        "/api/plugins/machine/jobs", provider=provider.name, required_scopes=("write",))
+```
+
+Only the process launch scope can register dashboard auth or token routes. The path must be
+under this plugin's `/api/plugins/<name>/` mount, using `dashboard/manifest.json`'s name
+(directory name if omitted), not necessarily `plugin.yaml`'s name. Discovery's first plugin per
+name owns the mount; shadowed plugins, non-dashboard directories and entry-point plugins cannot
+bind it. Registration scans mount metadata once per load sweep without importing the web app
+or executing plugin APIs. This method is in-process only, not supported in a plugin host.
+
+A bound HTTP path accepts only bearer tokens from the provider object captured from this
+plugin's own registration. A same-named global replacement cannot take over the binding:
+requests return audited 401 `token_provider_replaced` until the plugin rebinds it.
+Dashboard sessions and
+Desktop native tickets alone cannot authorize it (401). The provider must return a
+`TokenPrincipal` naming itself with every required scope, not a string or bytes scope value.
+Requests scoped to a non-launch profile return 401 with audit reason `profile_scope`.
+Auth and routing share the last non-blank `profile` selector: both
+`?profile=worker&profile=` and `?profile=worker&profile` still select `worker`.
+Validation resolves its path without entering that profile's secret scope.
+Insufficient scopes return 403 with audit reason `insufficient_scope`; other authentication
+refusals return 401, and `ProviderError` returns 503. Registration returns a `PluginRegistration`
+or `None` with a warning for an invalid registration. An identical policy supersedes the previous
+handle; disposing an older handle cannot release the current binding. Conflicting live policies
+are refused. Like dashboard auth providers, bindings survive routine unload-all. On forced
+re-discovery, the same plugin may supersede its own parked binding, including changed scopes or
+provider; another plugin may not. Bindings omitted from the sweep are evicted. Failed native
+registration disposes its persistent registrations too. Explicit disposal or targeted plugin
+unload releases the current binding without restoring superseded policies.
+
+This middleware is HTTP-only. It does not enforce these token policies on WebSockets, even
+on a bound path; plugins must keep separate WebSocket authentication and scope checks.
+
+A provider with at least one bound policy is not consulted on other token routes.
+Legacy `register_token_route(path)` callers retain stacking among providers without bound policies.
+
 ### Ship data files
 
 Put any files in your plugin directory and read them at import time:

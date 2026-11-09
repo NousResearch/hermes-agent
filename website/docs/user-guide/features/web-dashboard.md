@@ -1178,6 +1178,14 @@ The bundled first consumer is the **drain** provider (`plugins/dashboard_auth/dr
 
 Custom providers can implement `supports_token`/`verify_token` the same way to expose their own machine-authable endpoints.
 
+For machine endpoints, bind exact plugin HTTP paths to the same plugin's registered provider and required scopes with [`ctx.register_dashboard_token_route()`](../../developer-guide/plugins/index.md#provider-bound-dashboard-token-routes). The binding pins that plugin's provider object. A same-named global replacement gets audited 401 `token_provider_replaced`, not permission to verify the route. Dashboard sessions and Desktop native tickets alone cannot authorize it (401); insufficient scopes return 403. A provider with bound policies is not consulted on other token routes.
+
+Only the launch profile can register these bindings. Requests selecting another profile get audited 401 `profile_scope`, without entering its secret scope. Auth and routing use the last non-blank selector: `?profile=worker&profile=` and `?profile=worker&profile` both still select `worker`.
+
+Bindings survive routine unload-all. During forced discovery, only the same plugin can replace its own parked binding, including changed scopes or provider. Omitted bindings are evicted; failed native registration cleans up persistent registrations. Explicit disposal or targeted unload removes the current binding without restoring older policies. Registration reads mount metadata once per load sweep, without importing the web app or executing plugin APIs; plugin-host registration is unsupported.
+
+The token-route middleware is HTTP-only. It does not protect WebSockets on a bound path; plugins need separate WebSocket authentication and scope checks.
+
 ### Peer passes (`/api/peer`)
 
 A provider can also accept **peer passes** (`supports_peer_pass = True` + `verify_peer_pass(token=...)`): short-lived tokens minted for one agent that let another Hermes agent call this agent's API server through the dashboard, without the agent's `API_SERVER_KEY`.

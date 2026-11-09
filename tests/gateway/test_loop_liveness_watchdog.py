@@ -360,3 +360,81 @@ def test_heartbeat_write_does_not_block_the_loop_it_monitors():
     assert ticks >= 5, (
         f'the loop made only {ticks:d} tick(s) while the heartbeat was writing — the write is blocking the loop again'
     )
+
+
+def test_loop_liveness_dump_names_the_wedged_loop_frame_past_100_threads(tmp_path, monkeypatch):
+    # faulthandler stops after 100 threads and lists the oldest last, so a gateway with ~110
+    # threads never showed the event loop's own frame. The loop thread must lead the dump.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    release, started = threading.Event(), threading.Event()
+
+    def wedged_loop_body() -> None:
+        started.set()
+        release.wait(timeout=10.0)
+
+    loop_thread = threading.Thread(target=wedged_loop_body, name="fake-loop")
+    loop_thread.start()
+    fillers = [threading.Thread(target=release.wait, args=(10.0,)) for _ in range(110)]
+    for t in fillers:
+        t.start()
+    assert started.wait(timeout=2.0)
+    loop = MagicMock(spec=asyncio.AbstractEventLoop)
+    loop._thread_id = loop_thread.ident
+    exit_codes, ref, handle_ready = [], {}, threading.Event()
+
+    def exit_and_stop(code: int) -> None:
+        assert handle_ready.wait(timeout=2.0)
+        exit_codes.append(code)
+        ref["handle"].stop()
+
+    try:
+        with patch("gateway.shutdown_watchdog._hard_exit", side_effect=exit_and_stop), \
+                patch("gateway.shutdown_watchdog._mark_exited_quietly"):
+            ref["handle"] = handle = start_loop_liveness_watchdog(
+                loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=1)
+            handle_ready.set()
+            handle.join(timeout=5.0)
+    finally:
+        release.set()
+        loop_thread.join(timeout=2.0)
+        for t in fillers:
+            t.join(timeout=2.0)
+    from gateway.shutdown_watchdog import get_shutdown_watchdog_dump_path
+    dump = get_shutdown_watchdog_dump_path(tmp_path).read_text(encoding="utf-8-sig")
+    loop_header = f"--- event loop thread {loop_thread.ident:#x}"
+    assert loop_header in dump
+    assert dump.index(loop_header) < dump.index("--- faulthandler dump (all threads) ---")
+    assert "wedged_loop_body" in dump.split("--- faulthandler dump")[0]
+    assert exit_codes == [75]
+
+
+def test_first_missed_probe_logs_loop_stack_without_exiting():
+    # Short stalls (the Slack send-timeout bursts) never reach max_strikes, so the first miss
+    # must record where the loop was stuck even though the watchdog does not fire.
+    release, started = threading.Event(), threading.Event()
+
+    def stalled_loop_body() -> None:
+        started.set()
+        release.wait(timeout=10.0)
+
+    loop_thread = threading.Thread(target=stalled_loop_body, name="fake-loop")
+    loop_thread.start()
+    assert started.wait(timeout=2.0)
+    loop = MagicMock(spec=asyncio.AbstractEventLoop)
+    loop._thread_id = loop_thread.ident
+    try:
+        with patch("gateway.shutdown_watchdog.logger.warning") as warning, \
+                patch("gateway.shutdown_watchdog._hard_exit") as hard_exit:
+            handle = start_loop_liveness_watchdog(
+                loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=1000)
+            deadline = time.monotonic() + 2.0
+            while not warning.called and time.monotonic() < deadline:
+                time.sleep(0.01)
+            handle.stop()
+            handle.join(timeout=2.0)
+    finally:
+        release.set()
+        loop_thread.join(timeout=2.0)
+    assert warning.call_count == 1  # logged once per stall streak, not per probe
+    assert "stalled_loop_body" in warning.call_args.args[2]
+    hard_exit.assert_not_called()

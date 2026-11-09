@@ -1,5 +1,5 @@
-"""HX016: a new direct call to a legacy profile setter blocks; existing calls are grandfathered and
-migrate to ``agent.runtime_scope.bind_profile_scope`` when their function is next edited."""
+"""HX016: a new direct call to a legacy profile setter blocks; an existing call is grandfathered,
+even when its function changes, until it is migrated to ``agent.runtime_scope.bind_profile_scope``."""
 
 from __future__ import annotations
 
@@ -64,6 +64,9 @@ _NEW_CALL = "\n\ndef new(home):\n    return set_hermes_home_override(home)\n"
     ({"gateway/b.py": _OLD}, True),                                 # a new file
     ({"gateway/a.py": _OLD + "\n\ndef unrelated():\n    return 1\n"}, False),  # old call untouched
     ({"gateway/a.py": "def old(home):\n    return home\n"}, False),  # migrating one away
+    # editing the function around an existing call does not force its migration
+    ({"gateway/a.py": _OLD.replace("    return set_hermes_home_override(home)\n",
+                                   "    home = str(home)\n    return set_hermes_home_override(home)\n")}, False),
 ])
 def test_ratchet(tmp_path, capsys, head, blocks):
     repo, _ = _repo(tmp_path)

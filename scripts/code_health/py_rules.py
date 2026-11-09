@@ -871,8 +871,8 @@ def raw_thread(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
 
 
 # The legacy profile setters. Inside a bound runtime scope they cannot split it (a call for another
-# profile moves the whole scope; hosted scopes refuse), but new code binds a scope instead, so each
-# existing call is migrated when its function is next edited.
+# profile moves the whole scope; hosted scopes refuse), but new code binds a scope instead. Only a
+# new call blocks: an existing one stays until it is migrated, even when its function changes.
 _LEGACY_PROFILE_SETTERS = frozenset({
     "hermes_constants.set_hermes_home_override",
     "agent.secret_scope.set_secret_scope",

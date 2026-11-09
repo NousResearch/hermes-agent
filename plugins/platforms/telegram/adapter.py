@@ -189,7 +189,7 @@ from plugins.platforms.telegram.telegram_intake import effective_update_message
 from plugins.platforms.telegram.telegram_media_group import add_item_note, flush_media_group_event, queue_media_group_event, tracking_album_items
 from plugins.platforms.telegram.telegram_media_flood import TelegramMediaFloodMixin
 from plugins.platforms.telegram import telegram_flood_window as _flood_window
-from plugins.platforms.telegram.telegram_media_fetch import fetch_telegram_file
+from plugins.platforms.telegram.telegram_media_fetch import cache_replied_media, fetch_telegram_file
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, log_resolved, tap_matches_prompt
@@ -5758,27 +5758,20 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             event.media_text_inlined = []
             self._attach_cached(event, cached, observed_media_note(cached), "[Telegram] Cached observed group %s at %s")
 
-    def _attach_cached(self, event: MessageEvent, cached, note: str, log_fmt: str) -> None:
-        """Append a cached attachment to the event (message type follows the kind only for the first one)."""
+    def _attach_cached(self, event: MessageEvent, cached, note: str, log_fmt: str, *, retype: bool = True) -> None:
+        """Append a cached attachment to the event (with ``retype``, the first one's kind sets the message type)."""
         from plugins.platforms.telegram.telegram_batching import pad_inline_flags
         event.media_text_inlined = pad_inline_flags(event) + [False]
         event.media_urls.append(cached.path)
         event.media_types.append(cached.media_type)
-        if len(event.media_urls) == 1 and cached.kind in self._CACHED_KIND_TO_MESSAGE_TYPE:
+        if retype and len(event.media_urls) == 1 and cached.kind in self._CACHED_KIND_TO_MESSAGE_TYPE:
             event.message_type = self._CACHED_KIND_TO_MESSAGE_TYPE[cached.kind]
         event.text = self._append_observed_note(event.text, note)
         logger.info(log_fmt, cached.kind, cached.path)
 
     async def _cache_replied_media(self, msg: Any, event: MessageEvent) -> None:
-        """Cache media from the message this turn replies to, if any."""
-        reply_msg = getattr(msg, "reply_to_message", None)
-        if reply_msg is None:
-            return
-        status, cached = await self._download_observed_media(reply_msg, "replied-to media")
-        if status == "ok":
-            self._attach_cached(
-                event, cached, f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]",
-                "[Telegram] Cached replied-to %s at %s")
+        """Cache media from the message this turn replies to, if any (see telegram_media_fetch)."""
+        await cache_replied_media(self, msg, event)
 
     def _observed_media_source(self, msg: Message):
         """Return (telegram_file_source, filename, mime, default_kind) or Nones."""

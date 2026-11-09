@@ -1,0 +1,33 @@
+name: overhead
+title: Overhead
+repo: https://github.com/leoresendedop-sys/overhead
+sha: "5ddd2e5aed0e5451f0a9c5107270770c919e1eb8"
+description: "What changed at this place between these dates? Measures vegetation loss and gain, burned area by severity (dNBR) and water change in hectares anywhere on Earth from free Sentinel-2 L2A imagery, and delivers a before | after | change panel or a timelapse GIF to every surface, with an interactive before/after swipe and timelapse card in Hermes Desktop. Provides the overhead_locate, overhead_scenes, overhead_compare and overhead_timelapse tools, the overhead:earth-watch skill, and post_tool_call / transform_llm_output hooks that append the image's MEDIA line when a reply lacks it. Disclosure — Makes unauthenticated HTTPS requests to the Earth Search STAC API by Element 84 (earth-search.aws.element84.com: scene searches by the area's bounding box, never its exact outline, and dates) and to the AWS Open Data sentinel-cogs bucket in us-west-2 (range reads of Sentinel-2 bands, with ~/.netrc never read), and, only to look up a place name, to Nominatim / OpenStreetMap (nominatim.openstreetmap.org, at most 1 request per second). STAC and Nominatim requests carry the User-Agent `overhead-hermes-plugin/0.1.0 (+https://github.com/leoresendedop-sys/overhead)`. Place lookups, the pixels read and searches over past date ranges are cached under the plugin's data folder (plugin-data/overhead: cache/ and runs/), which is not pruned automatically. The Desktop card's Open map button opens openstreetmap.org in the browser, only when clicked. Reads a system font to draw panel labels. The plugin itself needs no API keys or accounts, stores no credentials and adds no telemetry; rasterio installs only after Hermes dependency consent. For optional visual interpretation, it offers local image paths and questions for Hermes's public vision_analyze tool. If the agent calls that tool, Hermes may send the selected images and prompt to its configured native or auxiliary model provider; images may include location and date labels, and credentials, costs and privacy terms depend on the user's Hermes configuration."
+maintainer: leoresendedop-sys
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/leoresendedop-sys/overhead/blob/5ddd2e5aed0e5451f0a9c5107270770c919e1eb8/README.md
+version: "0.1.0"
+image: https://raw.githubusercontent.com/leoresendedop-sys/overhead/5ddd2e5aed0e5451f0a9c5107270770c919e1eb8/assets/overhead-cover.png
+screenshots:
+  - https://raw.githubusercontent.com/leoresendedop-sys/overhead/5ddd2e5aed0e5451f0a9c5107270770c919e1eb8/assets/hermes-comparison.jpg
+  - https://raw.githubusercontent.com/leoresendedop-sys/overhead/5ddd2e5aed0e5451f0a9c5107270770c919e1eb8/assets/hermes-timelapse.jpg
+  - https://raw.githubusercontent.com/leoresendedop-sys/overhead/5ddd2e5aed0e5451f0a9c5107270770c919e1eb8/assets/altadena-burn.jpg
+  - https://raw.githubusercontent.com/leoresendedop-sys/overhead/5ddd2e5aed0e5451f0a9c5107270770c919e1eb8/assets/novo-progresso-vegetation.jpg
+  - https://raw.githubusercontent.com/leoresendedop-sys/overhead/5ddd2e5aed0e5451f0a9c5107270770c919e1eb8/assets/manaus-water.gif
+platforms: []
+known_issues:
+  - "The first run over a new area takes about 40 to 70 s, sometimes longer, while the imagery streams from AWS us-west-2; repeat runs take about 1 s from the cache."
+  - "The interactive Desktop card needs a Desktop build with the tool-media renderer area (main after 24 Oct 2026, or the first release after 0.22.5) and its Desktop half switched on in Capabilities → Plugins; other builds and surfaces show the panel PNG or the GIF."
+capabilities:
+  provides_tools:
+    - overhead_locate
+    - overhead_scenes
+    - overhead_compare
+    - overhead_timelapse
+  provides_hooks:
+    - post_tool_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

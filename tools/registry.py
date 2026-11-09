@@ -347,12 +347,27 @@ def check_fn_cache_scope() -> Optional[str]:
 # inbound turn stopped before its provider request, silently (#131145). A probe gets this budget
 # (the environment probe's) and then counts as unavailable; its thread stays parked, and later
 # calls in the same profile answer False at once instead of waiting or spawning another thread.
+# Callers that arrive while a probe is still running wait on that same worker.
 _CHECK_FN_PROBE_TIMEOUT_SECONDS = 10.0
 # Bound at import: callers that swap ``threading.Thread`` for their own worker type must not turn
 # the probe's bounded wait into an unstarted (or inline) one.
 _ProbeThread = threading.Thread
-_check_fn_parked: dict[tuple[Callable, str], threading.Event] = {}
-_check_fn_parked_lock = threading.Lock()
+
+
+class _Probe:
+    """One in-flight ``check_fn`` run, shared by every caller that asks for the same key meanwhile."""
+
+    __slots__ = ("before", "ctx", "done", "outcome", "timed_out")
+
+    def __init__(self) -> None:
+        self.ctx, self.done, self.outcome, self.timed_out = copy_context(), threading.Event(), {}, False
+        # What the starter's context held: only the probe's OWN writes are published, so a caller
+        # that joined this run never adopts the starter's session-bound values.
+        self.before = dict(self.ctx.items())
+
+
+_check_fn_inflight: dict[tuple[Callable, str], _Probe] = {}
+_check_fn_inflight_lock = threading.Lock()
 _UNSET = object()
 
 
@@ -363,35 +378,39 @@ class CheckFnTimeout(Exception):
 def _call_check_fn(fn: Callable) -> bool:
     """``bool(fn())`` on a daemon worker under the caller's contextvars, bounded. The probe's
     contextvar writes are published back (``memory_tool`` hands its availability snapshot to the
-    schema build that follows). Raises what the probe raised, or ``CheckFnTimeout``."""
+    schema build that follows). Concurrent callers for one key share a single worker, reserved
+    under the lock before it starts. Raises what the probe raised, or ``CheckFnTimeout``."""
     key = (fn, hermes_home_key())
-    with _check_fn_parked_lock:
-        parked = _check_fn_parked.get(key)
-        if parked is not None and not parked.is_set():
+    with _check_fn_inflight_lock:
+        current = _check_fn_inflight.get(key)
+        if current is not None and current.timed_out and not current.done.is_set():
             raise CheckFnTimeout("is still not answering")
-        _check_fn_parked.pop(key, None)
-    ctx, done, outcome = copy_context(), threading.Event(), {}
+        if current is None or current.done.is_set():
+            probe, start = _Probe(), True
+            _check_fn_inflight[key] = probe
+        else:
+            probe, start = current, False
 
-    def _probe() -> None:
-        try:
-            outcome["value"] = bool(fn())
-        except BaseException as exc:  # health: allow BLE001 -- re-raised on the calling thread
-            outcome["error"] = exc
-        finally:
-            done.set()
+    if start:
+        def _probe() -> None:
+            try:
+                probe.outcome["value"] = bool(fn())
+            except BaseException as exc:  # health: allow BLE001 -- re-raised on the calling thread
+                probe.outcome["error"] = exc
+            finally:
+                probe.done.set()
 
-    _ProbeThread(target=ctx.run, args=(_probe,), name="check-fn-probe", daemon=True).start()
-    if not done.wait(_CHECK_FN_PROBE_TIMEOUT_SECONDS):
-        with _check_fn_parked_lock:
-            _check_fn_parked[key] = done
+        _ProbeThread(target=probe.ctx.run, args=(_probe,), name="check-fn-probe", daemon=True).start()
+    if not probe.done.wait(_CHECK_FN_PROBE_TIMEOUT_SECONDS):
+        probe.timed_out = True
         raise CheckFnTimeout(f"did not answer within {_CHECK_FN_PROBE_TIMEOUT_SECONDS:.0f}s")
     caller = copy_context()
-    for var, value in ctx.items():
-        if caller.get(var, _UNSET) is not value:
+    for var, value in probe.ctx.items():
+        if probe.before.get(var, _UNSET) is not value and caller.get(var, _UNSET) is not value:
             var.set(value)
-    if "error" in outcome:
-        raise outcome["error"]
-    return outcome["value"]
+    if "error" in probe.outcome:
+        raise probe.outcome["error"]
+    return probe.outcome["value"]
 
 
 def _run_check_fn_uncached(fn: Callable) -> bool:

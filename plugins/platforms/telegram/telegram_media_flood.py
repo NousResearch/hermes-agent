@@ -209,12 +209,14 @@ class TelegramMediaFloodMixin:
                 chat_id, metadata = target
                 logger.error("[%s] Deferred upload of %s lost: %s", self.name, what,
                              result.error if result is not None else "raised")
-                for _ in range(_MAX_WINDOW_WAITS + 1):  # check and send under the chat lock: no sibling re-arms between
+                for waits in range(_MAX_WINDOW_WAITS + 2):  # check and send under the chat lock: no sibling re-arms between
                     async with self._chat_send_lock(chat_id):
                         if (still := self._send_flood_cooldown_remaining(chat_id)) is None:
                             await self._notify_media_delivery_failure(
                                 chat_id, source or "", is_voice=what.startswith("voice "), metadata=metadata)
                             return
+                    if waits > _MAX_WINDOW_WAITS:  # the last wait is followed by a check, never by giving up blind
+                        break
                     await asyncio.sleep(still)
                 logger.error("[%s] Failure notice for %s not sent: flood window kept re-arming", self.name, what)
             else:

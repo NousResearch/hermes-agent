@@ -6,7 +6,7 @@ every turn uses) into the real ``TelegramAdapter.send_document``; only the Bot A
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -409,3 +409,40 @@ async def test_promised_notice_survives_a_sibling_refused_as_it_goes_out(flooded
     await async_wait_until(lambda: not adapter._background_tasks, timeout=10, what="deferred task done")
 
     assert len(notices) == 1 and "Couldn't deliver" in notices[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("open_checks,notices", [(4, 1), (5, 0)], ids=["clears-in-last-wait", "still-open"])
+async def test_lost_upload_notice_checks_the_window_after_its_last_wait(flooded, tmp_path, monkeypatch,
+                                                                        open_checks, notices):
+    """The notice loop is capped at _MAX_WINDOW_WAITS waits, but a window that clears during the last
+    wait still gets its notice; only a window open on the check after it gives up."""
+    from plugins.platforms.telegram import telegram_media_flood as flood
+
+    adapter, _doc = flooded
+    clip = tmp_path / "reply.ogg"
+    clip.write_bytes(b"OggS-voice")
+    monkeypatch.setattr(flood.shutil, "copy2", Mock(side_effect=OSError("No space left on device")))
+    adapter._bot.send_voice = AsyncMock(side_effect=RetryAfter(0.2))
+    lost, checks = [], []
+    real_error, real_remaining = flood.logger.error, adapter._send_flood_cooldown_remaining
+
+    def error(msg, *args, **kwargs):
+        lost.append(msg)
+        real_error(msg, *args, **kwargs)
+
+    def remaining(chat_id):
+        if not any("lost" in m for m in lost):
+            return real_remaining(chat_id)
+        checks.append(chat_id)
+        return 0.01 if len(checks) <= open_checks else None
+
+    monkeypatch.setattr(flood.logger, "error", error)
+    monkeypatch.setattr(adapter, "_send_flood_cooldown_remaining", remaining)
+    await adapter.send_voice("12345", str(clip))
+    clip.unlink()  # the caller deletes its file: only the notice is left to deliver
+    await async_wait_until(lambda: not adapter._background_tasks, timeout=10, what="deferred task done")
+
+    assert adapter.send.await_count == notices
+    assert len(checks) == min(open_checks + 1, flood._MAX_WINDOW_WAITS + 2)
+

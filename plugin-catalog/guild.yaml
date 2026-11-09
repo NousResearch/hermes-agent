@@ -1,0 +1,41 @@
+name: guild
+repo: https://github.com/Nnadijoshuac/hermes-guild
+sha: e50991f88bef35833811a0949b8307de8ecd67ac
+description: >-
+  One reviewed skill library for a whole team's Hermes agents (or one person's laptops and
+  profiles). Skills an agent learns are scrubbed of secrets, home paths, e-mails and private IPs
+  and proposed to a git repository the team controls; a human reviewer approves them from the
+  CLI, TUI or Desktop; every member's agent then loads the approved version read-only. A
+  pre_tool_call guard stops any agent from overwriting a team skill and steers it to propose the
+  change instead; on_skill_lifecycle notices newly learned skills, and pre_llm_call tells agents
+  once about new team skills. `hermes guild init|join|propose|review|show|approve|reject|revert|log`
+  and `/guild`. Disclosure — runs local `git` subprocesses (hooks disabled, no terminal prompts)
+  that fetch from and push to the remote you configure, using your existing git credentials;
+  nothing else is contacted and no credentials are stored. Only the files of a skill you (or
+  your agent, after Hermes' approval prompt) propose leave the machine, after scrubbing, with your
+  guild member name in the commit. Optional background sync thread at session start
+  (auto_sync_minutes, default 15, 0 = off). `init`/`join` add the library folder to this
+  profile's skills.external_dirs and `leave` removes it. The read-only guard is a policy check,
+  not a sandbox; reviewer lists are advisory, so use branch protection on the remote for a hard
+  boundary.
+maintainer: Nnadijoshuac
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Nnadijoshuac/hermes-guild#readme
+version: "0.1.0"
+title: "Guild"
+platforms: []
+capabilities:
+  provides_tools:
+    - guild_status
+    - guild_sync
+    - guild_propose
+    - guild_review
+  provides_hooks:
+    - pre_tool_call
+    - on_skill_lifecycle
+    - pre_llm_call
+    - on_session_start
+  provides_middleware: []
+  requires_env: []

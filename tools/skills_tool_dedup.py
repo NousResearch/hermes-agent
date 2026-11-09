@@ -5,15 +5,16 @@ timestamps, so a same-size rewrite in one coarse mtime tick (or on a host whose 
 the filesystem's) is never mistaken for "unchanged". Cleared via ``reset_skill_view_dedup()`` on
 context compression AND on a committed proactive tool-result prune, because both replace the
 original content with a one-line marker. Each entry also keeps the tool call that served it, so a
-view the model received as anything but that exact result (a spill preview, a guardrail reference
-stub) is released by that call (``release_replaced_skill_view``).
+view the model received as anything but that whole result (a spill preview, a guardrail reference
+stub) is released by that call (``release_replaced_skill_view``); a notice appended after the whole
+result keeps it.
 """
 
 import hashlib
 import json
 import threading
 
-_skill_view_tracker: dict[str, dict[tuple, tuple[str, str]]] = {}
+_skill_view_tracker: dict[str, dict[tuple, tuple[str, str, int]]] = {}
 _skill_view_tracker_lock = threading.Lock()
 _SKILL_VIEW_DEDUP_CAP = 200
 
@@ -49,22 +50,25 @@ def dedup_skill_view(task_id, name, file_path, payload: dict, result: str) -> st
                 "file": file_path or "SKILL.md", "dedup": True, "content_returned": False,
                 "message": _SKILL_VIEW_DEDUP_MESSAGE}, ensure_ascii=False)
         cache.pop(key, None)  # re-insert at the end: FIFO eviction keeps the recently served
-        cache[key] = (digest, _approval_tool_call_id.get())
+        cache[key] = (digest, _approval_tool_call_id.get(), len(result))
         while len(cache) > _SKILL_VIEW_DEDUP_CAP:  # FIFO eviction
             del cache[next(iter(cache))]
     return None
 
 
 def release_replaced_skill_view(task_id, tool_call_id, delivered) -> None:
-    """Forget the view ``tool_call_id`` recorded unless the model was ``delivered`` exactly that result:
-    a spill preview or a reference stub in its place leaves the model without the content a later stub
-    would point at."""
+    """Forget the view ``tool_call_id`` recorded unless ``delivered`` starts with that whole result: a
+    spill preview or a reference stub in its place leaves the model without the content a later stub
+    would point at, while a guardrail notice appended after it does not."""
     if not tool_call_id:
         return
     with _skill_view_tracker_lock:
         cache = _skill_view_tracker.get(str(task_id)) or {}
-        key = next((key for key, (_, call_id) in cache.items() if call_id == tool_call_id), None)
-        if key is not None and (not isinstance(delivered, str) or _digest(delivered) != cache[key][0]):
+        key = next((key for key, (_, call_id, _) in cache.items() if call_id == tool_call_id), None)
+        if key is None:
+            return
+        digest, _, length = cache[key]
+        if not isinstance(delivered, str) or _digest(delivered[:length]) != digest:
             del cache[key]
 
 

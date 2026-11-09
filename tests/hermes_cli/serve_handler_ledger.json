@@ -2,7 +2,7 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 343
+   "undecided": 344
   },
   "rpc": {
    "authority": 108,
@@ -258,6 +258,7 @@
   {"current_path": "hermes_cli.web_routers.git:git_stage_route", "decision": "undecided", "handler": "POST /api/git/review/stage", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.git:git_unstage_route", "decision": "undecided", "handler": "POST /api/git/review/unstage", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.git:git_worktree_add_route", "decision": "undecided", "handler": "POST /api/git/worktree/add", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.git:git_worktree_reclaim_route", "decision": "undecided", "handler": "POST /api/git/worktree/reclaim", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.git:git_worktree_remove_route", "decision": "undecided", "handler": "POST /api/git/worktree/remove", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:post_health_retirement", "decision": "undecided", "handler": "POST /api/health/retirement", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.actions:update_hermes", "decision": "undecided", "handler": "POST /api/hermes/update", "kind": "http", "ref": ""},

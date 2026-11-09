@@ -20,13 +20,14 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from tests.fixtures.storage_holder import raw_holder
 from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from persistence_assembly import profile_scope
 
 
 @pytest.fixture(autouse=True)
 def _fresh_db(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setattr(dl, "_db_path", lambda: home / "state.db")
+    monkeypatch.setattr(dl, "_scope", lambda: profile_scope(home=home))
     yield
 
 
@@ -64,7 +65,7 @@ def _event(text="hello agent"):
 
 def _holder():
     """The holder of the ledger's store, for rows the tests read or force by hand."""
-    return raw_holder(storage_handle(dl._db_path().parent))
+    return raw_holder(storage_handle(dl._scope().profile_dir))
 
 
 def _execute(sql, params=()):

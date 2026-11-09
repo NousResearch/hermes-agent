@@ -7,7 +7,7 @@ reply cut off by a crash runs in the launch context. The ledger used to resolve 
 ``get_hermes_home()``, which follows the override: the row landed in ``profiles/<name>/state.db``,
 the sweep opened the launch ``state.db``, and the reply was never redelivered.
 
-Every other ledger test replaces ``_db_path``; these leave it alone, since the path is what is
+Every other ledger test replaces ``_scope``; these leave it alone, since the launch home is what is
 under test.
 """
 
@@ -33,7 +33,7 @@ ANSWER = "the final answer"
 
 def _holder():
     """The holder of the ledger's store, for rows the tests read or force by hand."""
-    return raw_holder(storage_handle(dl._db_path().parent))
+    return raw_holder(storage_handle(dl._scope().profile_dir))
 
 
 def _execute(sql, params=()):

@@ -21,7 +21,7 @@ from hermes_constants import (
     display_hermes_home,
 )
 from persistence.core.admin import AdminUnsupported
-from persistence_assembly import open_store_admin, profile_scope, store_location
+from persistence_assembly import open_store_admin, profile_scope, store_exists
 from sqlite_support import RETIRED_GENERATION_DIR_SUFFIX
 
 from agent.provider_media import GENERATED_SUBDIR
@@ -1016,7 +1016,7 @@ def _revive_gateway_after_import(hermes_root: Path) -> None:
     """
     native_default = _get_platform_default_hermes_home()
     if hermes_root != native_default and (any((native_default / marker).exists() for marker in ("config.yaml", ".env")) or (
-            (state_db := store_location(profile_scope(home=native_default))) is not None and state_db.exists())):
+            store_exists(profile_scope(home=native_default)))):
         print("\nRestored into a non-default home; leaving the gateway service alone to avoid clashing "
               f"with the install at {native_default}.\n"
               "To start a gateway for this home, run:  hermes gateway run")

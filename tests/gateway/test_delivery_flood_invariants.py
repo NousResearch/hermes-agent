@@ -9,7 +9,7 @@ from tests.gateway.fixtures.storage_handles import close_storage_handles, storag
 
 def _holder():
     """The holder of the ledger's store, for rows the tests read or force by hand."""
-    return raw_holder(storage_handle(dl._db_path().parent))
+    return raw_holder(storage_handle(dl._scope().profile_dir))
 
 
 def _execute(sql, params=()):

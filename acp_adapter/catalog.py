@@ -1,21 +1,27 @@
 """ACP historical catalog without storage initialization or an execution owner."""
 from pathlib import Path
 
-from persistence_assembly import open_persistence_reader
+from persistence_assembly import open_persistence_reader, profile_scope, store_exists
 from acp_adapter.session import (
     _normalize_cwd_for_compare, _parse_model_config, _session_info, _updated_at_sort_key,
 )
 
 
+def _store_scope(target):
+    """The profile scope of *target*, a Hermes home or a file in it."""
+    target = Path(target)
+    return profile_scope(home=target if target.is_dir() else target.parent)
+
+
 def read_catalog_rows(path):
-    path = Path(path)
-    if not path.exists():
+    scope = _store_scope(path)
+    if not store_exists(scope):
         return {}
     from hermes_cli.gateway_session_store import SurfaceLabelReader
     from persistence.conversation.sessions import SessionQuery, SessionWindow
     # The owner stores an editor thread as ``local`` with ``created_source='acp'``; the surface
     # labels match both in SQL, before the LIMIT.
-    with open_persistence_reader(path) as persistence:
+    with open_persistence_reader(scope.profile_dir) as persistence:
         expanded = SurfaceLabelReader(persistence)._expand(["acp"])
         query = (SessionQuery(sources=("acp",)) if expanded is None
                  else SessionQuery(sources=tuple(expanded[0]), local_created_sources=tuple(expanded[1])))
@@ -36,10 +42,10 @@ def _local_owners(persistence):
 
 
 def read_local_owners(path):
-    path = Path(path)
-    if not path.exists():
+    scope = _store_scope(path)
+    if not store_exists(scope):
         return {}
-    with open_persistence_reader(path) as persistence:
+    with open_persistence_reader(scope.profile_dir) as persistence:
         return _local_owners(persistence)
 
 
@@ -47,10 +53,10 @@ def logical_session_id(path, session_id):
     """The authority's logical id for an id an editor already holds: compression and a canonical
     reset advance the physical transcript, never the session identity (the local receipt's owner,
     else ``SessionAuthority.logical_owner``'s compression root)."""
-    path = Path(path)
-    if not path.exists():
+    scope = _store_scope(path)
+    if not store_exists(scope):
         return session_id
-    with open_persistence_reader(path) as persistence:
+    with open_persistence_reader(scope.profile_dir) as persistence:
         lineage = persistence.lineage.lineage(session_id)
         root = lineage[0] if lineage else session_id
         return _local_owners(persistence).get(root, root)

@@ -33,10 +33,9 @@ def _room_attachments(service):
         yield HostedRoomAttachmentStore(authority_persistence(authority))
         return
     from persistence_assembly import open_persistence, profile_scope
-    db_path = Path(service.db_path)
-    handle = open_persistence(profile_scope(home=db_path.parent))
+    handle = open_persistence(profile_scope(home=service.root))
     try:
-        yield HostedRoomAttachmentStore(handle, 'profile' if db_path.name == 'state.db' else 'shared')
+        yield HostedRoomAttachmentStore(handle, service.placement)
     finally:
         handle.close()
 

@@ -2021,8 +2021,8 @@ class TestAsyncDelegationsSchemaAgreement:
     def _ledger_write(self, async_delegation, db_path):
         """One delegation ledger write, which opens ``db_path`` through the store."""
         from unittest.mock import patch
-
-        with patch.object(async_delegation, "_db_path", lambda: db_path):
+        from persistence_assembly import profile_scope
+        with patch.object(async_delegation, "_scope", lambda: profile_scope(home=db_path.parent)):
             async_delegation.mark_completion_delivered("schema-probe")
 
     def _legacy_db(self, db_path):

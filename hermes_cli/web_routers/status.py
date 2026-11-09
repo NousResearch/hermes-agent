@@ -503,11 +503,11 @@ def _status_local_reads() -> dict[str, Any]:
 
 def _fts_rebuild_status() -> Optional[dict[str, Any]]:
     """Deferred FTS rebuild progress of this home's state.db (read-only open), or None."""
-    from persistence_assembly import open_persistence_reader, profile_scope, store_location
-    _db_path = store_location(profile_scope())
-    if not _db_path.exists():
+    from persistence_assembly import open_persistence_reader, profile_scope, store_exists
+    scope = profile_scope()
+    if not store_exists(scope):
         return None
-    with open_persistence_reader(_db_path) as _store:
+    with open_persistence_reader(scope.profile_dir) as _store:
         _rebuild = _store.search.search_index_rebuild_status()
     if _rebuild is None:
         return None

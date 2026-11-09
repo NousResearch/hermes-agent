@@ -45,6 +45,7 @@ from gateway.relay.ws_transport import (
 )
 from gateway.run import GatewayRunner, _USER_BOUNDARY_END_REASONS
 from gateway.session import AsyncSessionStore, SessionEntry
+from persistence_assembly import profile_scope, store_location
 
 
 # ---------------------------------------------------------------------------
@@ -387,7 +388,7 @@ def test_durable_dispatch_persists_and_recovers_scope_id(tmp_path, monkeypatch):
     from gateway.session_context import clear_session_vars, set_session_vars
 
     ad._reset_for_tests()
-    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
+    monkeypatch.setattr(ad, "_scope", lambda: profile_scope(home=tmp_path))
 
     tokens = set_session_vars(
         platform="discord",
@@ -420,7 +421,7 @@ def test_durable_dispatch_persists_and_recovers_scope_id(tmp_path, monkeypatch):
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
     ad.recover_abandoned_delegations()
 
-    with closing(sqlite3.connect(ad._db_path())) as conn:
+    with closing(sqlite3.connect(store_location(ad._scope()))) as conn:
         row = conn.execute(
             "SELECT event_json FROM async_delegations WHERE delegation_id='d-scope-1'"
         ).fetchone()
@@ -467,7 +468,7 @@ def test_live_completion_event_carries_scope_id(tmp_path, monkeypatch):
     class _PR:
         completion_queue = _Q()
 
-    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
+    monkeypatch.setattr(ad, "_scope", lambda: profile_scope(home=tmp_path))
     monkeypatch.setattr(
         "tools.process_registry.process_registry", _PR(), raising=False
     )

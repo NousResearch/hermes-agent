@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from persistence_assembly import store_location
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -39,7 +40,7 @@ def test_first_drain_under_secondary_scope_replays_the_launch_ledger(monkeypatch
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
     ledgers = []
     monkeypatch.setattr(async_delegation, "restore_undelivered_completions",
-                        lambda q: ledgers.append(async_delegation._db_path()) or 0)
+                        lambda q: ledgers.append(store_location(async_delegation._scope())) or 0)
     registry = pr_mod.ProcessRegistry()
     token = set_hermes_home_override(tmp_path / "launch" / "profiles" / "b")
     try:

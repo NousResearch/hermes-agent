@@ -116,12 +116,11 @@ def _purge_profile_identity(canon: str, live_mux: bool) -> bool:
 
     from hermes_cli.profiles import get_profile_dir
     from hermes_constants import get_default_hermes_root
-    from persistence_assembly import open_persistence, profile_scope, store_location
+    from persistence_assembly import open_persistence, profile_scope, store_exists, store_location
     root = get_default_hermes_root()
     purged = True
     for scope in (profile_scope(home=root), profile_scope(home=get_profile_dir(canon))):
-        db_path = store_location(scope)
-        if db_path is not None and not db_path.exists():
+        if not store_exists(scope):
             continue
         store = None
         try:
@@ -130,7 +129,7 @@ def _purge_profile_identity(canon: str, live_mux: bool) -> bool:
         except Exception as exc:
             purged = False
             print(
-                f"⚠ Profile was deleted, but identity purge failed for {db_path}: "
+                f"⚠ Profile was deleted, but identity purge failed for {store_location(scope) or scope.profile_dir}: "
                 f"{_store_error_text(exc)}",
                 file=sys.stderr)
         finally:
@@ -226,12 +225,11 @@ def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) ->
 
     from hermes_cli.profiles import get_profile_dir
     from hermes_constants import get_default_hermes_root
-    from persistence_assembly import open_persistence, profile_scope, store_location
+    from persistence_assembly import open_persistence, profile_scope, store_exists, store_location
     root = get_default_hermes_root()
     migrated = checkpoint_migrated
     for scope in (profile_scope(home=root), profile_scope(home=get_profile_dir(new_canon))):
-        db_path = store_location(scope)
-        if db_path is not None and not db_path.exists():
+        if not store_exists(scope):
             continue
         store = None
         try:
@@ -240,7 +238,7 @@ def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) ->
         except Exception as exc:
             migrated = False
             print(
-                f"⚠ Profile was renamed, but identity migration failed for {db_path}: "
+                f"⚠ Profile was renamed, but identity migration failed for {store_location(scope) or scope.profile_dir}: "
                 f"{_store_error_text(exc)}",
                 file=sys.stderr)
         finally:

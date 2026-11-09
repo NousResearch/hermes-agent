@@ -386,6 +386,7 @@ def _setup_tui_worktree() -> dict:
     wt_info = None
     try:
         from cli import _git_repo_root, _maintain_pack_health, _prune_stale_worktrees, _setup_worktree
+        from hermes_cli.worktree_ops import _retention_store
         repo = _git_repo_root()
         if repo:
             _prune_stale_worktrees(repo)
@@ -395,11 +396,9 @@ def _setup_tui_worktree() -> dict:
 
             _threading.Thread(
                 target=_maintain_pack_health, args=(repo,), name="pack-maintenance", daemon=True).start()
-        from hermes_cli.config import get_hermes_home
-        from persistence_assembly import profile_scope, store_location
         # The session's frozen cwd keeps this checkout; name the store from creation so a
         # launcher killed with its terminal still leaves the tree to its sessions.
-        wt_info = _setup_worktree(retain_db=store_location(profile_scope(home=get_hermes_home())))
+        wt_info = _setup_worktree(retain_db=_retention_store())
     except Exception as exc:
         print(f"✗ Failed to create TUI worktree: {exc}", file=sys.stderr)
     if not wt_info:
@@ -416,16 +415,14 @@ def _remove_idle_clean_tui_worktree(wt_info: dict) -> bool:
     still works in it; and by ``_cleanup_worktree`` when it is dirty, holds unpushed commits or
     something no branch keeps.
     """
-    from hermes_cli.config import get_hermes_home
     from hermes_cli.worktree_exit import _still_in_use
-    from hermes_cli.worktree_ops import _retained_tree_is_live, _tree_still_served
-    from persistence_assembly import profile_scope, store_location
+    from hermes_cli.worktree_ops import _retained_tree_is_live, _retention_store, _tree_still_served
 
     path = wt_info.get("path")
     if not path or not Path(path).is_dir():
         return False
     try:
-        db_path = str(store_location(profile_scope(home=get_hermes_home())))
+        db_path = str(_retention_store())
         if _retained_tree_is_live(db_path, path, pending_only=True):
             return False
         if _still_in_use(path):
@@ -656,11 +653,9 @@ def _launch_tui(
             if attached_session:
                 # The launch lock names this (exiting) pid; hand it to the session so a later
                 # launch's stale prune keeps the tree while the session is resumable.
-                from hermes_cli.config import get_hermes_home
-                from hermes_cli.worktree_ops import _retain_worktree_for_session
-                from persistence_assembly import profile_scope, store_location
+                from hermes_cli.worktree_ops import _retain_worktree_for_session, _retention_store
                 _retain_worktree_for_session(wt_info["repo_root"], wt_info["path"], attached_session,
-                                             store_location(profile_scope(home=get_hermes_home())))
+                                             _retention_store())
             print(f"Worktree retained for this session: {wt_info['path']}", file=sys.stderr)
 
     # Exit code 42 = TUI requested an update. Relaunch as `hermes update`;

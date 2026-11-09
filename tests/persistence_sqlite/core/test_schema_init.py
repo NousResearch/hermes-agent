@@ -7,6 +7,7 @@ import pytest
 from persistence.sqlite import _holder, _schema
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite.conversation._store.sessions import create_session
+from persistence_assembly import profile_scope
 
 
 @pytest.fixture()
@@ -120,7 +121,7 @@ class TestAsyncDelegationsSchemaAgreement:
         """One delegation ledger write, which opens ``db_path`` through the store."""
         from unittest.mock import patch
 
-        with patch.object(async_delegation, "_db_path", lambda: db_path):
+        with patch.object(async_delegation, "_scope", lambda: profile_scope(home=db_path.parent)):
             async_delegation.mark_completion_delivered("schema-probe")
 
     def _legacy_db(self, db_path):

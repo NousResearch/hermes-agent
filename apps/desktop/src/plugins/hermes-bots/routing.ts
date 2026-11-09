@@ -35,25 +35,36 @@ interface BotRouteResolution {
  *  on `resolved | owner_removed | not_scoped` rather than catching whatever
  *  exception the strict wrapper below happens to throw. */
 export function resolveBotConnectionRoute(bot: Partial<RosterRow> | null | undefined): BotRouteResolution {
-  if (!bot?.sourceScoped && !bot?.remoteSource) {
+  const connectionId = String(bot?.connectionId || '').trim()
+
+  const hasExplicitOwner = Boolean(
+    bot?.route || bot?.sourceScoped || bot?.remoteSource || bot?.connectionKind === 'remote'
+  )
+
+  const hasNonLocalConnection = Boolean(connectionId && connectionId !== 'local')
+
+  if (!hasExplicitOwner && !hasNonLocalConnection) {
     return {
       status: 'not_scoped',
       route: null
     }
   }
 
-  const candidate = bot.route || {
-    connectionId: bot.connectionId,
-    mode: bot.connectionKind === 'local' ? 'local' : 'remote',
-    profile: bot.name,
-    targetProfile: bot.targetProfile || bot.name
+  // A concrete non-local connection id is itself an owner descriptor. Older
+  // roster rows may lack the source flags, but must not fall back to whichever
+  // gateway happens to be active when two connections share a profile name.
+  const candidate = bot?.route || {
+    connectionId: bot?.connectionId,
+    mode: bot?.connectionKind === 'local' ? 'local' : 'remote',
+    profile: bot?.name,
+    targetProfile: bot?.targetProfile || bot?.name
   }
 
-  const connectionId = String(candidate?.connectionId || '').trim()
+  const routeConnectionId = String(candidate?.connectionId || '').trim()
   const profile = String(candidate?.profile || bot?.name || '').trim() || 'default'
   const targetProfile = String(candidate?.targetProfile || profile).trim() || profile
 
-  if (!connectionId) {
+  if (!routeConnectionId) {
     return {
       status: 'owner_removed',
       route: null,
@@ -64,8 +75,8 @@ export function resolveBotConnectionRoute(bot: Partial<RosterRow> | null | undef
   return {
     status: 'resolved',
     route: Object.freeze({
-      connectionId,
-      mode: candidate.mode === 'local' || connectionId === 'local' ? 'local' : 'remote',
+      connectionId: routeConnectionId,
+      mode: candidate.mode === 'local' || routeConnectionId === 'local' ? 'local' : 'remote',
       profile,
       targetProfile
     })
@@ -457,7 +468,10 @@ export function botRosterMeta(bot: RosterRow, metaByName: Record<string, BotMeta
 type TranscriptEntry = { from?: GroupMessageAuthor } | null | undefined
 
 function speaksAs(from: GroupMessageAuthor, bot: Partial<RosterRow>): boolean {
-  return bot.name === from.name && (from.source ? (bot.connectionLabel || bot.connectionId) === from.source : !bot.remoteSource)
+  return (
+    bot.name === from.name &&
+    (from.source ? (bot.connectionLabel || bot.connectionId) === from.source : !bot.remoteSource)
+  )
 }
 
 /** The row a transcript line's speaker is named from. Seated members first; a

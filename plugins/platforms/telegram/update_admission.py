@@ -140,6 +140,18 @@ class _ErrorCallback:
         return await self.__wrapped__(update, context)
 
 
+def _topic_lane(message):
+    """Forum/DM topic id that gets its own FIFO lane, else None (the chat's shared lane).
+
+    Only real topic messages split off: a plain group reply's ``message_thread_id`` is a reply
+    anchor, not a topic, and a ``forum_topic_created`` service message stays on the chat lane so
+    the thread-less opener that follows it is still processed after it (telegram_topic_routing).
+    """
+    if getattr(message, "is_topic_message", False) is not True or getattr(message, "forum_topic_created", None):
+        return None
+    return getattr(message, "message_thread_id", None)
+
+
 class PerChatUpdateProcessor(SimpleUpdateProcessor):
     """Concurrent across chats and Telegram topics, FIFO within one topic.
 
@@ -153,16 +165,14 @@ class PerChatUpdateProcessor(SimpleUpdateProcessor):
 
     def __init__(self, max_concurrent_updates: int):
         super().__init__(max_concurrent_updates)
-        self._tails: dict[int, asyncio.Future] = {}
+        self._tails: dict[tuple, asyncio.Future] = {}
 
     async def do_process_update(self, update, coroutine) -> None:
         chat = getattr(update, "effective_chat", None)
         if chat is None:
             await coroutine
             return
-        message = getattr(update, "effective_message", None)
-        thread_id = getattr(message, "message_thread_id", None)
-        key = (chat.id, thread_id)
+        key = (chat.id, _topic_lane(getattr(update, "effective_message", None)))
         prev = self._tails.get(key)
         done = asyncio.get_running_loop().create_future()
         self._tails[key] = done

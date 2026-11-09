@@ -477,9 +477,8 @@ def sweep_settled_media(store, *, now=None):
     still holds its bytes; API images and hosted documents keep their own owners."""
     import time
     from agent.provider_media import MEDIA_CACHE_MAX_AGE_HOURS
-    from persistence_assembly import store_location
     now = time.time() if now is None else now
-    key = store_location(store.scope)
+    key = store.scope.hermes_home_key
     if now - _last_sweep.get(key, 0) < _SWEEP_INTERVAL_S:
         return 0
     _last_sweep[key] = now

@@ -656,9 +656,8 @@ def session_search(query: str = "", role_filter: str | None = None, limit: int |
 def check_session_search_requirements() -> bool:
     """Requires the SQLite state database."""
     try:
-        from persistence_assembly import profile_scope, store_location
-        location = store_location(profile_scope())
-        return location is None or location.parent.exists()
+        from persistence_assembly import profile_scope
+        return profile_scope().profile_dir.exists()
     except ImportError:
         return False
 

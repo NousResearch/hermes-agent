@@ -211,6 +211,39 @@ before that key existed runs PM's own Python (its `pyvenv.cfg` `home` is in
 PM's tool store). Neither is ever carried, and neither is an empty `uv venv`. Any other in-tree `venv/` or `.venv/` with Hermes
 installed is read, a developer venv built by hand with `uv` included.
 
+### Plugin build inputs and generated output
+
+A plugin with a `pyproject.toml` can keep disposable output out of its dependency
+input digest and the initial generation snapshot:
+
+```toml
+[tool.hermes.build-inputs]
+generated = ["reports", "logs", "dumps", "request_dump.json"]
+required = ["reports/runtime-schema.json"]
+```
+
+These are literal plugin-relative file or directory paths, not glob patterns.
+Paths must use `/`, with no empty, `.` or `..` components, absolute paths,
+backslashes, drive prefixes or wildcard characters. Invalid declarations and
+unknown keys fail preparation rather than silently dropping inputs.
+
+`required` retains a path and its descendants, including the traversal ancestors
+needed to reach it, even inside a declared generated directory. Other generated
+siblings remain excluded. Only declare disposable output as generated: excluding
+functional source or a build dependency makes that input unavailable to the
+build. The Python project and plugin manifests are always retained. Existing
+cache exclusions (`.git`, virtual environments, `node_modules`, `__pycache__`
+and `*.egg-info`) cannot be overridden by `required`.
+
+This policy is opt-in. Without it, existing plugin inputs remain unchanged;
+Hermes does not guess that `reports/` is disposable or that `build/` and `dist/`
+are safe to omit. Those directories may contain a Python package, an in-tree
+build backend or shipped runtime assets. Changes to retained source and assets
+still invalidate the dependency digest. Updating the declaration also changes
+the digest. Repair replays the recorded workspace and lock, without rereading
+the live plugin or retroactively applying new output exclusions to an older
+snapshot.
+
 ### Lazy-install policy
 
 `security.allow_lazy_installs` controls on-demand installation. Already installed

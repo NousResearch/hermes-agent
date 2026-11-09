@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from hermes_state import SessionDB
+from persistence.sqlite._holder import StoreHolder
 from tests.hermes_state._wal_generation_harness import make_db, pin_wal, require_wal
 
 pytestmark = pytest.mark.platforms("linux")
@@ -38,7 +39,7 @@ def test_holder_survives_stray_close_then_sibling_closes(tmp_path, monkeypatch):
         for name in ("state.db", "state.db-shm"):  # the §2.2 bug, e.g. a raw header probe
             os.close(os.open(tmp_path / name, os.O_RDONLY))
         # Same-process second handle (Desktop backend / Herder tab shape) closing...
-        sibling = SessionDB(db_path=db.db_path)
+        sibling = SessionDB(holder=StoreHolder(db.db_path))
         sibling.append_message("s", role="user", content="tab")
         sibling.close()
         # ...and a foreign process (cron worker / one-shot CLI shape) closing.

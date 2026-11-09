@@ -1,6 +1,6 @@
 name: vibe-relay
 repo: https://github.com/trenthalden/vibe-relay
-sha: "8d05eb5a4c44a770eee5111daa993e85bebe3db8"
+sha: "de30e7ff415edac42f78f21859b205e21038346c"
 title: Vibe Relay
 description: >-
   Vibecoding without burning your best model. Sets Hermes `delegation.backend` to a quota-aware
@@ -29,12 +29,12 @@ tier: community
 category: automation
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/trenthalden/vibe-relay#readme
-image: https://raw.githubusercontent.com/trenthalden/vibe-relay/8d05eb5a4c44a770eee5111daa993e85bebe3db8/assets/banner.png
+image: https://raw.githubusercontent.com/trenthalden/vibe-relay/de30e7ff415edac42f78f21859b205e21038346c/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/trenthalden/vibe-relay/8d05eb5a4c44a770eee5111daa993e85bebe3db8/assets/shot-1.png
-  - https://raw.githubusercontent.com/trenthalden/vibe-relay/8d05eb5a4c44a770eee5111daa993e85bebe3db8/assets/shot-2.png
-  - https://raw.githubusercontent.com/trenthalden/vibe-relay/8d05eb5a4c44a770eee5111daa993e85bebe3db8/assets/shot-3.png
-version: "0.2.2"
+  - https://raw.githubusercontent.com/trenthalden/vibe-relay/de30e7ff415edac42f78f21859b205e21038346c/assets/shot-1.png
+  - https://raw.githubusercontent.com/trenthalden/vibe-relay/de30e7ff415edac42f78f21859b205e21038346c/assets/shot-2.png
+  - https://raw.githubusercontent.com/trenthalden/vibe-relay/de30e7ff415edac42f78f21859b205e21038346c/assets/shot-3.png
+version: "0.2.3"
 platforms: [linux, macos]
 capabilities:
   provides_tools:

@@ -459,6 +459,7 @@ export const zhHantChat = {
     archiveFailed: '封存失敗',
     restored: '已還原',
     unarchiveFailed: '取消封存失敗',
+    archiveUndo: '復原',
     cwdChangeFailed: '工作目錄變更失敗',
     cwdStagedTitle: '工作目錄已暫存',
     cwdStagedMessage: '重新啟動桌面後端後，工作目錄變更才會套用至此作用中工作階段。',

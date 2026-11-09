@@ -3847,6 +3847,7 @@ export const ruOverrides = {
     archiveFailed: 'Архивирование не удалось',
     restored: 'Восстановлено',
     unarchiveFailed: 'Не удалось восстановить',
+    archiveUndo: 'Отменить',
     cwdChangeFailed: 'Изменение рабочего каталога не удалось',
     cwdStagedTitle: 'Рабочий каталог поставлен в очередь',
     cwdStagedMessage: 'Перезапустите бэкенд desktop, чтобы применить изменения cwd к этому активному сеансу.',

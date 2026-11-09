@@ -4249,6 +4249,7 @@ export interface Translations extends NoticeTranslations {
     archiveFailed: string
     restored: string
     unarchiveFailed: string
+    archiveUndo: string
     cwdChangeFailed: string
     cwdStagedTitle: string
     cwdStagedMessage: string

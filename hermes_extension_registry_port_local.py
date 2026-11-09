@@ -26,7 +26,11 @@ race a read-modify-write, and the last atomic replace wins.
 
 A registry's file is written in one shape only: an ``entries`` list of row objects and a
 ``switches`` object whose keys are the entry's identity — ``<level>:<name>`` — the only
-form the file has ever held.
+form the file has ever held. A file whose row containers are of the wrong type — a
+present ``entries`` that is not a list, or a present ``switches`` that is not an object
+— is refused by every operation rather than silently reset: carrying on would answer
+for rows a read cannot see and let a write reset rows it cannot know. An absent file,
+or an absent key, is an empty registry, not a malformed one.
 """
 
 from __future__ import annotations
@@ -105,10 +109,20 @@ class LocalExtensionRegistry(ExtensionRegistry):
     def _load(self) -> dict[str, Any]:
         from utils import read_json_or_empty
         data = read_json_or_empty(self.path)
-        if not isinstance(data.get("entries"), list):
-            data["entries"] = []
-        if not isinstance(data.get("switches"), dict):
-            data["switches"] = {}
+        if data:
+            # The file is all-or-nothing: a row container of the wrong type cannot be read
+            # faithfully, and every operation refuses rather than half-read it — carrying
+            # on would answer for rows a read cannot see and let a write reset rows it
+            # cannot know. An absent key (a fresh profile has no file at all) is an empty
+            # registry, not a malformed one.
+            if "entries" in data and not isinstance(data["entries"], list):
+                raise ValueError(f"the extension registry file is malformed: "
+                                 f"{self.path} holds entries that are not a list")
+            if "switches" in data and not isinstance(data["switches"], dict):
+                raise ValueError(f"the extension registry file is malformed: "
+                                 f"{self.path} holds switches that are not an object")
+        data.setdefault("entries", [])
+        data.setdefault("switches", {})
         return data
 
     def _save(self, data: dict[str, Any]) -> None:

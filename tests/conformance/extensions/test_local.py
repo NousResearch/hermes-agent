@@ -158,6 +158,40 @@ def test_removing_an_entry_drops_only_its_own_switch(tmp_path, monkeypatch):
         assert reg.agent_enabled("dup") is True             # the tenant row's switch survived
 
 
+@pytest.mark.parametrize("rows", [
+    {"entries": {"existing": "not a row list"}, "switches": {"owner:existing": True}},
+    {"entries": [{"name": "existing", "kind": "plugin", "version": "1.0", "content_hash": "h1",
+                  "manifest": {}, "scan_result": None, "enabled": True, "level": "owner",
+                  "owner": None}], "switches": ["owner:existing"]},
+])
+def test_a_registry_file_whose_rows_cannot_be_read_is_refused_not_reset(tmp_path, monkeypatch, rows):
+    """A registry file is all-or-nothing: a present ``entries`` that is not a list (its
+    switches object intact beside it), or a present ``switches`` that is not an object
+    (its entry rows intact beside it), cannot be read faithfully — carrying on would
+    answer for rows a read cannot see, and a write would reset rows it cannot know.
+    Every operation refuses such a file, and a write leaves it byte for byte as it was;
+    a fresh profile's absent file still reads as an empty registry."""
+    _mutant(monkeypatch)
+    home = tmp_path / "a"
+    home.mkdir()
+    registry_file = home / REGISTRY_FILE
+    before = json.dumps(rows)
+    registry_file.write_text(before, encoding="utf-8")
+    reg = LocalExtensionRegistryProvider().open(home)
+    with bind_profile_scope(home):
+        for call in (lambda: reg.get("existing"),
+                     lambda: reg.list(),
+                     lambda: reg.enabled_extensions(),
+                     lambda: reg.agent_enabled("existing"),
+                     lambda: reg.set_agent_enabled("existing", True),
+                     lambda: reg.set_enabled("existing", False),
+                     lambda: reg.remove("existing"),
+                     lambda: install(reg, name="fresh")):
+            with pytest.raises(ValueError, match="malformed"):
+                call()
+    assert registry_file.read_text(encoding="utf-8") == before
+
+
 def test_the_offered_list_resolves_one_name_as_get_does(tmp_path, monkeypatch):
     """The offered list says what ``get`` says: one entry per name, by the same precedence —
     never both levels of one name, however both are switched on. The local install refuses

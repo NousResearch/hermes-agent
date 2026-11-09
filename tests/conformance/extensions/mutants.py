@@ -5,7 +5,9 @@ Each passed an earlier version of the suite. The local backend's pin forgets the
 caller, are served), the tenant (``local_pin_forgets_tenant``) or the owner
 (``local_pin_forgets_owner``), ``local_admin_not_required`` lets a scope that may not
 administer install and switch, and ``local_accepts_tenant_entries`` stores tenant-wide
-entries despite the registry's local exception. The
+entries despite the registry's local exception. ``local_resets_malformed_rows`` reads a
+file whose row containers are of the wrong type as if it held no rows, so a write resets
+it around the defaults. The
 reference backend accepts a principal administrator's
 tenant-wide writes (``reference_tenant_writes_without_provisioning``: the tenant gate is gone),
 its named writes refuse a missing name as if it were taken
@@ -87,6 +89,23 @@ def _local_accepts_tenant_entries(monkeypatch):
     is gone."""
     from hermes_extension_registry_port_local import LocalExtensionRegistry
     monkeypatch.setattr(LocalExtensionRegistry, "_check_levels", lambda self, level: None)
+
+
+def _local_resets_malformed_rows(monkeypatch):
+    """The local backend reads a file whose row containers are of the wrong type as if it
+    held no rows: a write resets the file around the defaults, silently dropping the
+    rows it could not read."""
+    from hermes_extension_registry_port_local import LocalExtensionRegistry
+
+    def _load(self):
+        from utils import read_json_or_empty
+        data = read_json_or_empty(self.path)
+        if not isinstance(data.get("entries"), list):
+            data["entries"] = []
+        if not isinstance(data.get("switches"), dict):
+            data["switches"] = {}
+        return data
+    monkeypatch.setattr(LocalExtensionRegistry, "_load", _load)
 
 
 def _reference_tenant_writes_without_provisioning(monkeypatch):
@@ -248,6 +267,7 @@ MUTANTS = {
     "local_pin_forgets_owner": _local_pin_forgets_owner,
     "local_admin_not_required": _local_admin_not_required,
     "local_accepts_tenant_entries": _local_accepts_tenant_entries,
+    "local_resets_malformed_rows": _local_resets_malformed_rows,
     "local_switch_forgets_entry_identity": _local_switch_forgets_entry_identity,
     "local_offers_every_visible_entry": _local_offers_every_visible_entry,
     "reference_tenant_writes_without_provisioning": _reference_tenant_writes_without_provisioning,

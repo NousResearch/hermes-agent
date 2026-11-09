@@ -61,8 +61,9 @@ def _recover_plugin_publication(project: Path, row: dict, journal: Path) -> None
     from hermes_cli.fs_utils import rmtree_force
 
     target, backup, metadata = (Path(row[key]) for key in ("target", "backup", "metadata"))
-    home = dependency_home_root().resolve()
-    if (not target.resolve().is_relative_to(home) or target.parent.name != "plugins"
+    from pm.plugins_state import dependency_homes
+    valid_roots = [h.resolve() for h in dependency_homes()]
+    if (not any(target.resolve().is_relative_to(root) for root in valid_roots) or target.parent.name != "plugins"
             or backup.parent != target.parent or not backup.name.startswith(".previous-")
             or metadata != target.parent / ".install-metadata.json"):
         raise ValueError("plugin publication paths escape their home")
@@ -105,7 +106,9 @@ def recover_publication(project: Path) -> None:
         configs = []
         for entry in entries:
             config = Path(entry["config"])
-            if config.name != "config.yaml" or not config.resolve().is_relative_to(dependency_home_root().resolve()):
+            from pm.plugins_state import dependency_homes
+            valid_roots = [h.resolve() for h in dependency_homes()]
+            if config.name != "config.yaml" or not any(config.resolve() == root / "config.yaml" for root in valid_roots):
                 raise ValueError("config path is outside Hermes state")
             previous = base64.b64decode(entry["previous"], validate=True) if entry["previous"] is not None else None
             configs.append((config, previous, entry.get("config_after")))

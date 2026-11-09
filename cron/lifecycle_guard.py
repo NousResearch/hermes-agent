@@ -585,13 +585,21 @@ def lifecycle_scan_root_within_budget(text: str) -> bool:
         return False
 
 
-def _budget_exhausted(budget: _LifecycleScanBudget, what: str, depth: int) -> bool:
+def _budget_exhausted(budget: _LifecycleScanBudget, what: str, depth: int,
+                      script: Optional[str] = None) -> bool:
+    # Name WHICH scan ran out and the sanctioned way through; an anonymous refusal pushes agents
+    # into wrapper workarounds that skip the guard entirely (sys-l9ftcw).
+    where = f" while scanning `{script}`" if script else " in the command itself"
     logger.warning(
-        "lifecycle guard scan budget exhausted (%s at depth %d); "
+        "lifecycle guard scan budget exhausted (%s at depth %d%s); "
         "failing closed — see _MAX_LIFECYCLE_SCAN_* in cron/lifecycle_guard.py",
-        what, depth,
+        what, depth, where,
     )
-    budget.refusal = f"the scan budget was exhausted ({what} at depth {depth})"
+    budget.refusal = (
+        f"the scan budget was exhausted ({what} at depth {depth}){where}. Run the command from a "
+        "shell outside the gateway, or raise the _MAX_LIFECYCLE_SCAN_* limits in "
+        "cron/lifecycle_guard.py if the referenced scripts are trusted."
+    )
     return True
 
 
@@ -1423,16 +1431,35 @@ def _scan_written_bodies(
     ``>>`` appends therefore costs about twice its size: one near half the walk budget fails
     closed on the budget refusal."""
     bodies = list(dict.fromkeys(filter(None, bodies)))
-    if any(recurse(body, cwd, executed, charge=False) for body in bodies):
+    if any(recurse(body, cwd, None, executed, charge=False) for body in bodies):
         return True
-    return len(bodies) > 1 and recurse("".join(bodies), cwd, executed)
+    return len(bodies) > 1 and recurse("".join(bodies), cwd, None, executed)
+
+
+def _shebang_names_non_shell(text: str) -> bool:
+    """True when *text*'s first line is a ``#!`` whose interpreter is not a POSIX shell: the body
+    of such a file is not shell commands that get run, so the walk must not treat its prose as
+    executed candidates (sys-l9ftcw). No shebang = plain sh content, stays executed.
+    ``env`` resolves to its first operand; a ``VAR=val`` assignment before the interpreter reads
+    as non-shell (fail-open in mention mode, the rarer spelling)."""
+    first_line = text.split("\n", 1)[0]
+    if not first_line.startswith("#!"):
+        return False
+    tokens = first_line[2:].split()
+    if not tokens:
+        return True  # a bare `#!` names no interpreter that runs a shell body
+    interpreter = Path(tokens[0]).name
+    if interpreter == "env":
+        interpreter = next((Path(t).name for t in tokens[1:] if not t.startswith("-")), "")
+    return interpreter not in _SHELL_EXECUTABLES
+
 
 
 def _contains_unsafe_gateway_action(
     command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None, executed: bool = True,
     written: Optional[dict[Path, list[str]]] = None, charge: bool = True,
-    gateway_pid: Optional[int] = None,
+    gateway_pid: Optional[int] = None, script: Optional[str] = None,
 ) -> bool:
     """``executed=False`` means *command* is the content of a file that is only MENTIONED in inert
     (masked) text: it is still scanned for a literal lifecycle command, but "could not scan" (budget,
@@ -1441,23 +1468,26 @@ def _contains_unsafe_gateway_action(
     *written* maps paths to the heredoc bodies written to them anywhere in the walk so far. It is
     shared by every depth so a nested ``sh -c 'bash P'`` / ``systemd-run bash -c P`` payload still
     resolves P to the body its parent wrote. ``charge=False`` is only for such a body: it is a
-    substring of text already charged, so its first scan is free and any repeat is charged."""
+    substring of text already charged, so its first scan is free and any repeat is charged.
+    ``script`` names the file this text came from, so a budget refusal can name it."""
     # Charge BEFORE _direct_lifecycle_scan: every scan in it tokenizes with shlex.
     if not budget.charge_text(command, written_body=not charge):
-        return _budget_exhausted(budget, "text", depth) if executed else False
+        return _budget_exhausted(budget, "text", depth, script) if executed else False
     # Before the PID check: a kill payload it rescans (`sh -c 'bash P'`) resolves P to its written body.
     written = _collect_heredoc_written_scripts(command, cwd, written)
 
-    def recurse(text: str, cwd: Optional[str], executed: bool, charge: bool = True) -> bool:
+    def recurse(text: str, cwd: Optional[str], script: Optional[str], executed: bool,
+                charge: bool = True) -> bool:
         return _contains_unsafe_gateway_action(
             text, cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
             read_remote_script=read_remote_script, executed=executed, written=written,
-            charge=charge, gateway_pid=gateway_pid,
+            script=script, charge=charge, gateway_pid=gateway_pid,
         )
 
     if _direct_lifecycle_scan(command) or (
         executed and gateway_pid is not None
-        and _targets_gateway_pid(command, gateway_pid, depth=depth, rescan=lambda text: recurse(text, cwd, True))
+        and _targets_gateway_pid(command, gateway_pid, depth=depth,
+                                 rescan=lambda text: recurse(text, cwd, script, True))
     ):
         return True
     if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
@@ -1475,7 +1505,7 @@ def _contains_unsafe_gateway_action(
     walk_command = strip_inert_heredoc_bodies(command)
 
     for payload in _iter_shell_command_payloads(walk_command):
-        if recurse(payload, cwd, executed):
+        if recurse(payload, cwd, script, executed):
             return True
 
     # Paths named only inside a masked body are still READ: an interpreter body that hands
@@ -1499,7 +1529,7 @@ def _contains_unsafe_gateway_action(
             continue
         if not budget.charge_path():
             if candidate_executed:
-                return _budget_exhausted(budget, "paths", depth)
+                return _budget_exhausted(budget, "paths", depth, str(script_path))
             break  # remaining candidates are all mentions
         visited.add(resolved)
         # Never read more than the walk can still afford to tokenize; a file larger than the
@@ -1514,7 +1544,7 @@ def _contains_unsafe_gateway_action(
             # local read — sanitize identically (binary skip + size fail-closed).
             if not budget.charge_remote_read():
                 if candidate_executed:
-                    return _budget_exhausted(budget, "remote reads", depth)
+                    return _budget_exhausted(budget, "remote reads", depth, str(script_path))
                 break
             script_text, unsafe = _sanitize_remote_script_text(
                 read_remote_script(str(script_path)), max_bytes=budget.bytes_remaining
@@ -1529,8 +1559,17 @@ def _contains_unsafe_gateway_action(
                 continue
         if not script_text:
             continue
+        # A non-shell interpreter body (`#!/usr/bin/env python3` and friends) is not shell commands
+        # that get RUN: parsing it that way turns docstring prose into executed candidates and lets
+        # a data file named in that prose fail the whole walk closed (sys-l9ftcw). Enter it as a
+        # mention (#113944 mode) instead: the body is still scanned for a literal lifecycle command
+        # and the paths it names are still read and scanned — only the fail-closed verdicts (budget,
+        # size, unreadable) become "nothing to scan" for that subtree.
+        if candidate_executed and _shebang_names_non_shell(script_text):
+            candidate_executed = False
         # Relative references inside a script resolve against that script's directory, not the cwd.
-        if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd, candidate_executed):
+        if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd,
+                   str(resolved), candidate_executed):
             return True
     return False
 
@@ -1594,6 +1633,7 @@ def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None)
     combined = prompt or ""
     python_script = False
     refusal: Optional[str] = None
+    resolved_script: Optional[Path] = None
     if script:
         resolved_script = _resolve_script_path(script)
         # Attribute the refusal correctly: not a lifecycle command, but a cloud path never opened.
@@ -1627,7 +1667,7 @@ def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None)
         # embedded in a .py script is still blocked. See #77131, #78398.
         budget = _LifecycleScanBudget()
         if not budget.charge_text(combined):
-            unsafe = _budget_exhausted(budget, "text", 0)
+            unsafe = _budget_exhausted(budget, "text", 0, str(resolved_script))
             refusal = budget.refusal
         else:
             unsafe = _lifecycle_command_scan_with_data_exemption(combined)

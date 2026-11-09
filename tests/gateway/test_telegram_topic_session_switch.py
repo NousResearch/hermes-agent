@@ -5,6 +5,7 @@ or the next message's binding heal switches the topic back to the old session. R
 activation enables topic mode without minting an untracked extra forum topic.
 """
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -35,7 +36,14 @@ def _bound_topic(tmp_path, *extra_sessions: str):
     db.append_message("parent", "assistant", "working")
     db.bind_telegram_topic(chat_id=CHAT, thread_id=THREAD, user_id=CHAT, session_key=key, session_id="parent")
     runner = _make_runner(session_db=db)
-    switch = AsyncMock(side_effect=lambda k, sid, **_kw: _entry(k, sid))
+    routes = {key: "parent"}
+    runner.session_store.peek_session_id.side_effect = routes.get
+
+    def _switch(k, sid, **_kw):
+        routes[k] = sid
+        return _entry(k, sid)
+
+    switch = AsyncMock(side_effect=_switch)
     runner._async_session_store = SimpleNamespace(
         _store=runner.session_store,
         get_or_create_session=AsyncMock(return_value=_entry(key, "parent")),
@@ -124,3 +132,30 @@ async def test_resume_of_session_bound_to_another_topic_is_refused_before_switch
     assert "already linked" in reply
     runner.async_session_store.switch_session.assert_not_awaited()
     assert _bound_session(db) == "parent"
+
+
+@pytest.mark.asyncio
+async def test_older_resume_finishing_last_does_not_undo_newer_switch(tmp_path):
+    """Commands dispatch concurrently: /resume A switches the route and is suspended, /resume B
+    switches and binds, then A finishes. The topic must stay bound to B, the route's session."""
+    db, runner = _bound_topic(tmp_path, "older", "newer")
+    db.set_session_title("older", "Older Work")
+    db.set_session_title("newer", "Newer Work")
+    a_parked, release_a = asyncio.Event(), asyncio.Event()
+
+    async def park_first_resume(_key, _value):
+        if not a_parked.is_set():
+            a_parked.set()
+            await release_a.wait()
+
+    runner.async_session_store.set_model_override = AsyncMock(side_effect=park_first_resume)
+    older = asyncio.create_task(runner._handle_resume_command(_make_event("/resume Older Work", thread_id=THREAD)))
+    await a_parked.wait()
+    runner.async_session_store.get_or_create_session.return_value = _entry(
+        build_session_key(_make_source(thread_id=THREAD)), "older")
+    await runner._handle_resume_command(_make_event("/resume Newer Work", thread_id=THREAD))
+    assert _bound_session(db) == "newer"
+    release_a.set()
+    await older
+
+    assert _bound_session(db) == "newer"

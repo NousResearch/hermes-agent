@@ -385,18 +385,46 @@ def _keep_kind(record: TreeRecord) -> str:
     return "policy"
 
 
-def reclaim_worktree(repo_root: str, path: str) -> dict:
+def live_use_reason(path: str) -> Optional[str]:
+    """Why *path* is in use right now, or None: some live process other than this one works in
+    it (cwd or open fd, the check ``prune`` applies). This process's own language servers are
+    released first; they are not "use". The reason names the process so a UI can show it."""
+    from hermes_cli.worktree_ops import release_lsp_clients
+    from hermes_cli.worktree_sweep import live_process_pids
+    release_lsp_clients(path)
+    pids = sorted(live_process_pids([path], exclude=(os.getpid(),)).get(path) or [])
+    if not pids:
+        return None
+    return f"in use by a running process ({', '.join(_describe_pid(pid) for pid in pids[:5])})"
+
+
+def _describe_pid(pid: int) -> str:
+    try:
+        name = Path(f"/proc/{pid}/comm").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        try:
+            import psutil
+            name = psutil.Process(pid).name()
+        except Exception:  # health: allow BLE001 -- best-effort label; the pid alone still names it
+            name = ""
+    return f"{name} pid {pid}" if name else f"pid {pid}"
+
+
+def reclaim_worktree(repo_root: str, path: str, *, force: bool = False) -> dict:
     """Remove ONE linked worktree when the policy allows, with a structured verdict for a UI.
 
-    Never forces past the policy: a tree with tracked changes or unique commits stays, and the
-    reply says why. A tree some live process works in (cwd or open fd, the check ``prune``
-    applies) stays too. ``outcome`` is the typed per-tree result (``removed``, ``kept``,
-    ``in-use``, ``kanban``, ``archive-failed``, ``remove-failed``, ``unknown``) and
-    ``forceable`` is True only for a plain policy keep — never when the untracked-file archive
-    failed or something still uses the tree. ``branch_deleted`` is True only when the branch
-    went with the tree (a pushed open-PR lane keeps its branch). This is the single-tree door
-    the Desktop session action and ``hermes worktree remove`` use, so every surface reaps by
-    the same rules.
+    Never forces past the policy unless *force*: a tree with tracked changes or unique commits
+    stays, and the reply says why. A tree some live process works in (cwd or open fd, the check
+    ``prune`` applies) stays ALWAYS, force or not, dirty or clean. ``outcome`` is the typed
+    per-tree result (``removed``, ``kept``, ``in-use``, ``kanban``, ``archive-failed``,
+    ``remove-failed``, ``unknown``) and ``forceable`` is True only for a plain policy keep that
+    nothing uses: never when the untracked-file archive failed or something still uses the
+    tree. *force* (the confirmed force prompt) removes exactly such a tree, re-checking the
+    live processes here so the guarantee never rests on the client. ``branch_deleted`` is True
+    only when the branch went with the tree (a pushed open-PR lane keeps its branch; a forced
+    removal keeps its branch, which may hold the only copy of its commits). This is the
+    single-tree door the Desktop session action and ``hermes worktree remove`` use, so every
+    surface reaps by the same rules.
     """
     repo_root = main_checkout(repo_root)
     record = audit_worktree(repo_root, path)
@@ -404,16 +432,16 @@ def reclaim_worktree(repo_root: str, path: str) -> dict:
         return {"removed": False, "branch": "", "branch_deleted": False, "outcome": "unknown",
                 "forceable": False, "verdict": "unknown",
                 "reason": "not a linked worktree of this repository", "actions": []}
-    if record.verdict in _REAP_VERDICTS:
-        from hermes_cli.worktree_ops import release_lsp_clients
-        from hermes_cli.worktree_sweep import live_process_pids
-        release_lsp_clients(record.path)  # this process's own language servers are not "use"
-        pids = live_process_pids([record.path], exclude=(os.getpid(),)).get(record.path)
-        if pids:
-            record.verdict, record.untracked = "keep", []
-            record.reason = f"in use by a running process (pid {', '.join(map(str, sorted(pids)[:5]))})"
+    if record.verdict in _REAP_VERDICTS or _keep_kind(record) == "policy":
+        # Also for a policy keep: it is the verdict that offers force, and a running session's
+        # tree with uncommitted edits is exactly the one force must never delete.
+        busy = live_use_reason(record.path)
+        if busy:
+            record.verdict, record.untracked, record.reason = "keep", [], busy
     if record.verdict not in _REAP_VERDICTS:
         outcome = _keep_kind(record)
+        if force and outcome == "policy":
+            return _force_remove(repo_root, record)
         return {"removed": False, "branch": record.branch, "branch_deleted": False,
                 "outcome": "kept" if outcome == "policy" else outcome,
                 "forceable": outcome == "policy", "verdict": record.verdict,
@@ -436,6 +464,21 @@ def reclaim_worktree(repo_root: str, path: str) -> dict:
         "reason": reason,
         "actions": actions,
     }
+
+
+def _force_remove(repo_root: str, record: TreeRecord) -> dict:
+    """The confirmed force removal of a policy-kept tree nothing uses (``reclaim_worktree``
+    already checked): ``git worktree remove --force``, branch kept."""
+    result = _git(["worktree", "remove", "--force", record.path], cwd=repo_root, timeout=30)
+    removed = result.returncode == 0
+    with contextlib.suppress(Exception):
+        _git(["worktree", "prune"], cwd=repo_root, timeout=15)
+    action = (f"force-removed {record.name} (branch {record.branch or '-'} kept)" if removed
+              else f"failed to remove {record.name}: {result.stderr.strip()}")
+    return {"removed": removed, "branch": record.branch, "branch_deleted": False,
+            "outcome": "removed" if removed else "remove-failed", "forceable": False,
+            "verdict": record.verdict, "reason": record.reason if removed else action,
+            "actions": [action]}
 
 
 _REAP_VERDICTS = {"reap", "reap-archive", "reap-keep-branch"}

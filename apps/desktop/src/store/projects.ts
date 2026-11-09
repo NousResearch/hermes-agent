@@ -1651,22 +1651,29 @@ export async function removeWorktreePath(
 // The lanes re-probe whether or not the tree went, so a verdict of "kept" still
 // repaints the sidebar from git's truth. `owner` sends it to the gateway the
 // repo lives on (same routing as `removeWorktreePath`).
+//
+// `force` (the confirmed force prompt) goes through the same backend door, which
+// re-checks for running processes and refuses a tree a live session uses, so the
+// local Electron git bridge never runs a bare `remove --force` on its own say-so.
 export async function reclaimWorktreePath(
   repoPath: string,
   worktreePath: string,
-  owner?: GitOwnerRoute
+  owner?: GitOwnerRoute,
+  options?: { force?: boolean }
 ): Promise<HermesWorktreeReclaim> {
+  const force = options?.force === true
+
   try {
-    return await reclaimWorktree(repoPath, worktreePath, owner)
+    return await reclaimWorktree(repoPath, worktreePath, owner, force ? { force } : undefined)
   } catch (err) {
     if (!isMissingRestEndpoint(err)) {
       throw err
     }
 
-    // A backend from before the reclaim route: keep main's plain, never-forced
-    // `git worktree remove` (git itself refuses a tree with changes or untracked
-    // files), and offer force only for those refusals, as main did.
-    return await legacyWorktreeRemove(repoPath, worktreePath, owner)
+    // A backend from before the reclaim route: keep main's plain `git worktree
+    // remove` (git itself refuses a tree with changes or untracked files), and
+    // offer force only for those refusals, as main did.
+    return await legacyWorktreeRemove(repoPath, worktreePath, owner, force)
   } finally {
     bumpWorktrees()
   }
@@ -1675,12 +1682,13 @@ export async function reclaimWorktreePath(
 async function legacyWorktreeRemove(
   repoPath: string,
   worktreePath: string,
-  owner?: GitOwnerRoute
+  owner: GitOwnerRoute | undefined,
+  force: boolean
 ): Promise<HermesWorktreeReclaim> {
   const base = { actions: [], branch: '', branchDeleted: false, verdict: 'unknown' as const }
 
   try {
-    await removeWorktreePath(repoPath, worktreePath, { force: false }, owner)
+    await removeWorktreePath(repoPath, worktreePath, { force }, owner)
 
     return { ...base, forceable: false, outcome: 'removed', reason: '', removed: true }
   } catch (err) {

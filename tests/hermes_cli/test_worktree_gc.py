@@ -238,6 +238,33 @@ class TestReclaimOne:
         assert kept["removed"] is False and tree.exists()
         assert kept["outcome"] == "in-use" and kept["forceable"] is False
 
+    def test_dirty_tree_a_live_process_uses_is_never_forceable_nor_force_removed(self, repo):
+        """A running session's tree with uncommitted edits is a policy keep, the verdict that
+        offers force: the live-process check must run for it too, and the force path itself
+        (``force=True`` on the core door, and the REST force remove) must refuse it."""
+        import subprocess
+        import sys
+        from hermes_cli import web_git
+        tree, branch = _add_worktree(repo, "hermes-busy-dirty")
+        (tree / "README.md").write_text("edited\n")
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=str(tree))
+        try:
+            kept = worktree_gc.reclaim_worktree(str(repo), str(tree))
+            forced = web_git.worktree_reclaim(str(repo), str(tree), force=True)
+            with pytest.raises(RuntimeError, match="running process"):
+                web_git.worktree_remove(str(repo), str(tree), True)
+        finally:
+            proc.kill()
+            proc.wait()
+        assert kept["outcome"] == "in-use" and kept["forceable"] is False
+        assert f"pid {proc.pid}" in kept["reason"]
+        assert forced["removed"] is False and forced["outcome"] == "in-use"
+        assert tree.exists() and (tree / "README.md").read_text() == "edited\n"
+        # Once nothing uses it, the confirmed force removes it and keeps the branch.
+        gone = web_git.worktree_reclaim(str(repo), str(tree), force=True)
+        assert gone["removed"] is True and gone["branchDeleted"] is False and not tree.exists()
+        assert _git(["rev-parse", "--verify", branch], repo)
+
     def test_untracked_file_git_quotes_is_archived_by_its_real_name(self, repo, tmp_path, monkeypatch):
         """``git status`` C-quotes names with spaces/quotes/non-ASCII; reading without ``-z``
         archived only the plain file and the force removal deleted the quoted one unsaved."""

@@ -226,7 +226,9 @@ async def git_worktree_remove_route(body: GitWorktreeRemoveBody):
 
 @router.post("/api/git/worktree/reclaim")
 async def git_worktree_reclaim_route(body: GitWorktreeReclaimBody):
-    return await _git_op(_web_git.worktree_reclaim, _git_path(body.path), _git_path(body.worktreePath))
+    return await _git_op(
+        _web_git.worktree_reclaim, _git_path(body.path), _git_path(body.worktreePath), body.force
+    )
 
 
 @router.post("/api/git/branch/switch")

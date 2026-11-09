@@ -18,7 +18,7 @@ import {
 } from '@/store/layout'
 import { notify, notifyError } from '@/store/notifications'
 import type { AgentProfileRoute } from '@/store/profile'
-import { reclaimWorktreePath, removeWorktreePath } from '@/store/projects'
+import { reclaimWorktreePath } from '@/store/projects'
 
 import { SidebarRowStack } from '../chrome'
 
@@ -191,14 +191,10 @@ function RepoFlatSection({
     }
 
     try {
-      if (force) {
-        await removeWorktreePath(repo.path, group.path, { force: true }, owner)
-        dismissWorktree(laneKey(group), { removed: true })
-
-        return
-      }
-
-      const result = await reclaimWorktreePath(repo.path, group.path, owner)
+      // The force leg goes through the backend's reclaim door too: it re-checks
+      // for running processes and answers `in-use` instead of deleting a live
+      // session's tree, whatever this prompt showed.
+      const result = await reclaimWorktreePath(repo.path, group.path, owner, force ? { force } : undefined)
 
       if (result.removed) {
         dismissWorktree(laneKey(group), { removed: true })

@@ -133,12 +133,17 @@ const remoteGit = remoteGitVia(windowApi)
 // `worktree_gc`, the module `hermes worktree prune` runs; routing the local case
 // through Electron's git bridge would mean a second copy of that policy in TS.
 // An `owner` routes it to the gateway the repo lives on, like `desktopGitFor`.
+// `force` is the confirmed force prompt: the backend removes a policy keep but
+// refuses (outcome `in-use`) while a running process works in the tree, so the
+// guarantee never rests on this client.
 export function reclaimWorktree(
   repoPath: string,
   worktreePath: string,
-  owner?: GitOwnerRoute
+  owner?: GitOwnerRoute,
+  options?: { force?: boolean }
 ): Promise<HermesWorktreeReclaim> {
   return (owner ? ownerApi(owner) : windowApi)<HermesWorktreeReclaim>('/api/git/worktree/reclaim', {
+    ...(options?.force ? { force: true } : {}),
     path: repoPath,
     worktreePath
   })

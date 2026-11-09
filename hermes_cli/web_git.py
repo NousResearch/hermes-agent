@@ -754,15 +754,24 @@ def worktree_add(cwd: str, options: dict) -> dict:
 
 
 def worktree_remove(cwd: str, worktree_path: str, force: bool) -> dict:
+    if force:
+        # A forced remove deletes uncommitted edits git would otherwise protect: never while a
+        # running process (a live session) works in the tree, whatever the client checked.
+        from hermes_cli import worktree_gc
+        busy = worktree_gc.live_use_reason(os.path.abspath(worktree_path))
+        if busy:
+            raise RuntimeError(f"refusing to force-remove {worktree_path}: {busy}")
     _git_ok(_main_root(cwd), ["worktree", "remove", *(["--force"] if force else []), worktree_path])
     return {"removed": worktree_path}
 
 
-def worktree_reclaim(cwd: str, worktree_path: str) -> dict:
+def worktree_reclaim(cwd: str, worktree_path: str, force: bool = False) -> dict:
     """Policy-gated single-tree removal (``worktree_gc.reclaim_worktree``): the same verdicts
-    ``hermes worktree prune`` applies, for one tree, never forced. camelCase for the renderer."""
+    ``hermes worktree prune`` applies, for one tree. *force* is the confirmed force prompt: it
+    removes a policy keep, and is refused here when a running process uses the tree.
+    camelCase for the renderer."""
     from hermes_cli import worktree_gc
-    result = worktree_gc.reclaim_worktree(_main_root(cwd), worktree_path)
+    result = worktree_gc.reclaim_worktree(_main_root(cwd), worktree_path, force=force)
     return {
         "removed": result["removed"],
         "branch": result["branch"],

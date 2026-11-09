@@ -54,10 +54,6 @@ def _next_claim(db, row):
     return _elsewhere(run)
 
 
-def _take_over_or_next_claim(kind):
-    return (lambda db, _row: _take_over(db)) if kind == 'takeover' else _next_claim
-
-
 def _fence(row):
     return claim_fence(row)
 
@@ -173,19 +169,32 @@ def _title_thread(db, monkeypatch, title):
     return tg, entered, go
 
 
-@pytest.mark.parametrize('kind', ['takeover', 'next_claim'])
-def test_the_title_thread_of_a_superseded_turn_publishes_nothing(claimed, monkeypatch, kind):
+def test_the_title_thread_of_a_turn_whose_owner_lost_the_profile_publishes_nothing(claimed, monkeypatch):
     db, row = claimed
     tg, entered, go = _title_thread(db, monkeypatch, 'Old owner title')
     with bind_turn('s', row['admission_id'], _fence(row), store=db.db_path):
         thread = tg.maybe_auto_title(db, 's', 'Explain transactional leases')
         assert entered.wait(10)
         instant = db.get_session_title('s')
-    _take_over_or_next_claim(kind)(db, row)
+    _take_over(db)
     go.set()
     thread.join(10)
     assert not thread.is_alive()
     assert db.get_session_title('s') == instant != 'Old owner title'
+
+
+def test_a_late_title_survives_the_sessions_next_claim(claimed, monkeypatch):
+    """The title names the session from this turn's ask; the same owner claiming the next input
+    must not drop it (and its paid call) as if it were a stale reply."""
+    db, row = claimed
+    tg, entered, go = _title_thread(db, monkeypatch, 'Next claim title')
+    with bind_turn('s', row['admission_id'], _fence(row), store=db.db_path):
+        thread = tg.maybe_auto_title(db, 's', 'Explain transactional leases')
+        assert entered.wait(10)
+    _next_claim(db, row)
+    go.set()
+    thread.join(10)
+    assert db.get_session_title('s') == 'Next claim title'
 
 
 def test_a_late_title_of_a_turn_not_superseded_still_lands(claimed, monkeypatch):

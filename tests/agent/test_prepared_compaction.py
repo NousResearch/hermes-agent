@@ -211,6 +211,52 @@ def test_pass_runs_under_the_callers_profile_scope(tmp_path):
     assert [cc.calls[0]["home"] for cc in compressors] == [str(h) for h in homes]
 
 
+def test_a_pass_outlives_the_sessions_next_claim_for_its_usage_row(tmp_path):
+    """The pass summarises this turn's own ask, like the title upgrade: the session's next claim
+    must not refuse the summary call's usage row (a takeover still does)."""
+    from contextlib import closing
+
+    import hermes_state_runtime as rt
+    from agent.runtime_scope import bind_profile_scope, bind_turn, claim_fence
+    from hermes_state import SessionDB
+    from tests.hermes_state.test_target_advance_fence import _local_session
+    from tests.hermes_state.test_turn_fence_writes import _move_generation
+
+    with closing(SessionDB(tmp_path / "state.db")) as db:
+        epoch = rt.begin_runtime_epoch(db, instance_id="owner")
+        sid = _local_session(db, epoch, tmp_path)
+        rt.admit_session_input(db, epoch=epoch, principal_id="human", session_id=sid,
+                               request_id="r1", payload={"text": "hi"})
+        row = rt.claim_session_input(db, epoch=epoch, session_id=sid)
+
+        class _UsageCompressor(_StubCompressor):
+            entered = None
+
+            def _generate_summary(self, turns_to_summarize, focus_topic=None, memory_context="", bypass_cooldown=False):
+                if threading.current_thread().name == "compaction-prepare":
+                    self.entered.set()
+                    assert self.gate.wait(10)
+                    db.record_auxiliary_usage(sid, "compression", input_tokens=1)  # what the call cost
+                return super()._generate_summary(turns_to_summarize, focus_topic=focus_topic,
+                                                 memory_context=memory_context, bypass_cooldown=bypass_cooldown)
+
+        with bind_profile_scope(tmp_path), bind_turn(sid, row["admission_id"], claim_fence(row), store=db.db_path):
+            cc = _compressor(session_id=sid)
+            cc.__class__ = _UsageCompressor
+            cc.entered = threading.Event()
+            cc.gate = threading.Event()
+            thread = pc.maybe_prepare(_agent(cc), _messages(30), origin="tool-batch")
+            assert thread is not None, "expected a pass to start"
+            assert cc.entered.wait(10)
+            _move_generation(db, sid)  # the session's next claim, while the pass still runs
+            cc.gate.set()
+            thread.join(10)
+            assert not thread.is_alive()
+        entry = cc.prepared_compaction._entry
+        assert entry is not None, "the pass must publish its summary"
+        assert db.auxiliary_usage_by_task(sid)["compression"]["input_tokens"] == 1
+
+
 # --------------------------------------------------------------------------- the splice
 
 

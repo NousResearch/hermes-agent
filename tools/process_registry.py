@@ -25,7 +25,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 # (not merely "not Windows") so macOS and other POSIX platforms never touch systemd.
 # See #70716.
 _IS_LINUX = platform.system() == "Linux"
-from tools.environments.sandbox_scope import producer_fields
+from tools.environments.sandbox_scope import hosted_scope, producer_fields
 from tools.environments.local import _append_dropped_path_entries, _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env, _terminal_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
@@ -1805,7 +1805,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         session's profile binding, and a once-per-process replay taken under a secondary's scope
         would leave the launch ledger unreplayed for the life of the process. Secondaries are
         replayed by the gateway's ``_restore_secondary_completion_ledgers``."""
-        if self._completions_restored:
+        if self._completions_restored or hosted_scope() is not None:  # hosted: not its ledger, and the setter refuses
             return 0
         self._completions_restored = True
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override

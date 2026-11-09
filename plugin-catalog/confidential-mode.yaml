@@ -1,6 +1,6 @@
 name: confidential-mode
 repo: https://github.com/ainsleys/hermes-confidential-mode
-sha: 88d0fe02f7df64d19ee836bff6de0cc9648ebcf7
+sha: c31cf42df76bc98bed4b7f7ffffe9e0f020ac792
 description: >-
   Hermes Confidential Mode locks a Hermes profile to one tier: attested (a Tinfoil enclave, or NEAR AI
   Cloud's gateway and models, verified and pinned to a build you approve) or on-host-only (loopback and
@@ -75,9 +75,10 @@ capabilities:
   provides_middleware:
     - llm_execution
     - tool_execution
-  requires_env:
-    - TINFOIL_API_KEY
+  requires_env: []
+  # No key is required at install: the ledger and the on-host-only tier need none, and the attested tier needs
+  # one vendor key, TINFOIL_API_KEY or NEAR_AI_API_KEY, which the lock and `check` name when it is missing.
   # Optional variables are a plugin.yaml field (optional_env), not a catalog capability key: plugin.yaml
-  # declares NEAR_AI_API_KEY (the attested-near provider only), OPENROUTER_API_KEY and NOUS_API_KEY (presence
-  # checks only, through agent.secret_scope.get_secret, to report whether Hermes' side-call fall-through to
-  # OpenRouter or Nous would have a credential).
+  # declares TINFOIL_API_KEY (the attested-tinfoil provider only), NEAR_AI_API_KEY (the attested-near provider
+  # only), OPENROUTER_API_KEY and NOUS_API_KEY (presence checks only, through agent.secret_scope.get_secret, to
+  # report whether Hermes' side-call fall-through to OpenRouter or Nous would have a credential).

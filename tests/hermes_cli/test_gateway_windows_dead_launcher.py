@@ -74,6 +74,17 @@ def test_ensure_rerenders_the_startup_entry_launcher(store_update, monkeypatch):
     assert _interpreter(store_update.vbs) == str(store_update.new)
 
 
+def test_an_unreadable_cmd_helper_blocks_neither_discovery_nor_the_vbs(store_update, monkeypatch):
+    _fake_schtasks(monkeypatch, task=store_update)
+    store_update.cmd.unlink()
+    store_update.cmd.mkdir()  # exists, but reading or replacing it raises OSError
+
+    found = service._windows(store_update.home, time.monotonic() + 5)
+
+    assert found is not None and found.start_argv[-1] == store_update.name
+    assert _interpreter(store_update.vbs) == str(store_update.new)
+
+
 def test_a_live_or_foreign_launcher_is_left_alone(store_update, monkeypatch):
     assert gateway_windows.refresh_dead_launcher(store_update.home, store_update.name)
     before = store_update.vbs.read_bytes()

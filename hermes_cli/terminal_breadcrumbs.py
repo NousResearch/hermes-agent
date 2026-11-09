@@ -29,11 +29,22 @@ _herdr_last_seq = 0
 _herdr_seq_lock = threading.Lock()
 
 
+def _herdr_resume_argv(session_id: str, profile: str | None) -> list[str]:
+    """Resume command for a named profile; empty keeps Herdr's built-in ``hermes --resume <id>``,
+    which opens the default profile and so cannot find a named profile's session. A home that is
+    not a profile (``profile_name_for_home`` is None) cannot be named with ``-p``."""
+    if not profile or profile == "default":
+        return []
+    return ["--", "hermes", "-p", profile, "--resume", session_id]
+
+
 def report_agent_session(session_id: str) -> None:
     """Bind this frontend's durable identity to its Herdr pane, independently of breadcrumbs.
 
     Explicit gateway URLs (including loopback tunnels) may own a different session DB.
     Only automatically discovered local owners can safely bind to this host's Herdr.
+    Herdr keeps the resume command only while it sees this Hermes process in the pane; a
+    refused command (``resume_not_accepted``) still records the session identity.
     """
     global _herdr_last_seq
     try:
@@ -45,10 +56,12 @@ def report_agent_session(session_id: str) -> None:
         with _herdr_seq_lock:
             seq = max(time.time_ns(), _herdr_last_seq + 1)
             _herdr_last_seq = seq
+        from hermes_constants import get_hermes_home, profile_name_for_home
         subprocess.run(
             [os.environ.get("HERDR_BIN_PATH") or "herdr", "pane", "report-agent-session", pane,
              "--source", "herdr:hermes", "--agent", "hermes", "--seq", str(seq),
-             "--agent-session-id", session_id, "--session-start-source", "resume"],
+             "--agent-session-id", session_id, "--session-start-source", "resume",
+             *_herdr_resume_argv(session_id, profile_name_for_home(get_hermes_home()))],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=1, check=False,
         )

@@ -37,12 +37,43 @@ def test_reports_exact_identity_from_each_frontend_environment(herdr, monkeypatc
                                "stderr": subprocess.DEVNULL, "timeout": 1, "check": False}
 
 
+def _use_profile(monkeypatch, name):
+    from hermes_constants import get_default_hermes_root
+    home = get_default_hermes_root() / "profiles" / name
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+
+def test_named_profile_reports_profile_qualified_resume_command(herdr, monkeypatch):
+    """`hermes -p connie` sessions live only in that profile's state.db; Herdr's built-in
+    `hermes --resume <id>` would look in the default profile after a server restart."""
+    monkeypatch.setattr(tb.time, "time_ns", lambda: 100)
+    monkeypatch.setattr(tb, "_herdr_last_seq", 0)
+    _use_profile(monkeypatch, "connie")
+    tb.report_agent_session("local-durable")
+    assert herdr.call_args.args[0] == [
+        "/Applications/Herdr/bin/herdr", "pane", "report-agent-session", "w2:pE",
+        "--source", "herdr:hermes", "--agent", "hermes", "--seq", "100",
+        "--agent-session-id", "local-durable", "--session-start-source", "resume",
+        "--", "hermes", "-p", "connie", "--resume", "local-durable"]
+
+
+def test_default_profile_keeps_herdr_builtin_resume(herdr):
+    tb.report_agent_session("durable")
+    assert "--" not in herdr.call_args.args[0]
+
+
+@pytest.mark.parametrize("profile", [None, "connie"])
 @pytest.mark.parametrize("variable,value", [("HERDR_ENV", "0"), ("HERDR_PANE_ID", ""),
     ("HERMES_TUI_GATEWAY_URL", "wss://remote.example/ws"),
     ("HERMES_TUI_GATEWAY_URL", "ws://127.0.0.1:7777/ws"),
     ("HERMES_TUI_SIDECAR_URL", "https://remote.example"),
     ("HERMES_TUI_SIDECAR_URL", "http://127.0.0.1:7777")])
-def test_does_not_bind_without_local_herdr_owner(herdr, monkeypatch, variable, value):
+def test_does_not_bind_without_local_herdr_owner(herdr, monkeypatch, variable, value, profile):
+    """Only the frontend running in the pane reports, so a resume command never claims a pane
+    (or a session database) owned by something else."""
+    if profile:
+        _use_profile(monkeypatch, profile)
     monkeypatch.setenv(variable, value)
     tb.report_agent_session("durable")
     herdr.assert_not_called()

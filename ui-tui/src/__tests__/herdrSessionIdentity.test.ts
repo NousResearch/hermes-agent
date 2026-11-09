@@ -88,6 +88,31 @@ describe('terminal Herdr session identity', () => {
     expect(spawn).toHaveBeenCalledTimes(2)
   })
 
+  it('reports a profile-qualified resume command for a named profile and the built-in one otherwise', () => {
+    const info = (profile_name: string) => ({ model: 'test', profile_name, skills: {}, tools: {} })
+    stop = watchHerdrSessionIdentity(env)
+    patchUiState({ info: info('connie'), sid: 'runtime', storedSid: 'local-durable' })
+    expect(vi.mocked(spawn).mock.calls[0]![1]!.slice(12)).toEqual([
+      'resume', '--', 'hermes', '-p', 'connie', '--resume', 'local-durable'
+    ])
+
+    for (const [i, profile] of ['default', 'custom'].entries()) {
+      children[i]!.emit('close', 0)
+      patchUiState({ info: info(profile) })
+      expect(vi.mocked(spawn).mock.calls[i + 1]![1]!.slice(12)).toEqual(['resume'])
+    }
+  })
+
+  it('re-reports when the profile arrives after the durable ID', () => {
+    stop = watchHerdrSessionIdentity(env)
+    patchUiState({ sid: 'runtime', storedSid: 'local-durable' })
+    children[0]!.emit('close', 0)
+    patchUiState({ info: { model: 'test', profile_name: 'connie', skills: {}, tools: {} } })
+    expect(vi.mocked(spawn).mock.calls.map(call => call[1]!.slice(12))).toEqual([
+      ['resume'], ['resume', '--', 'hermes', '-p', 'connie', '--resume', 'local-durable']
+    ])
+  })
+
   it.each([
     {}, { ...env, HERDR_ENV: '0' }, { ...env, HERDR_PANE_ID: '' },
     { ...env, HERMES_TUI_GATEWAY_URL: 'wss://remote.example/ws?token=secret' },
@@ -95,6 +120,7 @@ describe('terminal Herdr session identity', () => {
   ])('does not bind sessions outside an eligible local terminal: %j', disabledEnv => {
     stop = watchHerdrSessionIdentity(disabledEnv)
     patchUiState({ sid: 'runtime', storedSid: 'durable' })
+    patchUiState({ info: { model: 'test', profile_name: 'connie', skills: {}, tools: {} } })
     expect(spawn).not.toHaveBeenCalled()
   })
 
@@ -124,9 +150,13 @@ describe('terminal Herdr session identity', () => {
     expect(() => patchUiState({ sid: 'runtime', storedSid: 'durable' })).not.toThrow()
   })
 
-  it.each(['newSession', 'resumeById', 'activateLiveSession'] as const)(
-    'reports the committed durable ID from the real %s lifecycle',
-    async action => {
+  it.each([
+    ...(['newSession', 'resumeById', 'activateLiveSession'] as const).flatMap(action => [
+      [action, undefined], [action, 'connie']
+    ] as const)
+  ])(
+    'reports the committed durable ID from the real %s lifecycle (profile %s)',
+    async (action, profile) => {
       for (const [key, value] of Object.entries(env)) {
         vi.stubEnv(key, value)
       }
@@ -136,7 +166,8 @@ describe('terminal Herdr session identity', () => {
       resetTurnState()
       const request = vi.fn(async () => ({
         session_id: 'runtime-handle', stored_session_id: 'actual-durable-id',
-        session_key: 'actual-durable-id', messages: [], running: false
+        session_key: 'actual-durable-id', messages: [], running: false,
+        ...(profile ? { info: { model: 'test', profile_name: profile, skills: {}, tools: {} } } : {})
       }))
       // Only the request surface is needed by these lifecycle paths.
       const gw = { isCanonical: true, request } as unknown as UseSessionLifecycleOptions['gw']
@@ -162,7 +193,10 @@ describe('terminal Herdr session identity', () => {
       })
       try {
         await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(1))
-        expect(vi.mocked(spawn).mock.calls[0]![1]![10]).toBe('actual-durable-id')
+        expect(vi.mocked(spawn).mock.calls[0]![1]!.slice(10)).toEqual([
+          'actual-durable-id', '--session-start-source', 'resume',
+          ...(profile ? ['--', 'hermes', '-p', profile, '--resume', 'actual-durable-id'] : [])
+        ])
       } finally {
         instance.unmount()
       }

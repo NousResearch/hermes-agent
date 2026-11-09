@@ -177,6 +177,13 @@ active-session file. A missing or unresponsive Herdr command does not stop
 chat. Explicit gateway or sidecar URLs are excluded because their session
 database may be on another machine.
 
+Herdr restores a reported Hermes session with `hermes --resume <id>`, which
+opens the default profile. In a named profile (`hermes -p work`), the client
+also reports the resume command `hermes -p work --resume <id>`, so a Herdr
+server restart reopens the conversation in that profile. Herdr keeps this
+command only while it sees Hermes running in the pane; otherwise it records
+the session ID alone.
+
 ### Resume by Name
 
 If you've given a session a title (see [Session Naming](#session-naming) below), you can resume it by name:

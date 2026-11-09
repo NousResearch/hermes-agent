@@ -12,3 +12,11 @@ PLATFORM_HINT = (
     "photos. Audio: add [[audio_as_voice]] on its own line to send ANY audio file as a native voice bubble "
     "(non-Opus transcodes automatically); without it, .mp3/.m4a arrive as audio files, other formats as documents."
 )
+
+# Appended only when the session's toolset has ``clarify`` (cron and clarify-disabled profiles do not).
+PLATFORM_HINT_TOOL_NOTES = {
+    "clarify": (
+        "To offer a small fixed set of choices, call `clarify`: its choices render as tappable buttons that send the "
+        "answer back to you. Never fake controls with numbered lists or copy-to-clipboard text; those return nothing."
+    ),
+}

@@ -1188,31 +1188,39 @@ class GatewaySlashCommandsMixin(
             lines += [t("gateway.bundles.item", slug=info["slug"], desc=desc, count=len(skills))] + [f"    · {s}" for s in skills]
         return "\n".join(lines + ["", t("gateway.bundles.invoke_hint")])
 
-    def _blocking_approval_or_stale(self, event: MessageEvent, stale_key: str, none_key: str):
-        """``(session_key, None)`` when an agent thread is blocked on approval, else the reply to send.
+    def _blocking_approval_or_stale(self, event: MessageEvent, stale_key: str, none_key: str,
+                                    resolve_all: bool = False):
+        """``(session_key, None, request_ids)`` when an agent thread is blocked on approval and the
+        sender may answer the approvals this command selects, else ``(session_key, reply, [])``.
         A pending-approvals entry with no blocked thread is a stale prompt: drop it and say so."""
         from tools.approval import has_blocking_approval
         session_key = self._session_key_for_source(event.source)
         if has_blocking_approval(session_key):
-            return session_key, None
+            from gateway.approval_actor import answerable_request_ids, refusal_text
+            from gateway.slash_access import policy_for_runner_source
+            ids, requester = answerable_request_ids(
+                session_key, event.source.user_id, resolve_all=resolve_all,
+                admin_ids=policy_for_runner_source(self, event.source).admin_user_ids)
+            return (session_key, refusal_text(requester), []) if requester else (session_key, None, ids)
         if session_key in self._pending_approvals:
             self._pending_approvals.pop(session_key)
-            return session_key, t(stale_key)
-        return session_key, t(none_key)
+            return session_key, t(stale_key), []
+        return session_key, t(none_key), []
 
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve — unblock waiting agent thread(s). They block inside tools/approval.py;
         signalling the event resumes them so the command executes inline (same flow as the CLI)."""
         from tools.approval import resolve_gateway_approval
-        session_key, stale = self._blocking_approval_or_stale(event, "gateway.approval_expired",
-                                                              "gateway.approve.no_pending")
-        if stale:
-            return stale
         # Args: "all", "all session", "all always", "session", "always" ("always" beats "session").
         args = event.get_command_args().strip().lower().split()
+        session_key, stale, request_ids = self._blocking_approval_or_stale(
+            event, "gateway.approval_expired", "gateway.approve.no_pending", resolve_all="all" in args)
+        if stale:
+            return stale
         choices = {_APPROVE_CHOICE_BY_ARG[a] for a in args if a in _APPROVE_CHOICE_BY_ARG}
         choice = "always" if "always" in choices else "session" if "session" in choices else "once"
-        count = resolve_gateway_approval(session_key, choice, resolve_all="all" in args)
+        # Exactly the approvals the sender was checked against, never "the oldest" again.
+        count = sum(resolve_gateway_approval(session_key, choice, request_id=rid) for rid in request_ids)
         if not count:
             return t("gateway.approve.no_pending")
         confirmation_text = t(f"gateway.approve.{choice}_{'plural' if count > 1 else 'singular'}", count=count)
@@ -1227,17 +1235,18 @@ class GatewaySlashCommandsMixin(
         the agent so it can adapt instead of only hearing "denied". Ported from qwibitai/nanoclaw#2832.
         """
         from tools.approval import resolve_gateway_approval
-        session_key, stale = self._blocking_approval_or_stale(event, "gateway.deny.stale",
-                                                              "gateway.deny.no_pending")
-        if stale:
-            return stale
         # A leading "all" denies every pending command; the rest (or the whole arg string without
         # "all") is the optional deny reason relayed to the agent, capped to a sane one-liner.
         raw_args = event.get_command_args().strip()
         tokens = raw_args.split()
         resolve_all = bool(tokens) and tokens[0].lower() == "all"
+        session_key, stale, request_ids = self._blocking_approval_or_stale(
+            event, "gateway.deny.stale", "gateway.deny.no_pending", resolve_all=resolve_all)
+        if stale:
+            return stale
         reason = (raw_args[len(tokens[0]):].strip() if resolve_all else raw_args)[:280].strip()
-        count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all, reason=reason or None)
+        count = sum(resolve_gateway_approval(session_key, "deny", reason=reason or None, request_id=rid)
+                    for rid in request_ids)
         if not count:
             return t("gateway.deny.no_pending")
         logger.info("User denied %d dangerous command(s) via /deny%s", count,

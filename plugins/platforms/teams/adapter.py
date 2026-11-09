@@ -649,10 +649,14 @@ class TeamsAdapter(BasePlatformAdapter):
         choice = _APPROVAL_CHOICES.get(hermes_action)
         if not choice:
             return self._invoke_message(t("platform.teams.approval.unknown_action"))
+        from gateway.approval_actor import approval_refusal, refusal_text
+        clicker = getattr(ctx.activity.from_, "aad_object_id", None) or getattr(ctx.activity.from_, "id", "")
+        if requester := approval_refusal(session_key, clicker, extra=self.config.extra, request_id=data.get("request_id")):
+            return self._invoke_message(refusal_text(requester))  # shown to the clicker; card keeps its buttons
         # Cards from an older build carry cmd/desc in the button data instead.
         cmd, desc = self._approval_previews.get(data.get("prompt_id", ""), (data.get("cmd", ""), data.get("desc", "")))
         if not has_blocking_approval(session_key) or not resolve_gateway_approval_card(
-                session_key, choice, data.get("request_id")):
+                session_key, choice, data.get("request_id"), actor_id=clicker, extra=self.config.extra):
             body = _approval_body(cmd, desc)
             return self._invoke_card([*body, TextBlock(text=t("platform.shared.approval_expired"), wrap=True)])
         body = _approval_body(cmd, desc)
@@ -705,6 +709,9 @@ class TeamsAdapter(BasePlatformAdapter):
                 title=label, verb="hermes_approve",
                 data={**btn_data_base, "hermes_action": self._EA_CARD_ACTIONS[choice]}, **kw))
         body = _approval_body(cmd, prompt.description, always=True)
+        if cmd != prompt.command:  # the shared shortened-preview notice: where the rest is, or why Deny only
+            body.append(TextBlock(wrap=True, text=t("gateway.exec_approval.truncated_" + (
+                "full_above" if "once" in prompt.choices else "deny_only"), total=len(prompt.command))))
         body.append(TextBlock(text=format_approval_deadline_line(approval_timeout_seconds()), wrap=True))
         if prompt.smart_denied:
             body.append(TextBlock(text=self._EA_SMART_DENY_LINE.strip(), wrap=True))

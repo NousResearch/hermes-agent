@@ -3650,13 +3650,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             self._bot.edit_message_text(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
 
     async def _edit_markdown_or_plain(self, chat_id: str, message_id: str, formatted: str, plain: str, warn_fmt: str) -> bool:
-        """MarkdownV2 edit with plain-text fallback. Returns True on a "not modified" no-op (caller may
-        skip further work); the fallback edit's exceptions propagate."""
+        """MarkdownV2 edit, plain fallback on a parse error; True on a "not modified" no-op. Errors propagate."""
         try:
             await self._edit_text(chat_id, message_id, formatted, ParseMode.MARKDOWN_V2)
         except Exception as fmt_err:
             if "not modified" in str(fmt_err).lower():
                 return True
+            if getattr(fmt_err, "retry_after", None) is not None or "retry after" in str(fmt_err).lower():
+                raise  # flood, not formatting: a plain re-edit is one more call into the penalty (#76494)
             logger.warning(warn_fmt, self.name, _redact_telegram_error_text(fmt_err))
             await self._edit_text(chat_id, message_id, plain)
         return False
@@ -3753,8 +3754,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                 await self._edit_text(chat_id, message_id, truncated)
                 self._last_overflow_preview[_preview_key] = truncated
                 return SendResult(success=True, message_id=message_id)
-            # Flood control: short waits retry inline; long waits fail immediately so streaming falls back
-            # to a normal final send instead of a clipped partial.
+            # Flood control: short waits retry inline; long ones fail closed (``flood_control:<s>``) to the caller.
             retry_after = getattr(e, "retry_after", None)
             if retry_after is not None or "retry after" in err_str:
                 wait = retry_after if retry_after else 1.0
@@ -4059,18 +4059,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         return "\n\n" + _bold_label_html(t("gateway.exec_approval.smart_deny_line"))
 
     _EA_REASON_BUDGET = 500  # escaped chars; the reason shares the 4096 cap with the command
+    # Telegram rejects the whole card ("Message is too long") and the gateway then falls back to the text
+    # /approve prompt, so the preview is budgeted in UTF-16 units against what the framing leaves of the cap.
+    _EA_CARD_CAP = MAX_MESSAGE_LENGTH
 
     def _ea_escape(self, text: str) -> str:
         return _html.escape(text)
-
-    def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
-        # Telegram rejects the whole card ("Message is too long") and the gateway then falls back to
-        # the text /approve prompt, so budget the preview against what the framing leaves of the cap.
-        fixed = utf16_len(  # UTF-16 units, like the 4096 chunker in send()
-            self._EA_HEADER + self._EA_CODE_OPEN + self._EA_CODE_CLOSE + self._EA_REASON_LABEL
-            + self._ea_escape(description) + "..." + self._ea_deadline_line()
-            + (self._EA_SMART_DENY_LINE if smart_denied else ""))
-        return max(0, self.MAX_MESSAGE_LENGTH - fixed)
 
     @property
     def _EA_ACTION_LABELS(self) -> dict[str, str]:
@@ -4579,23 +4573,24 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         try:
             approval_id = int(parts[2])
         except (ValueError, IndexError):
-            await answer_callback(query, _toast("platform.telegram.approval.toast_invalid_data"))
+            return await answer_callback(query, _toast("platform.telegram.approval.toast_invalid_data"))
+        resolved = _toast("platform.telegram.approval.toast_already_resolved")
+        if not (session_key := await self._claim_callback_state(
+                query, cb, self._approval_state, approval_id, _unauthorized(), resolved, pop=False)):
             return
-        session_key = await self._claim_callback_state(
-            query, cb, self._approval_state, approval_id, _unauthorized(),
-            _toast("platform.telegram.approval.toast_already_resolved"))
-        if not session_key:
-            return
-        request_id = self._approval_request_ids.pop(approval_id, None)
+        from gateway.approval_actor import approval_refusal, refusal_text
+        request_id = self._approval_request_ids.get(approval_id)
+        if requester := approval_refusal(session_key, getattr(query.from_user, "id", ""), extra=self.config.extra, request_id=request_id):
+            return await answer_callback(query, refusal_text(requester)[:_TOAST_LIMIT], show_alert=True)
+        if not self._approval_state.pop(approval_id, None):  # a concurrent tap claimed it first
+            return await answer_callback(query, resolved)
+        self._approval_request_ids.pop(approval_id, None)
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
-        try:
-            # Rendering happens after so the message reflects what actually occurred: a tap that lands after
-            # the approval wait timed out (count == 0) must NOT claim "Approved" — the command was already
-            # denied and will not run (#63501 regression follow-up: 60s waits made stale taps common).
+        try:  # resolve FIRST, render after: a tap after the wait timed out (count == 0) is not "Approved" (#63501)
             from tools.approval import resolve_gateway_approval_card
-            count = resolve_gateway_approval_card(session_key, choice, request_id)
-            logger.info(
-                "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
+            count = resolve_gateway_approval_card(session_key, choice, request_id,
+                                                  actor_id=getattr(query.from_user, "id", ""), extra=self.config.extra)
+            logger.info("Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
             count = 0
@@ -6907,7 +6902,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
-    from .adapter_hint import PLATFORM_HINT
+    from .adapter_hint import PLATFORM_HINT, PLATFORM_HINT_TOOL_NOTES
     from .dashboard_card import DASHBOARD_CARD
     from .standalone import standalone_send
     from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
@@ -6917,7 +6912,7 @@ def register(ctx) -> None:
         ensure_deps_fn=check_telegram_requirements, is_connected=_is_connected, required_env=["TELEGRAM_BOT_TOKEN"],
         install_hint=t("platform.telegram.install_hint"), setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, cron_deliver_env_var="TELEGRAM_HOME_CHANNEL",
         standalone_sender_fn=standalone_send, max_message_length=4096, emoji="✈️", allow_update_command=True,
-        platform_hint=PLATFORM_HINT,
+        platform_hint=PLATFORM_HINT, platform_hint_tool_notes=PLATFORM_HINT_TOOL_NOTES,
         display_tier="high",
         # Mobile inbox: quiet tool_progress / busy-ack, but keep interim commentary and heartbeats.
         display_overrides={"tool_progress": "off", "busy_ack_detail": False},

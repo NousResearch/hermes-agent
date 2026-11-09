@@ -4929,9 +4929,8 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] %s failed: %s", label, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
-    _EA_CODE_OPEN = "```"
-    _EA_CODE_CLOSE = "```\n"
-
+    # The fence uses the base's own-line opener/closer: a fence touching the command's own backticks
+    # would merge into one longer run.
     # Resolved per call (not at class-body time) so the active language applies; the budget
     # below measures ``len()`` of these resolved strings against the 3000-char section cap.
     @property
@@ -4945,16 +4944,9 @@ class SlackAdapter(BasePlatformAdapter):
         return "\n" + (f"*{label}{sep}*{rest}" if sep else line)
 
     _EA_REASON_BUDGET = 500
-    _EA_SECTION_CAP = 3000  # a longer section text → invalid_blocks → no buttons at all
+    _EA_CARD_CAP = 3000  # section text cap: a longer one → invalid_blocks → no buttons at all
     _EA_ACTION_IDS = {"once": "hermes_approve_once", "session": "hermes_approve_session",
                       "always": "hermes_approve_always", "deny": "hermes_deny"}
-
-    def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
-        # execute_code approvals embed the whole script, so budget the preview against the cap.
-        fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
-                 + len(self._EA_REASON_LABEL) + len(description) + len("...") + len(self._ea_deadline_line())
-                 + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0))
-        return max(0, self._EA_SECTION_CAP - fixed)
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Block Kit approval prompt; the buttons call ``resolve_gateway_approval()`` to unblock the
@@ -5616,24 +5608,25 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _handle_approval_action(self, ack, body, action) -> None:
         """Handle an approval button click from Block Kit."""
-        started = await self._begin_interaction(ack, body, action, "approval")
-        if started is None:
+        if (started := await self._begin_interaction(ack, body, action, "approval")) is None:
             return
-        team_id, action_id, session_key, message, msg_ts, channel_id, user_name, _user_id = started
+        team_id, action_id, session_key, message, msg_ts, channel_id, user_name, user_id = started
         choice = self._APPROVAL_CHOICES.get(action_id, "deny")
-        # Double-click guard (atomic pop). Also accept the bare ts: the approval may
-        # have been stored without a team id while the click carries one.
-        approval_key = self._workspace_message_marker(team_id, msg_ts)
-        if msg_ts in self._approval_resolved:
-            approval_key = msg_ts
-        if self._approval_resolved.pop(approval_key, True):
+        # The bare ts too: stored without a team id, clicked with one.
+        approval_key = msg_ts if msg_ts in self._approval_resolved else self._workspace_message_marker(team_id, msg_ts)
+        from gateway.approval_actor import approval_refusal, refusal_text
+        if requester := approval_refusal(session_key, user_id, extra=self.config.extra, request_id=self._approval_request_ids.get(approval_key)):
+            return await self._get_client(channel_id, team_id=team_id or None).chat_postEphemeral(  # others: private note
+                channel=channel_id, user=user_id, text=refusal_text(requester), thread_ts=message.get("thread_ts"))
+        if self._approval_resolved.pop(approval_key, True):  # double-click guard (atomic pop)
             return
         request_id = self._approval_request_ids.pop(approval_key, None)
         # Resolve FIRST (unblocks the agent); render after so a click past the
         # timeout (count == 0) shows "expired", not "approved".
         try:
             from tools.approval import resolve_gateway_approval_card
-            count = resolve_gateway_approval_card(session_key, choice, request_id)
+            count = resolve_gateway_approval_card(session_key, choice, request_id, actor_id=user_id,
+                                                  extra=self.config.extra)
             logger.info(
                 "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)", count,
                 session_key, choice, user_name)

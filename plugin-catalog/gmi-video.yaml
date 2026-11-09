@@ -1,0 +1,24 @@
+name: gmi-video
+title: GMI Cloud video generation
+repo: https://github.com/zkasuran/hermes-gmi-media
+subdir: gmi-video
+sha: 6760b29d6f9f93f47cef08702bda876fb10af652
+description: "GMI Cloud text-to-video and image-to-video as a video_gen provider (video_gen.provider: gmi-video). Reads each model's live schema, so duration, resolution, aspect ratio and audio options use the values that model accepts. Anything it lacks is dropped and reported. Disclosure — sends prompts, the optional image URLs and your GMI_API_KEY (read per request through Hermes secret scope) to console.gmicloud.ai; every generation spends GMI credits with no Hermes approval prompt (GMI shows its own price per model, and most video models bill per second). The result is downloaded from the URL GMI returns into the Hermes video cache; the model catalog is read live and cached in memory for one hour. No telemetry, shell commands, background processes, self-updates or extra Python dependencies."
+maintainer: zkasuran
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/zkasuran/hermes-gmi-media/tree/main/gmi-video#readme
+version: "0.1.0"
+readme: true
+platforms: []
+known_issues:
+  - "Reference images are not supported and are reported as dropped. Image-to-video takes a public http(s) URL."
+  - "Live-tested with Minimax-Hailuo-02 (text) and Minimax-Hailuo-2.3-Fast (image). Kling-Text2Video-V1.6-Standard answers that model_name is required, a parameter its schema does not list, so it is not a default."
+  - "Shares one client module with gmi-image and gmi-speech from the same repository; each plugin carries its own byte-identical copy."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - GMI_API_KEY

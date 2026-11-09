@@ -5642,14 +5642,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     # The reason shares the 2000-char content cap with the command; unbounded it would starve
     # the command preview to zero and push the content past the cap.
     _EA_REASON_BUDGET = 300
+    _EA_CARD_CAP = MAX_MESSAGE_LENGTH
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         # Mentions ride in front of the content and count against the 2000-char message cap too.
-        fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
-                 + len(self._EA_REASON_LABEL) + len(description) + len("...") + len(self._ea_deadline_line())
-                 + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0)
-                 + len(self._approval_mention_content() or "") + 1)
-        return max(0, self.MAX_MESSAGE_LENGTH - fixed)
+        mention = len(self._approval_mention_content() or "") + 1
+        return max(0, super()._exec_approval_cmd_budget(description, smart_denied) - mention)
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Send an approval with content as its canonical payload and an embed for state."""
@@ -5660,7 +5658,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
             admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
             allow_session="session" in choices, smart_denied=prompt.smart_denied,
-            request_id=prompt.request_id,
+            request_id=prompt.request_id, allow_once="once" in choices, approval_extra=getattr(self.config, "extra", None),
         )
         # Observe BEFORE sending, so a request that settles while the card is in flight still
         # reports its real reason; ``pending_retire`` holds it until the card exists.

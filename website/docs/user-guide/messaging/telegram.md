@@ -1484,6 +1484,8 @@ When the agent calls the `clarify` tool — to ask which approach you prefer, ge
 
 Tap a button to answer, or tap **Other** to type a free-form response (the next message you send becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
 
+When `clarify` is in the session's tools (not in cron jobs or profiles that disable it), the Telegram platform hint tells the agent to use it for small fixed-choice decisions, so it does not improvise numbered lists or copy-to-clipboard buttons, which never send an answer back. Persistent agent-authored action buttons are not a generic Hermes feature yet.
+
 Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `90` seconds). If you don't respond within the timeout, the agent unblocks with `"outcome": "timed_out"` and adapts rather than hanging. Reply `skip` to skip a question.
 
 If Telegram cannot render the button card (the Bot API rejects it, or the send fails after its 15-second acknowledgement window), Hermes re-asks the same question as a plain numbered-list message and your typed reply (a number or the option text) is taken as the answer. When even that cannot be delivered, the agent is released at once with `[clarify prompt could not be delivered]` instead of waiting out the timeout and mistaking the silence for you not answering.

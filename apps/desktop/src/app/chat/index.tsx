@@ -191,6 +191,7 @@ function ChatHeader({
           sessionId={selectedSessionId || activeSessionId || ''}
           sideOffset={8}
           title={title}
+          unreadMuteTarget={activeStoredSession ?? undefined}
         >
           <TitleMenuTrigger>{title}</TitleMenuTrigger>
         </SessionActionsMenu>

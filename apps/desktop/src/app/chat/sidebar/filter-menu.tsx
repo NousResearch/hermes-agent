@@ -65,7 +65,8 @@ import { $profileRailVisible, toggleProfileRailVisible } from '@/store/profile-r
 import { runImportProfileFlow } from '@/store/profile-share'
 import { $projectTree } from '@/store/projects'
 import type { PullRequestBucket } from '@/store/pull-requests'
-import { $unreadFinishedSessionIds, markAllSessionsRead } from '@/store/session'
+import { markAllSessionsRead } from '@/store/session'
+import { $unreadSessionCount } from '@/store/session-dot-state'
 import type { SessionStatusBucket } from '@/store/session-dot-state'
 import { $sessionsHaveCost } from '@/store/sidebar-archive'
 
@@ -180,7 +181,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const listGroupIds = useStore($sidebarListGroupIds)
   const projects = useStore($projectTree)
   const hasCost = useStore($sessionsHaveCost)
-  const unreadIds = useStore($unreadFinishedSessionIds)
+  const unreadCount = useStore($unreadSessionCount)
   // PR state comes from `gh` on whichever machine holds the checkout — Electron
   // locally, the gateway's REST mirror remotely. Resolved per render, not once
   // at module load: switching to a remote profile swaps the bridge underneath.
@@ -447,7 +448,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
             {foldCollapsed ? f.expandAll : f.collapseAll}
           </DropdownMenuItem>
         )}
-        <DropdownMenuItem disabled={unreadIds.length === 0} onSelect={markAllSessionsRead}>
+        <DropdownMenuItem disabled={unreadCount === 0} onSelect={markAllSessionsRead}>
           {t.sidebar.markAllRead}
         </DropdownMenuItem>
       </DropdownMenuContent>

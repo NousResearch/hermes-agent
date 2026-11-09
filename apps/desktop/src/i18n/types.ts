@@ -2867,6 +2867,8 @@ export interface Translations extends NoticeTranslations {
       unpin: string
       markUnread: string
       markRead: string
+      muteUnread: string
+      unmuteUnread: string
       unreadFailed: string
       copyId: string
       export: string

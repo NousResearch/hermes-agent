@@ -196,6 +196,8 @@ export const zhHantChrome = {
       unpin: '取消釘選',
       markUnread: '標記為未讀',
       markRead: '標記為已讀',
+      muteUnread: '隱藏未讀指示',
+      unmuteUnread: '顯示未讀指示',
       unreadFailed: '無法更新未讀狀態',
       copyId: '複製 ID',
       export: '匯出',

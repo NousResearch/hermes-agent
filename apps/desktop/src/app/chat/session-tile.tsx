@@ -885,8 +885,15 @@ function useSessionTabActions({ onClose, onHideTabBar, storedSessionId, tabPaneI
   const { pinId, profile, renameable, title } = useTileMenuRow(storedSessionId)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinned = pinnedSessionIds.includes(pinId)
+  const owner = tileOwnerRoute($sessionTiles.get(), $sessions.get(), storedSessionId)
 
   return {
+    unreadMuteTarget: {
+      id: storedSessionId,
+      _lineage_root_id: pinId,
+      profile: owner?.profile ?? profile,
+      connection_id: owner?.connectionId ?? $connection.get()?.connectionId
+    },
     onArchive: () => void sessionTileDelegate()?.archiveSession(storedSessionId),
     onBranch: () => void sessionTileDelegate()?.branchSession(storedSessionId),
     onClose,

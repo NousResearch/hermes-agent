@@ -30,14 +30,30 @@ import { stableArray, stableRecord } from '@/lib/stable-array'
 import { $backgroundRunningSessionIds } from './composer-status'
 import { $liveWorkRoster, noteEventFed, rosterLiveIds, rosterSaysIdle } from './live-work-roster'
 import { $pausedQueueSessionIds } from './owner-queue-reconcile'
-import { $messagingSessions, $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
+import { $projectTree } from './project-tree'
+import {
+  $cronSessions,
+  $messagingSessions,
+  $sessions,
+  $unreadFinishedSessionIds,
+  lineageAliases,
+  sessionMatchesStoredId
+} from './session'
 import {
   $attentionSessionIds,
   $draftSessionIds,
   $sessionStates,
   $stalledSessionIds,
-  $workingSessionIds
+  $workingSessionIds,
+  runtimeSessionOwner
 } from './session-states'
+import {
+  $sessionUnreadMutes,
+  applyUnreadMuteOverrides,
+  scopedSessionDotKey,
+  type UnreadMuteRow,
+  unreadMuteScope
+} from './session-unread-mute'
 import { $unreadWriteGuard, UNREAD_WRITE_GUARD_MS } from './session-unread-remote'
 import { $subagentsBySession, activeSubagentCount } from './subagents'
 
@@ -128,7 +144,11 @@ export const $sessionDotStateById = computed(
     $draftSessionIds,
     $sessions,
     $unreadWriteGuard,
-    $pausedQueueSessionIds
+    $pausedQueueSessionIds,
+    $sessionUnreadMutes,
+    $messagingSessions,
+    $cronSessions,
+    $projectTree
   ],
   (attention, working, stalled, background, delegating, unread, draft, sessions, unreadWriteGuard, paused) => {
     const next: Record<string, SessionDotState> = {}
@@ -201,21 +221,69 @@ export const $sessionDotStateById = computed(
 
     claim(attention, 'needs-input')
 
+    // Keep scoped answers beside legacy bare-id aliases: equal ids on different
+    // profiles/connections must not silence each other. Never mask a live/attention state.
+    const rows: UnreadMuteRow[] = [
+      ...sessions,
+      ...$messagingSessions.get(),
+      ...$cronSessions.get(),
+      ...$projectTree
+        .get()
+        .flatMap(project => [
+          ...(project.previewSessions ?? []),
+          ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions))
+        ])
+    ]
+
+    // Read runtime ownership on status edges only, not on each streamed token.
+    for (const [runtimeId, state] of Object.entries($sessionStates.get())) {
+      const owner = runtimeSessionOwner(runtimeId)
+
+      if (!owner) {
+        continue
+      }
+
+      const candidate = {
+        id: state.storedSessionId ?? runtimeId,
+        profile: typeof owner === 'string' ? owner : owner.profile,
+        connection_id: typeof owner === 'string' ? undefined : owner.connectionId
+      }
+
+      if (
+        !rows.some(
+          row => sessionMatchesStoredId(row, candidate.id) && unreadMuteScope(row) === unreadMuteScope(candidate)
+        )
+      ) {
+        rows.push(candidate)
+      }
+    }
+
+    applyUnreadMuteOverrides(next, rows)
+
     return (dotStates = stableRecord(dotStates, next))
   }
 )
+
+/** Row-aware lookup for the scoped override; bare-id consumers keep lineage aliases. */
+export const sessionDotStateFor = (
+  row: UnreadMuteRow,
+  byId: Readonly<Record<string, SessionDotState>>
+): SessionDotState => byId[scopedSessionDotKey(row)] ?? byId[row.id] ?? 'idle'
+
+export const sessionStatusBucketFor = (row: UnreadMuteRow, byId: Readonly<Record<string, SessionDotState>>) =>
+  sessionStatusBucket(sessionDotStateFor(row, byId))
 
 /** Listed, non-archived rows whose resolved status is unread. Alias keys in
  *  `$sessionDotStateById` are ignored unless they are themselves a listed row. */
 export function unreadSessionCount(
   byId: Readonly<Record<string, SessionDotState>>,
-  ...lists: Array<readonly { archived?: boolean; id: string }[]>
+  ...lists: Array<readonly (UnreadMuteRow & { archived?: boolean })[]>
 ): number {
   let n = 0
 
   for (const rows of lists) {
     for (const row of rows) {
-      if (!row.archived && byId[row.id] === 'unread') {
+      if (!row.archived && sessionDotStateFor(row, byId) === 'unread') {
         n++
       }
     }

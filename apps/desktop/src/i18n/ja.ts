@@ -2245,6 +2245,8 @@ export const jaOverrides = {
       unpin: 'ピン留めを解除',
       markUnread: '未読にする',
       markRead: '既読にする',
+      muteUnread: '未読インジケーターを非表示',
+      unmuteUnread: '未読インジケーターを表示',
       unreadFailed: '未読状態を更新できませんでした',
       copyId: 'ID をコピー',
       export: 'エクスポート',

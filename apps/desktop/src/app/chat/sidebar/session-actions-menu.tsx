@@ -54,16 +54,14 @@ import {
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
 import { ambientRequestFor } from '@/store/session-gone-latch'
-import {
-  $sessionStates,
-  $sessionTiles,
-  closeAllOpenSessionTiles,
-  requestForOwnedSession
-} from '@/store/session-states'
+import { $sessionStates, $sessionTiles, closeAllOpenSessionTiles, requestForOwnedSession } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
+import type { UnreadMuteRow } from '@/store/session-unread-mute'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
+
+import { SessionUnreadMuteItem } from './session-unread-mute-item'
 
 // Rename a session, preferring the gateway's session.title RPC over REST.
 //
@@ -154,6 +152,7 @@ export async function renameSessionPreferringRpc(
 }
 
 interface SessionActions {
+  unreadMuteTarget?: UnreadMuteRow
   sessionId: string
   title: string
   pinned?: boolean
@@ -259,6 +258,7 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
 }
 
 function useSessionActions({
+  unreadMuteTarget,
   sessionId,
   title,
   pinned = false,
@@ -555,6 +555,7 @@ function useSessionActions({
       {openItems.map(item => renderActionItem(kit, item))}
       {openItems.length > 0 && <kit.Separator />}
       {identityItems.map(item => renderActionItem(kit, item))}
+      <SessionUnreadMuteItem kit={kit} profile={profile} sessionId={sessionId} target={unreadMuteTarget} />
       <kit.Sub>
         <kit.SubTrigger disabled={!sessionId}>
           <Codicon name="symbol-color" size="0.875rem" />

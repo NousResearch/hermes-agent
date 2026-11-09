@@ -796,6 +796,23 @@ def _inside_tree(worktree_path: str):
     return inside
 
 
+def _retention_store() -> Path:
+    """What a ``-w`` tree's lock names as its sessions' store: the store's file, or the profile home of a store
+    without one (both open as a reader)."""
+    from persistence_assembly import profile_scope, store_location
+    scope = profile_scope(home=get_hermes_home())
+    return store_location(scope) or scope.profile_dir
+
+
+def _retained_store(db_path: str) -> Optional[Path]:
+    """The store a retention record names, when it exists: a store file, or the home of a store without one."""
+    path = Path(db_path)
+    if path.is_dir():
+        from persistence_assembly import profile_scope, store_exists
+        return path if store_exists(profile_scope(home=path)) else None
+    return path if path.is_file() else None
+
+
 def _tree_still_served(db_path: str, worktree_path: str) -> Optional[str]:
     """Why the gateway still needs a ``--tui -w`` tree the launcher is about to remove, or None.
 
@@ -806,9 +823,9 @@ def _tree_still_served(db_path: str, worktree_path: str) -> Optional[str]:
     from persistence.core.errors import STORE_FAILURES
     from persistence_assembly import open_persistence_reader
 
-    path = Path(db_path)
+    path = _retained_store(db_path)
     chats: frozenset = frozenset()
-    if path.is_file():
+    if path is not None:
         try:
             with open_persistence_reader(path, patience_s=2) as store:
                 facts = store.maintenance.tree_served_sessions(worktree_path)
@@ -854,8 +871,8 @@ def _retained_tree_is_live(db_path: str, worktree_path: str, *, pending_only: bo
     from persistence.core.errors import STORE_FAILURES
     from persistence_assembly import open_persistence_reader
 
-    path = Path(db_path)
-    if not path.is_file():
+    path = _retained_store(db_path)
+    if path is None:
         return False
     try:
         with open_persistence_reader(path, patience_s=2) as store:

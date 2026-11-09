@@ -17,6 +17,7 @@ import tools.async_delegation as ad
 from tests.fixtures.storage_read import session_row
 from tests.fixtures.storage_seed import seed_session
 from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from persistence_assembly import store_location
 
 
 def _record(row):
@@ -363,7 +364,7 @@ async def test_compression_uncertainty_keeps_durable_completion_retryable(
         assert row is not None
         assert (row["delivery_state"], row["delivery_attempts"]) == ("pending", 0)
         import sqlite3
-        with sqlite3.connect(ad._db_path()) as conn:
+        with sqlite3.connect(store_location(ad._scope())) as conn:
             assert conn.execute("SELECT delivery_claim FROM async_delegations WHERE delegation_id=?",
                                 (event["delegation_id"],)).fetchone() == (None,)
         assert not resolved

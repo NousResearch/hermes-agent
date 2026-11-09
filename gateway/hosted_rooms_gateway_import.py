@@ -86,8 +86,9 @@ def handed_room_ids(source: Path) -> set[str]:
         return set(store.hosted_rooms.handed_room_ids(handoff_gateway_id=handoff_gateway_id()))
 
 
-def import_standalone_rooms(target_db: Path, *, runtime_epoch: int | None = None) -> int:
-    """Move the standalone backend's live rooms into ``target_db`` once; returns rooms copied.
+def import_standalone_rooms(target_db: Path | None, *, runtime_epoch: int | None = None) -> int:
+    """Move the standalone backend's live rooms into ``target_db`` once; returns rooms copied. A store with no file
+    (``target_db`` None) has no standalone file beside it, so there is nothing to move.
 
     ``runtime_epoch``: the authority's writer epoch, checked inside the copy's transaction so a
     superseded gateway process never writes the store. Never raises: a locked or unreadable source
@@ -99,7 +100,7 @@ def import_standalone_rooms(target_db: Path, *, runtime_epoch: int | None = None
     from gateway.owner_identity import host_owner_subject
     from persistence import PersistenceError
 
-    source = source_for(target_db)
+    source = source_for(target_db) if target_db is not None else None
     if source is None:
         return 0
     try:
@@ -138,7 +139,7 @@ def import_after_ready(authorities) -> None:
         service._ready_import_started = True
         from gateway.session_persistence import authority_persistence
         from persistence_assembly import store_location
-        target, epoch = Path(store_location(authority_persistence(authority).scope)), authority.epoch
+        target, epoch = store_location(authority_persistence(authority).scope), authority.epoch
 
         def run(target=target, epoch=epoch, service=service, authority=authority):
             from gateway.session_authorities import owner_scope

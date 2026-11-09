@@ -29,11 +29,10 @@ def create() -> dict | None:
 
             _threading.Thread(
                 target=_maintain_pack_health, args=(repo,), name="pack-maintenance", daemon=True).start()
-        from hermes_cli.config import get_hermes_home
-        from persistence_assembly import profile_scope, store_location
+        from hermes_cli.worktree_ops import _retention_store
         # The session's frozen cwd keeps this checkout; name the store from creation so a
         # launcher killed with its terminal still leaves the tree to its sessions.
-        wt_info = _setup_worktree(retain_db=store_location(profile_scope(home=get_hermes_home())))
+        wt_info = _setup_worktree(retain_db=_retention_store())
     except Exception as exc:  # health: allow BLE001 -- every failure is told to the user and the launch stops
         print(f"✗ Failed to create the session worktree: {exc}", file=sys.stderr)
     return wt_info
@@ -78,16 +77,14 @@ def _remove_idle_clean_tui_worktree(wt_info: dict) -> bool:
     still works in it; and by ``_cleanup_worktree`` when it is dirty, holds unpushed commits or
     something no branch keeps.
     """
-    from hermes_cli.config import get_hermes_home
-    from persistence_assembly import profile_scope, store_location
     from hermes_cli.worktree_exit import _still_in_use
-    from hermes_cli.worktree_ops import _retained_tree_is_live, _tree_still_served
+    from hermes_cli.worktree_ops import _retained_tree_is_live, _retention_store, _tree_still_served
 
     path = wt_info.get("path")
     if not path or not Path(path).is_dir():
         return False
     try:
-        db_path = str(store_location(profile_scope(home=get_hermes_home())))
+        db_path = str(_retention_store())
         if _retained_tree_is_live(db_path, path, pending_only=True):
             return False
         if _still_in_use(path):
@@ -124,9 +121,7 @@ def finish(info: dict, session_id: str | None, *, ask: bool) -> None:
     if session_id:
         # The launch lock names this (exiting) pid; hand it to the session so a later
         # launch's stale prune keeps the tree while the session is resumable.
-        from hermes_cli.config import get_hermes_home
-        from persistence_assembly import profile_scope, store_location
-        from hermes_cli.worktree_ops import _retain_worktree_for_session
+        from hermes_cli.worktree_ops import _retain_worktree_for_session, _retention_store
         _retain_worktree_for_session(info["repo_root"], info["path"], session_id,
-                                     store_location(profile_scope(home=get_hermes_home())))
+                                     _retention_store())
     print(f"Worktree retained for this session: {info['path']}", file=sys.stderr)

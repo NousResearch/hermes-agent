@@ -316,7 +316,7 @@ async def _ensure_hosted_service(runner, authority):
             loop = asyncio.get_running_loop()
             from gateway.hosted_rooms_gateway_import import import_standalone_rooms
             from persistence_assembly import store_location
-            await asyncio.to_thread(import_standalone_rooms, Path(store_location(authority_persistence(authority).scope)),
+            await asyncio.to_thread(import_standalone_rooms, store_location(authority_persistence(authority).scope),
                                     runtime_epoch=authority.epoch)
             service = await asyncio.to_thread(CanonicalHostedRoomService, authority, loop)
             authority.hosted_room_service = service

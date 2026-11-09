@@ -151,7 +151,10 @@ def _cmd_repair(args):
     from persistence.core.admin import AdminUnsupported, HealthCheckUnavailable
     from persistence_assembly import open_store_admin, profile_scope, store_location
     db_path = store_location(profile_scope())
-    admin = open_store_admin(db_path, read_only=False) if db_path is not None and db_path.exists() else None
+    if db_path is None:
+        print("hermes sessions repair needs a file-backed session store; this profile's store has no file.")
+        return
+    admin = open_store_admin(db_path, read_only=False) if db_path.exists() else None
     if admin is None or isinstance(admin, AdminUnsupported):
         print(f"No session database at {db_path} (nothing to repair).")
         return

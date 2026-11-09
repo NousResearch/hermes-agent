@@ -85,7 +85,7 @@ async def run_task(connection, params):
     # Resolved off-loop up front: no await separates the saved-claim check from session
     # creation. The Kanban claim check and its marker share one off-loop transaction; a
     # concurrent retry of the same attempt meets that marker (same session) or a stale claim.
-    owner_db = str(await asyncio.to_thread(store_location(store.scope).resolve))
+    owner_db = str(await asyncio.to_thread((store_location(store.scope) or store.scope.profile_dir).resolve))
     # The dispatcher attempt is the durable request identity, including after the
     # task closes. Retry checks the saved claim, never reinterprets updated cards.
     request_id = 'kanban:' + json.dumps([params.get('board'), params.get('task_id'), params.get('run_id')], separators=(',', ':'))

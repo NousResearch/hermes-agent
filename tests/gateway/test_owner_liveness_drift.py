@@ -15,6 +15,7 @@ from contextlib import closing
 import pytest
 
 from gateway import status
+from persistence_assembly import profile_scope, store_location
 
 RECORDED = 178864182760
 
@@ -40,10 +41,10 @@ def _api_server_run_alive() -> bool:
 def _async_delegation_alive(monkeypatch, tmp_path) -> bool:
     import tools.async_delegation as ad
 
-    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
+    monkeypatch.setattr(ad, "_scope", lambda: profile_scope(home=tmp_path))
     with ad._ledger() as store:
         store.ready()
-    with ad._DB_LOCK, closing(sqlite3.connect(ad._db_path())) as conn, conn:
+    with ad._DB_LOCK, closing(sqlite3.connect(store_location(ad._scope()))) as conn, conn:
         conn.execute(
             "INSERT INTO async_delegations (delegation_id, origin_session, state, dispatched_at, updated_at, "
             "delivery_state, delivery_attempts, owner_pid, owner_started_at, task_json) "

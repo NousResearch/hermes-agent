@@ -322,7 +322,7 @@ Session storage sits behind a storage interface: typed contracts in `persistence
 
 | `hermes_state` name | Replacement |
 |---|---|
-| `SessionDB()`, `SessionDB(db_path=path)` | `persistence_assembly.open_persistence(profile_scope())`, `open_persistence(profile_scope(home=path.parent))`; release the handle with `close()` or a `with` block |
+| `SessionDB()`, `SessionDB(db_path=path)` | `persistence_assembly.open_persistence(profile_scope())`, `open_persistence(profile_scope(home=path.parent))`; release the handle with `close()` or a `with` block. An agent given a `SessionDB` as `session_db` borrows the handle it holds when the agent is built, so keep that `SessionDB` open for the agent's life: its `close()` releases the handle, and its reopen after `close()` gives the agent no new one |
 | `SessionDB(read_only=True)` | `with open_persistence_reader(profile_scope().profile_dir) as store:` (never creates, migrates or repairs the store) |
 | `AsyncSessionDB(db)` | `store.aio`: the same repositories, awaitable, each call run off the event loop |
 | `DEFAULT_DB_PATH` | `persistence_assembly.store_location(profile_scope())` |

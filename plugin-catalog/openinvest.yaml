@@ -1,16 +1,26 @@
 name: openinvest
 repo: https://github.com/longsizhuo/openInvest
-sha: 0b9268bb85f8b97bff0f9d2eea18d7b88faec8fa
+sha: 6ac85f20a836cfb18369f50ba1d068e97d3e69a1
 subdir: plugin
-description: "Self-hosted AI investment committee — skills for portfolio review, a decision ledger, and a 4-role LLM committee (macro / quant / risk / CIO) that debates a symbol. Disclosure — the skills run the openinvest backend from PyPI via uvx (pinned in run.sh) and keep portfolio, ledger, committee records and any keys you add in plaintext under ~/openInvest (or $INVEST_HOME); it fetches public market data and RSS news, and on the Direct path / daily report sends your portfolio and wealth context to the LLM you configure (default api.deepseek.com) and, if installed, to the agy or gemini CLI for a second opinion; news ingestion can trigger extra committee runs (LLM spend). The MCP tools are a server you add to config.yaml yourself (the printed snippet runs the plugin's pinned run.sh with `trust: untrusted`, so Hermes asks before ledger writes); buy/sell/deposit/withdraw only edit the local ledger — it never connects to a broker or places orders."
+description: 'Portfolio ledger, market data and Agent-run investment research. Keep
+  one openInvest entry: new users can connect to the official OAuth MCP; local deployment
+  remains optional and existing local bindings are preserved. Disclosure: hosted ledger/tool
+  data are stored by the operator; de-identified research recording defaults on after
+  webpage notice and can be disabled in account settings. Local Direct inference uses
+  configured model providers. The native plugin registers skills, a routing rule and
+  a pre_llm_call hook; the hook invokes the local digest only for explicitly selected
+  local mode (or a configured legacy local data directory), never for remote/unselected
+  mode. No brokerage execution. Server-side research-default compatibility with rule
+  13 remains for maintainer review.'
 maintainer: longsizhuo
 tier: community
 category: tools
 title: openInvest
-docs_url: https://openinvest.involutionhell.com
-version: "0.25.0"
+docs_url: https://openinvest.involutionhell.com/docs/clients
+version: 0.34.4
 capabilities:
   provides_tools: []
-  provides_hooks: []
+  provides_hooks:
+  - pre_llm_call
   provides_middleware: []
   requires_env: []

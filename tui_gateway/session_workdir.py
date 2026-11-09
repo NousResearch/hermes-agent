@@ -717,17 +717,13 @@ def _persist_branch_seed(session: dict) -> None:
         with _session_db(session) as db:
             if db is None:
                 return
-            try:
-                # Chunked so each BEGIN IMMEDIATE stays short (a seed can be hundreds of rows); a mid-copy failure leaves a
-                # partial seed with _branch_seed_persisted unset.
-                # Bounded-chunk transactions (see #23254): a branch seed can be hundreds of rows; chunking keeps
-                # each BEGIN IMMEDIATE short so concurrent writers aren't starved.
-                db.append_messages_batch(key, seed, chunk_rows=500)
-                sync_flushed_message_markers(live, seed)
-                session.pop("_branch_seed_pending", None)
-                session["_branch_seed_persisted"] = True
-            except Exception as exc:
-                _workdir_reraise_disk_full(exc, "branch seed persist failed")
+            # Bounded transactions keep large seeds from starving concurrent writers. Retain
+            # pending row proofs on ANY failure and let submit refuse the new user row:
+            # accepting it between committed chunks would reorder the durable transcript.
+            db.append_messages_batch(key, seed, chunk_rows=500)
+            sync_flushed_message_markers(live, seed)
+            session.pop("_branch_seed_pending", None)
+            session["_branch_seed_persisted"] = True
 
 
 def _submit_row_target_key(session: dict) -> str:

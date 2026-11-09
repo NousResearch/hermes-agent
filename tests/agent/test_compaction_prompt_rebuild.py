@@ -275,6 +275,66 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
                     with patch("agent.system_prompt.resolve_context_cwd", return_value=second):
                         self.assertEqual(build_system_prompt(resumed), stored)
 
+    @pytest.mark.platforms("posix")
+    def test_retargeted_alias_does_not_restore_an_outer_repository_snapshot(self):
+        import tempfile
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt
+
+        for cached in (False, True):
+            for resume_alias in (False, True):
+                with self.subTest(cached=cached, resume_alias=resume_alias), \
+                     tempfile.TemporaryDirectory(prefix="test-ws-retarget-") as directory:
+                    repo = _init_repo(Path(directory) / "outer", "init outer")
+                    alias = repo.parent / "alias"
+                    alias.symlink_to(repo, target_is_directory=True)
+                    hints = f"Host: x\nUser home directory: /h\nCurrent working directory: {alias}"
+                    with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                         patch("agent.prompt_builder.build_environment_hints", return_value=hints):
+                        with patch("agent.system_prompt.resolve_context_cwd", return_value=alias):
+                            stored = build_system_prompt(self._pin_agent())
+                        self.assertIn(f"- Root: {repo}\n", stored)
+                        nested = _init_repo(repo / "nested", "init nested")
+                        alias.unlink()
+                        alias.symlink_to(nested, target_is_directory=True)
+                        db = SimpleNamespace(get_session=lambda sid: {"system_prompt": stored})
+                        resumed = self._pin_agent(
+                            _cached_system_prompt=stored if cached else None, _session_db=db,
+                        )
+                        cwd = alias if resume_alias else nested
+                        with patch("agent.system_prompt.resolve_context_cwd", return_value=cwd):
+                            rebuilt = build_system_prompt(resumed)
+                        self.assertIn(f"- Root: {nested}\n", rebuilt)
+                        self.assertIn("init nested", rebuilt)
+                        self.assertNotIn(f"- Root: {repo}\n", rebuilt)
+
+    @pytest.mark.platforms("posix")
+    def test_retargeted_alias_within_the_same_repository_keeps_the_snapshot(self):
+        import tempfile
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt
+
+        with tempfile.TemporaryDirectory(prefix="test-ws-retarget-same-") as directory:
+            repo = _init_repo(Path(directory) / "proj", "init commit")
+            first, second = repo / "first", repo / "second"
+            first.mkdir()
+            second.mkdir()
+            alias = repo.parent / "alias"
+            alias.symlink_to(first, target_is_directory=True)
+            hints = f"Host: x\nUser home directory: /h\nCurrent working directory: {alias}"
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value=hints):
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=alias):
+                    stored = build_system_prompt(self._pin_agent())
+                self.assertIn("- Status: clean", stored)
+                (repo / "untracked.txt").write_text("changed after snapshot\n")
+                alias.unlink()
+                alias.symlink_to(second, target_is_directory=True)
+                db = SimpleNamespace(get_session=lambda sid: {"system_prompt": stored})
+                resumed = self._pin_agent(_cached_system_prompt=None, _session_db=db)
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=second):
+                    self.assertEqual(build_system_prompt(resumed), stored)
+
     def test_binding_the_launch_dir_explicitly_replays_the_pin(self):
         """CLI-shaped first build (no cwd bound -> launch dir), then TUI /compress binds that same dir:
         one workspace, so the rebuild replays the session-start snapshot."""

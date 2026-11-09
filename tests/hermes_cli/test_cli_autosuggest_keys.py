@@ -81,3 +81,22 @@ def test_right_still_moves_the_cursor_inside_the_draft(cli):
         await _until(lambda: editor.buffer.cursor_position == len("okay le"))
         assert editor.text == "okay let"
     _drive(cli, script)
+
+
+@pytest.mark.parametrize("key", ["\t", "\x1b[C", "\x05", "\x06"], ids=["tab", "right", "ctrl-e", "ctrl-f"])
+def test_secret_prompt_offers_no_history_suggestion(cli, key):
+    """The composer doubles as the secret prompt: no key may put an old chat line into the value."""
+    cli._secret_state = {"var_name": "FIXTURE_KEY", "prompt": "fixture", "response_queue": None}
+
+    async def script(pipe, editor):
+        pressed = asyncio.Event()
+        cli._app.key_processor.after_key_press += lambda _: pressed.set()
+        pipe.send_text("okay let")
+        await _until(lambda: editor.text == "okay let")
+        assert editor.buffer.auto_suggest.get_suggestion(editor.buffer, editor.buffer.document) is None
+        pressed.clear()
+        pipe.send_text(key)
+        await asyncio.wait_for(pressed.wait(), 3)
+        assert editor.buffer.suggestion is None
+        assert editor.text.startswith("okay let") and HISTORY_ENTRY not in editor.text
+    _drive(cli, script)

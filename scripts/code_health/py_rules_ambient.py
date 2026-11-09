@@ -96,6 +96,8 @@ def _is_container(value: ast.AST | None) -> bool:
 
 
 _COPIES = {"copy.copy", "copy.deepcopy"}
+_FIELD_SPECS = {"dataclasses.field", "pydantic.Field", "pydantic.fields.Field", "attrs.field", "attr.ib",
+                "attr.attrib", "attr.field"}
 
 
 def _fresh(value: ast.AST | None) -> bool:
@@ -268,6 +270,13 @@ def _cached_functions(tree: ast.Module) -> Iterator[int]:
                 yield node.lineno
 
 
+def _per_instance(value: ast.AST | None) -> bool:
+    """A dataclass/pydantic/attrs field with a default factory: every instance gets its own
+    value, and the class attribute is the field spec, never a shared container."""
+    return (isinstance(value, ast.Call) and _call_name(value) in _FIELD_SPECS
+            and any(kw.arg in ("default_factory", "factory") for kw in value.keywords))
+
+
 def ambient_state(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
     bindings = Bindings(tree)
     writes = runtime_writes(tree, bindings)
@@ -275,5 +284,6 @@ def ambient_state(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
     yield from _imported_object_writes(writes)
     yield from _cached_functions(tree)
     for cls in _classes(tree):
-        attrs = {name: (value, line) for name, value, line in _assigned(import_time(cls.body))}
+        attrs = {name: (value, line) for name, value, line in _assigned(import_time(cls.body))
+                 if not _per_instance(value)}
         yield from class_state(cls, attrs, writes, bindings, _is_container, _mutable, _declared, _fresh)

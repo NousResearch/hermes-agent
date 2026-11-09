@@ -39,6 +39,13 @@ def _hits(src: str) -> list[int]:
     ("class C:\n    _live = {}\n    def add(self, k):\n        self._live[k] = 1\n", True),
     ("class C:\n    _live = []\n    @classmethod\n    def add(cls, k):\n        cls._live.append(k)\n", True),
     ("class C:\n    current = None\n    @classmethod\n    def set(cls, v):\n        cls.current = v\n", True),
+    # a field spec with a default factory gives each instance its own value; a shared default does not
+    ("from dataclasses import dataclass, field\n@dataclass\nclass C:\n    items: list = field(default_factory=list)\n"
+     "    def add(self, k):\n        self.items.append(k)\n", False),
+    ("from pydantic import BaseModel, Field\nclass C(BaseModel):\n    items: dict = Field(default_factory=dict)\n"
+     "    def add(self, k):\n        self.items[k] = 1\n", False),
+    ("from dataclasses import dataclass, field\n_SHARED = Registry()\n@dataclass\nclass C:\n"
+     "    items: object = field(default=_SHARED)\n    def add(self, k):\n        self.items.add(k)\n", True),
     # constants, per-instance state, and the two declarations
     ("_TABLE = {'a': 1, 'b': 2}\n", False),
     ("_NAMES = ('a', 'b')\n", False),

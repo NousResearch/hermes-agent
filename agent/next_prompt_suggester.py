@@ -24,6 +24,8 @@ _PROMPT = (
     "- Write as the user, in their voice and language, under 15 words.\n"
     "- It must be a natural follow-up request, e.g. 'run the full suite and diff against the baseline'.\n"
     "- Reply NONE if the task looks finished, or the assistant asked the user a question.\n"
+    "- Never describe, explain or refer to 'the user' or 'the assistant'; if you can't write the "
+    "message itself, reply NONE.\n"
     "- Output only the message: no quotes, no labels, no explanation."
 )
 

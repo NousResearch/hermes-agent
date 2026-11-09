@@ -33,9 +33,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import (
     ConditionalProcessor,
-    PasswordProcessor,
-    Processor,
-    Transformation)
+    PasswordProcessor)
 from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.widgets import TextArea
 from typing import Optional
@@ -44,6 +42,7 @@ from hermes_cli import cli_enter_burst as _enter_burst
 from hermes_cli.cli_enter_burst import RAPID_INPUT_ENTER_WINDOW_S as _RAPID_INPUT_ENTER_WINDOW_S
 from hermes_cli.cli_footer_split import FooterSplit
 from hermes_cli.cli_panel import _Panel
+from hermes_cli.cli_tui_placeholder import _PlaceholderProcessor
 from hermes_cli.cli_tui_wrap import _prefix_wrapped_rows, _wrap_rows
 
 # Rows below an overlay panel taken by spinner/tool-progress, status bar, input, separators and
@@ -2251,19 +2250,6 @@ class CLITuiMixin:
                              or bool(cli_ref._secret_state)
                              or (bool(cli_ref._connection_state)
                                  and cli_ref._connection_active_field_is_secret()))))
-
-        class _PlaceholderProcessor(Processor):
-            """Render grayed-out placeholder text inside the input when empty."""
-            def __init__(self, get_text):
-                self._get_text = get_text
-
-            def apply_transformation(self, ti):
-                if not ti.document.text and ti.lineno == 0:
-                    text = self._get_text()
-                    if text:
-                        # Append after existing fragments (preserves the ❯ prompt).
-                        return Transformation(fragments=ti.fragments + [('class:placeholder', text)])
-                return Transformation(fragments=ti.fragments)
 
         input_area.control.input_processors.append(_PlaceholderProcessor(self._tui_placeholder_text))
         return input_area

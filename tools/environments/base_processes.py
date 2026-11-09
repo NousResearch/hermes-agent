@@ -85,7 +85,15 @@ class LongLivedProcessMixin:
             if running is not None and running.poll() is None:
                 raise ValueError(f"a long-lived process named {name!r} is already running; attach to it")
             stale = table.pop(name, None)
-            table[name] = proc = self._spawn_long_lived(list(argv), child_env)
+            try:
+                table[name] = proc = self._spawn_long_lived(list(argv), child_env)
+            except BaseException:
+                # A failed respawn must not drop the leftover record on the floor: its children
+                # and pipes are still this environment's to stop, and a later stop would find
+                # nothing left to reap. Keep the record; the successful path reaps it below.
+                if stale is not None:
+                    table[name] = stale
+                raise
         if stale is not None:
             self._reap_long_lived(stale, scope)
         return self._stream(name, proc)

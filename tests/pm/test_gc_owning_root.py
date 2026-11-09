@@ -94,3 +94,38 @@ def test_gc_errors_when_the_install_state_cannot_be_found(tmp_path, monkeypatch,
 
     assert cli.cmd_gc(None) == 1
     assert "no dependency generations" in capsys.readouterr().err
+
+
+def test_gc_rejects_project_stamp_from_a_different_install(tmp_path, monkeypatch, capsys):
+    from pm import cli
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    owner = tmp_path / "owner"
+    other = tmp_path / "other"
+    owner.mkdir()
+    other.mkdir()
+    state = install_state_dir(owner)
+    workspace = state / "environments" / "active" / "workspace"
+    workspace.mkdir(parents=True)
+    (state / "inputs").mkdir()
+    (state / "inputs" / ".project-root").write_text(str(other), encoding="utf-8")
+
+    other_state = install_state_dir(other)
+    selected = other_state / "environments" / "active" / "venv"
+    selected.mkdir(parents=True)
+    (selected / "pyvenv.cfg").write_text("version = 3.11", encoding="utf-8")
+    _select(other, other_state, "active")
+    stale = other_state / "environments" / "stale"
+    stale.mkdir(parents=True)
+    marker = stale / ".lease-managed"
+    marker.touch()
+    import os
+    age = time.time() - 2 * 86400
+    os.utime(marker, (age, age))
+
+    monkeypatch.setattr("pm.paths.repo_root", lambda: workspace)
+    monkeypatch.setattr("pm.paths.writable_store_root", lambda: tmp_path / "tools")
+
+    assert cli.cmd_gc(None) == 1
+    assert stale.is_dir(), "mismatched owner stamp must not prune another checkout"
+    assert "no dependency generations" in capsys.readouterr().err

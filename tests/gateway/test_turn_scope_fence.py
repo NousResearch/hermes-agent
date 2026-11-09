@@ -42,5 +42,5 @@ async def test_each_claimed_turn_binds_its_admission_fence(monkeypatch):
         assert isinstance(scope, TurnScope), f'turn {text} ran without a TurnScope: {scope!r}'
         assert (scope.session, scope.turn) == (owner, rows[text]['admission_id'])
         assert scope.fence == Fence(authority.epoch, rows[text]['generation'])
-        assert (scope.owner, scope.role) == (LOCAL_OWNER, 'owner')
+        assert (scope.owner, scope.can_administer) == (LOCAL_OWNER, True)
     assert seen['B'].fence.generation == seen['A'].fence.generation + 1

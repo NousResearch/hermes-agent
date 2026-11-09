@@ -41,12 +41,13 @@ def _same_home(a: str | Path, b: str | Path) -> bool:
 
 
 def _identity(scope: Scope) -> tuple[Any, ...]:
-    return scope.tenant, scope.agent, scope.actor, scope.owner, scope.role
+    return scope.tenant, scope.agent, scope.actor, scope.owner, scope.can_administer
 
 
 def _refuse_inside_hosted(what: str, *, unless: Scope | None = None) -> None:
     """Refuse inside a hosted scope, unless *unless* is the same tenant, agent, actor, owner and
-    role (a turn of it): a hosted activity cannot change whom it acts for or what it may do."""
+    administration right (a turn of it): a hosted activity cannot change whom it acts for or what
+    it may do."""
     current = current_scope()
     if current is None or current.is_local:
         return
@@ -101,7 +102,8 @@ def bind_state(
     on its own: removing the earlier change it was copied from cannot take the piece away. Every
     piece is computed before anything is installed, so a failure leaves nothing bound.
 
-    Inside a hosted scope, only a bind of the same tenant, agent, actor, owner and role is
+    Inside a hosted scope, only a bind of the same tenant, agent, actor, owner and administration
+    right is
     allowed; anything else raises :class:`~hermes_scope.ScopeSwitchRefused`."""
     _refuse_inside_hosted("a bind of another scope", unless=scope)
     home = scope.home()
@@ -176,7 +178,8 @@ def claim_fence(row: Mapping[str, Any]) -> Fence:
 @contextmanager
 def bind_turn(session_id: str, turn_id: str, fence: Fence) -> Iterator[Scope | None]:
     """Mark the body as one turn of the bound scope, claimed under *fence*: the scope becomes a
-    :class:`~hermes_scope.TurnScope` with the same tenant, agent, actor, owner and role; nothing
+    :class:`~hermes_scope.TurnScope` with the same tenant, agent, actor, owner and administration
+    right; nothing
     else changes. With no scope bound (a single-profile gateway keeps its ambient scope) this
     binds nothing."""
     current = current_scope()

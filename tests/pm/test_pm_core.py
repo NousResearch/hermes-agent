@@ -45,6 +45,11 @@ class TopTool(FakeTool):
     deps = ("deptool",)
 
 
+class SideTool(FakeTool):
+    name = "sidetool"
+    deps = ("deptool",)
+
+
 class MultiTool(BinaryPackage):
     """A runtime split across two archives that must land in one entry."""
     name = "multitool"
@@ -79,7 +84,7 @@ def pm_env(tmp_path, served, monkeypatch):
     # restore and deletes the built-in entry from the live registry.
     saved = dict(registry._packages)
     registry._packages.clear()
-    for cls in (FakeTool, DepTool, TopTool, MultiTool, Venv):
+    for cls in (FakeTool, DepTool, TopTool, SideTool, MultiTool, Venv):
         registry._packages[cls.name] = cls()
     FakeTool.base_url = base_url
     MultiTool.base_url = base_url
@@ -186,6 +191,22 @@ def test_deps_compose_dependents_win(pm_env):
     assert runner.env["DEPTOOL_SEEN"] == "1"
     path = runner.env["PATH"]
     assert path.index("toptool-1.0") < path.index("deptool-1.0")
+
+
+def test_env_for_keeps_every_dependent_ahead_of_a_shared_dependency(pm_env):
+    """npm and pnpm both depend on node, whose bin dir carries its own bundled npm:
+    composing them must not let the shared dependency overtake the first dependent."""
+    from pm.install import ensure, env_for
+
+    lockfile_path, _, docroot, _ = pm_env
+    for name in ("deptool", "toptool", "sidetool"):
+        _name, digest = make_tar(docroot, f"{name}-1.0.tar.gz", {"bin/faketool": name})
+        _pin(lockfile_path, name, "1.0", digest)
+        ensure(name, explicit=True)
+
+    path = env_for("toptool", "sidetool", base_env={})["PATH"]
+    assert path.index("toptool-1.0") < path.index("deptool-1.0")
+    assert path.index("sidetool-1.0") < path.index("deptool-1.0")
 
 def test_cli_env_reports_only_package_exports(pm_env, monkeypatch, capsys):
     import json

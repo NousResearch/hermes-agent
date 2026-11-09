@@ -185,7 +185,7 @@ def _ensure_tui_workspace(tui_dir: Path) -> None:
         "This usually means `hermes update` left tracked ui-tui files deleted.\n"
         "Recovery:\n"
         "  1. From the Hermes checkout, run `git restore -- ui-tui`\n"
-        "  2. Run `npm install --silent --no-fund --no-audit --progress=false`\n"
+        "  2. Run `pnpm install --frozen-lockfile`\n"
         "  3. Retry `hermes --tui`\n"
         "If the checkout is still inconsistent, run `hermes update --force`.",
         file=sys.stderr)
@@ -226,7 +226,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     # 1. Prebuilt bundle (nix / packaged release / Docker image): just run it.
     # Must run BEFORE _ensure_tui_workspace(): a prebuilt install ships
     # hermes_cli/tui_dist/entry.js but never ui-tui/ (git checkouts only).
-    # 1. A prebuilt install (Docker image, Nix build, or prior `npm run build`) ships
+    # 1. A prebuilt install (Docker image, Nix build, or prior `pnpm run build`) ships
     #   hermes_cli/tui_dist/entry.js but never ships ui-tui/ at all (that directory only exists in a git
     #   checkout) — so requiring the workspace to exist first made every prebuilt dashboard Chat tab
     #   connection hard-exit before it ever got a chance to try the bundled entry.js it already has. See
@@ -241,7 +241,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if bundled is not None:
             return [_tui_node_bin("node"), "--expose-gc", str(bundled)], bundled.parent
 
-    # About to npm install/build from source, so the workspace must exist.
+    # About to pnpm install/build from source, so the workspace must exist.
     if not ext_dir:
         _ensure_tui_workspace(tui_dir)
 
@@ -256,10 +256,10 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     if tui_dev:
         # tsx imports @hermes/ink's built exports; the production bundle instead
         # compiles its source directly through scripts/build/tui.mjs.
-        npm = shutil.which("npm", path=env["PATH"])
-        subprocess.run([npm, "run", "build"], cwd=tui_dir / "packages/hermes-ink", env=env, check=True)
+        pnpm = shutil.which("pnpm", path=env["PATH"])
+        subprocess.run([pnpm, "run", "build"], cwd=tui_dir / "packages/hermes-ink", env=env, check=True, timeout=600)
         tsx = tui_dir / "node_modules/.bin/tsx"
-        return ([str(tsx), "src/entry.tsx"] if tsx.exists() else [npm, "start"]), tui_dir
+        return ([str(tsx), "src/entry.tsx"] if tsx.exists() else [pnpm, "start"]), tui_dir
 
     build_source_tui(project_root, env=env)
     node = shutil.which("node", path=env["PATH"])
@@ -350,26 +350,18 @@ def _safe_tui_cwd(env: Optional[dict] = None) -> str:
 
 
 def _apply_tui_python_env(env: dict) -> None:
-    """Seed/repair Python-related env vars shared by CLI and dashboard TUI launches."""
+    """Pin the TUI's Python helpers to this process's tree and interpreter; repair its cwd.
+
+    Inherited values name whatever shell launched us (a checkout's dev shell exports both),
+    and the gateway child must run the code and interpreter of the Hermes that spawned it.
+    """
     from hermes_cli.main import PROJECT_ROOT
-    src_root = str(env.get("HERMES_PYTHON_SRC_ROOT") or "").strip()
-    if not src_root or not Path(src_root).is_dir():
-        env["HERMES_PYTHON_SRC_ROOT"] = str(PROJECT_ROOT)
+    env["HERMES_PYTHON_SRC_ROOT"] = str(PROJECT_ROOT)
+    env["HERMES_PYTHON"] = sys.executable
 
     cwd = str(env.get("HERMES_CWD") or "").strip()
     if not cwd or not Path(cwd).is_dir():
         env["HERMES_CWD"] = _safe_tui_cwd(env)
-
-    python = str(env.get("HERMES_PYTHON") or "").strip()
-    if os.path.dirname(python):
-        python_path = Path(python)
-        if not python_path.is_absolute():
-            python_path = Path(env["HERMES_CWD"]) / python_path
-        python_is_executable = python_path.is_file() and os.access(python_path, os.X_OK)
-    else:
-        python_is_executable = bool(shutil.which(python, path=env.get("PATH")))
-    if not python_is_executable:
-        env["HERMES_PYTHON"] = sys.executable
 
 
 def _setup_tui_worktree() -> dict:

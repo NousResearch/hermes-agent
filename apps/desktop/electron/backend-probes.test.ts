@@ -2,7 +2,7 @@
  * Tests for electron/backend-probes.ts.
  *
  * Run with: node --test electron/backend-probes.test.ts
- * (Wired into npm test:desktop:platforms in package.json.)
+ * (Wired into pnpm run test:desktop:platforms in package.json.)
  */
 
 import assert from 'node:assert/strict'

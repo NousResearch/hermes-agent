@@ -112,13 +112,13 @@ _IMAGE_API_MODELS: dict[str, dict[str, Any]] = {
     "microsoft/mai-image-2.5-pro": _image_api_model(
         "Microsoft MAI-Image-2.5 Pro", "Reach for it when gpt-image-2 misses the brief",
         aspect_ratios=_MAI_RATIOS, max_n=1, max_refs=1),
-    "x-ai/grok-imagine-image-quality": _image_api_model(
-        "Grok Imagine (Image Quality)",
-        "Photoreal; widest exotic-ratio set (9:19.5, 20:9, 2:1 …); 1K/2K",
+    "x-ai/grok-imagine-image-2.0": _image_api_model(
+        "Grok Imagine Image 2.0",
+        "Photoreal; widest exotic-ratio set (9:19.5, 20:9, 2:1 …); 1K/2K; low/medium quality",
         aspect_ratios=(
             "1:1", "3:4", "4:3", "9:16", "16:9", "2:3", "3:2", "9:19.5", "19.5:9", "9:20", "20:9", "1:2", "2:1",
             "auto"),
-        resolutions=("1K", "2K"), max_n=1, max_refs=3),
+        resolutions=("1K", "2K"), quality=("low", "medium"), max_n=1, max_refs=3),
     "krea/krea-2-medium": _image_api_model(
         "Krea 2 Medium", "Realistic, expressive styles; deterministic via seed",
         aspect_ratios=_KREA_RATIOS, resolutions=("1K",), seed=True, max_n=1, max_refs=1),

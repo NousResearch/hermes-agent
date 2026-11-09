@@ -369,6 +369,13 @@ export const zhHant: Translations = {
     authRequired: "需要驗證",
     authRequiredHint: "執行此指令以完成驗證：",
     updateGit: "Git pull",
+    updateAll: "全部更新",
+    updatingAll: "正在更新外掛…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `已更新 ${updated}，需審核 ${needsReview}，失敗 ${failed}`,
+    autoUpdate: "自動更新",
+    autoUpdateDesc: (hours: number) =>
+      `閘道檢查時（每 ${hours} 小時）自動套用外掛更新。更新後的程式碼會在新工作階段中載入。`,
     versionBadge: "版本",
     showInSidebar: "顯示於側邊欄",
     hideFromSidebar: "從側邊欄隱藏",

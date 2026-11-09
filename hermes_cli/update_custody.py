@@ -14,7 +14,8 @@ can still write the checkout, and must NOT leak into processes that outlive the 
   needs as a child holding the fd (and start the daemon under it), so before a move the objects
   are fetched without the fd and with the user's helpers (:func:`_prefetch_for_move`); a lazy
   fetch the prefetch missed still runs, just without a helper. A killed fetch that leaves
-  ``*.lock`` ref files is recovered by the stale-lock rules (``gitlock.clear_stale_git_locks``).
+  ``*.lock`` ref files or ``shallow.lock`` is recovered by the stale-lock rules (``gitlock.release_dead_fetch_locks``
+  once its update is proven dead, ``gitlock.clear_stale_git_locks`` by age otherwise).
 * Windows has no fd inheritance: while this process holds (or joined) the checkout lock, every
   child started here is created SUSPENDED, assigned to the update's kill-on-close job and only
   then resumed, so it and everything it spawns die with the lock owner. The Node build goes
@@ -494,7 +495,7 @@ def _prefetch_for_move(git_cmd: list[str], args: list[str], kwargs: dict) -> Non
 # (argv[2]) — run_contained captures the child's stderr, so stderr alone is not seen (m1) — and
 # exits; the updater logs the notice, notes it in the receipt and raises CustodyRefused.
 # The command also runs in a kill-on-close job of the launcher's own, nested in the update job
-# (review C3): once the command exits, the launcher terminates that job — whatever npm / the
+# (review C3): once the command exits, the launcher terminates that job — whatever pnpm / the
 # builder started and left running — and waits until no process of it is left before it
 # returns, so the caller never releases the checkout while a build descendant still writes.
 # Only the command's tree: the update job also holds the update's other children. The Windows
@@ -621,7 +622,7 @@ def _join_launcher_python() -> str:
 
 
 # POSIX twin of the launcher (N13, review L1/L6). Node marks the donated lock fd close-on-exec,
-# so nothing node starts (npm, esbuild, sh) keeps the checkout locked: custody of them rests on
+# so nothing node starts (pnpm, esbuild, sh) keeps the checkout locked: custody of them rests on
 # this stdlib parent, which holds the fd until no descendant of the command is left.
 # * The command stays in the CALLER's process group: every group kill that stops a build (a
 #   Ctrl-C'd completion child's ``killpg``, Desktop's ``kill(-pid)``) reaches node and everything

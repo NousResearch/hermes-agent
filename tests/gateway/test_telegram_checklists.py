@@ -145,7 +145,19 @@ def _has(attr, test=bool):
     return _Filter(lambda update: test(getattr(update.effective_message, attr, None)))
 
 
+class _MessageFilter(_Filter):
+    """PTB's MessageFilter: a subclass overrides ``filter(message)``; the update check applies it to the message."""
+
+    def __init__(self, name=None):
+        super().__init__(lambda update: bool(self.filter(update.effective_message)))
+        self.name = name
+
+    def filter(self, message):  # the subclass provides it, as with PTB
+        raise NotImplementedError
+
+
 _FILTERS = SimpleNamespace(
+    MessageFilter=_MessageFilter,
     TEXT=_has("text"), COMMAND=_has("text", lambda text: bool(text) and text.startswith("/")),
     LOCATION=_has("location"), VENUE=_has("venue"), PHOTO=_has("photo"), VIDEO=_has("video"),
     VIDEO_NOTE=_has("video_note"), AUDIO=_has("audio"), VOICE=_has("voice"),
@@ -159,8 +171,10 @@ _FILTERS = SimpleNamespace(
 
 def _message_handlers(adapter, filters):
     registered = []
-    with patch.multiple("plugins.platforms.telegram.adapter", filters=filters,
-                        TelegramMessageHandler=lambda flt, callback: registered.append((flt, callback))):
+    # Patch the module object the adapter's code runs in: a later-collected test file may have re-imported
+    # ``plugins.platforms.telegram.adapter`` since this one bound ``TelegramAdapter``.
+    with patch.dict(type(adapter)._register_handlers.__globals__,
+                    {"filters": filters, "TelegramMessageHandler": lambda flt, callback: registered.append((flt, callback))}):
         adapter._register_handlers(MagicMock())
     return registered
 

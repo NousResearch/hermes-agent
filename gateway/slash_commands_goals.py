@@ -97,6 +97,7 @@ class GatewayGoalCommandsMixin:
                     message_type=MessageType.TEXT,
                     source=event.source,
                     message_id=event.message_id if kickoff else None,
+                    edit_revision=event.edit_revision if kickoff else None,  # an edited /goal: own admission id
                     channel_prompt=event.channel_prompt if kickoff else None,
                     auto_skill=event.auto_skill if kickoff else None,
                     inherit_channel_pin=not kickoff,

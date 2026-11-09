@@ -1487,7 +1487,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     # ---- refresh -----------------------------------------------------------
 
-    def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
+    def _refresh_entry(self, entry: PooledCredential, *, force: bool, failed_key: Optional[str] = None):
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
             if force:
                 self._mark_exhausted(entry, None)
@@ -1496,7 +1496,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         # the pool cannot know their grant semantics, and a needless in-lock re-read is cheaper than
         # a ``refresh_token_reused`` login loss. Eligibility comes from the hook, never a name set.
         if self.provider not in _SINGLE_USE_REFRESH_PROVIDERS and plugin_refresh_hook(self.provider) is None:
-            return self._refresh_entry_impl(entry, force=force)
+            return self._refresh_entry_impl(entry, force=force, failed_key=failed_key)
 
         # Single-use refresh tokens: sync -> POST -> write-back must be atomic
         # across Hermes processes, or two processes adopt the same on-disk
@@ -1675,7 +1675,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             last_refresh=refreshed.get("last_refresh"),
         )
 
-    def _refresh_entry_impl(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
+    def _refresh_entry_impl(self, entry: PooledCredential, *, force: bool, failed_key: Optional[str] = None):
         # Single-use-token providers adopt fresher tokens from their store
         # BEFORE spending the refresh_token; ``entry`` is rebound to the synced
         # row so the failure path below recovers against the pair we POSTed.
@@ -1693,12 +1693,12 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     raise RuntimeError("provider refresh_credential returned no rotated fields")
                 updated = apply_plugin_refresh_result(entry, rotated)
             elif self.provider == "nous":
-                stale_key = entry.runtime_api_key or entry.agent_key or entry.access_token
+                # The bearer the request SENT, not this row's (maybe older) copy: adopting it replays the 401.
+                stale_key = failed_key or entry.runtime_api_key or entry.agent_key or entry.access_token
                 synced = self._sync_nous_entry_from_auth_store(entry)
                 if synced is not entry:
                     entry = synced
-                    # A peer already rotated and persisted a usable key: adopt
-                    # it without consuming the single-use refresh token again.
+                    # A peer persisted a DIFFERENT usable key: adopt it without re-spending the refresh token.
                     if force and entry.runtime_api_key and entry.runtime_api_key != stale_key:
                         logger.debug("Nous entry %s: adopting peer-rotated token, skipping refresh", entry.id)
                         return entry
@@ -2160,13 +2160,13 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         self._current_id = entry.id
         return entry, pending_refresh
 
-    def peek(self) -> Optional[PooledCredential]:
-        with self._lock:
+    def peek(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
+        with self._lock:  # the current entry, else the first available; with ``model``: the current one if available
             current = self._current_unlocked()
-            if current is not None:
+            if current is not None and model is None:
                 return current
-            available, _pending = self._available_entries()
-            return available[0] if available else None
+            available = self._available_entries(model=model)[0]
+            return next((e for e in available if current and e.id == current.id), next(iter(available), None))
 
     def reclaim(self, credential_id: str, *, model: Optional[str] = None) -> Optional[PooledCredential]:
         """Entry *credential_id* once its cooldown has lifted (cleared and token-refreshed the way
@@ -2408,13 +2408,13 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             if entry is None:
                 return None
             self._current_id = entry.id
-            return self._try_refresh_current_unlocked()
+            return self._try_refresh_current_unlocked(failed_key=api_key_hint)
 
-    def _try_refresh_current_unlocked(self) -> Optional[PooledCredential]:
+    def _try_refresh_current_unlocked(self, failed_key: Optional[str] = None) -> Optional[PooledCredential]:
         entry = self._current_unlocked()
         if entry is None:
             return None
-        refreshed = self._refresh_entry(entry, force=True)
+        refreshed = self._refresh_entry(entry, force=True, failed_key=failed_key)
         if refreshed is not None:
             self._current_id = refreshed.id
         return refreshed

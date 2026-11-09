@@ -1,15 +1,12 @@
 """Kanban worker transcripts must not resume as ordinary write-capable sessions (#68779).
 
-Behaviour tests for the centralized guard (`hermes_cli/kanban_resume_guard.py`) and the three
-CLI resume surfaces it protects: startup `--resume` (`_preload_resumed_session`), mid-chat
-`/resume`, and the quiet one-shot resume (`oneshot._load_resume_target`). The gateway surface
-is covered in `tests/tui_gateway/test_kanban_resume_guard.py`.
+Behaviour tests for the centralized guard (`hermes_cli/kanban_resume_guard.py`) and the two
+CLI resume surfaces it protects: startup `--resume` (`_preload_resumed_session`) and mid-chat
+`/resume`. The gateway surface is covered in `tests/tui_gateway/test_kanban_resume_guard.py`.
 """
 
 from io import StringIO
 from unittest.mock import patch
-
-import pytest
 
 from hermes_state import SessionDB
 
@@ -175,20 +172,3 @@ def test_midchat_resume_refuses_kanban_target(tmp_path):
     # The chat stays on its own session — no switch, no history swap.
     assert cli.session_id == "chat-1"
     assert cli.conversation_history == [{"role": "user", "content": "hi"}]
-
-
-# ── quiet one-shot resume ────────────────────────────────────────────
-
-def test_oneshot_resume_refuses_kanban_session(tmp_path):
-    from hermes_cli.oneshot import _load_resume_target
-    db = _db(tmp_path, source="kanban", session_id="worker-1")
-    with pytest.raises(RuntimeError, match="cannot resume session worker-1"):
-        _load_resume_target(db, "worker-1")
-
-
-def test_oneshot_resume_ordinary_session_still_works(tmp_path):
-    from hermes_cli.oneshot import _load_resume_target
-    db = _db(tmp_path, source="cli", session_id="chat-1")
-    sid, history, _meta = _load_resume_target(db, "chat-1")
-    assert sid == "chat-1"
-    assert len(history) == 2

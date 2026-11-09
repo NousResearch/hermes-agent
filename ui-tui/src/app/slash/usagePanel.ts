@@ -1,6 +1,6 @@
+import type { BillingStateResponse } from '@hermes/shared/gateway-types'
 import { formatResetsIn } from '@hermes/shared/plan-usage'
 
-import type { BillingStateResponse } from '../../gatewayTypes.js'
 import { t } from '../../i18n/runtime.js'
 import type { PanelSection } from '../../types.js'
 

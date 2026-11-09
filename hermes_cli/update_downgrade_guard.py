@@ -18,7 +18,10 @@ from typing import Optional
 
 # The runtime ledger DDL: a target whose state-store modules lack it predates the cutover.
 _RUNTIME_SCHEMA_MARKER = "CREATE TABLE IF NOT EXISTS session_admissions"
-STATE_MODULES = "hermes_state*.py"  # git pathspec and fnmatch pattern alike (``*`` crosses ``/`` in both)
+# Where a tree keeps its state-store modules: the root today, the package once they move into it.
+# Literal per-location patterns serve as git pathspecs, fnmatch patterns and Path.glob patterns alike;
+# a ``:(glob)**`` pathspec would also match tests/ and is not honoured by ``rev-list --objects``.
+STATE_MODULES = ("hermes_state*.py", "src/hermes_agent/hermes_state*.py", "src/hermes_agent/hermes_state/*.py")
 _LEDGER_PROBE = ("SELECT EXISTS(SELECT 1 FROM session_admissions) "
                  "OR EXISTS(SELECT 1 FROM worker_executions)")
 _DOCS = "https://hermes-agent.nousresearch.com/docs/getting-started/updating#rolling-back-to-an-older-release"
@@ -46,7 +49,7 @@ def defines_runtime(sources: Iterable[str]) -> bool:
 def target_predates_runtime(git_cmd, root: Path, target_ref: str, *,
                             git: Optional[Callable[..., int]] = None,
                             remote: Optional[Callable[[str], Optional[bool]]] = None) -> bool:
-    """True when ``target_ref`` does not descend from HEAD and none of its ``hermes_state*.py`` files
+    """True when ``target_ref`` does not descend from HEAD and none of its ``STATE_MODULES`` files
     defines the runtime ledger. The pathspec keeps a blobless partial clone from fetching the whole
     tree. Any git failure proves nothing (False). ``git`` runs one git command and returns its exit
     code; the update check passes its own read-only probe.
@@ -58,10 +61,10 @@ def target_predates_runtime(git_cmd, root: Path, target_ref: str, *,
     if git("merge-base", "--is-ancestor", "HEAD", target_ref) == 0:
         return False  # forward update: whatever the target's schema, it was written knowing this one
     # grep can return 1 for unreadable blobs too: establish completeness before trusting no match.
-    if git("rev-list", "--objects", "--no-walk", "--sparse", "--missing=error", target_ref, "--", STATE_MODULES) != 0:
+    if git("rev-list", "--objects", "--no-walk", "--sparse", "--missing=error", target_ref, "--", *STATE_MODULES) != 0:
         return remote is not None and remote(target_ref) is True
     # Exit 1 = no match in a complete local schema; 0 = found; anything else is a git error.
-    result = git("grep", "-q", "-F", _RUNTIME_SCHEMA_MARKER, target_ref, "--", STATE_MODULES)
+    result = git("grep", "-q", "-F", _RUNTIME_SCHEMA_MARKER, target_ref, "--", *STATE_MODULES)
     return result == 1 if result in (0, 1) else remote is not None and remote(target_ref) is True
 
 

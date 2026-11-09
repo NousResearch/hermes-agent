@@ -616,7 +616,12 @@ class GatewayBusySessionMixin:
         return None if getattr(event, "internal", False) else event.message_id
 
     async def _send_busy_reply(self, event: MessageEvent, adapter, content: str, *, plain_anchor: bool = False) -> None:
-        """Send a busy-path reply anchored to the event (thread metadata included)."""
+        """Send a busy-path reply anchored to the event (thread metadata included). Never to a bot:
+        an ack, redirect or drain notice is a new inbound message for its turn loop (#137027)."""
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        if not automatic_notices_allowed(event.source):
+            logger.debug("Busy-path notice suppressed for bot-authored message in %s", event.source.chat_id)
+            return
         reply_anchor = self._reply_anchor_for_event(event)
         await adapter._send_with_retry(
             chat_id=event.source.chat_id, content=content,
@@ -950,7 +955,7 @@ class GatewayBusySessionMixin:
             )
             return True  # handled (silently dropped); do not fall through
         # A steered or queued follow-up never reaches _hm_admit_event, so the budget is charged here.
-        if not self._admit_bot_message_for_source(event.source):
+        if not (self._admit_bot_message_for_source(event.source) and self._admit_bot_chain(event)):
             return True
         event._bot_loop_admitted = True
 
@@ -1073,8 +1078,9 @@ class GatewayBusySessionMixin:
         if (sink := active_sink()) is not None:
             sink.notices.append(text)  # a local slash.exec: the ack rides the client's directive
             return
+        from gateway.bot_peer_notices import automatic_notices_allowed
         try:
-            adapter = self._delivery_adapter_for(source)
+            adapter = self._delivery_adapter_for(source) if automatic_notices_allowed(source) else None
             if adapter:
                 await adapter.send(
                     str(source.chat_id), text, metadata=self._thread_metadata_for_source(source)
@@ -1211,6 +1217,7 @@ class GatewayBusySessionMixin:
                 reply_to_is_own_message=event.reply_to_is_own_message, auto_skill=event.auto_skill,
                 channel_prompt=event.channel_prompt, channel_context=event.channel_context,
                 internal=event.internal, timestamp=event.timestamp,
+                edit_revision=event.edit_revision,  # an edited /queue is its own input (admission id)
             )
             if await self._queue_command_turn(quick_key, event, queued, adapter, t("gateway.queue.queued")):
                 return None  # its commit sends the ack
@@ -1234,7 +1241,7 @@ class GatewayBusySessionMixin:
             if adapter and await self._queue_command_turn(quick_key, event, MessageEvent(
                 text=steer_text, message_type=MessageType.TEXT, source=event.source,
                 message_id=event.message_id, channel_prompt=event.channel_prompt,
-                channel_context=event.channel_context,
+                channel_context=event.channel_context, edit_revision=event.edit_revision,
             ), adapter, reply):
                 return None  # its commit sends the reply
             return reply
@@ -1251,6 +1258,10 @@ class GatewayBusySessionMixin:
         if not accepted:
             return t("gateway.steer.rejected_empty")
         self._fold_into_running_turn(running_agent, quick_key, event)
+        # A pending clarify owns the turn: the agent is parked inside that tool, so no iteration
+        # prep runs and the accepted steer cannot arrive until the prompt times out (#145161).
+        # Released only once the steer is queued: the woken agent must find it at its next prep.
+        await self._release_clarify_owning_turn(quick_key, source)
         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
         target = (t("gateway.steer.target_subagents") if self._agent_has_active_subagents(running_agent)
                   else t("gateway.steer.target_run"))

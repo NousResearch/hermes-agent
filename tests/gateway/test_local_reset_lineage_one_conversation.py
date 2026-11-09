@@ -12,7 +12,7 @@ async def reset_lineage(tmp_path, monkeypatch):
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_mutations import mutate_session
     from hermes_state import SessionDB
@@ -26,7 +26,7 @@ async def reset_lineage(tmp_path, monkeypatch):
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='fixture')
     authority._schedule = lambda ref: None
-    owner = Principal('uid:1000', 'default', frozenset({'session:create', 'session:read', 'session:submit',
+    owner = SessionActor('uid:1000', 'default', frozenset({'session:create', 'session:read', 'session:submit',
                                                         'session:control'}), 'native')
     ref = create_local_session(authority, owner, {'request_id': 'r', 'source': 'gui', 'cwd': str(tmp_path),
                                                   'model': 'fixture', 'toolsets': []})

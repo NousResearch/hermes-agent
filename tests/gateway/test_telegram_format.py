@@ -980,3 +980,20 @@ class TestTelegramGuestMentionGating:
         message.caption_entities = [_guest_mention_entity(text)]
 
         assert adapter._should_process_message(message) is True
+
+
+def test_ignore_root_dm_makes_the_root_dm_a_command_lobby():
+    """``extra.ignore_root_dm`` drops plain root-DM text for chats with ``dm_topics``; commands, topic messages
+    and chats without topics still pass."""
+    a = TelegramAdapter(PlatformConfig(enabled=True, token="t", extra={
+        "ignore_root_dm": True, "dm_topics": [{"chat_id": 111, "topics": []}]}))
+
+    def msg(chat, thread=None):
+        return SimpleNamespace(chat=SimpleNamespace(id=chat, type="private"), message_thread_id=thread,
+                               is_topic_message=thread is not None, from_user=SimpleNamespace(id=chat, is_bot=False),
+                               text="hi", entities=None, caption_entities=None, reply_to_message=None)
+
+    assert a._should_process_message(msg(111)) is False
+    assert a._should_process_message(msg(111), is_command=True) is True
+    assert a._should_process_message(msg(111, 7)) is True
+    assert a._should_process_message(msg(222)) is True

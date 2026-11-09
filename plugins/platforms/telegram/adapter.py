@@ -5882,7 +5882,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if self._is_own_message(message):
             return False
         if not self._is_group_chat(message):
-            return True
+            return not self._is_ignored_root_dm(message, is_command=is_command)
         thread_id = self._effective_message_thread_id(message)
         if self._topic_gates_pass(thread_id, warn_non_numeric=True, message=message) is False:
             return False

@@ -682,6 +682,7 @@ gateway:
     session_storage_unavailable: "⚠️ Sessie-opslag was tydelik onbeskikbaar, so hierdie beurt is gestop om jou gesprekgeskiedenis te beskerm. Jou boodskap behoort reeds gestoor te wees — stuur dit asseblief oor 'n oomblik weer."
     generic_failed: "⚠️ Iets het verkeerd geloop en ek kon hierdie antwoord nie voltooi nie. Gebruik /retry om weer te probeer, of /new om 'n vars gesprek te begin. Tegniese besonderhede is in die gateway-log (`hermes logs`)."
     interrupted_before_start: "⚠️ Jou boodskap is onderbreek voordat verwerking begin het (waarskynlik deur 'n onlangse /stop). Stuur dit asseblief weer."
+    interrupted_by_system: "⚠️ Hierdie beurt is deur die stelsel gestop ({issuer}), nie deur jou nie. Wat besig was, is dalk onvoltooid. Stuur 'n boodskap om voort te gaan."
     processing_incomplete: "verwerking onvolledig"
     stopped_before_finishing: "⚠️ Ek moes stop voordat ek klaar was{reason}. Gebruik /retry om weer te probeer, of /compress as hierdie gesprek baie lank geword het."
     no_response: "⚠️ Verwerking is voltooi, maar geen antwoord is gegenereer nie. Dit kan 'n tydelike fout wees — probeer jou boodskap weer stuur."

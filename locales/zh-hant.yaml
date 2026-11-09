@@ -682,6 +682,7 @@ gateway:
     session_storage_unavailable: "⚠️ 工作階段儲存空間暫時無法使用，為保護你的對話歷史，這一輪已停止。你的訊息應已儲存 — 請稍後再傳送一次。"
     generic_failed: "⚠️ 發生錯誤，我無法完成這則回覆。請使用 /retry 重試，或使用 /new 開始新的對話。技術細節請見閘道日誌（`hermes logs`）。"
     interrupted_before_start: "⚠️ 你的訊息在開始處理前就被中斷（可能是因為剛才的 /stop）。請重新傳送。"
+    interrupted_by_system: "⚠️ 本輪被系統停止（{issuer}），不是你停止的。正在進行的操作可能未完成。傳送一則訊息即可繼續。"
     processing_incomplete: "處理未完成"
     stopped_before_finishing: "⚠️ 我在完成前不得不停止{reason}。請使用 /retry 重試；若這段對話已相當長，可使用 /compress。"
     no_response: "⚠️ 處理已完成，但沒有產生任何回應。這可能是暫時性錯誤 — 請試著重新傳送訊息。"

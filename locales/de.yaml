@@ -682,6 +682,7 @@ gateway:
     session_storage_unavailable: "⚠️ Der Sitzungsspeicher war vorübergehend nicht verfügbar, daher wurde dieser Zug abgebrochen, um Ihren Konversationsverlauf zu schützen. Ihre Nachricht sollte bereits gespeichert sein — bitte senden Sie sie in einem Moment erneut."
     generic_failed: "⚠️ Etwas ist schiefgelaufen und ich konnte diese Antwort nicht fertigstellen. Versuchen Sie es mit /retry erneut oder starten Sie mit /new eine neue Konversation. Technische Details stehen im Gateway-Log (`hermes logs`)."
     interrupted_before_start: "⚠️ Ihre Nachricht wurde unterbrochen, bevor die Verarbeitung begonnen hat (wahrscheinlich durch ein kürzliches /stop). Bitte senden Sie sie erneut."
+    interrupted_by_system: "⚠️ Dieser Zug wurde vom System gestoppt ({issuer}), nicht von Ihnen. Was gerade lief, ist möglicherweise unvollständig. Senden Sie eine Nachricht, um fortzufahren."
     processing_incomplete: "Verarbeitung unvollständig"
     stopped_before_finishing: "⚠️ Ich musste vor dem Abschluss abbrechen{reason}. Versuchen Sie es mit /retry erneut oder verwenden Sie /compress, falls diese Konversation sehr lang geworden ist."
     no_response: "⚠️ Die Verarbeitung wurde abgeschlossen, aber es wurde keine Antwort erzeugt. Das kann ein vorübergehender Fehler sein — senden Sie Ihre Nachricht erneut."

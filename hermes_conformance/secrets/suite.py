@@ -63,6 +63,14 @@ from hermes_secret_port import (
     LEVELS, SecretAdminRefused, SecretLevelRefused, SecretPinRefused, SecretStore,
 )
 
+#: The failure points a backend's ``fail_writes`` hook must be able to break mid-write, so the
+#: no-plaintext tests reach each: the write itself (a plain ``OSError``), the serialization of
+#: the value or record into what gets written (a ``TypeError`` or ``ValueError``), and the
+#: atomic replace of the written file (an ``OSError``). A hook that can break the write at one
+#: point alone leaves every other point's write path untested — a backend that publishes the
+#: value on one of them passes the suite.
+WRITE_FAILURES = ("write", "encode", "replace")
+
 
 @dataclass
 class Backend:
@@ -82,11 +90,15 @@ class Backend:
       bound in any frame below the write method (a backend whose write lock refuses only
       part-way through the write fails there instead, its plain error re-made fresh like any
       other writer failure). A backend with a managed-key write lock pins one.
-    - ``fail_writes()``: REQUIRED. While the context is active, the seeded agent ``"a"``'s
-      writes fail part-way through with an ``OSError``, with the caller's value (or record)
-      already bound in the writer's frames — a plain I/O failure, not the store's refusal.
-      A backend whose write path the fixture cannot break must supply a hook that fails
-      the write some other plain way, mid-path, or this failure path goes untested.
+    - ``fail_writes(kind)``: REQUIRED. While the context is active, the seeded agent ``"a"``'s
+      writes fail part-way through at the failure point *kind* names (:data:`WRITE_FAILURES`)
+      — ``"write"``: a plain ``OSError`` at the write itself; ``"encode"``: a ``TypeError`` or
+      ``ValueError`` where the value (or record) is serialized into what gets written;
+      ``"replace"``: an ``OSError`` at the atomic replace of the written file — with the
+      caller's value (or record) already bound in the writer's frames, as a plain failure,
+      not the store's refusal. A backend whose write path has no distinct step for a kind
+      fails the write some other plain way, mid-path, at the nearest point it has, or that
+      failure path goes untested.
     """
 
     open: Callable[[str], SecretStore]
@@ -96,7 +108,7 @@ class Backend:
     unbound: Callable[[], AbstractContextManager]
     levels: frozenset[str]
     managed_key: Callable[[], AbstractContextManager]
-    fail_writes: Callable[[], AbstractContextManager]
+    fail_writes: Callable[[str], AbstractContextManager]
 
 
 def _refused(call: Callable[[], Any]) -> str:
@@ -415,18 +427,21 @@ class SecretPinningConformance:
             for level in sorted(LEVELS - backend.levels):
                 refused_without_the_value(lambda level=level: store.set(NEW_NAME, marker, level=level))
 
-    def test_no_failure_traceback_frame_holds_the_value_or_record(self, backend):
+    @pytest.mark.parametrize("kind", WRITE_FAILURES)
+    def test_no_failure_traceback_frame_holds_the_value_or_record(self, backend, kind):
         """Through every failure of a credential write that is not the store's refusal — a
         level that is not a secret level at all (a programming error), a key an administrator
-        has pinned (the backend's own write lock), and a mid-write I/O error the fixture
-        injects — the value (or record) is bound in no frame the failure's traceback passes
-        through below this suite, nor in any frame of an exception chained to it, as context
-        or cause, recursively, or of an exception group's members. A backend clears its
-        frames on a refusal; it must hold no value on every failure too, whatever broke the
-        write: error reporters render the frame locals of the whole chain, under str and
-        repr and as JSON and bytes, so the serialized, escaped form is as much a leak as the
-        raw text. The managed-key and mid-write failure hooks are required fields of the
-        fixture, so both paths are exercised on every backend."""
+        has pinned (the backend's own write lock), and a mid-write failure the fixture injects
+        at each failure point it can break (:data:`WRITE_FAILURES` — the write itself, the
+        serialization, the atomic replace) — the value (or record) is bound in no frame the
+        failure's traceback passes through below this suite, nor in any frame of an exception
+        chained to it, as context or cause, recursively, or of an exception group's members. A
+        backend clears its frames on a refusal; it must hold no value on every failure too,
+        whatever broke the write and wherever it broke: error reporters render the frame
+        locals of the whole chain, under str and repr and as JSON and bytes, so the
+        serialized, escaped form is as much a leak as the raw text. The managed-key and
+        mid-write failure hooks are required fields of the fixture, so both paths are
+        exercised on every backend, at every failure point."""
         marker = 'zFailed\nWrite "Locals" 9a4e'
         store = _seed(backend)
         record = {"token": marker, "refresh": marker}
@@ -448,7 +463,7 @@ class SecretPinningConformance:
                                          lambda level=level: store.set(NEW_NAME, marker, level=level))
             with backend.managed_key() as key:
                 failed_without_the_value(ValueError, lambda: store.set(key, marker, level="agent"))
-            with backend.fail_writes():
+            with backend.fail_writes(kind):
                 failed_without_the_value(OSError, lambda: store.set(NEW_NAME, marker, level="agent"))
                 failed_without_the_value(OSError, lambda: store.set_auth(SEED_PROVIDER, record))
 
@@ -472,7 +487,7 @@ class SecretPinningConformance:
                     pass  # the write failed; the caller keeps its value to retry
                 return value, own_failure
 
-        with backend.bind("a"), backend.fail_writes():
+        with backend.bind("a"), backend.fail_writes(WRITE_FAILURES[0]):
             value_after, own_failure = retry_from_the_handler()
             assert value_after == marker, "the store cleared a binding in a frame it does not own"
             assert str(own_failure) == "the caller's own earlier failure"

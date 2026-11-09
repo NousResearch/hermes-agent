@@ -68,9 +68,9 @@ async def dispatch_group_control(connection, method, params):
         raise AuthorityRefusal('profile_mismatch')
     if method not in _FIELDS or not isinstance(params, dict) or set(params) - (_FIELDS[method] | {'profile'}):
         raise AuthorityRefusal('invalid_params')
+    from persistence_assembly import profile_scope
     home = Path(authority.profile_id)
-    db_path = await asyncio.to_thread(_store_path(authority).resolve)
-    if db_path.parent != await asyncio.to_thread(home.resolve):
+    if _store(authority).scope != await asyncio.to_thread(profile_scope, home=home):
         raise AuthorityRefusal('profile_mismatch')
     from hermes_cli.profiles import profile_matches_home
     profile = params.get('profile')
@@ -122,24 +122,17 @@ def _store(authority):
     return store
 
 
-def _store_path(authority):
-    """The file that holds *authority*'s store."""
-    from persistence_assembly import store_location
-    return Path(store_location(_store(authority).scope))
-
-
 def _group(authority, actor, method, params, *, host_scope=False):
     from gateway import hosted_rooms as rooms
     from gateway.hosted_room_context import groups_state_result, set_room_context
     if method == 'groups.disband':
         params = {**params, 'room_id': rooms._room_id(params.get('room_id'))}
     store = _store(authority)
-    db_path = _store_path(authority)
     gateway_id = rooms.local_authority_gateway_id()
     service = getattr(authority, 'hosted_room_service', None)
     room_authorizer = getattr(service, 'authorize_room', None)
     if service is not None:
-        if Path(service.db_path).resolve() != Path(db_path).resolve():
+        if service.placement != 'profile' or service.store.scope != store.scope:
             raise AuthorityRefusal('profile_mismatch')
         status = service.runtime.status()
         if not status.get('running') or status.get('stopping'):
@@ -399,7 +392,7 @@ def _bot_sessions(authority, actor):
     Discovery is read-only: no restore/unarchive and no new store handle."""
     from tui_gateway.profile_roster_cache import cached_reader_session_fields
     operator = 'session:operator' in actor.capabilities
-    return cached_reader_session_fields(_store_path(authority).parent, (actor.subject, operator),
+    return cached_reader_session_fields(_store(authority).scope.profile_dir, (actor.subject, operator),
                                         lambda: _read_bot_sessions(_store(authority), actor.subject, operator))
 
 

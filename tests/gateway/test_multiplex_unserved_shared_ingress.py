@@ -13,6 +13,7 @@ import pytest
 from gateway import run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
+from persistence_assembly import store_location
 
 
 def _runner():
@@ -119,7 +120,7 @@ async def test_boot_replays_the_launch_ledger_before_secondaries_and_watchers(mo
     monkeypatch.setattr(pr_mod.process_registry, "_completions_restored", False)
     order = []
     monkeypatch.setattr(async_delegation, "restore_undelivered_completions",
-                        lambda q: order.append(("restore", async_delegation._db_path())) or 0)
+                        lambda q: order.append(("restore", store_location(async_delegation._scope()))) or 0)
     runner = _runner()
 
     async def secondaries():

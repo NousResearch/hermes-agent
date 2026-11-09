@@ -212,18 +212,18 @@ class GatewayRuntimeInitMixin:
         closes it), else opened lazily and kept until shutdown; None while ``_session_db`` is pinned
         or when the handle cannot open (the next read tries again)."""
         from gateway.run import _SESSION_DB_UNPINNED
-        from persistence_assembly import profile_scope, store_location
+        from persistence_assembly import profile_scope
         from persistence_beside import open_beside
         if getattr(self, "_session_db_pinned", _SESSION_DB_UNPINNED) is not _SESSION_DB_UNPINNED:
             return None
         if (store := getattr(self, "session_store", None)) is not None:
             return getattr(store, "persistence", None)
-        path = store_location(profile_scope())
+        scope = profile_scope()
         with self._session_db_handles_lock:
             handles = self.__dict__.setdefault("_persistence_handles", {})
-            handle = handles.get(path)
-            if handle is None and (handle := open_beside(path.parent)) is not None:
-                handles[path] = handle
+            handle = handles.get(scope.hermes_home_key)
+            if handle is None and (handle := open_beside(scope.profile_dir)) is not None:
+                handles[scope.hermes_home_key] = handle
         return handle
 
     def close_all_persistence_handles(self) -> None:

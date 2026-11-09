@@ -5,7 +5,7 @@ process-shared store; ``open_persistence_reader`` returns an owned read-only han
 migrates or repairs a store. A handle's repositories act on its profile only and no verb takes a scope. Opening a
 handle reads no configuration and touches no file: the provider is read and the backend assembled on the handle's first
 use. Every handle releases its reference on ``close``; the last release of a profile's shared backend releases its
-store. ``storage_health`` and ``store_location`` answer for a profile without opening its store; ``live_stores`` lends a handle on
+store. ``storage_health``, ``store_exists`` and ``store_location`` answer for a profile without opening its store; ``live_stores`` lends a handle on
 every store the process holds open. ``open_store_admin``
 and ``open_profile_repair`` open the physical admin capability, or answer ``AdminUnsupported`` on a backend without it.
 Only this module names a backend package: callers branch on ``capabilities``, never on a provider name.
@@ -36,6 +36,7 @@ __all__ = [
     "open_store_admin",
     "profile_scope",
     "storage_health",
+    "store_exists",
     "store_location",
     "store_owner_name",
 ]
@@ -295,6 +296,11 @@ def storage_health(scope: ProfileScope) -> StorageHealth:
     from persistence.sqlite.services import SQLiteStorageHealth
 
     return SQLiteStorageHealth(_state_db(scope))
+
+
+def store_exists(scope: ProfileScope) -> bool:
+    """Whether ``scope`` has a store yet, answered by its readiness probe without opening, creating or migrating it."""
+    return storage_health(scope).probe().detail != "not initialized"
 
 
 @contextmanager

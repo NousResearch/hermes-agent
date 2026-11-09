@@ -19,7 +19,11 @@ def cmd_set_journal_mode(args) -> int:
     from sqlite_support import resolve_journal_mode
 
     target = args.mode
-    db_path = Path(getattr(args, "db", None) or store_location(profile_scope()))
+    db_path = getattr(args, "db", None) or store_location(profile_scope())
+    if db_path is None:
+        print("✗ Setting the journal mode needs a file-backed session store; this profile's store has no file.")
+        return 1
+    db_path = Path(db_path)
     admin = open_store_admin(db_path, read_only=False) if db_path.exists() else None
     if admin is None or isinstance(admin, AdminUnsupported):
         print(f"No database at {db_path} (nothing to convert).")

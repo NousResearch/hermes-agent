@@ -23,6 +23,7 @@ import time
 from contextlib import closing
 
 from tools.process_registry import ProcessRegistry
+from persistence_assembly import profile_scope, store_location
 
 
 def _make_registry():
@@ -61,7 +62,7 @@ def test_restore_stamps_restored_flag(tmp_path, monkeypatch):
     """Every durable completion re-enqueued at startup carries restored=True."""
     import tools.async_delegation as ad
 
-    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
+    monkeypatch.setattr(ad, "_scope", lambda: profile_scope(home=tmp_path))
     record = {
         "delegation_id": "d-old",
         "goal": "old goal",
@@ -89,7 +90,7 @@ def test_restore_stamps_restored_flag(tmp_path, monkeypatch):
     assert got["session_key"] == "OLD_SESSION_A"
 
     # The stamp is in-memory only — the durable payload is unchanged.
-    with closing(sqlite3.connect(ad._db_path())) as conn:
+    with closing(sqlite3.connect(store_location(ad._scope()))) as conn:
         row = conn.execute(
             "SELECT event_json FROM async_delegations WHERE delegation_id='d-old'"
         ).fetchone()

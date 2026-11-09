@@ -305,11 +305,8 @@ class SessionManager:
 
     def _catalog_rows(self) -> dict[str, dict[str, Any]]:
         from acp_adapter.catalog import read_catalog_rows
-        from persistence_assembly import store_location
-
         handle = self._persistence
-        path = store_location(handle.scope) if handle is not None else get_hermes_home() / "state.db"
-        return read_catalog_rows(path)
+        return read_catalog_rows(handle.scope.profile_dir if handle is not None else get_hermes_home())
 
     def display_history(self, session_id: str) -> Optional[list[dict[str, Any]]]:
         """The DURABLE DISPLAY projection for a session (``include_compacted``): what a reopened

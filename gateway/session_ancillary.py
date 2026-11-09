@@ -549,12 +549,11 @@ def subagent_records(parent, session_id=None, *, session_db=None, route=None, in
 
 
 def _below_owned(record, owned, expected_db, registry):
-    """A worker of a child this roster already owns, in the same session database file. After a parent
+    """A worker of a child this roster already owns, in the same profile's store. After a parent
     rebuild or eviction the orchestrator is found by its durable owner id, but its worker's owner id names the
     orchestrator and its spawn ancestry runs through the old parent, so only the orchestrator links it."""
-    expected_path = _store_file(expected_db)
-    child_path = _store_file(getattr(record.get('agent'), '_session_db', None))
-    if expected_path is None or child_path is None or str(child_path) != str(expected_path):
+    expected = _store_key(expected_db)
+    if expected is None or _store_key(getattr(record.get('agent'), '_session_db', None)) != expected:
         return False
     return any(registry._is_descendant_of(record.get('agent'), r.get('agent')) for r in owned)
 
@@ -562,22 +561,25 @@ def _below_owned(record, owned, expected_db, registry):
 def _owned_by_lineage(record, target_sids, expected_db):
     """The read-only roster follows the conversation, as ``delegate_task(action="list")`` does: a
     child whose durable owner id is in this session's compression lineage, written to the same
-    session database file. Without it every cached-agent rebuild (``/reasoning``, ``/model``, a
+    profile's store. Without it every cached-agent rebuild (``/reasoning``, ``/model``, a
     policy refresh, idle eviction) hid still-running children from the dock while the status bar
     kept counting them. Control and tail stay pinned to the resident parent."""
     if not target_sids or record.get('owner_agent_session_id') not in target_sids:
         return False
-    expected_path = _store_file(expected_db)
-    child_path = _store_file(getattr(record.get('agent'), '_session_db', None))
-    return expected_path is not None and child_path is not None and str(child_path) == str(expected_path)
+    expected = _store_key(expected_db)
+    return expected is not None and _store_key(getattr(record.get('agent'), '_session_db', None)) == expected
 
 
-def _store_file(store):
-    """The database file *store* (a storage interface handle or a SessionDB) writes, or None."""
-    from persistence_assembly import Persistence, store_location
+def _store_key(store):
+    """Which profile's store *store* (a storage interface handle or a SessionDB) writes, or None."""
+    from persistence_assembly import Persistence
     if isinstance(store, Persistence):
-        return store_location(store.scope)
-    return getattr(store, 'db_path', None)
+        return store.scope.hermes_home_key
+    path = getattr(store, 'db_path', None)
+    if path is None:
+        return None
+    from hermes_constants import hermes_home_key
+    return hermes_home_key(Path(path).parent)
 
 
 def _compression_lineage(db, session_id):

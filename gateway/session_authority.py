@@ -1509,11 +1509,7 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, persi
     if persistence is None:
         from persistence import StoreUnavailable
         raise StoreUnavailable('the session store has no storage interface handle')
-    # Resolved off-loop before any state is published: the rest of the bring-up runs without
-    # yielding, so no other task observes a half-registered authority.
-    from pathlib import Path
-    from persistence_assembly import store_location
-    db_key = await asyncio.to_thread(Path(store_location(persistence.scope)).resolve)
+    store_key = persistence.scope.hermes_home_key
     epoch = await asyncio.to_thread(persistence.runtime.begin_epoch, instance_id=instance_id)
     # Hot-serve builds a profile while the loop serves the others: both writes stay off it.
     await asyncio.to_thread(persistence.admissions.recover, epoch=epoch)
@@ -1543,7 +1539,7 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, persi
     epochs = getattr(store, '_local_authority_epochs', None)
     if epochs is None:
         epochs = store._local_authority_epochs = {}
-    epochs[db_key] = epoch
+    epochs[store_key] = epoch
     from gateway.session_detached import watch_routes
     watch_routes(runner, store)
     from gateway.session_local_recovery import recover_local_sessions

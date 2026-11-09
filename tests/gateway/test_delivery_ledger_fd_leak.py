@@ -13,10 +13,11 @@ import sqlite3
 import pytest
 
 from gateway import delivery_ledger as dl
+from persistence_assembly import profile_scope
 
 
 def _point_ledger(monkeypatch, tmp_path):
-    monkeypatch.setattr(dl, "_db_path", lambda: tmp_path / "state.db")
+    monkeypatch.setattr(dl, "_scope", lambda: profile_scope(home=tmp_path))
     return dl
 
 

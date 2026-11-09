@@ -189,8 +189,10 @@ class HostedRoomService:
         peer_routes: Mapping[tuple[str, str], PeerMemberRoute] | None = None,
         peer_clients: Mapping[Any, HostedRoomPeerClient] | None = None) -> None:
         self.server, self.store, self.placement = server, store, placement
-        profile_db = Path(store_location(store.scope))
-        self.db_path = profile_db if placement == "profile" else hosted_rooms.default_db_path(profile_db.parent)
+        home = store.scope.profile_dir
+        # The room file the in-process route resolves event-bound files from; None for a store with no file.
+        self.db_path = store_location(store.scope) if placement == "profile" else hosted_rooms.default_db_path(home)
+        self._root = home if self.db_path is None else self.db_path.parent
         self.discussion_limits = _discussion_limits(self.root)
         hosted_rooms.prune_disbanded_rooms(self.store, placement=self.placement)
         self._policy_lock = threading.RLock()
@@ -281,7 +283,7 @@ class HostedRoomService:
 
     @property
     def root(self) -> Path:
-        return self.db_path.parent
+        return self._root
 
     def local_profiles(self) -> tuple[str, ...]:
         from hermes_constants import named_profile_has_identity, named_profile_is_deleted

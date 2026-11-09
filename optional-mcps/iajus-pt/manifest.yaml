@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT
+# MIT applies only to this manifest.yaml; see the adjacent LICENSE.
+# Hosted MCP access remains subject to IAJUS plans, authentication, limits,
+# prices and terms: https://iajus.pt/termos
+manifest_version: 1
+name: iajus-pt
+description: Pesquisa jurídica portuguesa
+source: https://iajus.pt
+transport:
+  type: http
+  url: https://pt.mcp.iajus.com.br/mcp
+auth:
+  type: oauth

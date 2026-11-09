@@ -9,8 +9,10 @@ discovery keeps its hands off every other plugin in that directory.
 
 from __future__ import annotations
 
+import os
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -110,3 +112,21 @@ def test_disabled_by_manifest_name_when_directory_name_differs(hermes_home):
 
     assert get_provider_profile("claude-subscription-directsdk-experimental") is None
     assert not [m for m in sys.modules if "directsdk_experimental" in m]
+
+
+def test_enabling_a_disabled_plugin_finds_it_without_touching_the_plugin_dirs(hermes_home, monkeypatch):
+    # Desktop's Plugins page edits only config.yaml; the plugin dirs keep their settled mtimes.
+    import providers
+
+    monkeypatch.setattr(providers, "_PLUGIN_DIR_STAMP_TTL_SECONDS", 0.0)
+    config = hermes_home / "config.yaml"
+    config.write_text("plugins:\n  disabled:\n    - installed-acp\n", encoding="utf-8")
+    _write_plugin(hermes_home / "plugins" / "installed-acp", name="installed-acp",
+                  manifest="name: installed-acp\nkind: model-provider\n")
+    settled = time.time() - 60
+    os.utime(hermes_home / "plugins", (settled, settled))
+    assert providers.get_provider_profile("installed-acp") is None
+
+    config.write_text("plugins:\n  disabled: []\n", encoding="utf-8")
+
+    assert providers.get_provider_profile("installed-acp").base_url == "acp://installed-acp"

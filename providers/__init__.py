@@ -83,6 +83,8 @@ class _HomeLayer:
     registry: dict[str, ProviderProfile] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
     stamps: tuple = ()
+    # ``plugins.disabled`` as of the last scan: enabling a skipped plugin changes no directory
+    disabled: frozenset = frozenset()
     stamp_checked_at: float | None = None
     # name -> when its miss last forced a stamp check (see ``_miss_recheck_due``)
     misses: dict[str, float] = field(default_factory=dict)
@@ -464,7 +466,10 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
     ):
         return False
     stamps = _plugin_dir_stamps(home)
-    if stamps != layer.stamps:
+    from hermes_cli.plugins_discovery import _get_disabled_plugins
+
+    disabled = frozenset(_get_disabled_plugins())
+    if stamps != layer.stamps or disabled != layer.disabled:
         # Judge the stamps' age before scanning: a slow scan must not let a stamp read before it
         # look settled afterwards and get remembered over an install that landed mid-scan.
         settled = _plugin_dir_stamps_settled(stamps)
@@ -473,6 +478,7 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
         # tick, which would hide the plugin until some later change: keep it unremembered so the
         # next periodic check scans again, until the stamps settle.
         layer.stamps = stamps if settled else ()
+        layer.disabled = disabled
         # Publish the completed layer -- stamps AND check time -- before auth
         # sync: it calls list_providers(), which re-enters this function. An
         # unpublished stamp rescanned forever; an unpublished check time

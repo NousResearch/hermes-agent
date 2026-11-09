@@ -5,6 +5,7 @@ Regression for https://github.com/NousResearch/hermes-agent/issues/119681
 from providers import get_provider_profile, register_provider
 from providers.base import ProviderProfile
 from agent.transports.chat_completions import ChatCompletionsTransport
+import pytest
 
 
 def test_bare_named_custom_provider_gets_custom_profile(monkeypatch):
@@ -53,6 +54,56 @@ def test_named_custom_fallback_does_not_override_registered_routes(monkeypatch):
     assert get_provider_profile("custom:fixture") is dedicated
     assert get_provider_profile("CUSTOM:unregistered") is get_provider_profile("custom")
     assert get_provider_profile("NONEXISTENT") is None
+
+
+@pytest.mark.parametrize("provider", ["ollama", "custom:projection-fixture", "projection-named-custom"])
+def test_glm53_projection_uses_generic_custom_for_aliases_and_named_custom(provider, monkeypatch):
+    import providers
+    from gateway.session_local import effort_fields
+
+    assert get_provider_profile("custom") is not None
+    monkeypatch.setattr(
+        providers, "_has_named_custom_provider",
+        lambda name, home, hkey: name == "projection-named-custom",
+    )
+    fields = effort_fields(
+        {"enabled": True, "effort": "xhigh"}, "", "glm-5.3-flash", provider,
+        "https://relay.example/v1", "chat_completions",
+    )
+    assert fields["reasoning_effort_wire"] == "max"
+
+
+def test_dedicated_custom_route_does_not_inherit_generic_glm53_mapping(monkeypatch):
+    import providers
+    from agent.reasoning_effort import GLM53_EFFORTS
+    from agent.transports.codex import _resolve_reasoning
+    from gateway.session_local import effort_fields
+
+    get_provider_profile("custom")
+    monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))
+    monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))
+    monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
+    dedicated = ProviderProfile(name="custom:fixture")
+    monkeypatch.setattr(dedicated, "supported_reasoning_efforts", lambda model: GLM53_EFFORTS)
+    register_provider(dedicated)
+
+    fields = effort_fields(
+        {"enabled": True, "effort": "xhigh"}, "", "glm-5.3-flash", "custom:fixture",
+        "https://relay.example/v1", "chat_completions",
+    )
+    assert fields["reasoning_effort_wire"] == "xhigh"
+    disabled = effort_fields(
+        {"enabled": False}, "", "glm-5.3-flash", "custom:fixture",
+        "https://relay.example/v1", "chat_completions",
+    )
+    assert disabled["reasoning_effort_wire"] == ""
+    params = {"provider": "custom:fixture", "base_url": "https://relay.example/v1"}
+    assert _resolve_reasoning(
+        "glm-5.3-flash", {**params, "reasoning_config": {"enabled": True, "effort": "xhigh"}},
+    ) == ("high", True)
+    assert _resolve_reasoning(
+        "glm-5.3-flash", {**params, "reasoning_config": {"enabled": False}},
+    ) == (None, False)
 
 
 def test_bare_named_custom_memo_caches_the_helper_result(monkeypatch):

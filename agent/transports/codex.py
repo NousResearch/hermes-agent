@@ -11,8 +11,8 @@ import re
 from typing import Any, Callable, Optional
 
 from agent.reasoning_effort import (
-    CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
-    XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort, is_astra_model,
+    CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS, GLM53_OVERRIDES,
+    XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, _is_generic_custom_glm53, clamp_effort, is_astra_model,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
     # per-model — "max" availability varies; "minimal"/"ultra" clamp to a listed level.
     codex_supported_efforts,
@@ -311,6 +311,7 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
     # supported level, never escalate, never invert the ladder) replaces the per-backend hand maps that
     # repeatedly leaked internal levels like "ultra" to the wire (#89503 class) or clamped one rung below a
     # model's real ceiling (#87279).
+    generic_custom_glm53 = False
     if params.get("is_xai_responses", False):
         from agent.model_metadata import is_grok_46_family
 
@@ -329,6 +330,10 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
             model, base_url, is_codex_backend=is_codex_backend)
         if not supported:
             return None, False
+        generic_custom_glm53 = _is_generic_custom_glm53(params.get("provider"), model)
+        if not reasoning_enabled and generic_custom_glm53:
+            # GLM-5.3 always thinks; use its floor rather than omitting reasoning and keeping the default.
+            return "low", True
     if not reasoning_enabled:
         has_none = any(str(level).strip().lower() == "none" for level in supported)
         if not has_none and model not in _UNPROJECTABLE_DISABLE_WARNED:
@@ -340,7 +345,8 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
                 model, ", ".join(str(level) for level in supported),
             )
         return ("none" if has_none else None), False
-    return clamp_effort(reasoning_effort, supported), reasoning_enabled
+    overrides = GLM53_OVERRIDES if generic_custom_glm53 else None
+    return clamp_effort(reasoning_effort, supported, overrides), reasoning_enabled
 
 
 _EXTENDED_PROMPT_CACHE_MODELS = (

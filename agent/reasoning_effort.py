@@ -94,6 +94,21 @@ META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 GEMINI4_THINKING_LEVELS: tuple[str, ...] = ("low", "medium", "high")
 
 
+def is_glm53_model(model: Optional[str]) -> bool:
+    """GLM-5.3's common aliases, including vendor-prefixed custom-route model names."""
+    name = (model or "").strip().lower()
+    return any(token in name for token in ("glm-5.3", "glm-5-3", "glm-5p3"))
+
+
+def _is_generic_custom_glm53(provider: Optional[str], model: Optional[str]) -> bool:
+    """Whether this route resolves to the generic custom profile's GLM-5.3 policy."""
+    from providers import get_provider_profile
+
+    name = (provider or "").strip().lower()
+    profile = get_provider_profile(name) if name else None
+    return profile is not None and profile.name == "custom" and is_glm53_model(model)
+
+
 def is_astra_model(model: Optional[str]) -> bool:
     """``gpt-6-astra`` or its Hermes-side ``-900k`` picker alias, with or without a ``vendor/`` prefix.
     The single home for the slug set: picker gating, effort vocabulary and the request sanitizer all
@@ -171,6 +186,15 @@ def route_supported_efforts(
     return OPENAI_COMPAT_WIRE_EFFORTS
 
 
+def route_clamp_effort(
+    effort: Optional[str], provider: Optional[str], model: Optional[str], api_mode: Optional[str] = None,
+) -> Optional[str]:
+    """Clamp onto a route's vocabulary, including generic custom GLM-5.3's mappings."""
+    if _is_generic_custom_glm53(provider, model):
+        return clamp_effort(effort, GLM53_EFFORTS, GLM53_OVERRIDES)
+    return clamp_effort(effort, route_supported_efforts(provider, model, api_mode))
+
+
 def effort_display_label(
     effort: Optional[str], provider: Optional[str] = None, model: Optional[str] = None,
     api_mode: Optional[str] = None,
@@ -179,7 +203,7 @@ def effort_display_label(
     it verbatim, else ``"<level> (sends <clamped> on this route)"`` so a Hermes-internal step such as
     ``ultra`` (#61634) is never presented as a distinct wire level the route does not have."""
     requested = str(effort or "").strip().lower()
-    clamped = clamp_effort(requested, route_supported_efforts(provider, model, api_mode))
+    clamped = route_clamp_effort(requested, provider, model, api_mode)
     return requested if not requested or clamped == requested else f"{requested} (sends {clamped} on this route)"
 
 

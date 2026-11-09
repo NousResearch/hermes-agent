@@ -46,3 +46,25 @@ async def test_lazy_session_info_reports_frozen_reasoning_and_tier(tmp_path, mon
         assert (info['service_tier'], info['fast']) == ('priority', False), info
     off = await call('session.create', request_id='off', source='gui', cwd=str(tmp_path), reasoning='none')
     assert (off['info']['reasoning_effort'], off['info']['reasoning_effort_wire']) == ('none', '')
+
+
+def test_glm53_disable_reports_the_lightest_wire_effort():
+    """A custom GLM-5.3 route cannot disable reasoning: the pill says Off→Low, not bare Off."""
+    from gateway.session_local import effort_fields
+
+    fields = effort_fields(
+        {'enabled': False}, '', 'glm-5.3-flash', 'custom:mc',
+        'https://ark.cn-beijing.volces.com/api/coding/v3', 'chat_completions',
+    )
+    assert (fields['reasoning_effort'], fields['reasoning_effort_wire']) == ('none', 'low')
+
+
+def test_glm53_xhigh_reports_the_top_wire_effort():
+    """Canonical session info agrees with the custom transport's xhigh→max mapping."""
+    from gateway.session_local import effort_fields
+
+    fields = effort_fields(
+        {'enabled': True, 'effort': 'xhigh'}, '', 'glm-5.3-flash', 'custom:mc',
+        'https://ark.cn-beijing.volces.com/api/coding/v3', 'chat_completions',
+    )
+    assert (fields['reasoning_effort'], fields['reasoning_effort_wire']) == ('xhigh', 'max')

@@ -3,7 +3,7 @@
 from typing import Optional
 
 from gateway.platforms.event import MessageEvent
-from plugins.platforms.telegram.telegram_media_group import ITEM_NOTES_KEY
+from plugins.platforms.telegram.telegram_media_group import item_notes
 
 
 def pad_inline_flags(event: MessageEvent) -> list[Optional[bool]]:
@@ -26,7 +26,7 @@ def merge_batched_event(pending: dict, key: str, event: MessageEvent, *, merge_c
     existing.media_text_inlined = pad_inline_flags(existing) + pad_inline_flags(event)
     existing.extend_media(event)
     caption, notes = event.text or "", []
-    for note in reversed(event.metadata.get(ITEM_NOTES_KEY) or []):
+    for note in reversed(item_notes(event)):
         if caption.endswith(note):  # two same-name or unnamed same-size items both keep their note
             caption, notes = caption[:-len(note)].rstrip("\n"), [note, *notes]
     if caption:

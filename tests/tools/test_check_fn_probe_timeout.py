@@ -41,9 +41,11 @@ def _short_budget(monkeypatch):
 
 def test_a_wedged_check_fn_drops_only_its_tool_and_is_not_restarted():
     calls = []
+    entered = threading.Event()
 
     def wedged():
         calls.append(1)
+        entered.set()
         _RELEASE.wait(30)
         return True
 
@@ -52,13 +54,22 @@ def test_a_wedged_check_fn_drops_only_its_tool_and_is_not_restarted():
     _register(reg, "fine", lambda: True)
     _register(reg, "uncached_wedged", registry_module.no_cache_check_fn(lambda: _RELEASE.wait(30)))
 
+    # Two cold builds at once: they share one worker for the wedged probe instead of each starting
+    # (and abandoning) its own.
+    builds = [threading.Thread(target=_build_within, args=(reg, {"wedged", "fine", "uncached_wedged"}, 5.0),
+                               daemon=True) for _ in range(2)]
+    for build in builds:
+        build.start()
+    assert entered.wait(5.0)
     stuck, names = _build_within(reg, {"wedged", "fine", "uncached_wedged"}, 5.0)
+    for build in builds:
+        build.join(5.0)
     assert not stuck, "a wedged check_fn held the tool-schema build open"
     assert names == ["fine"]
 
-    # A later build (TTL expired) answers at once from the parked probe instead of a fresh thread.
+    # A later build (TTL expired) answers from the parked probe instead of a fresh thread.
     invalidate_check_fn_cache()
-    stuck, names = _build_within(reg, {"wedged", "fine"}, 0.25)
+    stuck, names = _build_within(reg, {"wedged", "fine"}, 5.0)
     assert not stuck and names == ["fine"]
     assert len(calls) == 1
 

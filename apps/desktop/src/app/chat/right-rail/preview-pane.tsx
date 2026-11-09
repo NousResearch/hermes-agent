@@ -46,7 +46,7 @@ import {
   setPreviewRenderMode
 } from '@/store/preview'
 import { currentSessionId } from '@/store/preview-ownership'
-import { $selectedStoredSessionId, knownSessionProfile, ownerLookupSessionRows } from '@/store/session'
+import { $connection, $selectedStoredSessionId, knownSessionProfile, ownerLookupSessionRows } from '@/store/session'
 import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
 
 import { previewPartitionForProfile } from '../../../../electron/preview-guest-throttle'
@@ -323,6 +323,7 @@ export function PreviewPane({
   const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const connection = useStore($connection)
   const [currentUrl, setCurrentUrl] = useState(target.url)
   const liveUrlRef = useRef(currentUrl)
   liveUrlRef.current = currentUrl
@@ -340,6 +341,7 @@ export function PreviewPane({
   const [localReloadKey, setLocalReloadKey] = useState(0)
   const [annotate, setAnnotate] = useState(emptyAnnotateSession)
   const [draftNote, setDraftNote] = useState('')
+  const [phoneView, setPhoneView] = useState(false)
   const annotateRef = useRef(annotate)
   const annotateLoopRef = useRef<AbortController | null>(null)
   const annotateConversationRef = useRef(selectedStoredSessionId)
@@ -858,6 +860,7 @@ export function PreviewPane({
     }
 
     const lifetime = new AbortController()
+
     const unregister = registerPreviewPageReader(tabId, async () => {
       const webview = webviewRef.current
 
@@ -1401,7 +1404,7 @@ export function PreviewPane({
   // rebuild it. Per-page state (annotate pins, console log, history) resets
   // around the load so nothing bleeds across pages. Skipped when the guest
   // already shows the address (an in-page navigation got there first).
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+   
   useEffect(() => {
     if (!isWebPreview || isRemoteHtml) {
       return
@@ -1501,6 +1504,7 @@ export function PreviewPane({
             commentCount={annotate.stack.pins.length}
             consoleOpen={consoleOpen}
             devToolsOpen={devtoolsOpen}
+            fullscreen={Boolean(connection?.isFullscreen)}
             loading={loading}
             onBack={goBack}
             onClose={onClose}
@@ -1518,6 +1522,9 @@ export function PreviewPane({
             onToggleAnnotate={toggleAnnotate}
             onToggleConsole={() => consoleState.setOpen(open => !open)}
             onToggleDevTools={toggleDevTools}
+            onToggleFullscreen={() => window.hermesDesktop?.windowControls.toggleFullscreen()}
+            onTogglePhoneView={() => setPhoneView(open => !open)}
+            phoneView={phoneView}
             tabId={tabId}
             url={currentUrl}
           />
@@ -1531,9 +1538,13 @@ export function PreviewPane({
           className="pointer-events-auto relative min-h-0 flex-1 overflow-hidden bg-transparent"
           ref={previewContentRef}
         >
+          {phoneView && (
+            <div aria-hidden className="absolute inset-0 bg-black/60" />
+          )}
           <div
             className={cn(
-              'absolute inset-0 flex bg-transparent',
+              'absolute flex bg-transparent',
+              phoneView ? 'top-0 bottom-0 left-1/2 w-[390px] -translate-x-1/2' : 'inset-0',
               (isRemoteHtml || !isWebPreview || loadError) && 'pointer-events-none opacity-0'
             )}
             ref={hostRef}

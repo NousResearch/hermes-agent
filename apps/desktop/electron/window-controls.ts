@@ -1,4 +1,4 @@
-export type WindowControlAction = 'close' | 'minimize' | 'toggle-maximize'
+export type WindowControlAction = 'close' | 'minimize' | 'toggle-fullscreen' | 'toggle-maximize'
 
 interface CustomWindowControlsOptions {
   env?: NodeJS.ProcessEnv
@@ -35,9 +35,11 @@ interface ControllableWindow {
   close?: () => void
   focus?: () => void
   isDestroyed?: () => boolean
+  isFullScreen?: () => boolean
   isMaximized?: () => boolean
   maximize?: () => void
   minimize?: () => void
+  setFullScreen?: (fullscreen: boolean) => void
   unmaximize?: () => void
 }
 
@@ -48,6 +50,12 @@ export function performWindowControl(win: ControllableWindow | null | undefined,
 
   if (action === 'minimize' && win.minimize) {
     win.minimize()
+
+    return true
+  }
+
+  if (action === 'toggle-fullscreen' && win.setFullScreen) {
+    win.setFullScreen(!win.isFullScreen?.())
 
     return true
   }

@@ -3793,6 +3793,10 @@ export interface Translations extends NoticeTranslations {
       goBack: string
       goForward: string
       reload: string
+      fullscreen: string
+      exitFullscreen: string
+      phoneView: string
+      exitPhoneView: string
       address: string
       addressPlaceholder: string
       blankPageBody: string

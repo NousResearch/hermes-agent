@@ -302,4 +302,40 @@ describe('PreviewBrowserBar', () => {
 
     expect(onPopIn).toHaveBeenCalledOnce()
   })
+
+  it('toggles fullscreen and labels it by current state', () => {
+    const onToggleFullscreen = vi.fn()
+
+    const rendered = render(
+      <PreviewBrowserBar {...baseProps} onToggleFullscreen={onToggleFullscreen} />
+    )
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Fullscreen' }))
+
+    expect(onToggleFullscreen).toHaveBeenCalledOnce()
+
+    rendered.rerender(<PreviewBrowserBar {...baseProps} fullscreen onToggleFullscreen={onToggleFullscreen} />)
+
+    expect(rendered.getByRole('button', { name: 'Exit fullscreen' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('toggles the phone-adaptive viewport and labels it by current state', () => {
+    const onTogglePhoneView = vi.fn()
+    const rendered = render(<PreviewBrowserBar {...baseProps} onTogglePhoneView={onTogglePhoneView} />)
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Phone adaptive version' }))
+
+    expect(onTogglePhoneView).toHaveBeenCalledOnce()
+
+    rendered.rerender(<PreviewBrowserBar {...baseProps} onTogglePhoneView={onTogglePhoneView} phoneView />)
+
+    expect(rendered.getByRole('button', { name: 'Exit phone view' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('renders no view controls when no handlers are supplied', () => {
+    const rendered = render(<PreviewBrowserBar {...baseProps} />)
+
+    expect(rendered.queryByRole('button', { name: 'Fullscreen' })).toBeNull()
+    expect(rendered.queryByRole('button', { name: 'Phone adaptive version' })).toBeNull()
+  })
 })

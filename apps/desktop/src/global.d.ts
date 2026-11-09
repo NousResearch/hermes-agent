@@ -128,6 +128,7 @@ declare global {
       windowControls: {
         custom: boolean
         minimize: () => void
+        toggleFullscreen: () => void
         toggleMaximize: () => void
         close: () => void
       }

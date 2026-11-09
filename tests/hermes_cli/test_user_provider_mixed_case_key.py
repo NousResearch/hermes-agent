@@ -83,3 +83,20 @@ def test_hermes_model_marks_the_configured_mixed_case_provider_active():
     cfg = load_config()
     custom_map = _named_custom_provider_map(cfg)
     assert _resolve_active_provider(cfg, cfg["model"], "OpenAI", custom_map) in custom_map
+
+
+@pytest.mark.parametrize("key", ["Anthropic", "OpenRouter"])
+def test_key_spelled_like_a_builtin_stays_on_the_builtin_as_the_runtime_does(key):
+    """The runtime keeps a built-in name on the built-in, so ``Anthropic:`` is not what ``anthropic``
+    means there. The switch used to pick the user entry anyway and save ``model.provider: Anthropic``,
+    and the next turn then ran on api.anthropic.com with the built-in key (#151775)."""
+    from hermes_cli.config import load_config
+    from hermes_cli.providers import resolve_provider_full
+    from hermes_cli.runtime_provider_custom import _get_named_custom_provider
+
+    _write_config(key)
+    cfg = load_config()
+    for requested in (key, key.lower()):
+        assert _get_named_custom_provider(requested, config=cfg, resolve_credentials=False) is None
+        pdef = resolve_provider_full(requested, cfg["providers"])
+        assert pdef is not None and pdef.source != "user-config", (requested, pdef)

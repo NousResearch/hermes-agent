@@ -4748,6 +4748,8 @@ export const esOverrides = {
     noInlineTitle: 'Sin vista previa inline',
     noInlineBody: mimeType => `${mimeType || 'Este tipo de archivo'} aún puede adjuntarse como contexto.`,
     edit: 'Editar',
+    copyDocument: 'Copiar documento completo',
+    copyDocumentTruncated: length => `Mostrando los primeros 4.000 caracteres de ${length}. El documento completo está en el portapapeles.`,
     editing: 'Edición',
     unsavedChanges: 'Cambios no guardados',
     saveFailed: message => `No se pudo guardar: ${message}`,

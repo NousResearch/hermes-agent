@@ -13,11 +13,13 @@ const WIN_DRIVE_RE = /^([A-Za-z]):[\\/]/
 // `/mnt/c` and `/mnt/c/...` (drvfs default automount root).
 const WSL_MOUNT_RE = /^\/mnt\/([a-z])(?:\/(.*))?$/i
 
+// A colon must be followed by a separator (or end the string): `/E:Users`
+// is a valid POSIX filename under WSL, not a Windows drive path.
 // `/c/...`, `/cygdrive/c/...`, `/mnt/c/...` (Git Bash, Cygwin, drvfs) and the
 // `/E:/...` spelling some shells emit for `E:\...` — without the `:` branch a
 // perfectly valid Windows path fell through to the WSL branch below and became
 // `\\wsl.localhost\<distro>\E:\...`.
-const SHELL_DRIVE_RE = /^\/(?:cygdrive\/|mnt\/)?([a-z])(?:[:/]\/?|$)/i
+const SHELL_DRIVE_RE = /^\/(?:cygdrive\/|mnt\/)?([a-z])(?:(?::)?\/+|:$|$)/i
 
 let cachedDistro: null | string = null
 let cachedUncBase: null | string = null

@@ -712,6 +712,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     continue
                 if self._load_background_notifications_mode() == "off":
                     continue
+                next_retry_at = evt.get("_watch_next_retry_at")
+                if next_retry_at is not None and next_retry_at > time.monotonic():
+                    # Keep backoff for enabled notices; suppressed ones should be discarded now.
+                    completion_queue.put(evt)
+                    continue
                 if evt.get("type") == "heartbeat":
                     from gateway.session_automation import deliver_heartbeat
                     delivered = await deliver_heartbeat(self, evt)

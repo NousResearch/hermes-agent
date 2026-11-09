@@ -1,0 +1,21 @@
+name: phoenix
+title: Phoenix — crash-proof execution journal & deterministic wind tunnel
+repo: https://github.com/Ratz00007/phoenix
+sha: 75326501b1f95da6afd6b3d29afd9d592a561bd5
+description: >-
+  Transactional SQLite WAL crash-recovery journal, pre/post SHA-256 state fingerprinting,
+  live idempotency guard, and deterministic ReplayLab fault-injection wind tunnel with
+  Zeller's ddmin minimizer for Hermes agents. Zero LLM calls in recovery.
+maintainer: Ratz00007
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+version: "0.3.0"
+capabilities:
+  provides_tools:
+    - phoenix_ledger
+    - phoenix_windtunnel
+  provides_hooks: []
+  provides_middleware:
+    - tool_execution
+  requires_env: []

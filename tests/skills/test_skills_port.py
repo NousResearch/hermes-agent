@@ -196,6 +196,27 @@ def test_a_directory_alias_two_skills_share_is_refused_never_guessed(index, tmp_
         assert index.get("two/shared")["name"] == "second"
 
 
+def test_every_operation_accepts_the_exact_path_the_index_advises(index, tmp_path):
+    for category in ("one", "two"):
+        skill_dir = tmp_path / "skills" / category / "alpha"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            _skill_md("alpha", f"The {category} copy."), encoding="utf-8")
+    with bind_profile_scope(tmp_path):
+        with pytest.raises(ValueError, match="use one of one/alpha, two/alpha"):
+            index.put("alpha", _skill_md("alpha", "A third copy."))  # it advises the exact paths
+        row = index.put("one/alpha", _skill_md("alpha", "Replaced by exact path."))
+        assert row["load_name"] == "one/alpha"  # one of two same-named skills: by exact path
+        assert (tmp_path / "skills" / "one" / "alpha" / "SKILL.md").read_text(
+            encoding="utf-8") == _skill_md("alpha", "Replaced by exact path.")
+        assert "The two copy." in (tmp_path / "skills" / "two" / "alpha" / "SKILL.md").read_text()
+        index.put_file("one/alpha", "references/notes.md", "notes")
+        assert index.read_body("one/alpha", "references/notes.md") == "notes"
+        assert index.delete_file("one/alpha", "references/notes.md") is True
+        assert index.delete("one/alpha") is True
+        assert index.get("alpha")["description"] == "The two copy."  # the survivor, now unique
+
+
 def test_supporting_files_live_behind_the_body_operation(index, tmp_path):
     with bind_profile_scope(tmp_path):
         index.put("alpha", _skill_md("alpha", "Holds files."))

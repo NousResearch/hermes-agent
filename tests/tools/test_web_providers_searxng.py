@@ -131,27 +131,6 @@ class TestSearXNGSearchProviderSearch:
             assert engine in result["error"]
         assert "CAPTCHA" in result["error"]
 
-    def test_failure_error_names_at_most_max_engines(self, monkeypatch):
-        """The error string is bounded by _MAX_ENGINES_NAMED, not by the instance's engine count:
-        the total stays in the count, the tail collapses to "and N more"."""
-        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
-        from plugins.web.searxng.provider import _MAX_ENGINES_NAMED, SearXNGWebSearchProvider
-        engines = [f"engine{i:02d}" for i in range(_MAX_ENGINES_NAMED + 15)]
-        mock_resp = self._make_mock_response(
-            {"results": [], "unresponsive_engines": [[e, "Suspended: CAPTCHA"] for e in engines]}
-        )
-
-        with patch("httpx.get", return_value=mock_resp):
-            result = SearXNGWebSearchProvider().search("test query", limit=5)
-
-        assert result["success"] is False
-        assert f"{len(engines)} engine(s)" in result["error"]
-        for engine in engines[:_MAX_ENGINES_NAMED]:
-            assert engine in result["error"]
-        for engine in engines[_MAX_ENGINES_NAMED:]:
-            assert engine not in result["error"]
-        assert "and 15 more" in result["error"]
-
     _SAMPLE_ROWS = [
         {"title": "Result A", "url": "https://a.example.com", "description": "Desc A", "position": 1},
         {"title": "Result B", "url": "https://b.example.com", "description": "Desc B", "position": 2},

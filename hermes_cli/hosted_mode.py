@@ -311,12 +311,27 @@ def _require_hosted_backends(config: Mapping[str, Any]) -> None:
     ``persistence.provider`` and refuses the built-in SQLite (a local single-tenant store), a
     provider that does not declare scope pinning or has no callable ``assert_isolating``, and one
     whose ``assert_isolating`` raises."""
+    from hermes_identity_verifier import resolve_identity_verifier
+
     verifier = str(_hosted_setting(config, "identity_verifier") or "").strip()
     if not verifier:
         _refuse(
             "no identity verifier is configured (hosted.identity_verifier)",
             "Every inbound frame must be admitted by a verifier that checks the connector's signed "
             "claim; install the deployment's verifier plugin and name it there")
+    try:
+        identity = resolve_identity_verifier(verifier)
+    except LookupError as exc:
+        _refuse(
+            f"the configured identity verifier is missing: {exc}",
+            "Install the deployment's identity verifier plugin so the name in "
+            "hosted.identity_verifier resolves; a hosted frame is admitted by the named verifier "
+            "or by nobody, never by a fallback")
+    if not identity.is_available():
+        _refuse(
+            f"the configured identity verifier {verifier!r} is not available here",
+            "The verifier must be able to check every frame this process serves (the reference "
+            "turn-claim verifier needs the deployment's relay id); fix its configuration")
     from persistence import IsolationUnsupported
     from persistence_assembly import require_hosted_persistence
 

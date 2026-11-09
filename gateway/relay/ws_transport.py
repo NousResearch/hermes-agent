@@ -973,8 +973,29 @@ class WebSocketRelayTransport:
             return
         from gateway.session_ingress_context import relay_callback
         event = _event_from_wire(frame.get("event", {}))
+        # Hosted intake: the identity verifier admits the frame before anything runs. A refusal
+        # drops it — counted, logged by reason, acknowledged like an unknown agent (a replay
+        # would be refused again) and never routed to a default tenant or agent — and the
+        # verified identity is bound as the scope the frame's whole turn runs under. A local
+        # install consults no verifier: the frame is handled exactly as it always was.
+        bound = None
+        from hermes_cli.hosted_mode import is_hosted
+        if is_hosted():
+            from gateway.relay.identity_intake import admit_verified, bind_verified, verify_inbound_frame
+            try:
+                verdict = await verify_inbound_frame(frame)
+            except Exception:
+                logger.exception("relay: identity verifier failed; frame dropped, acknowledged")
+                verdict = None
+            turn = admit_verified(verdict)
+            if turn is None:
+                buffer_id = frame.get("bufferId")
+                if buffer_id:
+                    await self._send_inbound_ack(str(buffer_id))
+                return
+            bound = bind_verified(turn)
         try:
-            with relay_callback(self, event):
+            with relay_callback(self, event), bound or contextlib.nullcontext():
                 admitting = await self._inbound(event)
         except Exception:
             # A handler failure is not a socket failure: keep this reader, withhold the

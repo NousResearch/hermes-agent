@@ -18,12 +18,12 @@ so the newer cancels the older. The older run's gate then fails on
 ``cancelled`` jobs, and branch protection requires the gate of *every* check
 suite on the head SHA, so the PR stays blocked even after the surviving run
 passes. With the flag, a gate whose only non-successes are ``cancelled`` jobs
-asks the Actions API whether a run of the same workflow, event and head SHA
-that started *later* (``run_started_at``, ties broken by the higher run id) is
-still live or succeeded. If so, that run's own gate carries the required
-verdict, and this one passes. Delegation only points forward, so it is acyclic:
-the last run to start can never pass, and two cancelled duplicates cannot vouch
-for each other. Only a run's first executed attempt may delegate: attempt 1, or
+asks the Actions API whether a run of the same workflow, event, head SHA, head
+branch and head repository that started *later* (``run_started_at``, ties
+broken by the higher run id) is still live or succeeded. If so, that run's own
+gate carries the required verdict, and this one passes. Delegation only points
+forward, so it is acyclic: the last run to start can never pass by delegation,
+and two cancelled duplicates cannot vouch for each other. Only a run's first executed attempt may delegate: attempt 1, or
 attempt 2 of a fork run whose attempt 1 only waited for approval. Any other
 rerun, failure, missing job, API error or lack of such a run keeps the gate
 failing.
@@ -111,22 +111,37 @@ def _entry_order(run: dict[str, Any]) -> tuple[str, int] | None:
     return (started, run_id) if isinstance(started, str) and isinstance(run_id, int) else None
 
 
+def _head_identity(run: dict[str, Any]) -> tuple[str, int] | None:
+    """The pushed branch and repository; both duplicates of one push share them.
+
+    ``pull_requests`` is empty on fork runs, so the PR itself cannot be
+    matched; branch plus head repository rules out another PR on the same SHA
+    unless it is the same branch opened against a second base.
+    """
+    branch, repo = run.get("head_branch"), run.get("head_repository")
+    repo_id = repo.get("id") if isinstance(repo, dict) else None
+    return (branch, repo_id) if isinstance(branch, str) and isinstance(repo_id, int) else None
+
+
 def find_superseding_run(own: dict[str, Any], runs: list[dict[str, Any]]) -> int | None:
     """Id of a later live or successful run of ``own``'s workflow on its head SHA.
 
     Only a run whose current attempt started strictly later (``run_started_at``,
     ties broken by the higher id) qualifies: the later entrant is the one that
     cancels. An attempt's start never moves back, so delegation is acyclic and
-    the last run to start always fails.
+    the last run to start never delegates. The twin must also share ``own``'s
+    head branch and head repository.
     """
-    own_order = _entry_order(own)
-    if own_order is None:
+    own_order, own_head = _entry_order(own), _head_identity(own)
+    if own_order is None or own_head is None:
         return None
     for run in runs:
         order = _entry_order(run)
         if order is None or order <= own_order:
             continue
         if any(run.get(key) != own.get(key) for key in ("workflow_id", "head_sha", "event")):
+            continue
+        if _head_identity(run) != own_head:
             continue
         if run.get("status") in _LIVE_STATUSES or (
             run.get("status") == "completed" and run.get("conclusion") == "success"

@@ -102,7 +102,8 @@ def test_cli_stdin_exit_codes_and_output(tmp_path, release, results, code, repor
 
 # --allow-superseded: a cancelled duplicate pull_request run of one push.
 _OWN = {"id": 1, "run_attempt": 1, "workflow_id": 7, "head_sha": "abc", "event": "pull_request",
-        "status": "in_progress", "conclusion": None, "run_started_at": "2026-11-09T11:45:30Z"}
+        "status": "in_progress", "conclusion": None, "run_started_at": "2026-11-09T11:45:30Z",
+        "head_branch": "fix/x", "head_repository": {"id": 99}}
 _CANCELLED_DETECT = {"detect": {"result": "cancelled", "outputs": {}}, "tests": {"result": "skipped"}}
 
 
@@ -173,6 +174,23 @@ def test_cancelled_run_without_live_twin_still_fails(monkeypatch, capsys, other)
 def test_find_superseding_run_ignores_a_twin_of_another_sha_workflow_or_event(other):
     # The client re-checks every key, so a listing the API failed to filter still cannot delegate.
     assert required_results.find_superseding_run(_OWN, [other]) is None
+
+
+# Another PR on the same SHA (pull_requests is empty on fork runs, so the PR
+# cannot be matched): its runs come from a different branch or head repository.
+@pytest.mark.parametrize("own,other", [
+    (_OWN, _dup(head_branch="other")),
+    (_OWN, _dup(head_repository={"id": 100})),
+    (_OWN, _dup(head_repository=None)),
+    ({**_OWN, "head_repository": None}, _dup(head_repository=None)),
+    ({**_OWN, "head_branch": None}, _dup(head_branch=None)),
+])
+def test_a_twin_from_another_branch_or_head_repository_cannot_carry_the_verdict(monkeypatch, capsys,
+                                                                                 own, other):
+    fetch, _ = _fake_fetch([other], own=own)
+    code, out = _run_main(monkeypatch, capsys, _CANCELLED_DETECT, ["--allow-superseded"], fetch)
+    assert code == 1
+    assert "::error::1 job(s) failed: detect" in out
 
 
 # A fork run held for approval: attempt 1 ran nothing, and once approved the

@@ -285,6 +285,8 @@ def retry_invalid_response(
     if agent._fallback_index < len(agent._fallback_chain):
         agent._buffer_diagnostic_status("⚠️ Empty/malformed response — switching to fallback...")
     if agent._try_activate_fallback():
+        # The buffered status above is dropped once the fallback answers: log the trigger (#152101).
+        logger.warning("%sInvalid API response (%s) — switched to fallback", agent.log_prefix, ", ".join(error_details))
         active_system_prompt = _arm_fallback_restart(
             agent, api_messages, active_system_prompt, _retry)
         retry_count = 0

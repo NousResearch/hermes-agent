@@ -1065,6 +1065,7 @@ class GatewayTurnProgressMixin:
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
         from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
+        from gateway.run_status_filter import status_chat_type
         from gateway.warning_notifications import is_warning_status, render_notification
         ctx = self._ctx
         if ctx.mute_notification_reply or not self._status_live():
@@ -1075,7 +1076,7 @@ class GatewayTurnProgressMixin:
         if not automatic_notices_allowed(ctx.source):
             logger.debug("status_callback suppressed for bot-authored message: %s", event_type)
             return
-        prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)
+        prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message, status_chat_type(ctx.source))
         if prepared is None:
             logger.debug(
                 "status_callback suppressed for %s/%s: %s",

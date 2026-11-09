@@ -96,10 +96,10 @@ VISIBLE_COMPRESSION_MESSAGES = [
     ),
     # Blocked-overflow warning (#62625/#62708): the context is over the
     # compression threshold but compression is blocked (summary-LLM cooldown
-    # or the anti-thrash breaker). FAILURE-CLASS — must reach chat users so
-    # they can /new or /compress before the session dies at the hard token
-    # limit. Formatted from the SAME template the emit site uses, so a
-    # rewording that drifts into the noise regex fails here.
+    # or the anti-thrash breaker). FAILURE-CLASS — must reach a DM so the
+    # owner can /new or /compress before the session dies at the hard token
+    # limit; shared chats drop it (#101003, tests/gateway/test_run_status_filter.py).
+    # Formatted from the SAME template the emit site uses.
     CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
         tokens=85_000, threshold=72_000, reason="cooldown:30"
     ),
@@ -181,9 +181,10 @@ def test_manual_compress_feedback_and_failure_notices_stay_visible(platform, mes
 
     These are the deliberate carve-outs from routine-compression silence
     (#16775 failures, manual_compression_feedback.py) — widening the noise
-    regex must not start eating them.
+    regex must not start eating them. Pinned in a DM: the blocked-overflow
+    warning is DM-only since #101003.
     """
-    assert _prepare_gateway_status_message(platform, "warn", message) == message
+    assert _prepare_gateway_status_message(platform, "warn", message, "dm") == message
 
 
 @pytest.mark.parametrize("platform", ["slack", "matrix"])

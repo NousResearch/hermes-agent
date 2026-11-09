@@ -308,26 +308,6 @@ def _install_defaults(names: list[str], *, verify: bool) -> None:
                   f"`hermes pm install {name}` succeeds", flush=True)
 
 
-def _first_selection(extras: list[str]) -> tuple[list[str], list[str]]:
-    """``(extras this install's sync requests, the ones it carries)``: the caller's, else ``[all]``.
-
-    Before PM has recorded a selection (a first migration that failed before writing facts),
-    the main-era venv's extras are carried too, minus any dropped with ``--without``, exactly as
-    the launch migration would; otherwise this sync's facts would end the re-scan without them.
-    The carried ones are not a request, so they never opt a declined extra back in.
-    """
-    from pm.environments import runtime_facts_path
-    from pm.extras import legacy_selection
-
-    requested = extras or ["all"]
-    if runtime_facts_path(repo_root()).is_file():
-        return requested, []
-    carried = legacy_selection(repo_root())
-    if carried == ["all"]:
-        return requested, []
-    return sorted(set(carried) | set(extras)), sorted(set(carried) - set(requested))
-
-
 def _install_python_environments(extras: list[str], *, sync: bool, test_environment) -> int:
     """Sync the venv and build the side test environment; return the failure count."""
     failed = 0
@@ -339,9 +319,9 @@ def _install_python_environments(extras: list[str], *, sync: bool, test_environm
             # `hermes update` force-syncs on every run (update_cmd.py) and
             # the installers' old `--extra all` did. sync_venv unions, so
             # any lazy extras already recorded survive this; it only makes
-            # a fresh bootstrap match what the first update would do.
-            selection, carried = _first_selection(extras)
-            sync_venv(selection, explicit=True, **({"automatic": carried} if carried else {}))
+            # a fresh bootstrap match what the first update would do. Before a selection is
+            # recorded, sync_venv carries the main-era venv's extras too (pm.carried_extras).
+            sync_venv(extras or ["all"], explicit=True)
             print(f"✓ venv{' +' + ' +'.join(extras) if extras else ''}")
         except InstallError as e:
             print(f"✗ {e}")

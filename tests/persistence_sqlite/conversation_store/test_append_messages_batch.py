@@ -22,6 +22,7 @@ from persistence.sqlite.conversation._store.messages import (
 )
 from persistence.sqlite.conversation._store.sessions import create_session
 from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
 
 
 @pytest.fixture()
@@ -33,7 +34,7 @@ def persistence(tmp_path):
 
 @pytest.fixture()
 def db(persistence):
-    d = persistence.holder()
+    d = raw_holder(persistence)
     create_session(d, "sess-batch", source="cli")
     return d
 

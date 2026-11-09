@@ -173,7 +173,7 @@ def validate_windows_bundle(bundle: Path, windows: list[dict]) -> None:
         raise ValueError("Universal bundle must cover both architectures")
 
 
-ALL_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64", "termux", "windows-universal")
+ALL_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-arm64", "termux", "windows-universal")
 
 
 def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
@@ -379,10 +379,7 @@ def promote(manifest: dict, root: Path, public_base: str) -> None:
         raise ValueError("APT indexes staged for a release without a Termux candidate")
     # Every package and index must exist before the first channel write.
     # The merged feed points at the attempt archive; the version stays plain.
-    # macOS Intel is opt-in: without it the feed carries the arm64 leg alone.
-    arches = tuple(arch for arch in ("arm64", "x64")
-                   if any(row["platform"] == "macos" and row["arch"] == arch for row in manifest["packages"]))
-    finalize(tag=manifest["tag"], dir=root, archive=manifest["archive"], arches=arches, verify_bytes=False)
+    finalize(tag=manifest["tag"], dir=root, archive=manifest["archive"], verify_bytes=False)
     def publish_pointer(key, file):
         put(tag=manifest["tag"], key=key, file=file, key_is_full=True)
         digest = hashlib.sha256()

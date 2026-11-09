@@ -101,7 +101,6 @@ def _runner(session_store):
     runner._agent_cache_lock = threading.Lock()
     runner._running_agents = {}
     runner._running_agents_ts = {}
-    runner._session_run_generation = {}
     runner._session_model_overrides = {}
     runner._pending_model_notes = {}
     runner._pending_skills_reload_notes = {}

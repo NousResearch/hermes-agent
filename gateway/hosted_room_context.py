@@ -31,7 +31,7 @@ _CONTEXT_ACTOR = {"kind": "system", "id": "room-control"}
 # member; a failure notice never does (its text is machine-written, not addressed to anyone).
 SCHEDULED_POST_PREFIX = "cron:"
 SCHEDULED_NOTICE_PREFIX = "cron-notice:"
-ROUTING_MODES = ("everyone", "lead")
+ROUTING_MODES = ("everyone", "lead", "auto")
 _EMPTY_CONTEXT = {"purpose": "", "notes": "", "routing": "everyone", "lead_member_id": ""}
 
 
@@ -47,7 +47,7 @@ def validate_context(purpose: Any, notes: Any, routing: Any = "everyone", lead_m
     if len(notes.encode("utf-8")) > MAX_NOTES_BYTES:
         raise hosted_rooms.HostedRoomError(f"notes must be at most {MAX_NOTES_BYTES} bytes")
     if routing not in ROUTING_MODES:
-        raise hosted_rooms.HostedRoomError("routing must be 'everyone' or 'lead'")
+        raise hosted_rooms.HostedRoomError("routing must be 'everyone', 'lead' or 'auto'")
     if routing == "lead" and not lead_member_id.strip():
         raise hosted_rooms.HostedRoomError("lead routing needs a lead_member_id")
     return {"purpose": purpose, "notes": notes, "routing": routing,

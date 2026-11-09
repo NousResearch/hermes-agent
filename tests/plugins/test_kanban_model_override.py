@@ -132,7 +132,7 @@ def test_spawn_resolves_claimed_task_policy(
     expected_model, expected_provider, expected_reasoning,
 ):
     """The worker passes identity, while the owner reads overrides from SQLite."""
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_kanban import build_kanban_policy
     from hermes_cli import kanban_worker_client
     from hermes_state_runtime import RuntimeStoreError
@@ -157,7 +157,7 @@ def test_spawn_resolves_claimed_task_policy(
     kbd._default_spawn(task, str(workspace))
     assert captured["cmd"] == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
     assert captured["env"]["HERMES_HOME"] == str(profile)
-    actor = Principal("owner", str(profile), frozenset({"session:create"}), "transport")
+    actor = SessionActor("owner", str(profile), frozenset({"session:create"}), "transport")
     connection = SimpleNamespace(
         authority=SimpleNamespace(profile_id=str(profile)), actor=actor, native_owner=True)
     config = {"model": {"default": "profile-model", "provider": "custom"},

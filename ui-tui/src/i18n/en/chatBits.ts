@@ -72,6 +72,12 @@ export const chatBitsEn = {
       systemMessage: '(system message)',
       chars: (count: string) => `${count} chars`,
       longMessage: '[long message]',
+      /** {0} = 1-based paste number within the message */
+      pasteSection: (n: number) => `Pasted text #${n}`,
+      /** {0} = line count */
+      pasteSectionShowHint: (lines: number) => `${lines} lines · click or Ctrl+P to show`,
+      /** {0} = line count */
+      pasteSectionHideHint: (lines: number) => `${lines} lines · click or Ctrl+P to hide`,
       response: 'Response'
     },
     todo: {

@@ -149,7 +149,7 @@ async function createRoom(page: Page, bots: [string, string][], roomName: string
   }
 
   await dialog.getByRole('textbox', { name: 'Group name' }).fill(roomName)
-  await dialog.getByRole('button', { name: `Create Group (${bots.length})` }).click()
+  await dialog.getByRole('button', { name: `Create group (${bots.length})` }).click()
   await expect(dialog).toBeHidden({ timeout: 30_000 })
 }
 
@@ -241,9 +241,6 @@ async function shootExtras(page: Page, room: string, label: string): Promise<voi
 /** The Bots list while the room works: its row with member avatars and the working glyph. */
 async function shootBotsRow(page: Page, room: string, label: string): Promise<void> {
   await openBots(page)
-  const refresh = page.getByRole('button', { name: /Refresh gateway groups/i }).first()
-
-  if (await refresh.count()) {await refresh.click().catch(() => undefined)}
   await page.waitForTimeout(1500)
   await capture('10-bots-row', label, { rowState: await page.locator('[data-room-state]').count(), row: await page.getByRole('button', { name: room, exact: true }).count() })
   const tab = page.getByRole('tab', { name: new RegExp(`^${room}`) }).first()

@@ -832,3 +832,88 @@ async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
     )
     assert event.reply_to_message_id == "678"
     assert event.reply_to_text == "Your morning briefing: CI is green."
+
+
+def test_rich_reply_and_inbound_blocks_share_one_flattener():
+    """Replied-to rich blocks and inbound rich blocks read through ONE parser: ``children`` spans,
+    labelled list items and a ``mappingproxy`` api_kwargs all flatten the same way in both."""
+    from types import MappingProxyType
+
+    from gateway.platforms.event import MessageType
+    from plugins.platforms.telegram.telegram_entities import rich_message_text
+
+    blocks = [
+        {"type": "paragraph", "text": ["See ", {"type": "bold", "children": ["the plan"]}]},
+        {"type": "list", "items": [{"label": "1.", "blocks": [{"type": "paragraph", "text": "ship it"}]}]},
+    ]
+    msg = _reply_message_with_rich_blocks("678", blocks=blocks, api_kwargs_factory=MappingProxyType)
+
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_text == "See the plan\n1. ship it"
+    assert rich_message_text(msg.reply_to_message) == event.reply_to_text
+
+
+def test_reply_to_deeply_nested_rich_message_still_reaches_the_agent():
+    """A plain reply quoting a pathologically nested rich message (valid JSON, 2,000 levels of blocks
+    and of inline spans) is still delivered: the flattener drops the over-deep content instead of
+    raising RecursionError out of ``_build_message_event``."""
+    from gateway.platforms.event import MessageType
+
+    block = {"type": "paragraph", "text": "leaf"}
+    span = "deep"
+    for _ in range(2000):
+        block = {"type": "quote", "blocks": [block]}
+        span = {"type": "bold", "children": [span]}
+    blocks = [{"type": "paragraph", "text": ["top ", {"type": "bold", "text": "line"}]}, block,
+              {"type": "paragraph", "text": span}]
+    msg = _reply_message_with_rich_blocks("678", blocks=blocks)
+
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_message_id == "678"
+    assert event.reply_to_text == "top line"
+
+
+def test_rich_message_filter_leaves_media_messages_to_the_media_handler():
+    """``rich_message_filter`` (registered ahead of the media handler) claims a rich-only message but not a
+    caption-less photo that also carries ``rich_message``: that photo must still be downloaded as media."""
+    from plugins.platforms.telegram.telegram_entities import rich_message_filter
+
+    class _MessageFilter:  # PTB's MessageFilter: subclass overrides filter(message)
+        def __init__(self, name=None):
+            self.name = name
+
+    rich_filter = rich_message_filter(SimpleNamespace(MessageFilter=_MessageFilter))
+    rich = {"rich_message": {"blocks": [{"type": "paragraph", "text": "look at this"}]}}
+    photo = [SimpleNamespace(file_id="f", width=1, height=1)]
+
+    assert rich_filter.filter(SimpleNamespace(text=None, effective_attachment=None, api_kwargs=rich)) is True
+    assert rich_filter.filter(SimpleNamespace(text=None, photo=photo, effective_attachment=photo,
+                                              api_kwargs=rich)) is False
+
+
+def test_rich_message_text_keeps_tables_details_math_links_and_custom_emoji():
+    """Bot API 10.1 block and span types whose content is not under ``text``/``items``/``blocks`` still reach
+    the agent: table rows, a details summary, math, a hidden link's URL (inlined like a ``text_link``) and a
+    custom emoji's alternative text. The mention scan (``skip_code``) does not see the inlined URL."""
+    from plugins.platforms.telegram.telegram_entities import rich_message_text
+
+    blocks = [
+        {"type": "table", "cells": [[{"text": "Model"}, {"text": "Price"}], [{"text": "HD103UJ"}, {"text": "20 EUR"}]]},
+        {"type": "details", "summary": "Specs", "blocks": [{"type": "paragraph", "text": "1TB"}]},
+        {"type": "mathematical_expression", "expression": "E=mc^2"},
+        {"type": "paragraph", "text": [
+            "ad ", {"type": "url", "text": "here", "url": "https://example.com/?u=@hermes_bot"}, " ",
+            {"type": "url", "text": "https://example.com/a", "url": "https://example.com/a"}, " ",
+            {"type": "mathematical_expression", "expression": "x^2"}, " ",
+            {"type": "custom_emoji", "custom_emoji_id": "5", "alternative_text": "\U0001F44D"}]},
+    ]
+    msg = SimpleNamespace(api_kwargs={"rich_message": {"blocks": blocks}})
+
+    assert rich_message_text(msg) == (
+        "Model | Price\nHD103UJ | 20 EUR\nSpecs\n1TB\nE=mc^2\n"
+        "ad here (https://example.com/?u=@hermes_bot) https://example.com/a x^2 \U0001F44D")
+    assert "@hermes_bot" not in rich_message_text(msg, skip_code=True)
+    malformed = [{"type": "list", "items": 5}, {"type": "table", "cells": 5}, {"type": "paragraph", "text": "ok"}]
+    assert rich_message_text(SimpleNamespace(api_kwargs={"rich_message": {"blocks": malformed}})) == "ok"

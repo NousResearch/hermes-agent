@@ -689,13 +689,27 @@ def _rewrite_cron_refs(consolidated: list[dict[str, Any]], pruned: list[dict[str
         return {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0, "error": str(e)}
 
 
-def _write_file(path: Path, label: str, render: Any) -> None:
-    """Best-effort write of *render()* (or the JSON dump of a non-callable payload);
-    rendering runs inside the guard so a serialisation error is logged, not raised."""
+def _write_file(path: Path, label: str, render: Any) -> bool:
+    """Best-effort write of *render()* (or the JSON dump of a non-callable payload); True once written.
+    Rendering runs inside the guard so a serialisation error is logged, not raised; a partial file a
+    failed write left behind is removed, so an existing report file is always a complete one."""
     try:
         path.write_text(render() if callable(render) else json.dumps(render, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        return True
     except Exception as e:
         logger.debug("Curator %s write failed: %s", label, e)
+        path.unlink(missing_ok=True)
+        return False
+
+
+def _notify_post_curator_run(run_dir: Optional[Path], dry_run: bool) -> None:
+    """``post_curator_run`` for a finished pass whose run.json and REPORT.md both exist; fired after the
+    pass's state is saved, so a slow plugin load never delays what ``hermes curator status`` reports."""
+    if run_dir is None or not ((run_dir / "run.json").is_file() and (run_dir / "REPORT.md").is_file()):
+        return
+    from hermes_cli.lifecycle import invoke_hook  # observers + plugins; each callback isolated there
+    invoke_hook("post_curator_run", run_dir=str(run_dir), run_json_path=str(run_dir / "run.json"),
+                report_md_path=str(run_dir / "REPORT.md"), dry_run=dry_run)
 
 
 def _write_run_report(
@@ -973,6 +987,7 @@ def run_curator_review(
         state2 = {**load_state(), "last_run_duration_seconds": elapsed, "last_run_summary": final_summary}
         # Per-run report, best-effort; path recorded for `hermes curator status`.
         after_report = _safe_curated_report()
+        report_path = None  # this pass's own report only: state2 still carries the previous pass's path
         try:
             report_path = _write_run_report(
                 started_at=start, elapsed_seconds=elapsed, auto_counts=counts, auto_summary=auto_summary,
@@ -985,6 +1000,7 @@ def run_curator_review(
         save_state(state2)
         _record_run_metric(trigger, dry_run, counts, before_report, after_report, llm_meta, hermes_home)
         _notify(on_summary, f"curator: {final_summary}")
+        _notify_post_curator_run(report_path, dry_run)
 
     if synchronous:
         _llm_pass()
@@ -1101,6 +1117,7 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
         acp_command = rp.get("command")
         if isinstance(acp_command, str) and acp_command:
             agent_kwargs.update(acp_command=acp_command, acp_args=list(rp.get("args") or []))
+        from agent.conversation_compression_checkpoint import checkpoint_required_from_config
         from hermes_cli.config import load_config_readonly
         from hermes_constants import resolve_reasoning_config
 
@@ -1118,7 +1135,10 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
             enabled_toolsets=["skills"],
             # Umbrella-building over hundreds of skills takes 50-100 API calls.
             max_iterations=9999,
-            quiet_mode=True, platform="curator", skip_context_files=True, skip_memory=True,
+            quiet_mode=True, platform="curator", skip_context_files=True,
+            # A curation run can compact (50-100 calls): under compression.checkpoint_required it needs the
+            # provider it checkpoints with, scoped as a fork.
+            skip_memory=not checkpoint_required_from_config(), memory_agent_context="subagent",
         )
         # Disable recursive nudges — the curator must never spawn its own review.
         review_agent._memory_nudge_interval = 0

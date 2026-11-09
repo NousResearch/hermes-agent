@@ -6,7 +6,7 @@
  * real (trivial commands + real subagent delegations). The tests assert the
  * sidebar states driven by real gateway events.
  *
- * Prerequisite: `npm run build` must have been run so dist/ exists.
+ * Prerequisite: `pnpm run build` must have been run so dist/ exists.
  */
 
 import { expect, test, type Page } from '@playwright/test'

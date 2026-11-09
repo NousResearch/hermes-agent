@@ -141,7 +141,6 @@ def _grant_published_tree(target: Path) -> None:
             target, failed[0][0], failed[0][1], unusable_dir_remedy(target))
 
 
-
 class StagedPlugin:
     def __init__(self, plugin: dict):
         from pm.store import tree_digest

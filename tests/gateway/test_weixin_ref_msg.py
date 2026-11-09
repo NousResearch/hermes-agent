@@ -77,6 +77,11 @@ class TestOpaqueRefMsg:
 
         assert out == "[引用: msg svr-99]\n好", out
 
+    def test_svr_id_only_ref_keeps_a_marker(self):
+        out = weixin._extract_text([_text_item("hi", {"svr_id": "svr-1"})])
+
+        assert out == "[引用: msg svr-1]\nhi", out
+
     def test_quote_without_any_id_degrades_to_placeholder(self):
         out = weixin._extract_text([_text_item("嗯", _opaque_ref(msg_id=""))])
 
@@ -150,5 +155,8 @@ class TestNoQuote:
     def test_empty_ref_msg_is_returned_unchanged(self):
         assert weixin._extract_text([_text_item("hi", {})]) == "hi"
 
-    def test_ref_msg_without_message_item_or_title_is_returned_unchanged(self):
-        assert weixin._extract_text([_text_item("hi", {"svr_id": "svr-1"})]) == "hi"
+    def test_ref_msg_with_blank_svr_id_is_returned_unchanged(self):
+        assert weixin._extract_text([_text_item("hi", {"svr_id": ""})]) == "hi"
+
+    def test_ref_msg_with_unrelated_keys_is_returned_unchanged(self):
+        assert weixin._extract_text([_text_item("hi", {"unexpected": "x"})]) == "hi"

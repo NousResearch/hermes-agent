@@ -546,9 +546,11 @@ def _quoted_prefix(item: dict[str, Any]) -> str:
     parts = [p for p in (title, _extract_text([ref_item]) if ref_item else "") if p]
     if parts:
         return f"[引用: {' | '.join(parts)}]"
-    if not ref_item and not title:
-        return ""
     ref_id = str(ref_item.get("msg_id") or ref.get("svr_id") or "").strip()
+    # `svr_id` alone is the other id-only shape: dropping it here would leave the early
+    # return contradicting the marker below, silently losing a quote that can be named.
+    if not ref_item and not title and not ref_id:
+        return ""
     # Shape metadata only: the quoted title/body must never reach routine logs.
     logger.debug(
         "[weixin] quoted reply without a delivered body: item_type=%s id_present=%s title_present=%s",

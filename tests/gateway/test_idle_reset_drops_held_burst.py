@@ -47,13 +47,21 @@ async def _rig(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('command,dropped', [('new', True), ('status', False)])
-async def test_idle_command_after_a_turn_settles_the_held_text(monkeypatch, command, dropped):
+@pytest.mark.parametrize('command,dropped,refused', [('new', True, False), ('status', False, False),
+                                                     ('new', False, True)])
+async def test_idle_command_after_a_turn_settles_the_held_text(monkeypatch, command, dropped, refused):
+    """A refused /new (slash access allows this caller /status only) resets nothing, so it must not
+    destroy the held text either: B still runs."""
+    from gateway.config import Platform, PlatformConfig
     from gateway.platforms.event import MessageEvent
     from gateway.session_ingress_burst import holds_busy_burst
 
     adapter, authority, running, finish, executed = await _rig(monkeypatch)
     source = adapter.build_source(chat_id='dm-42', chat_type='dm', user_id='42')
+    if refused:
+        adapter.gateway_runner.config.platforms[Platform.DISCORD] = PlatformConfig(
+            enabled=True, extra={'allow_admin_from': ['99'], 'user_allowed_commands': ['status']})
+        assert adapter.gateway_runner._check_slash_access(source, command) is not None
     await adapter.handle_message(MessageEvent(text='A', source=source, message_id='A'))
     await asyncio.wait_for(running.wait(), 10)
     key = adapter._event_session_key(MessageEvent(text='', source=source))

@@ -3950,9 +3950,6 @@ class BasePlatformAdapter(ABC):
         if session_key in self._active_sessions or behind_burst:
             await self._handle_message_while_active(event, session_key)
             return
-        from hermes_cli.commands import is_interrupt_then_dispatch  # idle too: a held burst is the old chat's
-        if is_interrupt_then_dispatch(event.get_command()):
-            self._discard_text_debounce(session_key)
         # Guard installed synchronously BEFORE the task spawns so a second message can't race in.
         event._gateway_accepted = self._start_session_processing(event, session_key)
 

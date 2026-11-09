@@ -221,9 +221,10 @@ class GatewayModelCommandsMixin:
 
         # Catalog alias names carry no credential authority; only a direct endpoint does.
         direct_alias = None
-        if result.resolved_via_alias:
+        alias_name = getattr(result, "resolved_via_alias", None)
+        if alias_name:
             _ensure_direct_aliases()
-            direct_alias = DIRECT_ALIASES.get(result.resolved_via_alias)
+            direct_alias = DIRECT_ALIASES.get(alias_name)
 
         # Persist the new model to the session DB so the dashboard shows the updated model (#34850).
         _sess_db = getattr(self, "_session_db", None)

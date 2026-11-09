@@ -3363,16 +3363,16 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 
     async def _retrigger_typing(self, chat_id: str, metadata: Optional[dict[str, Any]]) -> None:
         """Re-arm typing after an intermediate send (Telegram clears it when a message lands). Skipped on
-        the FINAL reply (``metadata["notify"]``): the refresh loop is gone and no API cancels the bubble.
+        the FINAL reply (``notify``) and cron deliveries (``job_id``): no refresh loop, no API cancels the bubble.
 
         Scheduled, never awaited: ``sendChatAction`` is a fire-and-forget UI hint, and awaiting its TLS
         round-trip on the send path after *every* streamed chunk pinned the event loop the ``getUpdates``
         long-polls live on until they rotted into CLOSE-WAIT while the adapter still reported connected
         (#111727). ``_keep_typing`` already refreshes every 2s, so one in-flight re-arm per chat, at most
         one per ``typing_retrigger_min_interval_seconds``, covers the gap a landed message leaves."""
-        if (metadata or {}).get("notify") or not getattr(getattr(self, "config", None), "typing_indicator", True):
+        final = any((metadata or {}).get(k) for k in ("notify", "job_id"))
+        if final or not getattr(getattr(self, "config", None), "typing_indicator", True):
             return
-        # __dict__.setdefault: tests build adapters via object.__new__() (no __init__).
         tasks: dict[str, asyncio.Task] = self.__dict__.setdefault("_telegram_typing_retrigger_tasks", {})
         sent_at: dict[str, float] = self.__dict__.setdefault("_telegram_typing_retrigger_at", {})
         key = str(chat_id)

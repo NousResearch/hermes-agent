@@ -528,20 +528,41 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return True if text in {"1", "true", "yes", "on"} else False if text in {"0", "false", "no", "off"} else default
 
 
+def _quoted_prefix(item: dict[str, Any]) -> str:
+    """``[引用: …]`` prefix for one item's ``ref_msg``, or ``""`` when there is no quote.
+
+    iLink delivers quotes in several shapes and both ``ref_msg`` fields are optional. The
+    quoted body can arrive inline (text or media), as a ``title`` alone, or as an opaque
+    ``message_item`` whose ``type`` is not a content type and whose only useful field is a
+    server-side id. For that last shape the previous inline branch returned ``text``
+    unchanged: the quote vanished with no marker and no log line (see #133965). Keep every
+    shape distinguishable instead — a degraded marker is far better than silence.
+    """
+    ref = item.get("ref_msg") or {}
+    ref_item = ref.get("message_item") or {}
+    title = str(ref.get("title") or "")
+    if ref_item.get("type") in {ITEM_IMAGE, ITEM_VIDEO, ITEM_FILE, ITEM_VOICE}:
+        return f"[引用媒体: {title}]" if title else "[引用媒体]"
+    parts = [p for p in (title, _extract_text([ref_item]) if ref_item else "") if p]
+    if parts:
+        return f"[引用: {' | '.join(parts)}]"
+    if not ref_item and not title:
+        return ""
+    ref_id = str(ref_item.get("msg_id") or ref.get("svr_id") or "").strip()
+    # Shape metadata only: the quoted title/body must never reach routine logs.
+    logger.debug(
+        "[weixin] quoted reply without a delivered body: item_type=%s id_present=%s title_present=%s",
+        ref_item.get("type"), "yes" if ref_id else "no", "yes" if title else "no",
+    )
+    return f"[引用: msg {ref_id}]" if ref_id else "[引用: 内容不可用]"
+
+
 def _extract_text(item_list: list[dict[str, Any]]) -> str:
     for item in item_list:
         if item.get("type") == ITEM_TEXT:
             text = str((item.get("text_item") or {}).get("text") or "")
-            ref = item.get("ref_msg") or {}
-            ref_item = ref.get("message_item") or {}
-            if ref_item.get("type") in {ITEM_IMAGE, ITEM_VIDEO, ITEM_FILE, ITEM_VOICE}:
-                title = ref.get("title") or ""
-                return f"[引用媒体: {title}]\n{text}".strip() if title else f"[引用媒体]\n{text}".strip()
-            if ref_item:
-                parts = [p for p in (str(ref["title"]) if ref.get("title") else "", _extract_text([ref_item])) if p]
-                if parts:
-                    return f"[引用: {' | '.join(parts)}]\n{text}".strip()
-            return text
+            prefix = _quoted_prefix(item)
+            return f"{prefix}\n{text}".strip() if prefix else text
     for item in item_list:
         if item.get("type") == ITEM_VOICE:
             # Tencent's ``voice_item.text`` is their STT output and is wrong for non-Chinese audio.

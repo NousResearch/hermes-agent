@@ -65,8 +65,8 @@ class TelegramHeldInboundMixin:
         for events, where in (
                 (self._pending_text_batches, "text-batch-teardown"), (self._pending_photo_batches, "photo-batch-teardown"),
                 (self._media_group_events, "media-group-teardown")):
-            for event in list(events.values()):
-                self._hold_inbound_event(event, where=where)
+            for key in list(events):  # popped: a batch handed over early is never salvaged twice
+                self._hold_inbound_event(events.pop(key), where=where)
 
     def _hold_inbound_event(self, event: MessageEvent, *, where: str, schedule: bool = True) -> None:
         """Preserve an inbound event that cannot be dispatched now (PTB already acked the update, so dropping is silent loss).
@@ -109,6 +109,10 @@ class TelegramHeldInboundMixin:
         """Take over the hold queue of the instance the runner just replaced with us (#132829): it only
         drains on its own ``_mark_connected``, which never comes; later holds there forward here."""
         self._held_inbound_successor = None  # we own the queue again: a reverse link would forward in a cycle
+        if predecessor._should_drop_delayed_delivery():
+            # Its buffered batches predate anything we receive; its own teardown salvage may still be
+            # awaiting network cleanup, so take them now or our replay can overtake them.
+            predecessor._salvage_buffered_inbound()
         predecessor._held_inbound_successor = weakref.ref(self)
         held = getattr(predecessor, "_held_inbound_events", None) or []
         events = list(held)

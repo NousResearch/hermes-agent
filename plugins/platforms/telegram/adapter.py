@@ -194,6 +194,7 @@ from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, build_ptb_requests, discover_fallback_ips, parse_fallback_ip_env,
     proxy_target_hosts)
 from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
+from plugins.platforms.telegram.telegram_send_path_recovery import mark_send_path_recovered
 from plugins.platforms.telegram.telegram_send_errors import is_entity_parse_error
 from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, shared_sender_suffix
 from plugins.platforms.telegram.telegram_picker_labels import model_button_labels
@@ -1652,14 +1653,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             elif self._polling_last_progress_monotonic - quiet_since >= _POLLING_CONFLICT_QUIET_PERIOD:
                 self._polling_conflict_count = 0
                 self._polling_conflict_quiet_since = None
-        # First proof getUpdates is flowing for this generation: flip a
-        # published "retrying" (degraded connect, reconnect stamp, or the
-        # mid-session recovery below) back to "connected" (#101391).
-        if self._send_path_degraded and getattr(self, "_running", False) and not self.has_fatal_error:
-            self._write_runtime_status_safe(
-                "connected", platform_state="connected", error_code=None, error_message=None,
-            )
-        self._send_path_degraded = False
+        mark_send_path_recovered(self)
         return True
 
     def _observe_polling_request_result(self, request, generation, result):

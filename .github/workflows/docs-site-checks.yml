@@ -44,6 +44,9 @@ jobs:
       - name: Regenerate per-skill docs pages + catalogs
         run: python3 website/scripts/generate-skill-docs.py
 
+      - name: Regenerate optional MCP catalog docs
+        run: python3 website/scripts/generate-mcp-catalog-docs.py
+
       - name: Committed skill docs match the generator
         # GitHub renders the committed copies, so a regeneration that changes anything
         # means the published catalogs/pages are stale. Fix: run the generator and commit.

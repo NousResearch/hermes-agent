@@ -135,7 +135,9 @@ def _render_emphasis(tokens: list, stash, escape) -> str:
 _RENDERABLE_LINK_TARGET_RE = re.compile(
     r'(?i)^(?:[a-z][a-z0-9+.-]*:[^\s@]\S*|[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:[/?#:]\S*)?)$')
 _MD_LINK_RE = re.compile(r'\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)')
-_MD_CODE_RE = re.compile(r'```[\s\S]*?(?:```|$)|`[^`\n]*`')
+# Fences, then inline spans closed by a backtick run of the SAME width (CommonMark, as
+# ``_RICH_DOLLAR_RE``'s code branch): ``a [k](v w)`` is one span, not two empty ones.
+_MD_CODE_RE = re.compile(r'```[\s\S]*?(?:```|$)|(?P<ticks>`+)[^\n]*?(?<!`)(?P=ticks)(?!`)')
 
 
 def link_target_renders(target: str) -> bool:

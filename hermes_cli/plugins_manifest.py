@@ -292,7 +292,8 @@ def _detect_kind_from_source(source_text: str) -> Optional[str]:
     if any(marker in source_text for marker in (
             "register_memory_provider", "MemoryProvider", "register_cron_scheduler", "CronScheduler",
             "register_computer_use_provider", "ComputerUseProvider",
-            "register_session_storage", "SessionStorageProvider")):
+            "register_session_storage", "SessionStorageProvider",
+            "register_kanban_storage", "KanbanStorageProvider")):
         return "exclusive"
     if "register_provider" in source_text and "ProviderProfile" in source_text:
         return "model-provider"

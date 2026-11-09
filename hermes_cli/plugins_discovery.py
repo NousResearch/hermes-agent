@@ -207,7 +207,7 @@ def collect_directory_manifests() -> list[PluginManifest]:
     logger.debug("Scanning bundled plugins: %s", repo_plugins)
     _scan("bundled (top-level)", repo_plugins, "bundled",
           {"memory", "context_engine", "model-providers", "cron_providers", "computer_use", "config_backends",
-           "session_storage"})
+           "session_storage", "kanban_storage"})
     user_dir = get_hermes_home() / "plugins"
     logger.debug("Scanning user plugins: %s", user_dir)
     _scan("user", user_dir, "user")

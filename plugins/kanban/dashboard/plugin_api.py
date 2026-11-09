@@ -33,6 +33,7 @@ from hermes_cli import kanban_workflow
 from hermes_cli.web_read_coalescing import coalesced_read
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
+from hermes_cli import kanban_db_profiles
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_diagnostics as kd
@@ -342,12 +343,12 @@ def get_board(
         # Queue columns keep list_tasks' dispatch order (priority DESC, created_at ASC).
         tenants = [r["tenant"] for r in conn.execute("SELECT DISTINCT tenant FROM tasks WHERE tenant IS NOT NULL ORDER BY tenant")]
         # List of known assignees for the lane-by-profile sub-grouping.
-        # Uses kanban_db.known_assignees so the lane set unions profiles
+        # Uses kanban_db_profiles.known_assignees so the lane set unions profiles
         # currently holding non-archived tasks with profiles configured on
         # disk — a freshly-added profile shows up as a (possibly empty)
         # lane immediately, matching the assignee picker at /assignees
         # which already uses this helper.
-        assignees = [entry["name"] for entry in kanban_db.known_assignees(conn)]
+        assignees = [entry["name"] for entry in kanban_db_profiles.known_assignees(conn)]
         return {
             "columns": [{"name": name, "tasks": columns[name]} for name in columns], "tenants": tenants,
             "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time())}
@@ -1249,7 +1250,7 @@ def get_assignees(board: Optional[str] = Query(None)):
     """Union of on-disk profiles and assignees used on the board, so a fresh
     profile appears in the picker before it has any task."""
     with _board_conn(board) as (board, conn):
-        return {"assignees": kanban_db.known_assignees(conn)}
+        return {"assignees": kanban_db_profiles.known_assignees(conn)}
 
 
 @router.get("/tasks/{task_id}/log")

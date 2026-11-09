@@ -402,9 +402,13 @@ def kanban_home() -> Path:
     """``HERMES_KANBAN_HOME`` else ``get_default_hermes_root()``. Shared across
     profiles BY DESIGN: resolving through the active profile's HERMES_HOME would
     fork the board per profile and break the dispatcher/worker handoff."""
-    override = os.environ.get("HERMES_KANBAN_HOME", "").strip()
+    from hermes_cli.kanban_db_home import scoped_home_override
+    override = scoped_home_override()  # a context-scoped pin (see kanban_db_home)
     if override:
         return Path(override).expanduser()
+    env_override = os.environ.get("HERMES_KANBAN_HOME", "").strip()
+    if env_override:
+        return Path(env_override).expanduser()
     from hermes_constants import get_default_hermes_root
     return get_default_hermes_root()
 
@@ -4068,40 +4072,6 @@ def read_worker_log(
             return f.read().decode("utf-8", errors="replace")
     except OSError:
         return None
-
-
-# --- Assignee enumeration (known profiles + per-profile board stats) ---
-
-def list_profiles_on_disk() -> list[str]:
-    """Profiles with a ``config.yaml`` plus the implicit ``default``; reads paths
-    directly to avoid importing ``hermes_cli.profiles`` at startup."""
-    try:
-        from hermes_constants import get_default_hermes_root
-        default_root = get_default_hermes_root()
-        profiles_dir = default_root / "profiles"
-    except Exception:
-        return []
-
-    names: set[str] = set()
-    if default_root.exists():
-        names.add("default")
-    if profiles_dir.is_dir():
-        try:
-            names.update(e.name for e in profiles_dir.iterdir() if e.is_dir() and (e / "config.yaml").is_file())  # config-reader: ok — profile directory discovery marker
-        except OSError:
-            pass
-    return sorted(names)
-
-
-def known_assignees(conn: sqlite3.Connection) -> list[dict]:
-    """``{"name", "on_disk", "counts"}`` for every on-disk profile or task
-    assignee, so a fresh profile appears in pickers before it has a task."""
-    on_disk = set(list_profiles_on_disk())
-    counts = _counts_by_assignee(conn)
-    return [
-        {"name": name, "on_disk": name in on_disk, "counts": counts.get(name, {})}
-        for name in sorted(on_disk | set(counts))
-    ]
 
 
 # --- Runs (attempt history on a task) ---

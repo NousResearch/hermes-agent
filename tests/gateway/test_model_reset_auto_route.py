@@ -20,7 +20,7 @@ async def test_real_auto_normalizer_reset_keeps_old_billing_out_of_all_readers(t
     from gateway.slash_commands_model import _ModelSwitchContext
     from gateway.session_local_migration import legacy_launch_params
     from hermes_cli.cli_model_switch_mixin import stored_session_route
-    from hermes_cli.oneshot import _ModelChoice, _apply_stored_session_runtime
+    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
     from tui_gateway.server import _stored_session_runtime_overrides
 
     cfg = {"model": {"default": default_model, "provider": "auto",
@@ -60,8 +60,6 @@ async def test_real_auto_normalizer_reset_keeps_old_billing_out_of_all_readers(t
                             lambda **kwargs: "custom:work")
         tui = _stored_session_runtime_overrides(row)
         profile_url = "http://127.0.0.1:9877/v1"
-        oneshot = _apply_stored_session_runtime(
-            _ModelChoice("ambient", "nous", base_url=profile_url, api_mode="chat_completions"), row, explicit_model=False)
         stub = _make_stub(base_url=profile_url, api_mode="chat_completions")
         stub._restore_session_model(row)
         explicit = _make_stub(model="manual", base_url="http://127.0.0.1:9880/v1", _explicit_model_override=True)
@@ -73,8 +71,13 @@ async def test_real_auto_normalizer_reset_keeps_old_billing_out_of_all_readers(t
         policy = build_policy({**legacy, "cwd": str(tmp_path)}, cfg, profile_terminal=False)
         assert policy.config()["model"]["base_url"] == "http://127.0.0.1:9877/v1"
         assert policy.config()["model"]["api_mode"] == "chat_completions"
+        model, runtime = _resolve_policy_agent_runtime(runner, policy, fallback=False)
+        assert model == (default_model or None)
+        assert runtime["provider"] != "custom:work"
+        assert runtime["base_url"] == profile_url
+        assert runtime["api_mode"] == "chat_completions"
+        assert runtime["api_key"] == "profile-key"
         assert "custom:work" not in str(tui) and old_url not in str(tui)
-        assert oneshot.provider != "custom:work" and oneshot.base_url != old_url
         assert stub.provider != "custom:work" and stub.base_url == profile_url
         assert stub.api_mode == "chat_completions"
     finally:

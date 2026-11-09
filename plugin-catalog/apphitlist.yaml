@@ -1,0 +1,31 @@
+name: apphitlist
+title: AppHitlist
+repo: https://github.com/mmdincer/apphitlist-mcp
+sha: a7ef3444bd7b6821f34908e802a71a2fdde06e50
+version: "1.0.0"
+description: >-
+  App Store research via AppHitlist remote MCP (Streamable HTTP at
+  https://apphitlist.com/api/mcp): new winning apps, top earners, daily chart
+  movers, Meta ads and review complaints. Bundles the apphitlist skill that
+  maps questions to the nine tools. Agent Plugins v1 package (plugin.json +
+  mcp.json + skills/), configuration only. Disclosure — hosted-only connector
+  with no local code; every tool call goes to apphitlist.com. Auth is required
+  today as an API key the Hermes remote MCP client supplies (Authorization:
+  Bearer ahl_…); free keys are limited (20 tool calls/month) and Pro-only tools
+  (ads, complaints) return subscription_required without Pro. The package does
+  not embed secrets. OAuth resource metadata is advertised at
+  /.well-known/oauth-protected-resource/api/mcp; full OAuth client flow is not
+  claimed here. The live tool set is served by the remote server at runtime and
+  is not covered by the pinned sha.
+maintainer: mmdincer
+tier: community
+category: tools
+docs_url: https://apphitlist.com
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

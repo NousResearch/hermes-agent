@@ -12,6 +12,15 @@ import pytest
 
 from hermes_cli.gateway_runtime_service import remaining
 
+
+@pytest.fixture(autouse=True)
+def _non_elevated_client(monkeypatch):
+    """Every start here is a normal client's. An elevated one is refused before any spawn
+    (client_elevated, test_gateway_runtime_elevated_client.py), and hosted Windows runners are elevated."""
+    import hermes_dir_acl
+    monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: False)
+
+
 def test_unmanaged_runtime_drops_session_config_bypass_flags(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from hermes_cli import gateway_runtime_start as start
@@ -307,13 +316,9 @@ def test_native_windows_discovery_uses_same_user_pipe(tmp_path):
 
 @pytest.mark.platforms("windows")
 def test_native_windows_spawn_never_retries_without_breakaway(tmp_path, monkeypatch):
-    import hermes_dir_acl
     from hermes_cli import gateway_runtime_start as start
     from hermes_cli.gateway_runtime_service import RuntimeStartError
     from hermes_cli._subprocess_compat import windows_detach_flags
-    # A normal client: an elevated one is refused before any spawn (client_elevated), and the
-    # hosted Windows runners are elevated.
-    monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: False)
     calls = []
     def denied(argv, **kwargs):
         calls.append(kwargs)

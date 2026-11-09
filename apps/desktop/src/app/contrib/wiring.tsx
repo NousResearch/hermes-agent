@@ -46,7 +46,7 @@ import { $activeConnectionId } from '@/store/connections'
 import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { $interfaceMode, shownInMode } from '@/store/interface-mode'
-import { $pinnedSessionIds, pinSession, restoreWorktree } from '@/store/layout'
+import { $pinnedSessionIds, restoreWorktree } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { markOnboardingDecided } from '@/store/onboarding-presence'
 import {
@@ -89,7 +89,7 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
-import { unpinSession } from '@/store/session-pin-sync'
+import { pinSession, unpinSession } from '@/store/session-pin-sync'
 import { reportPendingUpdateRun } from '@/store/shared-metrics'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
@@ -995,7 +995,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     if ($pinnedSessionIds.get().includes(pinId) || session?.pinned === true) {
       unpinSession(pinId, session)
     } else {
-      pinSession(pinId)
+      pinSession(pinId, session)
     }
   }, [])
 

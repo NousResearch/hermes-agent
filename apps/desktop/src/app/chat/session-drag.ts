@@ -52,12 +52,12 @@ import {
 } from '@/components/pane-shell/tree/store'
 import type { EngineZone, ZoneRect } from '@/components/pane-shell/tree/zones-engine'
 import { translateNow } from '@/i18n'
-import { $pinnedSessionIds, pinSession } from '@/store/layout'
+import { $pinnedSessionIds } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { requestFreshSession } from '@/store/profile'
 import { moveSessionToProject, projectIdForCwd } from '@/store/projects'
 import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
-import { unpinSession } from '@/store/session-pin-sync'
+import { pinSession, unpinSession } from '@/store/session-pin-sync'
 import { $sessionTiles, nextSessionTileForWorkspace, openSessionTile, type TileDock } from '@/store/session-states'
 
 import { requestComposerInsertRefs } from './composer/focus'
@@ -358,7 +358,7 @@ export function startSessionDrag(
         const pinId = session ? sessionPinId(session) : payload.id
 
         if (pin) {
-          pinSession(pinId)
+          pinSession(pinId, session)
         } else {
           unpinSession(pinId, session)
         }

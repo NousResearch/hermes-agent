@@ -624,6 +624,7 @@ gateway:
     action_deny: "Reddet"
     deadline: "{window} içinde yanıt vermezseniz komut çalıştırılMAYACAK."
     not_requester: "Bu onayı yalnızca {requester} yanıtlayabilir."
+    not_requester_admins_only: "Bu onayı yalnızca bir yönetici veya listelenmiş bir onaylayıcı yanıtlayabilir."
     text_choice_once: "Bir kez çalıştırmak için `{prefix}approve` yazın"
     text_choice_session: "bu deseni oturumun geri kalanında izin vermek için `{prefix}approve session`"
     text_choice_always: "kalıcı olarak izin vermek için `{prefix}approve always`"

@@ -624,6 +624,7 @@ gateway:
     action_deny: "Відхилити"
     deadline: "Якщо ви не відповісте протягом {window}, команду НЕ буде виконано."
     not_requester: "Відповісти на цей запит може лише {requester}."
+    not_requester_admins_only: "Відповісти на цей запит може лише адміністратор або вказаний затверджувач."
     text_choice_once: "Відповідайте `{prefix}approve`, щоб виконати один раз"
     text_choice_session: "`{prefix}approve session`, щоб дозволити цей шаблон до кінця сеансу"
     text_choice_always: "`{prefix}approve always`, щоб дозволити назавжди"

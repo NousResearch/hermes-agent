@@ -287,7 +287,7 @@ async def test_input_queued_while_a_model_receipt_commits_still_runs(tmp_path, m
     # A contended receipt transaction: the commit thread holds it open while the loop runs.
     entered, release = threading.Event(), threading.Event()
     from gateway.session_persistence import authority_persistence
-    for conn in (raw_holder(db)._conn, authority_persistence(authority).holder()._conn):  # the receipt commits on the handle's
+    for conn in (raw_holder(db)._conn, raw_holder(authority_persistence(authority))._conn):  # the receipt commits on the handle's
         conn.create_function('hold_receipt', 1, lambda s: (entered.set(), release.wait(s))[1] and 0)
     raw_holder(db)._execute_write(lambda c: c.execute("CREATE TRIGGER hold_receipt AFTER INSERT ON state_meta "
                                           "WHEN NEW.key LIKE 'gateway.mutation.v1.%' BEGIN SELECT hold_receipt(30); END"))

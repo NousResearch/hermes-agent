@@ -10,6 +10,7 @@ from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from persistence_assembly import open_persistence, profile_scope
 from tests.fixtures.storage_seed import seed_session
+from tests.fixtures.storage_holder import raw_holder
 
 
 def _assert_diverted(tmp_path, sid, needle):
@@ -40,7 +41,7 @@ def test_replaced_state_db_diverts_pending_without_fts_rebuild(tmp_path, monkeyp
     store.append_to_transcript(
         sid, {"role": "user", "content": "before", "timestamp": 1.0}
     )
-    if store.persistence.holder()._db_file_identity is None:
+    if raw_holder(store.persistence)._db_file_identity is None:
         store.close_all_db_handles()
         pytest.skip("filesystem does not expose st_dev/st_ino")
 
@@ -52,7 +53,7 @@ def test_replaced_state_db_diverts_pending_without_fts_rebuild(tmp_path, monkeyp
         sid, {"role": "user", "content": "after-replace", "timestamp": 2.0}
     )
 
-    holder = store.persistence.holder()  # the handle the transcript writes went through
+    holder = raw_holder(store.persistence)  # the handle the transcript writes went through
     assert holder._db_replaced is True
     # No FTS surgery ran on either layer: state-level fail-open never
     # detached, and the gateway one-shot rebuild was not consumed.
@@ -76,7 +77,7 @@ def test_copyfile_replaced_state_db_diverts_pending_without_fts_rebuild(
     store.append_to_transcript(
         sid, {"role": "user", "content": "before-cp", "timestamp": 1.0}
     )
-    if not store.persistence.holder()._db_file_application_id:
+    if not raw_holder(store.persistence)._db_file_application_id:
         store.close_all_db_handles()
         pytest.skip("generation stamp not recorded")
 
@@ -88,7 +89,7 @@ def test_copyfile_replaced_state_db_diverts_pending_without_fts_rebuild(
         sid, {"role": "user", "content": "after-cp", "timestamp": 2.0}
     )
 
-    holder = store.persistence.holder()  # the handle the transcript writes went through
+    holder = raw_holder(store.persistence)  # the handle the transcript writes went through
     assert holder._db_replaced is True
     # No FTS surgery ran on either layer: state-level fail-open never
     # detached, and the gateway one-shot rebuild was not consumed.

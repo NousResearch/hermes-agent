@@ -139,3 +139,23 @@ def test_a_thread_the_turn_started_stays_fenced_after_the_turn_returns(store, tm
     assert done.wait(10)
     assert results == ['written', 'refused']
     assert _snapshot(store, sid) == (['late'], 1)
+
+
+def test_a_transient_io_error_in_the_lease_check_is_retried_like_begin(store, tmp_path, monkeypatch):
+    """The check runs before the callback, so its reads keep the pre-callback disk I/O retry."""
+    import sqlite3
+
+    import hermes_state
+    sid, row = _claimed(store, tmp_path)
+    real, calls = hermes_state.check_turn_lease, []
+
+    def flaky(conn, mark):
+        calls.append(mark)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError('disk I/O error')
+        return real(conn, mark)
+    monkeypatch.setattr(hermes_state, 'check_turn_lease', flaky)
+    with bind_profile_scope(tmp_path), bind_turn(sid, row['admission_id'], claim_fence(row), store=store.db_path):
+        store.append_message(sid, 'user', 'kept')
+    assert len(calls) == 2
+    assert _snapshot(store, sid) == (['kept'], 1)

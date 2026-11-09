@@ -1050,8 +1050,8 @@ class SessionDB(
                         self._reopen_after_close_locked(context="write")
                     self._conn.execute("BEGIN IMMEDIATE")
                     try:
-                        fn_started = True
                         check_turn_lease(self._conn, turn)
+                        fn_started = True
                         result = fn(self._conn)
                         self._conn.commit()
                     except BaseException:

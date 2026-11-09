@@ -1187,6 +1187,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         history[:] = [h for h in history if not _is_model_switch_marker(h)]
         history.append(entry)
         session["history_version"] = int(session.get("history_version", 0)) + 1
+    target = ""
     try:
         agent = session.get("agent")
         db = getattr(agent, "_session_db", None) if agent is not None else None
@@ -1213,6 +1214,25 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         # Swallowed at debug, a model switch silently loses its durable notice — the next resume replays
         # without it and nothing lands in errors.log. Matches _persist_live_session_system_prompt above.
         logger.warning("failed to persist model switch marker", exc_info=True)
+        # FK fallback: the target session row may not exist yet (e.g. a rotated agent.session_id
+        # that was never persisted, or a race where _ensure_session_db_row created the row under
+        # session_key but _submit_row_target_key resolved to a different id).  Retry with the
+        # session_key, which _ensure_session_db_row is guaranteed to have created.
+        if session_key and target and session_key != target:
+            try:
+                with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db2:
+                    if db2 is not None:
+                        from agent.context_compressor import _DB_PERSISTED_MARKER
+                        from agent.message_metadata import stamp_message_uid
+                        db2.deactivate_messages_by_display_kind(session_key, "model_switch")
+                        entry["_row_id"] = db2.append_message(
+                            session_id=session_key, role="user", content=marker,
+                            display_kind="model_switch",
+                            message_uid=stamp_message_uid(entry))
+                        entry[_DB_PERSISTED_MARKER] = True
+                        logger.info("model switch marker persisted under session_key fallback %s", session_key)
+            except Exception:
+                logger.warning("model switch marker fallback also failed", exc_info=True)
 
 
 def _write_config_changes(sets: dict, unsets: tuple = ()) -> None:

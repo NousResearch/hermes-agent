@@ -134,13 +134,18 @@ def merge_session_affinity_headers(
     base_url: Optional[str],
     session_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Merge the affinity header(s) into ``kwargs["extra_headers"]`` (in place).
+    """Merge the affinity header(s), and ``x-initiator: agent`` for a provider that opts into
+    ``initiator_header``, into ``kwargs["extra_headers"]`` (in place).
 
     Existing per-request headers win, so a caller-pinned value is preserved.
-    Targets with neither source configured are left untouched.
+    Targets with none of these configured are left untouched.
     """
+    from hermes_cli.config_providers import get_custom_provider_initiator_header
+
     headers = opencode_session_headers(provider, base_url, session_id)
     headers.update(custom_provider_session_affinity_headers(base_url, session_id))
+    if get_custom_provider_initiator_header(str(base_url or "")):
+        headers["x-initiator"] = "agent"
     if headers:
         existing = kwargs.get("extra_headers")
         merged = dict(existing) if isinstance(existing, dict) else {}

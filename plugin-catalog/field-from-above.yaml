@@ -1,7 +1,7 @@
 name: field-from-above
 repo: https://github.com/kneblewskitomasz-sys/hermes-field-from-above
-sha: 6cc98bf01599c1d63d8635fe3aaa2133e20a7384
-description: "Free Sentinel-2 NDRE and terrain context for a Polish parcel or any point via GUGiK ULDK/NMT and Earth Search STAC. Disclosure: requested parcel IDs or coordinates are sent to uldk.gugik.gov.pl, earth-search.aws.element84.com and services.gugik.gov.pl; the plugin writes only its own raster cache and map artifacts, uses no credentials, shell commands or background processes."
+sha: f84c4275c44bbd0abad5d9ce5e6108eeef29166d
+description: "Free Sentinel-2 NDRE and terrain context for a Polish parcel or any point via GUGiK ULDK/NMT and Earth Search STAC. Disclosure: requested parcel IDs or coordinates are sent to uldk.gugik.gov.pl, earth-search.aws.element84.com and services.gugik.gov.pl; the plugin writes only its own capped raster cache and map artifacts under HERMES_HOME/plugin-data/field-from-above, uses no credentials, shell commands or background processes."
 maintainer: Tomasz Kneblewski
 tier: community
 category: tools

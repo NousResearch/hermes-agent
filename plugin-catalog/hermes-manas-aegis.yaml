@@ -1,7 +1,7 @@
 name: hermes-manas-aegis
 title: Manas Aegis
 repo: https://github.com/elianjuan-g/hermes-manas-aegis
-sha: 4aac490839ff961d7595468dbd7947f9df0356c0
+sha: cc18295839e296280072d6aecb18f4433db4ec77
 version: "2.6.2"
 description: >-
   [ALPHA] Experimental Hermes guardrail (prototype, not standalone security):

@@ -194,7 +194,7 @@ def dream_run(
             else:
                 eligible.append(text)
 
-        promoted = _promote_to_memory(eligible)
+        promoted, staged = _promote_to_memory(eligible)
 
         if skipped_meta:
             hermes_base = Path(
@@ -215,6 +215,7 @@ def dream_run(
         return {
             "candidates_scanned": len(raw),
             "promoted": len(promoted),
+            "staged": len(staged),
             "skipped_meta": len(skipped_meta),
             "narrative_length": len(narrative),
         }
@@ -267,17 +268,28 @@ def _ollama_narrative(texts: list[str], *, cfg: dict) -> str:
     return body.get("response", "").strip()
 
 
-def _promote_to_memory(entries: list[str]) -> list[str]:
-    """Write through Hermes's bounded, locked, threat-scanning memory store."""
-    from tools.memory_tool import MemoryStore
+def _promote_to_memory(entries: list[str]) -> tuple[list[str], list[str]]:
+    """Promote through the memory tool's own entry point, as any background write
+    goes: the store ``load_on_disk_store`` builds (the configured char limits and
+    enable flags, as approvals use), its validation, and the write-approval gate.
+    Returns (promoted, staged): a staged entry waits for the user's approval and
+    is not in MEMORY.md yet. Nothing is written while built-in memory is off."""
+    from tools.memory_tool import load_on_disk_store, memory_tool
 
-    store = MemoryStore()
+    store = load_on_disk_store()
     promoted: list[str] = []
+    staged: list[str] = []
     for entry in entries:
-        result = store.add("memory", entry)
-        if result.get("success"):
-            promoted.append(entry)
-    return promoted
+        try:
+            result = json.loads(
+                memory_tool(action="add", target="memory", content=entry, store=store)
+            )
+        except (TypeError, ValueError):
+            continue
+        if not result.get("success"):
+            continue
+        (staged if result.get("staged") else promoted).append(entry)
+    return promoted, staged
 
 
 def _write_to_skill(entries: list[str], path: Path) -> None:

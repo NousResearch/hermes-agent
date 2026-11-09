@@ -12,7 +12,7 @@ import copy
 from pathlib import Path
 from typing import Any
 
-import yaml
+import hermes_yaml as yaml  # PyYAML-compatible; Hermes reads YAML through ruamel (284dbaf537)
 
 from hermes_constants import get_hermes_home
 

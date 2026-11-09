@@ -9,7 +9,7 @@ import types
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 @pytest.fixture(autouse=True)
@@ -192,6 +192,57 @@ class TestDreamingSchedule:
         assert "deployment pipeline" in active_memory.read_text(encoding="utf-8")
         assert not (_isolate_env / "MEMORY.md").exists()
 
+    @staticmethod
+    def _stage_one_candidate(sched, hermes_home, monkeypatch):
+        dreams = hermes_home / "dreams"
+        dreams.mkdir(parents=True, exist_ok=True)
+        candidate = {
+            "text": "The deployment pipeline uses GitHub Actions for CI.",
+            "hash": "abc", "role": "user", "created_at": 1.0,
+            "frequency": 3, "query_count": 2, "word_count": 8,
+        }
+        (dreams / "staging.jsonl").write_text(json.dumps(candidate) + "\n", encoding="utf-8")
+        monkeypatch.setattr(sched._score, "score", lambda candidate, now: 1.0)
+        monkeypatch.setattr(sched, "_rem_narrative", lambda candidates, cfg=None: "themes")
+
+    def test_dream_run_writes_nothing_while_builtin_memory_is_off(
+        self, _isolate_env, monkeypatch
+    ):
+        (_isolate_env / "config.yaml").write_text(
+            yaml.safe_dump({"memory": {"memory_enabled": False}}), encoding="utf-8"
+        )
+        sched = _load_schedule_mod()
+        self._stage_one_candidate(sched, _isolate_env, monkeypatch)
+
+        result = sched.dream_run(force=True, hermes_home=str(_isolate_env))
+
+        assert result["promoted"] == 0
+        assert result["staged"] == 0
+        assert not (_isolate_env / "memories" / "MEMORY.md").exists()
+
+    def test_dream_run_stages_for_approval_when_memory_writes_need_it(
+        self, _isolate_env, monkeypatch
+    ):
+        from tools.skill_provenance import reset_current_write_origin, set_current_write_origin
+
+        (_isolate_env / "config.yaml").write_text(
+            yaml.safe_dump({"memory": {"write_approval": True}}), encoding="utf-8"
+        )
+        sched = _load_schedule_mod()
+        self._stage_one_candidate(sched, _isolate_env, monkeypatch)
+
+        token = set_current_write_origin("background_review")  # as the dream thread runs
+        try:
+            result = sched.dream_run(force=True, hermes_home=str(_isolate_env))
+        finally:
+            reset_current_write_origin(token)
+
+        assert result["promoted"] == 0
+        assert result["staged"] == 1
+        memory = _isolate_env / "memories" / "MEMORY.md"
+        assert not memory.exists() or "deployment pipeline" not in memory.read_text("utf-8")
+        assert list((_isolate_env / "pending" / "memory").glob("*.json"))
+
 
 class TestDreamingPluginContracts:
     def test_hooks_match_keyword_contract_and_stage_real_turns(self, monkeypatch):
@@ -232,7 +283,7 @@ class TestDreamingBundledDiscovery:
         """E2E: enable in config.yaml + dreaming config, verify PluginManager path."""
         import sys
 
-        import yaml
+        import hermes_yaml as yaml
 
         cfg_mod = _load_config_mod()
         cfg_mod.ensure_user_config(_isolate_env)
@@ -261,3 +312,59 @@ class TestDreamingBundledDiscovery:
         assert "on_session_end" in loaded.hooks_registered
         assert "dream" in loaded.commands_registered
         assert "dream" in mgr._plugin_commands
+
+    def test_hooks_and_command_run_through_the_plugin_runtime(self, _isolate_env):
+        """E2E past registration: a turn reaches staging through ``invoke_hook``,
+        the session boundary counts, and ``/dream status`` answers through the
+        same dispatch the CLI uses (``invoke_plugin_command``)."""
+        import sys
+
+        cfg_mod = _load_config_mod()
+        cfg_mod.ensure_user_config(_isolate_env)
+        cfg_mod.user_config_path(_isolate_env).write_text(
+            yaml.safe_dump({"enabled": True}), encoding="utf-8"
+        )
+        (_isolate_env / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["dreaming"]}}), encoding="utf-8"
+        )
+        for key in list(sys.modules):
+            if key.startswith(("hermes_plugins", "hermes_cli.plugins")):
+                del sys.modules[key]
+
+        from hermes_cli.plugin_command_dispatch import invoke_plugin_command
+        from hermes_cli.plugins import (
+            get_plugin_command_handler,
+            invoke_hook,
+            resolve_plugin_command_result,
+        )
+
+        try:
+            invoke_hook(
+                "post_llm_call",
+                session_id="s1",
+                user_message="The deployment pipeline runs on GitHub Actions every night.",
+                assistant_response="Noted: nightly GitHub Actions runs carry the deployment.",
+            )
+            invoke_hook("on_session_end", session_id="s1", completed=True)
+
+            staging = _isolate_env / "dreams" / "staging.jsonl"
+            assert "deployment pipeline" in staging.read_text(encoding="utf-8")
+            state = json.loads((_isolate_env / "dreams" / "state.json").read_text("utf-8"))
+            assert state["sessions_since_dream"] == 1
+
+            handler = get_plugin_command_handler("dream")
+            assert handler is not None
+            reply = resolve_plugin_command_result(
+                invoke_plugin_command(
+                    handler, "status", source=None, session_id="s1",
+                    session_key="s1", platform="cli",
+                )
+            )
+            assert "Enabled: yes" in str(reply)
+            assert "Sessions since last dream: 1" in str(reply)
+        finally:
+            for mod in list(sys.modules.values()):
+                thread = getattr(mod, "_thread", None)
+                if thread is not None and hasattr(thread, "stop") and \
+                        getattr(mod, "__name__", "").endswith("dreaming"):
+                    thread.stop()

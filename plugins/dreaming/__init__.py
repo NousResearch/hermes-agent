@@ -35,6 +35,14 @@ class _DreamThread(threading.Thread):
         self._stop = threading.Event()
 
     def run(self) -> None:
+        # A cycle runs with no user present: its memory writes are background
+        # writes, so the write-approval gate stages them rather than prompting.
+        try:
+            from tools.skill_provenance import set_current_write_origin
+
+            set_current_write_origin("background_review")
+        except Exception:
+            pass
         while not self._stop.wait(timeout=self._poll_seconds):
             try:
                 cfg = _config.load_config()
@@ -113,11 +121,13 @@ def _handle_slash(raw_args: str) -> str:
     if args and args[0] == "run":
         try:
             result = _schedule.dream_run(force=True, cfg=cfg)
+            staged = result.get("staged", 0)
             return (
                 f"Dream cycle complete. "
                 f"Scanned {result['candidates_scanned']} candidates, "
                 f"promoted {result['promoted']}, "
-                f"routed {result['skipped_meta']} meta-entries to SKILL.md."
+                + (f"staged {staged} for your approval, " if staged else "")
+                + f"routed {result['skipped_meta']} meta-entries to SKILL.md."
             )
         except Exception as e:
             return f"Dream cycle failed: {e}"

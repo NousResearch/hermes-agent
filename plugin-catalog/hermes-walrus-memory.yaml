@@ -1,0 +1,51 @@
+name: hermes-walrus-memory
+title: Walrus Memory
+repo: https://github.com/takaolovely/hermes-walrus-memory
+sha: c735d43a2134b81ad126dac24ae1adf712f55a5c
+subdir: plugin
+version: "0.2.0"
+requires_hermes: ">=0.16"
+maintainer: takaolovely
+tier: community
+category: memory
+description: >-
+  Append-only memory where a correction never rewrites what the agent used to believe.
+  Facts are ledger lines (obs, fix, rule), so Hermes can always answer what it thought
+  before you corrected it, why it changed, and which line taught it the rule. Recall
+  returns a citation chain such as "rule#04 <- fix#03 <- fix#02 <- obs#01" and each line
+  carries a SHA-256 hash chained to the previous one, so editing or reordering the ledger
+  is detectable. Works with zero configuration as a local tamper-evident ledger and never
+  touches memory.provider, so it runs alongside the built-in MEMORY.md rather than
+  replacing it. With Walrus credentials the same lines are also stored on Walrus Mainnet
+  and sync across devices. Disclosure — when WALRUS_DELEGATE_KEY and WALRUS_ACCOUNT_ID
+  are set, every memory line (facts, corrections and derived rules) is uploaded to the
+  Walrus Memory relay (relayer.memory.walrus.xyz by default) under the configured
+  namespace, encrypted with Mysten SEAL before upload. Offline that is the whole payload:
+  no telemetry, no other network calls, and nothing is written to ~/.hermes/MEMORY.md.
+  Without credentials nothing leaves the machine. Reading sealed blobs back requires a
+  SEAL session, supplied through WALRUS_SEAL_SESSION or an optional WALRUS_SEAL_BRIDGE
+  command; nothing is pulled or decrypted without one.
+docs_url: https://github.com/takaolovely/hermes-walrus-memory#readme
+homepage_url: https://github.com/takaolovely/hermes-walrus-memory
+readme: true
+platforms:
+  - linux
+  - macos
+  - windows
+capabilities:
+  provides_tools:
+    - memory_observe
+    - memory_correct
+    - memory_recall_cited
+    - memory_provenance_diff
+    - memory_import
+    - walrus_sync
+    - walrus_verify
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - Reading sealed blobs from Walrus needs a Mysten SEAL session. Without one, pull and verify report a degraded result instead of failing; the local ledger and the write path are unaffected.
+  - Pull re-seals merged lines onto the puller's own hash chain, so two devices that wrote independently produce different hashes for the same line. Deduplication and verification compare on line identity, not hash.
+  - Recall is token overlap with inverse document frequency, not embeddings. It does not call a model and cannot match synonyms.
+  - This plugin does not register as memory.provider. It adds provenance alongside the built-in MEMORY.md; memory_import mirrors existing entries in.

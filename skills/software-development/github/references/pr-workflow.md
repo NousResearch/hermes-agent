@@ -158,7 +158,7 @@ are history and are not replayed; an already-finished CI verdict IS reported.
 
 GitLab merge requests (gitlab.com or self-managed) use the same follower:
 pass `--gitlab-mr <merge request URL>` instead of `--pr`/`--repo`. Set
-`GITLAB_TOKEN` (personal access token, `read_api`) to get comments, diff
+`GITLAB_TOKEN` (personal access token, `read_api`; sent only to `GITLAB_HOST`, default gitlab.com) to get comments, diff
 comments and approve/request-changes; GitLab hides MR notes from anonymous
 callers, so without it a public MR reports only its pipeline verdict and
 merge/close. A pipeline waiting on a manual job reports as `blocked`, not

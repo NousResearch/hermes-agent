@@ -41,8 +41,10 @@ def test_own_comments_and_baselined_history_never_wake():
     assert [k for k, _ in events] == ["comment:c3"]
 
 
-def test_gitlab_mr_maps_onto_the_same_events():
-    view = {"state": "opened", "sha": "f00d", "web_url": "https://gl.example/g/p/-/merge_requests/7"}
+def test_gitlab_mr_maps_onto_the_same_events(monkeypatch):
+    head = {"id": 9, "sha": "f00d", "status": "manual", "source": "merge_request_event"}
+    view = {"state": "opened", "sha": "f00d", "web_url": "https://gl.example/g/p/-/merge_requests/7",
+            "head_pipeline": head}
     notes = [
         {"id": 1, "system": False, "type": None, "author": {"username": "rev"}, "body": "please rename"},
         {"id": 2, "system": False, "type": "DiffNote", "author": {"username": "rev"}, "body": "typo",
@@ -51,10 +53,15 @@ def test_gitlab_mr_maps_onto_the_same_events():
         {"id": 4, "system": True, "author": {"username": "rev"}, "body": "added 1 commit"},
         {"id": 5, "system": False, "type": None, "author": {"username": "me"}, "body": "fixed"},
     ]
-    manual = [{"id": 9, "status": "manual", "source": "merge_request_event"}]
-    events = follow_pr.collect_events(follow_pr.normalize_gitlab(view, notes, manual), set(), "me")
+    events = follow_pr.collect_events(follow_pr.normalize_gitlab(view, notes), set(), "me")
     assert [k for k, _ in events] == ["comment:gl1", "review:gl3", "inline:gl2", "ci:f00d"]
     assert "app.py:12" in events[2][1] and "APPROVED" in events[1][1]
     assert "blocked" in events[3][1] and "failed" not in events[3][1]
-    running = [{"id": 9, "status": "running", "source": "push"}]
-    assert follow_pr.collect_events(follow_pr.normalize_gitlab(view, [], running), set(), "me") == []
+    running = dict(view, head_pipeline=dict(head, status="running"))
+    assert follow_pr.collect_events(follow_pr.normalize_gitlab(running, []), set(), "me") == []
+
+    # The token belongs to one host: an MR link elsewhere never receives it.
+    monkeypatch.setenv("GITLAB_TOKEN", "glpat-secret")
+    monkeypatch.setenv("GITLAB_HOST", "https://gitlab.example.com/")
+    assert follow_pr.gitlab_token("gitlab.example.com") == "glpat-secret"
+    assert follow_pr.gitlab_token("evil.example") == ""

@@ -10,11 +10,12 @@ the state file remembers what was already reported, so nothing replays.
     python follow_pr.py --gitlab-mr https://gitlab.example.com/group/project/-/merge_requests/12
 
 GitLab (gitlab.com or self-managed) is read over its REST API: ``GITLAB_TOKEN``
-(a personal access token with ``read_api``) is needed for comments and reviews
+(a personal access token with ``read_api``; sent only to ``GITLAB_HOST``,
+default gitlab.com) is needed for comments and reviews
 (GitLab hides MR notes from anonymous callers) and for private projects;
 without it a public MR still reports its CI verdict and merge/close. MR notes map to
 comments, diff notes to inline comments, approve/unapprove/request-changes
-system notes to reviews, and the head commit's pipelines to the CI verdict.
+system notes to reviews, and the MR's head pipeline to the CI verdict.
 
 Events: new issue comments, submitted reviews, inline review comments, the CI
 verdict for the PR's current head commit (once per head), and merge/close
@@ -88,11 +89,22 @@ GITLAB_REVIEW_NOTES = (("requested changes", "CHANGES_REQUESTED"), ("unapproved"
 GITLAB_STATE = {"opened": "OPEN", "locked": "OPEN", "merged": "MERGED", "closed": "CLOSED"}
 
 
+def gitlab_token(host: str) -> str:
+    """``GITLAB_TOKEN`` only for the host it belongs to (``GITLAB_HOST``, default gitlab.com).
+
+    The MR URL is user input: a link on another host must never receive the credential.
+    """
+    token = os.environ.get("GITLAB_TOKEN", "")
+    trusted = (os.environ.get("GITLAB_HOST") or "gitlab.com").strip().lower()
+    trusted = re.sub(r"^https?://", "", trusted).rstrip("/")
+    return token if token and host.lower() == trusted else ""
+
+
 def gitlab_get(host: str, path: str, *, paginate: bool = False):
-    """GET ``https://<host>/api/v4/<path>``; ``GITLAB_TOKEN`` is sent when set (public projects need none)."""
+    """GET ``https://<host>/api/v4/<path>``, authenticated only when ``gitlab_token`` allows it."""
     headers = {"Accept": "application/json"}
-    if os.environ.get("GITLAB_TOKEN"):
-        headers["PRIVATE-TOKEN"] = os.environ["GITLAB_TOKEN"]
+    if gitlab_token(host):
+        headers["PRIVATE-TOKEN"] = gitlab_token(host)
     sep = "&" if "?" in path else "?"
     items, page = [], "1"
     while page:
@@ -115,14 +127,16 @@ def gitlab_snapshot(host: str, project: str, mr: int) -> dict:
     # GitLab serves MR notes only to signed-in callers, public projects included;
     # without GITLAB_TOKEN the follow still reports CI and merge/close.
     notes = gitlab_get(host, f"{base}/merge_requests/{mr}/notes?sort=asc", paginate=True) \
-        if os.environ.get("GITLAB_TOKEN") else []
-    sha = view.get("sha") or ""
-    pipelines = gitlab_get(host, f"{base}/pipelines?sha={sha}") if sha else []
-    return normalize_gitlab(view, notes, pipelines)
+        if gitlab_token(host) else []
+    return normalize_gitlab(view, notes)
 
 
-def normalize_gitlab(view: dict, notes: list[dict], pipelines: list[dict]) -> dict:
-    """GitLab MR + notes + head pipelines -> the GitHub snapshot shape ``collect_events`` reads."""
+def normalize_gitlab(view: dict, notes: list[dict]) -> dict:
+    """GitLab MR + notes -> the GitHub snapshot shape ``collect_events`` reads.
+
+    CI is the MR's ``head_pipeline`` only: older pipelines on the same SHA (a failed
+    run that was retried) are history, not the current verdict.
+    """
     sha = view.get("sha") or ""
     web = view.get("web_url", "")
     snap = {"state": GITLAB_STATE.get(view.get("state", ""), "OPEN"), "url": web, "headRefOid": sha,
@@ -144,7 +158,10 @@ def normalize_gitlab(view: dict, notes: list[dict], pipelines: list[dict]) -> di
         else:
             snap["comments"].append({"id": f"gl{n['id']}", "author": author, "body": body,
                                      "url": f"{web}#note_{n['id']}"})
-    for p in pipelines or []:
+    head = view.get("head_pipeline") or {}
+    if head.get("sha") not in (None, sha):
+        head = {}  # a pipeline for an older head commit is not this head's verdict
+    for p in [head] if head else []:
         status = p.get("status", "")
         snap["statusCheckRollup"].append({
             "__typename": "CheckRun", "name": f"pipeline {p.get('id')} ({p.get('source', '')})",
@@ -286,7 +303,7 @@ def follow(args: argparse.Namespace) -> int:
     if args.gitlab_mr:
         host, project, number = parse_gitlab_mr(args.gitlab_mr)
         repo = f"{host}/{project}"
-        self_login = "" if args.include_self or not os.environ.get("GITLAB_TOKEN") else \
+        self_login = "" if args.include_self or not gitlab_token(host) else \
             gitlab_get(host, "user").get("username", "")
         snapshot = lambda: gitlab_snapshot(host, project, number)
     else:

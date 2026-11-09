@@ -1,11 +1,14 @@
 name: hermes-wrapped
 repo: https://github.com/devpras22/hermes-wrapped
 sha: 0de155d96fb498971301dcf147f06e5628fa3993
+version: "0.1.0"
 description: 'Your week with Hermes as a 30-second video, delivered every Sunday: what your agent did, what it
   cost, and how much of your time went into upkeep versus Hermes working for you. Built from Hermes''s own
   session records by code: no model calls, no tokens, secrets and home paths stripped.'
+title: Hermes Wrapped
 maintainer: devpras22
 tier: community
+category: general
 requires_hermes: '>=0.22.0'
 docs_url: https://github.com/devpras22/hermes-wrapped
 platforms: []

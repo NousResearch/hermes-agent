@@ -320,7 +320,7 @@ def check_telegram_requirements() -> bool:
     return True
 
 
-from plugins.platforms.telegram.telegram_markdown import escape_rich_currency_dollars, to_markdown_v2
+from plugins.platforms.telegram.telegram_markdown import degrade_unrenderable_links, escape_rich_currency_dollars, to_markdown_v2
 
 
 def _strip_mdv2(text: str) -> str:
@@ -1339,7 +1339,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramTo
     def _rich_message_payload(self, content: str, *, skip_entity_detection: bool = False) -> dict[str, Any]:
         """``InputRichMessage`` from RAW markdown — never ``format_message(content)``, whose MarkdownV2
         escaping destroys table pipes. Currency ``$`` is escaped so two amounts never pair as inline math."""
-        payload: dict[str, Any] = {"markdown": escape_rich_currency_dollars(_rich_normalize_linebreaks(content))}
+        payload: dict[str, Any] = {"markdown": degrade_unrenderable_links(escape_rich_currency_dollars(_rich_normalize_linebreaks(content)))}
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload

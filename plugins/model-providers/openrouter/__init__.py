@@ -125,6 +125,12 @@ class OpenRouterProfile(ProviderProfile):
 
     def build_extra_body(self, *, session_id: str | None = None, **context: Any) -> dict[str, Any]:
         body: dict[str, Any] = {}
+        # Ask OpenRouter to report the per-request cost it actually billed
+        # (``usage.cost`` / ``usage.cost_details`` in the response). The
+        # endpoint that serves a request prices it by its own per-endpoint
+        # rate, which can differ from the model-level headline price by up to
+        # ~13x, so the reported figure is the only reliable cost.
+        body["usage"] = {"include": True}
         # Top-level session_id is OpenRouter's sticky routing key (used directly,
         # not hashed from the opening messages; active from the first request).
         sticky_key = _sticky_key(session_id)

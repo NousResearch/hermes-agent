@@ -151,6 +151,22 @@ class KanbanHandoffExhaustedTests(unittest.TestCase):
         }]
         self.assertFalse(session_called_kanban_terminal(messages))
 
+    def test_empty_json_error_field_is_not_failure(self):
+        messages = [_TERMINAL[0], {
+            "role": "tool", "name": "kanban_complete",
+            "tool_call_id": "1",
+            "content": json.dumps({"ok": True, "error": "", "task_id": "t_probe"}),
+        }]
+        self.assertTrue(session_called_kanban_terminal(messages))
+
+    def test_json_explicit_error_still_fails(self):
+        messages = [_TERMINAL[0], {
+            "role": "tool", "name": "kanban_complete",
+            "tool_call_id": "1",
+            "content": json.dumps({"ok": False, "error": "", "task_id": "t_probe"}),
+        }]
+        self.assertFalse(session_called_kanban_terminal(messages))
+
     def test_malformed_result_is_not_handoff(self):
         messages = [_TERMINAL[0], {
             "role": "tool", "name": "kanban_complete",

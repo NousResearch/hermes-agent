@@ -327,3 +327,34 @@ async def test_oversized_first_head_with_lost_ack_sends_only_the_unsent_tail(fai
     assert "".join(delivered) == answer  # head once, then only the unseen tail
     assert consumer.final_content_delivered is True
     assert consumer.delivery_uncertain is True  # ledger may issue a marked retry
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunks,expected", [
+    # The only send is the final; it ends in a code block the display closed.
+    ((["Here:\n```python\nprint(1)"]), ["Here:\n```python\nprint(1)\n```"]),
+    # The preview stopped inside the language tag: the rest reopens the model's own opener.
+    ((["```pyt", "hon\nx = 1\n```"]), ["```pyt\n```", "```python\nx = 1\n```"]),
+], ids=["final_in_open_code_block", "preview_cut_in_language_tag"])
+async def test_timed_out_send_in_a_code_block_shows_only_what_the_model_wrote(chunks, expected):
+    """Telegram (finalize edit required): a timed-out send whose code fence the display closed
+    counts as shown, so the gateway does not resend the whole answer unlabelled, and a
+    continuation never invents a code line out of a split fence tag."""
+    from gateway.run_turn import GatewayTurnMixin
+
+    delivered: list = []
+    adapter = _telegram_flagged(_landing_adapter(delivered))
+    adapter.REQUIRES_EDIT_FINALIZE = True
+    consumer = GatewayStreamConsumer(
+        adapter, "chat", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=""))
+    consumer.on_delta(chunks[0])
+    task = asyncio.create_task(consumer.run())
+    for rest in chunks[1:]:
+        await async_wait_until(lambda: delivered, timeout=5)
+        consumer.on_delta(rest)
+    consumer.finish()
+    await asyncio.wait_for(task, timeout=10)
+
+    assert delivered == expected
+    assert GatewayTurnMixin._run_agent_stream_confirmed_final_delivery(consumer, "".join(chunks))
+    assert consumer.delivery_uncertain is True  # the ledger's resend is labelled

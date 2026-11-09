@@ -1,6 +1,6 @@
 name: bulk
 repo: https://github.com/sniperchief/Bulk
-sha: "5c23b9923fa67b3c9b49899f6f319f9d107e16be"
+sha: "99a3f1780de549ac1c0a0e878b29f6d8d248be4a"
 description: >-
   Apply one instruction to hundreds of independent files, CSV rows or JSON records from a
   /bulk slash command, with job state in SQLite, background processing, bounded concurrency,

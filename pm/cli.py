@@ -489,7 +489,7 @@ def _doctor_uv_cache(*, repair: bool) -> int:
     Read-only by default like the rest of doctor. Installs already purge a
     corrupt entry they trip over; this finds them before an install does.
     """
-    from pm.environment import managed_environment
+    from pm.environment import managed_environment  # noqa: TID251
     from pm.packages import uv_cache_path
     from pm.uv_cache_health import corrupt_cached_packages
 
@@ -580,7 +580,7 @@ def cmd_gc(args) -> int:
 
 def _run_live(cmd: list[str], *, cwd, env, timeout: int = 3600) -> tuple[int, str]:
     """Stream CI progress with the Python engine's bounded drain and diagnostic tail."""
-    from pm.environment import _run_streaming
+    from pm.environment import _run_streaming  # noqa: TID251
 
     try:
         result = _run_streaming(cmd, cwd=cwd, env=env, timeout=timeout, output=sys.stdout)

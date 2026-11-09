@@ -40,8 +40,10 @@ def platform_modules():
     yet" / "not installed"; without the restore the rest of the session would run
     without the conftest mocks it depends on.
     """
+    roots = {root for names in FAKED_SDKS.values() for root in names}  # module roots, not platform ids
+
     def _owned(name: str) -> bool:
-        return name.split(".", 1)[0] in FAKED_SDKS
+        return name.split(".", 1)[0] in roots
 
     snapshot = {name: mod for name, mod in sys.modules.items() if _owned(name)}
     yield

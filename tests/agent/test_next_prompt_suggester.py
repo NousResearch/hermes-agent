@@ -1,5 +1,6 @@
 """Behaviour contract of the next-prompt suggester: what it asks the model and what it keeps."""
 
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -90,3 +91,86 @@ def test_last_exchange_uses_only_the_latest_assistant_message():
     history[-1] = {"role": "assistant", "content": "", "tool_calls": [{}]}
     assert nps.last_exchange(history) == ("q2", "")
     assert nps.last_exchange([]) == ("", "")
+
+
+_CLARIFY = ('{"responses": [{"question": "Should I delete it?", "choices_offered": ["No, keep it", '
+            '"Yes, delete it"], "status": "answered", "user_response": "No, keep it"}], "outcome": "submitted"}')
+
+
+def _clarify_history(tool_msg, call=None):
+    return [
+        {"role": "user", "content": "list the files, then ask me whether to delete the oldest backup"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            call or {"id": "c1", "type": "function", "function": {"name": "clarify", "arguments": "{}"}}]},
+        tool_msg,
+        {"role": "assistant", "content": "I kept 2026-11-08-backup.tar.gz."},
+    ]
+
+
+def _model_input(history):
+    user, assistant = nps.last_exchange(history)
+    with patch.object(nps, "call_llm", return_value=_resp("NONE")) as m:
+        nps.generate_next_prompt(user, assistant)
+    return "\n".join(msg["content"] for msg in m.call_args.kwargs["messages"][1:])
+
+
+@pytest.mark.parametrize("tool_msg", [
+    {"role": "tool", "tool_name": "clarify", "tool_call_id": "c1", "content": _CLARIFY},
+    {"role": "tool", "name": "clarify", "tool_call_id": "c1", "content": _CLARIFY},
+    {"role": "tool", "tool_call_id": "c1", "content": _CLARIFY},  # name only on the assistant tool_calls
+])
+def test_clarify_answer_reaches_the_model(tool_msg):
+    sent = _model_input(_clarify_history(tool_msg))
+    assert "Should I delete it?" in sent and "No, keep it" in sent
+    assert "I kept 2026-11-08-backup.tar.gz." in sent
+
+
+def test_history_without_clarify_is_unchanged():
+    history = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
+    assert nps.last_exchange(history) == ("q", "a")
+
+
+@pytest.mark.parametrize("content", ["not json", "[1, 2]", '{"responses": "x"}', '{"responses": [{"status": "answered"}]}', None])
+def test_malformed_clarify_content_is_ignored(content):
+    history = _clarify_history({"role": "tool", "tool_name": "clarify", "tool_call_id": "c1", "content": content})
+    assert nps.last_exchange(history) == (history[0]["content"], "I kept 2026-11-08-backup.tar.gz.")
+
+
+def test_other_tools_and_unanswered_clarify_are_ignored():
+    other = {"role": "tool", "tool_name": "terminal", "tool_call_id": "c1", "content": _CLARIFY}
+    assert "No, keep it" not in nps.last_exchange(_clarify_history(other))[0]
+    skipped = _CLARIFY.replace('"answered"', '"skipped"')
+    msg = {"role": "tool", "tool_name": "clarify", "tool_call_id": "c1", "content": skipped}
+    assert "No, keep it" not in nps.last_exchange(_clarify_history(msg))[0]
+
+
+def test_clarify_from_an_earlier_turn_is_not_included():
+    history = _clarify_history({"role": "tool", "tool_name": "clarify", "tool_call_id": "c1", "content": _CLARIFY})
+    history += [{"role": "user", "content": "thanks, now run tests"}, {"role": "assistant", "content": "All green."}]
+    assert nps.last_exchange(history) == ("thanks, now run tests", "All green.")
+
+
+def test_clarify_block_is_clipped_and_assistant_tail_survives():
+    big = json.dumps({"responses": [
+        {"question": "q" * 5000, "status": "answered", "user_response": "a" * 5000} for _ in range(10)]})
+    history = _clarify_history({"role": "tool", "tool_name": "clarify", "tool_call_id": "c1", "content": big})
+    history[-1]["content"] = "x" * 50_000 + "THE END"
+    user, assistant = nps.last_exchange(history)
+    assert len(user) < nps.MAX_USER_CHARS + nps.MAX_CLARIFY_CHARS + 10
+    with patch.object(nps, "call_llm", return_value=_resp("NONE")) as m:
+        nps.generate_next_prompt(user, assistant)
+    sent = "".join(msg["content"] for msg in m.call_args.kwargs["messages"])
+    assert len(sent) < 6_000 and sent.endswith("THE END")
+
+
+def test_long_user_message_without_clarify_stays_within_the_user_budget():
+    history = [{"role": "user", "content": "u" * 5000}, {"role": "assistant", "content": "done"}]
+    user, _ = nps.last_exchange(history)
+    assert len(user) == nps.MAX_USER_CHARS
+
+
+def test_multi_select_answer_is_joined_not_repr():
+    content = json.dumps({"responses": [
+        {"question": "Which?", "status": "answered", "user_response": ["alpha", "beta"]}]})
+    history = _clarify_history({"role": "tool", "tool_name": "clarify", "tool_call_id": "c1", "content": content})
+    assert nps.last_exchange(history)[0].endswith("Asked: Which? / User answered: alpha, beta")

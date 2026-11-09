@@ -4,6 +4,7 @@ One auxiliary call (``task="next_prompt"``) on a clipped tail of the last exchan
 the conversation, system prompt or toolsets, so the main prompt cache is unaffected. ``None`` means
 "show nothing": the model answered NONE, the output was unusable, or the call failed."""
 
+import json
 import logging
 from typing import Any, Optional
 
@@ -15,12 +16,17 @@ logger = logging.getLogger(__name__)
 # Tail budget per message: the end of an assistant reply is what the next prompt follows from.
 MAX_USER_CHARS = 1000
 MAX_ASSISTANT_CHARS = 2000
+MAX_CLARIFY_CHARS = 600  # whole block of answered clarify questions
+MAX_CLARIFY_FIELD_CHARS = 200
 NEXT_PROMPT_MAX_TOKENS = 200
 
 _PROMPT = (
     "You predict what the user will type next in a chat with an AI assistant. Given the last "
     "exchange, write the single most likely next message from the USER.\n\n"
     "Rules:\n"
+    "- Lines like 'Asked: ... / User answered: ...' are choices the user already made this turn. "
+    "Treat them as decided: never suggest reversing, repeating or re-asking them, and never "
+    "suggest an action the user just declined.\n"
     "- Write as the user, in their voice and language, under 15 words.\n"
     "- If the assistant asked a question or made an offer ('Want me to...?', 'Tell me if you want "
     "X'), answer it with the user's most likely short reply, e.g. 'yes, go ahead' or "
@@ -57,16 +63,72 @@ def clean_suggestion(raw: Any) -> Optional[str]:
     return line
 
 
+def _tool_names_by_call_id(messages: list) -> dict[str, str]:
+    """tool_call_id -> tool name from assistant ``tool_calls``, for results that carry no name."""
+    names: dict[str, str] = {}
+    for msg in messages:
+        for call in (msg.get("tool_calls") or []) if msg.get("role") == "assistant" else []:
+            if isinstance(call, dict) and call.get("id"):
+                names[call["id"]] = (call.get("function") or {}).get("name") or ""
+    return names
+
+
+def _clarify_pairs(result_messages: list, call_names: dict[str, str]) -> list[str]:
+    """``Asked: q / User answered: a`` for each answered clarify response in the tool results."""
+    pairs: list[str] = []
+    for msg in result_messages:
+        if msg.get("role") != "tool":
+            continue
+        name = msg.get("tool_name") or msg.get("name") or call_names.get(msg.get("tool_call_id") or "")
+        if name != "clarify":
+            continue
+        try:
+            responses = json.loads(flatten_message_text(msg.get("content")))["responses"]
+            for r in responses:
+                if r["status"] != "answered":
+                    continue
+                question = str(r["question"]).strip()[-MAX_CLARIFY_FIELD_CHARS:]
+                answer = r["user_response"]
+                if isinstance(answer, list):  # multi-select
+                    answer = ", ".join(str(a).strip() for a in answer)
+                answer = str(answer).strip()[-MAX_CLARIFY_FIELD_CHARS:]
+                if question and answer:
+                    pairs.append(f"Asked: {question} / User answered: {answer}")
+        except (ValueError, TypeError, KeyError, AttributeError):
+            continue
+    return pairs
+
+
+def _clip_pairs(pairs: list[str]) -> str:
+    """Newest pairs that fit ``MAX_CLARIFY_CHARS``, in original order."""
+    kept: list[str] = []
+    used = 0
+    for pair in reversed(pairs):
+        used += len(pair) + 1
+        if used > MAX_CLARIFY_CHARS and kept:
+            break
+        kept.append(pair)
+    return "\n".join(reversed(kept))[-MAX_CLARIFY_CHARS:]
+
+
 def last_exchange(history: list) -> tuple[str, str]:
     """(user, assistant) text of the latest assistant message and the user message before it;
-    empty when that latest assistant message carries no text (never reaches back to an older reply)."""
+    empty when that latest assistant message carries no text (never reaches back to an older reply).
+
+    Answered ``clarify`` results between the two ride on the user side, since they are the user's
+    words that the transcript otherwise records only as tool rows."""
     messages = list(history or [])
     idx = next((i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "assistant"), None)
     if idx is None:
         return "", ""
     assistant = flatten_message_text(messages[idx].get("content"))
-    user = next((flatten_message_text(m.get("content")) for m in reversed(messages[:idx])
-                 if m.get("role") == "user"), "")
+    user_idx = next((i for i in range(idx - 1, -1, -1) if messages[i].get("role") == "user"), None)
+    if user_idx is None:
+        return "", assistant
+    user = flatten_message_text(messages[user_idx].get("content")).strip()[-MAX_USER_CHARS:]
+    pairs = _clarify_pairs(messages[user_idx + 1:idx], _tool_names_by_call_id(messages[user_idx + 1:idx]))
+    if pairs:
+        user = f"{user}\n\n{_clip_pairs(pairs)}"
     return user, assistant
 
 
@@ -75,7 +137,7 @@ def generate_next_prompt(
     main_runtime: dict | None = None,
 ) -> Optional[str]:
     """Suggest the user's next prompt, or ``None``. Never raises."""
-    user_tail = (user_message or "").strip()[-MAX_USER_CHARS:]
+    user_tail = (user_message or "").strip()[-(MAX_USER_CHARS + MAX_CLARIFY_CHARS + 2):]
     assistant_tail = (assistant_message or "").strip()[-MAX_ASSISTANT_CHARS:]
     if not user_tail or not assistant_tail:
         return None

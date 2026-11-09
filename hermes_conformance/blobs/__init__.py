@@ -20,10 +20,10 @@ cover is listed in :mod:`hermes_conformance.blobs.suite`.
 
 from hermes_conformance.blobs.suite import (
     Backend, BlobConformance, BlobLevelRefusalConformance, ParticipantConformance,
-    PinningConformance,
+    ParticipantWriteFenceConformance, PinningConformance,
 )
 
 __all__ = [
     "Backend", "BlobConformance", "BlobLevelRefusalConformance", "ParticipantConformance",
-    "PinningConformance",
+    "ParticipantWriteFenceConformance", "PinningConformance",
 ]

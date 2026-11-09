@@ -25,7 +25,15 @@ Covered:
   agent cannot read, list or delete another member's conversation file, a participant's record
   resolves before an agent record of the same key, two members' files of one key never
   collide, a member still reads the agent's own files, and an actor that is no principal
-  cannot write a participant record.
+  cannot write a participant record;
+- the turn fence on conversation-file writes (:class:`ParticipantWriteFenceConformance`): a
+  participant-level write with no bound turn is refused, one under a fence its session's lease
+  no longer holds is refused with nothing written, one under the current lease lands, work
+  designed to outlive the turn keeps the fence's owner-epoch half (it writes after the session's
+  next claim and is refused after a takeover), and an agent-level write is never turn-fenced.
+  Today's local backend stores no participant level, so nothing changes there: its participant
+  writes are refused by the level conformance before any fence is asked for, and this class
+  runs only against backends that store the participant level.
 
 NOT covered. A backend that passes this suite may still violate these, and must not claim
 them:
@@ -37,9 +45,7 @@ them:
 - retention and cleanup (a deleted or swept blob leaves nothing readable through the port,
   but when a sweep runs and what it may remove is not asserted here);
 - the hosted isolation assertion (``BlobStoreProvider.assert_isolating`` failing for a role
-  that bypasses tenant isolation); only that the method is required is tested, elsewhere;
-- turn fencing of conversation-file writes (the session store fences the turn; the blob port
-  has no fence of its own).
+  that bypasses tenant isolation); only that the method is required is tested, elsewhere.
 
 The fixture cannot vary tenant names, agent ids or principals beyond the members it binds, so
 cross-tenant invariants are exercised through the one foreign tenant it supplies.
@@ -55,7 +61,8 @@ from typing import Any, Callable, Optional
 import pytest
 
 from hermes_blob_port import (
-    BlobKeyRefused, BlobLevelRefused, BlobNotFound, BlobPinRefused, BlobStore,
+    BlobFenceRequired, BlobFenceSuperseded, BlobKeyRefused, BlobLevelRefused, BlobNotFound,
+    BlobPinRefused, BlobStore,
 )
 
 
@@ -72,6 +79,17 @@ class Backend:
       participant). Required by :class:`ParticipantConformance`.
     - ``bind_system(agent)``: bind a non-principal actor's scope on the agent. Required by
       :class:`ParticipantConformance`'s non-principal test.
+    - ``claim(agent, session)``: the lease claim of *session*'s next input, on the backend's
+      admission side, returning the fence it issued (``hermes_scope.Fence``). Required by
+      :class:`ParticipantConformance`'s writes and :class:`ParticipantWriteFenceConformance`.
+    - ``turn(agent, member, session, fence, outlives=False)``: bind *member*'s claimed turn of
+      *session* under *fence* — the scope a conversation-file write runs under (*outlives*:
+      work designed to outlive the turn, keeping the fence's owner-epoch half). Required by
+      the same classes.
+    - ``supersede(agent, session, how)``: move the lease out from under the fence a claim
+      issued — ``"owner_epoch"`` (another owner took the agent over) or ``"next_claim"`` (the
+      session's next input was claimed elsewhere). Required by
+      :class:`ParticipantWriteFenceConformance`.
     - ``key_path(agent, key)``: where a key names its file on disk. Required by the
       planted-symlink test; without it that test fails on the missing hook, not the backend.
     """
@@ -82,6 +100,9 @@ class Backend:
     unbound: Callable[[], AbstractContextManager]
     bind_member: Optional[Callable[[str, str], AbstractContextManager]] = None
     bind_system: Optional[Callable[[str], AbstractContextManager]] = None
+    claim: Optional[Callable[[str, str], Any]] = None
+    turn: Optional[Callable[..., AbstractContextManager]] = None
+    supersede: Optional[Callable[[str, str, str], None]] = None
     key_path: Optional[Callable[[str, str], Path]] = None
 
 
@@ -122,6 +143,15 @@ def _refused(call: Callable[[], Any]) -> str:
     with pytest.raises(BlobPinRefused) as refused:
         call()
     return str(refused.value)
+
+
+def member_turn(backend, agent: str, member: str) -> AbstractContextManager:
+    """*member*'s claimed turn on the agent: the scope a conversation-file write runs under.
+    Its fence is the lease the claim issued, which the backend checks inside the write."""
+    assert backend.claim is not None and backend.turn is not None, (
+        "the backend fixture must supply claim and turn: a conversation-file write runs under "
+        "its turn's fence")
+    return backend.turn(agent, member, "s1", backend.claim(agent, "s1"))
 
 
 #: Every read, naming blobs agent ``a`` holds in the world.
@@ -278,19 +308,21 @@ class BlobLevelRefusalConformance:
 class ParticipantConformance:
     """Conversation files are per participant: a member of a group agent sees another member's
     nowhere, and the participant level resolves before the agent level. Inherit and supply a
-    ``backend`` fixture whose backend stores the participant level (``bind_member`` and
-    ``bind_system`` required)."""
+    ``backend`` fixture whose backend stores the participant level (``bind_member``,
+    ``bind_system``, ``claim`` and ``turn`` required: a conversation-file write runs under its
+    writer's claimed turn)."""
 
     def test_a_member_cannot_read_list_or_delete_another_members_conversation_file(self, backend):
         assert backend.bind_member is not None, "the backend fixture must supply bind_member"
         store = make_world(backend)
-        with backend.bind_member("a", "m1"):
+        with member_turn(backend, "a", "m1"):
             store.put("media/image/inbound.png", b"m1-photo", level="participant")
         with backend.bind_member("a", "m2"):
             with pytest.raises(BlobNotFound):
                 store.get("media/image/inbound.png")
             assert not store.exists("media/image/inbound.png")
             assert "media/image/inbound.png" not in store.list("media/")
+        with member_turn(backend, "a", "m2"):
             assert store.delete("media/image/inbound.png", level="participant") is False
         with backend.bind_member("a", "m1"):
             assert store.get("media/image/inbound.png") == b"m1-photo"
@@ -300,8 +332,9 @@ class ParticipantConformance:
         store = make_world(backend)
         with backend.bind("a"):
             store.put("pets/ghost/shared.bin", b"agent-level", level="agent")
-        with backend.bind_member("a", "m1"):
+        with member_turn(backend, "a", "m1"):
             store.put("pets/ghost/shared.bin", b"m1-private", level="participant")
+        with backend.bind_member("a", "m1"):
             assert store.get("pets/ghost/shared.bin") == b"m1-private"
         with backend.bind_member("a", "m2"):
             assert store.get("pets/ghost/shared.bin") == b"agent-level"
@@ -311,10 +344,11 @@ class ParticipantConformance:
     def test_two_members_conversation_files_of_one_key_never_collide(self, backend):
         assert backend.bind_member is not None, "the backend fixture must supply bind_member"
         store = backend.open("a")
-        with backend.bind_member("a", "m1"):
+        with member_turn(backend, "a", "m1"):
             store.put("media/image/inbound.png", b"m1-photo", level="participant")
-        with backend.bind_member("a", "m2"):
+        with member_turn(backend, "a", "m2"):
             store.put("media/image/inbound.png", b"m2-photo", level="participant")
+        with backend.bind_member("a", "m2"):
             assert store.get("media/image/inbound.png") == b"m2-photo"
         with backend.bind_member("a", "m1"):
             assert store.get("media/image/inbound.png") == b"m1-photo"
@@ -337,7 +371,95 @@ class ParticipantConformance:
         assert observe(backend, store) == before
 
 
-class BlobConformance(PinningConformance, ParticipantConformance):
+class ParticipantWriteFenceConformance:
+    """A conversation-file write is session-owned data, so it runs under its turn's claim: the
+    backend checks the bound turn's fence against the session's lease inside the write, before
+    anything of it lands. A participant-level write with no turn bound is refused, one under a
+    fence the lease no longer holds is refused with nothing written, one under the current lease
+    lands, work designed to outlive the turn keeps the fence's owner-epoch half, and an
+    agent-level write is never turn-fenced. Inherit and supply a ``backend`` fixture whose
+    backend stores the participant level (``claim``, ``turn`` and ``supersede`` required)."""
+
+    def _hooks(self, backend):
+        assert backend.claim is not None and backend.turn is not None \
+            and backend.supersede is not None, (
+            "the backend fixture must supply claim, turn and supersede: a conversation-file "
+            "write is fenced by its turn's claim")
+
+    def test_a_conversation_file_write_with_no_turn_bound_is_refused(self, backend):
+        self._hooks(backend)
+        store = make_world(backend)
+        before = observe(backend, store)
+        with backend.bind_member("a", "m1"):
+            for write in (lambda: store.put("media/image/inbound.png", b"unfenced", level="participant"),
+                          lambda: store.delete("media/image/inbound.png", level="participant")):
+                with pytest.raises(BlobFenceRequired):
+                    write()
+            assert not store.exists("media/image/inbound.png")
+            assert "media/image/inbound.png" not in store.list("media/")
+        assert observe(backend, store) == before
+
+    def test_a_conversation_file_write_under_its_sessions_current_lease_lands(self, backend):
+        self._hooks(backend)
+        store = make_world(backend)
+        fence = backend.claim("a", "s1")
+        with backend.turn("a", "m1", "s1", fence):
+            store.put("media/image/inbound.png", b"fenced", level="participant")
+        with backend.bind_member("a", "m1"):
+            assert store.get("media/image/inbound.png") == b"fenced"
+
+    @pytest.mark.parametrize("how", ["owner_epoch", "next_claim"])
+    def test_a_conversation_file_write_under_a_superseded_fence_is_refused_and_writes_nothing(
+            self, backend, how):
+        self._hooks(backend)
+        store = make_world(backend)
+        fence = backend.claim("a", "s1")
+        with backend.turn("a", "m1", "s1", fence):
+            store.put("media/image/inbound.png", b"first", level="participant")
+        backend.supersede("a", "s1", how)
+        with backend.turn("a", "m1", "s1", fence):
+            with pytest.raises(BlobFenceSuperseded):
+                store.put("media/image/inbound.png", b"stale", level="participant")
+            with pytest.raises(BlobFenceSuperseded):
+                store.delete("media/image/inbound.png", level="participant")
+        with backend.bind_member("a", "m1"):
+            assert store.get("media/image/inbound.png") == b"first"
+
+    def test_work_that_outlives_the_turn_writes_after_the_sessions_next_claim(self, backend):
+        self._hooks(backend)
+        store = make_world(backend)
+        fence = backend.claim("a", "s1")
+        backend.supersede("a", "s1", "next_claim")
+        with backend.turn("a", "m1", "s1", fence, outlives=True):
+            store.put("media/image/inbound.png", b"outlives", level="participant")
+        with backend.bind_member("a", "m1"):
+            assert store.get("media/image/inbound.png") == b"outlives"
+
+    def test_work_that_outlives_the_turn_is_refused_after_a_takeover(self, backend):
+        self._hooks(backend)
+        store = make_world(backend)
+        fence = backend.claim("a", "s1")
+        backend.supersede("a", "s1", "owner_epoch")
+        with backend.turn("a", "m1", "s1", fence, outlives=True):
+            with pytest.raises(BlobFenceSuperseded):
+                store.put("media/image/inbound.png", b"outlives", level="participant")
+        with backend.bind_member("a", "m1"):
+            assert not store.exists("media/image/inbound.png")
+
+    def test_an_agent_level_write_is_never_turn_fenced(self, backend):
+        self._hooks(backend)
+        store = make_world(backend)
+        fence = backend.claim("a", "s1")
+        backend.supersede("a", "s1", "owner_epoch")
+        with backend.turn("a", "m1", "s1", fence):
+            store.put("pets/ghost/sheet.webp", b"replaced", level="agent")
+            assert store.delete("media/audio/voice.ogg", level="agent") is True
+        with backend.bind("a"):
+            assert store.get("pets/ghost/sheet.webp") == b"replaced"
+            assert not store.exists("media/audio/voice.ogg")
+
+
+class BlobConformance(PinningConformance, ParticipantConformance, ParticipantWriteFenceConformance):
     """The whole suite for a backend that stores both levels. Inherit and supply a ``backend``
     fixture (or inherit the parts separately, e.g. one test module each, to spread a slow
     backend over several runners)."""

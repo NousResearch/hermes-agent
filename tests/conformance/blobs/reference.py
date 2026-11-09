@@ -12,6 +12,11 @@ see the shape the suite assumes.
 The pin is the bound scope, with no fallback: a hosted backend never serves an ambient
 profile. A participant record is the bound principal's — the ownership key's subject comes
 from the scope, never from the key.
+
+A conversation file is session-owned data, so its writes are fenced: they must run under the
+bound turn (``hermes_scope.TurnScope``), whose fence the store checks against the session's
+lease on its :class:`SessionLeases` inside the write, before anything of it lands. The leases
+model the turn-admission lease the hosted blob backend would read from its own index.
 """
 
 from __future__ import annotations
@@ -20,9 +25,38 @@ import os
 from pathlib import Path
 
 from hermes_blob_port import (
-    LEVELS, BlobKeyRefused, BlobLevelRefused, BlobNotFound, BlobPinRefused, BlobStore, parse_key,
+    LEVELS, BlobFenceRequired, BlobFenceSuperseded, BlobKeyRefused, BlobLevelRefused,
+    BlobNotFound, BlobPinRefused, BlobStore, parse_key,
 )
-from hermes_scope import Principal, current_scope
+from hermes_scope import Fence, Principal, current_scope, current_turn
+
+
+class SessionLeases:
+    """The turn-admission lease, as this fixture's stand-in for the hosted lease table: the
+    owner's epoch (a takeover moves it) and each claimed session's runtime generation (the
+    session's next claim moves it). One per agent; the store checks a turn's fence against it."""
+
+    def __init__(self) -> None:
+        self.epoch = 1
+        self.generations: dict[str, int] = {}
+
+    def claim(self, session: str) -> Fence:
+        """Claim *session*'s next input, stamping and returning the lease's fence."""
+        generation = self.generations.get(session, 0) + 1
+        self.generations[session] = generation
+        return Fence(self.epoch, generation)
+
+    def take_over(self) -> None:
+        """Another owner takes the agent over: every fence's owner-epoch half is gone."""
+        self.epoch += 1
+
+    def holds(self, session: str, fence: Fence, *, owner_only: bool = False) -> bool:
+        """Whether *fence* is still *session*'s lease here: the owner epoch the claim stamped is
+        still current, and (*owner_only*: work designed to outlive the turn) so is the session's
+        runtime generation."""
+        if fence.epoch != self.epoch:
+            return False
+        return owner_only or self.generations.get(session) == fence.generation
 
 
 class ReferenceBlobStore(BlobStore):
@@ -30,8 +64,11 @@ class ReferenceBlobStore(BlobStore):
 
     levels = frozenset({"participant", "agent"})
 
-    def __init__(self, root: Path, tenant: str, agent: str) -> None:
+    def __init__(self, root: Path, tenant: str, agent: str, leases: SessionLeases | None = None) -> None:
+        #: The turn-admission leases the store checks conversation-file fences against; one
+        #: per agent, shared by every store opened over it in a test.
         self.root, self.tenant, self.agent = root.resolve(), tenant, agent
+        self.leases = leases if leases is not None else SessionLeases()
 
     # --- the pin: the bound scope, nothing else
 
@@ -62,6 +99,25 @@ class ReferenceBlobStore(BlobStore):
             return self.root / self.tenant / "agent" / self.agent
         return self.root / self.tenant / "participant" / subject / self.agent
 
+    def _write_fence(self, level: str) -> None:
+        """The turn fence on a conversation-file write (``participant`` level): it is
+        session-owned data, so it runs under the bound turn, whose fence this store checks
+        against the session's lease on ``self.leases`` inside the write, before anything of it
+        lands — the owner-epoch half alone for work designed to outlive the turn. Agent-level
+        writes are never turn-fenced."""
+        if level != "participant":
+            return
+        mark = current_turn()
+        if mark is None:
+            raise BlobFenceRequired(
+                "a conversation-file write is session-owned data and must run under its turn's "
+                "fence; no turn is bound")
+        if not self.leases.holds(mark.session, mark.fence, owner_only=mark.outlives):
+            raise BlobFenceSuperseded(
+                f"turn {mark.turn!r} of session {mark.session!r} no longer holds its session's "
+                f"lease (fence epoch={mark.fence.epoch}, generation={mark.fence.generation}); "
+                "refusing its conversation-file write")
+
     def _locate(self, key: str, level_dir: Path) -> Path:
         """The file *key* names under *level_dir*, refused (``BlobKeyRefused``) when the key
         cannot name a file of that directory: escaping components, or a resolution (a symlink)
@@ -89,6 +145,7 @@ class ReferenceBlobStore(BlobStore):
     def put(self, key: str, data: bytes, *, level: str = "agent") -> None:
         self._pin()
         subject = self._subject(level)
+        self._write_fence(level)
         path = self._locate(key, self._level_dir(level, subject))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
@@ -96,6 +153,7 @@ class ReferenceBlobStore(BlobStore):
     def delete(self, key: str, *, level: str = "agent") -> bool:
         self._pin()
         subject = self._subject(level)
+        self._write_fence(level)
         try:
             self._locate(key, self._level_dir(level, subject)).unlink()
             return True

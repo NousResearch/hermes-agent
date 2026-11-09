@@ -22,6 +22,7 @@ import pytest
 from hermes_cli import gateway_migrate as gm
 from hermes_cli import gateway_migrate_backends as gmb
 from hermes_cli import main_dashboard
+from tests.waiting import wait_until
 
 _READ_ONLY_SYSTEMCTL = {"show", "list-unit-files"}
 _READ_ONLY_LAUNCHCTL = {"print"}
@@ -366,12 +367,9 @@ def _wait_for_detached_prune(scratch, timeout=60.0):
     exited. It outlives the command and may still create ``logs/`` under the home, so the trees are
     compared only once it is gone. It is spawned before the command exits, so it is either still in
     the process table (its argv names *scratch*) or already finished; a zombie counts as finished."""
-    import time
-
     needles = {os.fsencode(str(scratch)), os.fsencode(os.path.realpath(scratch))}
-    deadline = time.monotonic() + timeout
-    while True:
-        alive = []
+
+    def _gone():
         for entry in os.listdir("/proc"):
             if not entry.isdigit():
                 continue
@@ -383,11 +381,10 @@ def _wait_for_detached_prune(scratch, timeout=60.0):
             except OSError:
                 continue
             if needles.intersection(argv) and state != b"Z":
-                alive.append(int(entry))
-        if not alive:
-            return
-        assert time.monotonic() < deadline, f"detached scratch prune still running: {alive}"
-        time.sleep(0.05)
+                return False
+        return True
+
+    wait_until(_gone, timeout=timeout, interval=0.05, what="detached scratch prune to exit")
 
 
 def _fresh_hermes(tmp_path, name, *cli):

@@ -555,6 +555,15 @@ def release_unheld_media(db, references, *, retain_history=True):
         return 0
     seen, last_id = set(), 0
     if retain_history:
+        # A held reference is never released (``collect`` re-checks under the lock), so drop held
+        # ones before the full messages pass: an API admission's closing release names its own,
+        # now held, image, and that pass runs inside the serialized admission, where its cost
+        # grows with total history and every other admission waits behind it.
+        with db._read_ctx() as conn:
+            held = _held_media_paths(conn)
+        references = [reference for reference in references if reference['path'] not in held]
+        if not references:
+            return 0
         with db._read_ctx() as conn:
             conn.execute('BEGIN')  # one snapshot: the id watermark and the scan agree
             try:

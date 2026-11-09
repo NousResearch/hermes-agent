@@ -5526,7 +5526,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
 
     def _is_group_chat(self, message: Message) -> bool:
         chat = getattr(message, "chat", None)
-        return bool(chat) and self._chat_type_str(chat) in {"group", "supergroup"}
+        return bool(chat) and self._chat_type_str(chat) in {"group", "supergroup", "channel"}  # channels gate like groups
 
     @classmethod
     def _effective_message_thread_id(cls, message: Message) -> Optional[str]:
@@ -5767,8 +5767,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         return bool(text) and any(pattern.search(text) for pattern in self._mention_patterns)
 
     def _is_guest_mention(self, message: Message) -> bool:
-        """Guest-mode bypass: explicit bot mention (caller already verified group chat)."""
-        return self._telegram_guest_mode() and self._message_mentions_bot(message)
+        """Guest-mode bypass: explicit bot mention in a group (never a broadcast channel: anyone can post there)."""
+        return self._chat_type_str(message.chat) != "channel" and self._telegram_guest_mode() and self._message_mentions_bot(message)
 
     def _clean_bot_trigger_text(self, text: Optional[str]) -> Optional[str]:
         from plugins.platforms.telegram.telegram_addressing import clean_bot_trigger_text
@@ -6052,7 +6052,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             return True
         if not self._telegram_require_mention() or self._is_reply_to_bot(message):
             return True
-        if not self._telegram_guest_mode() and self._message_mentions_bot(message):
+        if self._message_mentions_bot(message):  # guest-mode group mentions already returned above
             return True
         return self._message_matches_mention_patterns(message)
 

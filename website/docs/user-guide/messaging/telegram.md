@@ -1276,6 +1276,8 @@ With `guest_mode: true`, a message from a non-allowlisted group is processed **o
 
 DMs and allowlisted groups behave exactly as before.
 
+Broadcast **channel** posts run the same `allowed_chats`, `require_mention` and topic gates as groups, but never get the guest bypass: anyone with posting rights in a channel could otherwise cross the allowlist. Add the channel's ID to `allowed_chats` and @mention the bot in a post to address it.
+
 ## Slash Command Access Control
 
 By default, every allowed user can run every slash command. To split your allowlist into **admins** (full slash command access) and **regular users** (only commands you explicitly enable), add `allow_admin_from` and `user_allowed_commands` to the platform's `extra` block:

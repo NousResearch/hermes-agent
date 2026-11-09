@@ -254,23 +254,43 @@ def _file_metadata(resolved: str) -> tuple | None:
         return None
 
 
+# os.stat and os.fstat agree on these four fields on every platform. st_ctime_ns
+# is deliberately NOT among them: on Windows os.stat reports a file's CREATION
+# time while os.fstat reports its last metadata-change time, so the two diverge
+# the moment the file is written after it is created. Keying the version off an
+# fstat/stat MIX on st_ctime_ns voided the version of every edited file on
+# Windows — read_file could never record a write_file baseline and write_file
+# then refused every overwrite with the misleading "partial view" refusal, even
+# for a file the task had just read in full or written itself.
+_VERSION_FIELDS = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+_HANDLE_IDENTITY_FIELDS = ("st_dev", "st_ino", "st_size", "st_mtime_ns")
+
+
 def _file_version(resolved: str) -> tuple | None:
-    """A byte snapshot, not just mtime (editors/copy tools can preserve that)."""
+    """A byte snapshot, not just mtime (editors/copy tools can preserve that).
+
+    The identity key comes entirely from ``os.stat`` so it matches ``_file_metadata``
+    and the native-read ``_snapshot`` on every platform. A second ``os.stat`` after
+    the hash detects a change during the read window; the opened descriptor is then
+    confirmed to be that same file on the fields ``fstat`` and ``stat`` agree on
+    everywhere — never ``st_ctime_ns`` (see above)."""
     try:
-        if not stat.S_ISREG(os.stat(resolved).st_mode):
+        before = os.stat(resolved)
+        if not stat.S_ISREG(before.st_mode):
             return None
         fd = os.open(resolved, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
         with os.fdopen(fd, "rb") as stream:
-            before = os.fstat(stream.fileno())
-            if not stat.S_ISREG(before.st_mode):
+            opened = os.fstat(stream.fileno())
+            if not stat.S_ISREG(opened.st_mode):
                 return None
             digest = hashlib.file_digest(stream, "sha256").digest()
-            after = os.stat(resolved)
-        fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-        version = tuple(getattr(before, name) for name in fields)
-        if version == tuple(getattr(after, name) for name in fields):
-            return (*version, digest)
-        return None
+        after = os.stat(resolved)
+        version = tuple(getattr(before, name) for name in _VERSION_FIELDS)
+        if version != tuple(getattr(after, name) for name in _VERSION_FIELDS):
+            return None
+        if any(getattr(opened, name) != getattr(after, name) for name in _HANDLE_IDENTITY_FIELDS):
+            return None
+        return (*version, digest)
     except OSError:
         return None
 

@@ -334,3 +334,88 @@ def test_third_patch_failure_hint_requires_a_full_reread_before_write_file(tmp_p
     assert "failure #3" in hint
     assert "re-read the file in full, then use write_file to replace it" in hint
     assert "use write_file to replace the entire file" not in hint
+
+
+def test_a_windows_style_fstat_ctime_skew_keeps_the_write_baseline(tmp_path, monkeypatch):
+    """A file's version identity must come from one stat source, not an fstat/stat mix.
+
+    On Windows ``os.stat`` reports a file's CREATION time as ``st_ctime_ns`` while
+    ``os.fstat`` reports its last METADATA-CHANGE time, so the two disagree the moment
+    the file is written after it is created. ``_file_version`` used to compare an fstat
+    snapshot against a stat snapshot on ``st_ctime_ns``; the mismatch voided the version
+    of every edited file, so read_file never recorded a write_file baseline and
+    write_file refused to overwrite it. The real host is covered by the
+    ``platforms("windows")`` test below; here the split is simulated so the regression
+    is also caught on the Linux lane, where fstat and stat otherwise agree.
+    """
+    from tools import file_tools_read_tracking as rt
+
+    class _FstatCtimeShift:
+        # An os.stat_result proxy: every field is the real fstat value except
+        # st_ctime_ns, bumped so it can never equal the os.stat (creation) ctime.
+        __slots__ = ("_st",)
+
+        def __init__(self, st):
+            self._st = st
+
+        def __getattr__(self, name):
+            if name == "st_ctime_ns":
+                return self._st.st_ctime_ns + 1_000_000_000
+            return getattr(self._st, name)
+
+    task = "ctime-skew"
+    path = tmp_path / "skewed.txt"
+    path.write_text("first\nsecond\n", encoding="utf-8")
+    target = (path.stat().st_dev, path.stat().st_ino)
+    real_fstat = os.fstat
+
+    def fake_fstat(fd):
+        st = real_fstat(fd)
+        return _FstatCtimeShift(st) if (st.st_dev, st.st_ino) == target else st
+
+    monkeypatch.setattr(os, "fstat", fake_fstat)
+    try:
+        # The mismatch alone must not void the version...
+        assert rt._file_version(str(path)) is not None
+        # ...so a full read records a baseline and the overwrite lands.
+        assert "error" not in _call("read_file", path, task)
+        written = _call("write_file", path, task, content="third\n")
+        assert "error" not in written, written
+        assert path.read_text(encoding="utf-8") == "third\n"
+    finally:
+        clear_file_ops_cache(task)
+
+
+@pytest.mark.platforms("windows")
+def test_a_native_windows_edit_keeps_its_write_baseline(tmp_path):
+    """The real Windows reproduction, with no stat faking. Here ``os.fstat`` and
+    ``os.stat`` genuinely disagree on ``st_ctime_ns`` for an edited file, so this is
+    the host that regressed: the task's own rewrite and a rewrite after a full read
+    must both land, while an external edit the task never saw is still refused."""
+    task = "native-windows"
+    path = tmp_path / "arena.html"
+    try:
+        assert "error" not in _call("write_file", path, task, content="<p>v1</p>\n" * 50)
+        # The task's own immediate rewrite must land (write -> write).
+        assert "error" not in _call("write_file", path, task, content="<p>v2</p>\n" * 50)
+        # Read the whole file, then overwrite it (read -> write) — the flow the bug broke.
+        assert "error" not in _call("read_file", path, task)
+        rewritten = _call("write_file", path, task, content="<p>v3</p>\n")
+        assert "error" not in rewritten, rewritten
+        assert path.read_text(encoding="utf-8") == "<p>v3</p>\n"
+
+        # An external edit the task never saw is still refused (mtime preserved so the
+        # refusal comes from the version baseline, not an mtime-drift shortcut).
+        stamp = path.stat()
+        path.write_text("external\n", encoding="utf-8")
+        os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        refused = _call("write_file", path, task, content="clobber\n")
+        assert refused.get("stale_write_blocked"), refused
+        assert path.read_text(encoding="utf-8") == "external\n"
+
+        # Recovery: read the new bytes, then the overwrite lands.
+        assert "error" not in _call("read_file", path, task)
+        assert "error" not in _call("write_file", path, task, content="merged\n")
+        assert path.read_text(encoding="utf-8") == "merged\n"
+    finally:
+        clear_file_ops_cache(task)

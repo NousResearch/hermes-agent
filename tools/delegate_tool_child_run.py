@@ -18,7 +18,8 @@ from dataclasses import dataclass, field
 from tools import file_state
 from tools.delegate_tool_progress import _quiet, _safe_progress
 from tools.delegate_tool_registry import (
-    _capture_gateway_steer_authority, _close_subagent_steering, _register_subagent, _unregister_subagent,
+    _capture_gateway_steer_authority, _close_subagent_steering, _mark_subagent_resumable, _register_subagent,
+    _unregister_subagent,
 )
 from tools.delegate_tool_results import (
     _extract_output_tail, _looks_like_error_output, _stringify_tool_content, _summarize_tool_arguments,
@@ -467,8 +468,8 @@ def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_i
         )
     return None
 
-def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
-    """Hand ``child.close()`` to a Future done-callback and drain its transports.
+def _defer_close_after_timeout(child: Any, child_future: Any, *, cleanup: Any = None) -> None:
+    """Hand close (or the full cleanup tail) to a Future done-callback and drain its transports.
 
     The interrupt is cooperative: the worker still runs its finally path, so closing now could close SQLite under its
     final write — the done-callback is the first safe boundary. The abandoned worker is usually parked in an OpenSSL
@@ -477,7 +478,9 @@ def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
     sweep + one delayed re-sweep for a connection opened in between; a worker that still won't settle keeps its
     resources until process exit.
     """
-    child_future.add_done_callback(lambda _done: _close_child(child, "Failed to close timed-out child after worker exit"))
+    context = contextvars.copy_context()
+    finish = cleanup or (lambda: _close_child(child, "Failed to close timed-out child after worker exit"))
+    child_future.add_done_callback(lambda _done: context.run(finish))
     # Bounded drain (#94248 native half): the deferred close above only fires once the abandoned worker
     # unwinds, but that worker is typically parked inside an in-flight OpenSSL read (Codex / httpx). Never
     # hard-close that transport from this thread — releasing FDs under a live SSL read is the #29507/#70773
@@ -804,6 +807,7 @@ class _ChildRun:
     parent_task_id: Optional[str] = None
     wall_start: float = 0.0
     parent_reads_snapshot: list = field(default_factory=list)
+    deferred_future: Any = None
 
     def elapsed(self) -> float:
         return round(time.monotonic() - self.child_start, 2)
@@ -1069,7 +1073,7 @@ class _ChildRun:
         _error_entry = self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
         close_deferred = is_timeout and not future.done()
         if close_deferred:
-            _defer_close_after_timeout(child, future)
+            self.deferred_future = future
         return None, _error_entry, close_deferred
 
     def append_sibling_write_reminder(self, entry: dict[str, Any]) -> None:
@@ -1159,8 +1163,7 @@ class _ChildRun:
         heartbeat.stop()
 
         # Safe even if the child was never registered (ID missing on test doubles).
-        if self.subagent_id:
-            _unregister_subagent(self.subagent_id, agent=child)
+        retained = _unregister_subagent(self.subagent_id, agent=child, stopping=True) if self.subagent_id else None
 
         if child_pool is not None and leased_cred_id is not None:
             with _quiet("Failed to release credential lease: %s"):
@@ -1175,10 +1178,21 @@ class _ChildRun:
 
         _detach_child(self.parent_agent, child)
 
-        # Close tool resources (terminal sandboxes, browser daemons, background
-        # processes, httpx clients) so subagent subprocesses don't outlive the delegation.
-        if not close_deferred:
-            _close_child(child, "Failed to close child agent after delegation")
+        # All session/task cleanup must finish before the same IDs can be reused by continue.
+        def finish():
+            self.close_resources()
+            if self.subagent_id:
+                _mark_subagent_resumable(self.subagent_id, retained)
+
+        if close_deferred:
+            _defer_close_after_timeout(child, self.deferred_future, cleanup=finish)
+        else:
+            finish()
+
+    def close_resources(self) -> None:
+        """Close only after the worker exits; continuation stays blocked through the entire tail."""
+        child = self.child
+        _close_child(child, "Failed to close child agent after delegation")
         # The child's execute_code kernels live exactly as long as the child (pinned against the LRU
         # cap while it runs); dispose them here so they never squat the cap after the child is gone.
         with _quiet("Failed to dispose child execute_code kernels: %s"):

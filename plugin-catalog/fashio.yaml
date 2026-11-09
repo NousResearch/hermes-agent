@@ -1,0 +1,18 @@
+name: fashio
+title: Fashio
+repo: https://github.com/fashiolabs/fashio-agent-plugin
+sha: 1901c1a576e752cbd1496e79006882d2f6c61a36
+version: "1.0.0"
+description: "E-commerce fashion photos from Fashio through its hosted MCP server (Streamable HTTP at https://mcp.fashiolabs.com/mcp): garment on an AI model, virtual try-on, catalog photoshoot packs, jewelry on model, flat lays, background removal, upscaling, reframing and short product videos, plus reusable style presets. Bundles one skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call, with its arguments and image URLs, goes to mcp.fashiolabs.com, which calls api.fashiolabs.com and needs a Fashio account with its API key in FASHIO_API_KEY. create_generation and create_catalog_job spend the account's credits (no test mode; failed jobs are refunded) and delete_template_set deletes a saved preset; the package marks the server untrusted, so Hermes asks before every tool the server does not annotate as read-only. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Fashio AI
+tier: community
+category: tools
+docs_url: https://github.com/fashiolabs/fashio-agent-plugin#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [FASHIO_API_KEY]

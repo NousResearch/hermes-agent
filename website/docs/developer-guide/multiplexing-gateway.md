@@ -148,8 +148,7 @@ state:
 - `bind_turn(session_id, turn_id, fence)` marks a turn inside a bound scope.
 
 Inside a hosted scope, a bind must keep the tenant, agent, actor, owner and
-administration right;
-anything else raises `ScopeSwitchRefused`.
+administration right; anything else raises `ScopeSwitchRefused`.
 
 A reset removes its own change and replays the later ones, except those made
 inside a scope the result no longer has. A reset that is stale, repeated, out of

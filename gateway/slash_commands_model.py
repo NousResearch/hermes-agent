@@ -250,7 +250,7 @@ class GatewayModelCommandsMixin:
             "model": result.new_model, "provider": result.target_provider, "api_key": result.api_key,
             "base_url": result.base_url, "api_mode": result.api_mode,
             # Catalog alias names carry no credential authority; only a direct alias endpoint does.
-            "owns_credentials": bool(getattr(result, "alias_endpoint_applied", False)),
+            "owns_credentials": result.alias_endpoint_applied,
             "request_overrides": dict(result.request_overrides or {}),
             "capabilities": dict(result.runtime_capabilities or {}),
         }

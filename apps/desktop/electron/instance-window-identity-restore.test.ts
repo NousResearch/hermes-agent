@@ -117,6 +117,40 @@ test('explicit profile pins survive capture/serialize/restore', async () => {
   assert.equal(h.urls()[0].searchParams.get('connectionId'), 'remote-a')
 })
 
+// Regression coverage for t_208bf984: every profile-persistence test above
+// (and in session-windows.test.ts) exercises a REMOTE registry route
+// (connectionId: 'remote-a'). In production the common non-default-profile
+// case is a LOCAL profile (connectionId: null, no registry connection at
+// all, e.g. a "maestro" profile running on this same machine) — a
+// combination nothing here checked, closing exactly the kind of gap that let
+// a profile-specific regression slip through 187/187 "passing" tests.
+test('explicit LOCAL (connectionId: null) profile pin survives capture/serialize/restore', async () => {
+  const h = harness()
+  h.open({ profile: 'maestro', connectionId: null }, 'maestro-win')
+  assert.equal(h.urls()[0].searchParams.get('profile'), 'maestro')
+  assert.equal(h.urls()[0].searchParams.get('connectionId'), '')
+  assert.equal(h.urls()[0].searchParams.get('profileWindow'), '1')
+  await h.restart()
+  assert.equal(h.urls()[0].searchParams.get('profile'), 'maestro', 'LOCAL profile must survive restart, not revert to default')
+  assert.equal(h.urls()[0].searchParams.get('connectionId'), '')
+  assert.equal(h.urls()[0].searchParams.get('profileWindow'), '1')
+})
+
+test('LOCAL (connectionId: null) inherited non-pinned profile peer survives capture/serialize/restore', async () => {
+  const h = harness()
+  // LOCAL maestro source, pinned explicitly…
+  const sourceWindow = h.open({ profile: 'maestro', connectionId: null }, 'source')
+  // …and an ordinary ⌘⇧N peer that only INHERITS the maestro route (not pinned).
+  h.open(undefined, 'peer-a', sourceWindow)
+  const peerBefore = h.urls().find(u => u.searchParams.get('windowId') === 'peer-a')!
+  assert.equal(peerBefore.searchParams.get('profile'), 'maestro')
+  assert.ok(!peerBefore.searchParams.has('profileWindow'))
+  await h.restart()
+  const peerAfter = h.urls().find(u => u.searchParams.get('windowId') === 'peer-a')!
+  assert.equal(peerAfter.searchParams.get('profile'), 'maestro', 'inherited LOCAL profile must survive restart, not revert to default')
+  assert.ok(!peerAfter.searchParams.has('profileWindow'), 'an inherited peer must not become pinned on restore')
+})
+
 test('legacy and malformed saved IDs reopen with fresh distinct isolated IDs, never the main bare-key identity', async () => {
   const h = harness()
   await h.restart({ version: 1, windows: [], instanceWindows: [

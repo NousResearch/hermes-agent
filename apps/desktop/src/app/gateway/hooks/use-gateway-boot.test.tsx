@@ -401,6 +401,48 @@ describe('default-route profile adoption', () => {
     }
   )
 
+  // Regression coverage for t_208bf984: the test above only exercises a
+  // REMOTE registry profile (connectionId: 'coder-remote'). The common
+  // case in production is a LOCAL non-default profile window (no registry
+  // connection at all — e.g. a "maestro" profile running on this machine),
+  // which nothing here checked before this test. Electron always writes
+  // `connectionId=` (empty) for a LOCAL route (see buildInstanceWindowUrl /
+  // buildSessionWindowUrl in electron/session-windows.ts), so this proves
+  // the empty-string case resolves through desktop.getConnection(profile)
+  // — never desktop.getConnectionFor, and never a silent fall-through to
+  // the default/primary profile.
+  it.each(['peer=1', 'win=secondary&watch=1'])(
+    'keeps %s on its LOCAL (no connectionId) non-default profile across boot',
+    async marker => {
+      const originalUrl = window.location.href
+      window.history.replaceState(null, '', `/?${marker}&profile=maestro&connectionId=`)
+
+      const localMaestroConn = { ...coderConn, connectionId: null, profile: 'maestro' }
+      const desktop = {
+        ...fakeDesktop(),
+        getConnectionFor: vi.fn(),
+        getConnection: vi.fn(async (profile?: null | string) => {
+          const key = (profile ?? '').trim()
+
+          return key === 'maestro' ? localMaestroConn : primaryConn
+        })
+      }
+
+      ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+      try {
+        render(<Harness />)
+        await flushAsync()
+        expect(desktop.getConnection).toHaveBeenCalledWith('maestro')
+        expect(desktop.getConnectionFor).not.toHaveBeenCalled()
+        expect($connection.get()?.profile).toBe('maestro')
+        expect($connection.get()?.connectionId).toBeNull()
+      } finally {
+        window.history.replaceState(null, '', originalUrl)
+      }
+    }
+  )
+
   it.each([null, 'coder-remote'])(
     'dials the saved startup route before an ambient sender can replace it (%s)',
     async connectionId => {

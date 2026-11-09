@@ -62,6 +62,12 @@ const endGatewaySwitch = vi.fn((token?: number) => {
 const recoverActiveSourceAfterFailedGatewaySwitch = vi.fn()
 
 vi.mock('@/store/session', () => ({ $connection, $activeSessionId, $selectedStoredSessionId: atom(null) }))
+let mainWindowOverride = true
+vi.mock('@/store/windows', () => ({
+  isMainWindow: () => mainWindowOverride,
+  isPeerInstanceWindow: () => false,
+  windowProfileOverride: () => null
+}))
 vi.mock('@/store/gateway-switch', () => ({
   $gatewaySwitching,
   beginGatewaySwitch,
@@ -112,6 +118,7 @@ const setLastUsed = vi.fn(async (id: string) => ({ ok: true, registry: { ...regi
 
 beforeEach(() => {
   localStorage.clear()
+  mainWindowOverride = true
   _resetConnectionsForTests()
   $connectionsRegistry.set(null)
   $connection.set(null)
@@ -1000,6 +1007,36 @@ describe('selectConnection', () => {
     expect(openGatewayAgent).toHaveBeenLastCalledWith('local', 'mac')
     expect(ensureGatewayAgent).toHaveBeenLastCalledWith('local', 'mac', expect.anything())
     expect($newChatProfile.get()).toBe('mac')
+  })
+
+  // t_208bf984: a peer ("File > New Window") or secondary window shares this
+  // origin's localStorage with the main window. Before this fix, ANY window
+  // activating a profile wrote to the same hermes.desktop.lastProfileByConnection
+  // record, so a "default"-profile peer window on connectionId `local` could
+  // clobber a "maestro"-profile main window's own remembered entry for
+  // `local` — reproducing Tim's report that the main window reverted to the
+  // default profile on the next launch even though it was last showing a
+  // non-default profile.
+  it('does not let a non-main window (peer/secondary) overwrite the remembered per-connection profile', () => {
+    // The main window activates the non-default "maestro" profile on `local`.
+    $connection.set({ connectionId: 'local', mode: 'local', profile: 'maestro', registryScoped: true })
+    $activeGatewayProfile.set('maestro')
+
+    expect(JSON.parse(localStorage.getItem('hermes.desktop.lastProfileByConnection') || '{}')).toEqual({
+      local: 'maestro'
+    })
+
+    // A peer/secondary window (e.g. the ordinary bot-chat window) now
+    // activates the default profile on the SAME connectionId.
+    mainWindowOverride = false
+    $connection.set({ connectionId: 'local', mode: 'local', profile: 'default', registryScoped: true })
+    $activeGatewayProfile.set('default')
+
+    // The main window's remembered profile for `local` must survive —
+    // the peer window's activation must not have written anything.
+    expect(JSON.parse(localStorage.getItem('hermes.desktop.lastProfileByConnection') || '{}')).toEqual({
+      local: 'maestro'
+    })
   })
 
   it('never re-homes a live connection the registry cannot name', async () => {

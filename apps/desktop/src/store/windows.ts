@@ -117,7 +117,7 @@ export const isAuxiliaryWindow = (): boolean => isSecondaryWindow() || isHudWind
 // Electron already has running. It is not an auxiliary/specialized renderer,
 // but it must not replay the primary window's app-launch source restoration
 // after boot and silently re-home itself to another registered gateway.
-export function isPeerInstanceWindow(search = typeof window === 'undefined' ? '' : window.location.search): boolean {
+export function isPeerInstanceWindow(search = typeof window === 'undefined' ? '' : window.location?.search ?? ''): boolean {
   try {
     return new URLSearchParams(search).get('peer') === '1'
   } catch {
@@ -148,7 +148,7 @@ const WINDOW_INSTANCE_ID_PATTERN = /^[\w-]{1,64}$/
  * garbage: a corrupt/foreign query string degrades to the legacy shared
  * behavior (the pre-fix bug for that one window), never a crash.
  */
-export function windowInstanceId(search = typeof window === 'undefined' ? '' : window.location.search): null | string {
+export function windowInstanceId(search = typeof window === 'undefined' ? '' : window.location?.search ?? ''): null | string {
   try {
     if (!isPeerInstanceWindow(search)) {
       return null

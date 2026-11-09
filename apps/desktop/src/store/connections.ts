@@ -34,7 +34,7 @@ import {
   requestFreshSession
 } from '@/store/profile'
 import { $activeSessionId, $connection, $selectedStoredSessionId } from '@/store/session'
-import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
+import { isMainWindow, isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
 const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 
@@ -106,6 +106,25 @@ $activeConnectionId.listen(() => invalidateProfileScopedQueries())
 // Remember one profile per source, so switching machines is a re-home rather
 // than a reset to `default`. The map is local UI preference only; Electron
 // remains the authority for the connection registry and all secrets.
+//
+// This key lives in the renderer's ordinary (unscoped) localStorage, which
+// Electron partitions by origin, not by BrowserWindow — every window sharing
+// this origin (the main window, every "File > New Window" peer, every
+// secondary/HUD/browser window) reads and writes the exact SAME record. Only
+// the main window's boot path (initializeConnectionsRegistry, gated on
+// !isPeerInstanceWindow() && !windowProfileOverride()) ever reads it; every
+// other window kind already carries its own explicit profile/connectionId
+// (URL query params, instanceWindows capture) and restores through that
+// instead. If a peer/secondary window were allowed to write here too,
+// whichever window's renderer last activated a profile on a given
+// connectionId would silently clobber the main window's own remembered
+// profile for that connectionId — e.g. a "default"-profile peer window open
+// alongside a "maestro"-profile main window, both on connectionId `local`,
+// would overwrite the single `local` entry back to "default" on quit, so the
+// MAIN window reverts to default on the next launch even though it never
+// left "maestro" (see t_208bf984 — the same clobber class windowScopedKey
+// already fixed for per-window tab/layout storage in t_7690aaea). Gate the
+// write to the main window only, matching the only reader.
 $activeConnectionProfile.subscribe(({ connectionId, descriptorProfile, profile, registryScoped }) => {
   // A migrated v1 per-profile remote may expose a client-side alias such as
   // "work" while the registered source's actual profile is "default". Only
@@ -113,6 +132,7 @@ $activeConnectionProfile.subscribe(({ connectionId, descriptorProfile, profile, 
   // descriptor. This also rejects the brief startup window where the profile
   // atom still carries the previous app run's alias.
   if (
+    !isMainWindow() ||
     !connectionId ||
     !registryScoped ||
     descriptorProfile !== profile ||

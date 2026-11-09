@@ -159,6 +159,24 @@ class TestTheReportedRecordNowNamesItsCause:
         assert "failure_reason=RuntimeError" in msg
         assert "connection reset mid-stream" in msg
 
+    def test_a_storage_refusal_keeps_its_published_class_name(self, turn_env, caplog, capsys):
+        from persistence.core.errors import AuthorityRefusal
+
+        def _refuse(*a, **k):
+            raise AuthorityRefusal("session_busy")
+
+        session = _session(agent=types.SimpleNamespace(
+            session_id="agent-sid-1",
+            run_conversation=_refuse,
+            clear_interrupt=lambda: None,
+        ))
+
+        with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
+            _run(session)
+
+        assert "failure_reason=RuntimeStoreError" in _finished(caplog)
+        assert "[gateway-turn] RuntimeStoreError: session_busy" in capsys.readouterr().err
+
 
 
 class TestContentDiscipline:

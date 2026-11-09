@@ -200,6 +200,8 @@ from plugins.platforms.telegram.telegram_network import (
 from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
 from plugins.platforms.telegram.telegram_send_path_recovery import TelegramSendPathRecoveryMixin, mark_send_path_recovered
 from plugins.platforms.telegram.telegram_send_errors import LOST, is_entity_parse_error, maybe_delivered_result as _maybe_delivered_result, send_error_kind
+from plugins.platforms.telegram.telegram_split import (
+    cap_split_chunks, separate_chunk_indicator_from_fence, split_send_chunks)
 from plugins.platforms.telegram.telegram_typing_gate import typing_may_fire
 from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, shared_sender_suffix
 from plugins.platforms.telegram.telegram_picker_labels import model_button_labels
@@ -337,15 +339,6 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
-_CHUNK_INDICATOR_ON_FENCE_RE = re.compile(r'(?m)^``` (?P<indicator>(?:\\)?\(\d+/\d+(?:\\)?\))$')
-
-
-def _separate_chunk_indicator_from_fence(text: str) -> str:
-    """Move a ``(N/M)`` chunk marker that ``truncate_message()`` appended to a synthesized closing
-    fence onto its own line — Telegram rejects ````` \\(1/2\\)`` as a fence."""
-    return _CHUNK_INDICATOR_ON_FENCE_RE.sub(r'```\n\g<indicator>', text)
-
-
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
 from gateway.platforms.helpers import (
     TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, compile_mention_patterns)
@@ -469,6 +462,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     _ptb_proxy_url: str | None = None  # set by _build_ptb_requests; error text then shows no detail
 
     MAX_MESSAGE_LENGTH = 4096
+    MAX_SPLIT_MESSAGES = 8  # split-delivery ceiling: the rest becomes one notice (degenerate turns, #152012)
     supports_code_blocks = True  # MarkdownV2 renders fenced code blocks
     allow_from_covers_groups = True  # allow_from is global (DMs + groups); group_allow_from adds group-only users
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
@@ -3477,13 +3471,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                     if rich_result.success:
                         await self._retrigger_typing(chat_id, metadata)
                     return rich_result
-            chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
-            if len(chunks) > 1:
-                # truncate_message appends a raw " (1/2)" suffix; escape the MarkdownV2-special parentheses.
-                chunks = [
-                    _separate_chunk_indicator_from_fence(re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk))
-                    for chunk in chunks
-               ]
+            chunks = split_send_chunks(self, content)  # formatted, capped at MAX_SPLIT_MESSAGES (#152012)
             return await self._send_chunks(chat_id, chunks, delivered, reply_to, metadata, error_types)
         except Exception as e:
             classified = self._classify_send_exception(e, error_types)
@@ -3527,6 +3515,11 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             success=True, message_id=delivered[0] if delivered else None,
             raw_response={
                 "message_ids": list(delivered), "requested_thread_id": requested_thread_id, "thread_fallback": used_thread_fallback})
+
+    def _split_cap_notice(self, dropped_chars: int) -> Optional[str]:
+        """Raw truncation notice for :func:`cap_split_chunks`; ``None`` when warnings are hidden."""
+        return self.warning_text(t("platform.telegram.limits.response_truncated",
+                                   max_messages=str(self.MAX_SPLIT_MESSAGES), dropped_chars=str(dropped_chars)))
 
     @staticmethod
     def _with_partial_send(
@@ -3745,7 +3738,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         for use_markdown in (True, False) if finalize else (False,):
             try:
                 if use_markdown:
-                    text = _separate_chunk_indicator_from_fence(self.format_message(chunk))
+                    text = separate_chunk_indicator_from_fence(self.format_message(chunk))
                 else:
                     # Degrade to stripped text on finalize (raw ** / ``` would render literally); previews stay raw.
                     text = _strip_mdv2(chunk) if finalize else chunk
@@ -3779,14 +3772,14 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """Split an oversized edit across the existing message + continuations: edit ``message_id`` with
         chunk 1, send the rest as replies to the previous chunk, return ``message_id=<last-chunk-id>`` so
         the consumer keeps editing the newest message. ``success=False`` only if the first-chunk edit fails."""
-        chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
+        chunks = cap_split_chunks(self, self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len), formatted=False)
         if len(chunks) <= 1:
             chunks = [content]  # defensive: a single chunk just edits normally
         first_chunk = chunks[0]
         try:
             if finalize:
                 await self._edit_markdown_or_plain(
-                    chat_id, message_id, _separate_chunk_indicator_from_fence(self.format_message(first_chunk)), _strip_mdv2(first_chunk),
+                    chat_id, message_id, separate_chunk_indicator_from_fence(self.format_message(first_chunk)), _strip_mdv2(first_chunk),
                     "[%s] Overflow split: MarkdownV2 first-chunk edit failed, falling back to plain text: %s")
             else:
                 await self._edit_text(chat_id, message_id, first_chunk)

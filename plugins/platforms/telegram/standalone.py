@@ -371,9 +371,9 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         if len(chunks) > 1 and not _has_html:
             # truncate_message appends a raw " (1/2)" suffix after format_message escaped the text;
             # escape the MarkdownV2-special parentheses, as the live adapter does (#74004).
-            from plugins.platforms.telegram.adapter import _separate_chunk_indicator_from_fence
+            from plugins.platforms.telegram.telegram_split import separate_chunk_indicator_from_fence
             chunks = [
-                _separate_chunk_indicator_from_fence(re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk))
+                separate_chunk_indicator_from_fence(re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk))
                 for chunk in chunks
             ]
         for chunk in chunks:

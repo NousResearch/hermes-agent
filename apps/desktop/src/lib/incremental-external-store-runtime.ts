@@ -36,6 +36,50 @@ const shallowEqual = (a: object, b: object): boolean => {
 const getThreadListAdapter = (store: ExternalStoreAdapter) => store.adapters?.threadList ?? {}
 
 /**
+ * @assistant-ui/core 0.2.23 constructs thread-list state through a
+ * LazyMemoizeSubject, but ThreadListRuntimeImpl.subscribe() bypasses that
+ * subject and subscribes to the core directly. The subject therefore never
+ * becomes connected and getState() allocates a structurally identical object
+ * on every read. React 19's useSyncExternalStore tearing check correctly
+ * rejects that unstable snapshot and can take the whole chat surface down.
+ *
+ * Cache at the public runtime seam until the real thread-list subscription
+ * fires. This mirrors the upstream fix, where subscribe() now goes through the
+ * memoizing state binding, without pulling a broad assistant-ui minor upgrade
+ * into Desktop.
+ */
+function stabilizeThreadListSnapshot(runtime: AssistantRuntime): AssistantRuntime {
+  const threads = runtime.threads
+  const readSnapshot = threads.getState.bind(threads)
+  let dirty = false
+
+  // Runtime-lifetime subscription: `runtime` owns `threads`, and both become
+  // unreachable together when this hook unmounts. Register before the provider
+  // subscribes so a core publication marks the cache dirty first, and take the
+  // initial read only after registration so nothing published in between is
+  // ever missed.
+  threads.subscribe(() => {
+    dirty = true
+  })
+
+  let snapshot = readSnapshot()
+
+  Object.defineProperty(threads, 'getState', {
+    configurable: true,
+    value: () => {
+      if (dirty) {
+        snapshot = readSnapshot()
+        dirty = false
+      }
+
+      return snapshot
+    }
+  })
+
+  return runtime
+}
+
+/**
  * Write only the items whose (message, parentId) pair actually moved.
  *
  * `useRuntimeMessageRepository` caches normalized ThreadMessages by source
@@ -280,5 +324,5 @@ export function useIncrementalExternalStoreRuntime<T extends ThreadMessage>(
     return runtime.registerModelContextProvider(modelContext)
   }, [modelContext, runtime])
 
-  return useMemo(() => new AssistantRuntimeImpl(runtime), [runtime])
+  return useMemo(() => stabilizeThreadListSnapshot(new AssistantRuntimeImpl(runtime)), [runtime])
 }

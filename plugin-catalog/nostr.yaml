@@ -1,7 +1,7 @@
 name: nostr
 title: Hermes Nostr Gateway
 repo: https://github.com/dadofsambonzuki/hermes-nostr-gateway
-sha: 9b52622679dccf34e7fe646da8ac9fe70beaf112
+sha: 28cd926e5a5412ac1df94315a6e22a8ce6302366
 subdir: integrations/hermes-plugin
 description: >-
   Nostr platform adapter for Hermes, backed by the local Hermes Nostr Gateway daemon:

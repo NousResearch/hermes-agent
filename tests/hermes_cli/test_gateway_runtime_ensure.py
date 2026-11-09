@@ -307,9 +307,13 @@ def test_native_windows_discovery_uses_same_user_pipe(tmp_path):
 
 @pytest.mark.platforms("windows")
 def test_native_windows_spawn_never_retries_without_breakaway(tmp_path, monkeypatch):
+    import hermes_dir_acl
     from hermes_cli import gateway_runtime_start as start
     from hermes_cli.gateway_runtime_service import RuntimeStartError
     from hermes_cli._subprocess_compat import windows_detach_flags
+    # A normal client: an elevated one is refused before any spawn (client_elevated), and the
+    # hosted Windows runners are elevated.
+    monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: False)
     calls = []
     def denied(argv, **kwargs):
         calls.append(kwargs)

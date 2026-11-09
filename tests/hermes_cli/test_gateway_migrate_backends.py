@@ -256,6 +256,8 @@ def nix_launcher_agent(tmp_path):
 def test_nix_wait_for_launcher_job_is_reported_with_its_plist_home(host, nix_launcher_agent, no_writes,
                                                                      monkeypatch, live_pid):
     agents, label = nix_launcher_agent
+    monkeypatch.setattr(gmb, "_on_macos", lambda: True)
+    monkeypatch.setattr(gmb.os, "getuid", lambda: 501, raising=False)
     monkeypatch.setattr(main_dashboard, "_launchd_plist_dirs", lambda: [("agent", agents)])
     monkeypatch.setattr(gmb, "_nix_managed", lambda p: p == str(agents / f"{label}.plist"))
     monkeypatch.setattr("hermes_cli.gateway._launchd_print_service_pid",
@@ -267,6 +269,19 @@ def test_nix_wait_for_launcher_job_is_reported_with_its_plist_home(host, nix_lau
 
     assert (item.supervisor, item.unit, item.pid, item.hermes_home) == (
         "nix-launchd", label, live_pid, "/Users/u/.hermes")
+
+
+def test_launchd_plists_are_ignored_off_macos(host, nix_launcher_agent, no_writes, monkeypatch):
+    """A leftover LaunchAgents plist on Linux or Windows is never scanned and never queried."""
+    agents, _label = nix_launcher_agent
+    monkeypatch.setattr(gmb, "_on_macos", lambda: False)
+    monkeypatch.delattr(gmb.os, "getuid", raising=False)  # as on Windows
+    monkeypatch.setattr(main_dashboard, "_launchd_plist_dirs", lambda: [("agent", agents)])
+    monkeypatch.setattr("hermes_cli.gateway._launchd_print_service_pid",
+                        lambda domain, lbl: pytest.fail("launchctl queried off macOS"))
+
+    assert gmb.collect_backends() == []
+    assert not [c for c in host.calls if c[0] == "launchctl"]
 
 
 @pytest.mark.platforms("macos")

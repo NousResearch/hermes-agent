@@ -619,15 +619,19 @@ def _record_late(sink: Any, label: str, future: Any) -> None:
 def _run_references_parallel(
     reference_models: list[dict[str, Any]], ref_messages: list[dict[str, Any]], *,
     temperature: float | None = None, max_tokens: int | None = None, progress_callback: Any = None,
+    heartbeat_callback: Any = None,
     reference_timeout: float | None = None, agent: Any = None, late_accounting_sink: Any = None,
 ) -> list[tuple[str, str, Any]]:
     """Fan out all reference models in parallel; ``(label, text, _RefAccounting)`` per
     slot in ``reference_models`` order.
 
     ``provider == "moa"`` slots are skipped with a note (recursion guard).
-    ``progress_callback(refs_done, refs_total, label)`` fires per completion. With
-    *agent*, the wait polls every ``_REFERENCE_POLL_INTERVAL_S`` so a user interrupt
-    can abort it; in-flight calls cannot be killed and bill via ``late_accounting_sink``.
+    ``progress_callback(refs_done, refs_total, label)`` fires exactly once for each
+    settled slot, including skipped and interrupted slots. ``heartbeat_callback``
+    fires immediately after dispatch and on pending polls with the settled count,
+    pending labels and elapsed seconds. With *agent*, the wait polls every
+    ``_REFERENCE_POLL_INTERVAL_S`` so a user interrupt can abort it; in-flight calls
+    cannot be killed and bill via ``late_accounting_sink``.
     """
     if not reference_models:
         return []
@@ -638,27 +642,51 @@ def _run_references_parallel(
     # Propagate the turn's contextvars (approval callbacks, Nous conversation tag).
     from tools.thread_context import propagate_context_to_thread
     completed = 0
+    reported: set[int] = set()
+    fanout_started_at = time.monotonic()
     executor = ThreadPoolExecutor(max_workers=min(_MAX_REFERENCE_WORKERS, total))
     interrupted = False
     # Shared per-fan-out context-length cache (dict get/set is GIL-atomic).
     ctx_len_cache: dict[tuple[str, str], int | None] = {}
     cache_disabled, cache_ttl = _agent_cache_opts(agent)
 
-    def collect(done: set[Any]) -> None:
+    def emit_completed(idx: int) -> None:
         nonlocal completed
+        if idx in reported:
+            return
+        reported.add(idx)
+        completed += 1
+        # Each settled slot is fan-out progress the main loop cannot see: the
+        # fan-out blocks it, so stamp the turn's activity clock for every outcome.
+        _touch_fanout_progress(agent, f"MoA: {completed} of {total} references complete")
+        if progress_callback is not None:
+            try:
+                progress_callback(completed, total, _slot_label(reference_models[idx]))
+            except Exception as exc:  # pragma: no cover - display must never break
+                logger.debug("MoA progress_callback failed: %s", exc)
+
+    def collect(done: set[Any]) -> None:
         for future in done:
             idx = futures[future]
             results[idx] = future.result()
-            completed += 1
-            # Each completion is fan-out progress the main loop cannot see: the
-            # fan-out blocks it, so stamp the turn's activity clock here (non-streaming
-            # advisors otherwise tick nothing between dispatch and completion).
-            _touch_fanout_progress(agent, f"MoA: {completed} of {total} references complete")
-            if progress_callback is not None:
-                try:
-                    progress_callback(completed, total, _slot_label(reference_models[idx]))
-                except Exception as exc:  # pragma: no cover - display must never break
-                    logger.debug("MoA progress_callback failed: %s", exc)
+            emit_completed(idx)
+
+    def emit_waiting_heartbeat(pending: set[Any]) -> None:
+        if heartbeat_callback is None or not pending:
+            return
+        pending_labels = [
+            _slot_label(reference_models[futures[future]])
+            for future in sorted(pending, key=lambda item: futures[item])
+        ]
+        try:
+            heartbeat_callback(
+                completed,
+                total,
+                pending_labels,
+                max(0.0, time.monotonic() - fanout_started_at),
+            )
+        except Exception as exc:  # pragma: no cover - display must never break
+            logger.debug("MoA heartbeat_callback failed: %s", exc)
 
     try:
         for idx, slot in enumerate(reference_models):
@@ -682,6 +710,13 @@ def _run_references_parallel(
 
         # Collect every reference (no early exit except a user interrupt).
         pending = set(futures)
+        # Recursion-guarded slots are already settled. Emit them before the first
+        # waiting heartbeat so every terminal event advances the same 1..M count.
+        for idx, result in enumerate(results):
+            if result is not None:
+                emit_completed(idx)
+        emit_waiting_heartbeat(pending)
+
         while pending:
             done, pending = _futures_wait(pending, timeout=_REFERENCE_POLL_INTERVAL_S)
             collect(done)
@@ -693,7 +728,13 @@ def _run_references_parallel(
                 collect(done)
                 interrupted = True
                 _settle_interrupted(futures, results, reference_models, late_accounting_sink)
+                # The interrupt settlement can turn still-running or cancelled
+                # futures into terminal placeholders. Report each exactly once.
+                for idx, result in enumerate(results):
+                    if result is not None:
+                        emit_completed(idx)
                 break
+            emit_waiting_heartbeat(pending)
     finally:
         executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
 
@@ -1058,9 +1099,11 @@ class MoAChatCompletions:
     """OpenAI-chat-compatible facade where the aggregator is the acting model.
 
     ``reference_callback(event, **kwargs)`` is an optional best-effort display hook
-    (events: ``moa.reference``, ``moa.progress``, ``moa.phase``, ``moa.aggregating``;
-    kwargs per ``_RELAY_EVENTS``). ``agent`` is the owning AIAgent; it lets the
-    fan-out check ``_interrupt_requested``.
+    for ``moa.reference``, ``moa.progress``, ``moa.phase`` and ``moa.aggregating``.
+    ``moa.progress`` uses ``state="completed"`` once per settled slot and
+    ``state="waiting"`` for dispatch/poll heartbeats. kwargs are relayed via
+    ``_RELAY_EVENTS``. ``agent`` is the owning AIAgent and lets the fan-out check
+    ``_interrupt_requested``.
     """
 
     def __init__(self, preset_name: str, reference_callback: Any = None, agent: Any = None):
@@ -1346,10 +1389,37 @@ class MoAChatCompletions:
         is never capped. None timeout = inherit auxiliary.moa_reference.timeout.
         """
         raw_reference_timeout = preset.get("reference_timeout")
+
+        def _progress(done: int, total: int, label: str) -> None:
+            self._emit(
+                "moa.progress",
+                refs_done=done,
+                refs_total=total,
+                label=label,
+                state="completed",
+            )
+
+        def _heartbeat(
+            done: int,
+            total: int,
+            pending_labels: list[str],
+            elapsed_seconds: float,
+        ) -> None:
+            elapsed = max(0, int(elapsed_seconds))
+            subject = pending_labels[0] if len(pending_labels) == 1 else f"{len(pending_labels)} advisors"
+            self._emit(
+                "moa.progress",
+                refs_done=done,
+                refs_total=total,
+                label=f"waiting on {subject} · {elapsed}s",
+                state="waiting",
+                elapsed_seconds=elapsed,
+            )
+
         reference_outputs = _run_references_parallel(
             reference_models, ref_messages, temperature=_preset_temperature(preset, "reference_temperature"),
-
-            progress_callback=lambda done, total, label: self._emit("moa.progress", refs_done=done, refs_total=total, label=label),
+            progress_callback=_progress,
+            heartbeat_callback=_heartbeat,
             reference_timeout=float(raw_reference_timeout) if raw_reference_timeout else None,
             agent=self._agent, late_accounting_sink=self._record_late_reference_accounting,
         )
@@ -1509,7 +1579,12 @@ class MoAClient:
 # The callback signature is ``cb(event, label, text, None, **moa_*)``.
 _RELAY_EVENTS: dict[str, tuple[str, str | None, dict[str, str]]] = {
     "moa.reference": ("label", "text", {"moa_index": "index", "moa_count": "count"}),
-    "moa.progress": ("label", None, {"moa_refs_done": "refs_done", "moa_refs_total": "refs_total"}),
+    "moa.progress": ("label", None, {
+        "moa_refs_done": "refs_done",
+        "moa_refs_total": "refs_total",
+        "moa_progress_state": "state",
+        "moa_elapsed_seconds": "elapsed_seconds",
+    }),
     "moa.phase": ("aggregator", None, {"moa_phase": "phase", "moa_refs_done": "refs_done", "moa_refs_total": "refs_total"}),
     "moa.aggregating": ("aggregator", None, {"moa_ref_count": "ref_count"}),
 }

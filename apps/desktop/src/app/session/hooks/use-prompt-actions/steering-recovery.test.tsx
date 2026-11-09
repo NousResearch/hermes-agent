@@ -467,6 +467,7 @@ it.each(rebuiltRuntimeCases)(
           nativeSubagentSessionsRef: { current: new Set() },
           appendAssistantDelta: vi.fn(),
           appendReasoningDelta: vi.fn(),
+          updateMoaProgress: vi.fn(),
           completeAssistantMessage: vi.fn(),
           failAssistantMessage: vi.fn(),
           flushQueuedDeltas: vi.fn(),

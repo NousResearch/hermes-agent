@@ -359,11 +359,9 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'moa.progress') {
-    // Live reference fan-out progress ("refs k/n") — surfaced in the same
-    // reasoning disclosure the references land in. These lines arrive
-    // BEFORE any moa.reference event (references are only emitted once the
-    // whole fan-out completes), and the first moa.reference replaces the
-    // block, so the progress trail is self-cleaning.
+    // Live reference fan-out progress and waiting heartbeats share the same
+    // reasoning disclosure. Waiting updates replace in place. The first
+    // moa.reference replaces the block after the fan-out completes.
     if (sessionId && typeof payload?.refs_done === 'number' && typeof payload?.refs_total === 'number') {
       const label = coerceGatewayText(payload?.label)
 
@@ -371,7 +369,14 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
         ? `◇ MoA refs ${payload.refs_done}/${payload.refs_total} — ${label}\n`
         : `◇ MoA refs ${payload.refs_done}/${payload.refs_total}\n`
 
-      appendReasoningDelta(sessionId, line, payload.refs_done <= 1, occurredAt)
+      if (payload.state === 'waiting') {
+        deps.updateMoaProgress(sessionId, line, 'waiting', occurredAt)
+      } else if (payload.refs_done <= 1) {
+        appendReasoningDelta(sessionId, line, true, occurredAt)
+      } else {
+        deps.updateMoaProgress(sessionId, line, 'completed', occurredAt)
+      }
+
       flushQueuedDeltas(sessionId)
     }
 

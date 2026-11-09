@@ -15,6 +15,8 @@ closed, so a drifted emitter fails the suite (``registry.check_payload`` raises 
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
@@ -693,6 +695,8 @@ class MoaProgressPayload(Payload):
     label: str
     refs_done: int
     refs_total: int
+    state: Literal["completed", "waiting"] | None = None
+    elapsed_seconds: int | None = None
 
 
 class MoaPhasePayload(Payload):
@@ -704,7 +708,8 @@ class MoaPhasePayload(Payload):
 
 event("moa.reference", MoaReferencePayload, doc="One MoA reference model's output.")
 event("moa.aggregating", MoaAggregatingPayload, doc="The MoA aggregator started.")
-event("moa.progress", MoaProgressPayload, doc="MoA reference fan-out progress (n/total).")
+event("moa.progress", MoaProgressPayload,
+      doc="MoA reference fan-out completion progress and waiting heartbeats (n/total).")
 event("moa.phase", MoaPhasePayload, doc="MoA phase transition (currently only ``aggregator``).")
 
 

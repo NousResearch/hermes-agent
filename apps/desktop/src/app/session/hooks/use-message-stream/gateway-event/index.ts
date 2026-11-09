@@ -323,6 +323,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     [
       deps.appendAssistantDelta,
       deps.appendReasoningDelta,
+      deps.updateMoaProgress,
       deps.activeSessionIdRef,
       deps.activeGatewayProfile,
       deps.compactedTurnRef,

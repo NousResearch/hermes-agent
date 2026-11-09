@@ -811,8 +811,11 @@ class GatewayBusySessionMixin:
         turn = self._session_state(session_key).turn
         if turn.agent is not running_agent:
             return None
+        running = turn.running_event()  # a drained queued follow-up's event, else the opener's
+        if running is not None and running is not event:
+            running.absorb_turn_input(event)
         if turn.event is not None and turn.event is not event:
-            turn.event.absorb_turn_input(event)
+            turn.event.absorb_reply_expected(event)
             if turn.ctx is not None:
                 turn.ctx.reply_expected = turn.event.reply_expected
         return turn

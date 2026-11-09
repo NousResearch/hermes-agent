@@ -408,7 +408,8 @@ def cmd_install(args) -> int:
     # tool first and put it on PATH; sync only after that.
     from pm.testenv import developer_tools
 
-    tool_names = [*(names if args.names else tool_roots(names)), *developer_tools(test_environment)]
+    tool_names = [*(names if args.names else tool_roots(names)),
+                  *(developer_tools(_lockfile().names()) if test_environment is not None else ())]
     if _install_names(tool_names, target=cross_target, verify=not trust_recorded):
         return 1
     if args.names and not cross_target:

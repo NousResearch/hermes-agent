@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 
 import pytest
 
@@ -37,6 +38,21 @@ def test_only_the_test_environment_install_requests_just(requested, test_environ
     args = argparse.Namespace(names=None, tools_only=False, test_environment=test_environment)
     assert pm.cli.cmd_install(args) == 0
     assert ("just" in requested) is provisioned
+
+
+def test_a_lockfile_without_just_still_installs_without_it(requested, tmp_path, monkeypatch):
+    from scripts.ci import setup_toolchain
+
+    lock_path = tmp_path / "lock.json"
+    lock_path.write_text(json.dumps({"schema": 1, "packages": {
+        name: Lockfile(lockfile_path())._packages[name] for name in ("python", "uv")}}), encoding="utf-8")
+    monkeypatch.setattr(importlib.import_module("pm.install"), "_lockfile", lambda: Lockfile(lock_path))
+    monkeypatch.setattr(pm.cli, "_lockfile", lambda: Lockfile(lock_path))
+    args = argparse.Namespace(names=None, tools_only=False, test_environment="")
+    assert pm.cli.cmd_install(args) == 0
+    assert "just" not in requested
+    assert "just" not in setup_toolchain.packages("python", lock=Lockfile(lock_path))
+    assert "just" in setup_toolchain.packages("python", lock=Lockfile(lockfile_path()))
 
 
 def test_every_locked_just_artifact_is_the_url_fetch_url_builds():

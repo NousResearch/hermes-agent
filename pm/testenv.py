@@ -22,9 +22,9 @@ GROUPS = ("dev", "test")
 DEVELOPER_TOOLS = ("just",)
 
 
-def developer_tools(test_environment: str | None) -> tuple[str, ...]:
-    """The developer tools an install requests: all of them with ``--test-environment``, else none."""
-    return DEVELOPER_TOOLS if test_environment is not None else ()
+def developer_tools(pinned: Sequence[str]) -> list[str]:
+    """The developer tools this lockfile pins; an older lockfile without one still installs."""
+    return [name for name in DEVELOPER_TOOLS if name in pinned]
 
 
 def testenv_root(project_root: Path) -> Path:

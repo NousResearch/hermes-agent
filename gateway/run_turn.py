@@ -37,6 +37,7 @@ from gateway.session import (
 )
 from gateway.session_context import scoped_turn_actor
 from gateway.session_transcript import TranscriptReadError
+from gateway.run_turn_bubble_cleanup import register_bubble_cleanup
 from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
@@ -997,7 +998,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         # The one-slot progress/holder containers shared with the callbacks are TurnContext defaults.
         turn_ctx = TurnContext(
             source=source, message=message, AIAgent=AIAgent, session_key=session_key,
-            run_generation=run_generation, _cleanup_progress=_cleanup_progress,
+            run_generation=run_generation, _cleanup_progress=_cleanup_progress, _cleanup_adapter=_cleanup_adapter,
             _run_still_current=self._run_still_current_fn(session_key, run_generation),
             progress_queue=queue.Queue() if disp.needs_progress_queue else None,
             _voice_ack_guild=_voice_ack_guild, _voice_ack_loop=asyncio.get_running_loop(),
@@ -1711,6 +1712,10 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
 
         # Interrupted: discard the response ("Operation interrupted." is noise).
         if not result.get("interrupted"):
+            # Register this turn's bubble cleanup BEFORE the first-response delivery pops and awaits
+            # the post-delivery callback: the follow-up returns early, so the normal-path
+            # registration after it would never run and the bubbles stayed up.
+            register_bubble_cleanup(response, turn_ctx)
             await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
 
         updated_history = result.get("messages", history)
@@ -1993,44 +1998,6 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 _sk, _streamed, _previewed, _content_delivered, _transformed, len(_final),
             )
 
-    def _run_agent_schedule_bubble_cleanup(self, response: Any, _cleanup_adapter: Any, turn_ctx: TurnContext) -> None:
-        """Schedule deletion of tracked temporary progress bubbles after the final response lands.
-
-        Failed runs keep them as breadcrumbs. Only on adapters with ``delete_message``; failures swallowed."""
-        from gateway.run import safe_schedule_threadsafe
-        _cleanup_msg_ids, session_key = turn_ctx._cleanup_msg_ids, turn_ctx.session_key
-        if not (
-            turn_ctx._cleanup_progress
-            and _cleanup_adapter is not None
-            and _cleanup_msg_ids
-            and session_key
-            and isinstance(response, dict)
-            and not response.get("failed")
-            and hasattr(_cleanup_adapter, "register_post_delivery_callback")
-        ):
-            return
-        _ids_snapshot = list(_cleanup_msg_ids)
-        _chat_id_snapshot = turn_ctx.source.chat_id
-        _loop_snapshot = asyncio.get_running_loop()
-
-        def _cleanup_temp_bubbles() -> None:
-            async def _delete_all() -> None:
-                for _mid in _ids_snapshot:
-                    with suppress(Exception):
-                        await _cleanup_adapter.delete_message(_chat_id_snapshot, _mid)
-            with suppress(Exception):
-                safe_schedule_threadsafe(
-                    _delete_all(), _loop_snapshot, logger=logger,
-                    log_message="Temp bubble cleanup scheduling error",
-                )
-
-        try:
-            _cleanup_adapter.register_post_delivery_callback(
-                session_key, _cleanup_temp_bubbles, generation=turn_ctx.run_generation,
-            )
-        except Exception as _rpe:
-            logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
-
     def _run_agent_bind_turn_wiring(
         self, turn_ctx: TurnContext, turn_runner: TurnRunner, source: SessionSource,
         event_message_id: Optional[str], _native_slack_task_cards: bool,
@@ -2233,5 +2200,5 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             )
 
         await self._run_agent_mark_streamed_delivery(response, turn_ctx)
-        self._run_agent_schedule_bubble_cleanup(response, _cleanup_adapter, turn_ctx)
+        register_bubble_cleanup(response, turn_ctx)
         return response

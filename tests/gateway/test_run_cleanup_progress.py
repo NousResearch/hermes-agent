@@ -284,13 +284,64 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     assert result["final_response"] == "done"
     cb = adapter.pop_post_delivery_callback(session_key)
     assert callable(cb)
+    # Deletion is complete when the callback completes: no polling (a queued follow-up starts
+    # right after this await).
     await _fire_post_delivery_cb(cb)
-    for _ in range(20):
-        await asyncio.sleep(0.01)
-        if adapter.deleted:
-            break
 
     # Both effects land: the pre-existing callback fires AND the cleanup
     # deletes at least one progress bubble.
     assert pre_existing_fired == [True]
     assert len(adapter.deleted) >= 1
+
+
+class QueuedFollowupAgent:
+    """Turn 1 emits progress, then a follow-up is queued; turn 2 records what the chat still showed."""
+
+    adapter = None
+    session_key = ""
+    deleted_at_turn2_start = None
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **_kwargs):
+        from gateway.platforms.base import MessageEvent, MessageType
+        cls = type(self)
+        if message == "follow-up":
+            cls.deleted_at_turn2_start = list(cls.adapter.deleted)
+            return {"final_response": "second", "messages": [], "api_calls": 1}
+        cb = self.tool_progress_callback
+        cb("tool.started", "terminal", "pwd", {})
+        deadline = time.monotonic() + 5  # let the progress sender deliver the bubble
+        while not cls.adapter.sent and time.monotonic() < deadline:
+            time.sleep(0.05)
+        cls.adapter._pending_messages[cls.session_key] = MessageEvent(
+            text="follow-up", message_type=MessageType.TEXT,
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="-1001"))
+        return {"final_response": "first", "messages": [], "api_calls": 1}
+
+
+@pytest.mark.asyncio
+async def test_queued_followup_starts_after_prior_turn_bubbles_are_deleted(monkeypatch, tmp_path):
+    """The queued follow-up path returns before the normal-path cleanup registration; turn 1's
+    progress bubbles must still be deleted, and deleted BEFORE turn 2 begins."""
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, QueuedFollowupAgent, cleanup_on=True)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    session_key = "agent:main:telegram:group:-1001"
+    QueuedFollowupAgent.adapter, QueuedFollowupAgent.session_key = adapter, session_key
+    QueuedFollowupAgent.deleted_at_turn2_start = None
+
+    result = await runner._run_agent(
+        message="hello", context_prompt="", history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="-1001"),
+        session_id="sess-1", session_key=session_key,
+    )
+
+    assert result["final_response"] == "second"
+    progress_ids = {m["message_id"] for m in adapter.sent if m["content"] != "first"}
+    assert progress_ids
+    assert QueuedFollowupAgent.deleted_at_turn2_start is not None
+    assert {d["message_id"] for d in QueuedFollowupAgent.deleted_at_turn2_start} >= progress_ids

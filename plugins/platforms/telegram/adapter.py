@@ -194,6 +194,7 @@ from plugins.platforms.telegram.telegram_media_flood import TelegramMediaFloodMi
 from plugins.platforms.telegram import telegram_flood_window as _flood_window
 from plugins.platforms.telegram.telegram_media_fetch import (
     cache_replied_media, fetch_telegram_file, merged_typed_text, record_typed_text)
+from plugins.platforms.telegram.telegram_media_budget import media_sources, scaled_budgets
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, log_resolved, tap_matches_prompt
@@ -423,10 +424,8 @@ _TEXT_SEND_DEADLINE = 30.0
 # (up to the 60 s read timeout) — 300 s covers it. It is also >2x the sum of the per-phase httpx budgets
 # (pool 8 + connect 10 + media_write 60 + read 60 = 138 s), so it only fires when a shielded socket has
 # stopped raising at all, never on a merely slow link.
-# On expiry `run_bounded_async` cancels and then abandons the upload task (never awaited), inside
-# `_chat_send_lock`: the lock is released while the abandoned task drains. Awaiting the cancel with a grace
-# period would re-hang the lock on exactly the wedged socket this bounds, so the rare late landing is
-# accepted; httpx's own timeouts free the pool slot.
+# On expiry the upload task is cancelled and abandoned inside `_chat_send_lock` (awaiting it would re-hang the
+# lock on the wedged socket this bounds). On-disk payloads widen it with size: telegram_media_budget.py.
 _MEDIA_SEND_DEADLINE = 300.0
 _POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar("telegram_polling_generation", default=None)
 
@@ -1068,15 +1067,15 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         return any(marker in str(error).lower() for marker in ("message to be replied not found", "reply message not found"))
 
     async def _send_with_dm_topic_reply_anchor_retry(
-        self, send_fn: Any, send_kwargs: dict[str, Any], metadata: Optional[dict[str, Any]], media_label: str, reset_media: Optional[Any] = None) -> Any:
+        self, send_fn: Any, send_kwargs: dict[str, Any], metadata: Optional[dict[str, Any]], media_label: str, reset_media: Optional[Any] = None, deadline: Optional[float] = None) -> Any:
         """Send private-topic media, retrying a deleted anchor or a dead topic one step at a time. Serialized per chat with
-        ``send()`` so a file upload cannot land between two chunks of the text it accompanies."""
+        ``send()`` so a file upload cannot land between two chunks of the text it accompanies. ``deadline`` bounds each try."""
         async with self._media_send_slot(send_kwargs.get("chat_id")):
             same_thread_retried = False  # a one-off "thread not found" flake retries the same thread first, as send() does
             while True:  # anchor drop / same thread once / chat root, so it ends
                 try:
                     return await _await_with_thread_deadline(
-                        send_fn(**send_kwargs), timeout=_MEDIA_SEND_DEADLINE, label="telegram-media-send", dump_on_blocked_loop=False)
+                        send_fn(**send_kwargs), timeout=deadline or _MEDIA_SEND_DEADLINE, label="telegram-media-send", dump_on_blocked_loop=False)
                 except Exception as send_err:
                     gone = dead_topic_may_reroute(send_kwargs.get("chat_id"), metadata) and topic_gone(send_kwargs.get("chat_id"), send_err)
                     if self._should_retry_without_dm_topic_reply_anchor(send_err, metadata, send_kwargs.get("reply_to_message_id")):
@@ -4844,8 +4843,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         reset_media: Optional[Any] = None, **media_kwargs: Any) -> Any:
         """Send one native media payload with thread routing + DM-topic anchor retry."""
         _, kwargs = self._media_send_kwargs(chat_id, reply_to, metadata)
+        budget, deadline = scaled_budgets(media_sources(media_kwargs), _MEDIA_SEND_DEADLINE, _MEDIA_SEND_READ_TIMEOUT)  # #133093
         return await self._send_with_dm_topic_reply_anchor_retry(
-            send_fn, {**kwargs, **media_kwargs}, metadata, media_label, reset_media=reset_media)
+            send_fn, {**kwargs, **budget, **media_kwargs}, metadata, media_label, reset_media=reset_media, deadline=deadline)
 
     @staticmethod
     def _caption_1024(caption: Optional[str]) -> Optional[str]:

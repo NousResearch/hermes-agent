@@ -38,6 +38,7 @@ capabilities:
     - cve_ack
     - cve_integrity
     - cve_rescan
-  provides_hooks: []
+  provides_hooks:
+    - pre_tool_call
   provides_middleware: []
   requires_env: []

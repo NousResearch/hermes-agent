@@ -21,6 +21,7 @@ time is positive proof the turn never finished. Contract pinned here:
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 import subprocess
 import sys
@@ -133,6 +134,36 @@ def test_marker_survives_corrupt_sidecar(tmp_path):
     assert read_turn_marker(tmp_path, "abc") is None
     record_turn_start(tmp_path, "abc", "prompt")
     assert read_turn_marker(tmp_path, "abc")["prompt"] == "prompt"
+
+
+def test_sibling_backend_record_does_not_resurrect_a_cleared_marker(tmp_path, monkeypatch):
+    """Two backends on one HERMES_HOME: B loads the marker file to start S2, A clears its concluded
+    S1, then B stores — B's stale snapshot must not bring S1 back (resume would re-run a finished turn)."""
+    from hermes_cli import auth
+    from tests.tui_gateway._turn_marker_backend import record_after_parent_moves
+
+    record_turn_start(tmp_path, "S1", "first prompt")
+    context = multiprocessing.get_context("spawn")
+    loaded, proceed = context.Event(), context.Event()
+    backend_b = context.Process(target=record_after_parent_moves, args=(str(tmp_path), "S2", loaded, proceed))
+    backend_b.start()
+    assert loaded.wait(timeout=30)
+
+    original_kernel_lock = auth._kernel_lock
+
+    def lock_releasing_b(lock_file, exclusive):
+        # A is about to wait on B's lock: let B finish so the wait ends instead of deadlocking the test.
+        proceed.set()
+        return original_kernel_lock(lock_file, exclusive)
+
+    monkeypatch.setattr(auth, "_kernel_lock", lock_releasing_b)
+    clear_turn_marker(tmp_path, "S1")
+    proceed.set()
+    backend_b.join(timeout=30)
+
+    assert backend_b.exitcode == 0
+    assert read_turn_marker(tmp_path, "S1") is None
+    assert read_turn_marker(tmp_path, "S2")["prompt"] == "second prompt"
 
 
 def _patch_local_interrupt(monkeypatch, session):
@@ -368,7 +399,7 @@ def schedule_env(monkeypatch, marker_home):
     monkeypatch.setattr(server.threading, "Thread", _InlineThread)
     monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
     monkeypatch.setattr(server, "_wait_agent", lambda session, rid, timeout=30.0: None)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
     submitted: list = []
     monkeypatch.setattr(
         server,

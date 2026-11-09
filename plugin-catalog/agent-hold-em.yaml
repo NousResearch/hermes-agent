@@ -1,0 +1,16 @@
+name: agent-hold-em
+repo: https://github.com/tony-simons-aiowa/agent-hold-em
+sha: dcd3b8d265778a70e6e671467cf2e6ec3cf21f42
+subdir: package/agent-hold-em
+version: "1.0.0"
+description: "No-Limit Texas Hold 'Em for Hermes Desktop: play with three isolated Hermes profile agents using play chips only. Agent decisions use configured models and may consume provider tokens; this is a local game, not gambling software. Disclosure — each opponent is a zero-tool Hermes agent run in-process under the local Hermes profile you select for it, using that profile's configured provider credentials and spending its tokens; reads every local profile's name, model and avatar for the picker; stores the table (including hole cards) in plugin-data/agent-hold-em/table.json."
+maintainer: tony-simons-aiowa
+tier: community
+category: desktop
+screenshots:
+  - https://raw.githubusercontent.com/tony-simons-aiowa/agent-hold-em/dcd3b8d265778a70e6e671467cf2e6ec3cf21f42/assets/catalog-setup.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,3 +1,10 @@
+// Loaded once at collection, outside every test's budget: vi.resetModules() keeps each module's
+// transformed code, so the fresh copy a test imports only re-evaluates it. Without this the first
+// test pays the cold transform of the whole graph and times out on a loaded runner.
+import '@/contrib/registry'
+import '@/store/interface-mode'
+import './floating-panes'
+
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 

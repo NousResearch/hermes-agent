@@ -40,7 +40,7 @@ class _StubAdapter(BasePlatformAdapter):
     async def send(self, *args: Any, **kwargs: Any) -> None:
         pass
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {}
 
 @pytest.fixture()

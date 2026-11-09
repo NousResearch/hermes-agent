@@ -34,7 +34,7 @@ def test_restart_watcher_relaunches_from_an_interpreter_without_site_packages(tm
     bare = tmp_path / "bare-python"
     bare.write_text(f'#!/bin/sh\nunset PYTHONPATH\nexec "{sys.executable}" -S "$@"\n', encoding="utf-8")
     bare.chmod(0o755)
-    probe = subprocess.run([str(bare), "-c", "import ruamel.yaml"], cwd=REPO, capture_output=True, text=True)
+    probe = subprocess.run([str(bare), "-c", "import ruamel.yaml"], cwd=REPO, capture_output=True, text=True, check=False)
     assert probe.returncode != 0, "premise: the stand-in interpreter must not see site-packages"
 
     marker = tmp_path / "respawned"

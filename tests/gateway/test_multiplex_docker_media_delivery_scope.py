@@ -3,7 +3,7 @@ under THAT profile's home + terminal policy on the adapter delivery side.
 
 The routed handler runs inside ``_profile_runtime_scope``, but ``_process_message_background``
 extracts and filters the reply's media AFTER that scope has exited. Docker path translation
-(``_docker_sandbox_dir_candidates`` / ``_parse_docker_volume_mounts``) infers the producing
+(``docker_media_paths._docker_sandbox_dir_candidates`` / ``_parse_docker_volume_mounts``) infers the producing
 container from the ACTIVE profile, so a secondary's ``MEDIA:/output/x.png`` resolved through the
 default profile's mounts (a decoy of the same name) or was dropped as "not found on this host".
 """

@@ -81,6 +81,7 @@ export function registerAgentTerminalWriter(procId: string, write: Writer): () =
   return () => {
     if (writers.get(procId) === write) {
       writers.delete(procId)
+      evictColdProcs()
     }
   }
 }

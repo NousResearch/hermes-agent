@@ -1,0 +1,89 @@
+{
+  "fixtureVersion": 2,
+  "name": "multi-group-lock-strips-higher-ancestor-scalar",
+  "description": "Proves d5-lock, r7: A higher group's scalar at a strict ancestor of a lower group's lock is stripped; the locked sub-path keeps the locking group's value.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-high",
+      "priority": 9,
+      "values": {
+        "a": 5
+      },
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-low",
+      "priority": 1,
+      "values": {
+        "a": {
+          "b": 1
+        }
+      },
+      "locks": [
+        "a.b"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "a": {
+        "b": 1
+      }
+    },
+    "provenance": {
+      "a.b": "group"
+    },
+    "groupProvenance": {
+      "a.b": "g-low"
+    },
+    "locks": [
+      {
+        "path": "a.b",
+        "level": "group",
+        "groupId": "g-low"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "a",
+      "value": 7,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "a.b",
+        "lockedBy": "group",
+        "lockedByGroupId": "g-low"
+      }
+    }
+  ]
+}

@@ -26,9 +26,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 __all__ = [
+    "PAYLOAD_DIR_NAME",
     "BundleLayout",
     "NotBundledApp",
-    "PAYLOAD_DIR_NAME",
     "launch_detached",
     "resolve_bundle_layout",
 ]
@@ -174,6 +174,7 @@ def launch_detached(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         close_fds=True,
+        # detached-spawn: ok — the desktop app launch, meant to outlive the CLI that opens it
         **windows_detach_popen_kwargs(),
     )
     return child.pid

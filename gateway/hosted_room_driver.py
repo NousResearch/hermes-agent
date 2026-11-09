@@ -13,6 +13,7 @@ import json
 import math
 import sqlite3
 from contextlib import closing
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Callable, Literal, get_args
@@ -35,7 +36,7 @@ TASK_STATUSES = frozenset(get_args(TaskStatus))
 TERMINAL_STATUSES = frozenset({"settled", "failed", "cancelled"})
 
 _TASK_PAYLOAD_REQUIRED_FIELDS = frozenset({"target_profile", "prompt", "source_event_seq"})
-_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({"target_member_id"})
+_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({"target_member_id", "input_context", "attachments", "lead_routing"})
 _LEASE_COLUMNS = frozenset({
     "room_id", "gateway_id", "authority_epoch", "process_generation", "lease_generation", "expires_at", "acquired_at",
     "updated_at", "released_at"})
@@ -95,6 +96,13 @@ _GENERATION_TRANSITIONS = {
     "defer": (
         "indeterminate", "status='deferred', result_json=?, terminal_at=?, updated_at=?", _INDETERMINATE_STALE,
         "indeterminate task changed during deferral"),
+    "defer_stopping": (
+        "stopping", "status='deferred', result_json=?, terminal_at=?, updated_at=?",
+        "stopping task generation changed", "stopping task changed during deferral"),
+    "reopen_deferred": (
+        "deferred",
+        "status='indeterminate', result_json=NULL, terminal_at=NULL, started_at=?, indeterminate_at=?, updated_at=?",
+        "deferred task generation changed", "deferred task changed during reopen"),
     "requeue_deferred": (
         "deferred",
         f"{_REQUEUE_SET}, result_json=NULL, started_at=NULL, terminal_at=NULL, indeterminate_at=NULL, updated_at=?",
@@ -142,6 +150,23 @@ def _lease_window(ttl_seconds: Any, clock: Clock) -> tuple[float, float]:
     return now, now + ttl
 
 
+def validate_bound_task_manifest(value: Any) -> list[dict[str, Any]]:
+    """Validate store metadata plus the exact source event for each task input."""
+    from gateway.hosted_room_attachments import validate_task_manifest
+
+    if not isinstance(value, list) or not value:
+        raise DriverValidationError("attachments must be a non-empty list")
+    if any(not isinstance(item, Mapping) or "event_id" not in item for item in value):
+        raise DriverValidationError("task attachment requires event_id")
+    event_ids = [_identifier(item["event_id"], label="attachment event_id") for item in value]
+    try:
+        manifest = validate_task_manifest([
+            {key: val for key, val in item.items() if key != "event_id"} for item in value])
+    except ValueError as exc:
+        raise DriverValidationError(str(exc)) from exc
+    return [{**item, "event_id": event_id} for item, event_id in zip(manifest, event_ids)]
+
+
 def _task_payload(value: Any) -> tuple[dict[str, Any], str, str]:
     if not isinstance(value, dict):
         raise DriverValidationError("payload must be an object")
@@ -156,8 +181,22 @@ def _task_payload(value: Any) -> tuple[dict[str, Any], str, str]:
     source_event_seq = _bounded_int(
         value["source_event_seq"], message="source_event_seq must be a positive integer", low=1)
     normalized = {"target_profile": target_profile, "prompt": prompt, "source_event_seq": source_event_seq}
+    if "input_context" in value:
+        from gateway.hosted_room_task_input import validate_task_input
+
+        try:
+            normalized["input_context"] = validate_task_input(value["input_context"])
+        except ValueError as exc:
+            raise DriverValidationError(str(exc)) from exc
     if "target_member_id" in value:
         normalized["target_member_id"] = _identifier(value["target_member_id"], label="target_member_id")
+    if "attachments" in value:
+        normalized["attachments"] = validate_bound_task_manifest(value["attachments"])
+    if "lead_routing" in value:
+        # Present only on a lead's routing turn, and then exactly true: absence is an ordinary member turn.
+        if value["lead_routing"] is not True:
+            raise DriverValidationError("lead_routing must be true when present")
+        normalized["lead_routing"] = True
     encoded = compact_json(normalized)
     return normalized, encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -467,6 +506,8 @@ def _transition(
         if guard is not None:
             guard(row)
         fenced_update(conn, sql, params, StaleTaskError(stale))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, identity.room_id)
         return _task_from_row(_load_task(conn, identity))
 
 
@@ -601,6 +642,8 @@ def admit_task(db_path: DbPath, identity: TaskIdentity, *, payload: Any, clock: 
             (
                 *dataclasses.astuple(identity), normalized_payload["source_event_seq"], payload_json, payload_digest,
                 now, now))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, identity.room_id)
         return _task_from_row(_load_task(conn, identity))
 
 
@@ -635,6 +678,8 @@ def start_task(
             (
                 execution_generation, *_run_fence(lease), now, now, identity.room_id, identity.task_id,
                 expected_cancel_generation), StaleTaskError("task changed during start"))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, identity.room_id)
         return TaskAttempt(
             identity=identity, lease=lease, execution_generation=execution_generation,
             cancel_generation=expected_cancel_generation)
@@ -704,6 +749,21 @@ def defer_indeterminate_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
     expected_cancel_generation: int, reason: Any, clock: Clock) -> dict[str, Any]:
     """Fence one uncertain attempt and release later room work."""
+    return _defer(db_path, identity, lease, "defer", expected_execution_generation, expected_cancel_generation,
+                  reason=reason, clock=clock)
+
+
+def defer_unconfirmed_stop(
+    db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
+    expected_cancel_generation: int, reason: Any, clock: Clock) -> dict[str, Any]:
+    """Release later room work behind a Stop its member never confirmed: deferred, never cancelled."""
+    return _defer(db_path, identity, lease, "defer_stopping", expected_execution_generation,
+                  expected_cancel_generation, reason=reason, clock=clock)
+
+
+def _defer(
+    db_path: DbPath, identity: TaskIdentity, lease: DriverLease, name: str, expected_execution_generation: int,
+    expected_cancel_generation: int, *, reason: Any, clock: Clock) -> dict[str, Any]:
     _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
     reason = _identifier(reason, label="defer_reason")
     result_json = _canonical_json({"reason": reason, "retryable": True})
@@ -712,7 +772,7 @@ def defer_indeterminate_task(
         deferred = _generations_match(row, "deferred", expected_execution_generation, expected_cancel_generation)
         return _task_from_row(row, idempotent=True) if deferred and row["result_json"] == result_json else None
     return _generation_transition(
-        db_path, identity, lease, "defer", expected_execution_generation, expected_cancel_generation, now=now,
+        db_path, identity, lease, name, expected_execution_generation, expected_cancel_generation, now=now,
         replay=replay, set_params=(result_json, now, now))
 
 
@@ -725,6 +785,18 @@ def requeue_deferred_task(
     return _generation_transition(
         db_path, identity, lease, "requeue_deferred", expected_execution_generation, expected_cancel_generation,
         now=now, set_params=(now,))
+
+
+def reopen_deferred_task(
+    db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
+    expected_cancel_generation: int, clock: Clock) -> dict[str, Any]:
+    """Return a deferred turn to indeterminate at its same generation (its peer still owns that generation).
+    The retry restarts the attempt's clock: its time limit counts from now, not from the first start."""
+    _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
+    now = _timestamp(clock)
+    return _generation_transition(
+        db_path, identity, lease, "reopen_deferred", expected_execution_generation, expected_cancel_generation,
+        now=now, set_params=(now, now, now))
 
 
 def requeue_not_admitted_task(db_path: DbPath, attempt: TaskAttempt, *, clock: Clock) -> dict[str, Any]:
@@ -793,6 +865,25 @@ def complete_task_cancel(
         stale="task changed during stop acknowledgement")
 
 
+def mark_attempt_indeterminate(
+    db_path: DbPath, attempt: TaskAttempt, lease: DriverLease, *, clock: Clock
+) -> None:
+    """Retire exactly the unwatched attempt, even if another control renewed its lease."""
+    _check_same_room(lease, attempt.identity)
+    now = _timestamp(clock)
+    with _transaction(db_path) as conn:
+        _require_active_lease(conn, lease, now=now)
+        row = _load_task(conn, attempt.identity)
+        if not _generations_match(row, "running", attempt.execution_generation, attempt.cancel_generation):
+            return
+        conn.execute(
+            _generation_update("status='indeterminate', indeterminate_at=?, updated_at=?", "running"),
+            (now, now, attempt.identity.room_id, attempt.identity.task_id,
+             attempt.execution_generation, attempt.cancel_generation))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, lease.room_id)
+
+
 def recover_room(db_path: DbPath, lease: DriverLease, *, clock: Clock) -> dict[str, list[TaskIdentity]]:
     """Fence abandoned running attempts without requeueing uncertain work."""
     now = _timestamp(clock)
@@ -806,6 +897,8 @@ def recover_room(db_path: DbPath, lease: DriverLease, *, clock: Clock) -> dict[s
             conn.execute(
                 f"""UPDATE hosted_room_driver_tasks SET status='indeterminate', indeterminate_at=?, updated_at=?
                     WHERE {foreign_running}""", (now, now, *fence))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, lease.room_id)
         return {
             status: [_task_identity_from_row(row) for row in _tasks_in_order(conn, lease.room_id, status)]
             for status in ("queued", "indeterminate")}
@@ -857,3 +950,20 @@ def prune_published_terminal_tasks(
             f"DELETE FROM hosted_room_driver_tasks WHERE room_id=? AND task_id IN ({','.join('?' * len(candidates))})",
             (room_id, *candidates))
         return max(0, int(deleted.rowcount))
+
+
+def get_task_for_turn(
+    db_path: DbPath,
+    identity: TaskIdentity,
+) -> dict[str, Any] | None:
+    """Read the immutable admission for a turn, including older payload versions."""
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            """SELECT * FROM hosted_room_driver_tasks
+               WHERE room_id=? AND thread_id=? AND turn_id=?""",
+            (identity.room_id, identity.thread_id, identity.turn_id),
+        ).fetchone()
+        return _task_from_row(row) if row is not None else None
+    finally:
+        conn.close()

@@ -41,7 +41,7 @@ def test_secondary_profile_turn_resolves_its_own_adapter(mux_runner):
 
 
 def test_profile_without_adapter_fails_closed_never_default_bot(mux_runner):
-    home, default_slack, _ = mux_runner
+    home, _default_slack, _ = mux_runner
     with _profile_runtime_scope(home / "profiles" / "nobot", {}):
         _, adapter = _live_adapter(Platform.SLACK)
     assert adapter is None

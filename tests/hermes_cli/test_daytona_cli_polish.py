@@ -44,7 +44,7 @@ class TestDaytonaStatusImageMode:
 
     def test_image_mode_shows_image_line(self, monkeypatch, capsys, tmp_path):
         status_mod = self._base_mocks(monkeypatch, tmp_path)
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, all=False, deep=False))
         output = capsys.readouterr().out
         assert "Mode:         image" in output
         assert "Image:" in output
@@ -64,21 +64,21 @@ class TestDaytonaStatusImageMode:
             },
             raising=False,
         )
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, all=False, deep=False))
         output = capsys.readouterr().out
         assert "Mode:         image" in output
         assert "Image:        custom/image:latest" in output
 
     def test_image_mode_shows_sdk_status(self, monkeypatch, capsys, tmp_path):
         status_mod = self._base_mocks(monkeypatch, tmp_path)
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, all=False, deep=False))
         output = capsys.readouterr().out
         assert "SDK:" in output
         assert "installed" in output
 
     def test_image_mode_shows_api_key_not_set(self, monkeypatch, capsys, tmp_path):
         status_mod = self._base_mocks(monkeypatch, tmp_path)
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, all=False, deep=False))
         output = capsys.readouterr().out
         assert "API key:" in output
         assert "not set" in output
@@ -86,33 +86,33 @@ class TestDaytonaStatusImageMode:
     def test_image_mode_shows_api_key_configured(self, monkeypatch, capsys, tmp_path):
         status_mod = self._base_mocks(monkeypatch, tmp_path)
         monkeypatch.setenv("DAYTONA_API_KEY", "dcs-test-key")
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, all=False, deep=False))
         output = capsys.readouterr().out
         assert "API key:" in output
         assert "configured" in output
 
     def test_image_mode_shows_naming_defaults(self, monkeypatch, capsys, tmp_path):
         status_mod = self._base_mocks(monkeypatch, tmp_path)
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, all=False, deep=False))
         output = capsys.readouterr().out
         assert "Name prefix:  hermes" in output
         assert "Name scope:   task" in output
 
     def test_image_mode_shows_ephemeral_default(self, monkeypatch, capsys, tmp_path):
         status_mod = self._base_mocks(monkeypatch, tmp_path)
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, all=False, deep=False))
         output = capsys.readouterr().out
         assert "Ephemeral:" in output
 
     def test_image_mode_shows_network_open(self, monkeypatch, capsys, tmp_path):
         status_mod = self._base_mocks(monkeypatch, tmp_path)
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, all=False, deep=False))
         output = capsys.readouterr().out
         assert "Network:     open" in output
 
     def test_image_mode_no_lifecycle_intervals_by_default(self, monkeypatch, capsys, tmp_path):
         status_mod = self._base_mocks(monkeypatch, tmp_path)
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, all=False, deep=False))
         output = capsys.readouterr().out
         assert "Auto-stop:" not in output
         assert "Auto-archive:" not in output
@@ -121,7 +121,7 @@ class TestDaytonaStatusImageMode:
     def test_image_mode_shows_language_when_set(self, monkeypatch, capsys, tmp_path):
         status_mod = self._base_mocks(monkeypatch, tmp_path)
         monkeypatch.setenv("TERMINAL_DAYTONA_LANGUAGE", "python")
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, all=False, deep=False))
         output = capsys.readouterr().out
         assert "Language:" in output
         assert "python" in output
@@ -129,7 +129,7 @@ class TestDaytonaStatusImageMode:
     def test_image_mode_hides_language_when_empty(self, monkeypatch, capsys, tmp_path):
         status_mod = self._base_mocks(monkeypatch, tmp_path)
         monkeypatch.delenv("TERMINAL_DAYTONA_LANGUAGE", raising=False)
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, all=False, deep=False))
         output = capsys.readouterr().out
         assert "Language:" not in output
 
@@ -161,14 +161,14 @@ class TestDaytonaStatusNetworkBlocked:
 
     def test_network_blocked_shows_blocked(self, monkeypatch, capsys, tmp_path):
         status_mod = self._base_mocks(monkeypatch, tmp_path)
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, all=False, deep=False))
         output = capsys.readouterr().out
         assert "Network:      block requested" in output
 
     def test_network_blocked_with_allow_list(self, monkeypatch, capsys, tmp_path):
         status_mod = self._base_mocks(monkeypatch, tmp_path)
         monkeypatch.setenv("TERMINAL_DAYTONA_NETWORK_ALLOW_LIST", "1.1.1.1/32,10.0.0.0/8")
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, all=False, deep=False))
         output = capsys.readouterr().out
         assert "Allow list:" in output
         assert "1.1.1.1" in output
@@ -202,7 +202,7 @@ class TestDaytonaStatusSnapshotMode:
 
     def test_snapshot_mode_shows_snapshot_line(self, monkeypatch, capsys, tmp_path):
         status_mod = self._base_mocks(monkeypatch, tmp_path)
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, all=False, deep=False))
         output = capsys.readouterr().out
         assert "Mode:         snapshot" in output
         assert "Snapshot:     my-project-snapshot" in output
@@ -225,7 +225,7 @@ class TestDaytonaStatusSnapshotMode:
             raising=False,
         )
         monkeypatch.setattr(status_mod, "read_raw_config", lambda: {"terminal": {}}, raising=False)
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, all=False, deep=False))
         output = capsys.readouterr().out
         # In snapshot mode, image line should not show by default
         assert "Fallback image" not in output
@@ -241,7 +241,7 @@ class TestDaytonaStatusSnapshotMode:
             lambda: {"terminal": {"daytona_image": "custom/fallback:latest"}},
             raising=False,
         )
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, all=False, deep=False))
         output = capsys.readouterr().out
         assert "Fallback image: custom/fallback:latest" in output
 
@@ -249,7 +249,7 @@ class TestDaytonaStatusSnapshotMode:
         status_mod = self._base_mocks(monkeypatch, tmp_path)
         monkeypatch.setenv("TERMINAL_DAYTONA_AUTO_STOP_INTERVAL", "30")
         monkeypatch.setenv("TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL", "120")
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, all=False, deep=False))
         output = capsys.readouterr().out
         assert "Auto-stop:    30 min" in output
         assert "Auto-delete:  120 min" in output
@@ -285,7 +285,7 @@ class TestDaytonaStatusLifecycle:
         monkeypatch.setenv("TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL", "60")
         monkeypatch.setenv("TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL", "120")
         monkeypatch.setenv("TERMINAL_DAYTONA_EPHEMERAL", "true")
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, all=False, deep=False))
         output = capsys.readouterr().out
         assert "Auto-stop:    30 min" in output
         assert "Auto-archive: 60 min" in output
@@ -602,7 +602,8 @@ class TestDaytonaConfigShowImageMode:
         monkeypatch.setattr(config_mod, "get_config_path", lambda: "/tmp/fake_config.yaml", raising=False)
         monkeypatch.setattr(config_mod, "get_env_path", lambda: "/tmp/fake_env", raising=False)
         monkeypatch.setattr(config_mod, "get_project_root", lambda: "/tmp/fake_root", raising=False)
-        return config_mod
+        from hermes_cli import config_show
+        return config_show
 
     def test_image_mode_shows_mode_line(self, monkeypatch, capsys, tmp_path):
         config_mod = self._base_mocks(monkeypatch, tmp_path)
@@ -636,7 +637,8 @@ class TestDaytonaConfigShowSnapshotMode:
         monkeypatch.setattr(config_mod, "get_config_path", lambda: "/tmp/fake_config.yaml", raising=False)
         monkeypatch.setattr(config_mod, "get_env_path", lambda: "/tmp/fake_env", raising=False)
         monkeypatch.setattr(config_mod, "get_project_root", lambda: "/tmp/fake_root", raising=False)
-        return config_mod
+        from hermes_cli import config_show
+        return config_show
 
     def test_snapshot_mode_shows_mode_line(self, monkeypatch, capsys, tmp_path):
         config_mod = self._base_mocks(monkeypatch, tmp_path)

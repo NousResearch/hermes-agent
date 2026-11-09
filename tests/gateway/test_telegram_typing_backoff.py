@@ -56,7 +56,6 @@ async def test_typing_dm_topic_fallback_success_does_not_cool_down(monkeypatch):
         calls.append(kwargs)
         if "message_thread_id" in kwargs:
             raise RuntimeError("message thread not found")
-        return None
 
     adapter._bot.send_chat_action = AsyncMock(side_effect=send_chat_action)
 

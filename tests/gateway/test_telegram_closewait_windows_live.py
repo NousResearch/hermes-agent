@@ -239,7 +239,7 @@ async def test_drain_bounded_and_functional_when_close_wedges_live(monkeypatch):
         await polling_req.initialize()
         code, _ = await polling_req.do_request(server.url, "POST")
         assert code == 200
-        old_client = polling_req._client  # noqa: SLF001
+        old_client = polling_req._client
         _diag(server, "wedge-probe: after first round-trip")
 
         async def _wedged_shutdown(_request):
@@ -263,7 +263,7 @@ async def test_drain_bounded_and_functional_when_close_wedges_live(monkeypatch):
             f"drain with a wedged shutdown must stay bounded, took {elapsed:.2f}s"
         )
 
-        new_client = polling_req._client  # noqa: SLF001
+        new_client = polling_req._client
         assert new_client is not old_client, (
             "drain must swap in a fresh HTTP client when shutdown wedges "
             "(initialize() no-ops while is_closed is False)"

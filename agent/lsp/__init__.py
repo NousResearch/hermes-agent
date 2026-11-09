@@ -41,10 +41,11 @@ def get_service() -> Optional[LSPService]:
     """Return the lazily created LSP service for the active profile (process-wide singleton when no
     profile override is bound), or None when disabled.
 
-    Also registers an :mod:`atexit` hook so a clean exit tears down spawned servers:
-    without it every ``hermes chat`` exit leaks pyright processes for a few seconds
-    while their stdout buffers drain.  (SIGKILL/os._exit skip atexit — fine, the
-    kernel reaps the stateless servers with their parent.)
+    Also registers an :mod:`atexit` hook so a clean exit tears down spawned servers through
+    the LSP ``shutdown``/``exit`` handshake: without it every ``hermes chat`` exit leaks
+    pyright processes for a few seconds while their stdout buffers drain.  SIGKILL/os._exit
+    skip atexit; the owner-death supervisor (``LSPClient._spawn`` hands it each server's
+    process group) kills whatever is left then.
     """
     global _service
     from hermes_constants import get_hermes_home_override, hermes_home_key
@@ -72,7 +73,7 @@ def release_workspace(path: str) -> int:
     for svc in services:
         try:
             released += svc.release_workspace(path)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("LSP workspace release failed for %s: %s", path, e)
     return released
 
@@ -88,7 +89,7 @@ def shutdown_service() -> None:
         if svc is not None:
             try:
                 svc.shutdown()
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 logger.debug("LSP shutdown error: %s", e)
 
 
@@ -96,8 +97,8 @@ def _atexit_shutdown() -> None:
     """atexit wrapper; logs at debug since the user has already seen the final output."""
     try:
         shutdown_service()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.debug("atexit LSP shutdown failed: %s", e)
 
 
-__all__ = ["get_service", "release_workspace", "shutdown_service", "LSPService"]
+__all__ = ["LSPService", "get_service", "release_workspace", "shutdown_service"]

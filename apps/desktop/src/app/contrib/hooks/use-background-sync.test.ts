@@ -36,6 +36,7 @@ import {
   rehydrateLiveSessionStatuses,
   resetTypingActivityTracking,
   resolveActiveTranscriptSession,
+  TRANSCRIPT_RETURN_REFRESH_MIN_GAP_MS,
   useBackgroundSync
 } from './use-background-sync'
 
@@ -741,6 +742,133 @@ describe('active transcript refresh', () => {
     expect(refresh).toHaveBeenCalledTimes(2)
   })
 
+  it('refreshes the open transcript when the window is viewed again (#125532)', () => {
+    $changeEventsAvailable.set(true)
+    const refresh = vi.fn(async () => undefined)
+
+    renderSync(refresh)
+    refresh.mockClear() // drop the connect-time pull; this test is about returns
+
+    // One return fires both visibilitychange and focus — a single read.
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      window.dispatchEvent(new Event('focus'))
+    })
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshes on the visibility leg alone when the window is visible but unfocused (#125532 review)', () => {
+    // A visible-but-unfocused window (another app in front, read without
+    // clicking) never receives `focus`; the visibility leg must stand on
+    // `visible` alone or the return refresh is lost entirely.
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    $changeEventsAvailable.set(true)
+    const refresh = vi.fn(async () => undefined)
+
+    renderSync(refresh)
+    refresh.mockClear() // drop the connect-time pull; this test is about returns
+
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('reconciles workspace tiles on return, not just the main pane (#125532 review)', async () => {
+    // A zombie socket that survives sleep replays no sessions.changed tick, so
+    // the tile reconcile driven by run() never fires; bot canonical chats never
+    // resolve through the main-pane path, and the tile stays pre-sleep forever.
+    const tileRuntimeId = 'runtime-wake-tile'
+    const tileStoredId = 'stored-wake-tile'
+    $sessionTiles.set([{ runtimeId: tileRuntimeId, storedSessionId: tileStoredId }])
+    publishSessionState(tileRuntimeId, createClientSessionState(tileStoredId))
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('wake tile answer', tileStoredId) as never)
+
+    const refresh = vi.fn(async () => undefined)
+    renderSync(refresh)
+    refresh.mockClear() // drop the connect-time pull; this test is about returns
+    vi.mocked(getLatestSessionMessages).mockClear()
+
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+
+    expect(refresh).toHaveBeenCalledTimes(1) // main pane still covered
+    await waitFor(() =>
+      expect(getLatestSessionMessages).toHaveBeenCalledWith(tileStoredId, undefined, { passive: true })
+    )
+  })
+
+  it('reconciles tiles on return in a workspace with no selected session (#125532 review)', async () => {
+    // A workspace whose pane shows only bot tiles has no main-pane selection
+    // (activeSessionId null); the return reconcile must still reach the tiles,
+    // while the main-pane refresh stays silent for lack of a session to resolve.
+    const tileRuntimeId = 'runtime-tile-only'
+    const tileStoredId = 'stored-tile-only'
+    $sessionTiles.set([{ runtimeId: tileRuntimeId, storedSessionId: tileStoredId }])
+    publishSessionState(tileRuntimeId, createClientSessionState(tileStoredId))
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('tile only answer', tileStoredId) as never)
+
+    const refresh = vi.fn(async () => undefined)
+    renderSync(refresh, { activeSessionId: null, activeStoredSessionId: null })
+
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+
+    expect(refresh).not.toHaveBeenCalled() // nothing selected in the main pane
+    await waitFor(() =>
+      expect(getLatestSessionMessages).toHaveBeenCalledWith(tileStoredId, undefined, { passive: true })
+    )
+  })
+
+  it('does not refresh on a visibilitychange to hidden (#125532 review)', () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    $changeEventsAvailable.set(true)
+    const refresh = vi.fn(async () => undefined)
+
+    renderSync(refresh)
+    refresh.mockClear()
+
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    expect(refresh).not.toHaveBeenCalled()
+  })
+
+  it('throttles return refreshes inside the minimum gap (#125532)', () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refresh = vi.fn(async () => undefined)
+
+    renderSync(refresh)
+    refresh.mockClear()
+
+    act(() => window.dispatchEvent(new Event('focus')))
+    expect(refresh).toHaveBeenCalledTimes(1)
+
+    // A rapid cmd-tab pair inside the gap adds no read...
+    act(() => window.dispatchEvent(new Event('focus')))
+    expect(refresh).toHaveBeenCalledTimes(1)
+
+    // ...but the next return after the gap catches up again.
+    act(() => {
+      vi.advanceTimersByTime(TRANSCRIPT_RETURN_REFRESH_MIN_GAP_MS)
+      window.dispatchEvent(new Event('focus'))
+    })
+    expect(refresh).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not refresh on return while the gateway is closed (#125532)', () => {
+    $changeEventsAvailable.set(true)
+    const refresh = vi.fn(async () => undefined)
+
+    renderSync(refresh, { gatewayState: 'closed' })
+    refresh.mockClear()
+
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      window.dispatchEvent(new Event('focus'))
+    })
+    expect(refresh).not.toHaveBeenCalled()
+  })
+
   it('coalesces a burst of global session-change ticks', async () => {
     vi.useFakeTimers()
     $changeEventsAvailable.set(true)
@@ -803,10 +931,6 @@ describe('active transcript refresh', () => {
 })
 
 describe('reconcileActiveTranscript', () => {
-  // A drop mid-send on a flaky link leaves the optimistic `user-*` row as the
-  // only copy of the message: the server never acked it, so server truth does
-  // not contain it. A background refresh landing in that window replaced the
-  // transcript outright and the message vanished, forcing the user to retype.
   it('keeps an un-acked optimistic user row when the refresh lands mid-send', async () => {
     const fixture = makeRefresh()
     const optimisticId = 'user-1758100000000-ab12cd'
@@ -1324,7 +1448,12 @@ describe('an empty persisted page over a populated runtime', () => {
     expect(fixture.updateSessionState).toHaveBeenCalledTimes(1)
   })
 
-  it('active pane: a runtime bound to another stored session does not veto the requested page', async () => {
+  // Branch → Enter: resumeSession names the branch as selected before the
+  // active runtime leaves the parent. A reconcile in that gap paired the
+  // parent's runtime with the branch's stored id and re-keyed the runtime; the
+  // parent's next session.info then read as a branch → parent compression
+  // rotation and the route-follow effect dragged the view back onto the parent.
+  it('active pane: a runtime bound to another stored session is mid-switch and is not reconciled', async () => {
     const fixture = makeRefresh()
 
     publishSessionState(
@@ -1333,11 +1462,13 @@ describe('an empty persisted page over a populated runtime', () => {
         { id: 'other-user', parts: [{ text: 'elsewhere', type: 'text' }], role: 'user' }
       ])
     )
+    vi.mocked(getLatestSessionMessages).mockClear()
     vi.mocked(getLatestSessionMessages).mockResolvedValue(emptyPage() as never)
 
     await fixture.refresh()
 
-    expect(fixture.updateSessionState).toHaveBeenCalledTimes(1)
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+    expect(fixture.updateSessionState).not.toHaveBeenCalled()
   })
 
   it('tile: keeps the transcript and records no signature for the ignored page', async () => {

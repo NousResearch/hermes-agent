@@ -20,6 +20,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+from cron import extra_fire
 from hermes_time import now as _hermes_now, safe_strftime
 
 logger = logging.getLogger("cron.scheduler")
@@ -56,7 +57,7 @@ def hold_seconds_from_failure(exc: BaseException) -> Optional[float]:
     return None
 
 
-def hold_active(job: Dict[str, Any], now: Optional[datetime] = None) -> bool:
+def hold_active(job: dict[str, Any], now: Optional[datetime] = None) -> bool:
     """True while the job is parked inside a provider window (an expired marker is inert)."""
     from cron.jobs import _instant_after, _parse_aware  # late: jobs imports this module's helpers
 
@@ -64,12 +65,12 @@ def hold_active(job: Dict[str, Any], now: Optional[datetime] = None) -> bool:
     return until is not None and _instant_after(until, now or _hermes_now())
 
 
-def clear_state(job: Dict[str, Any]) -> None:
+def clear_state(job: dict[str, Any]) -> None:
     job.pop(STATE_KEY, None)
     job.pop(SCHEDULE_EXPR_KEY, None)
 
 
-def is_recovery_fire(job: Dict[str, Any], next_run: str) -> bool:
+def is_recovery_fire(job: dict[str, Any], next_run: str) -> bool:
     """True for the exact off-lattice cron fire parked by ``plan_hold``.
 
     The expression fingerprint keeps a direct ``jobs.json`` schedule edit from inheriting the
@@ -90,7 +91,7 @@ def _window_end(hold_seconds: float) -> datetime:
 
 
 def _recovery_worthwhile(
-    job: Dict[str, Any], natural_next: datetime, window_end: datetime,
+    job: dict[str, Any], natural_next: datetime, window_end: datetime,
 ) -> bool:
     """One off-lattice recovery fire, and only for a sparse schedule.
 
@@ -110,7 +111,7 @@ def _recovery_worthwhile(
 
 
 def plan_hold(
-    job: Dict[str, Any], hold_seconds: float, *, recover_consumed_fire: bool = False,
+    job: dict[str, Any], hold_seconds: float, *, recover_consumed_fire: bool = False,
 ) -> bool:
     """Called under the jobs lock AFTER ``_advance_after_run`` computed the schedule's natural
     ``next_run_at`` for a failed run. A scheduled sparse cron may retry its consumed fire at the
@@ -131,9 +132,12 @@ def plan_hold(
     if not blocked and not recover:
         clear_state(job)
         return False
-    if kind == "cron" and blocked:
+    if kind == "cron" and blocked and not extra_fire.queued(job):
         # Coalesce cron occurrences inside the closed window to the first legal instant after it.
-        parked = compute_next_run(schedule, window_end.isoformat()) or window_end.isoformat()
+        # A queued run-now is not an occurrence: it waits for the boundary, not the next slot.
+        parked = compute_next_run(
+            schedule, window_end.isoformat(), timezone=job.get("timezone")
+        ) or window_end.isoformat()
     else:
         parked = window_end.isoformat()
     if recover:
@@ -141,7 +145,7 @@ def plan_hold(
         job[SCHEDULE_EXPR_KEY] = schedule.get("expr")
     else:
         job.pop(SCHEDULE_EXPR_KEY, None)
-    job["next_run_at"] = parked
+    extra_fire.reschedule(job, parked)
     job[STATE_KEY] = parked
     logger.warning(
         "Job '%s': provider usage window closed for %.0fs — holding fires until %s instead of "
@@ -150,7 +154,7 @@ def plan_hold(
     return True
 
 
-def hold_notice(job: Dict[str, Any], hold_seconds: Optional[float]) -> str:
+def hold_notice(job: dict[str, Any], hold_seconds: Optional[float]) -> str:
     """Line appended to the ONE failure alert delivered on entering the hold, else ""."""
     if not hold_seconds or (job.get("schedule") or {}).get("kind") not in {"cron", "interval"}:
         return ""

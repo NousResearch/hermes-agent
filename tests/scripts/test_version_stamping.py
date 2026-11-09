@@ -13,10 +13,9 @@ def _tree(root: Path) -> None:
     desktop = root / "apps" / "desktop"
     desktop.mkdir(parents=True)
     (desktop / "package.json").write_text('{"version": "0.0.0"}\n', encoding="utf-8")
-    (root / "package-lock.json").write_text(
-        '{"version": "0.0.0", "packages": {'
-        '"apps/desktop": {"name": "hermes", "version": "0.0.0"}, '
-        '"apps/bootstrap-installer": {"name": "@hermes/bootstrap-installer", "version": "0.0.0"}}}\n',
+    (root / "pnpm-lock.yaml").write_text(
+        "lockfileVersion: '9.0'\n"
+        "importers:\n  apps/desktop: {}\n  apps/bootstrap-installer: {}\n",
         encoding="utf-8")
     (root / "uv.lock").write_text(
         '[[package]]\nname = "hermes-agent"\nversion = "0.0.0"\n'
@@ -46,7 +45,7 @@ def test_stamping_only_writes_external_builder_inputs(tmp_path):
         build / "pyproject.toml",
         build / "uv.lock",
         build / "apps" / "desktop" / "package.json",
-        build / "package-lock.json",
+        build / "pnpm-lock.yaml",
         build / "apps" / "bootstrap-installer" / "package.json",
         build / "apps" / "bootstrap-installer" / "src-tauri" / "Cargo.lock",
     ]

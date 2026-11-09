@@ -48,7 +48,7 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     elif os.name == "nt":
         shutil.copytree(Path(sys.base_prefix), source_python.parent, dirs_exist_ok=True)
     else:
-        shutil.copytree(Path(getattr(sys, "_base_executable")).resolve().parents[1],
+        shutil.copytree(Path(sys._base_executable).resolve().parents[1],
                         source_python.parents[1], dirs_exist_ok=True)
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -71,8 +71,9 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
         '[project]\nname="fixture"\nversion="1.0.0"\nrequires-python=">=3.11"\n'
         '[project.scripts]\nprobe="entry:main"\n[project.optional-dependencies]\npayloadtest=["bundle-probe==1.0"]\n'
         '[tool.uv]\npackage=false\nno-index=true\nfind-links=["wheels"]\n', encoding="utf-8")
-    selected = {"agent-browser", "chromium", "uv", "python"}
-    stale = {"chromium-headless-shell", "retired-tool"}
+    selected = {"chromium", "uv", "python"}
+    # agent-browser: a retired package a pre-upgrade store still records.
+    stale = {"agent-browser", "chromium-headless-shell", "retired-tool"}
     user_store = tmp_path / "user-tools"
     for store in (output / "tools", user_store):
         store.mkdir(parents=True, exist_ok=True)
@@ -99,15 +100,12 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     shutil.copy2(uv, uv_package.binary(uv_entry, target))
     # Browser payloads are inert: this test exercises their real dependency
     # closure, admission and pruning, not browser execution or downloads.
-    for name in ("agent-browser", "chromium"):
-        package = get_package(name)
-        entry = canonical / package.store_entry(lock.version(name), target)
-        binary = (entry / ("chrome.exe" if os.name == "nt" else "chrome")
-                  if name == "chromium" else package.binary(entry, target))
-        binary.parent.mkdir(parents=True)
-        binary.write_text("inert browser fixture", encoding="utf-8")
-        if name == "chromium":
-            (entry / "INSTALLATION_COMPLETE").touch()
+    chromium = get_package("chromium")
+    entry = canonical / chromium.store_entry(lock.version("chromium"), target)
+    binary = entry / ("chrome.exe" if os.name == "nt" else "chrome")
+    binary.parent.mkdir(parents=True)
+    binary.write_text("inert browser fixture", encoding="utf-8")
+    (entry / "INSTALLATION_COMPLETE").touch()
     facts = Facts(canonical / "facts.json")
     for name in selected:
         package = get_package(name)
@@ -126,7 +124,7 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "fixture"], cwd=repo, check=True, capture_output=True)
     monkeypatch.setattr("pm.paths.repo_root", lambda: repo)
     (repo / "untracked").write_text("must not ship", encoding="utf-8")
-    monkeypatch.setattr(native, "_bundle_package_names", lambda: ["agent-browser", "uv"])
+    monkeypatch.setattr(native, "_bundle_package_names", lambda: ["chromium", "uv"])
     monkeypatch.setattr(importlib.import_module("pm.install"), "_prepare_artifacts",
                         lambda *args, **kwargs: pytest.fail("prepared tools reached acquisition"))
     monkeypatch.setattr("pm.client.is_runtime", lambda: True)
@@ -250,6 +248,16 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     assert not (output / "hermes-agent/untracked").exists()
     assert not (output / "hermes-agent/.git").exists()
     facts = Facts(output / "tools/facts.json")
+    venv_fact = facts.get("venv")
+    assert venv_fact is not None
+    assert venv_fact["extras"] == json.loads((output / "enabled-features.json").read_text())["extras"]
+    assert "environment" not in venv_fact
+    from pm.install import venv_is_current
+    with monkeypatch.context() as patch:
+        # The desktop app points the bundled backend's store at the payload's tools dir.
+        patch.setenv("HERMES_RUNTIME_DIR", str(output / "tools"))
+        patch.setattr("pm.paths.repo_root", lambda: output / "hermes-agent")
+        assert venv_is_current(project_root=output / "hermes-agent")
     for name in stale:
         assert facts.get(name) is None
         assert not (output / "tools" / f"cached-{name}").exists()
@@ -275,14 +283,14 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     moved = tmp_path / "installed elsewhere"
     output.rename(moved)
     try:
-        run = subprocess.run([str(moved / command)], cwd=tmp_path, capture_output=True, text=True, timeout=30)
+        run = subprocess.run([str(moved / command)], cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False)
         assert run.returncode == 7, run.stderr
         assert run.stdout.strip() == "1.0"
         from pm import runtime as runtime_api, paths
         with monkeypatch.context() as patch:
             patch.setattr(paths, "repo_root", lambda: moved / "hermes-agent")
             run = subprocess.run(runtime_api.runtime_command(moved / "hermes-agent/pm/launch.py", ["status"]),
-                                 cwd=tmp_path, env=runtime_api.runtime_environment(), capture_output=True, text=True, timeout=30)
+                                 cwd=tmp_path, env=runtime_api.runtime_environment(), capture_output=True, text=True, timeout=30, check=False)
         assert run.returncode == 0, run.stderr
         assert "no pm sync receipt" in run.stdout
     finally:
@@ -378,6 +386,53 @@ def test_staged_cache_prunes_wheel_index_entries_outside_the_lock(tmp_path):
     assert not (cache / "sdists-v9" / "pypi" / "old-sdist-only").exists()
 
 
+def test_staged_cache_keeps_a_dotted_dist_the_lock_resolves(tmp_path):
+    """``ruamel.yaml`` and ``jaraco.classes`` keep the dot in their dist-info names, while
+    uv.lock lists them as ``ruamel-yaml``; the prune must compare normalized names or it
+    deletes the archive the shipped venv was installed from."""
+    lock = tmp_path / "repo"
+    lock.mkdir()
+    (lock / "uv.lock").write_text(
+        "[[package]]\n"
+        'name = "ruamel-yaml"\n'
+        'version = "0.18.16"\n'
+        'source = { registry = "https://pypi.org/simple" }\n',
+        encoding="utf-8",
+    )
+    cache = tmp_path / "cache"
+    bucket = cache / "archive-v0" / "bucket"
+    (bucket / "ruamel.yaml-0.18.16.dist-info").mkdir(parents=True)
+    index = cache / "wheels-v6" / "pypi" / "ruamel-yaml"
+    index.mkdir(parents=True)
+
+    assert native.prune_uv_cache_to_lock(cache, lock) == 0
+    assert bucket.is_dir()
+    assert index.is_dir()
+
+
+@pytest.mark.platforms("posix")
+def test_prune_drops_a_url_wheel_link_whose_archive_it_pruned(tmp_path):
+    """A URL, git or named-index wheel sits a hash directory deeper than ``pypi``. Once the
+    prune deletes its bucket, the link must go too: a payload that ships a link with no target
+    fails ``publish_prepared``. A link the lock still resolves stays."""
+    lock = tmp_path / "repo"
+    lock.mkdir()
+    (lock / "uv.lock").write_text('[[package]]\nname = "keep-me"\nversion = "1.0"\n', encoding="utf-8")
+    cache = tmp_path / "cache"
+    (cache / "archive-v0" / "gone" / "gone_dep-1.0.dist-info").mkdir(parents=True)
+    (cache / "archive-v0" / "kept" / "keep_me-1.0.dist-info").mkdir(parents=True)
+    url = cache / "wheels-v7" / "url" / "d87c3d39b3c6ef8c"
+    (url / "gone-dep").mkdir(parents=True)
+    (url / "keep-me").mkdir()
+    os.symlink("../../../../archive-v0/gone", url / "gone-dep" / "1.0-py3-none-any")
+    os.symlink("../../../../archive-v0/kept", url / "keep-me" / "1.0-py3-none-any")
+
+    native.prune_uv_cache_to_lock(cache, lock)
+
+    assert not (url / "gone-dep" / "1.0-py3-none-any").is_symlink(), "a dangling wheel link survived the prune"
+    assert (url / "keep-me" / "1.0-py3-none-any").resolve() == (cache / "archive-v0" / "kept").resolve()
+
+
 @pytest.mark.parametrize("pointer, shard", [("revision.http", ""), ("revision.rev", "build-settings")])
 def test_staged_cache_skips_build_inputs_before_copying(tmp_path, monkeypatch, pointer, shard):
     cache = tmp_path / "cache"
@@ -411,6 +466,28 @@ def test_staged_cache_skips_build_inputs_before_copying(tmp_path, monkeypatch, p
     assert all(not (shipped / relative).exists() for relative in waste)
     assert all((shipped / relative).read_bytes() == data for relative, data in kept.items())
     assert all((cache / relative).read_bytes() == data for relative, data in {**waste, **kept}.items())
+
+
+@pytest.mark.platforms("posix")
+def test_staged_cache_keeps_wheel_entries_as_links(tmp_path):
+    """uv stores each cached wheel as a relative link into ``archive-v0/``. Following it
+    shipped every unpacked wheel twice and handed the seed a directory where uv renames
+    its own link (#141891); the payload must carry the link itself."""
+    cache = tmp_path / "cache"
+    bucket = cache / "archive-v0" / "bucket"
+    (bucket / "pkg").mkdir(parents=True)
+    (bucket / "pkg" / "__init__.py").write_text("shipped = True\n", encoding="utf-8")
+    wheel = cache / "wheels-v6" / "pypi" / "pkg"
+    wheel.mkdir(parents=True)
+    os.symlink("../../../archive-v0/bucket", wheel / "1.0-py3-none-any")
+
+    shipped = tmp_path / "payload" / "uv-cache"
+    native.stage_uv_cache(cache, shipped)
+
+    link = shipped / "wheels-v6" / "pypi" / "pkg" / "1.0-py3-none-any"
+    assert link.is_symlink(), "staging followed the wheel link and copied the archive again"
+    assert os.readlink(link) == "../../../archive-v0/bucket"
+    assert (link / "pkg" / "__init__.py").read_text(encoding="utf-8") == "shipped = True\n"
 
 
 SELF_BUILD_BACKEND = '''import os, zipfile
@@ -499,16 +576,19 @@ def test_staged_cache_ships_full_wheel_set_and_rebuilds_offline(tmp_path):
              "--no-deps", "--index-url", index_url,
              "cache-proof==1.0.0", "wheel-proof==1.0"],
             env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60,
+            check=False,
         )
         assert warm.returncode == 0, warm.stderr + warm.stdout
         locked = subprocess.run(
             [uv, "lock", "--python", sys.executable, "--index-url", index_url],
             env=env, cwd=project, capture_output=True, text=True, timeout=60,
+            check=False,
         )
         assert locked.returncode == 0, locked.stderr
         warmed = subprocess.run(
             [uv, "sync", "--python", sys.executable, "--frozen", "--index-url", index_url],
             env=env, cwd=project, capture_output=True, text=True, timeout=60,
+            check=False,
         )
         assert warmed.returncode == 0, warmed.stderr
 
@@ -524,6 +604,12 @@ def test_staged_cache_ships_full_wheel_set_and_rebuilds_offline(tmp_path):
         # or built: a per-install venv rebuild must not depend on network
         # reachability for any package the payload already shipped.
         assert any(shipped.rglob("wheel_proof*")), "downloadable wheels ship in the full cache"
+        # uv's wheel entries are links into archive-v0/ (POSIX); each ships as the same link.
+        for link in (path for path in cache.rglob("*") if path.is_symlink()):
+            copy = shipped / link.relative_to(cache)
+            assert copy.is_symlink() and os.readlink(copy) == os.readlink(link), copy
+        # The payload prunes its cache to the lock after staging; the rebuild below reads that.
+        native.prune_uv_cache_to_lock(shipped, project)
 
         # A fresh mutable venv rebuilds OFFLINE from the shipped cache alone.
         shutil.rmtree(cache, ignore_errors=True)
@@ -533,6 +619,7 @@ def test_staged_cache_ships_full_wheel_set_and_rebuilds_offline(tmp_path):
             [uv, "sync", "--python", sys.executable, "--frozen", "--offline"],
             env={**env, "UV_CACHE_DIR": str(shipped)}, cwd=project,
             capture_output=True, text=True, timeout=60,
+            check=False,
         )
         assert result.returncode == 0, result.stderr
         assert "Building" not in result.stderr and "Built" not in result.stdout, result.stderr + result.stdout
@@ -606,7 +693,7 @@ def test_native_dispatch_child_environment(tmp_path, monkeypatch, cache_source, 
     before, run, homes = dict(os.environ), subprocess.run, []
     observed = tmp_path / "child.json"
 
-    def child(command, *, cwd, env):
+    def child(command, *, cwd, env, check):
         assert command[command.index("-m") + 1] == "scripts.bundles.native"
         return run([sys.executable, "-c",
                     "import os,json,sys; from pathlib import Path; "
@@ -614,7 +701,7 @@ def test_native_dispatch_child_environment(tmp_path, monkeypatch, cache_source, 
                     "assert all((Path(os.environ[k])/'fixture-state').read_text() == k for k in ('CARGO_HOME','RUSTUP_HOME')); "
                     "p=Path(os.environ['UV_CACHE_DIR']); p.mkdir(parents=True,exist_ok=True); "
                     "f=p/'reused'; f.write_text(f.read_text()+'x' if f.exists() else 'x'); sys.exit(int(sys.argv[2]))",
-                    str(observed), str(status)], cwd=cwd, env=env)
+                    str(observed), str(status)], cwd=cwd, env=env, check=check)
 
     monkeypatch.setattr(native.subprocess, "run", child)
     out = tmp_path / "payload"

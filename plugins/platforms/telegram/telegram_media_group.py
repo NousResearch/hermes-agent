@@ -15,6 +15,16 @@ from typing import Any, Iterator
 
 from gateway.platforms.event import MessageEvent
 
+# ``MessageEvent.metadata`` key: an item's own notes (too large, …), which an album merge never dedupes away (#151871).
+ITEM_NOTES_KEY = "telegram_item_notes"
+
+
+def add_item_note(event: Any, note: str) -> None:
+    """Append ``note`` to the event text (the caption survives) and record it as this item's own note."""
+    event.text = f"{event.text}\n\n{note}" if event.text else note
+    if isinstance(meta := getattr(event, "metadata", None), dict):  # a bare stand-in event has no metadata
+        meta.setdefault(ITEM_NOTES_KEY, []).append(note)
+
 # Upper bound on how long a due flush waits for in-flight siblings before sending what it has.
 MEDIA_GROUP_MAX_WAIT_SECONDS = 8.0
 _IN_FLIGHT_POLL_SECONDS = 0.05

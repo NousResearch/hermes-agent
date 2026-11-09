@@ -185,7 +185,7 @@ from plugins.platforms.telegram.telegram_entities import (
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_polling_probe import TelegramPendingProbeMixin
 from plugins.platforms.telegram.telegram_intake import effective_update_message
-from plugins.platforms.telegram.telegram_media_group import flush_media_group_event, queue_media_group_event, tracking_album_items
+from plugins.platforms.telegram.telegram_media_group import add_item_note, flush_media_group_event, queue_media_group_event, tracking_album_items
 from plugins.platforms.telegram.telegram_media_flood import TelegramMediaFloodMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
@@ -6309,10 +6309,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         """Download a voice/audio/video attachment into the local cache. An oversized one only gets a note:
         the caller's tail dispatches the event, so an album item still joins its album's turn."""
         try:
-            name = getattr(source, "file_name", None)  # named, so a same-size album sibling's note is not merged away
+            name = getattr(source, "file_name", None)
             allowed, note = self._telegram_media_size_allowed(source, f"{label} '{name}'" if isinstance(name, str) and name else label)
             if not allowed:
-                event.text = self._append_observed_note(event.text, note or "")
+                self._note_instead_of_media(event, note or "")
                 logger.info("[Telegram] Skipped oversized user %s (size=%s)", kind, getattr(source, "file_size", None))
                 return
             file_obj = await source.get_file()
@@ -6332,9 +6332,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
 
     @staticmethod
     def _note_instead_of_media(event: MessageEvent, text: str) -> bool:
-        """Append a user-facing note to the event text (the caption survives); False lets the caller's tail
-        dispatch it (through the album queue for an album item, so the album stays one turn)."""
-        event.text = f"{event.text}\n\n{text}" if event.text else text
+        """Append an item note (kept per item by an album merge); False lets the caller dispatch the event."""
+        add_item_note(event, text)
         return False
 
     @staticmethod
@@ -6360,7 +6359,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             # Size check before the image branch so image documents can't bypass the limit.
             if not doc.file_size or doc.file_size > self._max_doc_bytes:
                 logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
-                return self._note_instead_of_media(  # named, so an album's second note is not merged away
+                return self._note_instead_of_media(
                     event, f"Document '{display}' is too large or its size could not be verified. Maximum: {self._max_doc_bytes // (1024 * 1024)} MB.")
             # Screenshots/photos sent as documents take the image cache + batching path.
             if ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/"):

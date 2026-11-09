@@ -126,6 +126,8 @@ class ReloadMcpParams(Params):
 class ReloadMcpStatus(WireEnum):
     confirm_required = "confirm_required"
     reloaded = "reloaded"
+    # The hosted boot froze the registries: config changes take effect when the process restarts.
+    restart_required = "restart_required"
 
 
 class ReloadMcpSession(WireEnum):

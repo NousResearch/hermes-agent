@@ -34874,7 +34874,8 @@
       "ReloadMcpStatus": {
         "enum": [
           "confirm_required",
-          "reloaded"
+          "reloaded",
+          "restart_required"
         ],
         "title": "ReloadMcpStatus",
         "type": "string"

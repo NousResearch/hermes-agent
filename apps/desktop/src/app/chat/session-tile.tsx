@@ -85,6 +85,7 @@ import { useSessionTileActions } from './session-tile-actions'
 import { tileOwnerRoute } from './session-tile-owner'
 import { reasoningEffortPending, type SessionView, SessionViewProvider } from './session-view'
 import { SessionActionsMenu, SessionContextMenu } from './sidebar/session-actions-menu'
+import { TabOwnerBadge } from './tab-owner-badge'
 import { lastVisibleMessageIsUser } from './thread-loading'
 
 import { ChatView } from '.'
@@ -1001,6 +1002,9 @@ export const watchSessionTiles = paneMirror<SessionTile>({
   tabLead: storedSessionId => (
     <SessionStatusDot session={tileStoredRow(storedSessionId)} storedSessionId={storedSessionId} />
   ),
+  // The tab's owner mark: which profile's agent answers this session. Only
+  // paint it when the strip can actually mix profiles (see TabOwnerBadge).
+  tabBadge: storedSessionId => <TabOwnerBadge profile={tileStoredRow(storedSessionId)?.profile} />,
   // Until the first turn lists a row there is no title to register, so the tab
   // takes its name from the composer instead — live, without re-registering.
   tabTitle: storedSessionId =>

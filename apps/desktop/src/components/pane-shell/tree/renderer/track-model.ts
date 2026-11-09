@@ -118,6 +118,13 @@ interface PaneChrome extends PaneSizing {
    *  the tab and the sidebar row render status/color from the ONE primitive
    *  (self-subscribing — it updates without the strip re-registering). */
   tabLead?: () => React.ReactNode
+  /** The owning profile's mark for this pane's TAB, rendered after the lead
+   *  node and before the label. A session pane supplies it when the gateway
+   *  serves more than one profile: the tab strip is the pane's only header in
+   *  the tiled/tabbed layout, so without it a tab says what the chat is called
+   *  but never whose agent answers it. Live node, like `tabLead` — the glyph
+   *  resolves its own color and tooltip. */
+  tabBadge?: () => React.ReactNode
   /** Mint another tab of THIS pane's kind — the strip's "+" while this pane is
    *  active. A Browser tab makes another Browser tab; a pane that is one of a
    *  kind (a file peek) leaves it absent and the strip falls back to the chat

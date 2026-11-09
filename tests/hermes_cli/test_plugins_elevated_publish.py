@@ -44,10 +44,11 @@ def test_an_elevated_publication_grants_the_user_the_whole_published_tree(staged
     assert sorted(writes) == [".", "pkg", "pkg/__init__.py", "plugin.yaml"]
 
 
-def test_an_unelevated_publication_touches_no_acl(staged_plugin):
+def test_an_unelevated_publication_touches_no_acl(staged_plugin, monkeypatch):
     from hermes_cli.plugins_transaction import publish_plugin
 
     staged, target, writes = staged_plugin
+    monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: False)
 
     publish_plugin(staged, target, {}, {"acl-probe": {}})
 

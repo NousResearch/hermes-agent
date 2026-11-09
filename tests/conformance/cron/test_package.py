@@ -40,7 +40,8 @@ def test_a_plugin_imports_the_suite_from_outside_the_repo(tmp_path):
         "from hermes_conformance.cron import Backend, CronConformance\n"
         "def test_imported():\n"
         "    assert CronConformance.test_two_racing_claimants_produce_exactly_one_winner\n"
-        "    assert 'foreign_tenant' in Backend.__dataclass_fields__\n", encoding="utf-8")
+        "    assert 'foreign_tenant' in Backend.__dataclass_fields__\n"
+        "    assert 'non_administering' in Backend.__dataclass_fields__\n", encoding="utf-8")
     env = {**os.environ, "PYTHONPATH": str(site)}
     env.pop("PYTHONSAFEPATH", None)
     code = (f"import sys, importlib.util, hermes_conformance.cron as s; "

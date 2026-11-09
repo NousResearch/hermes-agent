@@ -34,7 +34,10 @@ call are a follow-up.
 Every operation reads its pin (tenant, agent, owner, actor) from ``hermes_scope.current_scope()``
 when it runs, never from a path, ``HERMES_HOME`` or an argument; the port exposes no way to pin
 anything else. A backend refuses a pin it cannot serve with :class:`CronPinRefused`, which says
-nothing about whether the target exists.
+nothing about whether the target exists. On top of the pin, every job mutation requires the
+bound scope's administration right: one without it is refused with :class:`CronAdminRefused`
+before anything is looked up, while reads and the scheduler's own operations are not gated
+(a caller with no scope bound is today's local caller, who administers).
 """
 
 from __future__ import annotations
@@ -53,6 +56,12 @@ class CronPinRefused(PermissionError):
     backend that requires one) no scope at all. Says nothing about whether the target exists."""
 
 
+class CronAdminRefused(PermissionError):
+    """The bound scope may not administer this agent, so the job mutation it asked for is
+    refused before anything is looked up or written. Says nothing about whether the target
+    exists."""
+
+
 class CronStore(ABC):
     """Cron jobs, their fire claims and their execution audit, for the pinned agent.
 
@@ -61,6 +70,15 @@ class CronStore(ABC):
     whole, so one agent can never list, trigger or re-point another's jobs, and a tick pinned to
     one agent never fires another's due job. Job records are the dicts today's callers exchange:
     the backend may add columns, and a reader must tolerate fields it does not know.
+
+    Every job mutation is the agent's administration: creating, updating, pausing, resuming,
+    triggering, re-arming, removing a job and cancelling its live run all require the bound
+    scope's administration right (``Scope.can_administer``), and one without it is refused
+    whole (:class:`CronAdminRefused`) before anything is looked up, changing nothing. Not gated:
+    reads, and the scheduler's own operations — the due scan, dispatch claims, fire claims, the
+    claim heartbeats, the run outcome and the execution audit — which run as system activities
+    even when a scope is bound. A caller with no scope bound is today's local caller, who
+    administers, and is served as today.
     """
 
     # --- jobs ------------------------------------------------------------------------------
@@ -70,7 +88,8 @@ class CronStore(ABC):
         """Create a job and return its stored record. *fields* are the creation options today's
         callers pass (name, repeat, deliver, skills, script, ...); an unknown one is refused.
         The record also carries ``created_by``, the id of the principal who created it, stamped
-        by the backend from the bound scope's actor — never from *fields*."""
+        by the backend from the bound scope's actor — never from *fields* — by the same write
+        that creates the job. Requires the administration right."""
 
     @abstractmethod
     def get_job(self, job_id: str) -> Optional[dict[str, Any]]:
@@ -88,31 +107,37 @@ class CronStore(ABC):
     @abstractmethod
     def update_job(self, job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]:
         """Apply *updates* to a job; ``None`` when there was nothing to update. The job's id and
-        the principal who created it never change: an update naming either is refused whole."""
+        the principal who created it never change: an update naming either is refused whole.
+        Requires the administration right."""
 
     @abstractmethod
     def pause_job(self, job_id: str, reason: Optional[str] = None) -> Optional[dict[str, Any]]:
-        """Pause a job (id or name) without deleting it."""
+        """Pause a job (id or name) without deleting it. Requires the administration right."""
 
     @abstractmethod
     def resume_job(self, job_id: str) -> Optional[dict[str, Any]]:
-        """Resume a paused job (id or name); an occurrence that elapsed while paused stays due."""
+        """Resume a paused job (id or name); an occurrence that elapsed while paused stays due.
+        Requires the administration right."""
 
     @abstractmethod
     def trigger_job(self, job_id: str, extra_prompt: Optional[str] = None) -> Optional[dict[str, Any]]:
-        """Point a job at the next tick (id or name); *extra_prompt* applies to that fire only."""
+        """Point a job at the next tick (id or name); *extra_prompt* applies to that fire only.
+        Requires the administration right."""
 
     @abstractmethod
     def rearm_oneshot(self, job_id: str, run_at: Any) -> Optional[dict[str, Any]]:
-        """Re-arm a completed one-shot (id or name) as an explicit new occurrence."""
+        """Re-arm a completed one-shot (id or name) as an explicit new occurrence. Requires the
+        administration right."""
 
     @abstractmethod
     def remove_job(self, job_id: str) -> bool:
-        """Remove a job (id or name); ``False`` when there was nothing to remove."""
+        """Remove a job (id or name); ``False`` when there was nothing to remove. Requires the
+        administration right."""
 
     @abstractmethod
     def cancel_job_run(self, job_id: str, reason: Optional[str] = None) -> dict[str, Any]:
-        """Stop the job's live run, if any; its schedule is untouched."""
+        """Stop the job's live run, if any; its schedule is untouched. Requires the
+        administration right."""
 
     @abstractmethod
     def get_due_jobs(self) -> list[dict[str, Any]]:

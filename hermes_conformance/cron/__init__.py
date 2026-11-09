@@ -16,9 +16,9 @@ cover is listed in :mod:`hermes_conformance.cron.suite`.
 """
 
 from hermes_conformance.cron.suite import (
-    Backend, CronConformance, ExecutionConformance, FireClaimConformance, PinningConformance,
-    TickConformance,
+    Backend, CronConformance, ExecutionConformance, FireClaimConformance,
+    AdministrationConformance, PinningConformance, TickConformance,
 )
 
-__all__ = ["Backend", "CronConformance", "ExecutionConformance", "FireClaimConformance",
-           "PinningConformance", "TickConformance"]
+__all__ = ["AdministrationConformance", "Backend", "CronConformance", "ExecutionConformance",
+           "FireClaimConformance", "PinningConformance", "TickConformance"]

@@ -1835,6 +1835,7 @@ def create_job(
     interpreter: Optional[str] = None,
     timezone: Optional[str] = None,
     grace_minutes: Optional[int] = None,
+    created_by: Optional[str] = None,
 ) -> dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1847,7 +1848,10 @@ def create_job(
     interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
     (a venv can be rebuilt or moved after creation). timezone: IANA key pinning the schedule's
     wall clock (None/'' = inherit the profile zone). grace_minutes: catch-up window override
-    (0 = never catch up)."""
+    (0 = never catch up). created_by: the id of the principal the job records as its creator —
+    the caller that resolved it from its bound scope (the storage port), never an end-user
+    option; it is stamped by the same write that persists the job, so an interruption can leave
+    no job, never a runnable one without its creator."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1942,6 +1946,10 @@ def create_job(
     ):
         if value is not None:
             job[key] = value
+    if created_by is not None:
+        # One durable write carries the job and its creator together: the stamping can never be
+        # the second, separately interruptible write.
+        job["created_by"] = created_by
 
     with _jobs_lock():
         save_jobs(load_jobs() + [job])

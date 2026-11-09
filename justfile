@@ -19,6 +19,16 @@ setup:
 js-install:
     pnpm install --frozen-lockfile
 
+# Install only tests-js and its runtime dependencies, without lifecycle scripts
+[group('setup')]
+js-install-tests:
+    pnpm install --frozen-lockfile --filter "{./tests-js}..." --prod --ignore-scripts
+
+# Prepare the pm-locked Electron binary the desktop app and its E2E suites launch
+[group('setup')]
+electron-runtime:
+    node scripts/build/electron-runtime.mjs --source .
+
 # Run every blocking lint check CI runs (`just check --only health`)
 [group('check')]
 [positional-arguments]

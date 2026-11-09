@@ -16,7 +16,6 @@
 
 import { atom, batch } from 'nanostores'
 
-import { NEW_SESSION_TITLE } from '@/lib/chat-runtime'
 import { readJson, writeJson } from '@/lib/storage'
 
 import type { WorkspaceMode } from '../../contrib/types'
@@ -97,12 +96,13 @@ export interface WorkspaceTabScope {
 export function workspaceOwnerTitle(title: string, scope: WorkspaceTabScope | undefined): string {
   // After a compression rotation, the new stored id may be selected before its
   // row reaches the session lists. Keep its bot caption during that gap instead
-  // of exposing the generic new-session placeholder.
+  // of exposing the generic new-session placeholder. ('New session' mirrors
+  // NEW_SESSION_TITLE; importing chat-runtime here creates an import cycle.)
   if (
     scope?.workspaceMode !== 'bots' ||
     !scope.workspaceOwnerKey ||
     !scope.workspaceTabTitle ||
-    (title !== scope.workspaceTabTitle && title !== NEW_SESSION_TITLE)
+    (title !== scope.workspaceTabTitle && title !== 'New session')
   ) {
     return title
   }

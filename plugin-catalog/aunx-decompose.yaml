@@ -1,0 +1,17 @@
+name: aunx-decompose
+repo: https://github.com/aunysillyme-dev/aunx-skills
+sha: 98c3b21c8491e162fb71f200f691fbbfd16166b0
+subdir: plugins/aunx-decompose
+description: Break a task into checked steps and parallel waves; validates dependencies, cycles and write-path overlap.
+maintainer: AunySillyMe
+tier: community
+category: tools
+title: Decompose
+version: "0.1.0"
+requires_hermes: ">=0.19"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

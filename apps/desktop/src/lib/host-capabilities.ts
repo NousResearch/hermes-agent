@@ -72,7 +72,9 @@ export const HOST_CAPABILITIES = Object.freeze({
   /** The preview pane can mount an Electron `<webview>`; otherwise it uses an iframe. */
   webviewPreview: 'native',
   /** The window has a native material and opacity surface (glass, translucency). */
-  windowMaterial: 'native'
+  windowMaterial: 'native',
+  /** A popped-out session window names itself in the OS window title. */
+  windowTitleStatus: 'native'
 } as const satisfies Record<string, Host>)
 
 export type HostCapability = keyof typeof HOST_CAPABILITIES

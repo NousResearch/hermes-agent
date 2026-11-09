@@ -223,6 +223,41 @@ def test_namespace_change_leaves_no_own_copy(operation):
     assert _hits(source) == [6]
 
 
+@pytest.mark.parametrize("copy_expr, write, shared", [
+    ("dict(C.values)", "self.values['seed'].append(v)", True),
+    ("C.values.copy()", "self.values['seed'].append(v)", True),
+    ("copy.copy(C.values)", "self.values['seed'].append(v)", True),
+    ("copy.deepcopy(C.values)", "self.values['seed'].append(v)", False),
+    ("{'seed': []}", "self.values['seed'].append(v)", False),
+    ("dict(C.values)", "self.values['other'] = v", False),
+])
+def test_shallow_own_copy_still_shares_nested_containers(copy_expr, write, shared):
+    """A shallow copy gives each instance its own outer dict; the list inside it is still the
+    class's, so a write into it reaches every instance."""
+    source = ("import copy\nclass C:\n    values = {'seed': []}\n    def __init__(self):\n"
+              f"        self.values = {copy_expr}\n    def put(self, v):\n        {write}\n")
+    namespace: dict = {}
+    exec(source, namespace)
+    a, b = namespace["C"](), namespace["C"]()
+    a.put("tenant-A")
+    assert (b.values["seed"] == ["tenant-A"]) is shared
+    assert _hits(source) == ([3] if shared else [])
+
+
+def test_shallow_copy_stored_after_init_still_shares_nested_containers():
+    source = ("class C:\n    values = {'seed': []}\n    def __init__(self):\n        self.values = {}\n"
+              "    def reset(self):\n        self.values = dict(C.values)\n"
+              "    def put(self, v):\n        self.values['seed'].append(v)\n")
+    namespace: dict = {}
+    exec(source, namespace)
+    a, b = namespace["C"](), namespace["C"]()
+    a.reset()
+    b.reset()
+    a.put("tenant-A")
+    assert b.values["seed"] == ["tenant-A"]
+    assert _hits(source) == [2]
+
+
 @pytest.mark.parametrize("share", [
     # a namespace operation anywhere in the class costs every copy, whatever it names
     "def share(self):\n        setattr(self, 'other', 1)\n",

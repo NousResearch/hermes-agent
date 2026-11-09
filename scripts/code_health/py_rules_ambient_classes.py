@@ -18,7 +18,10 @@ or ``with`` target, or ``del`` of it revokes it; and no copy in the class counts
 uses any namespace operation at all (``setattr``, ``delattr``, ``vars``, ``eval``/``exec``, a
 ``getattr`` of a computed name, any dunder but the ordinary protocol ones (``__dict__``,
 ``__setattr__``, ``__getstate__``, ...), anything from ``builtins``, ``operator``,
-``importlib``, ``gc`` or ``ctypes``), through whatever receiver, alias or string.
+``importlib``, ``gc`` or ``ctypes``), through whatever receiver, alias or string. A shallow copy
+of an existing container (``dict(C.values)``, ``C.values.copy()``), stored anywhere in the class,
+owns only the outer container: a write into a container nested in it
+(``self.values[k].append(v)``) still reaches the class's.
 
 A method is any function the class body defines while it runs, under an ``if`` or ``try`` too.
 """
@@ -95,6 +98,19 @@ def _receiver_kind(method: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None
     return "instance"
 
 
+_SHALLOW_COPIES = {"dict", "list", "set", "collections.OrderedDict", "collections.deque", "copy.copy"}
+
+
+def _shallow(value: ast.AST | None) -> bool:
+    """A copy of an existing container (``dict(C.values)``, ``C.values.copy()``, ``copy.copy(v)``):
+    the outer container is the instance's own, the containers inside it are still shared."""
+    if not isinstance(value, ast.Call):
+        return False
+    if isinstance(value.func, ast.Attribute) and value.func.attr == "copy" and not value.args:
+        return True
+    return _call_name(value) in _SHALLOW_COPIES and bool(value.args)
+
+
 class _Receivers:
     """Which expressions in a class's methods mean the class, and which an instance of it."""
 
@@ -125,18 +141,18 @@ class _Receivers:
             return "class" if self.kind(node.value) == "instance" else None
         return None
 
-    def change(self, write: Write) -> tuple[str, str, bool] | None:
-        """``(receiver kind, attribute, rebound)`` when *write* changes an attribute of the class
-        or of an instance of it; an in-place change through a nested item or attribute
-        (``self.x[k].append(v)``) is a change of ``x``."""
+    def change(self, write: Write) -> tuple[str, str, bool, bool] | None:
+        """``(receiver kind, attribute, rebound, nested)`` when *write* changes an attribute of the
+        class or of an instance of it; an in-place change through a nested item or attribute
+        (``self.x[k].append(v)``, *nested*) is a change of ``x``."""
         if write.attr is not None:
             kind = self.kind(write.target)
-            return (kind, write.attr, True) if kind and write.attr else None
+            return (kind, write.attr, True, False) if kind and write.attr else None
         node = write.target
         while isinstance(node, (ast.Attribute, ast.Subscript)):
             kind = self.kind(node.value)
             if kind and isinstance(node, ast.Attribute):
-                return kind, node.attr, node is write.target and write.store
+                return kind, node.attr, node is write.target and write.store, node is not write.target
             node = node.value
         return None
 
@@ -194,6 +210,21 @@ class _Receivers:
         return {t.attr for t in targets
                 if isinstance(t, ast.Attribute) and self.kind(t.value) == "instance"}
 
+    def shallow_stores(self) -> set[str]:
+        """Instance attributes that any store in the class (``__init__`` or any other method) gives
+        a shallow copy (see :func:`_shallow`): their own copy owns only the outer container."""
+        out: set[str] = set()
+        for node in ast.walk(self.cls):
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                targets = [node.target]
+            else:
+                continue
+            if _shallow(node.value):
+                out |= {t.attr for t in targets if isinstance(t, ast.Attribute) and self.kind(t.value) == "instance"}
+        return out
+
     def _uses(self, stmt: ast.stmt, copies: set[str]) -> tuple[set[str], bool, bool]:
         """``(instance attributes the statement touches, whether it uses the instance beyond an
         attribute (a method call, handing ``self`` out), whether it can return)``. The copy's own
@@ -232,17 +263,18 @@ def class_state(cls: ast.ClassDef, attrs: Attrs, writes: list[Write], bindings: 
     recv = _Receivers(cls, bindings)
     revoked = recv.revoked(fresh)
     own = set() if revoked is None else recv.own_copies(fresh) - revoked
+    shallow = recv.shallow_stores() if own else set()
     rebound: dict[str, int] = {}
     mutated: set[str] = set()
     for write in writes:
         change = recv.change(write)
         if change is None:
             continue
-        kind, attr, rebind = change
+        kind, attr, rebind, nested = change
         in_place = not rebind or (write.aug and is_container(attrs.get(attr, (None, 0))[0]))
         if kind == "class" and not in_place:
             rebound.setdefault(attr, write.line)
-        elif in_place and (kind == "class" or attr not in own):
+        elif in_place and (kind == "class" or attr not in own or (nested and attr in shallow)):
             mutated.add(attr)
     for attr, line in rebound.items():
         value, decl_line = attrs.get(attr, (None, line))

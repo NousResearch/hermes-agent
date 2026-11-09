@@ -9,6 +9,7 @@ tier: community
 category: general
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/percyhendrux123-prog/hermes-chiron/blob/d6ccea67b10e7d4ee4cf69fa78896409e5f9645e/README.md
+image: https://raw.githubusercontent.com/percyhendrux123-prog/hermes-chiron/d18ea7187ffd63e7f5229a853bb092f23354f5c5/docs/media/banner.png
 readme: true
 platforms: [linux, macos]
 capabilities:

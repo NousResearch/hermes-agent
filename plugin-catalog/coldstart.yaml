@@ -1,6 +1,6 @@
 name: coldstart
 repo: https://github.com/zvporter-ops/coldstart
-sha: "24848d56ba438ed5d3697d7279e003a104e21bed"
+sha: "224655a9c24798076fb8d4ebd3c55445e17a362a"
 title: Coldstart
 description: >-
   Evidence-gated answering with a provenance hierarchy, for any local AI deployment.

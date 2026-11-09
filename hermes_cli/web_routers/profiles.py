@@ -761,7 +761,8 @@ async def create_profile_endpoint(body: ProfileCreate):
         no_skills=body.no_skills, description=body.description, clone_channels=body.clone_channels,
         soul=body.soul,
         model=model, provider=provider, model_validate_in=get_process_hermes_home(),
-        mcp_servers=tuple(body.mcp_servers), keep_skills=tuple(body.keep_skills))
+        mcp_servers=tuple(body.mcp_servers), keep_skills=tuple(body.keep_skills),
+        mirror_credentials=body.mirror_credentials, share_auth=body.share_auth)
     with _profile_errors("POST /api/profiles failed", not_found=(),
                          bad_request=(ValueError, FileExistsError, FileNotFoundError)):
         # Off the loop: creation asks a live multiplexer to serve the profile now over its control

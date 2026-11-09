@@ -3,6 +3,12 @@
 ``hermes_cli.profiles.create_profile`` does the core directory work; this module runs every step
 after it in a fixed order. Post-create steps are best-effort: a failing step is listed in
 ``warnings`` (credential mirroring reports per item in ``mirrored``) and never undoes the create.
+
+Defaults are the Desktop bot page's "Share keys & accounts with the main profile" (ticked): the
+launch profile's provider/tool keys (bot tokens and allowlists stripped), a shared ``auth.json``, and
+its model unless one is picked, so a profile made on any surface answers its first chat. Opt-outs:
+``share_auth=False`` (auth copied once, single-use OAuth grants dropped) and
+``mirror_credentials=False`` (nothing from the launch profile). Clones keep their own ``.env``.
 """
 from __future__ import annotations
 
@@ -32,8 +38,9 @@ class ProfileCreateRequest:
     soul: Optional[str] = None
     alias: bool = True                 # ~/.local/bin/<name> wrapper when the name is free
     quiet: bool = True                 # bundled-skill seeding prints its own failures when False
-    mirror_credentials: bool = False   # copy the launch profile's .env / auth.json / voice / model
-    share_auth: bool = False           # with mirror_credentials: keep one auth pool, do not copy auth.json
+    # Bot-page defaults (see module docstring); every surface exposes both opt-outs.
+    mirror_credentials: bool = True    # launch .env keys / voice / model (and auth.json unless shared)
+    share_auth: bool = True            # keep one auth pool with the launch profile, do not copy auth.json
     model: str = ""                    # explicit model pin (with provider)
     provider: str = ""
     model_validate_in: Optional[Path] = None  # home whose catalog vouches for the pick (default: the profile)
@@ -84,7 +91,8 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
         sync_imports=request.sync_imports, soul=request.soul,
     )
     result = ProvisionResult(path=path)
-    result.mirrored["auth"] = "shared" if request.share_auth else False
+    # "shared" only describes a mirrored profile; with no launch credentials nothing is shared on purpose.
+    result.mirrored["auth"] = "shared" if request.share_auth and request.mirror_credentials else False
 
     def step(label: str, fn: Callable[[], Any], default: Any = None) -> Any:
         try:

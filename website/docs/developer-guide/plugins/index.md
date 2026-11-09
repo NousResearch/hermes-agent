@@ -314,10 +314,10 @@ from the last commit that shipped the layer.
 
 ### `hermes_state` deprecated: use the storage interface
 
-Session storage sits behind a storage interface: typed contracts in `persistence/` and one entry point, `persistence_assembly`. The `SessionDB` class and the `hermes_state_*` modules are removed. For outside plugins, `hermes_state` stays as a temporary compatibility module under the [deprecation policy](#deprecation-policy) above. It forwards the names in the table below to the storage interface and holds no SQL or database connection of its own.
+Session storage sits behind a storage interface: typed contracts in `persistence/` and one entry point, `persistence_assembly`. The `SessionDB` class and the `hermes_state_*` modules are removed. For outside plugins, `hermes_state` and `hermes_state_registry` stay as temporary compatibility modules under the [deprecation policy](#deprecation-policy) above. They forward the names in the table below to the storage interface and hold no SQL or database connection of their own.
 
-- The first use of a `hermes_state` name warns once per process, naming the replacement and the removal release.
-- The module is supported through v0.24, v0.25 and v0.26 and removed no earlier than v0.27.0.
+- The first use of a name from either module warns once per process, naming the replacement and the removal release.
+- The modules are supported through v0.24, v0.25 and v0.26 and removed no earlier than v0.27.0.
 - Names not in the table are not carried: the old class's mixins and the SQLite backend's own helpers have no public replacement, and `hermes plugins validate` reports an import of one.
 
 | `hermes_state` name | Replacement |
@@ -328,7 +328,9 @@ Session storage sits behind a storage interface: typed contracts in `persistence
 | `DEFAULT_DB_PATH` | `persistence_assembly.store_location(profile_scope())` |
 | `create_session`, `end_session`, `reopen_session` | `store.sessions.create(NewSession(...))`, `store.sessions.end`, `store.sessions.reopen` |
 | `append_message` | `store.messages.append(session_id, NewMessage(...))` |
+| `hermes_state_registry.acquire(db_path=None)`, `release(db)`, `release_or_close(db)` | `open_persistence(profile_scope())` and the handle's `close()`; the stand-in's `acquire` opens a `SessionDB` of its own for each caller and both releases close it |
 | `get_messages` | `store.messages.read_transcript(session_id)`; `as_wire_row()` gives the old dict |
+| `list_gateway_sessions(platform=None, active_only=True)` | `store.sessions.list_gateway_sessions(platform=..., active_only=...)`; `{**e.session.as_session_row(), "last_active": e.last_active}` gives each old dict |
 | `get_messages_as_conversation` | `store.messages.read_conversation(session_id)`; `as_openai_message()` gives each old dict |
 | `get_session` | `store.sessions.get(session_id)`; `as_session_row()` gives the old dict |
 | `list_sessions_rich`, `session_count` | `store.sessions.list_sessions(SessionQuery(...), SessionWindow(...))`, `store.sessions.count_sessions()` |

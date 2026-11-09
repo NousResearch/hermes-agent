@@ -111,6 +111,18 @@ def test_git_in_ancestor_repo_checks_staged_paths_and_reports_tree_refusal(locke
     assert "git pull" in tree_refusal
 
 
+def test_tree_wide_git_from_a_sibling_subdirectory_is_refused(locked_home):
+    import subprocess
+    from tools.skill_lock import command_refusal
+    subprocess.run(["git", "-C", str(locked_home), "init", "-q"], check=True)
+    docs = locked_home / "docs"
+    docs.mkdir()
+    for cmd in ("git reset --hard HEAD", "git stash", "git pull --rebase", "git checkout -- ..",
+                "git add -A", "git commit -a -m x"):
+        assert command_refusal(cmd, str(docs)), cmd
+    assert command_refusal("git add notes.md", str(docs)) is None
+
+
 def test_lock_resolves_by_display_name_as_well_as_directory(locked_home):
     """Locks are keyed by directory; the curator's rows carry the frontmatter name."""
     from tools import skill_usage

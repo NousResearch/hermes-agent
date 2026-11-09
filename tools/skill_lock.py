@@ -384,6 +384,19 @@ def _git_staged_paths(where: str) -> list[str]:
         return []
 
 
+def _git_toplevel(where: str) -> str:
+    """The work-tree root git would act on from *where*. Tree-wide verbs rewrite the whole work
+    tree whatever the cwd, so a sibling subdirectory of a locked skill must not pass. Falls back to
+    *where* outside a repo or when git is unavailable."""
+    try:
+        proc = subprocess.run(["git", "-C", where, "rev-parse", "--show-toplevel"],
+                              capture_output=True, text=True, timeout=2, check=False)
+        top = proc.stdout.strip()
+        return top if proc.returncode == 0 and top else where
+    except OSError:
+        return where
+
+
 def _check_git(verb: str, args: list[str], scope: _Scope) -> str | None:
     if verb != "git":
         return None
@@ -400,7 +413,7 @@ def _check_git(verb: str, args: list[str], scope: _Scope) -> str | None:
     if sub in _GIT_PATHSPEC_VERBS:
         specs, whole_tree = _git_pathspecs(sub, rest[1:])
         if whole_tree:
-            return _hit(where, scope.locked, scope.record, ancestor="any")
+            return _hit(_git_toplevel(where), scope.locked, scope.record, ancestor="any")
         git_scope = _Scope(where, scope.locked, scope.record, scope.depth, scope.env)
         if reason := git_scope.first_hit(specs, ancestor="any"):
             return reason
@@ -412,7 +425,7 @@ def _check_git(verb: str, args: list[str], scope: _Scope) -> str | None:
         return None
     if reason := _hit(where, scope.locked, scope.record):
         return reason
-    real = os.path.realpath(where)
+    real = os.path.realpath(_git_toplevel(where))
     for name, root in scope.locked:
         if real != os.sep and _inside(root, real):
             return skill_tree_git_refusal(name, sub)

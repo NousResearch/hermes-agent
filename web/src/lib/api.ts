@@ -2677,7 +2677,7 @@ export interface HubAgentPluginRow {
   version: string;
   description: string;
   source: string;
-  runtime_status: "disabled" | "enabled" | "inactive";
+  runtime_status: "disabled" | "enabled" | "inactive" | "unreadable";
   has_dashboard_manifest: boolean;
   dashboard_manifest: PluginManifestResponse | null;
   path: string;

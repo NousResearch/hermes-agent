@@ -1,9 +1,9 @@
 """A plugin directory discovery cannot read is reported, not silently dropped (#152247).
 
 Discovery skips one unreadable directory so every other plugin stays visible (#111804). What was
-missing is the report: ``hermes plugins list`` and the Desktop Plugins page rendered a row list that
-simply lacked the folder, so the plugin read as uninstalled. These tests pin the report on both
-surfaces plus the loader's own scan, and the repair command each one names.
+missing is the report: ``hermes plugins list``, the Desktop Plugins page and the browser Dashboard's
+hub rendered a row list that simply lacked the folder, so the plugin read as uninstalled. These tests
+pin the report on all three surfaces plus the loader's own scan, and the repair command each names.
 """
 
 import json
@@ -119,3 +119,26 @@ def test_the_loaders_own_scan_names_the_repair(plugin_home, caplog):
 
     assert unusable_dir_remedy(locked) in caplog.text
     assert str(locked) in caplog.text
+
+
+def test_dashboard_hub_reports_it_without_offering_actions(plugin_home):
+    """The browser Dashboard renders this hub payload: dropping the folder there is the same defect."""
+    from hermes_cli import web_server_dashboard
+
+    _root, _good, locked = plugin_home
+    with patch("hermes_cli.web_server._get_dashboard_plugins", return_value=[]), \
+         patch("hermes_cli.plugins_cmd._discover_context_engines", list), \
+         patch("hermes_cli.web_server_memory._discover_memory_provider_statuses", return_value=[]), \
+         patch("hermes_cli.plugin_catalog.resolved_removed_entries", return_value={}):
+        payload = web_server_dashboard._merged_plugins_hub(force_refresh=True)
+
+    rows = {row["name"]: row for row in payload["plugins"]}
+    unreadable = rows["locked-plugin"]
+    assert unreadable["runtime_status"] == "unreadable"
+    assert unreadable["path"] == str(locked)
+    assert unusable_dir_remedy(locked) in unreadable["description"]
+    # A directory that cannot be read cannot be removed, updated or have a dashboard tab.
+    assert unreadable["can_remove"] is False
+    assert unreadable["can_update_git"] is False
+    assert unreadable["has_dashboard_manifest"] is False
+    assert rows["good-plugin"]["runtime_status"] != "unreadable"

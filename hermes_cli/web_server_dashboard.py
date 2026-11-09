@@ -727,6 +727,24 @@ def _plugin_runtime_status(aliases: set, enabled_set: set, disabled_set: set) ->
     return "disabled" if aliases & disabled_set else "enabled" if aliases & enabled_set else "inactive"
 
 
+def _unreadable_hub_rows(rows: list, hidden_plugins: list) -> list[dict[str, Any]]:
+    """Hub rows for the plugin directories discovery could not read (#152247).
+
+    The Dashboard renders a richer row schema than ``hermes plugins list``, so the listing rows cannot
+    be reused verbatim — but the folder must not be dropped either: a directory Desktop reports would
+    otherwise read as uninstalled here. ``runtime_status`` is ``unreadable`` and every action is
+    suppressed (nothing to toggle, remove or update) because a directory that cannot be read cannot be
+    loaded; ``has_dashboard_manifest`` is false since there is no manifest to describe.
+    """
+    return [{
+        "name": row["name"], "version": "", "description": row["description"], "source": row["source"],
+        "runtime_status": "unreadable", "has_dashboard_manifest": False, "dashboard_manifest": None,
+        "path": row["install_dir"], "can_remove": False, "can_update_git": False,
+        "auth_required": False, "auth_command": "", "user_hidden": row["name"] in hidden_plugins,
+        "removed_reason": None,
+    } for row in rows]
+
+
 def _merged_plugins_hub(force_refresh: bool = False) -> dict[str, Any]:
     """Agent discovery + dashboard manifests + provider picker metadata.
 
@@ -759,6 +777,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> dict[str, Any]:
         _get_enabled_set,
         _plugin_status,
         _read_manifest as _read_plugin_manifest_at,
+        unreadable_plugin_rows,
     )
     from hermes_cli.plugins_cmd_catalog import removed_annotation
     from hermes_cli.plugin_catalog import resolved_removed_entries
@@ -776,7 +795,8 @@ def _merged_plugins_hub(force_refresh: bool = False) -> dict[str, Any]:
     removed_entries = resolved_removed_entries()
     active = _category_active_names()
 
-    for name, version, description, source, dir_str, key in _discover_all_plugins():
+    skips: list = []
+    for name, version, description, source, dir_str, key in _discover_all_plugins(skips):
         # Same verdict as `hermes plugins list` / the TUI hub: name+key aliases for the lists, bundled
         # backends/platforms/providers and the live memory provider count as enabled without a list
         # entry (#73131, #82898).
@@ -813,6 +833,8 @@ def _merged_plugins_hub(force_refresh: bool = False) -> dict[str, Any]:
             "user_hidden": name in hidden_plugins,
             "removed_reason": removed_annotation(name, dir_str, removed_entries),
         })
+
+    rows.extend(_unreadable_hub_rows(unreadable_plugin_rows(skips), hidden_plugins))
 
     agent_names = {r["name"] for r in rows}
     orphan_dashboard = [_strip_dashboard_manifest(p) for p in dashboard_list if str(p["name"]) not in agent_names]

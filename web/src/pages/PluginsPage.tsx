@@ -1043,6 +1043,81 @@ interface PluginRowCardProps {
   t: Translations;
 }
 
+interface PluginRowAffordances {
+  badgeTone: "success" | "destructive" | "outline";
+  runtimeToggle: "disable" | "enable" | null;
+  showsNoDashboardNote: boolean;
+}
+
+/** What one hub row offers, derived in one place so the card itself stays a plain render.
+ *
+ *  A plugin directory discovery could not read (#152247) keeps a row — otherwise it reads as
+ *  uninstalled — but offers no toggle and no tab hint: it cannot be loaded, so nothing can be
+ *  switched, and the absence of a dashboard tab is not news.
+ */
+function pluginRowAffordances(row: HubAgentPluginRow): PluginRowAffordances {
+  const unreadable = row.runtime_status === "unreadable";
+  const enabled = row.runtime_status === "enabled";
+  return {
+    badgeTone: enabled ? "success" : unreadable || row.runtime_status === "disabled" ? "destructive" : "outline",
+    runtimeToggle: unreadable ? null : enabled ? "disable" : "enable",
+    showsNoDashboardNote: !row.has_dashboard_manifest && !row.dashboard_manifest && !unreadable,
+  };
+}
+
+interface PluginRuntimeToggleProps {
+
+  toggle: "disable" | "enable";
+  name: string;
+  busy: boolean;
+  setRuntimeLoading: (
+    name: string,
+    fn: () => Promise<unknown>,
+  ) => Promise<void>;
+
+  showToast: (msg: string, variant: "success" | "error") => void;
+  t: Translations;
+}
+
+/** The runtime toggle for one plugin: both directions share this button. */
+function PluginRuntimeToggle(props: PluginRuntimeToggleProps) {
+  const {
+    toggle,
+    name,
+    busy,
+    setRuntimeLoading,
+    showToast,
+    t,
+  } = props;
+
+  const disabling = toggle === "disable";
+
+  return (
+    <Button
+      disabled={busy}
+      ghost
+      size="sm"
+      onClick={() => {
+        void setRuntimeLoading(name, async () => {
+          const res = disabling
+            ? await api.disableAgentPlugin(name)
+            : await api.enableAgentPlugin(name);
+          showToast(
+            res.restart_required
+              ? t.pluginsPage.toggleTakesEffectAfterRestart
+              : disabling
+                ? t.pluginsPage.disableRuntime
+                : t.pluginsPage.enableRuntime,
+            "success",
+          );
+        });
+      }}
+    >
+      {disabling ? t.pluginsPage.disableRuntime : t.pluginsPage.enableRuntime}
+    </Button>
+  );
+}
+
 function PluginRowCard(props: PluginRowCardProps) {
   const {
     row,
@@ -1058,13 +1133,7 @@ function PluginRowCard(props: PluginRowCardProps) {
 
   const busy = rowBusy === row.name;
   const [confirmRemove, setConfirmRemove] = useState(false);
-
-  const badgeTone =
-    row.runtime_status === "enabled"
-      ? "success"
-      : row.runtime_status === "disabled"
-        ? "destructive"
-        : "outline";
+  const { badgeTone, runtimeToggle, showsNoDashboardNote } = pluginRowAffordances(row);
 
   return (
 
@@ -1100,45 +1169,16 @@ function PluginRowCard(props: PluginRowCardProps) {
           </div>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">
-            {row.runtime_status === "enabled" ? (
-              <Button
-                disabled={busy}
-                ghost
-                size="sm"
-                onClick={() => {
-                  void setRuntimeLoading(row.name, async () => {
-                    const res = await api.disableAgentPlugin(row.name);
-                    showToast(
-                      res.restart_required
-                        ? t.pluginsPage.toggleTakesEffectAfterRestart
-                        : t.pluginsPage.disableRuntime,
-                      "success",
-                    );
-                  });
-                }}
-              >
-                {t.pluginsPage.disableRuntime}
-              </Button>
-            ) : (
-              <Button
-                disabled={busy}
-                ghost
-                size="sm"
-                onClick={() => {
-                  void setRuntimeLoading(row.name, async () => {
-                    const res = await api.enableAgentPlugin(row.name);
-                    showToast(
-                      res.restart_required
-                        ? t.pluginsPage.toggleTakesEffectAfterRestart
-                        : t.pluginsPage.enableRuntime,
-                      "success",
-                    );
-                  });
-                }}
-              >
-                {t.pluginsPage.enableRuntime}
-              </Button>
-            )}
+            {runtimeToggle ? (
+              <PluginRuntimeToggle
+                toggle={runtimeToggle}
+                name={row.name}
+                busy={busy}
+                setRuntimeLoading={setRuntimeLoading}
+                showToast={showToast}
+                t={t}
+              />
+            ) : null}
 
             {tabPath ? (
 
@@ -1241,7 +1281,7 @@ function PluginRowCard(props: PluginRowCardProps) {
           />
         ) : null}
 
-        {!row.has_dashboard_manifest && !dm ? (
+        {showsNoDashboardNote ? (
 
 
           <p className="text-xs italic text-text-disabled">

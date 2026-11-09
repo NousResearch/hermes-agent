@@ -30,6 +30,7 @@ from persistence.sqlite.conversation._store.messages import (
 )
 from persistence.sqlite.conversation._store.rewind import rewind_user_turn
 from persistence.sqlite.conversation._store.sessions import create_session
+from tests.fixtures.storage_holder import raw_holder
 
 UID_RE = re.compile(r"^[0-9a-f]{32}$")
 
@@ -476,7 +477,7 @@ def test_a_branch_copy_writes_the_uids_its_live_history_keeps(tmp_path, monkeypa
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     with open_persistence(profile_scope(home=home), eager=True) as handle:
-        db = handle.holder()
+        db = raw_holder(handle)
         create_session(db, "parent", source="desktop", model="m")
         history = [{"role": "user", "content": "hello", "message_uid": "a" * 32}, {"role": "assistant", "content": "hi"}]
         server._persist_branch(handle, "child", "parent", "Branch", history, source="desktop", cwd=str(tmp_path),

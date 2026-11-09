@@ -26,6 +26,7 @@ import time
 import pytest
 
 from hermes_cli import goals
+from tests.fixtures.storage_holder import raw_holder
 
 
 class _RecordingDB:
@@ -72,7 +73,7 @@ def test_loop_thread_cache_miss_constructs_off_loop(monkeypatch):
 
     # Fast init: the grace window returns the real instance (no silent
     # feature loss on the first call).
-    assert isinstance(inline_result.holder(), _RecordingDB)
+    assert isinstance(raw_holder(inline_result), _RecordingDB)
     # Cache populated for subsequent calls.
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and not goals._DB_CACHE:
@@ -106,7 +107,7 @@ def test_worker_thread_constructs_inline(monkeypatch):
     _patch_sessiondb(monkeypatch)
     db = goals._get_session_db()
     assert db is not None
-    assert isinstance(db.holder(), _RecordingDB)
+    assert isinstance(raw_holder(db), _RecordingDB)
     assert _RecordingDB.constructed_on == [threading.get_ident()]
 
 

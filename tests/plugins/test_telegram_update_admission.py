@@ -970,3 +970,21 @@ async def test_unserved_update_not_receipted_and_logs_field_names(monkeypatch, c
         await app.process_update(dice)
         records = [r for r in caplog.records if "matched no core handler" in r.message]
         assert len(records) == 2
+
+
+@pytest.mark.asyncio
+async def test_core_refusal_still_receipts_and_failure_is_not_reported_unserved(monkeypatch, caplog):
+    """#141570 only takes completion away from observers: a group-0 core handler that returns
+    early (a blocked sender) served the update, so it keeps its receipt; a failed preparation
+    stays unreceipted without being reported as unserved."""
+    import logging as stdlib_logging
+
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        caplog.set_level(stdlib_logging.INFO, logger="plugins.platforms.telegram.update_admission")
+        await app.process_update(update(app.bot, 20, user=99))
+        assert not delivered
+        assert f"{app.bot.id}:20" in adapter._seen_update_ids
+        monkeypatch.setattr(adapter, "_cache_replied_media", AsyncMock(side_effect=OSError("before enqueue")))
+        await app.process_update(update(app.bot, 21))
+        assert f"{app.bot.id}:21" not in adapter._seen_update_ids
+        assert not [r for r in caplog.records if "matched no core handler" in r.message]

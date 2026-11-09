@@ -55,6 +55,7 @@ _DELIVERY_KINDS = ("async_delegation_complete", "hidden")
 
 def _resolve_target(target: _StoredRow, message: NewMessage) -> RowOutcome:
     """One batch row resolved onto the stored row it names (``agent.transcript_repair.resolve_and_repair_transcript_batch``)."""
+    message = copy.deepcopy(message)
     if message.db_row_snapshot is not None:
         if _row_snapshot(target.message) != message.db_row_snapshot:
             # Another writer changed the payload after the caller's flush: adopt its durable version, write nothing.

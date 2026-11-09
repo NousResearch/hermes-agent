@@ -282,13 +282,13 @@ def _decoded_row(message: NewMessage) -> dict[str, JsonValue]:
 def row_stamp(row: _StoredRow) -> RowStamp:
     m = row.message
     return RowStamp(id=MessageId(row.id), timestamp=row.epoch, db_row_snapshot=_row_snapshot(m), message_uid=str(m.message_uid),
-                    tool_call_uids=dict(m.tool_call_uids) if m.tool_call_uids else None, tool_call_uid=m.tool_call_uid)
+                    tool_call_uids=copy.deepcopy(dict(m.tool_call_uids)) if m.tool_call_uids else None, tool_call_uid=m.tool_call_uid)
 
 
 def _row_outcome(row: _StoredRow, disposition: RowDisposition, canonical: Optional[dict[str, JsonValue]] = None) -> RowOutcome:
     stamp = row_stamp(row)
     return RowOutcome(id=stamp.id, disposition=disposition, timestamp=stamp.timestamp, db_row_snapshot=stamp.db_row_snapshot,
-                      canonical_row=canonical, message_uid=stamp.message_uid, tool_call_uids=stamp.tool_call_uids,
+                      canonical_row=copy.deepcopy(canonical), message_uid=stamp.message_uid, tool_call_uids=stamp.tool_call_uids,
                       tool_call_uid=stamp.tool_call_uid)
 
 

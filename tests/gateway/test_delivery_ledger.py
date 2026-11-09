@@ -40,6 +40,7 @@ def _record(oid="ob-1", session_key="agent:main:slack:channel:C1", **kw):
         thread_id=kw.get("thread_id", "171.001"),
         content=kw.get("content", "the final answer"),
         adapter_profile=kw.get("adapter_profile"),
+        routing_metadata=kw.get("routing_metadata"),
     )
 
 
@@ -546,7 +547,7 @@ class TestGatewayRedeliverySweep:
         from tests.gateway.relay.stub_connector import StubConnector
         from tests.gateway.relay.test_relay_adapter import make_desc
 
-        _record()
+        _record(routing_metadata={"scope_id": "workspace", "user_id": "sender"})
         dl.mark_failed("ob-1", "send_path_degraded")
         _orphan("ob-1")
         _record("secondary", adapter_profile="reviewer")
@@ -605,9 +606,13 @@ class TestGatewayRedeliverySweep:
                 }) + "\n")
             elif frame["type"] == "outbound":
                 outbound.append(frame)
+                metadata = frame["action"].get("metadata", {})
+                routed = metadata.get("scope_id") == "workspace" and metadata.get("user_id") == "sender"
                 await ws.send(json.dumps({
                     "type": "outbound_result", "requestId": frame["requestId"],
-                    "result": {"success": True},
+                    "result": {"success": routed, **({} if routed else {
+                        "error": "target not routed to an onboarded tenant",
+                    })},
                 }) + "\n")
             else:
                 await original_on_frame(ws, frame)
@@ -630,7 +635,7 @@ class TestGatewayRedeliverySweep:
             transport.hold_redial()
             assert await transport.go_dormant()
             await async_wait_until(lambda: transport._ws is None, timeout=5, what="dormant socket")
-            _record()
+            _record(routing_metadata={"scope_id": "workspace", "user_id": "sender"})
             dl.mark_failed("ob-1", "send_path_degraded")
             assert await runner._redeliver_failed_obligations_for_platform(Platform.SLACK) == 0
             assert not outbound and _row("ob-1")["attempts"] == 0

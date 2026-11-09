@@ -27,18 +27,24 @@ def relay_platform_ready(adapter, platform):
 
 async def send_relay_obligation(runner, adapter, row, content, metadata):
     platform = Platform(row["platform"])
-    # After a restart the connector's tenant discriminators cannot come from
-    # the adapter's inbound cache. Reuse only the matching saved destination.
-    entry = await runner.async_session_store.lookup_by_session_key(row["session_key"])
-    origin = getattr(entry, "origin", None)
-    if origin and (origin.platform, origin.chat_id, origin.thread_id) == (
-        platform, row["chat_id"], row["thread_id"],
-    ):
-        metadata = dict(metadata or {})
-        for key in ("scope_id", "user_id", "profile"):
-            if value := getattr(origin, key, None):
-                metadata[key] = value
-    return await adapter.send_for_platform(platform, row["chat_id"], content, metadata=metadata)
+    routing = row.get("routing_metadata") or {}
+    if not (routing.get("scope_id") or routing.get("user_id")):
+        await runner._release_runtime_claim_quiet(
+            row["obligation_id"],
+            "failed to defer unrouted relay obligation %s",
+            error="relay routing metadata unavailable",
+        )
+        return None
+    # The specific failed send owns its routing. Session creation origins and
+    # live caches may now describe another author in this same thread.
+    metadata = {**(metadata or {}), **routing}
+    return await adapter.send_for_platform(
+        platform,
+        row["chat_id"],
+        content,
+        metadata=metadata,
+        replay=True,
+    )
 
 
 def _schedule_replay(runner, adapter, platform):
@@ -47,15 +53,21 @@ def _schedule_replay(runner, adapter, platform):
     # The socket reader delivers outbound_result frames. Run the sweep off
     # the reader so it can keep receiving the replay's acknowledgements.
     task = asyncio.create_task(
-        runner._redeliver_failed_obligations_for_platform(platform, relay_adapter=adapter),
+        runner._redeliver_failed_obligations_for_platform(
+            platform, relay_adapter=adapter
+        ),
         name=f"relay-obligation-replay:{platform.value}",
     )
     runner._track_task_in(runner._background_tasks, task)
-    task.add_done_callback(runner._late_failure_callback("relay obligation replay failed"))
+    task.add_done_callback(
+        runner._late_failure_callback("relay obligation replay failed")
+    )
 
 
 def wire_relay_obligation_replay(runner, adapter):
-    register = getattr(getattr(adapter, "_transport", None), "set_platform_ready_handler", None)
+    register = getattr(
+        getattr(adapter, "_transport", None), "set_platform_ready_handler", None
+    )
     if not callable(register):
         return
 
@@ -72,5 +84,7 @@ def wire_relay_obligation_replay(runner, adapter):
 def replay_on_relay_replacement(runner, adapter):
     """A replacement may have acknowledged its platforms before it was registered."""
     for platform in Platform:
-        if relay_obligation_adapter(runner, platform) is adapter and relay_platform_ready(adapter, platform):
+        if relay_obligation_adapter(
+            runner, platform
+        ) is adapter and relay_platform_ready(adapter, platform):
             _schedule_replay(runner, adapter, platform)

@@ -426,7 +426,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -449,6 +449,7 @@ from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
 
 if TYPE_CHECKING:
     from agent.display import ToolPreview
+    from gateway.relay.adapter import RelayAdapter
 
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
@@ -4147,37 +4148,12 @@ class BasePlatformAdapter(ABC):
 
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,
-        delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool) -> Optional[str]:
-        """Ledger the final response BEFORE the send so a crash before platform ACK redelivers on
-        next boot; best-effort, skips slash-command and ephemeral replies. Returns the obligation id
-        or None."""
-        if is_ephemeral_response or str(event.text or "").lstrip().startswith(
-            ("/", self.typed_command_prefix or "!")):
-            return None
-        try:
-            from gateway.delivery_ledger import (
-                compute_obligation_id, ledger_enabled, mark_attempting, record_obligation)
-            if not await asyncio.to_thread(ledger_enabled):
-                return None
-            source = event.source
-            # ``ledger_message_id`` wins when set: a queued chain's final answers the last message
-            # of the chain, not the event that opened it (see ``MessageEvent.ledger_message_id``).
-            _ledger_id = getattr(event, "ledger_message_id", None)
-            if _ledger_id is None:
-                _ledger_id = getattr(event, "message_id", "")
-            obligation_id = compute_obligation_id(
-                session_key, str(_ledger_id or ""), text_content)
-            await asyncio.to_thread(
-                record_obligation, obligation_id=obligation_id, session_key=session_key,
-                platform=str(getattr(source.platform, "value", source.platform)),
-                chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
-                content=text_content,
-                adapter_profile=getattr(delivery_adapter, "_owner_profile", None))
-            await asyncio.to_thread(mark_attempting, obligation_id)
-            return obligation_id
-        except Exception:
-            logger.debug("delivery ledger record failed", exc_info=True)
-            return None
+        delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool,
+        routing_metadata: Optional[dict] = None) -> Optional[str]:
+        from gateway.delivery_ledger_producer import record_delivery_obligation
+        return await record_delivery_obligation(
+            self, event, session_key, text_content, delivery_adapter,
+            is_ephemeral_response, routing_metadata)
 
     async def _finalize_delivery_obligation(
         self, obligation_id: str, result: Any, event: MessageEvent,
@@ -4290,10 +4266,17 @@ class BasePlatformAdapter(ABC):
         Returns the result with the adapter that sent it: that adapter owns ``result.message_id``
         (an ephemeral delete must go to the same transport)."""
         delivery_adapter = self._final_delivery_adapter(event.source)
+        if delivery_adapter.platform is Platform.RELAY:
+            metadata = dict(metadata or {})
+            for key in ("scope_id", "user_id", "profile"):
+                if value := getattr(event.source, key, None):
+                    metadata.setdefault(key, value)
+            metadata = cast("RelayAdapter", delivery_adapter)._with_scope(event.source.chat_id, metadata)
         logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
                     len(text_content), event.source.chat_id)
         obligation_id = await self._record_delivery_obligation(
-            event, session_key, text_content, delivery_adapter, is_ephemeral_response)
+            event, session_key, text_content, delivery_adapter, is_ephemeral_response,
+            routing_metadata=metadata)
         if obligation_id is not None:
             await self._release_turn_marker(event)  # the ledger now owns the crash recovery
         result = await delivery_adapter._send_with_retry(

@@ -501,6 +501,8 @@ class GatewayStartupMixin:
             try:
                 if getattr(adapter, "platform", None) is Platform.RELAY and row["platform"] != "relay":
                     result = await send_relay_obligation(self, adapter, row, content, metadata)
+                    if result is None:
+                        continue  # deferred before sending; the claim's attempt was refunded
                 else:
                     result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
             except Exception as send_err:

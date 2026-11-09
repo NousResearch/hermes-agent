@@ -1326,8 +1326,8 @@ def _usage_window_display_message(body: Any) -> str:
 
 def _has_large_inline_image(content: Any) -> bool:
     """True when a rejected ``content`` list carries a ``data:image/`` part the shrink pass would rewrite
-    (over ``conversation_compression._IMAGE_SHRINK_TARGET_BYTES``; below it a shrink retry is a no-op)."""
-    from agent.conversation_compression import _IMAGE_SHRINK_TARGET_BYTES
+    (over ``conversation_compression_image_shrink._IMAGE_SHRINK_TARGET_BYTES``; below it a shrink retry is a no-op)."""
+    from agent.conversation_compression_image_shrink import _IMAGE_SHRINK_TARGET_BYTES
 
     for part in content if isinstance(content, list) else ():
         image = part.get("image_url") if isinstance(part, dict) else None

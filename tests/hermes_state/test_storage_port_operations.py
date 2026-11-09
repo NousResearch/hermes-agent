@@ -9,6 +9,7 @@
   the same rows as today for the store's own.
 """
 import contextvars
+import inspect
 import sqlite3
 import threading
 from contextlib import closing
@@ -19,7 +20,9 @@ import pytest
 from agent.runtime_scope import bind_profile_scope, bind_state
 from hermes_scope import Group, Principal, Scope, push_state
 from hermes_state import SessionDB
-from hermes_state_port import ANY_HEAD, AdmissionGate, ClaimPreconditions, StoragePinRefused
+from hermes_state_port import (
+    ANY_HEAD, AdmissionGate, ClaimPreconditions, SessionStore, StoragePinRefused, TurnAdmission,
+)
 from hermes_state_port_local import LocalSessionStorageProvider
 from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch
 
@@ -39,6 +42,23 @@ def test_a_database_file_linked_into_another_profile_is_refused_at_open(tmp_path
             with pytest.raises(StoragePinRefused, match="link"):
                 _open(db)
         assert victim.get_session_title("secret") is None
+
+
+def test_without_a_handle_a_database_file_linked_into_another_profile_is_refused_at_open(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir(), b.mkdir()
+    with closing(SessionDB(b / "state.db")) as victim:
+        victim.create_session("secret", "cli")
+    (a / "state.db").symlink_to(b / "state.db")
+    with bind_profile_scope(a, hydrate_secrets=False):
+        with pytest.raises(StoragePinRefused, match="link"):
+            LocalSessionStorageProvider().open()
+    with bind_profile_scope(b, hydrate_secrets=False):  # the file's own profile opens it
+        storage = LocalSessionStorageProvider().open()
+        try:
+            assert storage.sessions.get("secret")["id"] == "secret"
+        finally:
+            storage.close()
 
 
 def test_a_handle_opened_by_a_relative_path_is_refused(tmp_path, monkeypatch):
@@ -189,34 +209,23 @@ def _foreign(home):
     return bind_state(Scope("acme", str(home), Principal("u"), owner=Group("g"), can_administer=False))
 
 
-def test_every_further_operation_is_pinned(queued, tmp_path):
-    db, storage, epoch, rows = queued
-    s, a = storage.sessions, storage.admission
-    calls = [
-        lambda: s.replace_messages("s1", []), lambda: s.rewind_to_message("s1", 1),
-        lambda: s.rewind_user_turn("s1", -1), lambda: s.set_user_message_content("s1", 1, "x"),
-        lambda: s.deactivate_message("s1", 1), lambda: s.set_message_reaction("s1", 1, "x"),
-        lambda: s.publish_compression_child(parent_session_id="s1", child_session_id="c", source="cli",
-                                            messages=[]),
-        lambda: s.archive_and_compact("s1", []), lambda: s.record_usage("s1", input_tokens=1),
-        lambda: s.record_auxiliary_usage("s1", "title", input_tokens=1), lambda: s.flush_usage(),
-        lambda: s.read_auxiliary_usage("s1"),
-        lambda: a.steer(epoch=epoch, admission_id=rows[1]["admission_id"], generation=1),
-        lambda: a.revert_steer(epoch=epoch, admission_id=rows[1]["admission_id"], generation=1),
-        lambda: a.mutate_session(epoch=epoch, principal_id="u", session_id="s1", request_id="m",
-                                 expected_revision=0, operation="rename", payload={"title": "t"}),
-        lambda: a.register_worker(epoch=epoch, execution_id="w", session_id="s1", generation=0,
-                                  kind="compute", adoption_secret="x"),
-        lambda: a.adopt_worker(epoch=epoch, execution_id="w", session_id="s1", generation=0,
-                               adoption_secret="x"),
-        lambda: a.apply_worker_op(epoch=epoch, execution_id="w", session_id="s1", generation=0, sequence=1,
-                                  operation="usage.main", payload={}),
-    ]
+def test_every_port_operation_is_pinned(queued, tmp_path):
+    """Every abstract operation of both ports, including any added later, refuses a foreign pin
+    before it reads its arguments or touches the store."""
+    db, storage, _epoch, _rows = queued
     before = (_state(db, storage), db.get_messages("s1"), db.get_session("s1"))
+    refused = []
     with _foreign(tmp_path):
-        for call in calls:
-            with pytest.raises(StoragePinRefused):
-                call()
+        for abc, port in ((SessionStore, storage.sessions), (TurnAdmission, storage.admission)):
+            for name in sorted(abc.__abstractmethods__):
+                params = [p for p in inspect.signature(getattr(port, name)).parameters.values()
+                          if p.default is p.empty and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
+                args = ["s1" for p in params if p.kind is not p.KEYWORD_ONLY]
+                kwargs = {p.name: "s1" for p in params if p.kind is p.KEYWORD_ONLY}
+                with pytest.raises(StoragePinRefused):
+                    getattr(port, name)(*args, **kwargs)
+                refused.append(name)
+    assert {"append_turn", "acquire_owner", "claim_next", "delete"} <= set(refused)
     assert (_state(db, storage), db.get_messages("s1"), db.get_session("s1")) == before
 
 

@@ -72,6 +72,16 @@ def test_a_named_provider_loads_through_discovery_and_runs_its_isolation_check(t
         provider.assert_isolating()
 
 
+def test_an_unavailable_named_provider_is_an_error_not_the_local_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    plugin = tmp_path / "plugins" / "offline"
+    plugin.mkdir(parents=True)
+    (plugin / "__init__.py").write_text(textwrap.dedent(_PLUGIN).replace(
+        "    def assert_isolating(self):", "    def is_available(self):\n        return False\n\n    def assert_isolating(self):"))
+    with pytest.raises(LookupError, match="not available"):
+        resolve_session_storage("offline")
+
+
 def test_a_missing_named_provider_is_an_error_not_the_local_store(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     with pytest.raises(LookupError, match="postgres"):
@@ -154,3 +164,23 @@ def test_a_turn_write_needs_its_claimed_turn(ports, tmp_path):
                                            generation=row["generation"], outcome="completed", result={})
     assert settled["status"] == "terminal"
     assert [m["content"] for m in db.get_messages(sid)] == ["fenced"]
+
+
+def test_a_turn_write_follows_its_session_into_a_compression_child(ports, tmp_path):
+    """Mid-turn compression rotates the transcript to a child while the claim stays on the parent."""
+    db, storage = ports
+    with bind_profile_scope(tmp_path):
+        epoch = storage.admission.begin_epoch(instance_id="owner")
+        from tests.hermes_state.test_target_advance_fence import _local_session
+        sid = _local_session(db, epoch, tmp_path)
+        storage.admission.admit(epoch=epoch, principal_id="human", session_id=sid, request_id="r",
+                                payload={"text": "hi"})
+        row = storage.admission.claim_next(epoch=epoch, session_id=sid)
+        with bind_turn(sid, row["admission_id"], storage.admission.fence(row), store=db.db_path):
+            storage.sessions.publish_compression_child(
+                parent_session_id=sid, child_session_id="child", source="cli",
+                messages=[{"role": "user", "content": "summary"}], require_compression_lease=False)
+            assert storage.sessions.append_turn("child", [{"role": "assistant", "content": "after"}]) == 1
+            with pytest.raises(TurnFenceRequiredError):  # a session outside the claim's lineage
+                storage.sessions.append_turn("other", [{"role": "user", "content": "x"}])
+    assert [m["content"] for m in db.get_messages("child")] == ["summary", "after"]

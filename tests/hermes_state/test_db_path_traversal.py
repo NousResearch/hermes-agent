@@ -13,9 +13,7 @@ from contextlib import closing
 import pytest
 from pathlib import Path
 
-from agent.runtime_scope import bind_profile_scope
 from hermes_state import SessionDB
-from hermes_state_port_local import LocalSessionStorageProvider
 
 
 def _layout(tmp_path):

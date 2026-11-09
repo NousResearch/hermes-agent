@@ -42,8 +42,8 @@ def store_identity(db: Any) -> tuple[Path, Path]:
     A hosted backend never derives a tenant's identity from a filesystem path.
 
     ``(canonical database file, owning profile home)`` of the file handle *db* opened: its
-    ``db_path``, which ``SessionDB`` makes absolute when the handle is created, never re-read
-    against a later working directory. Refuses (``StoragePinRefused``) a handle whose path is
+    ``db_path``, which must already be absolute (``SessionDB`` keeps the path it is given), never
+    re-read against a later working directory. Refuses (``StoragePinRefused``) a handle whose path is
     relative (which file it opened cannot be established now) and a database file that resolves
     outside the directory it is named in (a file link into another profile)."""
     opened = getattr(db, "db_path", None)
@@ -107,7 +107,9 @@ class LocalSessionStore(_Pinned, SessionStore):
         from hermes_state_errors import TurnFenceRequiredError
         from hermes_state_fence import store_turn
         mark = store_turn(self.db)
-        if mark is None or mark.session != session_id:
+        # A mid-turn compression moves the turn's transcript to a child; the claim stays on its session.
+        if mark is None or (session_id != mark.session
+                            and session_id not in self.db.get_compression_chain(mark.session)):
             raise TurnFenceRequiredError(
                 f"a turn write to session {session_id!r} needs that session's claimed turn bound")
         # The fence itself is checked by SessionDB's write transaction (hermes_state_fence).
@@ -329,7 +331,10 @@ class LocalSessionStorageProvider(SessionStorageProvider):
             return SessionStorage(LocalSessionStore(db), LocalTurnAdmission(db))
         from hermes_constants import get_hermes_home
         from hermes_state_registry import acquire, release
-        shared = acquire(get_hermes_home() / "state.db")
+        named = get_hermes_home() / "state.db"
+        if named.resolve().parent != named.parent.resolve():  # the registry resolves links itself
+            raise StoragePinRefused(f"session store {named} is a link into {named.resolve().parent}")
+        shared = acquire(named)
         try:
             sessions, admission = LocalSessionStore(shared), LocalTurnAdmission(shared)
         except BaseException:

@@ -1,6 +1,6 @@
 name: twitch-assist
 repo: https://github.com/Techkeyy/twitch-assist
-sha: c68cd3d2c784d84cb71e2e0faab4f0e6a190a0fa
+sha: a5cc08f56597b77ff950b129f1c2fbebcef41c05
 subdir: twitch_assist
 title: Twitch Assist
 description: "Put your Hermes in your Twitch chat as a co-host: viewers type !ask (or @mention the bot) and get a real agent answer in chat, and the broadcaster or a mod can run Backseat Mode, a chat vote whose winner becomes Hermes's next task. Stdlib only (asyncio IRC over TLS). Disclosure — network calls are limited to irc.chat.twitch.tv:6697 (TLS IRC, to read and post in the configured channel) and https://id.twitch.tv/oauth2/validate (checks the chat token and learns its login); the Twitch token is read only through Hermes's secret scope (TWITCH_TOKEN, a secret requires_env) and is never logged or written by the plugin; no telemetry, no shell commands, no file reads outside Hermes's own config (it reads the Hermes config through Hermes's read-only reader only to log warnings, and never edits it), and no background process beyond the gateway connection itself; anyone in the channel can trigger an agent turn with !ask or an @mention (per-viewer cooldown, default 20 s, and a global cap of 3 questions in flight, TWITCH_MAX_CONCURRENT; restrict with TWITCH_ALLOW_ALL_USERS=false and TWITCH_ALLOWED_USERS, which then also gates !vote and !backseat), and those turns get only the search and no_mcp toolsets (web search, no terminal, files, code, browser or MCP) with gateway /commands disabled, backed by a pre_tool_call hook that blocks every tool except web_search in Twitch sessions; only the broadcaster or a moderator (from Twitch's server tags) can start or cancel a vote; the adapter posts only replies to questions it dispatched, so gateway notices, cron output and broadcasts never reach public chat; question text goes to the user's configured model provider and web search uses the user's configured search backend; Hermes injects the owner's persona, context files and memory into every session prompt and a plugin cannot disable that, so the owner should set gateway.platforms.twitch.skip_context_files: true and the memory flags (see README)."
@@ -11,7 +11,7 @@ requires_hermes: ">=0.23.0"
 docs_url: https://github.com/Techkeyy/twitch-assist#readme
 version: "0.2.0"
 screenshots:
-  - https://raw.githubusercontent.com/Techkeyy/twitch-assist/c68cd3d2c784d84cb71e2e0faab4f0e6a190a0fa/docs/chat-proof.jpg
+  - https://raw.githubusercontent.com/Techkeyy/twitch-assist/a5cc08f56597b77ff950b129f1c2fbebcef41c05/docs/chat-proof.jpg
 platforms: []
 known_issues:
   - Needs a Twitch chat OAuth token with chat:read and chat:edit (a dedicated bot account is recommended).

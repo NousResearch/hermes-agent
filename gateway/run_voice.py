@@ -31,6 +31,37 @@ _OFF_SET, _ON_SET = "_auto_tts_disabled_chats", "_auto_tts_enabled_chats"
 _VOICE_MODES = {"off", "voice_only", "all"}
 
 
+def _turn_tool_results(messages: list[dict], start: int) -> dict[str, object]:
+    """Tool result bodies of this turn (from the last user message on), keyed by ``tool_call_id``."""
+    return {str(msg.get("tool_call_id")): msg.get("content")
+            for msg in messages[start:]
+            if msg.get("role") == "tool" and msg.get("tool_call_id")}
+
+
+def _tts_call_produced_audio(tool_call: dict, results: dict[str, object]) -> bool:
+    """Whether a ``text_to_speech`` call left audio the chat can actually hear.
+
+    Only a result that explicitly reports failure counts as "no audio" (#151862): a failed call
+    (provider length limit, a bad argument, a tool error) synthesised nothing, so the runner's own
+    voice reply is the only one left. A call whose result has not arrived yet (a turn still in
+    flight), an unreadable body, or a result naming an output file all keep the historical dedup.
+    """
+    content = results.get(str(tool_call.get("id") or ""))
+    if not isinstance(content, str):
+        return True
+    try:
+        payload = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return True
+    if not isinstance(payload, dict):
+        return True
+    if payload.get("success") is False:
+        return False
+    # ``tool_error`` writes {"error": ...} with no ``success`` key at all.
+    return not (payload.get("error") and not payload.get("success")
+                and not (payload.get("file_path") or payload.get("file_paths")))
+
+
 class GatewayVoiceMixin:
     def _voice_key(self, platform: Platform, chat_id: str, profile: Optional[str] = None) -> str:
         """``<profile>:<platform>:<chat_id>`` under multiplexing (else two bots in one channel
@@ -402,10 +433,15 @@ class GatewayVoiceMixin:
                 "Auto voice reply skipped: mode=%s adapter_auto_tts=%s chat=%s platform=%s",
                 voice_mode, adapter_auto_tts, chat_id, event.source.platform.value)
             return False
-        # Dedup: agent already called the TTS tool in THIS turn (from the last user message on).
+        # Dedup: the agent already called the TTS tool in THIS turn (from the last user message on)
+        # and the call produced audio. A call whose result reports an error left nothing to listen
+        # to, so the runner still owes its voice reply (#151862); one still in flight keeps the
+        # historical dedup.
         start = next((i for i, m in reversed(list(enumerate(agent_messages)))
                       if m.get("role") == "user"), 0)
+        results = _turn_tool_results(agent_messages, start)
         if any((tc.get("function") or {}).get("name") == "text_to_speech"
+               and _tts_call_produced_audio(tc, results)
                for msg in agent_messages[start:] if msg.get("role") == "assistant"
                for tc in (msg.get("tool_calls") or [])):
             return False

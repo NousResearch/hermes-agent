@@ -1,0 +1,28 @@
+name: groq-provider
+repo: https://github.com/AhmetArif0/hermes-groq-provider
+sha: b5be0388c2b4cae8ed6a30c7371aaa1330731ee8
+subdir: groq-provider
+description: >-
+  Groq as a Hermes model provider (`--provider groq`, or Groq in `hermes model`): reasoning effort
+  is sent in the form each Groq model accepts, so gpt-oss-120b and gpt-oss-20b work (through a
+  custom endpoint, Hermes 0.21.5 sends them a value Groq rejects with HTTP 400), and the model list
+  leaves out Groq's speech-to-text, text-to-speech, prompt-guard and 4K-context models that Hermes
+  cannot run. Not affiliated with Groq. Disclosure — registers one model provider at import and
+  nothing else (no tools, hooks, commands or threads); chat requests and the model list go to
+  https://api.groq.com/openai/v1 (or the configured model.base_url) through Hermes' own client with
+  GROQ_API_KEY, which Hermes reads; the plugin itself opens no connections, reads and writes no
+  files and starts no processes.
+maintainer: AhmetArif0
+tier: community
+category: models
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/AhmetArif0/hermes-groq-provider
+version: "1.0.0"
+image: https://raw.githubusercontent.com/AhmetArif0/hermes-groq-provider/b5be0388c2b4cae8ed6a30c7371aaa1330731ee8/docs/card.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - GROQ_API_KEY

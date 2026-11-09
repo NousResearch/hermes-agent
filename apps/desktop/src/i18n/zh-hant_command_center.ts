@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { zhHantCronControl } from './zh-hant_cron_control'
 
 export const zhHantCommandCenter = {
   commandCenter: {
@@ -167,6 +168,32 @@ export const zhHantCommandCenter = {
     restartNow: '立即重新啟動',
     restarting: '正在重新啟動…',
     restartFailedManual: '閘道重新啟動失敗 — 請手動重新啟動並檢查閘道日誌。',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: '不需要機器人權杖',
+      intro: (platform: string) => `${platform} 透過共用的 Hermes 機器人連到這個代理。連結你的 ${platform} 帳號，再傳訊息給機器人就能和代理對話。`,
+      link: (platform: string) => `連結 ${platform}`,
+      linkAnother: (platform: string) => `連結另一個 ${platform} 帳號`,
+      linkedAccounts: '已連結的帳號',
+      unlink: '取消連結',
+      unlinkFailed: '無法取消連結這個帳號',
+      stepOpen: (platform: string) => `1. 用手機掃描 QR 碼，或在 ${platform} 開啟機器人。`,
+      stepSend: '2. 用要連結的帳號傳這則訊息給機器人：',
+      open: (platform: string) => `開啟 ${platform}`,
+      copy: '複製訊息',
+      copied: '已複製',
+      copyFailed: (command: string) => `複製失敗。請改為輸入 ${command}。`,
+      waiting: '正在等待機器人收到你的訊息。這組代碼只能用一次。',
+      linked: (platform: string) => `${platform} 帳號已連結。傳訊息給機器人就能和代理對話。`,
+      expired: '代碼在使用前已過期。請取得新代碼後再試一次。',
+      refused: (platform: string) => `${platform} 拒絕了連結。請取得新代碼後再試一次。`,
+      qrAlt: (platform: string) => `共用 ${platform} 機器人的 QR 碼`,
+      managed: '由 Team Gateway 管理',
+      managedNote: (platform: string) => `此執行個體的訊息由 Team Gateway 承載，因此閘道每次啟動都會關閉 ${platform} 的直接連線。若要與中繼同時使用，請在閘道環境中設定 GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true（直接連線會使執行個體無法縮減到零，並可能重複傳遞訊息）。`,
+      managedIntro: '此代理的帳號在 Nous Portal 中連結。',
+      openPortal: '在 Nous Portal 中連結帳號',
+      noNewAccount: (platform: string) => `此代碼已失效，且沒有出現新帳號。如果你的 ${platform} 帳號不在清單中，請取得新代碼後再試一次。`
+    },
     telegramQr: {
       title: '選擇連接 Telegram 機器人的方式',
       subtitle: '兩種方式都會連接由你控制的機器人，憑證僅儲存在此 Hermes 安裝中。',
@@ -213,6 +240,9 @@ export const zhHantCommandCenter = {
     replaceValue: '取代目前值',
     openDocs: '開啟文件',
     clearField: key => `清除 ${key}`,
+    addListEntry: '再新增一個',
+    removeListEntry: '移除',
+    listEntryPlaceholder: '輸入 ID',
     enableAria: name => `啟用 ${name}`,
     disableAria: name => `停用 ${name}`,
     platformEnabled: name => `${name} 已啟用`,
@@ -235,14 +265,14 @@ export const zhHantCommandCenter = {
       },
       TELEGRAM_ALLOWED_USERS: {
         label: '允許的 Telegram 使用者 ID',
-        help: '建議設定。來自 @userinfobot 的逗號分隔數字 ID。不設定則任何人都能私訊您的機器人。'
+        help: '建議設定。來自 @userinfobot 的數字 ID（每格一個）。不設定則任何人都能私訊您的機器人。'
       },
       TELEGRAM_PROXY: { label: '代理 URL', help: '僅在 Telegram 被封鎖的網路中需要。' },
       DISCORD_BOT_TOKEN: {
         label: 'Bot Token',
         help: '在 Discord 開發者入口網站建立應用程式，新增機器人，然後貼上其 Token。'
       },
-      DISCORD_ALLOWED_USERS: { label: '允許的 Discord 使用者 ID', help: '建議設定。逗號分隔的 Discord 使用者 ID。' },
+      DISCORD_ALLOWED_USERS: { label: '允許的 Discord 使用者 ID', help: '建議設定。Discord 使用者 ID（每格一個）。' },
       DISCORD_REPLY_TO_MODE: { label: '回覆方式', help: 'first、all 或 off。' },
       DISCORD_ALLOW_ALL_USERS: {
         label: '允許所有 Discord 使用者',
@@ -272,16 +302,16 @@ export const zhHantCommandCenter = {
         help: 'Socket Mode 需要 app 層級 Token。',
         placeholder: '貼上 Slack app Token'
       },
-      SLACK_ALLOWED_USERS: { label: '允許的 Slack 使用者 ID', help: '建議設定。逗號分隔的 Slack 使用者 ID。' },
+      SLACK_ALLOWED_USERS: { label: '允許的 Slack 使用者 ID', help: '建議設定。Slack 使用者 ID（每格一個）。' },
       MATTERMOST_URL: { label: '伺服器 URL', placeholder: 'https://mattermost.example.com' },
       MATTERMOST_TOKEN: { label: 'Bot Token' },
-      MATTERMOST_ALLOWED_USERS: { label: '允許的使用者 ID', help: '建議設定。逗號分隔的 Mattermost 使用者 ID。' },
+      MATTERMOST_ALLOWED_USERS: { label: '允許的使用者 ID', help: '建議設定。Mattermost 使用者 ID（每格一個）。' },
       MATRIX_HOMESERVER: { label: 'Homeserver URL', placeholder: 'https://matrix.org' },
       MATRIX_ACCESS_TOKEN: { label: '存取 Token' },
       MATRIX_USER_ID: { label: 'Bot 使用者 ID', placeholder: '@hermes:example.org' },
       MATRIX_ALLOWED_USERS: {
         label: '允許的 Matrix 使用者 ID',
-        help: '建議設定。@user:server 格式的逗號分隔使用者 ID。'
+        help: '建議設定。@user:server 格式的使用者 ID（每格一個）。'
       },
       SIGNAL_HTTP_URL: {
         label: 'Signal 橋接 URL',
@@ -289,7 +319,7 @@ export const zhHantCommandCenter = {
         help: '執行中的 signal-cli REST 橋接的 URL。'
       },
       SIGNAL_ACCOUNT: { label: '電話號碼', help: '在 signal-cli 橋接中註冊的號碼。' },
-      SIGNAL_ALLOWED_USERS: { label: '允許的 Signal 使用者', help: '建議設定。逗號分隔的 Signal 識別碼。' },
+      SIGNAL_ALLOWED_USERS: { label: '允許的 Signal 使用者', help: '建議設定。Signal 識別碼（每格一個）。' },
       WHATSAPP_ENABLED: {
         label: '啟用 WhatsApp 橋接',
         help: '由下方切換開關自動設定。除非確知需要，否則請勿變更。'
@@ -297,7 +327,7 @@ export const zhHantCommandCenter = {
       WHATSAPP_MODE: { label: '橋接模式' },
       WHATSAPP_ALLOWED_USERS: {
         label: '允許的 WhatsApp 使用者',
-        help: '建議設定。逗號分隔的電話號碼或 WhatsApp ID。'
+        help: '建議設定。電話號碼或 WhatsApp ID（每格一個）。'
       }
     },
     platformIntro: {}
@@ -317,18 +347,17 @@ export const zhHantCommandCenter = {
     exported: '設定檔已匯出',
     failedImport: '匯入設定檔失敗',
     failedExport: '匯出設定檔失敗',
+    exportNeedsHost: name => `瀏覽器無法儲存設定檔封存。請在 Hermes 主機上執行：hermes profile export ${name}`,
     allProfiles: '全部設定檔',
     showAllProfiles: '顯示全部設定檔',
+    notServedHere: '此處未提供',
     switchToProfile: name => `切換至 ${name}`,
     switchToConnection: name => `切換至 ${name}`,
     switchConnectionFailed: name => `無法連線至 ${name}`,
     manageProfiles: '管理設定檔…',
     fleet: {
       localDevice: '此裝置（本機後端——若未安裝 Hermes 則會安裝，否則開啟新的工作階段）',
-      switchDeviceTitle: '切換到此裝置？',
-      switchDeviceDesc: '這會在這台電腦上開啟新的工作階段。目前的對話仍留在另一個閘道。',
-      switchDeviceConfirm: '切換',
-      installDeviceTitle: '切換到此裝置？',
+      installDeviceTitle: '在此裝置上安裝 Hermes？',
       installDeviceDesc: '這會在本機安裝 Hermes，然後在這台電腦上開啟新的工作階段。確認之前不會開始安裝。',
       installDeviceConfirm: '本機安裝',
       connectExistingInstead: '改為連線現有環境'
@@ -438,6 +467,7 @@ export const zhHantCommandCenter = {
   },
 
   cron: {
+    control: zhHantCronControl,
     close: '關閉排程',
     title: '排程工作',
     count: count => `${count} 個工作`,
@@ -502,6 +532,7 @@ export const zhHantCommandCenter = {
     last: '上次：',
     next: '下次：',
     noRuns: '尚無執行',
+    queuedRun: '排隊中的執行',
     manage: '管理',
     showRuns: '顯示執行記錄',
     hideRuns: '隱藏執行記錄',

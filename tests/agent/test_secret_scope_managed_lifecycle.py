@@ -47,7 +47,7 @@ def test_scope_composes_administrator_managed_values_last(homes):
 
 
 def test_refresh_replaces_owner_and_revokes_values_without_mutating_old_scope(homes):
-    source, target, managed = homes
+    source, target, _managed = homes
     from agent import secret_scope as ss
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     (target / '.env').write_text('REVOKED_LOGIN=fake-old\n', encoding='utf-8')

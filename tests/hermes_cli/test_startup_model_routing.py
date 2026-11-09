@@ -186,13 +186,10 @@ def test_startup_route_decodes_custom_colon_qualified_model(tmp_path, monkeypatc
         user_providers=cfg.get("providers")) is None
 
 
-def test_oneshot_and_tui_qualified_model_never_reaches_default_provider(tmp_path, monkeypatch):
-    """``hermes -z -m custom:<name>:<model>`` and ``hermes --tui -m …`` route through the same
-    startup owner, so provider auto-detection never hands the qualified string to the configured
-    default (#73943)."""
-    from hermes_cli.oneshot import _resolve_model_and_provider
-
-    cfg = _write_named_provider(tmp_path, monkeypatch)
+def test_tui_qualified_model_never_reaches_default_provider(tmp_path, monkeypatch):
+    """``hermes --tui -m custom:<name>:<model>`` routes through the startup owner, so provider
+    auto-detection never hands the qualified string to the configured default (#73943)."""
+    _write_named_provider(tmp_path, monkeypatch)
     from tui_gateway import server as tui_server  # binds the config path at import: after HERMES_HOME
     monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
     monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
@@ -203,6 +200,4 @@ def test_oneshot_and_tui_qualified_model_never_reaches_default_provider(tmp_path
         "hermes_cli.models.detect_static_provider_for_model",
         lambda *_a, **_k: pytest.fail("auto-detection ran on a provider-qualified model"))
     monkeypatch.setenv("HERMES_INFERENCE_MODEL", "custom:jetson-vllm:nemotron-nano-30b")
-    choice = _resolve_model_and_provider(cfg, None, None)
-    assert (choice.provider, choice.model) == ("custom:jetson-vllm", "nemotron-nano-30b")
     assert tui_server._resolve_startup_runtime() == ("nemotron-nano-30b", "custom:jetson-vllm")

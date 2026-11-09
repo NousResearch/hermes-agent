@@ -101,7 +101,7 @@ def test_gateway_platform_uses_hard_stop_default_without_cli_opt_in():
 
     _seed_exact_failures(agent, "web_search", args, count=5)
 
-    decision = getattr(agent, "_tool_guardrails").before_call("web_search", args)
+    decision = agent._tool_guardrails.before_call("web_search", args)
     assert decision.action == "block"
     assert decision.code == "repeated_exact_failure_block"
 
@@ -113,7 +113,7 @@ def test_interactive_platforms_keep_warning_only_default(platform):
 
     _seed_exact_failures(agent, "web_search", args, count=5)
 
-    decision = getattr(agent, "_tool_guardrails").before_call("web_search", args)
+    decision = agent._tool_guardrails.before_call("web_search", args)
     assert decision.action == "allow"
     assert decision.code == "allow"
 
@@ -186,7 +186,7 @@ def test_sequential_after_call_appends_guidance_to_tool_result_without_extra_mes
 
 def test_same_tool_failure_warning_tells_model_to_recover_with_tools():
     agent = _make_agent("terminal")
-    guardrails = getattr(agent, "_tool_guardrails")
+    guardrails = agent._tool_guardrails
     guardrails.after_call(
         "terminal",
         {"command": "bad-1"},
@@ -279,7 +279,6 @@ def test_relay_rewrite_precedes_sequential_policy_approval_checkpoint_and_dispat
 
     def observe_approval(name, args):
         observed["approval"].append((name, dict(args)))
-        return None
 
     def dispatch(name, args, task_id, **kwargs):
         del task_id, kwargs

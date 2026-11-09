@@ -31,6 +31,7 @@ import {
   type TourStyle
 } from './engine'
 import { type Stage, stopSpotlightBlur, syncSpotlightBlur } from './spotlight-blur'
+import { $tourActive } from './tour-active'
 
 /** Which document a tour runs against. */
 export type TourSurface = 'app' | 'preview'
@@ -44,7 +45,8 @@ const APP_HOST: TourHost = {
   navigate: to => {
     window.location.hash = to
   },
-  revealPane: pane => void revealDesktopPane(pane)
+  revealPane: pane => void revealDesktopPane(pane),
+  onEnd: () => $tourActive.set(false)
 }
 
 /** The app's own overlay treatment: a softly rounded cutout and a transition
@@ -85,6 +87,8 @@ export async function runTour(
     // Mirror driver.js's cutout onto a blur layer for as long as the tour is
     // up, and drop the whole thing once it isn't. The layer reads driver's own
     // per-frame stage rect, so it eases between steps exactly like the cutout.
+    $tourActive.set(isTourActive())
+
     if (isTourActive()) {
       syncSpotlightBlur(() => (appHolder.driver?.getState?.('__activeStagePosition') as null | Stage) ?? null)
     } else {

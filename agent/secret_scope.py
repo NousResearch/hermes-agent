@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
 from types import MappingProxyType
-from typing import Dict, Mapping, NamedTuple, Optional, Tuple
+from typing import Callable, Dict, Mapping, NamedTuple, Optional, Tuple
 
 from utils import file_signature
 
@@ -166,6 +166,19 @@ def serves_routed_profile() -> bool:
 
 
 _SECRET_SCOPE: ContextVar[Optional[_BoundScope]] = ContextVar("_SECRET_SCOPE", default=None)
+# A launch-profile body that entered before this process started multiplexing (no scope bound,
+# single-profile semantics): the launch profile's own mapping to read once fail-closed is armed
+# mid-body. Set only by ``tui_gateway.launch_profile_policy.launch_body``; never ``os.environ``.
+_LAUNCH_BODY_SCOPE: ContextVar[Optional[Callable[[], Mapping[str, str]]]] = ContextVar(
+    "_LAUNCH_BODY_SCOPE", default=None)
+
+
+def set_launch_body_scope(resolver: Callable[[], Mapping[str, str]]) -> Token:
+    return _LAUNCH_BODY_SCOPE.set(resolver)
+
+
+def reset_launch_body_scope(token: Token) -> None:
+    _LAUNCH_BODY_SCOPE.reset(token)
 
 
 class UnscopedSecretError(RuntimeError):
@@ -486,6 +499,9 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
             return val
         return default if serves_routed_profile() else _environ_or(name, default)
     if is_multiplex_active():
+        launch_scope = _LAUNCH_BODY_SCOPE.get()
+        if launch_scope is not None:
+            return launch_scope().get(name, default)
         raise UnscopedSecretError(
             name,
             f"get_secret({name!r}) called with no profile secret scope active "
@@ -496,6 +512,14 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
             f"(Workstream A).",
         )
     return _environ_or(name, default)
+
+
+def secret_source_label(name: str) -> str:
+    """``" (from Bitwarden)"``-style suffix naming the external secret source (a secret-source plugin)
+    that supplied env var *name*; ``""`` for ``.env`` / shell values. Public for plugins' status lines."""
+    from hermes_cli.env_loader import format_secret_source_suffix
+
+    return format_secret_source_suffix(name)
 
 
 def get_secret_str(name: str, default: str = "") -> str:
@@ -550,15 +574,12 @@ def _parse_env_value(raw_value: str) -> str:
 # turn, cron fire, MCP/browser adoption and housekeeping drain, and each call used to re-read and
 # re-parse the whole file.
 #
-# FRESHNESS: every call still OPENS the file and keys on ``utils.file_signature`` of that
-# descriptor's ``fstat`` (mtime_ns, size, inode, ctime_ns — ctime can't be backdated, so a pinned-
-# timestamp rewrite is still seen), re-checked after the read. The open keeps close-to-open
-# revalidation on NFS, a vanished/unreadable file fails the open and is never cached (a transient
-# EACCES must not become "this profile has no secrets"), and the descriptor pins one inode so a
-# symlink repointed mid-read can't file one file's contents under another's identity.
+# FRESHNESS: every call opens and reads the file, using exact bytes as the cache key; only decode + parse
+# is skipped. A stat identity alone misses same-size rewrites inside one coarse clock tick. The descriptor
+# still pins one inode and is checked after reading; missing/unreadable or unsettled input is not cached.
 # ``invalidate_env_file_cache()`` is the explicit knob; ``hermes_cli.config.invalidate_env_cache()``
 # calls it for Hermes's own .env writers.
-_ENV_FILE_CACHE: "OrderedDict[str, Tuple[tuple, Dict[str, str], bool]]" = OrderedDict()
+_ENV_FILE_CACHE: OrderedDict[str, tuple[bytes, dict[str, str], bool]] = OrderedDict()
 _ENV_FILE_CACHE_LOCK = threading.Lock()
 _ENV_FILE_CACHE_MAX = 64  # one entry per profile home in practice
 
@@ -575,8 +596,7 @@ def invalidate_env_file_cache(env_path: Optional[Path] = None) -> None:
 def _decode_env_bytes(raw: bytes) -> str:
     """BOM stripped; invalid UTF-8 falls back to latin-1 exactly as
     ``env_loader._load_dotenv_with_fallback`` installs it into ``os.environ``."""
-    if raw.startswith(codecs.BOM_UTF8):
-        raw = raw[len(codecs.BOM_UTF8):]
+    raw = raw.removeprefix(codecs.BOM_UTF8)
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
@@ -590,14 +610,6 @@ def load_env_file_snapshot(env_path: Path, *, strict_decode: bool = True) -> Env
     try:
         with open(env_path, "rb") as handle:
             fingerprint = file_signature(os.fstat(handle.fileno()))
-            with _ENV_FILE_CACHE_LOCK:
-                cached = _ENV_FILE_CACHE.get(key)
-                if cached is not None and cached[0] == fingerprint:
-                    _ENV_FILE_CACHE.move_to_end(key)
-                    if strict_decode and not cached[2]:
-                        return EnvFileSnapshot(env_path, MappingProxyType({}), "failed", "decode")
-                    secrets = dict(cached[1])
-                    return EnvFileSnapshot(env_path, MappingProxyType(secrets), "ready" if secrets else "empty")
             raw = handle.read()
             settled = file_signature(os.fstat(handle.fileno())) == fingerprint
     except FileNotFoundError:
@@ -609,6 +621,14 @@ def load_env_file_snapshot(env_path: Path, *, strict_decode: bool = True) -> Env
     if strict_decode and not settled:
         invalidate_env_file_cache(env_path)
         return EnvFileSnapshot(env_path, MappingProxyType({}), "failed", "source_changed_during_read")
+    with _ENV_FILE_CACHE_LOCK:
+        cached = _ENV_FILE_CACHE.get(key)
+        if cached is not None and cached[0] == raw:
+            _ENV_FILE_CACHE.move_to_end(key)
+            if strict_decode and not cached[2]:
+                return EnvFileSnapshot(env_path, MappingProxyType({}), "failed", "decode")
+            secrets = dict(cached[1])
+            return EnvFileSnapshot(env_path, MappingProxyType(secrets), "ready" if secrets else "empty")
     try:
         text = raw.decode("utf-8-sig")
         valid_utf8 = True
@@ -620,16 +640,16 @@ def load_env_file_snapshot(env_path: Path, *, strict_decode: bool = True) -> Env
     secrets = _parse_env_text(text)
     if settled:
         with _ENV_FILE_CACHE_LOCK:
-            _ENV_FILE_CACHE[key] = (fingerprint, dict(secrets), valid_utf8)
+            _ENV_FILE_CACHE[key] = (raw, dict(secrets), valid_utf8)
             _ENV_FILE_CACHE.move_to_end(key)
             while len(_ENV_FILE_CACHE) > _ENV_FILE_CACHE_MAX:
                 _ENV_FILE_CACHE.popitem(last=False)
     return EnvFileSnapshot(env_path, MappingProxyType(secrets), "ready" if secrets else "empty")
 
 
-def _parse_env_text(text: str) -> Dict[str, str]:
+def _parse_env_text(text: str) -> dict[str, str]:
     """Tokenize already-read ``.env`` text. See :func:`load_env_file`."""
-    secrets: Dict[str, str] = {}
+    secrets: dict[str, str] = {}
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -645,7 +665,7 @@ def _parse_env_text(text: str) -> Dict[str, str]:
     return secrets
 
 
-def load_env_file(env_path: Path) -> Dict[str, str]:
+def load_env_file(env_path: Path) -> dict[str, str]:
     """THE ``.env`` tokenizer: every reader (profile scope, ``hermes_cli.config.load_env``, the dashboard
     scrub, skill secret capture, managed .env, setup prompts) parses through here so no two boundaries
     disagree on which keys/values a file defines. Dict only — never touches ``os.environ``. ``export``
@@ -653,7 +673,7 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     Invalid UTF-8 decodes as latin-1, exactly like ``env_loader._load_dotenv_with_fallback`` installs it
     into ``os.environ``. Absent/unreadable → ``{}``.
 
-    Memoised per path on the open descriptor's stat identity (see the cache comment above). Always
+    Memoised per path on the file's exact bytes (see the cache comment above). Always
     returns a fresh dict: callers mutate what they get back (``build_profile_secret_scope`` layers
     external secrets over it).
     """
@@ -672,16 +692,12 @@ def _profile_external_secret_snapshot(home: Path, *, fail_closed: bool, hydrate:
             # Generation-zero legacy projections are not retryable authority.
             # Private hydration revokes startup error-suppression leases, so
             # the next boundary construction is the retry point for a
-            # transient source/config outage.  Do not retry
-            # twice inside one construction: a not_hydrated/stale refresh that
-            # records failure must still fail this attempt.
+            # transient source/config outage. Do not retry twice inside one
+            # construction: failure remains visible to this boundary attempt.
             env_loader.hydrate_profile_secret_sources(home)
             snapshot = env_loader.get_external_secret_snapshot(home)
         if fail_closed and snapshot.status in {
-            "degraded",
-            "failed",
-            "not_hydrated",
-            "stale",
+            "degraded", "failed", "not_hydrated", "stale",
         }:
             raise RuntimeError(
                 f"external secret snapshot is {snapshot.status}; refusing boundary"
@@ -695,7 +711,7 @@ def _profile_external_secret_snapshot(home: Path, *, fail_closed: bool, hydrate:
         return SimpleNamespace(data={}, status="failed", generation=0)
 
 
-def _profile_external_secret_values(home: Path, *, fail_closed: bool) -> Dict[str, str]:
+def _profile_external_secret_values(home: Path, *, fail_closed: bool) -> dict[str, str]:
     return dict(_profile_external_secret_snapshot(home, fail_closed=fail_closed).data)
 
 
@@ -1001,7 +1017,9 @@ def _is_process_home(hermes_home: Path) -> bool:
         return False
 
 
-def refresh_installed_secret_scope(hermes_home: Path) -> bool:
+def refresh_installed_secret_scope(
+    hermes_home: Path, *, fail_closed_external: bool = True,
+) -> bool:
     """Replace this home's installed authority after source/plugin publication.
 
     Readers holding an earlier scope retain an immutable snapshot. New reads see
@@ -1016,6 +1034,6 @@ def refresh_installed_secret_scope(hermes_home: Path) -> bool:
         raise RuntimeError("refresh home does not match installed profile secret scope")
     record_profile_owned_secret_names(home, bound.mapping.owned_names)
     rebuilt = build_profile_secret_scope(
-        home, fail_closed_external=True, defaults=bound.mapping.defaults)
+        home, fail_closed_external=fail_closed_external, defaults=bound.mapping.defaults)
     _SECRET_SCOPE.set(_BoundScope(rebuilt, str(home)))
     return True

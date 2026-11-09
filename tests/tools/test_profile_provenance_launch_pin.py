@@ -9,7 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from tests.tools._child_env_fixtures import child_env, observe_terminal  # noqa: F401
+pytest_plugins = ["tests.tools._child_env_fixtures"]
+
+from tests.tools._child_env_fixtures import observe_terminal
 
 
 @pytest.mark.platforms("linux", "macos", "windows")

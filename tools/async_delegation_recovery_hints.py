@@ -38,7 +38,7 @@ def transcript_tail(path: str, *, lines: int = TAIL_LINES, chars: int = TAIL_CHA
     return tail or None
 
 
-def transcript_tails(paths: Dict[str, str]) -> Dict[str, str]:
+def transcript_tails(paths: dict[str, str]) -> dict[str, str]:
     return {index: tail for index, path in (paths or {}).items() if (tail := transcript_tail(path))}
 
 
@@ -57,7 +57,7 @@ def git_state_hint(cwd: Optional[str]) -> Optional[str]:
         try:
             out = subprocess.run(["git", "-C", cwd, *harden_git_argv(args)], capture_output=True,
                                  text=True, encoding="utf-8", errors="replace",
-                                 stdin=subprocess.DEVNULL, timeout=_GIT_TIMEOUT_S, env=env)
+                                 stdin=subprocess.DEVNULL, timeout=_GIT_TIMEOUT_S, env=env, check=False)
         except (OSError, subprocess.SubprocessError):
             return None
         return out.stdout if out.returncode == 0 else None

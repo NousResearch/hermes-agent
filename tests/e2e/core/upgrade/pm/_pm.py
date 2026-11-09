@@ -48,12 +48,17 @@ def install_head(root: Path) -> tuple[I.Sandbox, Path]:
 
 
 def configure(sb: I.Sandbox, base_url: str, extra: str = "", env_extra: str = "") -> None:
-    """The user's config at HEAD's schema version, pointing at the fake provider."""
+    """The user's config at HEAD's schema version, pointing at the fake provider.
+
+    Writing config.yaml drops the main channel the installer saved in it, which leaves the
+    official-origin checkout on stable: an update check would then ask the live GitHub API for
+    the latest release. Re-pin main, as a user who chose it at install keeps it."""
     ver = ok(sb.run([sb.python, "-c",
                      "from hermes_cli.config_defaults import DEFAULT_CONFIG as D; print(D['_config_version'])"]))
     version = int(ver.stdout.strip().splitlines()[-1])
     (sb.hermes_home / "config.yaml").write_text(I.provider_config(base_url, version, extra), encoding="utf-8")
     (sb.hermes_home / ".env").write_text(f"OPENAI_API_KEY={I.FAKE_KEY}\n{env_extra}", encoding="utf-8")
+    I.pin_main_channel(sb)
 
 
 def state_dir(sb: I.Sandbox) -> Path:

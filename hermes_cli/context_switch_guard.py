@@ -24,7 +24,7 @@ def _threshold_tokens(compressor: Any, model: str, context_length: int, provider
     return max(int(context_length * float(getattr(compressor, "threshold_percent", 0.5))), MINIMUM_CONTEXT_LENGTH)
 
 
-def _estimate_tokens(agent: Any, messages: Optional[List[dict]]) -> Optional[int]:
+def _estimate_tokens(agent: Any, messages: Optional[list[dict]]) -> Optional[int]:
     cc = getattr(agent, "context_compressor", None)
     if cc is None:
         return None
@@ -45,18 +45,16 @@ def _estimate_tokens(agent: Any, messages: Optional[List[dict]]) -> Optional[int
         except Exception:
             pass
 
+    # session_prompt_tokens is a lifetime sum, not occupancy (#126343): never a fallback here.
     last = int(getattr(cc, "last_prompt_tokens", 0) or 0)
-    if last > 0:
-        return last
-    session_prompt = int(getattr(agent, "session_prompt_tokens", 0) or 0)
-    return session_prompt if session_prompt > 0 else None
+    return last if last > 0 else None
 
 
 def merge_preflight_compression_warning(
     result: ModelSwitchResult,
     *,
     agent: Any = None,
-    messages: Optional[List[dict]] = None,
+    messages: Optional[list[dict]] = None,
     custom_providers: list | None = None,
     config_context_length: int | None = None,
     configured_model: str | None = None,

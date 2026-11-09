@@ -17,6 +17,8 @@ echo "<github-login>" > contributors/emails/<email>
 ```
 
 - File **name** = the exact commit-author email (as shown by `git log --format='%ae'`).
+  Lookup is case-insensitive, so one file covers `Jane.Doe@x` and `jane.doe@x`;
+  never add a second file that differs only in case (`add_contributor.py` refuses it).
 - File **content** = the GitHub login on the first non-comment line.
   Lines starting with `#` are comments (use them for the PR reference).
 

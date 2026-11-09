@@ -66,10 +66,10 @@ _process_read_permits = threading.BoundedSemaphore(_READ_POOL_PROCESS_MAX)
 _read_open_denied_fd_headroom = 0
 
 _fd_usage_lock = threading.Lock()
-_fd_usage_cache: "tuple[float, Optional[int]]" = (0.0, None)
+_fd_usage_cache: tuple[float, Optional[int]] = (0.0, None)
 
 
-def _proc_fd_targets(pid: int) -> "Iterator[tuple[str, str]]":
+def _proc_fd_targets(pid: int) -> Iterator[tuple[str, str]]:
     """Yield ``(readlink target, fd path)`` for every entry in /proc/<pid>/fd (unreadable
     links skipped). Raises OSError when the fd directory itself cannot be listed."""
     fd_dir = f"/proc/{pid}/fd"
@@ -154,7 +154,7 @@ class _PathReadBudget:
         self.permits = threading.BoundedSemaphore(_READ_POOL_MAX)
         self._lock = threading.Lock()
         # Weak: a SessionDB dropped without close() must not pin peers' budget.
-        self._members: "weakref.WeakSet[SessionDB]" = weakref.WeakSet()
+        self._members: weakref.WeakSet[SessionDB] = weakref.WeakSet()
         self._duplicate_handles_warned = False
 
     def register(self, db: "SessionDB") -> None:
@@ -237,7 +237,7 @@ class _PathReadBudget:
 
 # canonical db path -> permits for that file. Weak values: the budget lives only
 # while some SessionDB on the path holds it, so tmp_path churn can't grow this.
-_read_budgets: "weakref.WeakValueDictionary[str, _PathReadBudget]" = (weakref.WeakValueDictionary())
+_read_budgets: weakref.WeakValueDictionary[str, _PathReadBudget] = (weakref.WeakValueDictionary())
 _read_budgets_lock = threading.Lock()
 
 

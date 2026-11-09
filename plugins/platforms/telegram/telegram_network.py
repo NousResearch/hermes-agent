@@ -6,10 +6,13 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import os
 import socket
 from typing import Iterable, Optional
 
 import httpx
+
+from agent.ssl_verify import platform_ssl_context
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +61,83 @@ _DOH_PROVIDERS: list[dict] = [
 # first-try connect targets so a blackholed IPv6 AAAA for the hostname can't pin initialize().
 SEED_FALLBACK_IPS: list[str] = ["149.154.166.110", "149.154.167.220"]
 _UNSET = object()
+
+
+def _env_number(key: str, default, cast):
+    raw = os.getenv(key, "").strip()
+    try:
+        return cast(raw) if raw else default
+    except (TypeError, ValueError):
+        return default
+
+
+def ptb_request_kwargs() -> dict:
+    """PTB ``HTTPXRequest`` sizing and timeouts (``HERMES_TELEGRAM_HTTP_*`` overrides): PTB's 1s pool
+    timeout trips "Pool timeout" on flaky networks. ``media_write_timeout`` is httpx's per-write
+    stall budget, so 60s rides out congested-link buffer stalls."""
+    return {
+        "connection_pool_size": _env_number("HERMES_TELEGRAM_HTTP_POOL_SIZE", 512, int),
+        "pool_timeout": _env_number("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0, float),
+        "connect_timeout": _env_number("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0, float),
+        "read_timeout": _env_number("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0, float),
+        "write_timeout": _env_number("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0, float),
+        "media_write_timeout": 60.0,
+    }
+
+
+def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optional[str], verify=None) -> tuple:
+    """The (general, getUpdates) ``request_cls`` (PTB ``HTTPXRequest``) pair the gateway adapter and
+    the standalone sender both use: the fallback-IP transport when ``fallback_ips`` and no proxy,
+    else the explicit proxy, else direct DNS; every client verifies with ``verify`` (default: the
+    cached ``platform_ssl_context()``).
+
+    CLOSE_WAIT fd leak (#31599, #18451): PTB builds its httpx client with only
+    ``max_connections`` and httpx's default 5s keepalive, so behind an HTTP proxy a peer FIN can
+    sit in CLOSE_WAIT and leak fds; ``platform_httpx_limits()`` keepalive tuning is injected while
+    keeping PTB's pool size. A long-poll is always active, so getUpdates never reuses a pooled
+    socket (``max_keepalive_connections=0``). httpx ignores client ``limits`` when a custom
+    ``transport`` is supplied (#58790), so the fallback branch hands them to the transport."""
+    from gateway.platforms._http_client_limits import platform_httpx_limits
+    verify = platform_ssl_context() if verify is None else verify
+    kwargs = ptb_request_kwargs()
+    base = platform_httpx_limits()
+    pool = updates = None
+    if base is not None:
+        pool = httpx.Limits(max_connections=kwargs["connection_pool_size"],
+                            max_keepalive_connections=base.max_keepalive_connections, keepalive_expiry=base.keepalive_expiry)
+        updates = httpx.Limits(max_connections=kwargs["connection_pool_size"], max_keepalive_connections=0,
+                               keepalive_expiry=base.keepalive_expiry)
+
+    def pair(general_httpx: dict, updates_httpx: dict, **extra) -> tuple:
+        return (request_cls(**kwargs, **extra, httpx_kwargs={"verify": verify, **general_httpx}),
+                request_cls(**kwargs, **extra, httpx_kwargs={"verify": verify, **updates_httpx}))
+
+    def limited(limits) -> dict:
+        return {"limits": limits} if limits is not None else {}
+
+    if fallback_ips and not proxy_url:
+        transport_kwargs = {"socket_options": tcp_keepalive_socket_options(), "verify": verify}
+        return pair({"transport": TelegramFallbackTransport(fallback_ips, **transport_kwargs, **limited(pool))},
+                    {"transport": TelegramFallbackTransport(fallback_ips, **transport_kwargs, **limited(updates))})
+    return pair(limited(pool), limited(updates), **({"proxy": proxy_url} if proxy_url else {}))
+
+
+def proxy_target_hosts(base_url: Optional[str], fallback_ips: Iterable[str] = ()) -> list[str]:
+    """The hosts a Bot API request actually reaches, for the NO_PROXY check: a configured
+    ``base_url`` server's ``host:port`` (a local ``telegram-bot-api`` on 127.0.0.1:8081 must
+    match ``NO_PROXY=127.0.0.1``), else api.telegram.org and its fallback IPs."""
+    if base_url:
+        from urllib.parse import urlsplit
+        parts = urlsplit(base_url if "//" in base_url else f"//{base_url}")
+        try:
+            port = parts.port or (80 if parts.scheme == "http" else 443)
+        except ValueError:
+            port = None
+        host = parts.hostname or ""
+        if host:
+            host = f"[{host}]" if ":" in host else host
+            return [f"{host}:{port}" if port else host]
+    return [_TELEGRAM_API_HOST, *fallback_ips]
 
 
 def _resolve_proxy_url(target_hosts=None) -> str | None:
@@ -265,7 +345,7 @@ async def discover_fallback_ips() -> list[str]:
     IP is the most reliable path to api.telegram.org and a transient primary-path failure should be retried
     against the same address via the IP-rewrite path before the seed list is consulted (#14520).
     """
-    async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT)) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT), verify=platform_ssl_context()) as client:
         system_dns_task = asyncio.ensure_future(asyncio.to_thread(_resolve_system_dns))
         results = await asyncio.gather(*[_query_doh_provider(client, p) for p in _DOH_PROVIDERS], return_exceptions=True)
     # The getaddrinfo leg has no timeout of its own and only feeds the log line below — bound it.

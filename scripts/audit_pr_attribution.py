@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """Audit (and auto-fix) contributor email mappings for a PR branch.
 
-Mirrors the CI gate in .github/workflows/contributor-check.yml so salvage
-branches never bounce off the check-attribution job. Run it from the branch
+Mirrors the CI gate in .github/workflows/repo-guards.yml (its contributor-email
+step) so salvage branches never bounce off it. Run it from the branch
 you are about to push:
 
     python3 scripts/audit_pr_attribution.py            # report only
     python3 scripts/audit_pr_attribution.py --fix      # create mapping files
 
-Logic (kept in sync with contributor-check.yml):
-  - scans ``git log $(git merge-base origin/main HEAD)..HEAD --format=%aE``
-    (honors explicit .mailmap identities without rewriting author history)
+Logic (kept in sync with that repo-guards.yml step):
+  - scans ``git log $(git merge-base origin/main HEAD)..HEAD --format=%ae``
   - skips teknium/bot emails and ``<id>+<login>@users.noreply.github.com``
     (CI auto-resolves those)
   - everything else must have ``contributors/emails/<email>`` or a legacy
@@ -33,6 +32,10 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.releases.authors import _load_contributor_dir, login_for_email
+from scripts.releases.authors_legacy import LEGACY_AUTHOR_MAP
 
 SKIP_SUBSTRINGS = (
     "teknium",
@@ -50,6 +53,7 @@ def run(*args: str, check: bool = True) -> str:
     result = subprocess.run(
         list(args), capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(REPO_ROOT),
+        check=False,
     )
     if check and result.returncode != 0:
         raise RuntimeError(f"{' '.join(args)}: {result.stderr.strip()}")
@@ -58,7 +62,7 @@ def run(*args: str, check: bool = True) -> str:
 
 def new_emails() -> list[str]:
     base = run("git", "merge-base", "origin/main", "HEAD")
-    log = run("git", "log", f"{base}..HEAD", "--format=%aE", "--no-merges", check=False)
+    log = run("git", "log", f"{base}..HEAD", "--format=%ae", "--no-merges", check=False)
     return sorted({e for e in log.splitlines() if e.strip()})
 
 
@@ -67,15 +71,10 @@ def is_mapped(email: str) -> bool:
         return True
     if ID_NOREPLY_RE.search(email):
         return True
-    if (REPO_ROOT / "contributors" / "emails" / email).is_file():
-        return True
-    authors_py = REPO_ROOT / "scripts" / "releases" / "authors_legacy.py"
-    try:
-        if f'"{email}"' in authors_py.read_text(encoding="utf-8-sig", errors="replace"):
-            return True
-    except OSError:
-        pass
-    return False
+    # Re-read the directory each call: ``--fix`` adds files mid-run.
+    author_map = {**LEGACY_AUTHOR_MAP,
+                  **_load_contributor_dir(REPO_ROOT / "contributors" / "emails")}
+    return login_for_email(email, author_map) is not None
 
 
 def gh_json(*args: str):
@@ -104,9 +103,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fix", action="store_true",
                         help="auto-create contributors/emails/ mapping files")
+    parser.add_argument("--list-unmapped", action="store_true",
+                        help="print unmapped RAW author emails, one per line, for CI")
     args = parser.parse_args()
 
     unmapped = [e for e in new_emails() if not is_mapped(e)]
+    if args.list_unmapped:
+        for email in unmapped:
+            print(email)
+        return 0
     if not unmapped:
         print("✅ All contributor emails on this branch are mapped.")
         return 0

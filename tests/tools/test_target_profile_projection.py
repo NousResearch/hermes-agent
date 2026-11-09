@@ -115,7 +115,7 @@ def test_forwarded_shared_value_uses_explicit_boundary_without_secret_scope(prof
 
 
 def test_forwarded_target_only_value_does_not_survive_shared_snapshot(profiles, tmp_path):
-    source, target = profiles
+    _source, target = profiles
     other = tmp_path / "other"
     _profile(other, "")
     (target / ".env").write_text("TARGET_ONLY=beta\n", encoding="utf-8")

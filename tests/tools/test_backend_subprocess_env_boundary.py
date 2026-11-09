@@ -2,7 +2,7 @@
 
 The trusted Hermes process may hold provider, vault, gateway, and service
 credentials.  Every model-authored terminal backend (local is covered in
-``test_build_subprocess_env.py``; Docker, SSH, and Singularity converge through
+``test_build_subprocess_env.py``; Docker and SSH converge through
 ``_popen_bash`` here) must launch its host-side child with a sanitized env.
 """
 
@@ -20,7 +20,6 @@ import pytest
 from tools.environments import base_output as base_env
 from tools.environments import docker as docker_env
 from tools.environments import local as local_env
-from tools.environments import singularity as singularity_env
 from tools.environments import ssh as ssh_env
 
 
@@ -129,20 +128,7 @@ def _make_ssh_exec_env(tmp_path: Path):
     return env
 
 
-def _make_singularity_exec_env():
-    env = singularity_env.SingularityEnvironment.__new__(
-        singularity_env.SingularityEnvironment
-    )
-    env.executable = "apptainer"
-    env.instance_id = "hermes_test"
-    env._instance_started = True
-    env._profile_env_boundary = None
-    env._owner_home = None
-    env._source_home = None
-    return env
-
-
-@pytest.mark.parametrize("backend", ["docker", "ssh", "singularity"])
+@pytest.mark.parametrize("backend", ["docker", "ssh"])
 def test_every_remote_terminal_exec_uses_shared_sanitized_popen_boundary(
     backend, monkeypatch, tmp_path
 ):
@@ -152,14 +138,8 @@ def test_every_remote_terminal_exec_uses_shared_sanitized_popen_boundary(
 
     if backend == "docker":
         _make_docker_exec_env()._run_bash("true")
-    elif backend == "ssh":
-        _make_ssh_exec_env(tmp_path)._run_bash("true")
     else:
-        env = _make_singularity_exec_env()
-        env._run_bash("true")
-        # Prevent the synthetic object's destructor from invoking a real
-        # ``apptainer instance stop`` after the assertion.
-        env._instance_started = False
+        _make_ssh_exec_env(tmp_path)._run_bash("true")
 
     assert len(calls) == 1
     _assert_child_env_is_sanitized(calls[0][1]["env"])
@@ -184,7 +164,7 @@ def test_docker_explicit_provider_grant_survives_shared_child_policy(monkeypatch
     env = _make_docker_exec_env()
     env._forward_env = ["OPENAI_API_KEY", "BWS_ACCESS_TOKEN"]
     env._profile_scoped_passthrough = True
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
 
     env._run_bash("true")
 
@@ -279,187 +259,6 @@ def test_nested_child_cannot_recover_scrubbed_parent_credentials(monkeypatch, tm
     assert json.loads(result.stdout) == {key: False for key in _BLOCKED}
 
 
-def _capture_singularity_run(monkeypatch):
-    calls: list[tuple[list[str], dict]] = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append((list(cmd), kwargs))
-        if len(cmd) >= 3 and cmd[1] == "build":
-            Path(cmd[2]).write_bytes(b"test-sif")
-        return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
-
-    monkeypatch.setattr(singularity_env.subprocess, "run", fake_run)
-    return calls
-
-
-@pytest.mark.parametrize("stage", ["preflight", "start", "cleanup"])
-def test_singularity_lifecycle_processes_use_sanitized_env(
-    stage, monkeypatch, tmp_path
-):
-    """The backend's start and control children share the exec scrub contract."""
-    _plant_parent_env(monkeypatch, tmp_path)
-    calls = _capture_singularity_run(monkeypatch)
-
-    if stage == "preflight":
-        monkeypatch.setattr(
-            singularity_env, "_find_singularity_executable", lambda: "apptainer"
-        )
-        assert singularity_env._ensure_singularity_available() == "apptainer"
-    else:
-        env = _make_singularity_exec_env()
-        env.image = "image.sif"
-        env._persistent = False
-        env._overlay_dir = None
-        env._memory = 0
-        env._cpu = 0
-        if stage == "start":
-            env._instance_started = False
-            import tools.credential_files as credential_files
-
-            monkeypatch.setattr(credential_files, "get_credential_file_mounts", lambda: [])
-            monkeypatch.setattr(credential_files, "get_skills_directory_mount", lambda: [])
-            env._start_instance()
-        else:
-            env.cleanup()
-
-    assert len(calls) == 1
-    _assert_child_env_is_sanitized(calls[0][1]["env"])
-
-
-def test_singularity_image_build_gets_only_explicit_registry_auth(
-    monkeypatch, tmp_path
-):
-    """The deliberate registry-auth exception is narrow, not full inheritance."""
-    _plant_parent_env(monkeypatch, tmp_path)
-    registry_auth = {
-        "APPTAINER_DOCKER_USERNAME": "registry-user",
-        "APPTAINER_DOCKER_PASSWORD": "fake-registry-password",
-        "SINGULARITY_DOCKER_USERNAME": "legacy-user",
-        "SINGULARITY_DOCKER_PASSWORD": "fake-legacy-password",
-        "DOCKER_USERNAME": "plain-user",
-        "DOCKER_PASSWORD": "fake-plain-password",
-    }
-    for key, value in registry_auth.items():
-        monkeypatch.setenv(key, value)
-    monkeypatch.setattr(singularity_env, "_get_apptainer_cache_dir", lambda: tmp_path)
-    calls = _capture_singularity_run(monkeypatch)
-
-    result = singularity_env._get_or_build_sif(
-        "docker://example.invalid/private:latest", "apptainer"
-    )
-
-    assert result.endswith(".sif")
-    assert Path(result).is_file()
-    assert len(calls) == 1
-    child_env = calls[0][1]["env"]
-    for key, value in registry_auth.items():
-        assert child_env.get(key) == value
-    for key in (*_BLOCKED, *_CONTAINER_TUNNELS):
-        assert key not in child_env
-    assert child_env.get("HERMES_TEST_BENIGN") == "keep-me"
-
-
-def test_singularity_image_build_nonmultiplex_scope_overlays_ambient(
-    monkeypatch, tmp_path
-):
-    """Single-profile scopes preserve ambient fallback and override matching keys."""
-    from agent.secret_scope import reset_secret_scope, set_secret_scope
-
-    _plant_parent_env(monkeypatch, tmp_path)
-    ambient_auth = {
-        key: f"ambient-{index}"
-        for index, key in enumerate(singularity_env._REGISTRY_AUTH_ENV_VARS)
-    }
-    for key, value in ambient_auth.items():
-        monkeypatch.setenv(key, value)
-    override_key = singularity_env._REGISTRY_AUTH_ENV_VARS[0]
-    monkeypatch.setattr(singularity_env, "_get_apptainer_cache_dir", lambda: tmp_path)
-    calls = _capture_singularity_run(monkeypatch)
-
-    token = set_secret_scope({override_key: "scope-override"})
-    try:
-        singularity_env._get_or_build_sif(
-            "docker://example.invalid/nonmultiplex:latest", "apptainer"
-        )
-    finally:
-        reset_secret_scope(token)
-
-    child_env = calls[0][1]["env"]
-    assert child_env[override_key] == "scope-override"
-    for key, value in ambient_auth.items():
-        if key != override_key:
-            assert child_env[key] == value
-
-
-@pytest.mark.parametrize("target_mode", ["absent", "different"])
-def test_singularity_image_build_registry_auth_is_target_profile_scoped(
-    target_mode, monkeypatch, tmp_path
-):
-    """The image-build exception may source only the active target profile."""
-    from agent.secret_scope import (
-        reset_secret_scope,
-        set_multiplex_active,
-        set_secret_scope,
-    )
-
-    _plant_parent_env(monkeypatch, tmp_path)
-    source_auth = {
-        key: f"source-{index}"
-        for index, key in enumerate(singularity_env._REGISTRY_AUTH_ENV_VARS)
-    }
-    for key, value in source_auth.items():
-        monkeypatch.setenv(key, value)
-
-    target_auth = (
-        {}
-        if target_mode == "absent"
-        else {
-            key: f"target-{index}"
-            for index, key in enumerate(singularity_env._REGISTRY_AUTH_ENV_VARS)
-        }
-    )
-    monkeypatch.setattr(singularity_env, "_get_apptainer_cache_dir", lambda: tmp_path)
-    calls = _capture_singularity_run(monkeypatch)
-
-    set_multiplex_active(True)
-    token = set_secret_scope(target_auth)
-    try:
-        result = singularity_env._get_or_build_sif(
-            "docker://example.invalid/scoped:latest", "apptainer"
-        )
-    finally:
-        reset_secret_scope(token)
-        set_multiplex_active(False)
-
-    assert result.endswith(".sif")
-    assert Path(result).is_file()
-    child_env = calls[0][1]["env"]
-    for key, source_value in source_auth.items():
-        assert child_env.get(key) != source_value
-        if target_mode == "absent":
-            assert key not in child_env
-        else:
-            assert child_env.get(key) == target_auth[key]
-
-
-def test_singularity_image_build_refuses_unscoped_multiplex_auth(
-    monkeypatch, tmp_path
-):
-    """Multiplex image builds fail closed if target authority is unavailable."""
-    from agent.secret_scope import set_multiplex_active
-
-    _plant_parent_env(monkeypatch, tmp_path)
-    monkeypatch.setattr(singularity_env, "_get_apptainer_cache_dir", lambda: tmp_path)
-    set_multiplex_active(True)
-    try:
-        with pytest.raises(RuntimeError, match="active target-profile secret scope"):
-            singularity_env._get_or_build_sif(
-                "docker://example.invalid/unscoped:latest", "apptainer"
-            )
-    finally:
-        set_multiplex_active(False)
-
-
 def test_docker_explicit_forward_cannot_export_hermes_internal_secret(
     monkeypatch, tmp_path
 ):
@@ -467,7 +266,7 @@ def test_docker_explicit_forward_cannot_export_hermes_internal_secret(
     _plant_parent_env(monkeypatch, tmp_path)
     env = _make_docker_exec_env()
     env._forward_env = ["BWS_ACCESS_TOKEN", "DB_PASSWORD"]
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
 
     args = env._build_init_env_args()
 

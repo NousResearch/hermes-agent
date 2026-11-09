@@ -3,7 +3,9 @@
 Order of controls (each is a gate, never skipped by a cache hit): secret-URL
 refusal -> SSRF filter (in web_tools.web_extract_tool) -> provider resolution
 (strict selection) -> per-URL website policy -> disk cache -> vendor call with
-one-shot keyless rescue. Logs under the origin (tools.web_tools) logger.
+one-shot keyless rescue -> website policy + SSRF on every page reported under a
+URL that was not requested (redirect targets). Logs under the origin
+(tools.web_tools) logger.
 """
 
 import asyncio
@@ -60,7 +62,7 @@ def _strict_selection_error(capability: str, backend: str) -> str:
     return _no_provider_error(capability, selection_error("web", f"'{backend}'", failure))
 
 
-def _result_entry(url: str, error: Optional[str]) -> Dict[str, Any]:
+def _result_entry(url: str, error: Optional[str]) -> dict[str, Any]:
     return {"url": url, "title": "", "content": "", "error": error}
 
 
@@ -74,8 +76,8 @@ def _refuse_all(error: str):
 
 
 def _merge_in_order(
-    total: int, fixed: Dict[int, dict], fetch_positions: List[int], fetch_urls: List[str], results: List[dict]
-) -> List[dict]:
+    total: int, fixed: dict[int, dict], fetch_positions: list[int], fetch_urls: list[str], results: list[dict]
+) -> list[dict]:
     """Rebuild a ``total``-long result list: *fixed* entries by position, fetched *results* at
     *fetch_positions* (a short provider list yields ``_NO_RESULT_ERROR`` entries for the rest)."""
     merged = dict(fixed)
@@ -85,7 +87,7 @@ def _merge_in_order(
     return [merged[i] for i in range(total)]
 
 
-def _validate_extract_urls(urls: List[Any]):
+def _validate_extract_urls(urls: list[Any]):
     """Normalize model-supplied items and block URLs carrying secrets (percent-encoded forms are unquoted
     and checked too). Returns ``(normalized_urls, normalized_indices, invalid_urls, blocked_json)``;
     ``blocked_json`` is a whole-call refusal (exfiltration prevention) or None."""
@@ -146,14 +148,20 @@ def _extract_timeout_seconds() -> float:
         return _DEFAULT_EXTRACT_TIMEOUT_S
 
 
-async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[str]) -> List[dict]:
+def _backend_failed_whole_batch(results: list[dict]) -> bool:
+    from plugins.web._common import is_origin_http_error
+    errors = [r.get("error") for r in results]
+    return bool(errors) and all(errors) and not any(is_origin_http_error(e) for e in errors)
+
+
+async def _fetch_with_rescue(provider, fetch_urls: list[str], format: Optional[str]) -> tuple[list[dict], bool]:
     """Call ``provider.extract`` (async or sync-in-thread), with one-shot keyless rescue.
 
     Rescue fires on a raised exception — including a dispatch timeout — or when the WHOLE batch
-    failed (backend outage, not per-page problems). Rescued batches are never cached.
+    failed (backend outage, not per-page problems): an origin HTTP 4xx/5xx is the page's own answer,
+    so a batch with one never triggers it. Returns ``(results, rescued)``.
     """
     import inspect
-    from tools.web_result_cache import extract_cache_put
     timeout = _extract_timeout_seconds()
     try:
         if inspect.iscoroutinefunction(provider.extract):
@@ -164,44 +172,111 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
             results = await asyncio.wait_for(coro, timeout=timeout)
         else:
             results = await coro
-    except asyncio.TimeoutError as exc:  # hanging backend — bounded, never a stalled tool call
+    except TimeoutError:  # hanging backend — bounded, never a stalled tool call
         logger.warning("web_extract provider '%s' timed out after %.0fs for %d URL(s)",
                        provider.name, timeout, len(fetch_urls))
         failed = [_result_entry(u, f"Extract timed out after {timeout:.0f}s via {provider.name}")
                   for u in fetch_urls]
         if not _rescue_eligible(provider):
-            return failed
-        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
-    except Exception as exc:  # noqa: BLE001 — candidate for rescue
+            return failed, False
+        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed), True
+    except Exception as exc:
         if not _rescue_eligible(provider):
             raise
         failed = [_result_entry(u, str(exc)) for u in fetch_urls]
-        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
-    if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
-        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
+        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed), True
+    if _backend_failed_whole_batch(results) and _rescue_eligible(provider):
+        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results), True
+    return results, False
+
+
+async def _final_url_refusal(fetched: dict) -> Optional[dict]:
+    """Refusal entry when a page's reported (post-redirect) URL fails the website policy or SSRF gate,
+    in the shape Firecrawl's own redirect re-check returns; None when it passes. A policy check that
+    raises refuses (fail closed): the requested URL passed, but nothing vouches for this one."""
+    from tools.url_safety import async_is_safe_url
+    from tools.website_policy import check_website_access
+    final_url, title = fetched["url"], fetched.get("title", "")
+    refusal = {"url": final_url, "title": title, "content": "", "raw_content": ""}
+    try:
+        blocked = check_website_access(final_url)
+    except Exception as exc:
+        logger.warning("Website policy check failed for redirect target %s", final_url, exc_info=True)
+        return {**refusal, "error": f"Website policy check failed for redirect target: {exc}"}
+    if blocked:
+        logger.info("Blocked redirected web_extract for %s by rule %s", blocked["host"], blocked["rule"])
+        policy = {k: blocked[k] for k in ("host", "rule", "source")}
+        return {**refusal, "error": blocked["message"], "blocked_by_policy": policy}
+    if not await async_is_safe_url(final_url):
+        logger.info("Blocked redirected web_extract for unsafe final URL: %s", final_url)
+        return {**refusal, "error": "Blocked: URL targets a private or internal network address"}
+    return None
+
+
+async def _gate_final_urls(results: list[dict], requested: set[str]) -> list[dict]:
+    """Re-gate every page a provider reports under a URL other than one we asked for (a redirect
+    target, a canonicalised host): the SSRF and website-policy checks only ever saw the requested URL.
+    Covers every provider shape — Keenable reports the target in ``url`` with ``sourceURL`` = requested,
+    Exa/Parallel/Tavily report the vendor's URL in both — and rescued batches alike."""
+    gated = []
+    for fetched in results:
+        url = fetched.get("url")
+        if url and url not in requested and not fetched.get("error"):
+            fetched = await _final_url_refusal(fetched) or fetched
+        gated.append(fetched)
+    return gated
+
+
+async def _dispatch_extract(provider, fetch_urls: list[str], format: Optional[str]) -> list[dict]:
+    """Fetch *fetch_urls* (with keyless rescue), re-gate redirect targets, then cache the passes.
+    Rescued batches are never cached."""
+    from tools.web_result_cache import extract_cache_put, extract_cache_record_final_url
+    results, rescued = await _fetch_with_rescue(provider, fetch_urls, format)
+    requested = set(fetch_urls)
+    results = await _gate_final_urls(results, requested)
+    if rescued:
+        return results
 
     # Cache each successful fetch under the REQUESTED url it reports as its own — never by list
     # position: providers omit failed URLs or return successes out of request order, and a positional
     # write filed one page's text under another URL's key for the whole TTL. ``metadata.sourceURL``
     # counts because Keenable/Firecrawl put the requested URL there when ``url`` is the redirect target.
     # An entry naming no requested URL is served but not cached (a miss re-fetches; a mis-key poisons).
-    requested = set(fetch_urls)
     for fetched in results:
         meta = fetched.get("metadata")
         source = meta.get("sourceURL") if isinstance(meta, dict) else None
         url = next((u for u in (fetched.get("url"), source) if u in requested), None)
         _content = fetched.get("raw_content", "") or fetched.get("content", "")
         if url and _content and not fetched.get("error"):
-            extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)
+            stored = extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)
+            if stored and fetched.get("url") and fetched["url"] != url:
+                extract_cache_record_final_url(url, fetched["url"], _content, format=format, provider=provider.name)
     return results
 
 
-async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[str]) -> List[dict]:
+async def _cached_final_url_allowed(hit: dict, requested: str) -> bool:
+    """Gate a cache hit on the URL its content came from: a redirector cached before its target was
+    blocklisted (or turned private) must not keep serving that target. Consumes ``final_url``."""
+    final_url = hit.pop("final_url", requested)
+    if final_url == requested:  # the requested URL already passed both gates
+        return True
+    from tools.url_safety import async_is_safe_url
+    from tools.website_policy import check_website_access
+    try:
+        if check_website_access(final_url) is not None:
+            return False
+    except Exception:  # fail closed: a miss, and the live fetch re-gates the redirect
+        logger.warning("Website policy check failed for cached final URL %s", final_url, exc_info=True)
+        return False
+    return await async_is_safe_url(final_url)
+
+
+async def _extract_safe_urls(provider, safe_urls: list[str], format: Optional[str]) -> list[dict]:
     """Serve cache hits, fetch the rest, and merge back in ``safe_urls`` order.
 
     The disk cache (tools/web_result_cache.py) sits AFTER the secret-URL gate, SSRF gate, and provider
     resolution, and is gated per-URL on the website policy — a hit skips only the vendor call, never a
-    control; policy-blocked URLs are cache misses. Keys include provider and format, so switching either
+    control; policy-blocked URLs are cache misses, judged on both the requested and the cached final URL. Keys include provider and format, so switching either
     within the TTL never serves the other's content."""
     from tools.web_result_cache import extract_cache_get
     from tools.website_policy import check_website_access as _check_site
@@ -209,9 +284,11 @@ async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[st
     for position, url in enumerate(safe_urls):
         try:
             _policy_block = _check_site(url)
-        except Exception:  # noqa: BLE001 — policy errors fail open like dispatch
+        except Exception:
             _policy_block = None
         hit = extract_cache_get(url, format=format, provider=provider.name) if _policy_block is None else None
+        if hit is not None and not await _cached_final_url_allowed(hit, url):
+            hit = None  # a miss: the live fetch re-checks the redirect and refuses with blocked_by_policy
         if hit is not None:
             cached_results[position] = hit
         else:

@@ -98,6 +98,8 @@ That logs you in, sets Nous as your provider, and turns on the Tool Gateway in o
 :::
 
 :::info Setup modes
+Coming from OpenClaw, Claude Code, Codex CLI or Cursor? When a fresh `hermes setup` finds one of them on your computer it first offers to import your setup (it installs the `agent-importers` plugin for that; see [Import from Other Agents](../user-guide/import-from-other-agents.md)).
+
 On a fresh install, `hermes setup` offers three modes:
 
 - **Quick Setup (Nous Portal)** — OAuth login, no API keys to manage; sets up a model plus the Tool Gateway tools, billed to your [Nous Portal subscription](../integrations/nous-portal.md). The recommended fast path.
@@ -147,8 +149,6 @@ Good defaults:
 | **OpenCode Go** | $10/month subscription for open models | Set `OPENCODE_GO_API_KEY` |
 | **DeepSeek** | Direct DeepSeek API access | Set `DEEPSEEK_API_KEY` |
 | **NVIDIA NIM** | Nemotron models via build.nvidia.com or local NIM | Set `NVIDIA_API_KEY` (optional: `NVIDIA_BASE_URL`) |
-| **GitHub Copilot** | GitHub Copilot subscription (GPT-5.x, Claude, Gemini, etc.) | OAuth via `hermes model`, or `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` |
-| **GitHub Copilot ACP** | Copilot ACP agent backend (spawns local `copilot` CLI) | `hermes model` (requires `copilot` CLI + `copilot login`) |
 | **Vercel AI Gateway** | Vercel AI Gateway routing | Set `AI_GATEWAY_API_KEY` |
 | **Custom Endpoint** | VLLM, SGLang, Ollama, or any OpenAI-compatible API | Set base URL + API key |
 
@@ -264,7 +264,7 @@ Only after the base chat works. Pick what you need:
 hermes gateway setup    # Interactive platform configuration
 ```
 
-Connect [Telegram](../user-guide/messaging/telegram.md), [Discord](../user-guide/messaging/discord.md), [Slack](../user-guide/messaging/slack.md), [WhatsApp](../user-guide/messaging/whatsapp.md), [Signal](../user-guide/messaging/signal.md), [Email](../user-guide/messaging/email.md), or [Home Assistant](../user-guide/messaging/homeassistant.md), or [Microsoft Teams](../user-guide/messaging/teams.md).
+Connect [Telegram](../user-guide/messaging/telegram.md), [Discord](../user-guide/messaging/discord.md), [Slack](../user-guide/messaging/slack.md), [WhatsApp](../user-guide/messaging/whatsapp.md), [Signal](../user-guide/messaging/signal.md), [Email](../user-guide/messaging/email.md), [Home Assistant](../user-guide/messaging/homeassistant.md) (plugin), or [Microsoft Teams](../user-guide/messaging/teams.md).
 
 ### Automation and tools
 
@@ -386,6 +386,7 @@ That sequence gets you from "broken vibes" back to a known state fast.
 
 ## Next Steps
 
+- **[User Stories](../user-stories.mdx)**: real setups from the community, a good place to start if you're not sure what to hand Hermes first
 - **[CLI Guide](../user-guide/cli.md)** — Master the terminal interface
 - **[Configuration](../user-guide/configuration.md)** — Customize your setup
 - **[Messaging Gateway](../user-guide/messaging/index.md)** — Connect Telegram, Discord, Slack, WhatsApp, Signal, Email, Home Assistant, Teams, and more

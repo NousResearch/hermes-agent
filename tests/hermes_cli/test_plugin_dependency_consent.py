@@ -7,7 +7,7 @@ import pytest
 import hermes_yaml as yaml
 
 from hermes_cli import plugins_cmd
-from tests.pm.test_plugin_survival_contract import admission_env  # noqa: F401
+from tests.pm.test_plugin_survival_contract import admission_env
 
 
 @pytest.mark.parametrize('python_surface', [None, 'pyproject', 'legacy'])
@@ -23,7 +23,8 @@ def test_install_only_requests_relevant_python_consent(admission_env, monkeypatc
     (source / 'package.json').write_text(json.dumps({'name': 'sidecar-plugin', 'version': '1.0.0'}), encoding='utf-8')
     if python_surface == 'pyproject':
         (source / 'pyproject.toml').write_text(
-            '[project]\nname="sidecar-plugin"\nversion="1.0"\nrequires-python=">=3.14"\n', encoding='utf-8')
+            '[project]\nname="sidecar-plugin"\nversion="1.0"\nrequires-python=">=3.14"\n'
+            'dependencies=["never-install-without-consent==1"]\n', encoding='utf-8')
     env = {k: v for k, v in os.environ.items() if k not in {'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'}}
     for args in [('init', '-q'), ('add', '.'), ('-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture')]:
         subprocess.run(['git', *args], cwd=source, env=env, check=True, capture_output=True, timeout=30)
@@ -43,6 +44,30 @@ def test_install_only_requests_relevant_python_consent(admission_env, monkeypatc
         assert 'sidecar-plugin' not in enabled
         assert config_path.read_bytes() == before
         assert 'dependency install skipped (non-interactive)' in output
+
+
+def test_empty_python_dependencies_install_and_enable_without_consent(admission_env, monkeypatch, capsys):  # health: allow F811 -- pytest injects the imported admission_env fixture by parameter name
+    """``dependencies = []`` installs nothing, so a headless ``install --enable`` enables the plugin
+    exactly like one without a pyproject instead of refusing at an empty consent question."""
+    root, home = admission_env
+    source = root / 'plugin-source'
+    source.mkdir()
+    (source / 'plugin.yaml').write_text(yaml.safe_dump({'name': 'no-deps-plugin'}), encoding='utf-8')
+    (source / '__init__.py').write_text('def register(ctx):\n    pass\n', encoding='utf-8')
+    (source / 'pyproject.toml').write_text(
+        '[project]\nname="no-deps-plugin"\nversion="1.0"\nrequires-python=">=3.11"\ndependencies=[]\n',
+        encoding='utf-8')
+    env = {k: v for k, v in os.environ.items() if k not in {'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'}}
+    for args in [('init', '-q'), ('add', '.'), ('-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture')]:
+        subprocess.run(['git', *args], cwd=source, env=env, check=True, capture_output=True, timeout=30)
+    monkeypatch.setattr(plugins_cmd.sys.stdin, 'isatty', lambda: False)
+
+    plugins_cmd.cmd_install(source.as_uri(), enable=True, allow_removed=True)
+
+    enabled = yaml.safe_load((home / 'config.yaml').read_text(encoding='utf-8'))['plugins']['enabled']
+    output = capsys.readouterr().out
+    assert 'no-deps-plugin' in enabled, 'install completed but the plugin was not enabled; CLI output:\n' + output
+    assert 'declares Python dependencies' not in output
 
 
 def test_node_sidecar_question_stays_independent(tmp_path, monkeypatch):
@@ -96,6 +121,39 @@ def test_yes_deps_carries_consent_through_non_interactive_install(admission_env,
     assert 'dependency install skipped (non-interactive)' not in output
 
 
+def test_dashboard_install_publishes_a_plugin_the_config_already_selects(admission_env, monkeypatch):  # health: allow F811 -- pytest injects the imported admission_env fixture by parameter name
+    """The Desktop/dashboard Install click on a plugin memory.provider already names (a provider that
+    left core, a synced config, a re-install after remove) publishes like any fresh install instead of
+    the non-interactive 'Install declined' that a retry can never get past. A forced replacement of an
+    installed plugin keeps the veto: that is the reinstall the click did not review."""
+    root, home = admission_env
+    source = root / 'mem-source'
+    source.mkdir()
+    (source / 'plugin.yaml').write_text(yaml.safe_dump({'name': 'mem-twin'}), encoding='utf-8')
+    (source / '__init__.py').write_text('class Twin(MemoryProvider): ...\n', encoding='utf-8')
+    (source / 'pyproject.toml').write_text(
+        '[project]\nname="mem-twin"\nversion="1.0"\nrequires-python=">=3.11"\n', encoding='utf-8')
+    env = {k: v for k, v in os.environ.items() if k not in {'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'}}
+    for args in [('init', '-q'), ('add', '.'), ('-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture')]:
+        subprocess.run(['git', *args], cwd=source, env=env, check=True, capture_output=True, timeout=30)
+    config = yaml.safe_load((home / 'config.yaml').read_text(encoding='utf-8'))
+    config['memory'] = {'provider': 'mem-twin'}
+    (home / 'config.yaml').write_text(yaml.safe_dump(config), encoding='utf-8')
+    monkeypatch.setattr(plugins_cmd.sys.stdin, 'isatty', lambda: False)
+
+    result = plugins_cmd.dashboard_install_plugin(source.as_uri(), force=False, enable=True)
+    assert result['ok'], result
+    assert (home / 'plugins' / 'mem-twin' / 'plugin.yaml').is_file()
+    # The forced replacement now declares a dependency: installing it is what the veto guards.
+    (source / 'pyproject.toml').write_text(
+        '[project]\nname="mem-twin"\nversion="1.1"\nrequires-python=">=3.11"\n'
+        'dependencies=["never-install-without-consent==1"]\n', encoding='utf-8')
+    subprocess.run(['git', '-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qam', 'deps'],
+                   cwd=source, env=env, check=True, capture_output=True, timeout=30)
+    again = plugins_cmd.dashboard_install_plugin(source.as_uri(), force=True, enable=True)
+    assert not again['ok'] and 'Reinstall declined' in again['error']
+
+
 def test_publish_assume_consent_skips_replacement_veto(tmp_path, monkeypatch):
     """The active-replacement veto at publication honors --yes-deps: with the
     explicit answer the PM handoff runs; the default without it stays the
@@ -108,7 +166,8 @@ def test_publish_assume_consent_skips_replacement_veto(tmp_path, monkeypatch):
     target.mkdir()
     (staged / 'plugin.yaml').write_text(yaml.safe_dump({'name': 'active-plugin'}), encoding='utf-8')
     (staged / 'pyproject.toml').write_text(
-        '[project]\nname="active-plugin"\nversion="1.0"\nrequires-python=">=3.11"\n', encoding='utf-8')
+        '[project]\nname="active-plugin"\nversion="1.0"\nrequires-python=">=3.11"\n'
+        'dependencies=["never-install-without-consent==1"]\n', encoding='utf-8')
     monkeypatch.setattr(ws, 'enabled_plugin_dirs', lambda **kwargs: [target])
     syncs = []
     monkeypatch.setattr('pm.client.sync_venv', lambda **kwargs: syncs.append(kwargs))

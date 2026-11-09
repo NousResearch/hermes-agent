@@ -18,8 +18,8 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from scripts.releases import authors, authors_legacy  # noqa: E402
-from add_contributor import add_contributor, read_mapping_file  # noqa: E402
+from scripts.releases import authors, authors_legacy
+from add_contributor import add_contributor, read_mapping_file
 
 
 # ── directory loader behavior ─────────────────────────────────────────
@@ -102,6 +102,7 @@ def test_cli_entrypoint_end_to_end(tmp_path):
         [sys.executable, str(scripts / "add_contributor.py"),
          "cli@example.com", "cliperson", "via subprocess"],
         cwd=tmp_path, capture_output=True, text=True,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     out = (tmp_path / "contributors" / "emails" / "cli@example.com").read_text(encoding="utf-8")
@@ -136,9 +137,7 @@ def test_case_collision_uses_casefold(emails_dir):
     assert add_contributor("straße@example.com", "someone") == 1
 
 
-def test_pr_audit_honors_mailmap_and_still_rejects_unknown_authors(tmp_path, monkeypatch):
-    import audit_pr_attribution as audit
-
+def _git_repo(tmp_path, *, authors, mailmap=""):
     def git(*args):
         return subprocess.check_output(
             ["git", "-c", "user.name=Test Contributor", "-c", "user.email=test@example.com",
@@ -149,15 +148,35 @@ def test_pr_audit_honors_mailmap_and_still_rejects_unknown_authors(tmp_path, mon
     git("init")
     git("commit", "--allow-empty", "-m", "base")
     git("update-ref", "refs/remotes/origin/main", "HEAD")
-    raw_emails = {"Person@example.com", "person@example.com", "unknown@example.com"}
-    for email in sorted(raw_emails):
+    for email in authors:
         git("commit", "--allow-empty", "--author", f"Contributor <{email}>", "-m", "contribution")
-    (tmp_path / ".mailmap").write_text(
-        "Contributor <123+contributor@users.noreply.github.com> <person@example.com>\n",
-        encoding="utf-8",
-    )
+    if mailmap:
+        (tmp_path / ".mailmap").write_text(mailmap, encoding="utf-8")
+    return git
+
+
+def test_pr_audit_and_release_credit_share_one_raw_author_contract(tmp_path, monkeypatch):
+    """The gate checks exactly what release credit consumes: the RAW ``%ae`` email.
+
+    A .mailmap rewrite to a skipped noreply address must not hide an author whose
+    raw email the release collector cannot resolve, and one lowercase mapping file
+    credits both spellings of the same address (no case-colliding filenames).
+    """
+    import audit_pr_attribution as audit
+
+    emails_dir = tmp_path / "contributors" / "emails"
+    emails_dir.mkdir(parents=True)
+    (emails_dir / "person@example.com").write_text("person-login\n", encoding="utf-8")
+    raw = ["Person@example.com", "person@example.com", "hidden@example.com", "unknown@example.com"]
+    _git_repo(tmp_path, authors=raw, mailmap=(
+        "Hidden <99+hidden@users.noreply.github.com> <hidden@example.com>\n"))
     monkeypatch.setattr(audit, "REPO_ROOT", tmp_path)
 
-    assert audit.new_emails() == ["123+contributor@users.noreply.github.com", "unknown@example.com"]
-    assert [email for email in audit.new_emails() if not audit.is_mapped(email)] == ["unknown@example.com"]
-    assert set(git("log", "origin/main..HEAD", "--format=%ae").splitlines()) == raw_emails
+    assert audit.new_emails() == sorted(raw)
+    unmapped = [email for email in audit.new_emails() if not audit.is_mapped(email)]
+    assert unmapped == ["hidden@example.com", "unknown@example.com"]
+
+    author_map = authors._load_contributor_dir(emails_dir)
+    for email in ("Person@example.com", "person@example.com"):
+        assert authors.login_for_email(email, author_map) == "person-login"
+    assert authors.login_for_email("hidden@example.com", author_map) is None

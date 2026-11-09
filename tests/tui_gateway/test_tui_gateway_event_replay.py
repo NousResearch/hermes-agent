@@ -66,6 +66,33 @@ def test_events_since_returns_only_newer_frames_in_order():
     assert latest_seq("s1") == 5
 
 
+def test_replay_snapshot_is_detached_from_live_event_mutation():
+    frame = _frame("s1", "tool.complete")
+    frame["params"]["payload"] = {"result": "small"}
+    event_replay._stamp_event(frame)
+    retained = replay_stats()["bytes"]
+
+    # The transport/caller still owns the live frame after stamping. Mutating it must not
+    # rewrite or grow an already-admitted replay entry behind the byte-accounting budget.
+    frame["params"]["payload"]["result"] = "x" * 1_000_000
+
+    (replayed,) = events_since("s1", 0)
+    assert replayed["payload"]["result"] == "small"
+    assert replay_stats()["bytes"] == retained
+
+
+def test_each_replay_read_returns_an_independent_event_graph():
+    frame = _frame("s1", "tool.complete")
+    frame["params"]["payload"] = {"nested": {"value": "original"}}
+    event_replay._stamp_event(frame)
+
+    (first,) = events_since("s1", 0)
+    first["payload"]["nested"]["value"] = "caller-mutated"
+    (second,) = events_since("s1", 0)
+
+    assert second["payload"]["nested"]["value"] == "original"
+
+
 def test_events_since_returns_client_dispatchable_event_objects():
     """Cross-language contract: the client's replay loop dispatches an element
     only when it has a TOP-LEVEL ``type`` (json-rpc-gateway.ts fetchReplay:
@@ -269,3 +296,69 @@ def test_truncation_detection_semantics():
     assert event_replay.is_truncated("s1", 5)
     # Unknown session: nothing evicted, nothing truncated.
     assert not event_replay.is_truncated("nope", 0)
+
+
+def test_forget_session_frees_the_ring_and_keeps_seq_and_gap_semantics():
+    for _ in range(3):
+        event_replay._stamp_event(_frame("gone"))
+    event_replay._stamp_event(_frame("kept"))
+    before = replay_stats()["bytes"]
+
+    event_replay.forget_session("gone")
+
+    assert replay_stats()["sessions"] == 1
+    assert 0 < replay_stats()["bytes"] < before
+    assert events_since("gone", 0) == []
+    assert latest_seq("gone") == 3  # numbering survives: a late frame continues at 4
+    assert event_replay.is_truncated("gone", 2)  # a client behind the drop must refetch
+    assert not event_replay.is_truncated("gone", 3)
+    late = _frame("gone")
+    event_replay._stamp_event(late)
+    assert late["params"]["seq"] == 4
+    assert len(events_since("kept", 0)) == 1
+    event_replay.forget_session("never-seen")  # frees nothing, raises nothing
+
+
+def test_a_frame_stamped_after_forget_does_not_rebuild_the_ring():
+    event_replay._stamp_event(_frame("closed"))
+    event_replay.forget_session("closed")
+
+    late = _frame("closed")
+    late["params"]["payload"] = {"text": "x" * 100_000}
+    event_replay._stamp_event(late)
+
+    assert late["params"]["seq"] == 2  # numbering still advances
+    assert events_since("closed", 0) == []
+    assert replay_stats()["sessions"] == 0 and replay_stats()["bytes"] == 0
+    assert event_replay.is_truncated("closed", 1)  # a client holding seq 1 refetches
+
+
+def test_session_teardown_releases_the_replay_ring(monkeypatch):
+    from tui_gateway import session_lifecycle
+
+    # The isolated-turn settle and full finalize need an agent/DB behind the dict; the subject is the ring.
+    monkeypatch.setattr(session_lifecycle, "_teardown_session", lambda session, end_reason="tui_close": None)
+    for _ in range(3):
+        event_replay._stamp_event(_frame("closed-sid"))
+    event_replay._stamp_event(_frame("live-sid"))
+
+    assert session_lifecycle._teardown_popped_session({"_sid": "closed-sid"}, end_reason="tui_shutdown")
+
+    assert events_since("closed-sid", 0) == []
+    assert event_replay.is_truncated("closed-sid", 0)
+    assert len(events_since("live-sid", 0)) == 1
+
+
+def test_a_raising_teardown_still_releases_the_replay_ring(monkeypatch):
+    from tui_gateway import session_lifecycle
+
+    def _boom(session, end_reason="tui_close"):
+        raise RuntimeError("finalize failed")
+
+    monkeypatch.setattr(session_lifecycle, "_teardown_session", _boom)
+    event_replay._stamp_event(_frame("failed-sid"))
+
+    with pytest.raises(RuntimeError):
+        session_lifecycle._teardown_popped_session({"_sid": "failed-sid"}, end_reason="tui_shutdown")
+
+    assert events_since("failed-sid", 0) == []

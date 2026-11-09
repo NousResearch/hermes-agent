@@ -71,7 +71,7 @@ def _set_forwarding(target, enabled):
 def test_cron_handoff_reprojects_target_grants_on_each_launch(
     worker_profiles, tmp_path, monkeypatch, caller_is_target
 ):
-    import cron.scheduler as scheduler
+    from cron import scheduler
     from hermes_constants import (
         get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override,
     )
@@ -150,7 +150,7 @@ def test_kanban_cross_profile_child_observes_only_current_assignee_grant(
         "import json,os,pathlib;"
         f"pathlib.Path({str(output)!r}).write_text(json.dumps({{k:os.getenv(k) for k in {names!r}}}),encoding='utf-8')"
     )
-    monkeypatch.setattr(dispatch, "_resolve_hermes_argv", lambda: [sys.executable, "-c", probe])
+    monkeypatch.setattr(dispatch, "_worker_argv", lambda *_a, **_kw: [sys.executable, "-c", probe])
     real_popen = subprocess.Popen
     children = []
 

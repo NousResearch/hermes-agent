@@ -9,6 +9,7 @@ default fails closed to text-only/no-upscale.
 import os
 import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -130,6 +131,35 @@ class TestDynamicParamGating(unittest.TestCase):
         self.assertLessEqual(set(declared), set(props))
         for model in (self._t2i_only(), self._edit_multi_ref()):
             self.assertFalse(set(ig._CREATIVE_CONTROL_PARAMS) & set(self._schema_for(model)["parameters"]["properties"]))
+
+    def test_style_reference_backend_describes_image_inputs_as_style_not_edit(self):
+        """A backend declaring source_image_role "style" gets the style wording; FAL keeps the edit wording."""
+        with patch.object(ig, "_read_configured_image_provider", return_value="nous"), \
+             patch.object(ig, "_read_configured_image_model", return_value="krea-2-medium"):
+            krea = _build_dynamic_image_schema()
+        fal = self._schema_for(self._edit_multi_ref())
+        self.assertIs(krea["parameters"]["properties"]["image_url"], ig._STYLE_IMAGE_URL_PARAM)
+        self.assertIs(fal["parameters"]["properties"]["image_url"], ig._IMAGE_URL_PARAM)
+        self.assertNotIn("edit", krea["parameters"]["properties"]["reference_image_urls"]["description"])
+        self.assertNotIn("edit", krea["parameters"]["properties"]["prompt"]["description"])
+        self.assertIn("edit", fal["parameters"]["properties"]["reference_image_urls"]["description"])
+        self.assertIn("edit", fal["parameters"]["properties"]["prompt"]["description"])
+
+    def test_krea_3_advertises_edit_wording_and_its_own_controls(self):
+        """Krea 3 edits the pictures it is given, so the edit wording applies with the plugin's
+        reference cap, and the schema offers Krea 3's controls and none of Krea 2's."""
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        # The tool and the plugin read the same stored selection, no env override needed.
+        home = Path(os.environ["HERMES_HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("image_gen:\n  provider: nous\n  model: krea-3\n")
+        props = _build_dynamic_image_schema()["parameters"]["properties"]
+        cap = KreaImageGenProvider().capabilities()["max_reference_images"]
+        self.assertIs(props["image_url"], ig._IMAGE_URL_PARAM)
+        self.assertEqual(props["reference_image_urls"]["maxItems"], cap)
+        self.assertLessEqual({"thinking", "resolution"}, set(props))
+        self.assertNotIn("creativity", props)
 
     def test_static_schema_carries_no_capability_args(self):
         """The registration-time placeholder must stay minimal — dynamic

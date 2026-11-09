@@ -195,7 +195,7 @@ provider_routing:
 Provider routing preferences are passed to OpenRouter on agent chat requests and iteration-limit summaries via the `extra_body.provider` field. (`extra_body` is the OpenAI Python SDK argument; it becomes the top-level `provider` object in the JSON request.) Auxiliary tasks such as compression and title generation are configured independently under `auxiliary.<task>.extra_body`.
 
 - **CLI mode** — configured in `~/.hermes/config.yaml`, loaded at startup
-- **Gateway mode** — same config file, loaded when the gateway starts
+- **Gateway mode** — same config file. Messaging-platform turns use the copy loaded when the gateway starts. A local `hermes chat` / TUI session reads it from its own profile when the gateway creates the session: an edit applies to the next new session without a gateway restart, and open sessions keep the values they were created with
 
 The routing config is read from `config.yaml` and passed as parameters when creating the `AIAgent`:
 

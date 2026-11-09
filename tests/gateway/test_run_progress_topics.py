@@ -462,7 +462,6 @@ def _make_runner(adapter):
     runner._fallback_model = None
     runner._session_db = None
     runner._running_agents = {}
-    runner._session_run_generation = {}
     runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
@@ -1799,7 +1798,7 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = DelayedProgressAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 - register terminal tool metadata
+    import tools.terminal_tool
 
     adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
     runner = _make_runner(adapter)
@@ -1814,7 +1813,7 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
         thread_id=None,
     )
     session_key = "agent:main:discord:dm:dm-1"
-    runner._session_run_generation[session_key] = 1
+    runner._session_state(session_key).persistent.run_generation = 1
 
     original_send = adapter.send
     invalidated = {"done": False}
@@ -1871,7 +1870,7 @@ async def test_run_agent_drops_interim_commentary_after_generation_invalidation(
         thread_id=None,
     )
     session_key = "agent:main:discord:dm:dm-2"
-    runner._session_run_generation[session_key] = 1
+    runner._session_state(session_key).persistent.run_generation = 1
 
     original_send = adapter.send
     invalidated = {"done": False}
@@ -1989,7 +1988,7 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = TerminalCommandAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+    import tools.terminal_tool
 
     adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
     runner = _make_runner(adapter)
@@ -2038,7 +2037,7 @@ async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_pat
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = TerminalCommandAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+    import tools.terminal_tool
 
     adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
     runner = _make_runner(adapter)

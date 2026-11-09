@@ -12,7 +12,7 @@ No LLM, no real platform connections.
 import asyncio
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -124,13 +124,13 @@ _ensure_telegram_mock()
 _ensure_discord_mock()
 _ensure_slack_mock()
 
-import discord  # noqa: E402 — mocked above
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+import discord
+from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.discord.adapter import DiscordAdapter
 
-import plugins.platforms.slack.adapter as _slack_mod  # noqa: E402
+import plugins.platforms.slack.adapter as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter
 
 
 # Platform-generic factories
@@ -214,7 +214,6 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> Gatew
     runner._busy_input_mode = "interrupt"
     runner._running_agents_ts = {}
     runner._pending_model_notes = {}
-    runner._update_prompt_pending = {}
     runner._voice_mode = {}
     runner._session_db = None
     runner._reasoning_config = None
@@ -389,7 +388,7 @@ def make_fake_thread(thread_id: int = THREAD_ID, name: str = "test-thread", pare
 
 def make_discord_message(
     *, content: str = "hello", author=None, channel=None, mentions=None,
-    attachments=None, message_id: int = None,
+    attachments=None, message_id: int | None = None,
 ):
     if message_id is None:
         message_id = _next_message_id()
@@ -409,7 +408,7 @@ def make_discord_message(
         guild=getattr(channel, "guild", None),
         mentions=mentions, attachments=attachments,
         type=getattr(discord, "MessageType", SimpleNamespace()).default,
-        reference=None, created_at=datetime.now(timezone.utc),
+        reference=None, created_at=datetime.now(UTC),
         create_thread=AsyncMock(),
     )
 

@@ -2,78 +2,86 @@
 
 When a cloud browser provider (Browserbase / Browser-Use / Firecrawl) is
 configured globally, ``browser.auto_local_for_private_urls`` (default True)
-causes ``browser_navigate`` to transparently spawn a local Chromium sidecar
-for URLs whose host resolves to a private/loopback/LAN address, while
-public URLs continue to hit the cloud session in the same conversation.
+routes a ``browser_exec`` call whose code carries a URL whose host resolves to a
+private/loopback/LAN address to a local Chromium sidecar (the ``::local`` session
+key), while public URLs continue to hit the cloud session in the same conversation.
 
-These tests cover the routing decision layer — session_key selection,
-sidecar detection, last-active-session tracking, and the config toggle.
-The downstream session creation is covered by test_browser_cloud_fallback.py.
+These tests cover the routing decision layer — session_key selection, sidecar
+detection, task ownership, and sidecar-aware cleanup. The downstream session
+creation is covered by test_browser_cloud_fallback.py.
 """
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
-import tools.browser_tool as browser_tool
-from tools import browser_tool_lifecycle as bt_lifecycle
-from tools import browser_tool_session as bt_session
-from tools import browser_tool_cloud as bt_cloud
+from tools.bot_desktop import placement
+from tools import browser_launcher
+from tools import browser_session as bs
+from tools import browser_session_cloud as bs_cloud
+from tools import browser_session_lifecycle as lifecycle
+from tools import browser_use_cli as bu
+
+_LOCAL_CDP = "ws://127.0.0.1:9444/devtools/browser/sidecar"
 
 
 @pytest.fixture(autouse=True)
 def _reset_routing_state(monkeypatch):
     """Clear module-level caches so each test starts clean."""
-    monkeypatch.setattr(browser_tool, "_active_sessions", {})
-    monkeypatch.setattr(browser_tool, "_last_active_session_key", {})
-    monkeypatch.setattr(browser_tool, "_cached_cloud_provider", None)
-    monkeypatch.setattr(browser_tool, "_cloud_provider_resolved", False)
-    monkeypatch.setattr(browser_tool, "_auto_local_for_private_urls_resolved", False)
-    monkeypatch.setattr(browser_tool, "_cached_auto_local_for_private_urls", True)
-    monkeypatch.setattr("tools.browser_tool_lifecycle._start_browser_cleanup_thread", lambda: None)
-    monkeypatch.setattr("tools.browser_tool_lifecycle._update_session_activity", lambda t: None)
-    # Default: no CDP override, no Camofox
-    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: None)
-    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(bs, "_active_sessions", {})
+    monkeypatch.setattr("tools.browser_session_lifecycle.start_cleanup_thread", lambda: None)
+    monkeypatch.setattr("tools.browser_session_lifecycle.update_session_activity", lambda t: None)
+    monkeypatch.setattr(bs_cloud, "auto_local_for_private_urls", lambda: True)
+    # Default: no CDP override
+    monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override", lambda: None)
+    monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr("tools.bot_desktop.runtime.tool_placement", lambda: placement.GATEWAY)  # host browser
+    monkeypatch.setattr(browser_launcher, "launch_chromium",
+                        lambda key, **kw: (SimpleNamespace(cdp_url=_LOCAL_CDP, pid=4242), None))
+
+
+def _exec_session_key(task_id, url: str) -> str:
+    """The session key browser_exec routes a call carrying ``url`` to."""
+    verdict = bu._code_url_verdict(f'new_tab("{url}")')
+    return bu._backend_cache_key(task_id, sidecar=verdict.local_sidecar)
 
 
 class TestNavigationSessionKey:
-    """Tests for _navigation_session_key URL-based routing decisions."""
+    """URL-based routing decisions for a browser_exec call."""
 
     def test_public_url_uses_bare_task_id(self, monkeypatch):
         """Public URL with cloud provider configured → bare task_id (cloud)."""
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: Mock())
-        key = browser_tool._navigation_session_key("default", "https://github.com/x/y")
+        monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: Mock())
+        key = _exec_session_key("default", "https://github.com/x/y")
         assert key == "default"
 
     def test_localhost_routes_to_local_sidecar(self, monkeypatch):
         """``localhost`` URL → ``::local`` suffix when cloud configured + flag on."""
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: Mock())
-        key = browser_tool._navigation_session_key("default", "http://localhost:3000/")
+        monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: Mock())
+        key = _exec_session_key("default", "http://localhost:3000/")
         assert key == "default::local"
 
 
     def test_rfc1918_lan_routes_to_local_sidecar(self, monkeypatch):
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: Mock())
-        key = browser_tool._navigation_session_key("default", "http://192.168.1.50:8000/")
+        monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: Mock())
+        key = _exec_session_key("default", "http://192.168.1.50:8000/")
         assert key == "default::local"
 
 
     def test_none_task_id_defaults(self, monkeypatch):
-        """``None`` task_id resolves to 'default'."""
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: Mock())
-        key = browser_tool._navigation_session_key(None, "http://localhost:3000/")
-        assert key == "default::local"
+        """``None`` task_id resolves to browser_exec's default key."""
+        monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: Mock())
+        key = _exec_session_key(None, "http://localhost:3000/")
+        assert key == "browser-exec-default::local"
 
 
 class TestSessionKeyHelpers:
 
 
-    def test_last_session_key_drops_mismatched_owner_metadata(self, monkeypatch):
+    def test_task_lookup_ignores_another_tasks_sidecar(self, monkeypatch):
         """Explicit ownership metadata prevents retargeting to another task's session."""
-        last_active = {"default": "other-task::local"}
-        monkeypatch.setattr(browser_tool, "_last_active_session_key", last_active)
         monkeypatch.setattr(
-            browser_tool,
+            bs,
             "_active_sessions",
             {
                 "other-task::local": {
@@ -84,12 +92,11 @@ class TestSessionKeyHelpers:
             },
         )
 
-        assert browser_tool._last_session_key("default") == "default"
-        assert last_active == {}
+        assert bs.session_for_task("default") == {}
 
 
 class TestHybridRoutingSessionCreation:
-    """_get_session_info must force a local session when the key carries ``::local``."""
+    """get_session_info must force a local session when the key carries ``::local``."""
 
     def test_local_sidecar_key_skips_cloud_provider(self, monkeypatch):
         """A ``::local``-suffixed key creates a local session even when cloud is set."""
@@ -99,14 +106,14 @@ class TestHybridRoutingSessionCreation:
             "bb_session_id": "bb_xxx",
             "cdp_url": "wss://fake.browserbase.com/ws",
         }
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: provider)
-        monkeypatch.setattr("tools.browser_tool_cdp._ensure_cdp_supervisor", lambda t: None)
+        monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: provider)
+        monkeypatch.setattr("tools.browser_session_cdp.ensure_cdp_supervisor", lambda t: None)
 
-        session = bt_session._get_session_info("default::local")
+        session = bs.get_session_info("default::local")
 
         assert provider.create_session.call_count == 0
         assert session["bb_session_id"] is None
-        assert session["cdp_url"] is None
+        assert session["cdp_url"] == _LOCAL_CDP
         assert session["features"]["local"] is True
         assert session["session_key"] == "default::local"
         assert session["owner_task_id"] == "default"
@@ -119,11 +126,11 @@ class TestHybridRoutingSessionCreation:
             "bb_session_id": "bb_123",
             "cdp_url": "wss://real.browserbase.com/ws",
         }
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: provider)
-        monkeypatch.setattr("tools.browser_tool_cdp._ensure_cdp_supervisor", lambda t: None)
-        monkeypatch.setattr("tools.browser_tool_cdp._resolve_cdp_override", lambda u: u)
+        monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: provider)
+        monkeypatch.setattr("tools.browser_session_cdp.ensure_cdp_supervisor", lambda t: None)
+        monkeypatch.setattr("tools.browser_session_cdp.resolve_cdp_override", lambda u: u)
 
-        session = bt_session._get_session_info("default")
+        session = bs.get_session_info("default")
 
         assert provider.create_session.call_count == 1
         assert session["bb_session_id"] == "bb_123"
@@ -141,24 +148,19 @@ class TestCleanupHybridSessions:
         def _fake_cleanup_one(key):
             reaped.append(key)
 
-        monkeypatch.setattr(bt_lifecycle, "_cleanup_single_browser_session", _fake_cleanup_one)
+        monkeypatch.setattr(lifecycle, "cleanup_single_session", _fake_cleanup_one)
         monkeypatch.setattr(
-            browser_tool,
+            bs,
             "_active_sessions",
             {
                 "default": {"session_name": "cloud_sess"},
                 "default::local": {"session_name": "local_sess"},
             },
         )
-        monkeypatch.setattr(
-            browser_tool, "_last_active_session_key", {"default": "default::local"}
-        )
 
-        bt_lifecycle.cleanup_browser("default")
+        lifecycle.cleanup_browser("default")
 
         assert set(reaped) == {"default", "default::local"}
-        # last-active pointer dropped
-        assert "default" not in browser_tool._last_active_session_key
 
 
     def test_cleanup_sidecar_directly_keeps_primary(self, monkeypatch):
@@ -168,22 +170,16 @@ class TestCleanupHybridSessions:
         def _fake_cleanup_one(key):
             reaped.append(key)
 
-        monkeypatch.setattr(bt_lifecycle, "_cleanup_single_browser_session", _fake_cleanup_one)
+        monkeypatch.setattr(lifecycle, "cleanup_single_session", _fake_cleanup_one)
         monkeypatch.setattr(
-            browser_tool,
+            bs,
             "_active_sessions",
             {
                 "default": {"session_name": "cloud_sess"},
                 "default::local": {"session_name": "local_sess"},
             },
         )
-        monkeypatch.setattr(
-            browser_tool, "_last_active_session_key", {"default": "default::local"}
-        )
 
-        bt_lifecycle.cleanup_browser("default::local")
+        lifecycle.cleanup_browser("default::local")
 
         assert reaped == ["default::local"]
-        # The cleaned sidecar must not remain the recorded owner; otherwise a
-        # later click/snapshot could resurrect it instead of using the primary.
-        assert "default" not in browser_tool._last_active_session_key

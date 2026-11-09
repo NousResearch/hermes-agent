@@ -91,9 +91,18 @@ export const zh: Translations = {
     webUi: "管理面板",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "当前记忆提供方",
+    noProvider: "无 — 仅内置",
+    builtinLayer: "内置层",
+    builtinNote: "MEMORY.md 和 USER.md 是 Hermes 自己的记忆，独立于任何外部提供方。两者默认都会载入会话；配置开关 (memory.memory_enabled / memory.user_profile_enabled) 可分别关闭。外部提供方是对它们的补充，绝不会取代它们。",
+  },
+
   status: {
     actionFailed: "操作失败",
     actionFinished: "已完成",
+    actionFinishedOwed: "已更新，但仍有待完成的步骤（重新运行 `hermes update` 以完成）",
     actions: "操作",
     agent: "代理",
     activeSessions: "活跃会话",
@@ -356,6 +365,13 @@ export const zh: Translations = {
     authRequired: "需要认证",
     authRequiredHint: "运行此命令以完成认证：",
     updateGit: "git pull",
+    updateAll: "全部更新",
+    updatingAll: "正在更新插件…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `已更新 ${updated}，需审核 ${needsReview}，失败 ${failed}`,
+    autoUpdate: "自动更新",
+    autoUpdateDesc: (hours: number) =>
+      `网关检查时（每 ${hours} 小时）自动应用插件更新。更新后的代码在新会话中加载。`,
     versionBadge: "版本",
     showInSidebar: "在侧边栏显示",
     hideFromSidebar: "从侧边栏隐藏",

@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTRIBUTORS_EMAILS_DIR = REPO_ROOT / "contributors" / "emails"
 
 
-def _load_contributor_dir(directory: "Path | None" = None) -> dict:
+def _load_contributor_dir(directory: Path | None = None) -> dict:
     """Load one-file-per-email mappings from contributors/emails/.
 
     Filename = commit-author email, first non-comment line = GitHub login.
@@ -48,10 +48,30 @@ def _load_contributor_dir(directory: "Path | None" = None) -> dict:
 AUTHOR_MAP = {**LEGACY_AUTHOR_MAP, **_load_contributor_dir()}
 
 
+def login_for_email(email: str, author_map: dict | None = None) -> str | None:
+    """The mapped GitHub login for a RAW commit-author email (``git log %ae``).
+
+    Email addresses are matched case-insensitively (``casefold``, like
+    ``add_contributor.py``'s collision check): the same person commits as
+    ``J.Doe@x`` and ``j.doe@x``, and one mapping file must credit both. The
+    release collector and the PR attribution gate both resolve through here,
+    so the gate can never certify an email the release notes would drop.
+    """
+    mapping = AUTHOR_MAP if author_map is None else author_map
+    login = mapping.get(email)
+    if login:
+        return login
+    folded = email.casefold()
+    for known, known_login in mapping.items():
+        if known.casefold() == folded:
+            return known_login
+    return None
+
+
 def resolve_author(name: str, email: str) -> str:
     """Resolve a git author to a GitHub @mention."""
     # Try email lookup first
-    gh_user = AUTHOR_MAP.get(email)
+    gh_user = login_for_email(email)
     if gh_user:
         return f"@{gh_user}"
 

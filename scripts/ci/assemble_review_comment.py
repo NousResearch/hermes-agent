@@ -75,7 +75,7 @@ class ReviewItem:
     """A single piece of review information with a severity tag."""
 
     severity: str  # "error" | "action_required" | "warning" | "info" | "debug"
-    title: str  # short section title, e.g. "package-lock.json"
+    title: str  # short section title, e.g. "JS lockfiles"
     summary: str  # one-line summary
     detail: str = ""  # optional markdown detail (tables, bullet lists, etc.)
     link: str = ""  # optional URL emitted by the job (e.g. report URL)
@@ -291,7 +291,6 @@ def render_comment(
 
     info = by_severity.get("info", [])
     debug = by_severity.get("debug", [])
-    has_blocking = any(by_severity.get(s) for s in _BLOCKING_SEVERITIES)
 
     body = f"{MARKER}\n# ૮ >ﻌ< ა ci review\n\n"
 

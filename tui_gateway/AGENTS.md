@@ -8,17 +8,27 @@ and the dashboard `/chat` talk to — changes here have three consumers.
 
 ```
 hermes --tui
-  └─ Node (Ink)  ──stdio JSON-RPC──  Python (tui_gateway)
-       │                                  └─ AIAgent + tools + sessions
+  └─ Node (Ink)  ──WebSocket /api/ws, hermes-gateway-v1──  the profile's gateway owner
+       │  (URL + single-use ticket:                              ├─ session authority: sessions, AIAgent, tools
+       │   ui-tui/scripts/gateway_bootstrap.py)                  └─ tui_gateway handlers (non-session methods)
        └─ renders transcript, composer, prompts, activity
 ```
+
+Ink attaches to the profile's shared gateway owner (`hermes gateway run`, started on demand with
+its idle exit), never to a private child. `ui-tui/scripts/gateway_bootstrap.py` is a thin wrapper
+over `hermes_cli/gateway_runtime_attach.py::attach_gateway`, the attach `hermes gateway attach
+--json` gives any other local client. Only `HERMES_TUI_GATEWAY_URL` (the dashboard's `/chat`)
+dials another URL, and then negotiates the wire from that listener's ready frame.
 
 TypeScript owns the screen. Python owns sessions, tools, model calls, and slash-command logic.
 Never move agent behaviour into the renderer.
 
 ## Transport
 
-Newline-delimited JSON-RPC over stdio, peer-to-peer: client→server method calls, server→client
+Newline-delimited JSON-RPC frames over a WebSocket (`/api/ws`, `tui_gateway/ws.py`) or stdio
+(`tui_gateway/entry.py`), peer-to-peer. On the owner's ticketed socket, session methods (the
+`hermes-gateway-v1` `CANONICAL_METHODS` below) go to the session authority; other methods reach these
+handlers only with a full interactive grant (`ws_legacy_fallback.py`). Client→server method calls, server→client
 **requests** (the agent asking the user something: `approval`, `clarify`, `sudo`, `secret`, `vault.*`,
 `connection`, the desktop read/act bridges) and server→client `event` notifications. `tui_gateway/server.py`
 is the facade with the method/event catalog; methods live in `methods_*.py` siblings (`methods_config`,
@@ -44,6 +54,16 @@ shape) and `gateway-contract.openrpc.json` are rendered by `scripts/gen_gateway_
 `tests/tui_gateway/contracts/test_generated.py` fails when they are stale, so the loop is: change the model →
 regenerate → `tsc` shows every consumer the field moved. `apps/shared/src/gateway-events.ts` only adds
 the client-local synthetic events and the `GatewayEvent` envelope on top.
+The native `hermes-gateway-v1` transport has a separate `CANONICAL_METHODS` catalog in
+`contracts/canonical*.py`, declared with `canonical_method(...)`. `gateway/session_controls.py::
+AuthorityConnection` validates parameters and successful results against it; unknown/missing
+parameter keys return `4001 invalid_params`. Reuse a standalone model only when its wire is
+identical: shared method names can carry different snapshots, admission receipts and producer
+results. The same generator emits `CanonicalRpcMethods` and OpenRPC `x-canonical-methods` without
+widening `RpcMethods`. `tests/gateway/test_canonical_wire_contract.py` checks handler coverage.
+A method family whose names exist only at runtime (`plugin.<plugin_id>.<name>`) is one
+`canonical_namespace(...)` entry in `CANONICAL_NAMESPACES` instead: a pattern, a prefix, open params and the
+`runtime.describe` capability clients gate on (`CanonicalRpcNamespaces` / OpenRPC `x-canonical-namespaces`).
 New question for the user = `_ask("<method>", sid, params, timeout)` in the emitter, a handler in
 `apps/desktop/.../gateway-event/server-requests.ts` and `ui-tui/src/app/createServerRequestHandler.ts`,
 and a `server_request(...)` in `contracts/server_requests.py`.
@@ -82,7 +102,7 @@ profile's does not, and that `os.environ` is unchanged afterwards.
 | Approvals | `prompts.tsx` | server→client request `approval` → response `{choice}` |
 | Clarify / sudo / secret | `prompts.tsx`, `maskedPrompt.tsx` | server→client requests `clarify` / `sudo` / `secret` (`server_requests.py`) |
 | Session picker | `sessionPicker.tsx` | `session.list` / `session.resume` |
-| Slash commands | local handler + fallthrough | `slash.exec` → `_SlashWorker`; `command.dispatch` |
+| Slash commands | local handler + fallthrough | `slash.exec` → `_SlashWorker` (`slash_worker_client.py`); `command.dispatch` |
 | Completions | `useCompletion` hook | `complete.slash`, `complete.path` (under a non-local `terminal.backend`, `complete.path` lists the directory through the session's terminal backend — never the gateway host, whose same-named tree would look right and be wrong) |
 | Theming | `theme.ts` + `branding.tsx` | `gateway.ready` carries skin data |
 | Connection operations (desktop card) | desktop `store/connection-request.ts` | `connection.request` → `connection.update`* → `connection.respond {op_id}`; `connectors.operation.status`. The op lives in `tools/connectors/live.py`; the card never parks the tool thread (`methods_connectors.py`). |
@@ -109,7 +129,9 @@ on their existing poll and avoid updates when unchanged.
 existing transcript. Poll only the selected detail. Missing/finished/foreign
 children return an unavailable empty snapshot; no client-supplied path is opened.
 This is live-only, not persisted completion history. Invalid session/transport
-returns error 4001. `subagent.steer({session_id, subagent_id, text})` remains the
+returns error 4001. The child's stored rows (live or finished, polled from a cursor)
+are the canonical owner's `session.transcript` with `subagent_id`; list rows name the
+child's `child_session_id` on both transports. `subagent.steer({session_id, subagent_id, text})` remains the
 shared control: `status: queued` acknowledges acceptance, not delivery; final
 boundary races are reported by the existing runtime as `missed_steer`.
 `subagent.interrupt({session_id, subagent_id})` requires the same exact live
@@ -125,23 +147,71 @@ retains its legacy unscoped contract.
    `command.dispatch` fallback, which the gateway resolves into a skill / alias / exec directive
    (a skill command resolves to `{type: "skill", message}` and is submitted as a normal prompt).
 
-`commands.catalog` (empty-query list) and `complete.slash` (typed-query completions) already include
-built-ins, user `quick_commands`, AND skill-derived commands (`scan_skill_commands()` /
-`get_skill_commands()`) — clients do not need a new RPC to see skills. The command definitions
-themselves come from `hermes_cli/commands.py` (`hermes_cli/AGENTS.md`).
+`commands.catalog` (empty-query list) includes built-ins, user `quick_commands`, plugin commands,
+and skill-derived commands. `complete.slash` uses the existing CLI completer (registry, plugins,
+skills/bundles, argument completions); quick commands remain catalog-only. Shared data builders
+live in `tui_gateway/command_discovery.py`, without importing the legacy server. Definitions
+come from `hermes_cli/commands.py` (`hermes_cli/AGENTS.md`).
+
+The canonical gateway exposes the same two discovery RPCs through `gateway/session_discovery.py`.
+It requires authenticated `session:read` capability and the authority's exact profile before any
+discovery. An optional named `profile` must resolve to that same home; a foreign selector returns
+`profile_mismatch`. Discovery runs off-loop in the authority's profile scope, without creating a
+legacy session or execution runtime. Catalog warnings, categories, aliases, desktop metadata,
+skill usage/origin, and completion replacement offsets retain their legacy shapes. Discovery is
+not an assertion that every listed slash execution command is implemented by the canonical RPCs.
+
+## Canonical local slash execution
+
+`gateway/session_commands.py` adapts both `slash.exec({session_id, command})` and
+`command.dispatch({session_id, name, arg})` without loading the legacy server or
+slash worker. Optional `profile` must name the authority's exact profile. Only
+server-registered local sources belonging to the authenticated actor may dispatch;
+caller-supplied source, routing, credentials, or platform fields are rejected.
+
+Reviewed gateway handlers: `help`, `commands`, `status`, `context`, `version`,
+`whoami` require `session:read`; `title` requires `session:control` (including its
+query form). Registry aliases are accepted. Existing registry busy rejection and
+mid-turn dispatch policies apply. Results are `{type: "exec", output}`.
+
+Profile skills and configured quick-command aliases to these commands/skills are
+supported. Skill resolution requires `session:submit` and returns the existing
+`{type: "skill", name, message, display}` directive. Desktop and Ink already submit
+that message through `prompt.submit`, retaining their own durable input identity.
+Resolution itself does not start a turn or change the cached system prompt; the
+normal durable admission path owns FIFO, retries, approvals, and execution.
+
+`type: exec` quick commands and plugin slash commands require `session:control` and
+run through the messaging gateway's own dispatch (`gateway/run_inbound_hooks.py`: slash
+access policy, 30 s sanitized-env exec with redacted output, plugin session env).
+All other commands return `unsupported_command`, including bundles, runtime/config
+mutation, approval/secret slash shortcuts, and lifecycle commands. Use the existing generation-bound control RPCs where
+available. Catalog presence alone does not imply execution support. No legacy
+fallback is installed on the canonical transport.
+
+## Canonical native projections
+
+`gateway/session_config.py` exposes profile-authorized `config.get` presentation
+reads and `model.options` through the shared provider inventory. `full` contains
+display, approval and paste preferences plus voice record/submit settings, not
+provider/MCP/plugin credentials. Session reasoning/model selection comes from the
+retained agent or frozen launch policy. `mtime.mcp_rev` is pinned to that policy;
+cosmetic edits do not request a cache-breaking live MCP reload. Busy overrides
+remain session-scoped; composer model changes use `session.mutate`, never global
+`config.set`. Discovery can refresh provider metadata, but never starts inference.
 
 ## Dev commands
 
 ```bash
 cd ui-tui
-npm install       # first time
-npm run dev       # watch mode (rebuilds hermes-ink + tsx --watch)
-npm start         # production
-npm run build     # full build (hermes-ink + tsc)
-npm run typecheck # tsc --noEmit
-npm run lint      # eslint
-npm run fmt       # prettier
-npm test          # vitest
+pnpm install       # first time
+pnpm run dev       # watch mode (rebuilds hermes-ink + tsx --watch)
+pnpm start         # production
+pnpm run build     # full build (hermes-ink + tsc)
+pnpm run typecheck # tsc --noEmit
+pnpm run lint      # eslint
+pnpm run fmt       # prettier
+pnpm test          # vitest
 ```
 
 Python tests: `tests/tui_gateway/` via `scripts/run_tests.sh`. TS tests: vitest in `ui-tui`. A

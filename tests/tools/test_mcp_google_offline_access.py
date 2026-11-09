@@ -39,7 +39,7 @@ def _standin(httpx, *, issuer, authorization_servers):
     def handler(request):
         url = str(request.url)
         path = urlsplit(url).path
-        j = lambda status, body, **h: httpx.Response(status, json=body, headers=h, request=request)  # noqa: E731
+        j = lambda status, body, **h: httpx.Response(status, json=body, headers=h, request=request)
         if url == RESOURCE:
             if request.headers.get("Authorization") == "Bearer AT-1":
                 return j(200, {"ok": True})

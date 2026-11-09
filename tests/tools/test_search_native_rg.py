@@ -126,3 +126,17 @@ def test_limit_hit_keeps_drained_matches_when_group_kill_is_refused(tree, ops_fa
     monkeypatch.setattr(os, "killpg", lambda pgid, sig: (_ for _ in ()).throw(PermissionError(1, "Operation not permitted")))
     result = ops.search(pattern="needle", path=str(tree), limit=2)
     assert not result.error and len(result.matches) == 2, result.to_dict()
+
+
+def test_local_search_runs_the_pinned_ripgrep_not_the_first_on_path(_local_env, tmp_path, monkeypatch):
+    """The terminal PATH puts the user's tools first; Hermes's own search still runs PM's rg."""
+    import pm
+    from pm.install import InstalledPackage
+
+    pinned = tmp_path / "store" / "ripgrep" / "rg"
+    pinned.parent.mkdir(parents=True)
+    pinned.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(pm, "installed_package",
+                        lambda name: InstalledPackage(pinned.parent, "15", pinned) if name == "ripgrep" else None)
+    ops = ShellFileOperations(_local_env, cwd=str(tmp_path))
+    assert ops._resolve_command("rg") == str(pinned).replace("\\", "/")

@@ -36,5 +36,5 @@ async def test_media_dispatch_delivers_audio_through_mattermost_send_voice(tmp_p
 
     assert [r.success for r in results] == [True]
     adapter._notify_media_delivery_failure.assert_not_awaited()
-    args, kwargs = adapter._send_local_file.call_args
+    args, _kwargs = adapter._send_local_file.call_args
     assert args[1] == str(clip)

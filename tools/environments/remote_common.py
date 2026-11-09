@@ -1,4 +1,4 @@
-"""Helpers shared by the non-local terminal backends (docker, ssh, singularity, cloud SDKs)."""
+"""Helpers shared by the non-local terminal backends (docker, ssh, cloud SDKs)."""
 
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ def resolve_passthrough_env(explicit_forward: Iterable[str] = (),
     still a value. Do not fall back to the launch profile on policy failures.
     """
     from tools.env_passthrough import get_all_passthrough, resolve_passthrough_value
+    from tools.environments.local_env_policy import _is_provider_env_blocklisted
     from agent.secret_scope import (
         _is_global_env, build_profile_env_boundary, current_secret_scope, is_multiplex_active)
 
@@ -46,8 +47,11 @@ def resolve_passthrough_env(explicit_forward: Iterable[str] = (),
     passthrough_keys = get_all_passthrough(profile_home=profile_home)
     forward_keys = {
         k for k in explicit_forward if not _is_hermes_internal_secret(k, profile_home=profile_home)
-    } | {k for k in passthrough_keys
-         if not _is_hermes_internal_secret(k, profile_home=profile_home) and not _is_blocked_provider_env(k)}
+    } | {
+        k for k in passthrough_keys
+        if not _is_hermes_internal_secret(k, profile_home=profile_home)
+        and not _is_provider_env_blocklisted(k)
+    }
     forward_keys = {k for k in forward_keys if _SHELL_ENV_NAME_RE.fullmatch(k)}
     target_values = boundary.compiled_target_values() if boundary is not None else None
     hermes_env = hermes_env_loader() if forward_keys and boundary is None else {}

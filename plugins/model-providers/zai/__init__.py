@@ -56,7 +56,13 @@ class ZaiProfile(ProviderProfile):
         # Only emit when the user expressed a preference (server default = enabled).
         if isinstance(reasoning_config, dict):
             enabled = reasoning_config.get("enabled") is not False
-            extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
+            if not enabled and _has_token(model, _GLM_5_3_TOKENS):
+                # GLM-5.3 rejects disabled thinking; low is its lightest supported mode.
+                enabled = True
+                top_level["reasoning_effort"] = "low"
+            # Preserved Thinking: with thinking on, the standard endpoint drops replayed prior-turn
+            # reasoning_content unless clear_thinking is false (docs.z.ai/guides/capabilities/thinking-mode).
+            extra_body["thinking"] = {"type": "enabled", "clear_thinking": False} if enabled else {"type": "disabled"}
         if is_5_2:
             effort = _glm_5_2_reasoning_effort(reasoning_config, model=model)
             if effort is not None:

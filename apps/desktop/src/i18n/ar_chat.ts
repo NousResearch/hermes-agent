@@ -100,7 +100,7 @@ export const arChat = {
       '/init': 'فحص المستودع لإنشاء تعليمات AGENTS.md أو تحديثها',
       '/suggestions': 'مراجعة عمليات الأتمتة المقترحة وقبولها أو رفضها',
       '/blueprint': 'إعداد أتمتة من قالب مخطط',
-      '/browser': 'إدارة متصفح الوكيل [connect|disconnect|status|use]',
+      '/browser': 'إدارة متصفح الوكيل [connect|disconnect|status]',
       '/palette': 'فتح لوحة الأوامر',
       '/usage': 'عرض استخدام الرموز وحدود الطلبات؛ reset يسترد إعادة ضبط محفوظة لحدود Codex',
       '/subscription': 'عرض خطة Nous وتغييرها في المتصفح',
@@ -391,9 +391,6 @@ export const arChat = {
     sessionUnavailable: 'الجلسة غير متاحة',
     createSessionFailed: 'فشل إنشاء الجلسة',
     promptFailed: 'فشل إرسال الرسالة',
-    staleSessionTitle: 'المحادثة غير محدّثة',
-    staleSessionBody:
-      'كانت هذه النافذة متأخرة عن عرض آخر لنفس المحادثة. تم تحميل أحدث الرسائل. أعد الإرسال إذا كنت لا تزال تريد ذلك.',
     providerCredentialRequired: 'مطلوب اعتماد المزود',
     emptySlashCommand: 'أمر slash فارغ',
     slashCommandIgnoredTitle: 'لم يتم إرسال الأمر',
@@ -468,6 +465,7 @@ export const arChat = {
     imageAttach: 'إرفاق الصورة',
     imageWriteFailed: 'فشل كتابة الصورة',
     imageAttachFailed: 'فشل إرفاق الصورة',
+    attachFailed: 'فشل الإرفاق',
     pastedContent: 'محتوى ملصق',
     pasteAttachFailed: 'تعذر إرفاق النص الملصق',
     attachImages: 'إرفاق الصور',
@@ -475,6 +473,7 @@ export const arChat = {
     noClipboardImage: 'لا توجد صورة في الحافظة',
     clipboardPasteFailed: 'فشل اللصق من الحافظة',
     dropFiles: 'أفلت الملفات هنا',
+    dropFilesMore: (count: number) => `و${count} أخرى`,
     handoff: {
       pickPlatform: 'اختر وجهة',
       success: platform => `تم التسليم إلى ${platform}. استأنف هنا في أي وقت.`,
@@ -522,11 +521,6 @@ export const arChat = {
         title: 'يتوفر تحديث للمحرك المحلي',
         text: 'حدّث المحرك الذي يشغّل نماذجك المحلية. قد تنقطع الطلبات المحلية الجارية.',
         action: 'التحديث الآن'
-      },
-      'local-setup': {
-        title: 'هذا الجهاز يمكنه تشغيل النماذج محليًا',
-        text: 'عتادك قادر على تشغيل نموذج محلي. تبقى محادثاتك على جهازك ولا تكلف شيئًا.',
-        action: 'إعداد الآن'
       },
       'right-pane': {
         title: 'لوحة العمل',

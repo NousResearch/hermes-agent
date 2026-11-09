@@ -22,11 +22,12 @@ def test_gateway_failure_writer_preserves_accepted_turn_identity(tmp_path):
         text=True,
         stdin=subprocess.DEVNULL,
         timeout=90,
+        check=False,
     )
     assert receipt.exists(), result.stdout + result.stderr
     data = json.loads(receipt.read_text())
     assert all(row["reached"] for row in data["observations"]), data
-    # A startup lazy install (tirith → PM runtime) would download over the real network on a
+    # A startup lazy install would download over the real network on a
     # background thread and pollute the archive case's process-wide tracemalloc window.
     assert data["blocked_external_attempts"] == [], data["blocked_external_attempts"]
     assert data["passed"] == data["total"], data["observations"]
@@ -236,6 +237,270 @@ def test_fresh_session_agent_flushed_failed_turn_is_closed(tmp_path):
         # Typed like the core closer's row, or Desktop reads the boundary as the model's reply.
         assert rows[-1]["display_kind"] == FAILED_TURN_DISPLAY_KIND
         assert store.transcript_tail_role(sid) == "assistant"
+        db.close()
+
+    asyncio.run(check())
+
+
+def test_failed_turn_whose_tail_is_a_tool_row_is_closed(tmp_path):
+    """A turn that failed after its tool ran leaves the tool row as the durable tail. That tail is
+    as open as a bare user row: the gateway closer must land the boundary, once."""
+    import asyncio
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource, SessionStore
+
+    async def check():
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = store
+        runner._session_db = object()  # agent_persisted defaults True
+
+        async def noop(*args, **kwargs):
+            return None
+
+        runner._refresh_agent_cache_message_count = noop
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="tool-tail", user_id="u")
+        entry = store.get_or_create_session(source)
+        sid = entry.session_id
+        db = store._db_for_session_id(sid)
+        call = {"id": "call-1", "type": "function", "function": {"name": "reset_password", "arguments": "{}"}}
+        db.append_message(sid, "user", "reset the password", platform_message_id="m-1")
+        db.append_message(sid, "assistant", "", tool_calls=[call])
+        db.append_message(sid, "tool", "Password reset", tool_call_id="call-1")
+        failed = {"failed": True, "final_response": "429", "error": "429", "history_offset": 0,
+                  "last_prompt_tokens": 0, "messages": [
+                      {"role": "user", "content": "reset the password"},
+                      {"role": "assistant", "content": "", "tool_calls": [call]},
+                      {"role": "tool", "tool_call_id": "call-1", "content": "Password reset"},
+                  ]}
+        for _ in range(2):  # second pass = platform redelivery of the same failed message
+            await runner._hmwa_persist_turn_transcript(
+                event=MessageEvent(text="reset the password", source=source, message_id="m-1"),
+                source=source, session_entry=entry, session_key=entry.session_key, agent_result=failed,
+                agent_messages=failed["messages"],
+                prepared=runner._PreparedTurn([], "", "reset the password", None, None, None, sid, "o"),
+                response="x", agent_failed_early=True, hidden_reasoning_incomplete=False,
+                is_context_overflow_failure=False,
+            )
+        rows = [m for m in db.get_messages(sid) if m["role"] != "session_meta"]
+        assert [m["role"] for m in rows] == ["user", "assistant", "tool", "assistant"]
+        assert (rows[-1]["content"], rows[-1]["display_kind"]) == (PARTIAL_FAILED_TURN_NOTICE, FAILED_TURN_DISPLAY_KIND)
+        db.close()
+
+    asyncio.run(check())
+
+
+def test_content_policy_refusal_drops_the_turn_and_evicts_the_cached_agent(tmp_path):
+    """A safety-filter refusal is deterministic for the unchanged conversation, so a persisted
+    refused turn re-trips the filter on every later message and locks the chat (the "stuck session"
+    report). Unlike a transient failure (which persists the user row + a boundary to replay), the
+    gateway drops the refused turn — the user row the agent flushed at turn start is soft-deleted
+    (the rewind /undo uses) and the cached agent is evicted so the next turn rebuilds clean. An
+    earlier accepted exchange survives."""
+    import asyncio
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import AsyncSessionStore, SessionSource, SessionStore
+
+    async def check():
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = store
+        runner._async_session_store = AsyncSessionStore(store)
+        runner._session_db = object()  # agent_persisted defaults True
+
+        async def noop(*args, **kwargs):
+            return None
+
+        runner._refresh_agent_cache_message_count = noop
+        evicted = []
+        runner._evict_cached_agent = lambda session_key, **kw: evicted.append(session_key)
+
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="refused", user_id="u")
+        entry = store.get_or_create_session(source)
+        sid = entry.session_id
+        db = store._db_for_session_id(sid)
+        # A prior accepted exchange, then the agent's turn-start flush of the refused user row.
+        db.append_message(sid, "user", "hello")
+        db.append_message(sid, "assistant", "hi there")
+        db.append_message(sid, "user", "the request the filter blocked", platform_message_id="m-9")
+        refused = {"failed": True, "failure_reason": "content_policy_blocked", "failure_retryable": False,
+                   "final_response": "⚠️ safety refusal", "error": "content_policy_blocked: x",
+                   "messages": [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi there"}],
+                   "history_offset": 0, "last_prompt_tokens": 0}
+        await runner._hmwa_persist_turn_transcript(
+            event=MessageEvent(text="the request the filter blocked", source=source, message_id="m-9"),
+            source=source, session_entry=entry, session_key=entry.session_key, agent_result=refused,
+            agent_messages=refused["messages"],
+            prepared=runner._PreparedTurn([], "", "the request the filter blocked", None, None, None, sid, "o"),
+            response="⚠️ safety refusal", agent_failed_early=True, hidden_reasoning_incomplete=False,
+            is_context_overflow_failure=False,
+        )
+        rows = [(m["role"], m["content"]) for m in db.get_messages(sid) if m["role"] != "session_meta"]
+        # The refused turn is gone; the prior accepted exchange survives; no failed-turn boundary.
+        assert rows == [("user", "hello"), ("assistant", "hi there")]
+        assert store.transcript_tail_role(sid) == "assistant"
+        # The cached agent is evicted so the next turn rebuilds from the clean transcript.
+        assert evicted == [entry.session_key]
+        db.close()
+
+    asyncio.run(check())
+
+
+def test_content_policy_refused_turn_stays_in_the_display_tagged_content_refused(tmp_path):
+    """The refused ask leaves the MODEL read (active-only) but is RETAINED in the display read,
+    tagged content_refused, so a Desktop/CLI reopen still shows the greyed "you asked X → refused"
+    block. Model-exclusion (the stuck-session fix) and display-retention are the two invariants."""
+    import asyncio
+
+    from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import AsyncSessionStore, SessionSource, SessionStore
+
+    async def check():
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = store
+        runner._async_session_store = AsyncSessionStore(store)
+        runner._session_db = object()
+
+        async def noop(*args, **kwargs):
+            return None
+
+        runner._refresh_agent_cache_message_count = noop
+        runner._evict_cached_agent = lambda session_key, **kw: None
+
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="refused2", user_id="u")
+        entry = store.get_or_create_session(source)
+        sid = entry.session_id
+        db = store._db_for_session_id(sid)
+        db.append_message(sid, "user", "hello")
+        db.append_message(sid, "assistant", "hi there")
+        db.append_message(sid, "user", "the request the filter blocked", platform_message_id="m-9")
+        refused = {"failed": True, "failure_reason": "content_policy_blocked", "failure_retryable": False,
+                   "final_response": "⚠️ safety refusal", "error": "content_policy_blocked: x",
+                   "messages": [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi there"}],
+                   "history_offset": 0, "last_prompt_tokens": 0}
+        await runner._hmwa_persist_turn_transcript(
+            event=MessageEvent(text="the request the filter blocked", source=source, message_id="m-9"),
+            source=source, session_entry=entry, session_key=entry.session_key, agent_result=refused,
+            agent_messages=refused["messages"],
+            prepared=runner._PreparedTurn([], "", "the request the filter blocked", None, None, None, sid, "o"),
+            response="⚠️ safety refusal", agent_failed_early=True, hidden_reasoning_incomplete=False,
+            is_context_overflow_failure=False,
+        )
+
+        # MODEL read (active-only): the refused ask is gone.
+        model = [m["content"] for m in db.get_messages(sid) if m["role"] == "user"]
+        assert model == ["hello"]
+
+        # DISPLAY read (include_compacted): the refused ask is kept, tagged, with the stored notice.
+        display = [m for m in db.get_messages(sid, include_compacted=True) if m["role"] != "session_meta"]
+        refused_row = display[-1]
+        assert refused_row["content"] == "the request the filter blocked"
+        assert refused_row["display_kind"] == CONTENT_REFUSED_DISPLAY_KIND
+        assert CONTENT_REFUSED_METADATA_KEY in (refused_row.get("display_metadata") or {})
+        db.close()
+
+    asyncio.run(check())
+
+
+def test_managed_worker_refusal_is_cleaned_owner_side_in_the_real_db(tmp_path):
+    """752 (Bot Chat / managed worker): a managed worker runs the turn in a subprocess that flushes
+    to the SHARED transcript, then exits — it CANNOT rewind its own transcript. execute_managed
+    settles the captured result but, before this fix, never dropped the refused rows, so the next
+    worker reloaded the blocked request and the deterministic filter re-refused forever. The owner-
+    side cleanup (``_finalize_managed_refusal`` → ``_hmwa_retain_content_policy_refused_turn``) now
+    runs after the worker exits. Proven against the REAL on-disk state.db: the refused turn leaves the
+    MODEL read and is retained, tagged, in the DISPLAY read; a prior accepted exchange survives; and a
+    mid-turn redirect's boundary targets the whole refused run, not just the redirect."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import AsyncSessionStore, SessionSource, SessionStore
+    from gateway.session_managed_worker import _finalize_managed_refusal
+
+    async def check():
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = store
+        runner._async_session_store = AsyncSessionStore(store)
+        runner._session_db = object()
+        runner._evict_cached_agent = lambda *a, **k: None  # managed worker: no cached owner agent
+        authority = SimpleNamespace(runner=runner)
+
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="managed-refused", user_id="u")
+        entry = store.get_or_create_session(source)
+        sid = entry.session_id
+        db = store._db_for_session_id(sid)
+        # What the managed worker's subprocess flushed to the shared transcript this turn:
+        db.append_message(sid, "user", "hello")
+        db.append_message(sid, "assistant", "hi there")
+        boundary = db.append_message(sid, "user", "the request the filter blocked")
+        db.append_message(sid, "assistant", "", tool_calls=[{"id": "t1", "type": "function",
+                          "function": {"name": "shell", "arguments": "{}"}}])
+        db.append_message(sid, "tool", "ran", tool_call_id="t1")
+        db.append_message(sid, "user", "actually, do this instead")  # a mid-turn redirect
+
+        accepted = {"failed": True, "failure_reason": "content_policy_blocked",
+                    "final_response": "⚠️ safety refusal", "error": "content_policy_blocked: x",
+                    "refused_turn_boundary_row_id": boundary}
+        await _finalize_managed_refusal(authority, sid, accepted)
+
+        # Read the REAL state.db back: the whole refused run is gone from the model read.
+        model = [(m["role"], m["content"]) for m in db.get_messages_as_conversation(sid)
+                 if m["role"] != "session_meta"]
+        assert model == [("user", "hello"), ("assistant", "hi there")], model
+        # The original refused ask is retained in the display read, tagged content_refused.
+        display = [m for m in db.get_messages_as_conversation(sid, include_compacted=True)
+                   if m["role"] != "session_meta"]
+        refused = display[-1]
+        assert refused["content"] == "the request the filter blocked"
+        assert refused["display_kind"] == CONTENT_REFUSED_DISPLAY_KIND
+        assert CONTENT_REFUSED_METADATA_KEY in (refused.get("display_metadata") or {})
+        db.close()
+
+    asyncio.run(check())
+
+
+def test_managed_worker_cleanup_is_a_no_op_for_a_non_refusal(tmp_path):
+    """Only a content_policy_blocked managed result triggers the owner-side drop; an ordinary
+    (successful or transient-failure) managed turn leaves the transcript untouched."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import AsyncSessionStore, SessionSource, SessionStore
+    from gateway.session_managed_worker import _finalize_managed_refusal
+
+    async def check():
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = store
+        runner._async_session_store = AsyncSessionStore(store)
+        runner._session_db = object()
+        runner._evict_cached_agent = lambda *a, **k: None
+        authority = SimpleNamespace(runner=runner)
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="managed-ok", user_id="u")
+        sid = store.get_or_create_session(source).session_id
+        db = store._db_for_session_id(sid)
+        db.append_message(sid, "user", "hello")
+        db.append_message(sid, "assistant", "hi there")
+        before = [(m["role"], m["content"]) for m in db.get_messages_as_conversation(sid)
+                  if m["role"] != "session_meta"]
+        await _finalize_managed_refusal(authority, sid, {"completed": True, "final_response": "done"})
+        after = [(m["role"], m["content"]) for m in db.get_messages_as_conversation(sid)
+                 if m["role"] != "session_meta"]
+        assert before == after == [("user", "hello"), ("assistant", "hi there")]
         db.close()
 
     asyncio.run(check())

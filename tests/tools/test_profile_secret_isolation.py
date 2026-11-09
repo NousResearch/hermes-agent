@@ -293,7 +293,7 @@ def test_scope_profile_identity_mismatch_refuses_before_child_env(tmp_path, monk
 def test_boundary_matches_windows_environment_names_case_insensitively(
     tmp_path, monkeypatch
 ):
-    import agent.secret_scope as secret_scope
+    from agent import secret_scope
 
     monkeypatch.setattr(secret_scope, "_ENV_KEYS_CASE_INSENSITIVE", True)
     source = tmp_path / "source"
@@ -677,7 +677,7 @@ def test_profile_op_env_values_are_boundary_scoped(tmp_path):
 def test_external_secret_source_failure_preserves_normal_scope_fail_open(
     monkeypatch, tmp_path
 ):
-    import hermes_cli.env_loader as env_loader
+    from hermes_cli import env_loader
 
     def _raise(_home, **kwargs):
         raise RuntimeError("secret backend unavailable")
@@ -687,7 +687,7 @@ def test_external_secret_source_failure_preserves_normal_scope_fail_open(
 
 
 def test_external_secret_source_failure_refuses_boundary(monkeypatch, tmp_path):
-    import hermes_cli.env_loader as env_loader
+    from hermes_cli import env_loader
 
     def _raise(_home, **kwargs):
         raise RuntimeError("secret backend unavailable")
@@ -698,7 +698,7 @@ def test_external_secret_source_failure_refuses_boundary(monkeypatch, tmp_path):
 
 
 def test_failed_external_snapshot_recovers_on_next_boundary(monkeypatch, tmp_path):
-    import hermes_cli.env_loader as env_loader
+    from hermes_cli import env_loader
 
     outcomes = iter([RuntimeError("temporary"), {"API_TOKEN": "recovered"}])
 
@@ -773,7 +773,7 @@ def test_snapshot_exclusions_include_profile_owned_names(tmp_path, multiplex_mod
 
 
 def test_snapshot_exclusion_refresh_fails_closed(monkeypatch, tmp_path, multiplex_mode):
-    import agent.secret_scope as secret_scope
+    from agent import secret_scope
 
     source = tmp_path / "source"
     target = tmp_path / "target"
@@ -969,6 +969,7 @@ def test_late_provider_registration_updates_terminal_and_model_policy(
     from hermes_cli import auth
 
     provider = SimpleNamespace(
+        id="late-acme",
         api_key_env_vars=("ACME_PROVIDER_API_KEY",),
         auth_type="api_key",
         base_url_env_var=None,

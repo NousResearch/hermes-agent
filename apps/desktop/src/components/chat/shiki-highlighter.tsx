@@ -12,6 +12,7 @@ import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { SHIKI_COLOR_REPLACEMENTS } from '@/components/chat/shiki-config'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
+import { hostHas } from '@/lib/host-capabilities'
 import { isLikelyProseCodeBlock } from '@/lib/markdown-code'
 
 import type { CachedShikiBlockProps } from './shiki-block'
@@ -198,7 +199,16 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
       />
       <CodeCardBody className="[&_pre]:px-3 [&_pre]:py-2.5">
         <ExpandableBlock>
-          <Pre className="aui-shiki m-0 overflow-hidden bg-transparent p-0">
+          {/* In the browser host the fence is sized to its longest line, so
+              ExpandableBlock scrolls it sideways in place and draws its fade.
+              Native Desktop keeps main's fence, whose <pre> scrolls itself. */}
+          <Pre
+            className={
+              hostHas('sidewaysCodeFences')
+                ? 'aui-shiki m-0 min-w-max bg-transparent p-0'
+                : 'aui-shiki m-0 overflow-hidden bg-transparent p-0'
+            }
+          >
             {plain ? (
               <PlainCode code={content} />
             ) : (

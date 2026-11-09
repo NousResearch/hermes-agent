@@ -1,4 +1,5 @@
 import { compactNumber } from '@hermes/shared'
+import { useStore } from '@nanostores/react'
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { LogSearchField, useLogSearch } from '@/components/chat/log-search'
@@ -26,10 +27,12 @@ import {
   Wrench
 } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
+import { isSignedOutStatus } from '@/lib/signed-out-status'
 import { fmtDateTime } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
+import { $cloudOwnsUpdates } from '@/store/cloud-updates'
 import { $pinnedSessionIds, pinSession, SIDEBAR_SESSIONS_PAGE_SIZE, unpinSession } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import { $sessionProfilesTruncated, $sessions, sessionPinId } from '@/store/session'
@@ -128,6 +131,19 @@ function RowIconButton({
   )
 }
 
+/** The System card's Update button. Hermes Cloud updates its agents itself, so it has none there. */
+function UpdateHermesButton({ label, onClick }: { label: string; onClick: () => void }) {
+  if (useStore($cloudOwnsUpdates).backend) {
+    return null
+  }
+
+  return (
+    <Button onClick={onClick} size="xs" variant="textStrong">
+      {label}
+    </Button>
+  )
+}
+
 function EmptyPanel({ action, description, title }: { action?: ReactNode; description: string; title?: string }) {
   return (
     <div className="grid min-h-48 place-items-center px-6 text-center">
@@ -223,7 +239,9 @@ export function CommandCenterView({
         })
       ])
 
-      setStatus(nextStatus)
+      // The Webapp's signed-out body (an access token expired since the last gated request) leaves
+      // out what this panel shows, so the last full answer stays up.
+      setStatus(previous => (previous && isSignedOutStatus(nextStatus) ? previous : nextStatus))
       setLogs(nextLogs.lines)
     } catch (error) {
       setSystemError(error instanceof Error ? error.message : String(error))
@@ -504,9 +522,7 @@ export function CommandCenterView({
                           <Button onClick={() => void runSystemAction('restart')} size="xs" variant="text">
                             {cc.restartGateway}
                           </Button>
-                          <Button onClick={() => void runSystemAction('update')} size="xs" variant="textStrong">
-                            {cc.updateHermes}
-                          </Button>
+                          <UpdateHermesButton label={cc.updateHermes} onClick={() => void runSystemAction('update')} />
                         </div>
                       </div>
                       {systemAction && (

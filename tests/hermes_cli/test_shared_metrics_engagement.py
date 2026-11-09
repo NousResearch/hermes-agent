@@ -4,7 +4,7 @@ conversation is one session row with its whole volume, and turns-before-switch n
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 import pytest
 
@@ -13,19 +13,30 @@ from hermes_cli import lifecycle
 from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.observability import shared_metrics_engagement as engagement
 from hermes_cli.observability.shared_metrics import SharedMetricsStore
-from tests.hermes_cli.test_relay_shared_metrics_runtime import (  # noqa: F401 - fixture
+from tests.hermes_cli.test_relay_shared_metrics_runtime import (
+    _join_export_workers,
     _stored_values,
     direct_runtime,
 )
 
 PUBLIC = "anthropic/claude-sonnet-4"
 OTHER = "openai/gpt-5"
-DAY1 = datetime(2026, 9, 27, 9, 0, tzinfo=timezone.utc).timestamp()
+DAY1 = datetime(2026, 9, 27, 9, 0, tzinfo=UTC).timestamp()
 
 
-def _flush() -> None:
-    for runtime in list(relay_shared_metrics._RUNTIMES.values()):
+def _flush(*stores) -> None:
+    """Settle every write before the store is read. The fake Relay delivers events inline, but each
+    finished turn starts the background flush/export worker, and a user-path write that meets the
+    worker's write transaction past the short busy timeout is deferred in memory until the next
+    write. Without joining the worker and draining, an assertion can read the store before the
+    day-closing writes land (seen on a loaded CI runner as ``[] == [...]``)."""
+    _join_export_workers()
+    runtimes = list(relay_shared_metrics._RUNTIMES.values())
+    for runtime in runtimes:
         runtime.relay.subscribers.flush()
+    live = [r for r in runtimes if isinstance(r, relay_shared_metrics._Runtime)]
+    for store in (*stores, *(r.subscriber.store for r in live)):
+        store.drain_deferred()
 
 
 def _turn(session_id, task_id, *, platform="cli", model=PUBLIC, tools=0, clock=None, at=None, took=0.0):
@@ -74,7 +85,7 @@ def test_a_closed_day_reports_active_time_surfaces_and_primary_model_once(direct
     clock["now"] = DAY1 + 86_400
     engagement.record(other_process, resource, surface="cli", route=None)
     _turn("cli-2", "t3", clock=clock, at=DAY1 + 86_400 + 5)
-    _flush()
+    _flush(other_process)
 
     assert _rows(tmp_path, "hermes.engagement.surface_day.count") == sorted([
         (json.dumps({"active_minutes_bucket": "5m_to_30m", "surface": "cli"}, sort_keys=True), 1),
@@ -82,7 +93,7 @@ def test_a_closed_day_reports_active_time_surfaces_and_primary_model_once(direct
     ])
     assert _stored_values(tmp_path, "hermes.engagement.day.count") == [(
         {"active_minutes_bucket": "5m_to_30m", "active_profile_count_bucket": "1", "primary_model": PUBLIC,
-         "primary_provider": "openrouter", "surfaces_used_count": "2"}, 1)]
+         "primary_provider": "openrouter", "surfaces_used_count": "2", "gateway_peak_busy_chats_bucket": "0"}, 1)]
     periods = {c["period_start"] for c in other_process.counter_snapshot() if c["metric_name"].startswith("hermes.engagement")}
     assert periods == {"2026-09-27"}
 
@@ -110,7 +121,7 @@ def test_a_late_interaction_never_reopens_a_closed_day():
     """An interaction sampled before midnight that lands after the day rolled folds into the newer day:
     the closed day is reported once, and the only close path is a later clock."""
     resource = {"architecture": "x86_64", "hermes_version": "0.0.0", "install_method": "git", "os_family": "linux"}
-    midnight = int(datetime(2026, 9, 28, tzinfo=timezone.utc).timestamp() * 1000)
+    midnight = int(datetime(2026, 9, 28, tzinfo=UTC).timestamp() * 1000)
     state, _ = engagement.apply(None, now_ms=midnight - 3_600_000, resource=resource, surface="cli")
     state, closed = engagement.apply(state, now_ms=midnight + 500, resource=resource, surface="cli")
     assert [r[3] for r in closed] == ["2026-09-27", "2026-09-27"]
@@ -121,7 +132,7 @@ def test_a_late_interaction_never_reopens_a_closed_day():
 
 
 def test_collection_off_writes_no_engagement_state(direct_runtime, tmp_path, clock, monkeypatch):
-    monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly", dict)
     _turn("s1", "t1", clock=clock, at=DAY1)
     clock["now"] = DAY1 + 86_400
     _turn("s1", "t2", clock=clock, at=DAY1 + 86_400)
@@ -299,13 +310,13 @@ def test_active_profiles_are_counted_once_per_host_day_on_the_root_profiles_row(
         engagement.record(_profile_store(home), resource, surface="cli", route=None)
 
     zero = {"active_minutes_bucket": "lt_5m", "active_profile_count_bucket": "0", "primary_model": "none",
-            "primary_provider": "none", "surfaces_used_count": "1"}
+            "primary_provider": "none", "surfaces_used_count": "1", "gateway_peak_busy_chats_bucket": "0"}
     assert _day_rows(a) == [("2026-09-27", zero)]
     assert _day_rows(b) == []  # B has not seen a later day yet; its row will carry 0 too
     if root_collects:
         assert _day_rows(root) == [("2026-09-27", {
             "active_minutes_bucket": "0", "active_profile_count_bucket": "2", "primary_model": "none",
-            "primary_provider": "none", "surfaces_used_count": "0"})]
+            "primary_provider": "none", "surfaces_used_count": "0", "gateway_peak_busy_chats_bucket": "0"})]
     else:
         assert not (root / "telemetry").exists()
 

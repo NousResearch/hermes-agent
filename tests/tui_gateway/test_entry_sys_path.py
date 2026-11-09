@@ -38,6 +38,7 @@ def test_entry_imports_from_cwd_with_colliding_packages(tmp_path):
         encoding="utf-8",
         errors="replace",
         timeout=120,
+        check=False,
     )
     assert result.returncode == 0, (
         "tui_gateway.entry failed to import from a CWD with a colliding utils/ "

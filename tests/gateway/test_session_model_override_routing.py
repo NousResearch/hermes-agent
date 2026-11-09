@@ -54,7 +54,6 @@ def _make_runner():
     runner._background_tasks = set()
     runner._session_db = None
     runner._session_model_overrides = {}
-    runner._session_reasoning_overrides = {}
     runner._pending_model_notes = {}
     runner._pending_approvals = {}
     runner._agent_cache = {}
@@ -122,7 +121,7 @@ fallback_providers:
             "credential_pool": None,
         }
 
-    import hermes_cli.runtime_provider as runtime_provider
+    from hermes_cli import runtime_provider
 
     monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", fake_resolve_runtime_provider)
 

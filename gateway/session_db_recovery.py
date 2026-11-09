@@ -19,6 +19,7 @@ class _Unavailable:
     failures: int = 0
     next_retry_at: float = 0.0
     in_flight: bool = False
+    error: str = ""
 
 
 class _HealthSource:
@@ -121,6 +122,7 @@ class RecoverableHandleCache:
                     raise
                 if not stale:
                     unavailable.failures += 1
+                    unavailable.error = f"{type(exc).__name__}: {exc}"
                     backoff = self._initial_retry_delay * (2 ** min(unavailable.failures - 1, 30))
                     unavailable.next_retry_at = self._clock() + min(backoff, self._max_retry_delay)
                     unavailable.in_flight = False
@@ -149,6 +151,12 @@ class RecoverableHandleCache:
         if was_unavailable and on_recovered is not None:
             on_recovered()
         return handle
+
+    def last_error(self, path: Path) -> str:
+        """The exception the latest failed open of *path* raised (``''`` when none is recorded)."""
+        target = Path(path).resolve()
+        with self.lock:
+            return next((u.error for key, u in self._unavailable.items() if key.resolve() == target), "")
 
     def close_all(self, close: Callable[[Any], None]) -> None:
         """Drain cached handles under the lock and close them outside it."""

@@ -16,6 +16,7 @@ from gateway.config import Platform
 from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
+from gateway.session_state import SERVICE_TIER_UNSET
 
 
 def _make_event(text="/reasoning", platform=Platform.TELEGRAM, user_id="12345", chat_id="67890"):
@@ -51,7 +52,6 @@ def _make_runner(adapter=None):
     runner._ephemeral_system_prompt = ""
     runner._prefill_messages = []
     runner._reasoning_config = None
-    runner._session_reasoning_overrides = {}
     runner._show_reasoning = False
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -103,19 +103,19 @@ class TestReasoningChoicePicker:
         reply = await on_choice(event.source.chat_id, "ultra")
 
         assert "ultra" in reply
-        override = runner._session_reasoning_overrides.get(session_key)
+        override = runner._session_state(session_key).conversation.reasoning_override
         assert override == {"enabled": True, "effort": "ultra"}
 
 
 class TestFastChoicePicker:
     def _patch_fast_support(self, monkeypatch, tmp_path):
         monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
         monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda cfg=None: "gpt-5.6")
         # ``/fast`` now resolves the effective session model through
         # ``_resolve_session_agent_runtime``; with no session override that path
         # calls runtime provider resolution, so stub it (no real credentials in CI).
-        monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {})
+        monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", dict)
         import hermes_cli.models as models_mod
         monkeypatch.setattr(models_mod, "model_supports_fast_mode", lambda m: True)
 
@@ -144,7 +144,8 @@ class TestFastChoicePicker:
         await on_choice(event.source.chat_id, "fast")
 
         assert runner._service_tier == "priority"
-        assert runner._session_service_tier_overrides
+        assert any(st.conversation.service_tier_override is not SERVICE_TIER_UNSET
+                   for st in runner._sessions_map().values())
         assert not (tmp_path / "config.yaml").exists()
 
 

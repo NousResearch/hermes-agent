@@ -10,6 +10,7 @@ import type { ReadableAtom } from 'nanostores'
 import type { ReactElement, ReactNode, PointerEvent as ReactPointerEvent } from 'react'
 
 import { setTreePaneParked } from '@/components/pane-shell/tree/parked-panes'
+import type { TabActionsMenu } from '@/components/pane-shell/tree/renderer/track-model'
 import {
   adoptContributedPanes,
   registerPaneCloser,
@@ -61,6 +62,8 @@ export interface PaneMirror<T> {
   tabMenuPrefix?: (key: string) => ((kit: MenuKit) => ReactNode) | undefined
   /** Wrap the tile's TAB (domain context menu — session verbs). */
   tabWrap?: (key: string, tab: ReactElement) => ReactNode
+  /** The same menu from a button (see PaneChrome.tabActions). */
+  tabActions?: (key: string) => TabActionsMenu | undefined
   /** Override the tile's TAB drag (session drop language: stack/split/link).
    *  Returns whether it took the drag (see PaneChrome.tabDrag). */
   tabDrag?: (key: string, event: ReactPointerEvent<HTMLElement>, onTap: () => void) => boolean
@@ -89,6 +92,18 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
     before: cfg.before?.(tile),
     pane: cfg.anchor?.(tile) ?? 'workspace',
     pos: cfg.dir?.(tile) ?? 'right'
+  })
+
+  // The tile's tab hooks, bound to its key (absent when the mirror has none).
+  const tabChrome = (key: string) => ({
+    tabActions: cfg.tabActions ? () => cfg.tabActions!(key) : undefined,
+    // returns boolean (handled) — see PaneChrome.tabDrag
+    tabDrag: cfg.tabDrag
+      ? (event: ReactPointerEvent<HTMLElement>, onTap: () => void) => cfg.tabDrag!(key, event, onTap)
+      : undefined,
+    tabLead: cfg.tabLead ? () => cfg.tabLead!(key) : undefined,
+    tabTitle: cfg.tabTitle ? () => cfg.tabTitle!(key) : undefined,
+    tabWrap: cfg.tabWrap ? (tab: ReactElement) => cfg.tabWrap!(key, tab) : undefined
   })
 
   const dispose = (key: string) => {
@@ -130,8 +145,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
         area: 'panes',
         title,
         data: {
-          tabLead: cfg.tabLead ? () => cfg.tabLead!(key) : undefined,
-          tabTitle: cfg.tabTitle ? () => cfg.tabTitle!(key) : undefined,
+          ...tabChrome(key),
           dock,
           lifecycleKeepAlive: cfg.lifecycleKeepAlive?.(key),
           minWidth: cfg.minWidth,
@@ -140,11 +154,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
           // and closeable, which is what keeps its tab when it lands in a zone of
           // its own (see strip-visibility.ts).
           placement: 'main',
-          tabDrag: cfg.tabDrag
-            ? (event: ReactPointerEvent<HTMLElement>, onTap: () => void) => cfg.tabDrag!(key, event, onTap)
-            : undefined, // returns boolean (handled) — see PaneChrome.tabDrag
-          tabMenuPrefix: cfg.tabMenuPrefix?.(key),
-          tabWrap: cfg.tabWrap ? (tab: ReactElement) => cfg.tabWrap!(key, tab) : undefined
+          tabMenuPrefix: cfg.tabMenuPrefix?.(key)
         },
         render: () => cfg.render(key)
       })

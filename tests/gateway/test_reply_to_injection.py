@@ -96,7 +96,7 @@ async def test_quoted_reply_references_stay_literal_while_typed_ones_expand(tmp_
     payload.write_text("LOCAL-FILE-MARKER", encoding="utf-8")
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
     runner = _make_runner()
-    runner._session_model_overrides, runner._last_resolved_model = {}, {}
+    runner._session_model_overrides = {}
     runner._agent_cache, runner._agent_cache_lock = {}, threading.Lock()
     runner._resolve_session_agent_runtime = lambda **kw: ("openai/gpt-4.1-mini", {"base_url": None, "api_key": ""})
     source = _source()

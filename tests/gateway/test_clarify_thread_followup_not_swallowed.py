@@ -100,7 +100,6 @@ def _make_runner(adapter):
     runner._is_user_authorized = lambda source: True
     runner._session_key_for_source = lambda source: SESSION_KEY
     runner._delivery_adapter_for = lambda source: adapter
-    runner._update_prompt_pending = {}
     return runner
 
 

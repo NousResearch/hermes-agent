@@ -18,7 +18,7 @@ lifecycle in ``hermes_cli.credential_lifecycle``.
 import re
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # Environment-variable shape: what every shell and ``os.getenv`` caller treats as a variable name.
 # Case-sensitive on purpose: a lowercase bare name (``my_flag``) stays a config.yaml top-level key.
@@ -85,3 +85,39 @@ def read_env_setting(key: str) -> Optional[str]:
             print(f"  (note: {key} is a stale top-level config.yaml copy; `hermes config set {key} <value>` "
                   f"moves it to .env, `hermes config unset {key}` removes it)", file=sys.stderr)
     return value
+
+
+def publish_env_value(key: str, value: Optional[str]) -> None:
+    """Publish a just-persisted ``.env`` change to the live process.
+    Under a multiplexed gateway a routed profile's write must not land in the SHARED
+    ``os.environ`` where every profile sees it; the installed scope mapping is updated instead so
+    same-turn reads see the change. All other callers keep the legacy ``os.environ`` publish.
+
+    ``save_env_value`` / ``remove_env_value`` already target the right file (``get_env_path()`` honors the
+    profile-home override), but the in-process mirror historically went straight to ``os.environ``. See
+    #77490, #88441.
+    """
+    import os
+    from hermes_cli.config import get_env_path
+
+    from agent import secret_scope as scope_module
+
+    scope = scope_module.current_secret_scope()
+    routed = scope_module.serves_routed_profile()
+    multiplex = scope_module.is_multiplex_active()
+    if multiplex or routed:
+        # Multiplex/routed mode must never publish a profile credential to
+        # shared os.environ. The immutable scope owner replaces the current
+        # context value; a missing scope stays fail-closed.
+        if scope_module.update_secret_scope(key, value, profile_home=get_env_path().parent):
+            return
+        return
+    if scope is not None:
+        # The launch profile may also have an installed scope (TUI/dashboard
+        # launch path). Keep same-request reads coherent, then retain the
+        # single-profile process-environment mirror below.
+        scope_module.update_secret_scope(key, value, profile_home=get_env_path().parent)
+    if value is None:
+        os.environ.pop(key, None)
+    else:
+        os.environ[key] = value

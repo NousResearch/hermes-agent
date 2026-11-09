@@ -13,6 +13,7 @@ import gateway.run as gateway_run
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
+from gateway.session_state import SERVICE_TIER_UNSET
 
 
 class _CapturingAgent:
@@ -44,6 +45,12 @@ class _CapturingAgent:
             "api_calls": 1,
             "completed": True,
         }
+
+
+def _tier_overrides(runner):
+    """Sessions holding a /fast override (an explicit None counts), keyed by session key."""
+    return {k: st.conversation.service_tier_override for k, st in runner._sessions_map().items()
+            if st.conversation.service_tier_override is not SERVICE_TIER_UNSET}
 
 
 def _install_fake_agent(monkeypatch):
@@ -134,11 +141,11 @@ async def test_handle_fast_command_global_flag_persists_config(monkeypatch, tmp_
     runner = _make_runner()
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
     # /fast now resolves eligibility through the session runtime resolver; with
     # no session override that path calls the real provider resolver, so stub it.
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", dict)
 
     response = await runner._handle_fast_command(_make_event("/fast fast --global"))
 
@@ -148,7 +155,7 @@ async def test_handle_fast_command_global_flag_persists_config(monkeypatch, tmp_
     saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
     assert saved["agent"]["service_tier"] == "fast"
     # Global write supersedes the session override.
-    assert not runner._session_service_tier_overrides
+    assert not _tier_overrides(runner)
 
 
 @pytest.mark.asyncio
@@ -165,7 +172,7 @@ async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
     # Eligibility routes through the session runtime resolver; stub the real
     # provider resolution the no-override path would otherwise trigger.
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", dict)
 
     event = _make_event("/fast normal")
     session_key = runner._session_key_for_source(event.source)
@@ -174,7 +181,7 @@ async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path)
 
     assert "NORMAL" in response
     # Override stores explicit None (normal) and wins over config "fast".
-    assert session_key in runner._session_service_tier_overrides
+    assert session_key in _tier_overrides(runner)
     assert runner._resolve_session_service_tier(session_key=session_key) is None
     # A different session still gets the config default.
     assert runner._resolve_session_service_tier(session_key="other-session") == "priority"
@@ -200,7 +207,7 @@ async def test_fast_gate_follows_the_session_route(monkeypatch, tmp_path, defaul
     session_key = runner._session_key_for_source(event.source)
     runner._session_model_overrides[session_key] = dict(override)
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: default_model)
 
     response = await runner._handle_fast_command(event)
@@ -213,7 +220,7 @@ async def test_fast_gate_follows_the_session_route(monkeypatch, tmp_path, defaul
         assert route["request_overrides"] == {"service_tier": "ultrafast"}
     else:
         assert "only available" in response
-        assert session_key not in runner._session_service_tier_overrides
+        assert session_key not in _tier_overrides(runner)
 
 
 @pytest.mark.asyncio
@@ -230,11 +237,11 @@ async def test_fast_override_lands_under_the_recovered_telegram_topic_key(monkey
     assert turn_key != raw_key
     runner._session_model_overrides[turn_key] = dict(_ASTRA_ON_CODEX)
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "claude-sonnet-4-6")
 
     response = await runner._handle_fast_command(MessageEvent(text="/fast fast", source=source, message_id="m1"))
 
     assert "FAST" in response
     assert runner._resolve_session_service_tier(session_key=turn_key) == "priority"
-    assert raw_key not in runner._session_service_tier_overrides
+    assert raw_key not in _tier_overrides(runner)

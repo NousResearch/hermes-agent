@@ -11,7 +11,8 @@ from hermes_cli import venv_sync
 from pm.environments import install_state_dir, selected_venv
 from pm import paths
 from pm.lock import Lockfile
-from tests.pm.test_plugin_survival_contract import admission_env  # noqa: F401
+from pm.packages import Venv
+from tests.pm.test_plugin_survival_contract import admission_env
 
 
 def test_check_uses_real_pm_selection_and_keeps_invalid_evidence(admission_env, monkeypatch, capsys):
@@ -61,14 +62,21 @@ def test_check_uses_real_pm_selection_and_keeps_invalid_evidence(admission_env, 
 
     # A recorded extra only counts while the tree still declares it.
     pyproject = core / 'pyproject.toml'
+    old_pyproject = pyproject.read_bytes()
     pyproject.write_text(pyproject.read_text(encoding='utf-8')
                          + '[project.optional-dependencies]\nchanged-extra = []\n', encoding='utf-8')
+    # A packaging change alone needs a new environment, even with uv.lock unchanged.
+    check('would-sync')
     altered = json.loads(pristine)
+    altered['packages']['venv']['stamp'] = Venv(core).expected_stamp([], plugin_dirs=[])
+    facts_path.write_text(json.dumps(altered), encoding='utf-8')
+    check('current')
     altered['packages']['venv']['extras'] = ['changed-extra']
     facts_path.write_text(json.dumps(altered), encoding='utf-8')
     check('would-sync')
     assert any(problem.startswith('venv:') for problem in ensure.check())
     facts_path.write_bytes(pristine)
+    pyproject.write_bytes(old_pyproject)
 
     pins.set_pin('python', '1.0', {'any': {'url': 'https://example.invalid/python', 'sha256': 'b' * 64}})
     pins.save()

@@ -299,7 +299,6 @@ def test_cron_delivery_runs_inside_job_profile_secret_scope(
 
     def fake_deliver(job, content, adapters=None, loop=None):
         captured["scope"] = current_secret_scope()
-        return None
 
     monkeypatch.setattr(sched, "_deliver_result", fake_deliver)
     monkeypatch.setattr(sched, "claim_dispatch", lambda _id: True)

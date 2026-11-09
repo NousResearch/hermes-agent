@@ -19,6 +19,7 @@ from typing import Any, Callable, Optional
 from hermes_cli.cli_output import line_input
 from hermes_cli.plugin_install_phase import InstallPhase
 
+from rich.markup import escape as _escape
 logger = logging.getLogger(__name__)
 
 # Answers to the dependency questions, reused while one plugin is installed into several profile
@@ -130,7 +131,7 @@ def _consent_python_deps(
     )
     if deps:
         for dep in deps:
-            console.print(f"  - {dep}")
+            console.print(f"  - {_escape(dep)}")
     else:
         console.print("  - (declared in its pyproject.toml)")
 
@@ -185,9 +186,9 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
         name = spec["name"]
         desc = spec.get("description", "")
         url = spec.get("url", "")
-        console.print(f"  {name}" + (f" — {desc}" if desc else ""))
+        console.print(f"  {_escape(name)}" + (f" — {_escape(desc)}" if desc else ""))
         if url:
-            console.print(f"  [dim]Get yours at: {url}[/dim]")
+            console.print(f"  [dim]Get yours at: {_escape(url)}[/dim]")
         try:
             value = (_pc().masked_secret_prompt if spec.get("secret", False) else line_input)(f"  {name}: ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -658,7 +659,7 @@ def cmd_install(
             "Consider using https:// or git@ for production installs.")
 
     if not brief:
-        console.print(f"[dim]Cloning {git_url}{f' (subdir: {_subdir})' if _subdir else ''}...[/dim]")
+        console.print(f"[dim]Cloning {_escape(git_url)}{f' (subdir: {_escape(_subdir)})' if _subdir else ''}...[/dim]")
     _interactive_scan_decision = interactive_scan_decision(console, "Install")
 
     def _install() -> tuple:

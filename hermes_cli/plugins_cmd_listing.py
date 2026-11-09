@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
+from rich.markup import escape as _escape
 def _pc():
     """The facade, read at call time: tests patch ``plugins_cmd.<name>`` and sibling calls must see it."""
     from hermes_cli import plugins_cmd
@@ -95,8 +96,8 @@ def cmd_list(args: Any | None = None) -> None:
         status = _STATUS_MARKUP.get(status_name, "[yellow]not enabled[/yellow]")
         if removed:
             name = f"[red]{name} ✗[/red]"
-            removed_lines.append(f"[red]✗ {name}[/red] was removed from the plugin catalog: {removed}")
-        table.add_row(name, status, version, description, source)
+            removed_lines.append(f"[red]✗ {name}[/red] was removed from the plugin catalog: {_escape(removed)}")
+        table.add_row(name, status, _escape(version), _escape(description), source)
         # class line rides the Source column for user plugins
         if source in {"user", "git"}:
             if klass and klass != "git":
@@ -128,9 +129,9 @@ def cmd_show(name: str) -> None:
     listens = manifest.get("listens") or []
     status = _pc()._plugin_status(pname, _pc()._get_enabled_set(), _pc()._get_disabled_set(), key=key)
     console.print()
-    console.print(f"[bold]{pname}[/bold]" + (f" [dim]v{version}[/dim]" if version else ""))
+    console.print(f"[bold]{_escape(pname)}[/bold]" + (f" [dim]v{_escape(version)}[/dim]" if version else ""))
     if description:
-        console.print(description)
+        console.print(_escape(description))
     console.print(f"[dim]Status:[/dim] {status}")
     console.print(f"[dim]Source:[/dim] {source}")
     console.print(f"[dim]Key:[/dim] {key}")
@@ -144,7 +145,7 @@ def cmd_show(name: str) -> None:
         console.print(f"[dim]Runs in:[/dim] {runs_in} [dim]— {audit.summary()}[/dim]")
     from hermes_cli.plugin_provider_requests import requires_auth_notice
     if notice := requires_auth_notice(manifest):
-        console.print(f"[dim]Sign-in:[/dim] {notice}")
-    console.print("[dim]Emits:[/dim] " + (", ".join(emits) if emits else "[dim](none)[/dim]"))
-    console.print("[dim]Listens:[/dim] " + (", ".join(listens) if listens else "[dim](none)[/dim]"))
+        console.print(f"[dim]Sign-in:[/dim] {_escape(notice)}")
+    console.print("[dim]Emits:[/dim] " + (_escape(", ".join(emits)) if emits else "[dim](none)[/dim]"))
+    console.print("[dim]Listens:[/dim] " + (_escape(", ".join(listens)) if listens else "[dim](none)[/dim]"))
     console.print()

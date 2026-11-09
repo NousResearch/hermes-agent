@@ -15,6 +15,7 @@ import pytest
 
 import hermes_state_lockguard as lg
 from hermes_state import SessionDB
+from persistence.sqlite._holder import StoreHolder
 from tests.hermes_state._wal_generation_harness import make_db, pin_wal, require_wal
 
 pytestmark = pytest.mark.platforms("linux")
@@ -54,9 +55,9 @@ def test_guard_never_outlives_the_handle_under_fd_reuse(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
     a = make_db(path, "s", "seed")
     require_wal(a)
-    b = SessionDB(db_path=path)
+    b = SessionDB(holder=StoreHolder(path))
     a.close()
-    c = SessionDB(db_path=path)
+    c = SessionDB(holder=StoreHolder(path))
     b.close()
     try:
         assert not _foreign_exclusive_ok(str(path)), "C recorded as guarded while nothing locks"

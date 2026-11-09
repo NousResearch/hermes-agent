@@ -554,8 +554,6 @@ gateway:
          /help, /usage. Les prompts normaux vont dans un topic.
       4. /new dans un topic réinitialise uniquement la session de ce topic.
       5. /topic <id> dans un topic y restaure une ancienne session.
-    system_topic_name: "Système"
-    system_topic_intro: "Topic système pour les commandes et l'état d'Hermes."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "Impossible de déterminer l'ID du chat."
     mode_not_enabled: "Le mode topic multi-session n'est pas activé pour ce chat."

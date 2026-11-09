@@ -487,8 +487,6 @@ gateway:
     root_new: "새 Hermes 채팅을 병렬로 시작하려면 이 봇 화면 상단의 All Messages 토픽을 열고 그곳에 아무 메시지나 보내세요. Telegram이 새 토픽을 만들어 줘요.\n\n각 토픽은 독립된 Hermes 세션이에요. 기존 토픽의 현재 세션을 교체하고 싶을 때만 그 토픽 안에서 /new를 사용하세요."
     new_header: "이 토픽에서 새 Hermes 세션을 시작했어요.\n\n팁: 병렬 작업을 하려면 여기서 /new를 쓰는 대신 All Messages를 열고 메시지를 보내 별도 토픽을 만드세요. /new는 현재 토픽에 연결된 세션을 교체해요."
     help: "/topic — 다중 세션 DM 모드 켜기(봇 하나로 여러 채팅을 병렬로)\n\n사용법:\n  /topic             토픽 모드를 켜거나, 이미 켜져 있으면 상태 표시\n  /topic help        이 메시지 표시\n  /topic off         토픽 모드를 끄고 토픽 연결 지우기\n  /topic <id>        토픽 안에서: ID로 이전 세션 복원\n\n동작 방식:\n1. 이 DM에서 /topic을 한 번 실행하세요 — Hermes가 BotFather의 Threads\n   Settings가 켜져 있는지 확인하고 다중 세션 모드를 켜요.\n2. 봇 상단의 All Messages를 누르고 아무 메시지나 보내세요.\n   Telegram이 그 메시지로 새 토픽을 만들고, 각 토픽은\n   독립된 Hermes 세션이 돼요(새 기록, 새 컨텍스트).\n3. 루트 DM은 시스템 로비가 돼요 — /topic, /status,\n   /help, /usage는 거기서 보내세요. 일반 프롬프트는 토픽에서 보내요.\n4. 토픽 안에서 /new를 쓰면 그 토픽의 세션만 초기화돼요.\n5. 토픽 안에서 /topic <id>를 쓰면 이전 세션을 그 토픽으로 복원해요."
-    system_topic_name: "시스템"
-    system_topic_intro: "Hermes 명령과 상태를 위한 시스템 토픽이에요."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "채팅 ID를 확인할 수 없어요."
     mode_not_enabled: "이 채팅에는 다중 세션 토픽 모드가 아직 켜져 있지 않아요."

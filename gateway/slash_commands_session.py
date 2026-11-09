@@ -903,7 +903,6 @@ class GatewaySessionCommandsMixin:
             return t("gateway.topic.enable_failed", error=exc)
 
         if not source.thread_id:
-            await self._ensure_telegram_system_topic(source)
             return await self._telegram_topic_root_status_message(source)
         try:
             binding = await self._session_db.get_telegram_topic_binding(

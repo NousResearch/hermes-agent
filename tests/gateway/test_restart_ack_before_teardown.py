@@ -112,3 +112,22 @@ async def test_timed_out_restart_ack_is_not_sent_twice(monkeypatch, tmp_path):
 
     assert order == ["restart"] and len(sent) == 1
     assert not result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error,retryable", [("Timed out", True), ("httpx.ConnectTimeout: timed out", False)],
+                         ids=["retryable-flag", "connect-timeout-text"])
+async def test_undelivered_timeout_falls_back_to_the_reply(monkeypatch, tmp_path, error, retryable):
+    """A timeout that never left (Telegram flags a wrapped ConnectTimeout / pool timeout ``retryable``;
+    other adapters name the connect timeout) was not delivered, so the ack still goes out through the
+    reply path, as ``_send_with_retry`` would retry it."""
+    async def send(chat_id, content, **kwargs):
+        return SendResult(success=False, error=error, retryable=retryable)
+
+    runner, order = _idle_restart(monkeypatch, tmp_path, send)
+    event = MessageEvent(text="/restart", message_type=MessageType.TEXT, source=make_restart_source(), message_id="m1")
+
+    result = await runner._handle_message(event)
+
+    assert order == ["restart"]
+    assert result and "Restarting" in result

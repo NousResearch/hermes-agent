@@ -317,8 +317,18 @@ export function parseOscColor(data: string): string | undefined {
 // and emit codepoints our input parser doesn't handle (notably over SSH and
 // in xterm.js-based terminals like VS Code). tmux is allowlisted because it
 // accepts modifyOtherKeys and doesn't forward the kitty sequence to the outer
-// terminal.
-const EXTENDED_KEYS_TERMINALS = ['iTerm.app', 'kitty', 'WezTerm', 'ghostty', 'tmux', 'windows-terminal', 'vscode']
+// terminal. Rex (TERM_PROGRAM=rex) reports Kitty CSI-u correctly; without the
+// push it sends Option+Backspace as legacy ESC DEL.
+const EXTENDED_KEYS_TERMINALS = [
+  'iTerm.app',
+  'kitty',
+  'WezTerm',
+  'ghostty',
+  'rex',
+  'tmux',
+  'windows-terminal',
+  'vscode'
+]
 
 /** True if this terminal correctly handles extended key reporting
  *  (Kitty keyboard protocol + xterm modifyOtherKeys). */

@@ -917,3 +917,16 @@ def test_rich_message_text_keeps_tables_details_math_links_and_custom_emoji():
     assert "@hermes_bot" not in rich_message_text(msg, skip_code=True)
     malformed = [{"type": "list", "items": 5}, {"type": "table", "cells": 5}, {"type": "paragraph", "text": "ok"}]
     assert rich_message_text(SimpleNamespace(api_kwargs={"rich_message": {"blocks": malformed}})) == "ok"
+
+
+@pytest.mark.asyncio
+async def test_rich_send_degrades_unopenable_link_targets_but_keeps_urls_and_code():
+    """Telegram cannot open ``[Title](Title)`` or ``@session:`` targets and would show the syntax."""
+    adapter = _make_adapter()
+
+    result = await adapter.send(
+        "12345", RICH_CONTENT + "\n\nIn [Fix Research](Fix Research) via [S](@session:p/1); [Docs](https://x.y) `[k](v w)`")
+
+    assert result.success is True
+    assert _rich_api_kwargs(adapter)["rich_message"]["markdown"] == (
+        RICH_CONTENT + "\n\nIn Fix Research via S; [Docs](https://x.y) `[k](v w)`")

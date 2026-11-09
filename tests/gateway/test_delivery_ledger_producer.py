@@ -153,6 +153,47 @@ class TestProducerHook:
 
 
     @pytest.mark.asyncio
+    async def test_in_place_recovery_before_failed_ledger_update_sweeps_again(self):
+        """An in-place sweep may see 'attempting'; finalization must replay its late failure."""
+        class _HealthAdapter(_Adapter):
+            def __init__(self):
+                super().__init__()
+                self.degraded = True
+
+            @property
+            def send_path_degraded(self):
+                return self.degraded
+
+        adapter = _HealthAdapter()
+        runner = MagicMock()
+        runner._delivery_adapter_for.return_value = adapter
+        seen = []
+
+        async def _sweep(platform, *, profile=None):
+            seen.append((_rows()[0][1], platform, profile))
+            return 0
+
+        runner._redeliver_failed_obligations_for_platform = AsyncMock(side_effect=_sweep)
+        adapter.gateway_runner = runner
+
+        async def _send_finishes_after_recovery(**_kwargs):
+            adapter.degraded = False
+            # The first reconnect sweep completed while this row was still attempting.
+            done = asyncio.get_running_loop().create_future()
+            done.set_result(0)
+            adapter._send_path_recovery_task = done
+            await runner._redeliver_failed_obligations_for_platform(Platform.SLACK)
+            return SendResult(success=False, error="send_path_degraded", retryable=True)
+
+        adapter._send_with_retry = AsyncMock(side_effect=_send_finishes_after_recovery)
+        await _run(adapter, _event())
+
+        assert seen == [
+            ("attempting", Platform.SLACK, None),
+            ("failed", Platform.SLACK, None),
+        ]
+
+    @pytest.mark.asyncio
     async def test_slow_ledger_record_does_not_block_event_loop(self):
         adapter = _Adapter()
         slow_record, event_loop_witness, blocked_event_loop = _blocking_probe()

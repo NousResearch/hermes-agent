@@ -4214,11 +4214,11 @@ class BasePlatformAdapter(ABC):
     async def _finalize_delivery_obligation(
         self, obligation_id: str, result: Any, event: MessageEvent,
         delivery_adapter: "BasePlatformAdapter") -> None:
-        """Mark the ledger row delivered/failed (best-effort). On ``send_path_degraded`` with a
-        replacement adapter live, trigger another redelivery sweep (the watcher's may have run
-        before this failure landed; atomic claiming keeps it idempotent). On any other rejection arm
-        the runner's timed redelivery, so the reply goes out once the flood penalty or the retry
-        backoff has passed instead of waiting for the next restart (#91653)."""
+        """Mark the ledger row delivered/failed (best-effort). On ``send_path_degraded`` with
+        a replacement or in-place recovered adapter, sweep after the failure is recorded:
+        the recovery sweep might have seen only ``attempting``; atomic claiming makes a
+        second sweep safe. Other transient rejections arm the runner's timed redelivery,
+        so flood penalties and retry backoffs do not strand final replies (#91653)."""
         try:
             from gateway.dead_targets import classify_dead_error
             from gateway.delivery_ledger import is_reconnect_only, mark_delivered, mark_failed
@@ -4231,7 +4231,15 @@ class BasePlatformAdapter(ABC):
                 redeliver = getattr(
                     self.gateway_runner, "_redeliver_failed_obligations_for_platform", None)
                 live = self._final_delivery_adapter(event.source)
-                if live is not delivery_adapter and callable(redeliver):
+                # In-place recovery can sweep before this row becomes 'failed'. Once
+                # its health is proven, retry the sweep after marking this late failure.
+                recovery_task = getattr(delivery_adapter, "_send_path_recovery_task", None)
+                recovered_in_place = (
+                    live is delivery_adapter
+                    and recovery_task is not None
+                    and not delivery_adapter.send_path_degraded
+                )
+                if callable(redeliver) and (live is not delivery_adapter or recovered_in_place):
                     await redeliver(event.source.platform,
                                     profile=getattr(delivery_adapter, "_owner_profile", None))
             elif classify_dead_error(error) is None:  # a dead chat is never retried: no timer to wake

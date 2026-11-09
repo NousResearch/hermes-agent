@@ -127,16 +127,16 @@ try:
     from telegram.constants import ParseMode, ChatType
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
-except ImportError:
+except ImportError as _import_exc:
+    # Not installed is a normal optional state (debug); installed-but-broken logs its traceback (#87455).
+    logger.log(logging.DEBUG if _import_exc.name == "telegram" else logging.WARNING, "[Telegram] python-telegram-bot import failed: %s", _import_exc, exc_info=True)
     TELEGRAM_AVAILABLE = False
     Update = Bot = Message = InlineKeyboardButton = InlineKeyboardMarkup = Application = Any
     CommandHandler = CallbackQueryHandler = InlineQueryHandler = TypeHandler = TelegramMessageHandler = HTTPXRequest = Any
     LinkPreviewOptions = filters = ParseMode = ChatType = None
 
     # Mock so ContextTypes.DEFAULT_TYPE annotations don't crash class definition without the lib.
-    class _MockContextTypes:
-        DEFAULT_TYPE = Any
-    ContextTypes = _MockContextTypes
+    ContextTypes = type("_MockContextTypes", (), {"DEFAULT_TYPE": Any})
 
 import sys
 
@@ -182,6 +182,7 @@ from plugins.platforms.telegram.telegram_dm_topic_send import dead_topic_may_rer
 from plugins.platforms.telegram.telegram_entities import (
     addressing_sources, addressing_text, expand_link_entities, expand_quote_link_entities, rich_message_filter, rich_message_text)
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
+from plugins.platforms.telegram.telegram_ingress import TelegramContactMixin, discard_session_media_buffers
 from plugins.platforms.telegram.telegram_polling_probe import TelegramPendingProbeMixin
 from plugins.platforms.telegram.telegram_intake import effective_update_message
 from plugins.platforms.telegram.telegram_media_group import add_item_note, flush_media_group_event, queue_media_group_event, tracking_album_items
@@ -457,7 +458,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, TelegramPendingProbeMixin, TelegramMediaFloodMixin, TelegramSendPathRecoveryMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramTopicRoutingMixin, TelegramPendingProbeMixin, TelegramMediaFloodMixin, TelegramSendPathRecoveryMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -2766,6 +2767,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
 
     async def handle_message(self, event: MessageEvent) -> None:
         self._accept_update()
+        discard_session_media_buffers(self, event)  # /stop, /new, /reset: buffered photos die with the turn (#81370)
         await apply_root_dm_topic_transfer(self, event)  # opt-in dm_topic_auto_transfer (#139136)
         await super().handle_message(event)
 
@@ -2779,13 +2781,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         core_before = {g: len(hs) for g, hs in table.items()} if isinstance(table, dict) else {}
         app.add_handler(TelegramMessageHandler((filters.TEXT | rich_message_filter(filters)) & ~filters.COMMAND, self._handle_text_message))
         app.add_handler(TelegramMessageHandler(filters.COMMAND, self._handle_command))
-        app.add_handler(TelegramMessageHandler(
-            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION), self._handle_location_message))
-        app.add_handler(TelegramMessageHandler(
-            filters.PHOTO | filters.VIDEO | filters.VIDEO_NOTE | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-            self._handle_media_message))
-        # Topic-creation service messages carry the new topic id and no text, so no other handler sees
-        # them. They are a routing signal only (never an agent turn): see _handle_forum_topic_created.
+        app.add_handler(TelegramMessageHandler(filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION), self._handle_location_message))
+        app.add_handler(TelegramMessageHandler(filters.CONTACT, self._handle_contact_message))  # #98598
+        media = filters.PHOTO | filters.VIDEO | filters.VIDEO_NOTE | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL
+        app.add_handler(TelegramMessageHandler(media, self._handle_media_message))
+        # Topic-creation service messages (no text; a routing signal, never a turn): _handle_forum_topic_created.
         created_filter = getattr(getattr(filters, "StatusUpdate", None), "FORUM_TOPIC_CREATED", None)
         if created_filter is not None:
             app.add_handler(TelegramMessageHandler(created_filter, self._handle_forum_topic_created))

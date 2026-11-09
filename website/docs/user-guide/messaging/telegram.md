@@ -482,6 +482,10 @@ TELEGRAM_CRON_THREAD_ID=<topic_thread_id>
 
 `TELEGRAM_CRON_THREAD_ID` overrides `TELEGRAM_HOME_CHANNEL_THREAD_ID` for cron deliveries only. Replies in that topic continue the topic's existing session.
 
+## Shared Contacts and Locations
+
+A contact card or location pin you share with the bot reaches the agent as a short text block (name, phone number and vCard for a contact; coordinates and venue for a location), so the agent can act on it.
+
 ## Voice Messages
 
 ### Incoming Voice (Speech-to-Text)

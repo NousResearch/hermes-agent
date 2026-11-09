@@ -44,6 +44,8 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 _UNSET = object()  # "no per-profile human_delay snapshot": fall back to the primary's value
+# Slack on top of one connect budget per EXTEND_TIMEOUT_USEC step: covers the next profile's config load.
+_SYSTEMD_BOOT_STEP_MARGIN_SECS = 30.0
 
 
 class _UnresolvedProfileHome:
@@ -199,6 +201,18 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         if await self._wait_or_detach(task, timeout):
             return bool(await task)
         raise TimeoutError(f"{platform.value} connect timed out after {timeout:g}s")
+
+    def _extend_systemd_boot_for(self, platform) -> None:
+        """Before one serial secondary connect, push systemd's Type=notify start deadline past it (#137995).
+
+        READY=1 waits for every secondary profile's adapters, connected one after another; without this the
+        unit's default 90s TimeoutStartSec kills a still-progressing multi-profile boot. Each step buys
+        one connect budget + margin, so only a boot that stops making progress is killed."""
+        timeout = self._platform_connect_timeout_secs(platform, initial=True)
+        if getattr(self, "_running", False) or self.config.systemd_watchdog_seconds <= 0 or timeout <= 0:
+            return
+        from gateway.systemd_notify import extend_start_timeout
+        extend_start_timeout(timeout + _SYSTEMD_BOOT_STEP_MARGIN_SECS)
 
     async def _connect_initial_adapter_with_timeout(self, adapter, platform) -> bool:
         """Cold-start connect with replace intent visible ONLY during this await, so a later
@@ -1329,6 +1343,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             self._configure_profile_adapter(adapter, profile_name, platform)
             # Hold the bot across the connect await; a failed connect's reconnect takes the hold over.
             self._hold_secondary_claims(profile_name, platform, adapter, claims)
+            self._extend_systemd_boot_for(platform)
             try:
                 try:
                     with _profile_runtime_scope(profile_home, hydrate_secrets=False):

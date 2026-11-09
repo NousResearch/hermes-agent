@@ -202,7 +202,8 @@ class TestHoldInboundAcrossReconnect:
         from plugins.platforms.telegram.update_admission import _Claim
 
         old, new = _make_adapter(), _make_adapter()
-        old._update_admission = ContextVar("claim", default=_Claim("1:1", None))
+        from telegram import Update
+        old._update_admission = ContextVar("claim", default=_Claim("1:1", None, Update(update_id=1)))
         old._mark_disconnected()
         new.adopt_held_inbound(old)
         old._pending_text_batches["k"] = _make_event("late-salvage")

@@ -16,7 +16,7 @@ import { attemptCanonicalGroupSend, prepareCanonicalGroupSend, readCanonicalGrou
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest, disbandCanonicalGroup } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoom, CanonicalRoomContext, CanonicalRoomMember } from './canonical-groups'
-import { GroupMentionInput } from './group-chat-parts'
+import { focusComposerEnd, GroupMentionInput } from './group-chat-parts'
 import { RoomBotAvatar } from './group-room-avatar'
 import { fill, ROOM_COMPOSER_INPUT_CLASS, RoomComposer, RoomReplyChip } from './group-room-ui'
 
@@ -123,6 +123,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   const [reply, setReply] = useState<RoomReply | null>(null)
   // A handed-back journal entry keeps its thread even without a visible reply chip.
   const draftThread = useRef<string | undefined>(undefined)
+  const composerInput = useRef<HTMLTextAreaElement>(null)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const scroller = useStickToBottom()
   // An intent handed back for editing (nothing of it admitted): the next Send replaces it.
@@ -501,6 +502,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
       const tag = `@${member.handle}`
       setDraft(current => current.trimStart().startsWith(tag) ? current : `${tag} ${current}`)
     }
+
+    focusComposerEnd(composerInput)
   }
 
   // Text pastes stay in the composer; only files go through the picker's upload.
@@ -565,7 +568,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
         sendLabel={pending ? labels.retry : labels.send}
         status={<CanonicalGroupCycle cycle={cycle} driver={driver} labels={labels} members={members} statuses={statuses} />}>
         <GroupMentionInput aria-label={labels.groupMessage} className={ROOM_COMPOSER_INPUT_CLASS} disabled={composerLocked} handleFor={member => member.handle}
-          members={mentionMembers} onChange={setDraft} onSubmitDraft={send} placeholder={labels.composerPlaceholder} value={draft} />
+          members={mentionMembers} onChange={setDraft} onSubmitDraft={send} placeholder={labels.composerPlaceholder} ref={composerInput} value={draft} />
       </RoomComposer>
       </div>
     </div>

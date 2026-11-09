@@ -625,6 +625,7 @@ gateway:
     action_always: "Ceadaigh i gCónaí"
     action_deny: "Diúltaigh"
     deadline: "Mura bhfreagraíonn tú laistigh de {window}, NÍ rithfear é."
+    not_requester: "Ní féidir ach le {requester} an cead seo a fhreagairt."
     text_choice_once: "Freagair `{prefix}approve` chun é a rith uair amháin"
     text_choice_session: "`{prefix}approve session` chun an patrún seo a cheadú don chuid eile den seisiún seo"
     text_choice_always: "`{prefix}approve always` chun é a cheadú go buan"
@@ -632,6 +633,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", nó {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Réamhamharc giorraithe: tá an t-ordú iomlán ({total} carachtar) sa teachtaireacht thuas."
+    truncated_deny_only: "Réamhamharc giorraithe ({total} carachtar) agus níorbh fhéidir an t-ordú iomlán a thaispeáint anseo, mar sin níl ach Diúltaigh ar fáil. Athbhreithnigh é sa CLI nó san aip Desktop."
+    text_prompt_deny_only: "Tá an leid cheadaithe iomlán rófhada don ardán seo, mar sin níl ach Diúltaigh ar fáil. Athbhreithnigh é sa CLI nó san aip Desktop."
   notify:
     media_kind:
       audio: "fuaime"

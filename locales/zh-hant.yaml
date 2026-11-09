@@ -625,6 +625,7 @@ gateway:
     action_always: "永久允許"
     action_deny: "拒絕"
     deadline: "若你在 {window} 內未回應，指令將「不會」執行。"
+    not_requester: "只有 {requester} 可以回應此核准請求。"
     text_choice_once: "回覆 `{prefix}approve` 執行一次"
     text_choice_session: "`{prefix}approve session` 在本次工作階段內允許此模式"
     text_choice_always: "`{prefix}approve always` 永久允許"
@@ -632,6 +633,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: "，或 {choice}。\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}：{reason}\n\n"
+    truncated_full_above: "預覽已截斷：完整指令（{total} 個字元）在上方的訊息中。"
+    truncated_deny_only: "預覽已截斷（{total} 個字元），且無法在此顯示完整指令，因此只提供拒絕。請在 CLI 或桌面應用程式中查看。"
+    text_prompt_deny_only: "完整的核准提示對此平台而言過長，因此只提供拒絕。請在 CLI 或桌面應用程式中查看。"
   notify:
     media_kind:
       audio: "音訊"

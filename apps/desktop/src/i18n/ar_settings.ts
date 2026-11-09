@@ -528,6 +528,8 @@ export const arSettings = {
       'compression.targetRatio': 'هدف الضغط',
       'compression.protectLastN': 'الرسائل الأخيرة المحمية',
       'auxiliary.compression.timeout': 'مهلة نموذج الضغط (ثانية)',
+      'auxiliary.titleGeneration.enabled': 'عناوين المحادثات التلقائية',
+      'auxiliary.titleGeneration.modelUpgradeEnabled': 'تحسين العنوان بالذكاء الاصطناعي',
       'delegation.model': 'نموذج الوكيل الفرعي',
       'delegation.provider': 'مزود الوكيل الفرعي',
       'delegation.maxIterations': 'حد دورات الوكيل الفرعي',
@@ -563,6 +565,10 @@ export const arSettings = {
       'context.engine': 'استراتيجية إدارة المحادثات الطويلة قرب حد السياق.',
       'compression.enabled': 'يلخص السياق الأقدم عندما تكبر المحادثات.',
       'compression.codexGpt55Autoraise': 'يرفع عتبة الضغط إلى 85٪ لنماذج ChatGPT Codex OAuth المدعومة.',
+      'auxiliary.titleGeneration.enabled':
+        'تسمية المحادثات الجديدة من رسالتها الأولى. عند الإيقاف تبقى المحادثات بلا عنوان حتى تعيد تسميتها، ولا يُستدعى نموذج العناوين.',
+      'auxiliary.titleGeneration.modelUpgradeEnabled':
+        'بعد العنوان الفوري، اطلب من نموذج العناوين عنواناً أفضل. عند الإيقاف يبقى العنوان الفوري ويُوفَّر استدعاء النموذج الإضافي.',
       'auxiliary.compression.timeout':
         'عدد الثواني لانتظار نموذج الضغط المساعد في كل استدعاء (الافتراضي 120). ارفعه للنماذج المحلية البطيئة.',
       'voice.autoTts': 'ينطق ردود المساعد تلقائياً.',

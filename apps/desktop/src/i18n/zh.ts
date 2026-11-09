@@ -1032,6 +1032,10 @@ export const zhOverrides = {
         protectLastN: '保护最近消息'
       },
       auxiliary: {
+        titleGeneration: {
+          enabled: '自动聊天标题',
+          modelUpgradeEnabled: 'AI 标题优化'
+        },
         compression: {
           timeout: '压缩模型超时（秒）'
         }
@@ -1101,6 +1105,10 @@ export const zhOverrides = {
         codexGpt55Autoraise: '为受支持的 ChatGPT Codex OAuth 模型将压缩阈值提高到 85%。'
       },
       auxiliary: {
+        titleGeneration: {
+          enabled: '根据第一条消息为新聊天命名。关闭后聊天保持无标题，直到你重命名；不会调用标题模型。',
+          modelUpgradeEnabled: '生成即时标题后，再请标题模型给出更好的标题。关闭后保留即时标题，省去这次额外的模型调用。'
+        },
         compression: {
           timeout: '每次调用辅助压缩模型的等待秒数（默认 120）。本地模型较慢时请调高。'
         }

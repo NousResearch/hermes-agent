@@ -1317,6 +1317,10 @@ export const frOverrides = {
         protectLastN: 'Messages récents protégés'
       },
       auxiliary: {
+        titleGeneration: {
+          enabled: 'Titres de discussion automatiques',
+          modelUpgradeEnabled: 'Affinage des titres par IA'
+        },
         compression: {
           timeout: 'Délai du modèle de compression (s)'
         }
@@ -1391,6 +1395,12 @@ export const frOverrides = {
         codexGpt55Autoraise: 'Relever la compression à 85 % pour les modèles ChatGPT Codex OAuth pris en charge.'
       },
       auxiliary: {
+        titleGeneration: {
+          enabled:
+            'Nommer les nouvelles discussions d’après leur premier message. Désactivé : elles restent sans titre jusqu’à ce que vous les renommiez ; aucun modèle de titre n’est appelé.',
+          modelUpgradeEnabled:
+            'Après le titre instantané, demander un meilleur titre au modèle. Désactivé : le titre instantané est conservé et l’appel supplémentaire est évité.'
+        },
         compression: {
           timeout:
             'Secondes d’attente du modèle de compression auxiliaire par appel (120 par défaut). Augmentez pour les modèles locaux lents.'

@@ -1312,6 +1312,10 @@ export const deOverrides = {
         protectLastN: 'Geschützte letzte Nachrichten'
       },
       auxiliary: {
+        titleGeneration: {
+          enabled: 'Automatische Chat-Titel',
+          modelUpgradeEnabled: 'KI-Titelverfeinerung'
+        },
         compression: {
           timeout: 'Timeout des Komprimierungsmodells (s)'
         }
@@ -1385,6 +1389,12 @@ export const deOverrides = {
         codexGpt55Autoraise: 'Komprimierung bei unterstützten ChatGPT-Codex-OAuth-Modellen auf 85 % anheben.'
       },
       auxiliary: {
+        titleGeneration: {
+          enabled:
+            'Neue Chats nach ihrer ersten Nachricht benennen. Aus: Chats bleiben unbenannt, bis Sie sie umbenennen; kein Titelmodell wird aufgerufen.',
+          modelUpgradeEnabled:
+            'Nach dem Sofort-Titel das Titelmodell um einen besseren bitten. Aus: Der Sofort-Titel bleibt und der zusätzliche Modellaufruf entfällt.'
+        },
         compression: {
           timeout:
             'Sekunden, die pro Aufruf auf das Hilfsmodell für Komprimierung gewartet wird (Standard 120). Für langsame lokale Modelle erhöhen.'

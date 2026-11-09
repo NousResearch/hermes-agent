@@ -1313,6 +1313,10 @@ export const esOverrides = {
         protectLastN: 'Mensajes recientes protegidos'
       },
       auxiliary: {
+        titleGeneration: {
+          enabled: 'Títulos automáticos de chat',
+          modelUpgradeEnabled: 'Mejora de títulos con IA'
+        },
         compression: {
           timeout: 'Tiempo de espera del modelo de compresión (s)'
         }
@@ -1388,6 +1392,12 @@ export const esOverrides = {
         codexGpt55Autoraise: 'Sube la compresión al 85 % para los modelos compatibles de ChatGPT Codex OAuth.'
       },
       auxiliary: {
+        titleGeneration: {
+          enabled:
+            'Nombra los chats nuevos a partir de su primer mensaje. Desactivado: los chats quedan sin título hasta que los renombres; no se llama a ningún modelo de títulos.',
+          modelUpgradeEnabled:
+            'Tras el título instantáneo, pide uno mejor al modelo de títulos. Desactivado: se mantiene el título instantáneo y se ahorra esa llamada extra.'
+        },
         compression: {
           timeout:
             'Segundos de espera del modelo auxiliar de compresión por llamada (120 por defecto). Súbelo para modelos locales lentos.'

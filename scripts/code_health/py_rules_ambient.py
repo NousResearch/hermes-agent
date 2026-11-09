@@ -11,6 +11,11 @@ rule flags, in a module reachable from ``config.HOSTED_ENTRY`` (``hosted_graph``
   (``X["seed"].append(v)``, ``X.value = v``). A non-empty table the module never changes is a
   constant;
 - an ``lru_cache`` / ``cache`` on a module-level function or a method;
+- a default a function or method defined at import time fills once with an empty container
+  (``def remember(value, cache={}): cache[value] = value``): the one container is shared by
+  every call, whatever it holds. A filled container used read-only is the same constant a filled
+  module table is; a default of a function defined inside a function is built again on every
+  enclosing call and is not shared;
 - a class attribute changed at runtime (``py_rules_ambient_classes``);
 - an object bound by ``from m import X`` that a function changes in place (``X[k] = v``,
   ``X.append(v)``, ``X.attr = v``), on the import line: ``m`` cannot see that write, so the
@@ -270,6 +275,23 @@ def _cached_functions(tree: ast.Module) -> Iterator[int]:
                 yield node.lineno
 
 
+def _mutable_defaults(tree: ast.Module) -> Iterator[int]:
+    """The line of each default a function or method defined at import time fills once with an
+    empty container: the one container is shared by every call of the function, so a write
+    through the parameter reaches every later caller. A filled container used read-only is the
+    same constant a filled module table is; a default of a function defined inside a function
+    is built again on every enclosing call and is not shared."""
+    bodies = [tree.body, *(cls.body for cls in _classes(tree))]
+    for body in bodies:
+        for node in import_time(body):
+            if not isinstance(node, _FUNCS):
+                continue
+            args = node.args
+            for default in (*args.defaults, *(d for d in args.kw_defaults if d is not None)):
+                if _is_container(default) and _is_empty(default):
+                    yield default.lineno
+
+
 def _per_instance(value: ast.AST | None) -> bool:
     """A dataclass/pydantic/attrs field with a default factory: every instance gets its own
     value, and the class attribute is the field spec, never a shared container."""
@@ -283,6 +305,7 @@ def ambient_state(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
     yield from _module_state(tree, writes, bindings)
     yield from _imported_object_writes(writes)
     yield from _cached_functions(tree)
+    yield from _mutable_defaults(tree)
     for cls in _classes(tree):
         attrs = {name: (value, line) for name, value, line in _assigned(import_time(cls.body))
                  if not _per_instance(value)}

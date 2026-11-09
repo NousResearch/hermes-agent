@@ -46,6 +46,11 @@ def _hits(src: str) -> list[int]:
      "    def add(self, k):\n        self.items[k] = 1\n", False),
     ("from dataclasses import dataclass, field\n_SHARED = Registry()\n@dataclass\nclass C:\n"
      "    items: object = field(default=_SHARED)\n    def add(self, k):\n        self.items.add(k)\n", True),
+    # a default a function builds once and every call then shares
+    ("def remember(value, cache={}):\n    cache[value] = value\n", True),
+    ("def remember(value, cache=[]):\n    cache.append(value)\n", True),
+    ("from collections import defaultdict\ndef remember(value, seen=defaultdict(list)):\n    seen[value].append(1)\n", True),
+    ("class C:\n    def remember(self, value, seen=set()):\n        seen.add(value)\n", True),
     # constants, per-instance state, and the two declarations
     ("_TABLE = {'a': 1, 'b': 2}\n", False),
     ("_NAMES = ('a', 'b')\n", False),
@@ -53,6 +58,13 @@ def _hits(src: str) -> list[int]:
     ("class C:\n    _live = {}\n    def __init__(self):\n        self._live = {}\n    def add(self, k):\n"
      "        self._live[k] = 1\n", False),
     ("def f():\n    seen = {}\n    seen[1] = 2\n", False),
+    # a default built again on every enclosing call is not shared, whatever it holds
+    ("def outer():\n    def inner(x=[]):\n        return x\n    return inner\n", False),
+    ("def f(x=None, y=1, z='s'):\n    return x\n", False),
+    ("def f(x=()):\n    return x\n", False),
+    ("def f(x=frozenset()):\n    return x\n", False),
+    # a filled container default read-only use is the same constant a filled module table is
+    ("def f(opts={'mode': 'fast'}):\n    return dict(opts)\n", False),
     ("from hermes_scope_cache import ScopedCache\n_CACHE = ScopedCache('c')\n", False),
     ("from hermes_scope_cache import tenant_neutral\n"
      "_CATALOG = tenant_neutral({}, reason='model catalog, same for every tenant')\n", False),

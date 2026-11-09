@@ -123,7 +123,7 @@ from agent.vision_message_prep import VisionMessagePrepMixin
 from agent.reasoning_params import ReasoningParamsMixin
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
 from agent.session_activity import ActivityProvenance
-from agent.model_metadata import is_local_endpoint
+from agent.process_transport import non_stream_stale_disabled
 from agent.message_sanitization import (
     coalesce_tool_call_id as _sanitize_coalesce_tool_call_id,
     deterministic_call_id as _codex_deterministic_call_id,
@@ -569,8 +569,7 @@ class AIAgent(
         """Effective non-stream stale timeout for ``api_payload`` (an ``api_kwargs`` dict or legacy ``messages``
         list), scaled by estimated context size and capped by the run budget."""
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
-        base_url = getattr(self, "_base_url", None) or self.base_url or ""
-        if uses_implicit_default and base_url and is_local_endpoint(base_url):
+        if non_stream_stale_disabled(self, uses_implicit_default):
             return float("inf")
 
         from agent.chat_completion_helpers import _high_effort_silence_floor, cap_to_run_budget, estimate_request_context_tokens

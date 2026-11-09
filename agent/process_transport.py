@@ -27,3 +27,13 @@ def waits_like_local(base_url: Any, provider: Any) -> bool:
 
     return _is_external_process_provider(str(provider or "")) or (bool(base_url) and is_local_endpoint(str(base_url)))
 
+
+def non_stream_stale_disabled(agent: Any, uses_implicit_default: bool) -> bool:
+    """No implicit wall-clock kill on a buffered call to a local server or an external process; the
+    process client's own per-event deadline bounds a dead child. Reasoning floors (240s for opus) are
+    for HTTP gateways that idle-kill, so they do not apply to a process, whatever the model (#149555)."""
+    from hermes_cli.runtime_provider_backends import _is_external_process_provider
+
+    if _is_external_process_provider(str(agent.provider or "")):
+        return not agent._stale_timeout_is_explicit()
+    return uses_implicit_default and is_local_server(getattr(agent, "_base_url", None) or agent.base_url, agent.provider)

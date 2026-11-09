@@ -3138,7 +3138,7 @@ approvals:
   shutdown_without_approval: false
 ```
 
-These four keys are read **only from the managed config** (`/etc/hermes/config.yaml`, or the directory in `HERMES_MANAGED_DIR` when Hermes starts). In your own `~/.hermes/config.yaml` they are ignored, and Hermes logs a warning once if it finds one set to `true` there. The agent's terminal runs as the user who owns `~/.hermes/config.yaml`, so the agent could write that file in ways no command filter can catch. Keep `/etc/hermes` owned by root and not writable by the agent's user. As an extra layer, `hermes config set` / `unset` naming one of these keys, and a redirect, `tee` or in-place edit of `~/.hermes/config.yaml` that names one, are on the hardline blocklist.
+These four keys are read **only from `/etc/hermes/config.yaml`**, and only when that file and `/etc/hermes` are owned by root, are not symlinks, and are not group- or world-writable. `HERMES_MANAGED_DIR` does not apply to them. In your own `~/.hermes/config.yaml` they are ignored, and Hermes logs a warning once if it finds one set to `true` there. The agent's terminal runs as the user who owns `~/.hermes/config.yaml` and `~/.hermes/.env`, so the agent could write those files in ways no command filter can catch. As an extra layer, `hermes config set` / `unset` naming one of these keys, and a redirect, `tee` or in-place edit of `~/.hermes/config.yaml` that names one, are on the hardline blocklist.
 
 ### Deny rules
 

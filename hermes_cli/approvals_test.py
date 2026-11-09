@@ -77,8 +77,8 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
             "hardline-deny", rule=hardline_desc,
             detail="matches the hardline blocklist (never bypassable, "
                    "blocked even under --yolo / approvals.mode=off)"
-                   + (f"; opt in with {setting}: true in the managed config "
-                      "(/etc/hermes/config.yaml)" if setting else ""),
+                   + (f"; opt in with {setting}: true in the root-owned "
+                      "/etc/hermes/config.yaml" if setting else ""),
         )
 
     # 3. Sudo stdin guard — unconditional, like the hardline floor.

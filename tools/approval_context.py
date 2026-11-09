@@ -293,26 +293,51 @@ def _get_approval_config() -> dict:
 
 _POWER_KEYS = ("allow_reboot", "allow_shutdown", "reboot_without_approval", "shutdown_without_approval")
 _warned_ignored_power_keys = False
+# Fixed path, deliberately NOT managed_scope.get_managed_dir(): that honours HERMES_MANAGED_DIR, which
+# a user-owned .env (loaded into os.environ at start and on reload) can set. Module-level for tests.
+_POWER_MANAGED_CONFIG = "/etc/hermes/config.yaml"
+_POWER_MANAGED_OWNER_UID = 0
+
+
+def _root_owned_power_approvals() -> dict:
+    """``approvals`` block of ``_POWER_MANAGED_CONFIG``, or ``{}`` unless the file AND its directory
+    are owned by ``_POWER_MANAGED_OWNER_UID`` (root), are not symlinks, and are not group/other
+    writable. Any other state means the agent's user might have written it."""
+    import stat
+    if not hasattr(os, "getuid"):
+        return {}  # no POSIX ownership model to check: fail closed
+    path = _POWER_MANAGED_CONFIG
+    for p in (os.path.dirname(path), path):
+        try:
+            st = os.lstat(p)
+        except FileNotFoundError:
+            return {}
+        if (stat.S_ISLNK(st.st_mode) or st.st_uid != _POWER_MANAGED_OWNER_UID
+                or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+            logger.warning("Ignoring %s for host power keys: not a root-owned, non-writable %s",
+                           p, "file" if p == path else "directory")
+            return {}
+    from utils import fast_safe_load
+    with open(path, encoding="utf-8-sig") as f:
+        data = fast_safe_load(f.read()) or {}
+    approvals = data.get("approvals") if isinstance(data, dict) else None
+    return approvals if isinstance(approvals, dict) else {}
 
 
 def _get_power_approval_config() -> dict:
-    """The ``approvals`` block of the MANAGED config only (``/etc/hermes/config.yaml`` or the
-    ``HERMES_MANAGED_DIR`` the Hermes process started with), never the user's ``config.yaml``.
+    """The ``approvals`` block of the root-owned ``/etc/hermes/config.yaml`` only, never the user's
+    ``config.yaml`` and never a ``HERMES_MANAGED_DIR`` override.
 
     The four power keys decide whether host reboot/shutdown leave the hardline floor. The agent's
-    terminal runs as the same user that owns ``~/.hermes/config.yaml``, so any value read from there
-    is one the agent could have written itself (``sed``, ``python``, ``eval``, a variable holding the
-    key name...): no command filter can close that. The managed directory is root-owned, and the
-    approval check runs in the Hermes process, whose environment a terminal child cannot change.
-    Fails closed: any read error, or no managed scope, means every power key is false."""
+    terminal runs as the same user that owns ``~/.hermes/config.yaml`` and ``~/.hermes/.env``, so any
+    value read from there (or from a directory an env var there points to) is one the agent could
+    have written itself, by more routes than a command filter can list. Fails closed: missing file,
+    wrong ownership/permissions, or any read/parse error means every power key is false."""
     global _warned_ignored_power_keys
     try:
-        from hermes_cli import managed_scope
-        managed = managed_scope.load_managed_config().get("approvals") or {}
+        managed = _root_owned_power_approvals()
     except Exception:  # fail-closed boundary: any error -> every power key false
         logger.warning("Failed to load managed approval config; power opt-ins off", exc_info=True)
-        managed = {}
-    if not isinstance(managed, dict):
         managed = {}
     if not _warned_ignored_power_keys:
         user = _get_approval_config()

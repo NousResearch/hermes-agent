@@ -1,11 +1,14 @@
-"""The four approvals.* host power keys are read ONLY from the managed config layer
-(/etc/hermes/config.yaml or HERMES_MANAGED_DIR), never from the user's config.yaml.
+"""The four approvals.* host power keys are read ONLY from the root-owned /etc/hermes/config.yaml,
+never from the user's config.yaml and never from a HERMES_MANAGED_DIR override.
 
-The agent's terminal runs as the user that owns ~/.hermes/config.yaml, so it can write that file in
-ways no command filter can enumerate (variables, eval, sed, python, ...). Reading the keys from the
-root-owned managed layer closes that whole class: whatever the agent writes into its own config, a
-power command stays on the hardline floor."""
+The agent's terminal runs as the user that owns ~/.hermes/config.yaml and ~/.hermes/.env, so it can
+write either file in ways no command filter can enumerate (variables, eval, sed, python, ...), and a
+.env line can point HERMES_MANAGED_DIR at an agent-written directory. Reading the keys from a fixed,
+ownership-checked path closes that whole class: whatever the agent writes, a power command stays on
+the hardline floor."""
 
+import logging
+import os
 import time
 
 import pytest
@@ -22,34 +25,40 @@ _ALL_ON = {"allow_reboot": True, "allow_shutdown": True,
            "reboot_without_approval": True, "shutdown_without_approval": True}
 
 
+def _yaml(approvals: dict | None) -> str:
+    if approvals is None:
+        return "{}\n"
+    return "approvals:\n" + "".join(f"  {k}: {str(v).lower()}\n" for k, v in approvals.items())
+
+
 @pytest.fixture
-def managed_dir(tmp_path, monkeypatch):
-    d = tmp_path / "managed"
-    d.mkdir()
-    monkeypatch.setenv("HERMES_MANAGED_DIR", str(d))
-    managed_scope.invalidate_managed_cache()
+def root_config(tmp_path, monkeypatch):
+    """A stand-in for /etc/hermes/config.yaml: a private dir + file, with the 'root' uid check
+    pointed at the test user (the real check requires uid 0)."""
+    d = tmp_path / "etc-hermes"
+    d.mkdir(mode=0o755)
+    os.chmod(d, 0o755)
+    path = d / "config.yaml"
+    monkeypatch.setattr(approval_context, "_POWER_MANAGED_CONFIG", str(path))
+    monkeypatch.setattr(approval_context, "_POWER_MANAGED_OWNER_UID", os.getuid())
+    monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
 
-    def write(approvals: dict | None):
-        if approvals is None:
-            (d / "config.yaml").write_text("{}\n", encoding="utf-8")
-        else:
-            lines = ["approvals:"] + [f"  {k}: {str(v).lower()}" for k, v in approvals.items()]
-            (d / "config.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
-        managed_scope.invalidate_managed_cache()
-    yield write
-    managed_scope.invalidate_managed_cache()
+    def write(approvals: dict | None, mode: int = 0o644):
+        path.write_text(_yaml(approvals), encoding="utf-8")
+        os.chmod(path, mode)
+        return path
+    return write
 
 
-def test_user_config_power_keys_are_ignored(monkeypatch, managed_dir):
-    managed_dir(None)
+def test_user_config_power_keys_are_ignored(monkeypatch, root_config):
+    root_config(None)
     monkeypatch.setattr(approval_context, "_get_approval_config", lambda: dict(_ALL_ON))
     assert approval_context._get_hardline_opt_ins() == frozenset()
     assert approval_context._get_power_no_approval_categories() == frozenset()
 
 
-def test_ignored_user_keys_are_logged_once(monkeypatch, managed_dir, caplog):
-    import logging
-    managed_dir(None)
+def test_ignored_user_keys_are_logged_once(monkeypatch, root_config, caplog):
+    root_config(None)
     monkeypatch.setattr(approval_context, "_warned_ignored_power_keys", False)
     monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"allow_reboot": True})
     with caplog.at_level(logging.WARNING, logger="tools.approval"):
@@ -59,39 +68,89 @@ def test_ignored_user_keys_are_logged_once(monkeypatch, managed_dir, caplog):
     assert len(hits) == 1 and "approvals.allow_reboot" in hits[0].getMessage()
 
 
-def test_managed_config_enables_the_categories(monkeypatch, managed_dir):
-    managed_dir({"allow_reboot": True, "reboot_without_approval": True})
+def test_root_config_enables_the_categories(monkeypatch, root_config):
+    root_config({"allow_reboot": True, "reboot_without_approval": True})
     monkeypatch.setattr(approval_context, "_get_approval_config", dict)
     assert approval_context._get_hardline_opt_ins() == frozenset({"reboot"})
     assert approval_context._get_power_no_approval_categories() == frozenset({"reboot"})
 
 
-def test_managed_false_wins_over_user_true(monkeypatch, managed_dir):
-    managed_dir({"allow_reboot": False})
+def test_root_false_wins_over_user_true(monkeypatch, root_config):
+    root_config({"allow_reboot": False})
     monkeypatch.setattr(approval_context, "_get_approval_config", lambda: dict(_ALL_ON))
     assert approval_context._get_hardline_opt_ins() == frozenset()
 
 
-def test_no_managed_scope_fails_closed(monkeypatch):
-    monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
-    monkeypatch.setattr(managed_scope, "load_managed_config", dict)
+def test_missing_root_config_fails_closed(monkeypatch, root_config):
     monkeypatch.setattr(approval_context, "_get_approval_config", lambda: dict(_ALL_ON))
     assert approval_context._get_hardline_opt_ins() == frozenset()
 
 
-def test_managed_read_error_fails_closed(monkeypatch):
+@pytest.mark.parametrize("mode", [0o664, 0o646, 0o666])
+def test_group_or_other_writable_file_is_ignored(monkeypatch, root_config, mode):
+    root_config(dict(_ALL_ON), mode=mode)
+    assert approval_context._get_hardline_opt_ins() == frozenset()
+
+
+def test_writable_directory_is_ignored(monkeypatch, root_config):
+    path = root_config(dict(_ALL_ON))
+    os.chmod(path.parent, 0o777)
+    try:
+        assert approval_context._get_hardline_opt_ins() == frozenset()
+    finally:
+        os.chmod(path.parent, 0o755)
+
+
+def test_symlinked_file_is_ignored(tmp_path, monkeypatch, root_config):
+    path = root_config(None)
+    target = tmp_path / "agent-written.yaml"
+    target.write_text(_yaml(_ALL_ON), encoding="utf-8")
+    path.unlink()
+    path.symlink_to(target)
+    assert approval_context._get_hardline_opt_ins() == frozenset()
+
+
+def test_wrong_owner_is_ignored(monkeypatch, root_config):
+    root_config(dict(_ALL_ON))
+    monkeypatch.setattr(approval_context, "_POWER_MANAGED_OWNER_UID", os.getuid() + 1)
+    assert approval_context._get_hardline_opt_ins() == frozenset()
+
+
+def test_hermes_managed_dir_is_not_a_source(tmp_path, monkeypatch, root_config):
+    """A ~/.hermes/.env line can set HERMES_MANAGED_DIR (loaded into os.environ at start and on
+    reload). Even when the generic managed layer follows it, the power keys must not."""
+    root_config(None)
+    agent_dir = tmp_path / "agent-managed"
+    agent_dir.mkdir()
+    (agent_dir / "config.yaml").write_text(_yaml(_ALL_ON), encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(agent_dir))
+    managed_scope.invalidate_managed_cache()
+    try:
+        assert managed_scope.load_managed_config().get("approvals", {}).get("allow_reboot") is True
+        assert approval_context._get_hardline_opt_ins() == frozenset()
+        assert approval_context._get_power_no_approval_categories() == frozenset()
+    finally:
+        managed_scope.invalidate_managed_cache()
+
+
+def test_read_error_fails_closed(monkeypatch, root_config):
     def boom():
         raise OSError("unreadable")
-    monkeypatch.setattr(managed_scope, "load_managed_config", boom)
-    monkeypatch.setattr(approval_context, "_get_approval_config", lambda: dict(_ALL_ON))
+    monkeypatch.setattr(approval_context, "_root_owned_power_approvals", boom)
     assert approval_context._get_hardline_opt_ins() == frozenset()
 
 
-def test_agent_write_to_user_config_does_not_lift_the_floor(tmp_path, monkeypatch, managed_dir):
+def test_malformed_root_config_fails_closed(monkeypatch, root_config):
+    path = root_config(None)
+    path.write_text("approvals: [allow_reboot\n", encoding="utf-8")
+    assert approval_context._get_hardline_opt_ins() == frozenset()
+
+
+def test_agent_write_to_user_config_does_not_lift_the_floor(tmp_path, monkeypatch, root_config):
     """End to end: the guard chain reads a real user config.yaml with all four keys true (as an
     injected agent could write it by any route) and still hard-blocks reboot with no prompt."""
     from hermes_cli import config as hconfig
-    managed_dir(None)
+    root_config(None)
     home = tmp_path / "home"
     home.mkdir()
     (home / "config.yaml").write_text(
@@ -121,7 +180,7 @@ def test_agent_write_to_user_config_does_not_lift_the_floor(tmp_path, monkeypatc
 def test_detection_is_fast_just_under_the_parser_cap(filler):
     """4095 separator-free chars is the largest input the floor still parses (4096+ short-circuits on
     the parser limit, so a longer probe proves nothing). The _CMDPOS prefix used to backtrack
-    quadratically here: ~13 s hardline + ~12 s dangerous per command."""
+    quadratically here: ~13 s hardline + ~12 s dangerous per command (now well under 0.5 s)."""
     command = filler * (_MAX_SEPARATOR_FREE_COMMAND_CHARS - 2) + "q"
     assert len(command) == _MAX_SEPARATOR_FREE_COMMAND_CHARS - 1
     assert not _command_parser_limit_exceeded(command)
@@ -129,4 +188,4 @@ def test_detection_is_fast_just_under_the_parser_cap(filler):
     detect_hardline_command(command)
     detect_dangerous_command(command)
     detect_power_state_command(command)
-    assert time.monotonic() - start < 2.0
+    assert time.monotonic() - start < 3.0

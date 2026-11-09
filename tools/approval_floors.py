@@ -105,9 +105,9 @@ def _hardline_block_result(description: str, command: str = "") -> dict:
     setting = hardline_opt_in_setting(description)
     if setting:
         message += (
-            f" Only the operator can allow this category, with the {setting} setting in the managed "
-            "config (/etc/hermes/config.yaml; the user config.yaml is ignored for it); the command "
-            "then requires a live human approval every time instead of being hard-blocked."
+            f" Only the operator can allow this category, with the {setting} setting in the root-owned "
+            "/etc/hermes/config.yaml (the user config.yaml is ignored for it); the command then "
+            "requires a live human approval every time instead of being hard-blocked."
         )
     # The parser-limit block is almost always a giant inline payload, not a forbidden operation, and is typically
     # followed by blind rephrase retries — point at the saved script (or the write_file recipe).

@@ -269,8 +269,24 @@ describe('collapsing the active terminal in a shared group with the workspace', 
     expect($terminalTakeover.get()).toBe(true) // toggle store stays truthful
   })
 
-  it('startFreshSessionDraft (⌘N): fronts the workspace and leaves the terminal open behind its tab', () => {
-    focusGroup()
+  it('⌘N (session.new): unified with openNewSessionTab — fronts the new session tab and leaves the terminal open behind its tab', () => {
+    const stored = 'stored-1'
+    const tilePaneId = `session-tile:${stored}`
+
+    const dispose = registry.register({
+      area: 'panes',
+      data: { placement: 'main' },
+      id: tilePaneId,
+      render: () => null,
+      title: 'new session'
+    })
+
+    disposers.push(dispose)
+
+    // The tile lands in the same shared zone as the workspace + terminal,
+    // exactly like the openNewSessionTile test above (Focus preset: docked
+    // 'center' into the focused chat zone).
+    $layoutTree.set(group(['workspace', 'files', 'review', 'terminal', tilePaneId], { active: 'terminal', id: 'g-focus' }))
 
     bindToolPaneCollapse(
       'terminal',
@@ -282,19 +298,20 @@ describe('collapsing the active terminal in a shared group with the workspace', 
     setTerminalTakeover(true)
     expect(focusActive()).toBe('terminal')
 
-    // What startFreshSessionDraft does: reveal, and nothing else. It must NOT
-    // clear the takeover atom — that is the terminal's open/closed state, not
-    // a fronting flag.
-    revealTreePane('workspace')
+    // session.new and session.newTab share one action (openNewSessionTab): the
+    // new session lands as its own tile in the workspace zone, so what fronts
+    // the view is the tile's pane — exactly like the tab-strip "+" test above.
+    // It must NOT clear the takeover atom — that is the terminal's open/closed
+    // state, not a fronting flag.
+    revealTreePane('session-tile:stored-1')
 
-    expect(focusActive()).toBe('workspace')
-    expect(isPaneVisible('workspace')).toBe(true)
-    // Hidden behind the workspace tab, so the overlay stops painting (the
-    // actual cause of the chat being covered) …
+    expect(focusActive()).toBe('session-tile:stored-1')
+    expect(isPaneVisible('session-tile:stored-1')).toBe(true)
+    // Hidden behind the session tab, so the overlay stops painting …
     expect(isPaneVisible('terminal')).toBe(false)
     // … while the terminal stays OPEN: its PTYs live and clicking the tab
     // brings back a mounted workspace.
-    expect($terminalTakeover.get()).toBe(true)
+    expect($terminalTakeover.get()).toBe(true) // toggle store stays truthful
   })
 })
 

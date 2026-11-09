@@ -29,7 +29,6 @@ const deps = {
   archiveSelectedSession: vi.fn(),
   openNewSessionTab: vi.fn(),
   requestGateway: <T>() => Promise.resolve(undefined as T),
-  startFreshSession: vi.fn(),
   toggleCommandCenter: vi.fn(),
   toggleSelectedPin: vi.fn()
 }

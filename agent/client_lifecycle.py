@@ -336,7 +336,8 @@ class ClientLifecycleMixin:
 
         def _contains_image(value: Any) -> bool:
             if isinstance(value, dict):
-                return value.get("type") in {"image_url", "input_image"} or any(
+                _part_type = value.get("type")
+                return (isinstance(_part_type, str) and _part_type in {"image_url", "input_image"}) or any(
                     _contains_image(v) for v in value.values()
                 )
             return isinstance(value, list) and any(_contains_image(v) for v in value)
@@ -567,7 +568,10 @@ class ClientLifecycleMixin:
 
     def _adopt_openai_credentials(self, api_key: str, base_url: str, *, reason: str) -> bool:
         """Apply a fresh key/base_url to the OpenAI-style kwargs and rebuild the shared client."""
+        from agent.route_verdicts import reset_route_verdicts_if_moved
+        prior_base_url = self.base_url
         self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
+        reset_route_verdicts_if_moved(self, prior_base_url)
         self._sync_client_kwargs_credentials()
         return self._replace_primary_openai_client(reason=reason)
 
@@ -642,7 +646,10 @@ class ClientLifecycleMixin:
                 )
                 return False
         if self.api_mode == "anthropic_messages":
+            from agent.route_verdicts import reset_route_verdicts_if_moved
+            prior_base_url = self.base_url
             self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
+            reset_route_verdicts_if_moved(self, prior_base_url)
             self._anthropic_api_key, self._anthropic_base_url = self.api_key, self.base_url
             self._rebuild_anthropic_client()
             return True
@@ -773,6 +780,8 @@ class ClientLifecycleMixin:
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(base_url)
         prior_api_key, prior_base_url = self.api_key, self.base_url
         prior_client_kwargs = dict(self._client_kwargs)
+        from agent.route_verdicts import apply_route_verdicts, snapshot_route_verdicts
+        prior_verdicts = snapshot_route_verdicts(self)
         self.api_key, self.base_url = api_key, base_url
         self._sync_client_kwargs_credentials()
         # A base-url change moves the route: recompute TLS material and default headers.
@@ -782,6 +791,7 @@ class ClientLifecycleMixin:
             self.api_key, self.base_url = prior_api_key, prior_base_url
             self._client_kwargs.clear()
             self._client_kwargs.update(prior_client_kwargs)
+            apply_route_verdicts(self, prior_verdicts)
             return False
         # Rebind the pool entry id to the adopted key, or the next 429 quarantines the wrong credential.
         try:
@@ -823,7 +833,9 @@ class ClientLifecycleMixin:
         token, base_url = refreshed
         self.api_key = token
         if base_url:
-            self.base_url = base_url.rstrip("/")
+            from agent.route_verdicts import reset_route_verdicts_if_moved
+            prior_base_url, self.base_url = self.base_url, base_url.rstrip("/")
+            reset_route_verdicts_if_moved(self, prior_base_url)
         self._sync_client_kwargs_credentials()
         self._apply_client_headers_for_base_url(str(self.base_url or ""))
         return self._replace_primary_openai_client(reason=f"{profile.name}_credential_{reason}")
@@ -957,6 +969,9 @@ class ClientLifecycleMixin:
             self._anthropic_client = self._build_direct_anthropic_client(runtime_key, self._anthropic_base_url)
             self._is_anthropic_oauth = self._anthropic_oauth_flag(runtime_key)
             self.api_key, self.base_url = runtime_key, stripped_base
+            if route_changed:
+                from agent.route_verdicts import reset_route_verdicts
+                reset_route_verdicts(self)
             return True
         self.api_key, self.base_url = runtime_key, stripped_base
         # Inlined (not _sync_client_kwargs_credentials): tests call this unbound on a SimpleNamespace agent.
@@ -969,8 +984,13 @@ class ClientLifecycleMixin:
     def _reapply_route_client_config(self, *, route_changed: bool) -> None:
         """Recompute route-derived client kwargs (TLS material, default headers) for ``self.base_url``.
 
-        Any rebuild that may have moved ``base_url`` must call this or the new endpoint inherits the old config.
+        Any rebuild that may have moved ``base_url`` must call this, or (for code that assigns a
+        refreshed ``base_url`` directly) ``route_verdicts.reset_route_verdicts_if_moved``; otherwise the
+        new endpoint inherits the old config (including the old endpoint's rejection verdicts).
         """
+        if route_changed:
+            from agent.route_verdicts import reset_route_verdicts
+            reset_route_verdicts(self)
         self._client_kwargs.pop("ssl_verify", None)
         self._client_kwargs.pop("ssl_ca_cert", None)
         try:

@@ -15,10 +15,13 @@ import {
   GlyphSpinner,
   PRIMARY_ICON_BTN,
   relativeTime,
-  Tip
+  Tip,
+  useI18n
 } from '@hermes/plugin-sdk'
 import type { ComponentProps, FormEvent, ReactNode } from 'react'
 
+import type { GroupReasonMessages } from './group-reason-locales'
+import { groupReasonText } from './group-reason-text'
 import { formatElapsed, type MemberStatus, type RoomCycle } from './group-room-status'
 
 /** The Chat Text Size scope the session transcript and composer get from `styles.css`, for the room's
@@ -29,7 +32,7 @@ export const ROOM_TEXT_SCALE = '[--conversation-text-font-size:calc(var(--conver
 export const fill = (template: string, values: Record<string, number | string>) =>
   template.replace(/\{(\w+)\}/g, (_, key: string) => String(values[key] ?? ''))
 
-export interface RoomStatusLabels {
+export interface RoomStatusLabels extends GroupReasonMessages {
   statusWorking: string
   statusStalled: string
   memberQueued: string
@@ -46,6 +49,7 @@ export interface RoomStatusLabels {
   cycleBounded: string
   cycleMessageCap: string
   cycleStopped: string
+  roomStopped: string
   typing: string
   typingTool: string
 }
@@ -75,17 +79,20 @@ const STATUS_WORD: Record<MemberStatus['kind'], keyof RoomStatusLabels> = {
 }
 
 /** One grammar for every member: a status word or the tool, then time.
- *  `terminal · 1m20s`, `working · 12s`, `no progress for 2m05s`, `failed · rate_limited`, `idle`. */
+ *  `terminal · 1m20s`, `working · 12s`, `no progress for 2m05s`, `failed · <reason>`, `idle`. */
 export function memberStatusText(status: MemberStatus, labels: RoomStatusLabels): string {
   if (status.kind === 'working' || status.kind === 'stalled') {
-    const elapsed = status.elapsedS !== undefined ? formatElapsed(status.elapsedS) : undefined
+    const elapsed = status.kind === 'working' && status.elapsedS !== undefined ? formatElapsed(status.elapsedS) : undefined
     const lead = status.kind === 'stalled' ? fill(labels.statusStalled, { time: formatElapsed(status.quietS ?? 0) }) : ''
 
     return [lead, status.tool || (lead ? '' : labels.statusWorking), elapsed].filter(Boolean).join(' · ')
   }
 
   const word = labels[STATUS_WORD[status.kind]]
-  const reason = 'reason' in status ? status.reason : undefined
+
+  const reason = 'reason' in status
+    ? groupReasonText(status.reason, labels) || groupReasonText(status.detail?.split('\n')[0], labels)
+    : ''
 
   return reason ? `${word} · ${reason}` : word
 }
@@ -95,7 +102,7 @@ export function MemberStatusChip({ avatar, badge, labels, name, phase, status }:
 }) {
   const busy = status.kind === 'working' || status.kind === 'stalled'
   const text = memberStatusText(status, labels)
-  const detail = 'detail' in status && status.detail ? status.detail : undefined
+  const detail = 'detail' in status ? groupReasonText(status.detail, labels) : ''
 
   return <Tip label={detail ? `${name} · ${detail}` : `${name} · ${text}`}>
     <li className="inline-flex h-6 min-w-0 items-center gap-1.5 rounded-full bg-(--ui-bg-quaternary) pl-0.5 pr-2.5 text-xs"
@@ -120,6 +127,8 @@ const AVATAR_COLUMN = 'w-7 shrink-0'
 export function RoomMessage({ actions, author, avatar, badge, children, isUser = false, timestampMs }: {
   actions?: ReactNode; author?: ReactNode; avatar?: ReactNode; badge?: ReactNode; children: ReactNode; isUser?: boolean; timestampMs?: number
 }) {
+  const { locale } = useI18n()
+
   return <div className="group/room-message flex items-start gap-3 py-2" data-room-message={isUser ? 'user' : 'member'}>
     <div className={cn(AVATAR_COLUMN, 'mt-0.5')}>{avatar}</div>
     <div className="min-w-0 flex-1">
@@ -127,11 +136,11 @@ export function RoomMessage({ actions, author, avatar, badge, children, isUser =
         {author && <span className="truncate text-[0.8125rem] font-semibold text-foreground">{author}</span>}
         {badge}
         {typeof timestampMs === 'number' && Number.isFinite(timestampMs) &&
-          <time className="shrink-0 text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)" dateTime={new Date(timestampMs).toISOString()}>{relativeTime(timestampMs)}</time>}
+          <time className="shrink-0 text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)" dateTime={new Date(timestampMs).toISOString()}>{relativeTime(timestampMs, undefined, locale)}</time>}
         {actions && <div className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/room-message:opacity-100 focus-within:opacity-100">{actions}</div>}
       </div>
       <div className={cn(ROOM_TEXT_SCALE, 'wrap-anywhere mt-0.5 min-w-0 text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground [&_pre]:whitespace-pre-wrap',
-        isUser && 'w-fit max-w-full rounded-xl border border-(--ui-stroke-tertiary) bg-(--dt-user-bubble) px-3 py-2')} data-selectable-text="true">
+        isUser && 'w-fit max-w-full rounded-xl border border-(--ui-stroke-tertiary) bg-(--dt-user-bubble) px-3 py-2')} data-selectable-text="true" dir="auto">
         {children}
       </div>
     </div>
@@ -177,7 +186,7 @@ export function RoomTypingRow({ avatar, labels, name, status }: {
 /** `Round 2 of 3 · Working: builder (terminal, 1m20s)` while members work, else how it ended. */
 export function roomCycleText(cycle: RoomCycle, labels: RoomStatusLabels, working: string[]): string {
   if (cycle.kind !== 'working') {
-    return labels[({ settled: 'cycleSettled', bounded: 'cycleBounded', messageCap: 'cycleMessageCap', stopped: 'cycleStopped' } as const)[cycle.kind]]
+    return labels[({ settled: 'cycleSettled', bounded: 'cycleBounded', messageCap: 'cycleMessageCap', stopped: 'cycleStopped', stopRequested: 'roomStopped' } as const)[cycle.kind]]
   }
 
   const round = cycle.maxRounds ? fill(labels.roundOf, { n: cycle.round, max: cycle.maxRounds }) : fill(labels.round, { n: cycle.round })
@@ -213,12 +222,12 @@ export function RoomHeader({ backLabel, children, onBack, onStop, onTitle, stopD
         <Button aria-label={backLabel} className="text-(--ui-text-tertiary)" onClick={onBack} size="icon-sm" variant="ghost"><Codicon name="arrow-left" /></Button>
       </Tip>}
       {onTitle
-        ? <Tip label={titleLabel}>
-          <Button aria-expanded={titleExpanded} aria-label={titleLabel} className="min-w-0 rounded-md px-1 text-[0.9375rem] font-semibold text-foreground hover:bg-(--chrome-action-hover)" onClick={onTitle} size="inline" variant="text">
-            <span className="truncate">{title}</span>
+        ? <Tip label={typeof title === 'string' ? title : titleLabel}>
+          <Button aria-expanded={titleExpanded} aria-label={titleLabel} className="min-w-0 flex-1 shrink justify-start overflow-hidden rounded-md px-1 text-[0.9375rem] font-semibold text-foreground hover:bg-(--chrome-action-hover)" onClick={onTitle} size="inline" variant="text">
+            <span className="min-w-0 truncate" title={typeof title === 'string' ? title : undefined}>{title}</span>
           </Button>
         </Tip>
-        : <h2 className="min-w-0 truncate px-1 text-[0.9375rem] font-semibold text-foreground">{title}</h2>}
+        : <h2 className="min-w-0 flex-1 truncate px-1 text-[0.9375rem] font-semibold text-foreground">{title}</h2>}
       <div className="ml-auto flex shrink-0 items-center gap-0.5">
         {working && onStop && <Tip label={stopLabel}>
           <Button aria-label={stopLabel} className="text-(--ui-accent)" disabled={stopDisabled} onClick={onStop} size="icon-sm" variant="ghost"><Codicon name="debug-stop" /></Button>
@@ -293,4 +302,3 @@ export function RoomReplyChip({ cancelLabel, label, onCancel, quote }: { cancelL
 /** Borderless input inside a `RoomComposer` surface (the surface owns the ring). */
 export const ROOM_COMPOSER_INPUT_CLASS =
   `${ROOM_TEXT_SCALE} !border-transparent !bg-transparent !shadow-none min-h-(--composer-input-min-height) px-1 py-1 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) placeholder:text-(--ui-text-tertiary)`
-

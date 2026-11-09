@@ -304,6 +304,47 @@
       },
       "version": "0.39.0"
     },
+    "just": {
+      "artifacts": {
+        "darwin-arm64": {
+          "sha256": "6574cea774ed4cae12e24b6aa11857de33e80dab4667cf628fd5840df96a2a9d",
+          "url": "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-aarch64-apple-darwin.tar.gz"
+        },
+        "darwin-x64": {
+          "sha256": "036ead9df9bc31dbae9934ae3b4236ed124d0bafcffd33439460ae084d5c9cb7",
+          "url": "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-x86_64-apple-darwin.tar.gz"
+        },
+        "linux-arm64": {
+          "sha256": "23871b1702bfd550fb5f901778fd4290ecf2ee034a45a889fbe96d89b188086d",
+          "url": "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-aarch64-unknown-linux-musl.tar.gz"
+        },
+        "linux-arm64-bionic": {
+          "sha256": "23871b1702bfd550fb5f901778fd4290ecf2ee034a45a889fbe96d89b188086d",
+          "url": "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-aarch64-unknown-linux-musl.tar.gz"
+        },
+        "linux-arm64-musl": {
+          "sha256": "23871b1702bfd550fb5f901778fd4290ecf2ee034a45a889fbe96d89b188086d",
+          "url": "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-aarch64-unknown-linux-musl.tar.gz"
+        },
+        "linux-x64": {
+          "sha256": "409044617b6f06517c1035e55ca38c8c856ff8b650e41bc2aa1ef82d5903a23e",
+          "url": "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-x86_64-unknown-linux-musl.tar.gz"
+        },
+        "linux-x64-musl": {
+          "sha256": "409044617b6f06517c1035e55ca38c8c856ff8b650e41bc2aa1ef82d5903a23e",
+          "url": "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-x86_64-unknown-linux-musl.tar.gz"
+        },
+        "win32-arm64": {
+          "sha256": "a72808bc8f8028c25aaae87cf26405d2bd85d2769a779380b344c69607216971",
+          "url": "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-aarch64-pc-windows-msvc.zip"
+        },
+        "win32-x64": {
+          "sha256": "9c5463e2d0974e31bee71346aa5cbf19167de1585a4abc1bae7b3b04604ea9c0",
+          "url": "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-x86_64-pc-windows-msvc.zip"
+        }
+      },
+      "version": "1.59.0"
+    },
     "llamacpp-cpu": {
       "artifacts": {
         "darwin-arm64": {
@@ -535,6 +576,16 @@
           {
             "sha256": "8117d65f28e627e949d5fc65d63342266326826a56fa374317bf13fe1166a50e",
             "url": "https://registry.npmjs.org/@pnpm/exe.linux-arm64/-/exe.linux-arm64-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ],
+        "linux-arm64-bionic": [
+          {
+            "sha256": "3356eb9f4552e2299464c843447fdae01c80dde10436af046fae6b443c7c186d",
+            "url": "https://registry.npmjs.org/@pnpm/exe.android-arm64/-/exe.android-arm64-12.15.0.tgz"
           },
           {
             "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",

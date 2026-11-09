@@ -41,7 +41,6 @@ def _make_runner(**attrs):
 
     runner = object.__new__(GatewayRunner)
     runner._session_model_overrides = {}
-    runner._session_reasoning_overrides = {}
     runner.adapters = {}
     runner.session_store = MagicMock()
     for key, value in attrs.items():

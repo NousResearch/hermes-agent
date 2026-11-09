@@ -949,7 +949,9 @@ class SessionCompressionMixin:
         """Root of a ``--source tool`` run's compression chain. ``get_compression_lineage`` treats every
         ``tool`` row as a fork, but rotation copies the parent's source onto its continuation, so climb only
         hops where both rows are ``tool`` and the child is an unmarked continuation of a compression-ended
-        parent. A ``tool`` fork of another source's session keeps its own id."""
+        parent. A ``tool`` fork of another source's session keeps its own id.
+
+        Storage interface: port as ``sessions.tool_rotation_root``."""
         row, seen = self.get_session(session_id), {session_id}
         while row and row.get("source") == "tool" and (parent_id := row.get("parent_session_id")) not in seen:
             parent = self.get_session(parent_id) if parent_id else None

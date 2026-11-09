@@ -13,7 +13,6 @@ def _make_runner() -> GatewayRunner:
     )
     runner.adapters = {}
     runner._session_model_overrides = {}
-    runner._session_reasoning_overrides = {}
     return runner
 
 

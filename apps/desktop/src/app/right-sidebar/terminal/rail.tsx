@@ -22,7 +22,7 @@ import { setTerminalTakeover } from '../store'
 
 import { NewTerminalButton } from './rail-new-terminal'
 import { toggleTerminalPane } from './reveal-focus'
-import { terminalHost } from './terminal-gateway'
+import { terminalHost, type TerminalHost } from './terminal-gateway'
 import {
   $activeTerminalId,
   $terminalHostsMixed,
@@ -157,18 +157,7 @@ function TerminalRailItem({ active, canCloseOthers, horizontal, index, term, tog
                 size="0.875rem"
               />
               {horizontal && <span className="truncate">{term.title}</span>}
-              {shown && (
-                <span
-                  className="pointer-events-none absolute bottom-0 right-0.5 grid place-items-center rounded-sm bg-(--ui-terminal-surface-background)"
-                  data-terminal-host={shown === 'removed' ? 'removed' : shown.connection.id}
-                >
-                  {shown === 'removed' ? (
-                    <Codicon className="text-(--ui-text-quaternary)" name="debug-disconnect" size="0.625rem" />
-                  ) : (
-                    <ConnectionGlyph className="size-2.5 [&_svg]:size-2.5" connection={shown.connection} />
-                  )}
-                </span>
-              )}
+              <TerminalHostBadge host={shown} />
             </button>
           </Tip>
         </li>
@@ -183,5 +172,22 @@ function TerminalRailItem({ active, canCloseOthers, horizontal, index, term, tog
         <ContextMenuItem onSelect={() => horizontal ? toggleTerminalPane() : setTerminalTakeover(false)}>{t.rightSidebar.terminalHide}</ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
+  )
+}
+
+function TerminalHostBadge({ host }: { host: TerminalHost }) {
+  if (!host) {return null}
+
+  return (
+    <span
+      className="pointer-events-none absolute bottom-0 right-0.5 grid place-items-center rounded-sm bg-(--ui-terminal-surface-background)"
+      data-terminal-host={host === 'removed' ? 'removed' : host.connection.id}
+    >
+      {host === 'removed' ? (
+        <Codicon className="text-(--ui-text-quaternary)" name="debug-disconnect" size="0.625rem" />
+      ) : (
+        <ConnectionGlyph className="size-2.5 [&_svg]:size-2.5" connection={host.connection} />
+      )}
+    </span>
   )
 }

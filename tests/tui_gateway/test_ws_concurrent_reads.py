@@ -152,3 +152,21 @@ async def test_a_failed_read_reply_does_not_cancel_the_running_control(rig):
     await asyncio.wait_for(task, 10)
     assert "cancelled:submit" not in log and "done:submit" in log
     assert log[-1] == "teardown"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["session.transcript"])
+async def test_a_slow_stored_read_never_holds_an_interrupt(rig, method):
+    """A picker paging a long stored transcript must not queue the socket's interrupt behind it (#150091)."""
+    sock, gates, log = rig
+    gates[method] = release = asyncio.Event()
+    task = asyncio.create_task(ws_mod.handle_ws(sock))
+    sock.inbound.put_nowait(rpc(1, method))
+    sock.inbound.put_nowait(rpc(2, "session.interrupt"))
+    try:
+        assert await settle(lambda: "done:2" in log), log
+        assert "done:1" not in log
+    finally:
+        release.set()
+    sock.inbound.put_nowait(None)
+    await asyncio.wait_for(task, 30)

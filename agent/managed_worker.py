@@ -9,7 +9,7 @@ Neither assignment secrets nor launch credentials appear in argv or logs.
 try:
     import hermes_bootstrap
 except ModuleNotFoundError as exc:
-    if exc.name != "hermes_bootstrap":
+    if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise
 
 import contextlib

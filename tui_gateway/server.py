@@ -675,7 +675,7 @@ def _open_requests(sid: str) -> list[dict]:
     if (session := _sessions.get(sid)) is not None:
         with session.get("history_lock", threading.Lock()):
             mirrored = session.get("_compute_host_open_request")
-            return [dict(mirrored)] if isinstance(mirrored, dict) else []
+            return [dict(mirrored)] if isinstance(mirrored, dict) and mirrored.get("replayable", True) else []
     return []
 
 
@@ -1264,21 +1264,17 @@ _BOOL_WORDS = {
 
 
 def _restart_slash_worker(sid: str, session: dict):
-    # Close the slash-worker subprocess as part of finalize itself, not just in the callers.
-    # Defense-in-depth: every session-end path goes through _finalize_session (it's the single
-    # ``_finalized``-guarded chokepoint), so folding worker cleanup in here means a future code path that
-    # calls _finalize_session directly — without the surrounding _teardown_session / _shutdown_sessions
-    # worker.close() — can't reintroduce the #38095 leak. Idempotent: _SlashWorker.close() is
-    # poll()-guarded, so the explicit close() still in those callers is harmless.
-    worker = session.get("slash_worker")
+    # Respawn on the agent's current route (model, provider, base_url) after a switch or compression.
+    worker, agent = session.get("slash_worker"), session.get("agent")
     if worker is None:
         return  # never spawned one; spawning here would fork the per-worker MCP fleet for nothing
     with contextlib.suppress(Exception):
         worker.close()
     try:
-        new_worker = _SlashWorker(session["session_key"], getattr(session.get("agent"), "model", _resolve_model()),
+        new_worker = _SlashWorker(session["session_key"], getattr(agent, "model", _resolve_model()),
                                   profile_home=session.get("profile_home"),
-                                  provider=getattr(session.get("agent"), "provider", None) or None)
+                                  provider=getattr(agent, "provider", None) or None,
+                                  base_url=getattr(agent, "base_url", None) or None)
     except Exception:
         session["slash_worker"] = None
         return

@@ -29,6 +29,7 @@ from gateway.restart import (
 )
 from gateway.run_common import _UNSET
 from gateway.run_runtime import interrupt_side_agents, managed_turn_count, stop_managed_turns
+from gateway.session_runtime_workers import uncounted_runtime_work_units
 from gateway.run_shutdown_session_end import GatewaySessionEndMixin
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
 
@@ -1569,10 +1570,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         """One dict per in-flight work unit the restart wait is holding for, so an observer
         (``hermes update``, ``hermes gateway status``) can name it instead of printing a bare count.
 
-        ``kind`` ∈ ``chat`` (session turn), ``cron`` (job id + external worker pid when the run was
-        handed to a restart-safe scope), ``managed`` / ``api`` / ``deferred`` (count only — those sources expose
-        no identity). Best-effort: a source that can't be read is omitted, never raises.
-        """
+        ``kind`` ∈ ``chat`` (session turn), ``cron`` (job id + external worker pid when the run was handed to a
+        restart-safe scope), ``managed`` (session + worker pid when a worker holds it), ``api`` / ``deferred``
+        (count only). Best-effort: a source that can't be read is omitted, never raises."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         now = time.time()
         units: list = []
@@ -1600,8 +1600,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                               "pid": job["worker_pid"] or os.getpid(), "external": bool(job["worker_pid"]),
                               "wedged": job["job_id"] in wedged,
                               "restart_safe": bool(job.get("restart_safe"))})
-        for kind, count in (("managed", managed_turn_count(self)), ("api", self._active_api_run_count()),
-                            ("deferred", self._active_deferred_agent_worker_count())):
+        units.extend(uncounted_runtime_work_units(self, os.getpid()))
+        for kind, count in (("api", self._active_api_run_count()), ("deferred", self._active_deferred_agent_worker_count())):
             units.extend({"kind": kind, "pid": os.getpid()} for _ in range(count))
         return units
 

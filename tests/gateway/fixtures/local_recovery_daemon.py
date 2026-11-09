@@ -12,7 +12,7 @@ schedule = SessionAuthority._schedule
 def crash_barrier(self, ref):
     pending = list_session_admissions(self.db, session_id=ref.session_id)
     text = pending[-1]['payload'].get('text') if pending else None
-    if text in {'FOREIGN_QUEUE', 'MISSING_QUEUE', 'CORRUPT_QUEUE'}:
+    if text in {'TAMPERED_QUEUE', 'MISSING_QUEUE', 'CORRUPT_QUEUE'}:
         return
     if text == 'RECOVER_QUEUED':
         os.kill(os.getpid(), signal.SIGSTOP)

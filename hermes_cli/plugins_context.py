@@ -18,7 +18,7 @@ from hermes_cli.plugins_dispatch import DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS
 from hermes_cli.plugins_ledger import PluginRegistration
 from hermes_cli.plugins_loader import _serialized_replacement
 from hermes_cli.plugins_manifest import PluginManifest
-from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
+from hermes_cli.plugins_registrars import register_scoped_provider, scoped_provider_registrar
 from hermes_cli.plugins_state import PluginState
 
 if TYPE_CHECKING:
@@ -752,7 +752,7 @@ class PluginContext(PluginCapabilityCtxMixin):
     def register_session_env(self, names, resolver: Callable[[str], Any]) -> PluginRegistration:
         """Each session's tool subprocesses get ``resolver(session_id)``'s ``names``, resolved at spawn."""
         from hermes_cli.plugins_session_env import register_session_env
-        release = register_session_env(self._manager.scope_key, names, resolver)
+        release = register_session_env(self._manager.scope_key, names, resolver, owner=self.plugin_id)
         return self._track("session_env", getattr(resolver, "__qualname__", "resolver"), release)
 
     def _track_callback(
@@ -827,11 +827,52 @@ class PluginContext(PluginCapabilityCtxMixin):
     from hermes_cli.plugins_content import register_automation_blueprint, register_skill
     from hermes_cli.plugin_rpc import emit_to_session, register_rpc
 
-# -- scoped provider registrars ------------------------------------------------------------------
-# One generated ``register_<category>_provider`` method per row of plugins_registrars.py's table.
-for _row in _SCOPED_PROVIDER_REGISTRARS:
-    setattr(PluginContext, _row[0], make_scoped_provider_registrar(*_row))
-del _row
+    # -- scoped provider registrars ----------------------------------------------------------------
+    # One method per row of plugins_registrars.py's table, which also holds each method's docstring.
+
+    @scoped_provider_registrar
+    def register_login_backend(self, provider):
+        return register_scoped_provider(self, "register_login_backend", provider)
+
+    @scoped_provider_registrar
+    def register_browser_page_backend(self, provider):
+        return register_scoped_provider(self, "register_browser_page_backend", provider)
+
+    @scoped_provider_registrar
+    def register_image_gen_provider(self, provider):
+        return register_scoped_provider(self, "register_image_gen_provider", provider)
+
+    @scoped_provider_registrar
+    def register_video_gen_provider(self, provider):
+        return register_scoped_provider(self, "register_video_gen_provider", provider)
+
+    @scoped_provider_registrar
+    def register_web_search_provider(self, provider):
+        return register_scoped_provider(self, "register_web_search_provider", provider)
+
+    @scoped_provider_registrar
+    def register_browser_provider(self, provider):
+        return register_scoped_provider(self, "register_browser_provider", provider)
+
+    @scoped_provider_registrar
+    def register_terminal_environment_provider(self, provider):
+        return register_scoped_provider(self, "register_terminal_environment_provider", provider)
+
+    @scoped_provider_registrar
+    def register_secret_source(self, source):
+        return register_scoped_provider(self, "register_secret_source", source)
+
+    @scoped_provider_registrar
+    def register_tts_provider(self, provider):
+        return register_scoped_provider(self, "register_tts_provider", provider)
+
+    @scoped_provider_registrar
+    def register_transcription_provider(self, provider):
+        return register_scoped_provider(self, "register_transcription_provider", provider)
+
+    @scoped_provider_registrar
+    def register_delegation_provider(self, provider):
+        return register_scoped_provider(self, "register_delegation_provider", provider)
 
 
 def _ignore_after_abandoned_load(method):

@@ -79,6 +79,16 @@ describe('normalizePreviewAddress', () => {
 })
 
 describe('PreviewBrowserBar', () => {
+  it('offers saved logins only for the native browser surface', () => {
+    const view = render(<PreviewBrowserBar {...baseProps} tabId="preview" />)
+    expect(view.container.querySelector('[data-slot="preview-vault-button"]')).not.toBeNull()
+
+    view.rerender(<PreviewBrowserBar {...baseProps} nativeControls={false} tabId="preview" />)
+    expect(view.container.querySelector('[data-slot="preview-vault-button"]')).toBeNull()
+    expect(view.getByRole('textbox', { name: 'Address' })).toBeTruthy()
+    expect(view.getByRole('button', { name: 'Reload page' })).toBeTruthy()
+  })
+
   it('disables back and forward when there is no history', () => {
     const rendered = render(<PreviewBrowserBar {...baseProps} />)
 

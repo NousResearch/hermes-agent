@@ -36,29 +36,36 @@ from typing import Any, Dict, Optional, Tuple
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+# What adapters' ``get_chat_info`` reports for a chat every member reads (a handoff home that is no DM).
+_HANDOFF_SHARED_CHAT_TYPES = frozenset({"group", "channel", "forum", "room", "supergroup", "thread"})
 
 
-def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> None:
+def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> list[str]:
     """Install the catalog plugin of every feature that left core (Home Assistant) *home* uses, in
     *home*'s runtime scope (its config, secrets and allow_lazy_installs); once per process per home.
-    Blocking: call it off the event loop."""
+    Returns the installed plugin names. Blocking: call it off the event loop."""
     from gateway.run import _profile_runtime_scope
     from hermes_cli.left_core_migration import recover_at_startup
     with _profile_runtime_scope(Path(home), hydrate_secrets=hydrate_secrets):
-        recover_at_startup(gateway_start=True)
+        return recover_at_startup(gateway_start=True)
 
 
-def recover_left_core_at_gateway_start() -> None:
+def recover_left_core_at_gateway_start() -> bool:
     """Left-core migration for the homes whose platform config the runner loads first: the launch
     home and the default root (the multiplex primary; a named launcher is then served as a
     secondary). Every secondary runs :func:`recover_left_core_in` before its plugins are discovered,
-    so a platform plugin it gets starts its adapter in the same gateway start."""
-    from hermes_cli.left_core_migration import recover_at_startup
+    so a platform plugin it gets starts its adapter in the same gateway start. True when a plugin
+    that ships a gateway platform was installed: platform config loaded before it lacks the platform."""
+    from hermes_cli.left_core_migration import LEFT_CORE
     from hermes_constants import get_default_hermes_root, get_hermes_home
-    recover_at_startup(gateway_start=True)
+    # The launch home too runs in its own scope: a multiplexing config load already armed fail-closed
+    # secret reads, so an unscoped install read of its own .env raised. Its sources were hydrated at boot.
+    launch = Path(get_hermes_home())
+    installed = recover_left_core_in(launch, hydrate_secrets=False)
     root = Path(get_default_hermes_root())
-    if root.resolve() != Path(get_hermes_home()).resolve():
-        recover_left_core_in(root)
+    if root.resolve() != launch.resolve():
+        installed += recover_left_core_in(root)
+    return any(feature.platform and feature.plugin in installed for feature in LEFT_CORE)
 
 
 
@@ -1047,7 +1054,7 @@ class GatewayStartupMixin:
     _ALLOWLIST_ENV_PLATFORMS = (
         "TELEGRAM", "DISCORD", "WHATSAPP", "WHATSAPP_CLOUD", "SLACK", "SIGNAL", "EMAIL", "SMS",
         "MATTERMOST", "MATRIX", "DINGTALK", "FEISHU", "WECOM", "WECOM_CALLBACK", "WEIXIN",
-        "BLUEBUBBLES", "QQ", "YUANBAO",
+        "BLUEBUBBLES", "QQ",
     )
     _BUILTIN_ALLOWED_USERS_VARS = tuple(f"{p}_ALLOWED_USERS" for p in _ALLOWLIST_ENV_PLATFORMS) + (
         "SIGNAL_GROUP_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -1850,10 +1857,10 @@ class GatewayStartupMixin:
             chat_type = "dm" if home_chat_id.startswith("D") else "group"
             scope_for_chat = getattr(transport.adapter, "scope_id_for_chat", None)
             scope_id = home.scope_id or (scope_for_chat(home_chat_id) if callable(scope_for_chat) else None)
-        if platform == Platform.MATRIX:
-            # Matrix likewise keys an in-thread reply on the ROOM's type (#112918); the adapter's
-            # get_chat_info reports "dm"/"group" for the home room.
-            chat_type = "dm" if await self._handoff_home_is_dm(transport.adapter, home_chat_id) else "group"
+        if platform == Platform.MATRIX or (not is_thread and platform not in (Platform.TELEGRAM, Platform.SLACK)):
+            # Matrix keys replies on the room's type (#112918); a turn in no fresh thread keeps the home's
+            # real type on every platform: a group home is not a DM (its DM-only statuses, #101003).
+            chat_type = await self._handoff_home_chat_type(transport.adapter, home_chat_id, platform)
         # Discord builds in-thread messages with ``chat_id == thread id``: key on the thread's OWN id.
         dest_source = SessionSource(
             platform=platform,
@@ -1876,15 +1883,19 @@ class GatewayStartupMixin:
         )
 
     @staticmethod
-    async def _handoff_home_is_dm(adapter, home_chat_id: str) -> bool:
-        """Whether the home chat is a DM by the adapter's own ``get_chat_info`` (``type: "dm"``);
-        unknown/failed → not a DM, the common handoff target."""
+    async def _handoff_home_chat_type(adapter, home_chat_id: str, platform: Platform) -> str:
+        """The home chat's type by the adapter's own ``get_chat_info``. Matrix and Discord key a room or
+        guild channel ``group`` (unknown/failed → ``group``, the common handoff target); elsewhere the
+        reported shared label is kept, and an unclassifiable home keeps ``dm``."""
         try:
             info = await adapter.get_chat_info(home_chat_id)
         except Exception:
             logger.debug("Handoff: get_chat_info failed for %s", home_chat_id, exc_info=True)
-            return False
-        return isinstance(info, dict) and info.get("type") == "dm"
+            info = None
+        kind = str(info.get("type") or "").strip().lower() if isinstance(info, dict) else ""
+        if platform in (Platform.MATRIX, Platform.DISCORD):
+            return "dm" if kind == "dm" else "group"
+        return kind if kind in _HANDOFF_SHARED_CHAT_TYPES else "dm"
 
     def _handoff_session_key(self, dest, profile_name: Optional[str]) -> str:
         """Destination session_key by the adapters' own rules. Thread keys omit user_id so the next

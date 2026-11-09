@@ -133,6 +133,8 @@ VALID_HOOKS: set[str] = {
     # error_body may be unredacted.
     "transform_api_error_classification", "on_session_start", "on_session_end",
     "on_session_finalize", "on_session_reset", "on_session_delete",
+    # on_session_open: local session created/opened, before its first turn. Kwargs: session_id, platform, reason.
+    "on_session_open",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
@@ -203,6 +205,9 @@ VALID_HOOKS: set[str] = {
     # block/rewrite adopters are discoverable once the middleware variant ships (#64231 taxonomy).
     "pre_command",
     "post_compaction",  # once per committed compaction on every path; observer (hooks.md, #118382)
+    # post_curator_run: after a curator pass wrote logs/curator/<run>/ (run.json + REPORT.md). Kwargs:
+    # run_dir, run_json_path, report_md_path, dry_run. Observer; returns ignored.
+    "post_curator_run",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
@@ -910,13 +915,14 @@ def start_background_plugin_discovery() -> None:
         _background_discovery_thread.start()
 
 
-def _join_background_discovery(timeout: float = 30.0) -> None:
+def _join_background_discovery(timeout: float = 30.0) -> bool:
     """Wait for an in-flight background discovery (no-op from its own thread or a plugin-load worker it
-    spawned — that worker's parent is blocked waiting on it)."""
+    spawned — that worker's parent is blocked waiting on it). True when the wait timed out."""
     t = _background_discovery_thread
     if t is None or not t.is_alive() or t is threading.current_thread() or in_plugin_load_worker():
-        return
+        return False
     t.join(timeout=timeout)
+    return t.is_alive()
 
 
 def _plugin_toolset_keys_cache_path() -> Path:
@@ -966,13 +972,21 @@ def get_portable_mcp_server_names_nowait() -> set[str]:
     return _nowait_plugin_set("portable_mcp", lambda m: set(m.get_portable_mcp_servers()))
 
 
+_delivery_join_abandoned = False
+
+
 def _delivery_manager() -> PluginManager:
     """Active manager, lazily discovering if it never ran — delivery must not depend on WHICH
     surface imported us (dashboards/TUI/cron never import model_tools: #50776, #64178).
     ``getattr`` default ``True`` leaves test doubles untouched."""
+    global _delivery_join_abandoned
     manager = get_plugin_manager()
+    # ``_discovered`` flips when a scan STARTS (re-entrancy guard), so an in-flight background scan
+    # must be joined first or a hook fired during startup sees a half-loaded registry. A scan still
+    # running after one full join is hung (a plugin's register() blocked): later hooks stop waiting.
+    if not _delivery_join_abandoned:
+        _delivery_join_abandoned = _join_background_discovery()
     if not getattr(manager, "_discovered", True):
-        _join_background_discovery()
         manager.discover_and_load()
     return manager
 
@@ -1031,6 +1045,21 @@ def has_hook(hook_name: str) -> bool:
     Lazy-discovers first — same gate-before-invoke rationale as :func:`has_middleware` (tracking #64178).
     """
     return _delivery_manager().has_hook(hook_name)
+
+
+def hook_unused_nowait(hook_name: str) -> bool:
+    """True when this home's plugins are loaded and none handles *hook_name*. Never discovers or
+    waits (an unloaded home, or one whose (re)load is still running on another thread, answers False:
+    unknown, not unused), so it is safe on an event loop."""
+    manager = get_plugin_manager()
+    # ``_discovered`` is set before a sweep finishes and a force reload clears ``_hooks`` first, so a
+    # sweep in flight could read as "no consumer": treat a held discovery lock as unknown.
+    if not manager._discovery_lock.acquire(blocking=False):
+        return False
+    try:
+        return manager._discovered and not manager.has_hook(hook_name)
+    finally:
+        manager._discovery_lock.release()
 
 
 def iter_hook_callbacks(hook_name: str) -> tuple[Callable, ...]:

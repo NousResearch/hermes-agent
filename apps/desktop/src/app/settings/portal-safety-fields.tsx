@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef } from 'react'
+import { useSearchParams } from 'react-router'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -7,6 +8,7 @@ import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { ConfigField } from './config-field'
 import { configFieldValue, enumOptionsFor, setConfigField } from './helpers'
+import { SharedMetricsSettings } from './shared-metrics-settings'
 
 interface PortalSafetyFieldsProps {
   config: HermesConfigRecord
@@ -78,4 +80,32 @@ export function PortalSafetyFields({ config, fields, onChange, onManagePasswords
       )}
     </div>
   )
+}
+
+export function PortalSafetySettings({ config, fields = [], onChange, subpage }: {
+  config: HermesConfigRecord
+  fields?: [string, ConfigFieldSchema][]
+  onChange: (config: HermesConfigRecord) => void
+  subpage?: string
+}) {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const targetField = searchParams.get('field')
+
+  return <>
+    <PortalSafetyFields
+      advancedOpen={Boolean(targetField && targetField !== 'approvals.mode' && targetField !== 'security.redact_secrets') || subpage === 'checkpoints'}
+      config={config}
+      fields={fields}
+      onChange={onChange}
+      onManagePasswords={() => setSearchParams(previous => {
+        const next = new URLSearchParams(previous)
+        next.set('tab', 'vault')
+        next.delete('page')
+        next.delete('field')
+
+        return next
+      })}
+    />
+    {subpage === 'privacy' && <SharedMetricsSettings />}
+  </>
 }

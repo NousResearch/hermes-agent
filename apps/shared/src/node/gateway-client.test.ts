@@ -80,6 +80,7 @@ it('dials the grant, describes the owner, creates a session and redials through 
   const created = gw.request<{ session_id: string }>('session.create', {})
 
   await vi.waitFor(() => expect(socket.sent.some(frame => frame.method === 'session.create')).toBe(true))
+  expect(Object.keys(socket.sent.find(frame => frame.method === 'session.create')!.params)).toEqual(['source', 'request_id'])
   expect(socket.sent.find(frame => frame.method === 'session.create')!.params).toMatchObject({ source: 'tui' })
   socket.reply('session.create', { session_id: 'S1', messages: [], authority_epoch: 1 })
   expect((await created).session_id).toBe('S1')
@@ -92,4 +93,34 @@ it('dials the grant, describes the owner, creates a session and redials through 
   await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS)
   expect(connect).toHaveBeenLastCalledWith(false, true)
   gw.kill()
+})
+
+// A third-party client launches with its own source and name; the name rides only when the owner lists it.
+async function createdFrame(options: { source?: 'cli'; client?: { name: string } }, parameters: string[]) {
+  vi.stubGlobal('WebSocket', FakeSocket)
+  const connect = async () => ({ url: 'ws://127.0.0.1:9/api/ws', protocols: [], profile_id: '/home/p', instance_id: 'owner' })
+  const gw = new GatewayClient({ connect, ...options })
+
+  gw.start()
+  gw.drain()
+  await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+  const socket = FakeSocket.instances[0]!
+
+  socket.open()
+  await vi.waitFor(() => expect(socket.sent.some(frame => frame.method === 'runtime.describe')).toBe(true))
+  socket.reply('runtime.describe', { session_create: { sources: ['cli', 'tui'], parameters } })
+  void gw.request('session.create', {}).catch(() => undefined)
+  await vi.waitFor(() => expect(socket.sent.some(frame => frame.method === 'session.create')).toBe(true))
+  const { request_id: _id, ...params } = socket.sent.find(frame => frame.method === 'session.create')!.params
+  gw.kill()
+
+  return params
+}
+
+it('puts the source and client options on the session.create frame', async () => {
+  const client = { name: 'example-client' }
+
+  expect(await createdFrame({ source: 'cli', client }, ['source', 'request_id', 'client'])).toEqual({ source: 'cli', client })
+  FakeSocket.instances = []
+  expect(await createdFrame({ source: 'cli', client }, ['source', 'request_id'])).toEqual({ source: 'cli' })
 })

@@ -1,7 +1,8 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
-import { PortalSafetyFields } from './portal-safety-fields'
+import { PortalSafetyFields, PortalSafetySettings } from './portal-safety-fields'
 
 afterEach(cleanup)
 
@@ -27,4 +28,23 @@ it('changes only the chosen approval field and keeps advanced controls available
   expect(details.open).toBe(true)
   fireEvent.click(screen.getByRole('button', { name: /Passwords/i }))
   expect(manage).toHaveBeenCalledOnce()
+})
+
+it('keeps advanced deep links visible and preserves profile scope when opening passwords', () => {
+  function Location() {
+    return <output aria-label="Location">{useLocation().search}</output>
+  }
+
+  const view = render(
+    <MemoryRouter initialEntries={['/?tab=safety&page=approvals&field=approvals.timeout&profile=research']}>
+      <PortalSafetySettings config={{ approvals: { timeout: 300 } }}
+        fields={[["approvals.timeout", { type: 'number' }]]} onChange={vi.fn()} subpage="approvals" />
+      <Location />
+    </MemoryRouter>
+  )
+
+  expect(view.container.querySelector('details')!.open).toBe(true)
+  fireEvent.click(screen.getByRole('button', { name: /Passwords/i }))
+  const query = new URLSearchParams(screen.getByLabelText('Location').textContent!)
+  expect(Object.fromEntries(query)).toEqual({ tab: 'vault', profile: 'research' })
 })

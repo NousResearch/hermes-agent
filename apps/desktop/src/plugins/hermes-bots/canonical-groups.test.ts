@@ -9,7 +9,9 @@ const host = vi.hoisted(() => ({
 vi.mock('@hermes/plugin-sdk', async () => {
   const { captureGroupRequests } = await import('./canonical-group-contract-test-utils')
 
-  return { randomUuid: (await import('@hermes/shared')).randomUuid, host: { ...host, requestProfile: captureGroupRequests(host.requestProfile).request } }
+  const { pluginSdkMock } = await import('./group-test-utils')
+
+  return { ...await pluginSdkMock(host), host: { ...host, requestProfile: captureGroupRequests(host.requestProfile).request } }
 })
 
 import { groupAdvertisedMethods, groupExecutionMode, offersGroupMethod } from './canonical-group-capabilities'
@@ -47,7 +49,7 @@ it('pins discovery and every subsequent request to its captured authority, inclu
   await expect(canonicalGroupRequest({ ...route, connectionId: '' }, 'groups.list', {})).rejects.toThrow()
   await expect(canonicalGroupRequest(route, 'groups.list', { profile: 'other' })).rejects.toThrow()
   host.requestProfile.mockResolvedValueOnce({ driver: true }).mockResolvedValueOnce({ rooms: [], next_offset: 0 })
-  await expect(discoverCanonicalGroups(route)).rejects.toThrow('pagination')
+  await expect(discoverCanonicalGroups(route)).rejects.toThrow('Could not load the next group chats')
   expect(host.request).not.toHaveBeenCalled()
 })
 
@@ -121,6 +123,44 @@ it('creates only same-authority rosters and dispatches exact advertised attempt 
   expect(host.requestProfile).toHaveBeenCalledTimes(count + 2)
 
   expect(host.request).not.toHaveBeenCalled()
+})
+
+it('retries a lost create reply with the same room id, scoped to the exact create intent', async () => {
+  const route = { connectionId: 'source-a', profile: 'default' }
+  const members = [{ name: 'alice' }, { name: 'bob' }]
+  const intent = {}
+  const stored = new Map<string, { room_id: string; name: string; members: unknown }>()
+  let loseReply = true
+  host.requestProfile.mockImplementation(async (_route, _method, params) => {
+    const previous = stored.get(params.room_id)
+
+    if (previous && (previous.name !== params.name || JSON.stringify(previous.members) !== JSON.stringify(params.members))) {
+      throw Object.assign(new Error('room_id already exists with different state'), { code: 4110 })
+    }
+
+    stored.set(params.room_id, previous ?? { room_id: params.room_id, name: params.name, members: params.members })
+
+    if (loseReply) {loseReply = false; throw new Error('request timed out')}
+
+    return { room: stored.get(params.room_id) }
+  })
+
+  await expect(createCanonicalGroup(route, 'Retry', members, intent)).rejects.toThrow('request timed out')
+  const firstId = [...stored.keys()][0]
+
+  // An intervening create on another authority or with different inputs must not take this id.
+  for (const [authority, name, roster] of [
+    [{ ...route, connectionId: 'source-b' }, 'Retry', members],
+    [{ ...route, profile: 'other' }, 'Retry', members],
+    [route, 'Renamed', members], [route, 'Retry', [{ name: 'alice' }, { name: 'carol' }]]
+  ] as [typeof route, string, typeof members][]) {
+    await createCanonicalGroup(authority, name, roster)
+  }
+
+  expect((await createCanonicalGroup(route, 'Retry', members, intent)).binding.roomId).toBe(firstId)
+  expect(stored.size).toBe(5)
+  expect((await createCanonicalGroup(route, 'Retry', members, intent)).room.room_id).not.toBe(firstId)
+  expect(stored.size).toBe(6)
 })
 
 // Both Python surfaces answer groups.capabilities; the standalone server (what SSH, URL and Cloud

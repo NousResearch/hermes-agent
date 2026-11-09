@@ -624,10 +624,10 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
         return send_error("Mattermost standalone send: MATTERMOST_URL and MATTERMOST_TOKEN must both be set")
     upload_headers = {"Authorization": f"Bearer {token}"}
     headers = {**upload_headers, "Content-Type": "application/json"}
-    try:
-        # One ClientSession (with proxy) covers the optional uploads + final post.
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url(platform_env_var="MATTERMOST_PROXY"))
+    from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
+    proxy = resolve_proxy_url(platform_env_var="MATTERMOST_PROXY")
+    try:  # one ClientSession (with proxy) covers the optional uploads + final post
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(proxy)
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60), **_sess_kw) as session:
             file_ids: list[str] = []
             for media in media_files or []:
@@ -656,10 +656,10 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
                     return send_error(f"Mattermost API error ({resp.status}): {body[:400]}")
                 data = await resp.json()
             return {"success": True, "platform": "mattermost", "chat_id": chat_id, "message_id": data.get("id")}
-    except aiohttp.ClientError as exc:
-        return send_error(f"Mattermost send failed (network): {exc}")
+    except aiohttp.ClientError as exc:  # the text may echo the proxy URL: it reaches the model
+        return send_error(f"Mattermost send failed (network): {describe_proxy_error(exc, proxy) or exc}")
     except Exception as exc:
-        return send_error(f"Mattermost send failed: {exc}")
+        return send_error(f"Mattermost send failed: {describe_proxy_error(exc, proxy) or exc}")
 
 
 # --- Interactive setup wizard ---

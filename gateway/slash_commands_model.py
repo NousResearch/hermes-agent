@@ -249,6 +249,8 @@ class GatewayModelCommandsMixin:
         self._session_model_overrides[ctx.session_key] = {
             "model": result.new_model, "provider": result.target_provider, "api_key": result.api_key,
             "base_url": result.base_url, "api_mode": result.api_mode,
+            # Catalog alias names carry no credential authority; only a direct alias endpoint does.
+            "owns_credentials": result.alias_endpoint_applied,
             "request_overrides": dict(result.request_overrides or {}),
             "capabilities": dict(result.runtime_capabilities or {}),
         }
@@ -995,7 +997,8 @@ class GatewayModelCommandsMixin:
             current_effort = rc.get("effort", "medium")
             level = effort_display_label(current_effort, *_route)
         display_state = t("gateway.reasoning.display_on") if self._show_reasoning else t("gateway.reasoning.display_off")
-        has_session_override = session_key in (getattr(self, "_session_reasoning_overrides", {}) or {})
+        _rs_state = self._peek_session_state(session_key)
+        has_session_override = _rs_state is not None and _rs_state.conversation.reasoning_override is not None
         scope = t("gateway.reasoning.scope_session") if has_session_override else t("gateway.reasoning.scope_global")
 
         async def _on_reasoning_choice(_chat_id: str, value: str) -> str:

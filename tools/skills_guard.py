@@ -17,8 +17,10 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import List, Tuple
 
+from tools.skills_guard_context import literal_context
 
-SCANNER_VERSION = "skills-guard-v10"
+
+SCANNER_VERSION = "skills-guard-v14"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {
@@ -716,6 +718,9 @@ def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
                 text = line.strip()
                 line_severity, line_description = _demote_inert_path_reference(
                     pid, severity, description, line, lines[owners[i - 1]], suffix)
+                line_severity, line_description = literal_context(
+                    pid, line, line_severity, line_description,
+                    tuple(m.group(0) for m in pattern.finditer(line)) if pid == "hardcoded_secret" else ())
                 findings.append(Finding(pid, line_severity, category, rel_path, i,
                                         text if len(text) <= 120 else text[:117] + "...", line_description))
     for i, line in enumerate(lines, start=1):

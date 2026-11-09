@@ -22,7 +22,10 @@ Covered:
   one local exception on its own class (:attr:`KanbanStore.LOCAL_SHARED_BOARD`
   ``hermes_kanban_port``: a single-user machine's one board root, shared by every profile,
   which today's dispatcher handoff needs), when the matrix asserts the inverse: B's scope is
-  served on A's handle, as A's own is;
+  served on A's handle, answering exactly A's own seeded answer — never an empty stand-in —
+  as A's own is. A write row's own preparation (the card a link or unlink targets, the block
+  an unblock resumes, the board a removal removes) runs under A's scope first, so the refusal
+  the matrix pins is the named operation's, never a prerequisite's that refused before it;
 - claims: a ready task is claimed by at most one of two replicas, and the loser sees ``None``
   with no trace of a claim; a review claim behaves the same.
 
@@ -58,6 +61,8 @@ WORLD_BOARD = "work"
 FOREIGN_BOARD = "private"
 #: The chat id each agent's notify subscription uses.
 CHAT = "telegram-chat"
+#: The board a removal row prepares under the owning agent's own scope before it removes it.
+TEMP_BOARD = "temp-board"
 
 
 @dataclass
@@ -99,6 +104,10 @@ class AgentWorld:
     review_id: str
     #: the card on the second agent's private board (``None`` for the first agent)
     private_id: Optional[str] = None
+    #: the card a later link or unlink targets, created by that row's preparation under the
+    #: owning agent's own scope (a named operation is the only thing that runs under a
+    #: foreign scope)
+    prepared_card_id: Optional[str] = None
 
 
 @dataclass
@@ -172,8 +181,18 @@ def _replica_thread(target: Callable[..., Any], *args: Any) -> threading.Thread:
     return threading.Thread(target=contextvars.Context().run, args=(target, *args))
 
 
-def _fresh_card(store: KanbanStore, title: str) -> str:
-    return store.create_task(title=title, board=WORLD_BOARD)
+def _prepare_card(title: str) -> Callable[[KanbanStore, AgentWorld], None]:
+    """A row's preparation: the card a later link or unlink targets, created under the owning
+    agent's own scope so the named operation is the only thing that runs under a foreign one."""
+    def prepare(store: KanbanStore, w: AgentWorld) -> None:
+        w.prepared_card_id = store.create_task(title=title, board=WORLD_BOARD)
+    return prepare
+
+
+def _prepared(w: AgentWorld) -> str:
+    """The target card a prepared row operates on (created by its preparation)."""
+    assert w.prepared_card_id is not None, "the row's preparation did not run"
+    return w.prepared_card_id
 
 
 READS: list[tuple[str, Callable[[KanbanStore, AgentWorld], Any]]] = [
@@ -200,10 +219,10 @@ WRITES: list[tuple[str, Callable[[KanbanStore, AgentWorld], Any], Callable[[Any]
     ("add_comment", lambda s, w: s.add_comment(w.ready_id, "user", "another note", board=WORLD_BOARD),
      lambda r: isinstance(r, int) and r > 0),
     ("link_tasks",
-     lambda s, w: s.link_tasks(w.ready_id, _fresh_card(s, "child card"), board=WORLD_BOARD),
+     lambda s, w: s.link_tasks(w.ready_id, _prepared(w), board=WORLD_BOARD),
      lambda r: r is True),
     ("unlink_tasks",
-     lambda s, w: s.unlink_tasks(w.ready_id, _fresh_card(s, "unlink target"), board=WORLD_BOARD),
+     lambda s, w: s.unlink_tasks(w.ready_id, _prepared(w), board=WORLD_BOARD),
      lambda r: r is False),  # no edge existed: the op ran and answered, it did not reach for another agent
     ("request_review", lambda s, w: s.request_review(w.ready_id, board=WORLD_BOARD), lambda r: r is True),
     ("complete_task", lambda s, w: s.complete_task(w.ready_id, result="finished", board=WORLD_BOARD),
@@ -211,8 +230,7 @@ WRITES: list[tuple[str, Callable[[KanbanStore, AgentWorld], Any], Callable[[Any]
     ("block_task", lambda s, w: s.block_task(w.ready_id, reason="waiting", board=WORLD_BOARD),
      lambda r: r is True),
     ("unblock_task",
-     lambda s, w: (s.block_task(w.ready_id, reason="brief", board=WORLD_BOARD),
-                   s.unblock_task(w.ready_id, board=WORLD_BOARD))[1],
+     lambda s, w: s.unblock_task(w.ready_id, board=WORLD_BOARD),
      lambda r: r is True),
     ("archive_task", lambda s, w: s.archive_task(w.ready_id, board=WORLD_BOARD), lambda r: r is True),
     ("delete_task", lambda s, w: s.delete_task(w.ready_id, board=WORLD_BOARD), lambda r: r is True),
@@ -254,9 +272,7 @@ WRITES: list[tuple[str, Callable[[KanbanStore, AgentWorld], Any], Callable[[Any]
                                           old_cursor=0, board=WORLD_BOARD),
      lambda r: isinstance(r, bool)),
     ("create_board", lambda s, w: s.create_board("fresh-board"), lambda r: isinstance(r, dict)),
-    ("remove_board",
-     lambda s, w: (s.create_board("temp-board"), s.remove_board("temp-board"))[1],
-     lambda r: isinstance(r, dict)),
+    ("remove_board", lambda s, w: s.remove_board(TEMP_BOARD), lambda r: isinstance(r, dict)),
 ]
 
 #: The positive control: every operation, read and write, once for its own agent.
@@ -274,6 +290,36 @@ READ_MISSING: dict[str, Callable[[Any], bool]] = {
     "latest_run": lambda r: r is None,
     "list_runs": lambda r: r == [],
     "unseen_events_for_sub": lambda r: r == (0, []),
+}
+
+#: What the same read must answer for the seeded world it is served: the seeded rows
+#: themselves, never the missing-row stand-in — an empty answer hides a populated board as
+#: easily as a refusal the agent never sees (``READ_MISSING``), and the inverse matrix
+#: compares the other agent's answer against the owning agent's own, so the owning answer
+#: itself is asserted seeded here.
+SEEDED_READ: dict[str, Callable[[Any, AgentWorld], bool]] = {
+    "get_task": lambda r, w: r is not None and r.id == w.ready_id,
+    "list_tasks": lambda r, w: {t.id for t in r} >= {w.ready_id, w.claimed_id, w.review_id},
+    "list_events": lambda r, w: len(r) > 0,
+    "list_comments": lambda r, w: [c.body for c in r] == [f"note for {w.agent}"],
+    "list_boards": lambda r, w: {"default", WORLD_BOARD} <= {m["slug"] for m in r},
+    "list_notify_subs": lambda r, w: (w.ready_id, "telegram", f"{CHAT}-{w.agent}") in
+        {(s["task_id"], s["platform"], s["chat_id"]) for s in r},
+    "latest_run": lambda r, w: r is not None and r.task_id == w.claimed_id,
+    "list_runs": lambda r, w: len(r) > 0,
+    "unseen_events_for_sub": lambda r, w: r != (0, []),
+}
+
+#: What a write row needs in place before its named operation runs, prepared under the owning
+#: agent's own scope (never the foreign scope the operation itself runs under): a mutating
+#: prerequisite inside the operation would refuse there first, and the row would pass without
+#: ever invoking the operation it names. A row absent here needs nothing in place.
+PREPARE_WRITE: dict[str, Callable[[KanbanStore, AgentWorld], Any]] = {
+    "link_tasks": _prepare_card("child card"),
+    "unlink_tasks": _prepare_card("unlink target"),
+    "unblock_task": lambda s, w: s.block_task(w.ready_id, reason="blocked to unblock",
+                                              board=WORLD_BOARD),
+    "remove_board": lambda s, w: s.create_board(TEMP_BOARD),
 }
 
 
@@ -302,6 +348,10 @@ class PinningConformance:
     def test_every_write_is_refused_for_a_foreign_tenant_and_changes_nothing(
             self, backend, world, name, operation):
         w = world["a"]
+        with backend.bind("a"):  # the row's preparation, under the agent's own scope
+            prepare = PREPARE_WRITE.get(name)
+            if prepare is not None:
+                prepare(w.store, w)
         before = observe(w.store, w)
         with backend.foreign_tenant("a"):
             _refused(lambda: operation(w.store, w))
@@ -329,6 +379,9 @@ class PinningConformance:
         w = world["a"]
         store = backend.open(w.agent)  # the environment, if any, back at this agent's root
         with backend.bind(w.agent):
+            prepare = PREPARE_WRITE.get(name)
+            if prepare is not None:
+                prepare(store, w)
             result = operation(store, w)
         checks = {name: ok for name, _c, ok in WRITES}
         assert (checks.get(name, lambda r: r is not None))(result)
@@ -457,18 +510,27 @@ class CrossAgentConformance:
             self, backend, world, name, operation):
         """The cross-agent read: B's worker holding A's handle never sees A's rows — the
         operation is refused, or answers exactly what a missing row would — unless the backend
-        declares its one board root shared, when B's scope reads A's rows like A's own."""
+        declares its one board root shared, when B's scope reads A's rows like A's own:
+        exactly A's own answer, and never the missing-row stand-in an empty-handed backend
+        would hide behind."""
         a = world["a"]
+        if _shared_board_root(a.store):
+            with backend.bind("a"):
+                own = operation(a.store, a)
+            assert SEEDED_READ[name](own, a), (
+                f"{name} answered A's own read without the world's seeded rows")
+            with backend.bind("b"):
+                under_b = operation(a.store, a)
+            assert under_b == own, (
+                f"{name} under a same-tenant other agent's scope did not answer A's own read")
+            return
         with backend.bind("b"):
-            if _shared_board_root(a.store):
-                assert operation(a.store, a) is not None
-                return
             try:
                 result = operation(a.store, a)
             except KanbanPinRefused:
                 return
-            assert READ_MISSING[name](result), \
-                f"{name} under a same-tenant other agent's scope answered with A's rows"
+            assert READ_MISSING[name](result), (
+                f"{name} under a same-tenant other agent's scope answered with A's rows")
 
     @pytest.mark.parametrize("name,operation", [(n, c) for n, c, _ in WRITES],
                              ids=[n for n, _, _ in WRITES])
@@ -476,10 +538,16 @@ class CrossAgentConformance:
             self, backend, world, name, operation):
         """The cross-agent write: unless the backend declares its one board root shared (when
         B's scope writes A's rows like A's own), the operation is refused and nothing A can
-        observe changes — no row moves, no event lands, no subscription or cursor does."""
+        observe changes — no row moves, no event lands, no subscription or cursor does. The
+        row's own preparation runs under A's scope first, so the refusal the test pins is the
+        named operation's, never a prerequisite's that fired before it; A observes its world
+        unchanged afterwards, the preparation included."""
         a = world["a"]
         shared = _shared_board_root(a.store)
         with backend.bind("a"):
+            prepare = PREPARE_WRITE.get(name)
+            if prepare is not None:
+                prepare(a.store, a)
             before = observe(a.store, a)
         with backend.bind("b"):
             if shared:

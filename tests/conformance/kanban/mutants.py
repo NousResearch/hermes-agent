@@ -8,8 +8,14 @@ whatever root the ambient environment names (another agent's boards); ``claim_wi
 claims without the compare-and-set, so two replicas both win; ``refusal_commits_first`` refuses
 only after the write has landed; ``tenant_only_pin`` drops the store's declaration of its one
 shared board root while the pin keeps checking the tenant alone, so a backend that claims agent
-isolation serves another same-tenant agent's scope on the same handle. Each mutant is applied by
-the ``backend`` fixture when ``HERMES_KANBAN_MUTANT`` names it.
+isolation serves another same-tenant agent's scope on the same handle. ``strict_except_target_*``
+refuse every operation under another same-tenant agent's scope except the one named, which
+serves it — a leak a write row with a mutating prerequisite used to hide behind, the prerequisite
+refusing first; the row's preparation now runs under the owning agent's scope, so the named
+operation alone runs under the foreign scope and the leak is caught. ``empty_read_*`` answer
+nothing for a read while the pin still refuses properly — the shared-board-root inverse matrix
+compares the answer against the owning agent's own seeded read, so an empty stand-in fails it.
+Each mutant is applied by the ``backend`` fixture when ``HERMES_KANBAN_MUTANT`` names it.
 """
 
 import os
@@ -125,6 +131,47 @@ def _tenant_only_pin(monkeypatch):
     monkeypatch.delattr(LocalKanbanStore, "LOCAL_SHARED_BOARD")
 
 
+def _strict_except_target(monkeypatch, target):
+    """Every operation refuses another same-tenant agent's scope except *target*, which serves
+    it: the leak a write row with a mutating prerequisite used to hide behind (the prerequisite
+    refused first, so the row passed without invoking the operation it names). The declaration
+    of the shared root is dropped too, so the cross-agent matrix expects a refusal for every
+    row — only the named operation's own row can catch the leak."""
+    from hermes_kanban_port import KanbanPinRefused, KanbanStore
+    from hermes_kanban_port_local import LocalKanbanStore
+    from hermes_scope import LOCAL_TENANT, current_scope
+
+    monkeypatch.setattr(LocalKanbanStore, "LOCAL_SHARED_BOARD", False)
+    for op in KanbanStore.__abstractmethods__:
+        original = getattr(LocalKanbanStore, op)
+
+        def guarded(self, *args, _op=op, _original=original, **kwargs):
+            scope = current_scope()
+            if scope is not None and scope.tenant == LOCAL_TENANT and _op != target:
+                # The first same-tenant scope to touch a store is its owning agent's; the
+                # suite's world binds each agent to its own store first.
+                owner = self.__dict__.get("_suite_owner_agent")
+                if owner is None:
+                    self.__dict__["_suite_owner_agent"] = scope.agent
+                    owner = scope.agent
+                if scope.agent != owner:
+                    raise KanbanPinRefused(f"another agent of this tenant: {_op}")
+            return _original(self, *args, **kwargs)
+        monkeypatch.setattr(LocalKanbanStore, op, guarded)
+
+
+def _empty_read(monkeypatch, name, missing):
+    """A read that answers nothing for everyone (the pin still refuses properly), so the
+    strict matrices pass: only the shared-root inverse matrix — which asserts the owning
+    agent's own answer is the seeded one and the other agent's equals it — can catch it."""
+    from hermes_kanban_port_local import LocalKanbanStore
+
+    def empty(self, *args, **kwargs):
+        self._pin()
+        return missing
+    monkeypatch.setattr(LocalKanbanStore, name, empty)
+
+
 _READS = ("get_task", "list_tasks", "list_events", "list_comments", "list_boards",
           "list_notify_subs", "latest_run", "list_runs", "unseen_events_for_sub")
 _NOTIFY = ("list_notify_subs", "unseen_events_for_sub", "claim_unseen_events_for_sub",
@@ -143,6 +190,17 @@ MUTANTS = {
     "claim_without_compare": _claim_without_compare,
     "refusal_commits_first": _refusal_commits_first,
     "tenant_only_pin": _tenant_only_pin,
+    "strict_except_target_link_tasks": lambda m: _strict_except_target(m, "link_tasks"),
+    "strict_except_target_unlink_tasks": lambda m: _strict_except_target(m, "unlink_tasks"),
+    "strict_except_target_unblock_task": lambda m: _strict_except_target(m, "unblock_task"),
+    "strict_except_target_remove_board": lambda m: _strict_except_target(m, "remove_board"),
+    "empty_read_list_tasks": lambda m: _empty_read(m, "list_tasks", []),
+    "empty_read_list_events": lambda m: _empty_read(m, "list_events", []),
+    "empty_read_list_comments": lambda m: _empty_read(m, "list_comments", []),
+    "empty_read_list_boards": lambda m: _empty_read(m, "list_boards", []),
+    "empty_read_list_notify_subs": lambda m: _empty_read(m, "list_notify_subs", []),
+    "empty_read_list_runs": lambda m: _empty_read(m, "list_runs", []),
+    "empty_read_unseen_events_for_sub": lambda m: _empty_read(m, "unseen_events_for_sub", (0, [])),
 }
 
 

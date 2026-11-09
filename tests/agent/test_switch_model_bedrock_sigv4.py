@@ -81,6 +81,33 @@ def test_bind_without_runtime_url_uses_configured_region(aws_env, monkeypatch, a
     assert agent._bedrock_region == "eu-west-3"
 
 
+@pytest.mark.parametrize("caller", ["switch_model", "fallback", "restore"])
+@pytest.mark.parametrize("model, api_mode", [("eu.anthropic.claude-opus-4-6-v1", "anthropic_messages"),
+                                             ("eu.amazon.nova-pro-v1:0", "bedrock_converse")])
+@patch("agent.model_metadata.get_model_context_length", return_value=200_000)
+def test_callers_without_runtime_url_land_in_configured_region(_ctx, aws_env, monkeypatch, caller, model, api_mode):
+    """The binder's callers hand it the URL the agent holds, which is empty when the agent was built
+    without one: a same-provider ``/model`` re-select, a fallback to Bedrock and the primary restore
+    after a fallback must all reach ``bedrock.region`` (where ``eu.`` profiles exist), not us-east-1."""
+    from agent.agent_runtime_helpers import _rebuild_primary_client
+    from agent.client_lifecycle import _swap_fallback_clients
+    from hermes_constants import get_hermes_home
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    (get_hermes_home() / "config.yaml").write_text("bedrock:\n  region: eu-west-3\n")
+    agent = _agent()
+    agent.model, agent.provider, agent.base_url, agent.api_mode = model, "bedrock", "", api_mode
+
+    if caller == "switch_model":
+        agent.switch_model(model, "bedrock", api_key="aws-sdk", base_url="", api_mode=api_mode)
+    elif caller == "fallback":
+        _swap_fallback_clients(agent, MagicMock(base_url="", api_key="aws-sdk"), "bedrock", model, "", api_mode)
+    else:
+        _rebuild_primary_client(agent, {}, reason="restore after fallback")
+
+    assert agent._bedrock_region == "eu-west-3"
+
+
 @pytest.mark.parametrize("api_mode", ["anthropic_messages", "bedrock_converse"])
 def test_fallback_to_bedrock_binds_runtime_not_generic_client(aws_env, api_mode):
     from agent.client_lifecycle import _swap_fallback_clients

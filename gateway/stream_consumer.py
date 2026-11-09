@@ -206,6 +206,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Fallback sends only the missing tail after a partial overflow delivery.
         self._fallback_preserve_partial_messages = False
         self._segment_preview_message_ids: set[str] = set()
+        # The preview send timed out after the request left: it may be on screen, but unlike an
+        # acknowledged preview there is no id to edit or delete, so nothing can replace it.
+        self._preview_uncertain = False
         # Tool-progress overlay (native only): shown in the bubble until text arrives.
         self._tool_progress_lines: list[str] = []
         self._tool_progress_active: bool = False

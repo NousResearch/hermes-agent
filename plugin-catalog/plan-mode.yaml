@@ -1,7 +1,7 @@
 name: plan-mode
 title: Plan mode
 repo: https://github.com/100yenadmin/hermes-plan-mode
-sha: c44ff9ac28bf0ed7680916a79b149809f7b5005e
+sha: 6ac579e8109c915d3d0428f8df720ab563a89622
 description: 'Claude Code-style plan mode for Hermes: the agent explores and writes a plan, and edits nothing else until you
   approve it. It works on every interactive Hermes surface: /plan or /planmode on blocks mutating Hermes tools dispatched
   through pre_tool_call (writes outside .hermes/plans, terminal, code execution, delegation, MCP) while the agent
@@ -16,7 +16,8 @@ description: 'Claude Code-style plan mode for Hermes: the agent explores and wri
   (gateway buttons, the TUI/Desktop card, the CLI panel or /approve). When yolo or approvals.mode: off would
   auto-approve, it asks through clarify instead, so a person still decides. By default plans are compact and
   decision-complete, the lean profile asks at most three targeted questions (say "grill me" for more, or set questions: thorough for an
-  interview before every plan, one decision at a time), and the agent does not commit unless
+  interview before every plan, one decision at a time), the reply names any tool call plan mode blocked (Hermes
+  itself shows none), and the agent does not commit unless
   asked (plan_style, plan_profile, questions, allow_commits and plan_skill settings). Classic CLI enforced on every supported
   Hermes; gateway, TUI and Desktop from Hermes v2026.9.24 (0.21.5), and refused on older builds; 0.21.6 or newer recommended, tested through 0.23.0.
   On the interactive classic CLI, Hermes'' inline diff shows a new plan file in full, so the agent does not retype it
@@ -46,13 +47,13 @@ tier: community
 category: tools
 requires_hermes: '>=0.21.3'
 docs_url: https://github.com/100yenadmin/hermes-plan-mode#readme
-version: "1.2.0"
-image: https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/c44ff9ac28bf0ed7680916a79b149809f7b5005e/docs/media/banner.jpg
+version: "1.3.0"
+image: https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/6ac579e8109c915d3d0428f8df720ab563a89622/docs/media/banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/c44ff9ac28bf0ed7680916a79b149809f7b5005e/docs/media/cli-card.png
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/c44ff9ac28bf0ed7680916a79b149809f7b5005e/docs/media/cli-edit-review.png
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/c44ff9ac28bf0ed7680916a79b149809f7b5005e/docs/media/cli-card-implement.png
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/c44ff9ac28bf0ed7680916a79b149809f7b5005e/docs/media/cli-edit-approve.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/6ac579e8109c915d3d0428f8df720ab563a89622/docs/media/cli-card.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/6ac579e8109c915d3d0428f8df720ab563a89622/docs/media/cli-edit-review.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/6ac579e8109c915d3d0428f8df720ab563a89622/docs/media/cli-card-implement.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/6ac579e8109c915d3d0428f8df720ab563a89622/docs/media/cli-edit-approve.png
 platforms: []
 capabilities:
   provides_tools:

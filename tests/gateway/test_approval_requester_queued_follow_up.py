@@ -1,0 +1,56 @@
+"""A message queued behind a running turn and drained as the next turn (the recursive ``_run_agent``)
+is its own sender's turn: an approval it raises names that sender, not the member who opened the chain."""
+
+import pytest
+
+from gateway.config import GatewayConfig, Platform
+from gateway.platforms.event import MessageEvent, MessageType
+from gateway.session import SessionSource, build_session_context
+from tests.gateway.test_queued_followup_processing_hooks import HookRecordingAdapter, _install_fake_agent, _make_runner
+
+KEY = "agent:main:telegram:group:-100"
+
+
+class _ApprovingAgent:
+    calls: list = []
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **_kw):
+        from tools.approval_gateway_wait import _ApprovalEntry
+        entry = _ApprovalEntry({"command": "rm -rf notes"})
+        type(self).calls.append((message, entry.authority["requester_id"], entry.authority["requester_name"]))
+        return {"final_response": "ok", "messages": [], "api_calls": 1}
+
+
+def _event(text, uid, name, on_event):
+    """Telegram observe mode carries the sender on the event; other platforms on the source."""
+    src = SessionSource(platform=Platform.TELEGRAM, chat_id="-100", chat_type="group",
+                        user_id=None if on_event else uid, user_name=None if on_event else name)
+    who = {"user_id": uid, "user_name": name} if on_event else {}
+    return MessageEvent(text=text, source=src, message_id=text, message_type=MessageType.TEXT, **who)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("on_event", [True, False], ids=["observe-sender-on-event", "sender-on-source"])
+@pytest.mark.parametrize(("follow_uid", "follow_name"), [("222", "Bob"), ("111", "Alice")],
+                         ids=["other-member", "same-member"])
+async def test_a_queued_follow_up_runs_under_its_own_sender(monkeypatch, tmp_path, on_event, follow_uid, follow_name):
+    _ApprovingAgent.calls = []
+    _install_fake_agent(monkeypatch, tmp_path, _ApprovingAgent)
+    adapter = HookRecordingAdapter()
+    runner = _make_runner(adapter)
+    alice = _event("alice-task", "111", "Alice", on_event)
+    adapter._pending_messages[KEY] = _event("follow-task", follow_uid, follow_name, on_event)
+    tokens = runner._set_session_env(build_session_context(alice.source, GatewayConfig(), event=alice))
+    try:
+        await runner._run_agent(message="alice-task", context_prompt="", history=[], source=alice.source,
+                                session_id="s1", session_key=KEY)
+        from gateway.session_context import get_session_env
+        assert get_session_env("HERMES_SESSION_ACTOR_ID") == "111"  # the opener's binding is restored after
+    finally:
+        runner._clear_session_env(tokens)
+
+    assert [(m.rsplit("] ", 1)[-1], uid, name) for m, uid, name in _ApprovingAgent.calls] == [
+        ("alice-task", "111", "Alice"), ("follow-task", follow_uid, follow_name)]

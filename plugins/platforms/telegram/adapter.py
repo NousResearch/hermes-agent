@@ -6324,7 +6324,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         """Download a voice/audio/video attachment into the local cache. An oversized one only gets a note:
         the caller's tail dispatches the event, so an album item still joins its album's turn."""
         try:
-            allowed, note = self._telegram_media_size_allowed(source, label)
+            name = getattr(source, "file_name", None)  # named, so a same-size album sibling's note is not merged away
+            allowed, note = self._telegram_media_size_allowed(source, f"{label} '{name}'" if isinstance(name, str) and name else label)
             if not allowed:
                 event.text = self._append_observed_note(event.text, note or "")
                 logger.info("[Telegram] Skipped oversized user %s (size=%s)", kind, getattr(source, "file_size", None))
@@ -6374,8 +6375,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             # Size check before the image branch so image documents can't bypass the limit.
             if not doc.file_size or doc.file_size > self._max_doc_bytes:
                 logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
-                return self._note_instead_of_media(
-                    event, f"The document is too large or its size could not be verified. Maximum: {self._max_doc_bytes // (1024 * 1024)} MB.")
+                return self._note_instead_of_media(  # named, so an album's second note is not merged away
+                    event, f"Document '{display}' is too large or its size could not be verified. Maximum: {self._max_doc_bytes // (1024 * 1024)} MB.")
             # Screenshots/photos sent as documents take the image cache + batching path.
             if ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/"):
                 file_obj = await doc.get_file()

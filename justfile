@@ -124,6 +124,12 @@ docs-check-links:
 docs-lint-diagrams:
     npm run lint:diagrams --prefix website
 
+# Stage pinned bionic pm packages and their runtime libraries into a Termux payload
+[group('dev')]
+[positional-arguments]
+termux-payload payload +packages:
+    scripts/termux/stage_payload.sh "$@"
+
 # Refresh uv.lock after a pyproject.toml change, then re-sync the environment
 [group('deps')]
 lock:

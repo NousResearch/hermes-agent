@@ -4,11 +4,19 @@ This is the one test helper that names the SQLite backend: the holder is ``SQLit
 """
 
 
+def _sqlite_store(store):
+    """The SQLite backend's own store for *store*: a ``Persistence`` handle's bound store (a handle forwards only the
+    storage interface), else *store* itself."""
+    from persistence_assembly import Persistence
+
+    return store._bound_store() if isinstance(store, Persistence) else store
+
+
 def raw_holder(store):
     """The SQLite backend's holder for the handle's store. ``_execute_write(fn)`` runs ``fn(conn)`` in one write
     transaction and returns its result; ``with _read_ctx() as conn`` gives a read connection. Fetching it opens the
     store, so a test that asserts the store is closed never calls it."""
-    return store.holder()
+    return _sqlite_store(store).holder()
 
 
 def holder_type():
@@ -228,7 +236,7 @@ def hosted_upload(store, placement, room_id, upload_id):
                               (room_id, upload_id))
         row = cursor.fetchone()
         return None if row is None else dict(zip([column[0] for column in cursor.description], row))
-    return HostedFiles(store)._hosted_read(placement, read)
+    return HostedFiles(_sqlite_store(store))._hosted_read(placement, read)
 
 
 def hosted_attachment_setup_seam():

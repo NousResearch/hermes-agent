@@ -801,11 +801,13 @@ class Pnpm(BinaryPackage):
     deps = ("node",)
     binary_rel = {"win32": "pnpm.exe", "posix": "pnpm"}
     flatten = False
-    gaps = {"linux-arm64-bionic": "Termux ships a prebuilt TUI; nothing installs JS workspaces on device"}
+    # pnpm names its Termux build after the OS, not the libc: a bionic-linked executable.
+    exe_platforms = {"linux-arm64-bionic": "android-arm64"}
 
     def fetch_urls(self, version: str, target: str) -> list[str]:
+        exe = self.exe_platforms.get(target, target)
         return [
-            f"https://registry.npmjs.org/@pnpm/exe.{target}/-/exe.{target}-{version}.tgz",
+            f"https://registry.npmjs.org/@pnpm/exe.{exe}/-/exe.{exe}-{version}.tgz",
             f"https://registry.npmjs.org/pnpm/-/pnpm-{version}.tgz",
         ]
 

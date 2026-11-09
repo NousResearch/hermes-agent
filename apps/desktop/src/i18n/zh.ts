@@ -28,6 +28,11 @@ import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
+  gatewayGroupOpen: {
+    opening: "正在打开群聊…",
+    lookupFailed: "无法在网关上查找此群组，请重试。",
+    missing: "此群聊已不存在。"
+  },
   catalog: zhCatalog,
   externalOpenFailed: {
     title: '无法打开此链接',

@@ -9,13 +9,14 @@ import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { markRoomLead } from './canonical-group-lead'
-import { forgetCanonicalGroup } from './canonical-group-registry'
+import { peerRenewalBeforeSend, usePeerRenewal } from './canonical-group-peer-join'
+import { forgetCanonicalGroup, registerCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupRoomSettings } from './canonical-group-room-settings'
 import { attemptCanonicalGroupSend, prepareCanonicalGroupSend, readCanonicalGroupSend, replaceCanonicalGroupSend, retireCanonicalGroupSend, withdrawCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
-import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
+import { actCanonicalGroup, canonicalGroupRequest, disbandCanonicalGroup } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoom, CanonicalRoomContext, CanonicalRoomMember } from './canonical-groups'
-import { GroupMentionInput } from './group-chat-parts'
+import { focusComposerEnd, GroupMentionInput } from './group-chat-parts'
 import { RoomBotAvatar } from './group-room-avatar'
 import { fill, ROOM_COMPOSER_INPUT_CLASS, RoomComposer, RoomReplyChip } from './group-room-ui'
 
@@ -79,15 +80,15 @@ function confirmSend(result: unknown, eventId: string, unconfirmed: string) {
   }
 }
 
-export function CanonicalGroupWorkspace({ binding, visible = true, onBack }: {
-  binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void
+export function CanonicalGroupWorkspace({ binding, visible = true, onBack, onReplaced }: {
+  binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void; onReplaced?: (key: string) => void
 }) {
   // Remount on identity changes: old polls and pending confirmations never cross rooms.
-  return <CanonicalRoomView binding={binding} key={JSON.stringify([binding.connectionId, binding.profile, binding.roomId])} onBack={onBack} visible={visible} />
+  return <CanonicalRoomView binding={binding} key={JSON.stringify([binding.connectionId, binding.profile, binding.roomId])} onBack={onBack} onReplaced={onReplaced} visible={visible} />
 }
 
-function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
-  binding: CanonicalGroupBinding; visible: boolean; onBack?: () => void
+function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplaced }: {
+  binding: CanonicalGroupBinding; visible: boolean; onBack?: () => void; onReplaced?: (key: string) => void
 }) {
   const [binding] = useState(() => ({ ...initialBinding }))
   const labels = useCanonicalGroupLabels()
@@ -114,7 +115,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const stopPending = useRef(false)
   // One cancellation intent survives uncertain replies until new work starts or Stop is confirmed.
   const stopIntent = useRef<string | null>(null)
-  const [notice, setNotice] = useState('')
+  const [notice, setNotice] = useState<'' | 'stopped'>('')
   const [sendHint, setSendHint] = useState('')
   const revision = useRef(0)
   // This window's typed draft while it sends the room's one pending intent another window prepared.
@@ -122,6 +123,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const [reply, setReply] = useState<RoomReply | null>(null)
   // A handed-back journal entry keeps its thread even without a visible reply chip.
   const draftThread = useRef<string | undefined>(undefined)
+  const composerInput = useRef<HTMLTextAreaElement>(null)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const scroller = useStickToBottom()
   // An intent handed back for editing (nothing of it admitted): the next Send replaces it.
@@ -168,37 +170,53 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     return () => { cancelled = true }
   }, [binding, journalAttempt])
 
+  const readFailure = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+
+    return /timed out|timeout/i.test(message) ? labels.readTimedOut :
+      [labels.readTimedOut, labels.invalidLogCursor].includes(message) ? message : labels.groupsUnreachable
+  }
+
   const refresh = async () => {
-    const version = ++revision.current
-    const snapshot = await canonicalGroupRequest<RoomState>(binding, 'groups.state', { room_id: binding.roomId })
-    const { authority_epoch: epoch, latest_seq: latest } = snapshot.room ?? {}
-    // A new authority epoch (or a log behind what was read) starts the log again.
-    const fresh = epoch !== seen.current.epoch || (typeof latest === 'number' && latest < seen.current.seq)
-    const since = fresh ? 0 : seen.current.seq
-    const log: RoomEvent[] = []
-    let cursor = since
+    try {
+      const version = ++revision.current
+      const snapshot = await canonicalGroupRequest<RoomState>(binding, 'groups.state', { room_id: binding.roomId })
+      const { authority_epoch: epoch, latest_seq: latest } = snapshot.room ?? {}
+      // A new authority epoch (or a log behind what was read) starts the log again.
+      const fresh = epoch !== seen.current.epoch || (typeof latest === 'number' && latest < seen.current.seq)
+      const since = fresh ? 0 : seen.current.seq
+      const log: RoomEvent[] = []
+      let cursor = since
 
-    for (;;) {
-      const page = await canonicalGroupRequest<{ events: RoomEvent[]; has_more?: boolean; next_seq?: number }>(binding, 'groups.log', { room_id: binding.roomId, since_seq: cursor, limit: 100 })
-      log.push(...page.events)
+      for (;;) {
+        const page = await canonicalGroupRequest<{ events: RoomEvent[]; has_more?: boolean; next_seq?: number }>(binding, 'groups.log', { room_id: binding.roomId, since_seq: cursor, limit: 100 })
+        log.push(...page.events)
 
-      if (!page.has_more) {break}
-      const next = page.events.at(-1)?.seq
+        if (!page.has_more) {break}
+        const next = page.events.at(-1)?.seq
 
-      if (!next || next <= cursor) {throw new Error(labels.invalidLogCursor)}
-      cursor = next
-    }
+        if (!next || next <= cursor) {throw new Error(labels.invalidLogCursor)}
+        cursor = next
+      }
 
-    if (alive.current && version === revision.current) {
-      seen.current = { epoch, seq: log.at(-1)?.seq ?? cursor }
-      setState(snapshot)
-      setEvents(current => {
-        const next = fresh ? log : [...current, ...log.filter(event => event.seq > since)]
+      if (alive.current && version === revision.current) {
+        seen.current = { epoch, seq: log.at(-1)?.seq ?? cursor }
+        setState(snapshot)
 
-        return !fresh && sameLog(current, next) ? current : next
-      })
-      setReadError('')
-    }
+        // The stop notice tells people to use Retry or Discard on kept turns: it stays while any wait.
+        if (snapshot.driver_status && !snapshot.driver_status.working && !snapshot.driver_status.counts?.stopping &&
+          !snapshot.driver_status.pending_actions?.length) {
+          setNotice(current => current === 'stopped' ? '' : current)
+        }
+
+        setEvents(current => {
+          const next = fresh ? log : [...current, ...log.filter(event => event.seq > since)]
+
+          return !fresh && sameLog(current, next) ? current : next
+        })
+        setReadError('')
+      }
+    } catch (error) {throw new Error(readFailure(error))}
   }
 
   useEffect(() => {
@@ -207,7 +225,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     let timer: ReturnType<typeof setTimeout>
 
     const poll = async () => {
-      try { await refresh() } catch (e) { if (!cancelled) {setReadError(String(e instanceof Error ? e.message : e))} }
+      try { await refresh() } catch (e) { if (!cancelled) {setReadError(readFailure(e))} }
 
       if (!cancelled) {timer = setTimeout(() => void poll(), 2000)}
     }
@@ -284,12 +302,15 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     if (run.posted) {throw error}
   }
 
-  const sendIntent = async (run: SendRun) => {
+  const retireDeliveredIntent = async () => {
     if (!pending && delivered.current) {
       await retireCanonicalGroupSend(binding, delivered.current)
       delivered.current = null
     }
+  }
 
+  const sendIntent = async (run: SendRun) => {
+    await retireDeliveredIntent()
     const typed = { text: draft, attachments, thread_id: reply?.thread ?? draftThread.current }
     const replacing = editing.current
     const exact = pending ?? (replacing ? await replaceCanonicalGroupSend(binding, replacing, typed) : await prepareCanonicalGroupSend(binding, typed))
@@ -313,6 +334,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     setPending(exact)
     setDraft(words.text)
     setAttachments(words.attachments)
+    // Save before waiting; Stop can still hold this intent back.
+    await peerRenewalBeforeSend(exact.binding, state, methods)
+
+    if (!alive.current) {return}
 
     if (await attemptCanonicalGroupSend(exact.binding, exact.params.event_id) === null) {
       if (alive.current) {finishedElsewhere()}
@@ -392,13 +417,13 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       const replay = stopIntent.current !== null
       const first = requestStop()
       first.catch(() => undefined)
-      let cancelled = covered && await covered.settled ? await first.catch(() => 0) + await requestStop(true) : await first
+      const cancelled = covered && await covered.settled ? await first.catch(() => 0) + await requestStop(true) : await first
 
       // The replay stopped nothing while the room still works: that work came after its fence.
-      if (replay && !cancelled && state?.driver_status?.working) {cancelled = await requestStop(true)}
+      if (replay && !cancelled && state?.driver_status?.working) {await requestStop(true)}
 
       if (alive.current) {
-        setNotice(cancelled ? labels.stopped : labels.nothingRunning)
+        setNotice('stopped')
         await refresh()
       }
     } catch (e) {
@@ -417,20 +442,38 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     mutate(() => {
       if (action.kind === 'retry') {stopIntent.current = null}
 
-      return actCanonicalGroup(binding, action, choice)
+      return actCanonicalGroup(binding, action, choice).catch(error => {
+        const reasons = new Map([
+          ['session_busy', labels.discardStopPending],
+          // Older members use the same reason as a network failure, with this detail on the wire.
+          ['peer_unreachable', typeof error?.data?.detail === 'string' && error.data.detail.includes("gateway is too old to confirm this turn never started")
+            ? labels.discardPeerUpdateRequired : labels.discardPeerUnreachable]
+        ])
+
+        const message = action.kind === 'discard' ? reasons.get(error?.data?.reason)
+          : action.kind === 'retry' && error?.data?.reason === 'session_busy' ? labels.retryBusy : undefined
+        const member = memberById.get(action.member_id)
+
+        throw message ? new Error(message.replace('{name}', member ? canonicalMemberName(member) : action.member_id)) : error
+      })
     })
 
   const rename = (name: string) =>
-    void mutate(() => canonicalGroupRequest(binding, 'groups.rename', { room_id: binding.roomId, event_id: randomUuid(), name }))
+    void mutate(async () => {
+      const { room } = await canonicalGroupRequest<{ room: CanonicalRoom }>(binding, 'groups.rename', { room_id: binding.roomId, event_id: randomUuid(), name })
+      registerCanonicalGroup(binding, room)
+    })
 
   // Rejects so ConfirmDialog stays open with the error; a disbanded room no longer reads back, so leave it.
   const end = async () => {
-    await canonicalGroupRequest(binding, 'groups.disband', { room_id: binding.roomId, cancel_id: randomUuid() })
+    if (!await disbandCanonicalGroup(binding, labels)) {throw new Error(labels.disbandUnconfirmed)}
 
     if (alive.current) {onBack?.()}
     forgetCanonicalGroup(binding)
     host.notify({ kind: 'success', message: labels.disbanded(state?.room.name || binding.roomName || '') })
   }
+
+  usePeerRenewal(binding, state, methods, visible)
 
   const composerLocked = !restored || busy || !!pending
   const driver = state?.driver_status
@@ -459,6 +502,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       const tag = `@${member.handle}`
       setDraft(current => current.trimStart().startsWith(tag) ? current : `${tag} ${current}`)
     }
+
+    focusComposerEnd(composerInput)
   }
 
   // Text pastes stay in the composer; only files go through the picker's upload.
@@ -475,12 +520,13 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
   return <section className="flex h-full min-h-0">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <CanonicalGroupHeader busy={busy} canDisband={offersGroupMethod(methods, 'groups.disband')} canRename={offersGroupMethod(methods, 'groups.rename')}
-        canStop={!!driver && offersGroupSafetyMethod(methods, 'groups.stop')} detailsOpen={detailsOpen} driver={driver} onBack={onBack} onDetails={() => setDetailsOpen(open => !open)}
-        onDisband={end} onRename={rename} onStop={() => void stop()}
+      <CanonicalGroupHeader binding={binding} busy={busy} canDisband={offersGroupMethod(methods, 'groups.disband')} canRename={offersGroupMethod(methods, 'groups.rename')}
+        canStop={!!driver && offersGroupSafetyMethod(methods, 'groups.stop')} detailsOpen={detailsOpen} driver={driver} methods={methods} onBack={onBack}
+        onChanged={() => void refresh().catch(e => setReadError(readFailure(e)))} onDetails={() => setDetailsOpen(open => !open)}
+        onDisband={end} onRename={rename} onReplaced={onReplaced} onStop={() => void stop()}
         room={state ? { ...state.room, members: markRoomLead(state.room.members, state.context) } : undefined} statuses={statuses} stopping={stopping} working={working || !!sending.current || stopping} />
       <CanonicalGroupNotices error={error} journalError={journalError} labels={labels}
-        notice={notice} onJournalReload={() => setJournalAttempt(value => value + 1)} onRefresh={() => void refresh().catch(e => setReadError(String(e)))}
+        notice={notice ? labels[notice] : ''} onJournalReload={() => setJournalAttempt(value => value + 1)} onRefresh={() => void refresh().catch(e => setReadError(readFailure(e)))}
         readError={readError} unavailable={Boolean(state && !driver)} />
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4" ref={scroller} role="log">
         {/* Anchored to the composer like a chat thread: a short room sits at the bottom, not the top. */}
@@ -495,7 +541,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
             return <CanonicalPendingCard action={action} avatar={avatarFor(member?.profile || action.member_id, 24)} busy={busy}
               key={`${action.kind}:${action.task_id}:${action.execution_generation}`} labels={labels} methods={methods} name={name}
               onAct={act} onDiscard={() => setDiscard({ ...action })}
-              onRefresh={() => void refresh().catch(e => setReadError(String(e)))} />
+              onRefresh={() => void refresh().catch(e => setReadError(readFailure(e)))} />
           })}
           {discard && <div aria-label={labels.discardUnknown} className="mx-3 grid gap-2 rounded-xl bg-(--chrome-action-hover) px-3 py-2 text-xs" role="alertdialog">
             <p>{labels.discardWarning}</p>
@@ -522,7 +568,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
         sendLabel={pending ? labels.retry : labels.send}
         status={<CanonicalGroupCycle cycle={cycle} driver={driver} labels={labels} members={members} statuses={statuses} />}>
         <GroupMentionInput aria-label={labels.groupMessage} className={ROOM_COMPOSER_INPUT_CLASS} disabled={composerLocked} handleFor={member => member.handle}
-          members={mentionMembers} onChange={setDraft} onSubmitDraft={send} placeholder={labels.composerPlaceholder} value={draft} />
+          members={mentionMembers} onChange={setDraft} onSubmitDraft={send} placeholder={labels.composerPlaceholder} ref={composerInput} value={draft} />
       </RoomComposer>
       </div>
     </div>

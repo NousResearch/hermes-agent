@@ -86,6 +86,9 @@ class PlatformEntry:
     emoji: str = "🔌"  # CLI/gateway display
     allow_update_command: bool = True  # /update may be issued from this platform
     platform_hint: str = ""  # injected into the system prompt; empty = none
+    # ``{tool_name: sentence}`` appended to ``platform_hint`` only when the session's toolset (fixed at
+    # prompt build) has that tool, so the hint never recommends a tool cron or the profile disabled.
+    platform_hint_tool_notes: dict = field(default_factory=dict)
     # ``() -> Optional[dict]`` of ``extra`` fields to seed when auto-enabled from env; runs in
     # ``_apply_env_overrides`` BEFORE adapter construction so ``gateway status`` sees it.
     env_enablement_fn: Optional[Callable[[], Optional[dict]]] = None
@@ -106,7 +109,7 @@ class PlatformEntry:
     send_message_handler: Optional[Callable[[dict, str, str, Any], Any]] = None
     # Out-of-process sender for cron without a co-resident gateway:
     # ``async (pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False)
-    # -> {"success": True, "message_id": ...} | {"error": str}``.
+    # -> {"success": True, "message_id": ...} | {"error": str}``; ``notify`` only if declared/**kwargs.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
     # Every inbound event is produced by the service the adapter authenticated to with its own
     # credential (an event bus, not a person), so user allowlists and pairing do not apply. Never

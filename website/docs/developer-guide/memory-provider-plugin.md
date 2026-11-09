@@ -141,6 +141,21 @@ turn start; `""` when unset, a preset name under mixture-of-agents) and the turn
 `author_id`, `author_name`, `author_is_bot`. Declare only the keywords you need; the manager passes
 a provider only the ones its signature accepts.
 
+It also receives `previous_message`: the text of the person's last message before this turn, taken
+from the transcript Hermes holds (`""` on a first turn, or when that message was image-only). Known
+runtime rows in the user role are skipped (continue nudges, task-list snapshots, single
+background-process completion and watch-match notices, compaction summaries, mid-turn `/steer`
+messages), a gateway timestamp prefix is removed, and the value is secret-scrubbed like `message`.
+On a turn with an image, Hermes appends recalled memory and plugin or gateway notes to the message as
+text; `previous_message` is the turn's own text, without them. It
+is best-effort: an image turn stored by an older Hermes, or one that repair or compaction later merged
+with another turn, still carries its plugin and gateway notes, and
+other runtime notices a gateway replays after a restart (a cron delivery, a process
+heartbeat, a watch-disabled or batched-completion notice) can still come through. A process
+that resumed a session (`hermes chat --resume`, a gateway after a restart) never ran the previous
+turn's end, so a provider that prepares recall in `queue_prefetch()` can redo that work from it, even
+when it stores no transcript of its own. Older Hermes omits it: read it with `kwargs.get`.
+
 Do not assume `os.getcwd()` identifies the conversation's workspace: one Desktop
 or gateway backend can serve several sessions. If `cwd` is absent and directory
 routing is needed, `agent.runtime_cwd.resolve_agent_cwd()` honors the session cwd

@@ -27,6 +27,11 @@ import { ruThemePicker } from './ru_theme_picker'
 import { ruUpdateChannel } from './ru_update_channel'
 
 export const ruOverrides = {
+  gatewayGroupOpen: {
+    opening: "Открываем групповой чат…",
+    lookupFailed: "Не удалось найти эту группу на шлюзе. Попробуйте ещё раз.",
+    missing: "Этот групповой чат больше не существует."
+  },
   catalog: ruCatalog,
   connectors: ruConnectors.connectors,
   sharedMetrics: ruSharedMetrics,

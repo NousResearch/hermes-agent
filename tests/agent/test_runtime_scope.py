@@ -463,3 +463,31 @@ def test_a_deferred_policy_keeps_the_overlay_it_was_bound_with(two_profiles):
             assert get_terminal_scope()["TERMINAL_ENV"] == "docker"
         finally:
             reset_terminal_scope(token)
+
+
+def test_a_managed_reference_in_the_terminal_policy_resolves_against_the_target_profile(
+        two_profiles, tmp_path, monkeypatch):
+    """A managed ``${VAR}`` in ``terminal:`` reads the profile being bound, as a standalone load of
+    that profile reads its own environment: entering B from inside A's bind must not freeze A's
+    value into B's policy, and an unbound entry must not take the launch environment's."""
+    from hermes_cli import managed_scope
+
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text("terminal:\n  ssh_host: ${SSH_TARGET}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("SSH_TARGET", "launch-host")
+    managed_scope.invalidate_managed_cache()
+    a, b = two_profiles
+    for home, name in ((a, "a"), (b, "b")):
+        with (home / ".env").open("a", encoding="utf-8") as f:
+            f.write(f"SSH_TARGET=target-{name}\n")
+    try:
+        with bind_profile_scope(b, hydrate_secrets=False):
+            assert get_terminal_scope()["TERMINAL_SSH_HOST"] == "target-b"
+        with bind_profile_scope(a, hydrate_secrets=False):
+            assert get_terminal_scope()["TERMINAL_SSH_HOST"] == "target-a"
+            with bind_profile_scope(b, hydrate_secrets=False):
+                assert get_terminal_scope()["TERMINAL_SSH_HOST"] == "target-b"
+    finally:
+        managed_scope.invalidate_managed_cache()

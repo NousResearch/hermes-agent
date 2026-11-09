@@ -40,6 +40,13 @@ DAEMON_STRIPPED_ENV = (
 )
 
 
+# The daemon would inherit an elevated client's token, and no normal window can reach it (gateway_elevated).
+CLIENT_ELEVATED_REMEDY = (
+    "Hermes is running as administrator, and a gateway it started would run as administrator too, "
+    "which locks every normal Hermes window out of it. Start Hermes from a normal (non-administrator) "
+    "window, or run hermes gateway install once so the gateway always starts without administrator rights")
+
+
 def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: bool = False,
                             force: bool = False) -> subprocess.Popen | GatewayJob:
     """Request a daemon, not readiness. Refuse Windows no-breakaway fallback.
@@ -51,6 +58,9 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
     ``force``: a ``gateway restart --force --detach`` replacement keeps the ``--force`` its old owner
     needed (a named profile under a multiplexer), or it exits on the run-side guard.
     """
+    from hermes_dir_acl import process_is_elevated
+    if process_is_elevated():
+        raise RuntimeStartError("client_elevated", detail=CLIENT_ELEVATED_REMEDY)
     home = profile_home.resolve()
     root = Path(__file__).resolve().parent.parent
     # A root home is only pinned by an explicit selector: without one the child's
@@ -106,7 +116,8 @@ def start_detached_replacement(profile_home: Path, *, force: bool = False) -> in
     try:
         spawn_unmanaged_gateway(profile_home, deadline=time.monotonic() + 30, force=force)
     except RuntimeStartError as exc:
-        print(f"✗ Could not start the gateway in the background: {exc}", file=sys.stderr)
+        print(f"✗ Could not start the gateway in the background: {exc}"
+              + (f". {exc.detail}" if exc.detail else ""), file=sys.stderr)
         return 1
     print("✓ Started the gateway in the background")
     return 0

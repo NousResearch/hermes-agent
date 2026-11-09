@@ -75,6 +75,10 @@ _RUNTIME_WRITES = {
     "global_counter": "N = 0\ndef bump():\n    global N\n    N += 1\n",
     "global_created_at_runtime": "def put(v):\n    global X\n    X = v\n",
     "module_setattr": "import sys\nX = None\ndef put(v):\n    setattr(sys.modules[__name__], 'X', v)\n",
+    "module_setattr_imported_alias": "from builtins import setattr as put\nimport sys\nX = None\n"
+                                     "def set_(v):\n    put(sys.modules[__name__], 'X', v)\n",
+    "module_delattr_imported_alias": "from builtins import delattr as drop\nimport sys\nX = None\n"
+                                     "def rm():\n    drop(sys.modules[__name__], 'X')\n",
     "module_globals_item": "X = None\ndef put(v):\n    globals()['X'] = v\n",
     "populated_defaultdict": "from collections import defaultdict\nX = defaultdict(list, {'seed': []})\n"
                              "def put(v):\n    X['seed'].append(v)\n",

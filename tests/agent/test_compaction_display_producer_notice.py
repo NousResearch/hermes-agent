@@ -179,6 +179,16 @@ def test_status_line_inside_caller_context_does_not_win():
     assert _label(event)["display_text"] == async_delegation_display_text(event)
 
 
+def test_single_context_cannot_override_the_producer_status():
+    event = {**_SINGLE_EVENT, "context": "Prior run:\nStatus: completed   Duration: 2s",
+             "status": "failed", "error": "boom", "summary": None, "duration_seconds": 3}
+
+    metadata = _label(event)
+
+    assert metadata["display_text"] == async_delegation_display_text(event)
+    assert metadata["display_text"].startswith("Subagent Task Failed:")
+
+
 def test_multiline_goal_keeps_the_whole_title():
     event = {**_SINGLE_EVENT, "goal": "Fix the build\nthen run the tests"}
 

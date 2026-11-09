@@ -153,7 +153,17 @@ def _delegation_event(text: str, title: re.Match) -> dict[str, Any]:
         # A batch that failed before any child reported writes only an ERROR section.
         return {"status": "failed" if "\n--- ERROR ---\n" in text else "completed",
                 **({"group": group} if group is not None else {})}
-    goal, status = _DELEGATION_GOAL.search(text, title.end()), _DELEGATION_STATUS.search(text, title.end())
+    goal = _DELEGATION_GOAL.search(text, title.end())
+    if title.group(1) == "COMPLETE":
+        # Caller-supplied context may contain a full Status/Duration line. Only the producer's
+        # own status, immediately followed by its result separator, determines the card label.
+        status = next(
+            (match for match in _DELEGATION_STATUS.finditer(text, title.end())
+             if text.startswith("\n--- RESULT ---", match.end())),
+            None,
+        )
+    else:
+        status = _DELEGATION_STATUS.search(text, title.end())
     return {"goal": goal.group(1) if goal else "",
             "status": status.group(1) if status else ("failed" if title.group(1) == "TASK FAILED" else "completed"),
             "truncated": bool(status and status.group(2))}

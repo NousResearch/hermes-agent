@@ -3,7 +3,7 @@
 // `session.mutate` rename / rewind (`gateway/session_mutations.py`), the committed admission
 // result (`prompt.receipt include_result`) and the frozen launch policy (`session.info`).
 
-import type { SessionStats } from '@hermes/shared/gateway-events'
+import type { SessionAccountUsage, SessionStats } from '@hermes/shared/gateway-events'
 import type { BillingStateResponse, RollbackListResponse } from '@hermes/shared/gateway-types'
 import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
 import { CANONICAL_REASONING_EFFORTS } from '@hermes/shared/slash-input'
@@ -236,14 +236,19 @@ interface CommittedResult {
 
 /** `/usage`: main's session totals panel. The owner's `session.stats` is the same session-cumulative
  * dict its `session.usage` ticks carry (`gateway/session_usage.py`), mapped onto main's `Usage` shape
- * and rendered exactly as main's sidecar `/usage` did (Usage panel, or "no API calls yet", then the
- * plan CTA). */
+ * and rendered as the classic CLI's `/usage` is (Usage panel, or "no API calls yet", then the provider
+ * plan limits from `session.account_usage`, then the plan CTA). */
 export function canonicalUsage(ctx: SlashRunCtx) {
   const sid = ctx.sid!
 
+  // An older owner without the read answers unknown_method; its /usage keeps main's lines.
+  const limits = ctx.gateway.gw
+    .request<SessionAccountUsage>('session.account_usage', { session_id: sid })
+    .catch(() => null)
+
   void ctx.gateway.gw
     .request('session.stats', { session_id: sid })
-    .then(raw => {
+    .then(async raw => {
       if (ctx.stale()) {
         return
       }
@@ -252,12 +257,19 @@ export function canonicalUsage(ctx: SlashRunCtx) {
 
       if (!usage?.calls) {
         ctx.transcript.sys(t('slashCmd.session.usage.noCalls'))
-        ctx.transcript.sys(t('slashCmd.session.usage.cta'))
       } else {
         patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
         ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), usageTotalsSections(usage))
-        ctx.transcript.sys(t('slashCmd.session.usage.cta'))
       }
+
+      const limitLines = (await limits)?.lines ?? []
+
+      if (ctx.stale()) {
+        return
+      }
+
+      limitLines.forEach(line => ctx.transcript.sys(line))
+      ctx.transcript.sys(t('slashCmd.session.usage.cta'))
 
       // Usage-window plans: the allowance bars, after the lines above (every other account: nothing).
       void ctx.gateway

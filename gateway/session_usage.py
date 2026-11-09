@@ -227,6 +227,28 @@ def snapshot_usage(authority, ref, agent) -> dict | None:
     return tui_usage(_stored_stats(row)) if row else None
 
 
+async def account_usage(connection, ref, params):
+    """``session.account_usage {session_id}``: the CLI's /usage plan-limits block for this session's route
+    (its agent, else the frozen policy), fetched off the loop in the owning profile's scope."""
+    import asyncio
+    from agent.account_usage import account_limit_lines
+    from gateway.session_authorities import owner_scope
+    from gateway.session_policy import policy_for_source
+    await connection.authority.resolve(connection.actor, ref)
+    authority = connection.authority
+    agent = authority.agent(ref)
+
+    def fetch():
+        with owner_scope(authority):
+            if agent is not None:
+                return account_limit_lines(getattr(agent, "provider", None), base_url=getattr(agent, "base_url", None),
+                                           api_key=getattr(agent, "api_key", None))
+            policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
+            model = (policy.config(authority) if policy is not None else {}).get("model") or {}
+            return account_limit_lines(model.get("provider"), base_url=model.get("base_url"))
+    return {"lines": await asyncio.to_thread(fetch)}
+
+
 async def stats(connection, ref, params):
     """``session.stats {session_id}``: the same dict ``session.usage`` carries."""
     from hermes_state_runtime import RuntimeStoreError

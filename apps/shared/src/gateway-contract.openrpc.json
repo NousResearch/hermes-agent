@@ -36152,6 +36152,38 @@
         "title": "SeedMessage",
         "type": "object"
       },
+      "SessionAccountUsage": {
+        "additionalProperties": false,
+        "description": "``gateway/session_usage.py::account_usage``: the provider plan-limits block of ``/usage``.",
+        "properties": {
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Lines",
+            "type": "array"
+          }
+        },
+        "required": [
+          "lines"
+        ],
+        "title": "SessionAccountUsage",
+        "type": "object"
+      },
+      "SessionAccountUsageParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionAccountUsageParams",
+        "type": "object"
+      },
       "SessionActivateParams": {
         "additionalProperties": false,
         "properties": {
@@ -50239,6 +50271,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/RuntimeDescribeResult"
+        }
+      }
+    },
+    {
+      "name": "session.account_usage",
+      "summary": "The /usage provider plan-limits lines for this session's route (built-in or plugin fetcher).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionAccountUsageParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionAccountUsage"
         }
       }
     },

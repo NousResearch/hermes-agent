@@ -148,6 +148,16 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
     return lines
 
 
+def account_limit_lines(provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
+                        markdown: bool = False) -> list[str]:
+    """``/usage``'s provider plan-limits block on every surface: the built-in fetcher, else the plugin
+    profile's ``fetch_account_usage`` hook (Claude plan limits on DirectSDK). [] when there is none."""
+    if not provider:
+        return []
+    return render_account_usage_lines(fetch_account_usage(provider, base_url=base_url, api_key=api_key),
+                                      markdown=markdown)
+
+
 def _render_usage_window_lines(snapshot: AccountUsageSnapshot) -> list[str]:
     """Usage-window plans: plain stacked bar lines for CLI ``/usage`` and the TUI panel. No emoji,
     no ANSI, no markdown — Ink ``<Text>`` would otherwise count escape bytes as width and smear the wrap."""

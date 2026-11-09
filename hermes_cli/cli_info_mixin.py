@@ -804,17 +804,17 @@ class CLIInfoMixin:
         provider = self._agent_or_self("provider")
         if not provider:
             return False
-        from agent.account_usage import fetch_account_usage, render_account_usage_lines
-        account_snapshot = None
+        from agent.account_usage import account_limit_lines
+        raw_lines: list[str] = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
             try:
-                account_snapshot = _pool.submit(
-                    fetch_account_usage, provider, base_url=self._agent_or_self("base_url"),
+                raw_lines = _pool.submit(
+                    account_limit_lines, provider, base_url=self._agent_or_self("base_url"),
                     api_key=self._agent_or_self("api_key"),
                 ).result(timeout=10.0)
             except (concurrent.futures.TimeoutError, Exception):
-                account_snapshot = None
-        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
+                raw_lines = []
+        account_lines = [f"  {line}" for line in raw_lines]
         if not account_lines:
             return False
         print()

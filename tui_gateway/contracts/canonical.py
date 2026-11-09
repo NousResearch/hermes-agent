@@ -260,6 +260,20 @@ canonical_method("session.stats", params=SessionStatsParams, result=SessionStats
                  doc="The session.usage dict on demand: what main's classic CLI read off its agent.")
 
 
+class SessionAccountUsageParams(Params):
+    session_id: str
+
+
+class SessionAccountUsage(Result):
+    """``gateway/session_usage.py::account_usage``: the provider plan-limits block of ``/usage``."""
+
+    lines: list[str]
+
+
+canonical_method("session.account_usage", params=SessionAccountUsageParams, result=SessionAccountUsage,
+                 doc="The /usage provider plan-limits lines for this session's route (built-in or plugin fetcher).")
+
+
 class RollbackSessionDiffParams(Params):
     session_id: str
     profile: str | None = None

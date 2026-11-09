@@ -5,7 +5,7 @@
    "undecided": 343
   },
   "rpc": {
-   "authority": 108,
+   "authority": 109,
    "keep-host-wide": 1,
    "undecided": 182
   },
@@ -569,6 +569,7 @@
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "rollback.restore", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "rollback.session_diff", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "runtime.describe", "kind": "rpc", "ref": ""},
+  {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "session.account_usage", "kind": "rpc", "ref": ""},
   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.activate", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "session.active_list", "kind": "rpc", "ref": ""},
   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.archive", "kind": "rpc", "ref": "D3"},

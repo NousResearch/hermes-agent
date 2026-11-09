@@ -4896,6 +4896,13 @@ export interface SessionStats {
   fallback_model?: string | null
   plan_gauge?: PlanGauge | null
 }
+export interface SessionAccountUsageParams {
+  session_id: string
+}
+/** ``gateway/session_usage.py::account_usage``: the provider plan-limits block of ``/usage``. */
+export interface SessionAccountUsage {
+  lines: string[]
+}
 export interface RollbackSessionDiffParams {
   session_id: string
   profile?: string | null
@@ -7120,6 +7127,8 @@ export interface CanonicalRpcMethods {
   'rollback.session_diff': { params: RollbackSessionDiffParams; result: RollbackSessionDiffResult }
   /** Owner identity and the canonical capabilities a client may rely on. */
   'runtime.describe': { params: RuntimeDescribeParams; result: RuntimeDescribeResult }
+  /** The /usage provider plan-limits lines for this session's route (built-in or plugin fetcher). */
+  'session.account_usage': { params: SessionAccountUsageParams; result: SessionAccountUsage }
   /** The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row. */
   'session.automation': { params: SessionAutomationParams; result: SessionAutomationResult }
   'session.create': { params: CanonicalCreateParams; result: CanonicalSnapshot }
@@ -7188,6 +7197,7 @@ export const CANONICAL_RPC_METHODS = [
   'prompt.submit',
   'rollback.session_diff',
   'runtime.describe',
+  'session.account_usage',
   'session.automation',
   'session.create',
   'session.detach',

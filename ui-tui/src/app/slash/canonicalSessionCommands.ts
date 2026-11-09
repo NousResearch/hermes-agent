@@ -282,14 +282,19 @@ export function canonicalUsage(ctx: SlashRunCtx) {
         ctx.transcript.sys(line)
       }
 
-      // The /topup CTA and plan bars apply to a Nous route only (an older owner sends no flag).
+      // The /topup CTA applies to a Nous route only (an older owner sends no flag).
       if (account?.nous_route === false) {
         return
       }
 
       ctx.transcript.sys(t('slashCmd.session.usage.cta'))
 
-      // Usage-window plans: the allowance bars, after the lines above (every other account: nothing).
+      // The account read's nous_lines already carry a window plan's name and bars. Only an older owner,
+      // without the read, still needs them from billing.state (every other account: nothing).
+      if (account) {
+        return
+      }
+
       void ctx.gateway
         .rpc<BillingStateResponse>('billing.state', {})
         .then(r => {

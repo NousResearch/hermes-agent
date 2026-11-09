@@ -34,7 +34,8 @@ _DASH_M = re.compile(r"(?<![\w-])(-m(?:\s+|[\"'],\s*[\"']))([A-Za-z_][\w.]*)")
 _CODE_IMPORT = re.compile(r"(?<![\w.])((?:from|import)\s+)([A-Za-z_][\w.]*)(?=\s+import\b|\s*(?:$|[\n,;)]|\\n| as\b))",
                           re.MULTILINE)
 _PYTHON_SHEBANG = re.compile(r"#!.*\bpython")
-_SYS_MODULES = {"sys.modules", "modules"}
+_SYS_MODULES = re.compile(r"(?:(?:^|\.)_*sys_*\.)?modules$")
+_ASSERT_LOGS = {"assertLogs", "assertNoLogs"}
 _SYS_MODULES_METHODS = {"pop", "get", "setdefault"}
 _STRICT_REASON = "left for the strict compat finder, which fails the test that runs it"
 _FLAGGED_CALLS = {"patch": "patch target", "object": None, "setattr": "patch target",
@@ -192,26 +193,29 @@ class _Rewriter(cst.CSTTransformer):
     # Which string nodes are sinks: decided top-down, before their children are left.
 
     def visit_Subscript(self, node: cst.Subscript) -> None:
-        if get_full_name_for_node(node.value) in _SYS_MODULES and len(node.slice) == 1 \
+        if _is_sys_modules(node.value) and len(node.slice) == 1 \
                 and isinstance(node.slice[0].slice, cst.Index):
             self._mark(node.slice[0].slice.value, "sys-modules")
 
     def visit_Comparison(self, node: cst.Comparison) -> None:
         target = node.comparisons[0]
         if len(node.comparisons) == 1 and isinstance(target.operator, (cst.In, cst.NotIn)) \
-                and get_full_name_for_node(target.comparator) in _SYS_MODULES:
+                and _is_sys_modules(target.comparator):
             self._mark(node.left, "sys-modules")
 
     def visit_Call(self, node: cst.Call) -> None:
         func = get_full_name_for_node(node.func) or ""
-        owner, _, method = func.rpartition(".")
+        owner_node = node.func.value if isinstance(node.func, cst.Attribute) else None
+        method = node.func.attr.value if owner_node is not None else func
         positional = [arg.value for arg in node.args if arg.keyword is None and not arg.star]
         keywords = {arg.keyword.value: arg.value for arg in node.args if arg.keyword is not None}
         if method == "getLogger" and (positional or "name" in keywords):
             self._mark(positional[0] if positional else keywords["name"], "logger")
         elif method in ("set_level", "at_level") and "logger" in keywords:
             self._mark(keywords["logger"], "logger")
-        elif owner in _SYS_MODULES and method in _SYS_MODULES_METHODS and positional:
+        elif method in _ASSERT_LOGS and (positional or "logger" in keywords):
+            self._mark(positional[0] if positional else keywords["logger"], "logger")
+        elif owner_node is not None and _is_sys_modules(owner_node) and method in _SYS_MODULES_METHODS and positional:
             self._mark(positional[0], "sys-modules")
         elif positional and _is_sys_modules(positional[0]):
             if method == "dict" and len(positional) > 1 and isinstance(positional[1], cst.Dict):
@@ -331,8 +335,13 @@ def _strings(node: cst.BaseExpression):
 
 
 def _is_sys_modules(node: cst.BaseExpression) -> bool:
-    return get_full_name_for_node(node) in _SYS_MODULES or \
-        (isinstance(node, cst.SimpleString) and node.evaluated_value == "sys.modules")
+    if isinstance(node, cst.SimpleString):
+        return node.evaluated_value == "sys.modules"
+    if isinstance(node, cst.Attribute) and isinstance(node.value, cst.Call) and node.attr.value == "modules":
+        call = node.value
+        return get_full_name_for_node(call.func) == "__import__" and len(call.args) == 1 \
+            and isinstance(call.args[0].value, cst.SimpleString) and call.args[0].value.evaluated_value == "sys"
+    return _SYS_MODULES.search(get_full_name_for_node(node) or "") is not None
 
 
 def _with_text(node: cst.SimpleString, transform) -> cst.SimpleString | None:

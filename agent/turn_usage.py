@@ -209,12 +209,6 @@ def record_response_usage(
     _upstream = getattr(response, "provider", None)
     if isinstance(_upstream, str) and _upstream:
         _ident += f" upstream={_upstream}"
-    logger.info(
-        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s",
-        agent.session_api_calls, agent.model, agent.provider or "unknown",
-        prompt_tokens, completion_tokens, total_tokens,
-        api_duration, _cache_pct, _ident,
-    )
     # nous.anthropic_wire=auto: the session's wire is decided once, from this first response.
     if agent.session_api_calls == 1 and (agent.provider or "") == "nous":
         with suppress(Exception):
@@ -248,6 +242,17 @@ def record_response_usage(
         if _moa_cost is not None:
             agent.session_estimated_cost_usd += _moa_cost
             _cost_delta = (_cost_delta or 0.0) + _moa_cost
+    _cost_usd = f"{_cost_delta:.8f}" if cost_result.amount_usd is not None and _cost_delta is not None else "?"
+    _billing = (
+        f" uncached={canonical_usage.input_tokens} cost_usd={_cost_usd}"
+        f" cost_status={cost_result.status}"
+    )
+    logger.info(
+        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s%s",
+        agent.session_api_calls, agent.model, agent.provider or "unknown",
+        prompt_tokens, completion_tokens, total_tokens,
+        api_duration, _cache_pct, _ident, _billing,
+    )
     agent.session_cost_status = cost_result.status
     agent.session_cost_source = cost_result.source
 

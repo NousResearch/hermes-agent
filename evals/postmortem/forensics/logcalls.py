@@ -34,6 +34,17 @@ _LINE = re.compile(
 _WRITE = re.compile(r" write=(\d+)")
 _ID = re.compile(r" id=(\S+)")
 _UPSTREAM = re.compile(r" upstream=(.+?)(?: [a-z_]+=|$)")
+_UNCACHED = re.compile(r" uncached=(\d+)")
+_COST_USD = re.compile(r" cost_usd=(\?|\d+(?:\.\d+)?)")
+_COST_STATUS = re.compile(r" cost_status=(\S+)")
+
+
+def _optional_field_value(key: str, value: str) -> Any:
+    if key in {"write", "uncached"}:
+        return int(value)
+    if key == "cost_usd":
+        return None if value == "?" else float(value)
+    return value
 
 
 def parse_logs(paths: list[str], sids: set) -> list[dict[str, Any]]:
@@ -50,11 +61,13 @@ def parse_logs(paths: list[str], sids: set) -> list[dict[str, Any]]:
                     rec = {"ts": m.group(1), "sid": m.group(2), "n": int(m.group(3)), "model": m.group(4),
                            "inp": int(m.group(5)), "out": int(m.group(6)), "lat": float(m.group(7)),
                            "hit": int(m.group(8))}
-                    # Newer lines (post 2026-09) also carry write= / id= / upstream=; optional.
-                    for key, pat in (("write", _WRITE), ("id", _ID), ("upstream", _UPSTREAM)):
+                    # Newer lines append optional billing/cache fields; old prefixes stay valid.
+                    for key, pat in (("write", _WRITE), ("id", _ID), ("upstream", _UPSTREAM),
+                                     ("uncached", _UNCACHED), ("cost_usd", _COST_USD),
+                                     ("cost_status", _COST_STATUS)):
                         mm = pat.search(line)
                         if mm:
-                            rec[key] = int(mm.group(1)) if key == "write" else mm.group(1)
+                            rec[key] = _optional_field_value(key, mm.group(1))
                     calls.append(rec)
     return calls
 

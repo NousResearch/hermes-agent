@@ -104,4 +104,3 @@ def test_unfinished_inventory_exhausts_shared_deadline_without_writes(
         assert sibling.read_bytes() == before
     finally:
         db.close()
-

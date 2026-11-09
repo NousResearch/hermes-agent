@@ -390,4 +390,3 @@ def test_repair_profiles_reports_dual_home_as_nonrepairable(profile_stores, monk
     assert findings[0].repairable is False
     assert "canonical-owner" in findings[0].reason
     assert not [finding for finding in plan.repairable if finding.subject == session_id]
-

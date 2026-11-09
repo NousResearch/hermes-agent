@@ -572,6 +572,8 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
                 db.replace_messages(
                     truncation_key, truncated, active_only=True, archive_dropped=True,
                     reject_active_turn_lease=True)
+                from .session_seed import finish_seed_replacement
+                finish_seed_replacement(session, truncation_key)
             except Exception as exc:
                 logger.error(
                     "prompt.submit: replace_messages failed for session %s (ordinal=%d); refusing "

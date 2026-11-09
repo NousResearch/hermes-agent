@@ -57,5 +57,15 @@ export const frPreviewWeb: TranslationOverride<Translations['preview']['web']> =
   commentPlaceholder: 'Ajouter un commentaire...',
   commentTitle: n => `Commentaire ${n}`,
   saveComment: 'Enregistrer',
-  cancelComment: 'Annuler le commentaire'
+  cancelComment: 'Annuler le commentaire',
+  vaultFill: 'Remplir un identifiant enregistré',
+  vaultTitle: site => `Identifiants enregistrés pour ${site}`,
+  vaultLoading: 'Chargement des identifiants enregistrés…',
+  vaultEmpty: 'Aucun identifiant enregistré pour ce site',
+  vaultUnlock: name => `Déverrouiller ${name}`,
+  vaultOpenSettings: 'Ouvrir les réglages du coffre d’identifiants',
+  vaultFilled: label => `${label} rempli. Vérifiez le formulaire, puis connectez-vous.`,
+  vaultFillFailed: 'Impossible de remplir l’identifiant',
+  vaultLoadFailed: 'Impossible de charger les identifiants enregistrés',
+  vaultPageNotReady: 'La page est encore en cours de chargement. Réessayez une fois terminée.'
 }

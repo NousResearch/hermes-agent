@@ -24,7 +24,8 @@ from hermes_cli.web_server_memory import (
 from hermes_cli.web_models import MemoryProviderConfigUpdate, MemoryProviderSetupRequest
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, scoped_to_thread
 from plugins.memory.config_schema import (
-    STORAGE_HONCHO_HOST_BLOCK, STORAGE_PROVIDER, ProviderConfigSchema, ProviderField, get_provider_config_schema,
+    STORAGE_FLAT_JSON, STORAGE_HONCHO_HOST_BLOCK, STORAGE_PROVIDER, ProviderConfigSchema, ProviderField,
+    get_provider_config_schema,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -134,8 +135,8 @@ def _honcho_resolvers(name: str):
 def _provider_instance(provider: ProviderConfigSchema):
     """The loaded provider behind a ``STORAGE_PROVIDER`` schema (it owns its config layout)."""
     instance = _load_memory_provider(provider.name, register_skills=False)  # the panel never registers skills
-    if instance is None:
-        raise _unknown_provider(provider.name)
+    if instance is None:  # it declares a panel, so it is known: it failed to load
+        raise HTTPException(status_code=503, detail=f"Memory provider {provider.name} could not be loaded; see the logs")
     return instance
 
 
@@ -194,7 +195,10 @@ def _write_provider_own(provider: ProviderConfigSchema, values: dict[str, str]) 
     non-blank secrets included); secrets reach ``.env`` only once the provider accepted the write."""
     fields: dict[str, Any] = {field.key: submitted for field, submitted in _submitted_secrets(provider, values)}
     fields.update({k: None if v is _UNSET else v for k, v in _submitted_natives(provider, values).items()})
-    _provider_instance(provider).write_config_fields(fields, str(get_hermes_home()))
+    try:
+        _provider_instance(provider).write_config_fields(fields, str(get_hermes_home()))
+    except NotImplementedError as exc:  # declares storage=provider without the writer: a plugin bug
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
     _save_submitted_secrets(provider, values)
 
 
@@ -272,7 +276,15 @@ def _declared_field_is_set(field: ProviderField, sources: tuple, env: dict[str, 
     return any(source.get(k) for source in sources for k in (field.key, *field.aliases))
 
 
+_WARNED_STORAGE: set[tuple[str, str]] = set()
+
+
 def _declared_provider_payload(provider: ProviderConfigSchema) -> dict[str, Any]:
+    if provider.storage not in _STORAGE_WRITERS:
+        if (provider.name, provider.storage) not in _WARNED_STORAGE:
+            _WARNED_STORAGE.add((provider.name, provider.storage))
+            _log.warning("memory provider %s declares unsupported config storage %r; no panel", provider.name, provider.storage)
+        return {"name": provider.name, "label": provider.label, "docs_url": provider.docs_url, "fields": []}
     env = load_env()
     is_honcho = provider.storage == STORAGE_HONCHO_HOST_BLOCK
     # A provider-owned layout reports presence (a stored False/0 is set), like the host block.
@@ -343,9 +355,14 @@ def _memory_section(config: dict[str, Any]) -> dict[str, Any]:
     return memory_config
 
 
+_STORAGE_WRITERS = {STORAGE_FLAT_JSON: _write_provider_flat, STORAGE_PROVIDER: _write_provider_own,
+                    STORAGE_HONCHO_HOST_BLOCK: _write_provider_honcho}
+
+
 def _update_memory_provider_config(provider: ProviderConfigSchema, values: dict[str, str]) -> None:
-    writer = {STORAGE_PROVIDER: _write_provider_own,
-              STORAGE_HONCHO_HOST_BLOCK: _write_provider_honcho}.get(provider.storage, _write_provider_flat)
+    writer = _STORAGE_WRITERS.get(provider.storage)
+    if writer is None:  # an unknown kind must not fall back to writing a stray flat file
+        raise ValueError(f"Memory provider {provider.name} declares unsupported config storage {provider.storage!r}")
     writer(provider, values)
     with _CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
         config = load_config()

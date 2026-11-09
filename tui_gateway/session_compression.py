@@ -281,6 +281,12 @@ def _compress_session_history(
     request = parse_compress_args(focus_topic or "")
     if request.aggressive:
         raise ValueError(AGGRESSIVE_UNSUPPORTED)
+    if not request.preview and session.get("seeded") and not session.get("_branch_seed_persisted"):
+        if _ensure_session_db_row(session) is False:
+            raise RuntimeError("Seed storage could not be verified before compression")
+        _persist_branch_seed(session)
+        if not session.get("_branch_seed_persisted"):
+            raise RuntimeError("Seed transcript could not be persisted before compression")
     # RPC thread: bind the session cwd, or the boundary prompt rebuild resolves the backend's cwd and
     # persists a prompt every other process then rejects as stale runtime (fresh build, no tools pin).
     tokens = _set_session_context(session.get("session_key") or "", cwd=_session_cwd(session))

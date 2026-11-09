@@ -24,6 +24,7 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
+          node-package-manager: npm
           node-cache-dependency-path: website/package-lock.json
 
       - name: Install website dependencies

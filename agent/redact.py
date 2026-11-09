@@ -4,6 +4,7 @@ Short tokens (< 18 chars) are fully masked; longer ones keep the first 6 and
 last 4 characters for debuggability.
 """
 
+import json
 import logging
 import os
 import re
@@ -16,6 +17,11 @@ from urllib.parse import unquote_plus
 # drift: a blocked file_tools read that falls back to ``cat`` is still caught.
 from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
 from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
+from agent.redact_headers import (
+    _COOKIE_HEADER_JSON_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE, _SECRET_HEADER_JSON_RE,
+    _SECRET_HEADER_JSON_UNTERMINATED_RE, json_header_value_is_credential, redact_cookie_assignments,
+    redact_header_credentials,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -627,11 +633,6 @@ _PYTHON_EXCEPTION_LINE_RE = re.compile(
 # (unterminated quote → shell EOF / SyntaxError).
 _AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)", re.IGNORECASE)
 
-# API-key style headers (single opaque value, no scheme word): non-vendor-prefix
-# values would otherwise leak when a curl command is echoed into tool output.
-SECRET_HEADER_NAME_LIST = ("x-api-key", "x-goog-api-key", "api-key", "apikey", "x-api-token", "x-auth-token", "x-access-token")
-_SECRET_HEADER_NAMES = rf"(?:{'|'.join(SECRET_HEADER_NAME_LIST)})"
-_SECRET_HEADER_RE = re.compile(rf"({_SECRET_HEADER_NAMES}\s*:\s*)(\S+)", re.IGNORECASE)
 
 # Telegram bot tokens: [bot]<digits>:<token>, token >= 30 chars. The lookbehind
 # anchors the id at the start of its digit run: without it, a long run of digits
@@ -698,6 +699,9 @@ _DB_CONNSTR_RE = re.compile(
 # bare userinfo. ``user:pass@`` passes through (class forbids ``:``); DB schemes
 # belong to _DB_CONNSTR_RE. 8+ char floor skips short usernames; the class
 # forbids ``/`` so an ``@`` in a path/query (``?q=user@example.com``) never counts.
+# The class also forbids ``"``: a double quote is not URL userinfo, and
+# ``https://schema.org","@type`` is a JSON string boundary, not a credential
+# (src#903). A comma stays legal userinfo.
 # This is the ``git remote set-url origin https://PASSWORD@github.com/...`` shape from issue #6396 — a
 # single opaque credential in the userinfo position with NO ``user:pass`` colon. The colon form's
 # PASSWORD is masked separately by _redact_userinfo_passwords (issue #125664) — #34029's pass-through
@@ -706,7 +710,7 @@ _DB_CONNSTR_RE = re.compile(
 # schemes are handled by _DB_CONNSTR_RE above and excluded here. Guards against false positives:
 _URL_BARE_TOKEN_RE = re.compile(
     r"((?:https?|wss?|git|ssh|ftp|ftps|sftp)://)"  # scheme
-    r"([^\s:@/]{8,})"                               # bare token (no colon/slash/@), 8+ chars
+    r"([^\s:@/\"]{8,})"                             # bare token, 8+ chars; no quote
     r"(@[^\s]+)",                                   # @host...
     re.IGNORECASE,
 )
@@ -737,9 +741,14 @@ _STRICT_URL_PARAM_RE = re.compile(r"([?#&;])([A-Za-z0-9_.~+%\-]+)=([^#&;\s\"'<>]
 # authority stops at path/query/fragment delimiters. Anchored on the mandatory
 # ``//`` — an optional-scheme prefix backtracked O(n²) on long alphanumeric runs
 # (~55s per sub() on a 320KB compaction payload).
-_STRICT_URL_USERINFO_RE = re.compile(r"//[^/\s?#@]+@")
+# No ``"``: ``"https://a.com","u:pw@y"`` is two JSON strings, not ``a.com","u`` userinfo.
+_STRICT_URL_USERINFO_RE = re.compile(r"//[^/\s?#@\"]+@")
 # The same authority span with the delimiter and userinfo captured, for _redact_userinfo_passwords.
-_URL_USERINFO_PAIR_RE = re.compile(r"(//)([^/\s?#@]+)@")
+_URL_USERINFO_PAIR_RE = re.compile(r"(//)([^/\s?#@\"]+)@")
+# Scheme-less network path (``mount //user:pass@host/share``), masked under force only: ``//`` must
+# start a token (comments are ``// note``, protocol-relative URLs carry no ``@``) and the password
+# needs 8+ characters, so ``//user:note@x`` stays as written.
+_NETWORK_PATH_USERINFO_RE = re.compile(r"(?<![^\s\"'=(`,\[])(//)([^/\s?#@:\"]+):([^/\s?#@\"]{8,})@")
 
 # ``NAME=user:pass`` where NAME carries no secret keyword — an HTTP Basic auth pair is often stored
 # this way (#125664). Shape-only on arbitrary names, so it runs force-only (persistence boundary,
@@ -1258,6 +1267,32 @@ def _mask_token_nonreusable(token: str) -> str:
     return f"«redacted:{label}…»" if label else "«redacted-secret»"
 
 
+def _redact_json_string_value(m: re.Match, *, mask=_mask_token) -> str:
+    """Mask a captured JSON string value without breaking its escapes."""
+    encoded_value = m.group(2)
+    try:
+        value = json.loads(f'"{encoded_value}"')
+    except json.JSONDecodeError:
+        # The regex also accepts malformed escape pairs. Keep redaction
+        # fail-safe while emitting a syntactically valid replacement value.
+        value = encoded_value
+    if not json_header_value_is_credential(m.group(1), value):
+        return m.group(0)
+    masked = json.dumps(mask(value), ensure_ascii=False)[1:-1]
+    return m.group(1) + masked + m.group(3)
+
+
+def _redact_unterminated_json_string_value(m: re.Match, *, mask=_mask_token) -> str:
+    """Fail closed on a truncated JSON header value through end-of-line."""
+    encoded_value = m.group(2)
+    try:
+        value = json.loads(f'"{encoded_value}"')
+    except json.JSONDecodeError:
+        value = encoded_value
+    masked = json.dumps(mask(value), ensure_ascii=False)[1:-1]
+    return m.group(1) + masked
+
+
 def _assignment_sub(render, *, check_keyword: bool):
     """re.sub callback: keep the match unless the key/value pair (groups[0], groups[-1]) needs redaction."""
     def _sub(m):
@@ -1311,6 +1346,7 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     truncated key and could write it back as a dead credential (#35519)."""
     mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
     if "=" in text:
+        text = redact_cookie_assignments(text, mask)
         _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)
         if "://" not in text:  # lowercase names would match URL params
@@ -1333,8 +1369,13 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
             text = _CFG_ANCHORED_RE.sub(_redact_env, text)
 
     if ":" in text and '"' in text:
+        for pattern in (_SECRET_HEADER_JSON_RE, _COOKIE_HEADER_JSON_RE):
+            text = pattern.sub(lambda m: _redact_json_string_value(m, mask=mask), text)
+        for pattern in (_SECRET_HEADER_JSON_UNTERMINATED_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE):
+            text = pattern.sub(lambda m: _redact_unterminated_json_string_value(m, mask=mask), text)
+        redact_json = _assignment_sub(lambda g: f'{g[0]}: "{mask(g[1])}"', check_keyword=False)
         text = _JSON_FIELD_RE.sub(
-            _assignment_sub(lambda g: f'{g[0]}: "{mask(g[1])}"', check_keyword=False), text)
+            lambda m: m.group(0) if m.group(1)[1:-1].lower() == "apikey" else redact_json(m), text)
         if '\\"' in text:
             text = _JSON_FIELD_ESCAPED_RE.sub(
                 _assignment_sub(lambda g: f'{g[0]}: {g[1]}"{mask(g[2])}{g[1]}"', check_keyword=False), text)
@@ -1369,7 +1410,7 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
 # A docs placeholder is a lower-case or ALL-CAPS name in angle brackets (``<password>``) or an
 # upper-case env var reference (``${REDIS_PASSWORD}``); ``$ecretPassw0rd`` or ``<Zq8x…>`` is
 # a real password that happens to start with the same character.
-_DSN_PW_PLACEHOLDER_RE = re.compile(r"<(?:[a-z][a-z_ -]*|[A-Z][A-Z_ -]*)>|\$\{?[A-Z_][A-Z0-9_]*\}?")
+_DSN_PW_PLACEHOLDER_RE = re.compile(r"<(?:[a-z][a-z_ -]*|[A-Z][A-Z_ -]*)>|\$\{?[A-Z_][A-Z0-9_]*\}?|%[A-Z_][A-Z0-9_]*%")
 
 
 # ``https://user:password@host`` in docs names the field instead of filling it in.
@@ -1415,6 +1456,13 @@ def _redact_url_credentials(text: str, code_file: bool) -> str:
     text = _DB_CONNSTR_RE.sub(_redact_db, text)
     text = _URL_BARE_TOKEN_RE.sub(lambda m: f"{m.group(1)}{_mask_token(m.group(2))}{m.group(3)}", text)
     return _redact_userinfo_passwords(text)
+
+
+def _mask_network_path_userinfo(m) -> str:
+    """``//user:pass@host`` without a scheme (#125664 residual); placeholders stay as written."""
+    if _is_userinfo_placeholder(m.group(3)):
+        return m.group(0)
+    return f"{m.group(1)}{m.group(2)}:***@"
 
 
 def _redact_phone(m):
@@ -1522,7 +1570,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
 
     if ":" in text:
-        text = _SECRET_HEADER_RE.sub(lambda m: m.group(1) + _mask_token(m.group(2)), text)
+        text = redact_header_credentials(text)
         text = _TELEGRAM_RE.sub(lambda m: f"{m.group(1) or ''}{m.group(2)}:***", text)
 
     # Database connection string passwords. With code_file=True, a password group that is a pure ``{...}``
@@ -1532,6 +1580,8 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # #33801.
     if "://" in text:
         text = _redact_url_credentials(text, code_file)
+    if force and "//" in text:
+        text = _NETWORK_PATH_USERINFO_RE.sub(_mask_network_path_userinfo, text)
 
     # Keyword/value connection strings (``Host=…;Password=…``, libpq ``host=… password=…``):
     # the forms the URL pass above never sees. Gate: a ``password=``/``pwd=`` key in any casing;

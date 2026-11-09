@@ -157,7 +157,17 @@ export const zhHantArtifacts = {
       loadFailedConsole: (code, message) => `載入失敗${code ? ` (${code})` : ''}：${message}`,
       unreachableDescription: '無法連線至預覽頁面。',
       openTarget: url => `開啟 ${url}`,
-      fallbackTitle: '預覽'
+      fallbackTitle: '預覽',
+      vaultFill: '填入已儲存的登入資訊',
+      vaultTitle: site => `${site} 的已儲存登入資訊`,
+      vaultLoading: '正在載入已儲存的登入資訊…',
+      vaultEmpty: '此網站沒有已儲存的登入資訊',
+      vaultUnlock: name => `解鎖 ${name}`,
+      vaultOpenSettings: '開啟憑證保險庫設定',
+      vaultFilled: label => `已填入 ${label}。請檢查表單，然後登入。`,
+      vaultFillFailed: '無法填入登入資訊',
+      vaultLoadFailed: '無法載入已儲存的登入資訊',
+      vaultPageNotReady: '頁面仍在載入。載入完成後請再試一次。'
     }
   }
 } satisfies Pick<TranslationOverrides, 'artifacts' | 'artifactCard' | 'artifactPreview' | 'preview'>

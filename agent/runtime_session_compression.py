@@ -39,6 +39,9 @@ class RuntimeSessionCompressionMixin:
     def get_conversation_root(self, session_id):
         return self._apply('compression.lineage', {'target': session_id})['root']
 
+    def get_tool_rotation_root(self, session_id):
+        return self._apply('compression.lineage', {'target': session_id})['tool_root']
+
     def get_compression_tip(self, session_id):
         return self._apply('compression.lineage', {'target': session_id})['tip']
 

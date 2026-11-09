@@ -468,7 +468,7 @@ class SessionUsageMixin:
 
     def flush_token_counts(self, timeout: float = 5.0) -> bool:
         """Block until every queued token delta has been applied. False on timeout (callers
-        then read totals stale by the queued deltas). Never raises."""
+        then read totals stale by the queued deltas). Process-control interrupts remain visible."""
         # Lock-free fast path: reads queue-then-busy (see ordering notes below).
         if (not self._token_queue and not self._token_writer_busy and not self._token_writer_uncertain
                 and self._token_pending_marker is None):
@@ -892,4 +892,3 @@ class SessionUsageMixin:
              WHERE {' AND '.join(where)}
             """, params)
         return {"tokens": int(row[0] or 0), "cost_usd": float(row[1] or 0.0)}
-

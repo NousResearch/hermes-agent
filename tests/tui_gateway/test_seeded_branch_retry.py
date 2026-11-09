@@ -138,3 +138,46 @@ def test_branch_compensation_does_not_authorize_an_unproven_row(gateway, monkeyp
     finally:
         if sibling is not None:
             sibling.close()
+
+
+@pytest.mark.parametrize("cut", [0, 250])
+def test_branch_seed_retry_honors_a_committed_rewind(gateway, monkeypatch, cut):
+    mod, db, _ = gateway
+    messages = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"seed {i}"}
+                for i in range(501)]
+    _prepare_branch(mod, db, monkeypatch, messages)
+    append = db.append_messages_batch
+
+    def fail_after_chunk(key, rows, **kwargs):
+        if key == "seed-retry-child":
+            append(key, rows[:500])
+            raise OSError(errno.ENOSPC, "injected partial seed disk full")
+        return append(key, rows, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(db, "append_messages_batch", fail_after_chunk)
+        created = _create_branch(mod)
+    assert "result" in created, created
+    sid = created["result"]["session_id"]
+    record = mod._sessions[sid]
+    before = db.get_messages("seed-retry-child")
+    assert len(before) == 500
+    with record["history_lock"]:
+        error, _ = mod._truncate_history_for_submit("rewind", sid, record, {
+            "truncate_before_row_id": before[cut]["id"],
+            "confirm_truncate": True,
+            "confirm_deep_truncate": True,
+            "confirm_empty_truncate": True,
+        }, None)
+    assert error is None, error
+    assert mod._persist_session_row_for_submit("submit", record, "replacement") is None
+    assert [row["content"] for row in db.get_messages("seed-retry-child")] == [
+        *(f"seed {i}" for i in range(cut)), "replacement",
+    ]
+    archived = db._conn.execute(
+        "SELECT content FROM messages WHERE session_id=? AND active=0 ORDER BY id",
+        ("seed-retry-child",)).fetchall()
+    assert [row["content"] for row in archived] == [f"seed {i}" for i in range(cut, 500)]
+    assert [row["content"] for row in db.get_messages("seed-retry-parent")] == [
+        f"seed {i}" for i in range(501)
+    ]

@@ -734,4 +734,3 @@ def session_lineage_rows(conn):
     optional = ("parent_session_id", "end_reason", "profile_name", "session_key", "message_count")
     projection = ", ".join(["id", "ended_at", *(name if name in columns else f"NULL AS {name}" for name in optional)])
     return [dict(row) for row in conn.execute(f"SELECT {projection} FROM sessions").fetchall()]
-

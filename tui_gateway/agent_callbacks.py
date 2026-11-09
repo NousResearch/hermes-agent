@@ -621,6 +621,8 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     with session["history_lock"]:
         session["history"] = []
         session["history_version"] = int(session.get("history_version", 0)) + 1
+        session.pop("_branch_seed_pending", None)
+        session["seeded"] = False  # the reset abandoned this seed, not its ownership guards
     info = _session_info(new_agent, session)
     _emit("session.info", sid, info)
     _restart_slash_worker(sid, session)

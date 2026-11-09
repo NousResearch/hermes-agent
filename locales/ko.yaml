@@ -974,9 +974,6 @@ platform:
     approved: "✅ 승인됨."
     denied: "❌ 거부됨."
     approval_expired: "⌛ 승인이 만료되어 명령이 실행되지 않았어요 (이미 시간 초과되었거나 다른 곳에서 처리됨)."
-  yuanbao:
-    slow_response_notice: "이 작업은 조금 복잡해서 아직 진행 중이에요. 잠시만 기다려 주세요..."
-    owner_command_denied: "⚠️ {command}은(는) 비공개 채팅 모드에서 생성자만 사용할 수 있어요"
   shared:
     truncated_suffix: "\n...(잘림)"
     unknown: "알 수 없음"
@@ -1710,10 +1707,10 @@ slash:
     description: "CLI 종료 (--delete를 붙이면 세션 기록도 삭제)"
 cli:
   backtrack:
-    title: "↺ 되감기 — 이전 프롬프트 선택"
-    keys_hint: "↑/↓ 선택 · Enter 편집 후 다시 보내기 · f 여기서 분기 · Esc 닫기"
-    preview_label: "프롬프트 {number} / {total}:"
-    more_lines: "… ({count}줄 더 있음)"
+    title: "↺ 대화 기록 — 편집할 프롬프트 선택"
+    keys_hint: "대화 기록 탐색 중 · ↑↓/jk 스크롤 · ←→/hl 프롬프트 · ↵ 편집 · f 분기 · esc 뒤로"
+    prime_hint: "esc를 한 번 더 누르면 이전 메시지를 편집합니다"
+    no_previous: "편집할 이전 메시지가 없습니다."
     editing_hint: "↺ 프롬프트 {number} 편집 중 — Enter를 누르면 여기로 되감고 전송 · Esc Esc 취소"
     edit_cancelled: "↺ 되감기가 취소되었습니다. 아무것도 제거되지 않았습니다."
     rewound: "↺ 프롬프트 {number}(으)로 되감았습니다({count}개 메시지 보관됨). 편집 내용을 전송합니다."
@@ -3981,3 +3978,8 @@ plan_usage:
   large_notice_limit: "대형 모델: {name} 한도에 도달했습니다({resets})."
   large_notice_limit_stops: "대형 모델: {name} 한도에 도달했습니다({resets}). 그때까지 실행되지 않습니다."
   large_notice_percent: "대형 모델: 메시지당 플랜 사용량을 더 많이 씁니다. 대형 모델 월간 한도: {percent} 사용."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ 취소한 턴에서 변경된 파일: {files}. /rollback 으로 체크포인트 목록을 보고 하나를 복원하세요."
+    more: "외 {count}개"

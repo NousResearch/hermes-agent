@@ -699,7 +699,9 @@ def _persist_branch_seed(session: dict) -> None:
         return
     from agent.message_metadata import message_identity
     from agent.transcript_repair import sync_flushed_message_markers
-    with session["history_lock"]:  # message_identity stamps the live dicts
+    with session["history_lock"]:  # ownership stays held through the write and proof sync
+        if not (key := session.get("session_key")) or not session.get("seeded") or session.get("_branch_seed_persisted"):
+            return  # another seed writer may have completed while this caller waited
         pending = session.get("_branch_seed_pending")
         if pending is None:
             live = list(session.get("history") or [])
@@ -707,26 +709,25 @@ def _persist_branch_seed(session: dict) -> None:
                      **message_identity(msg)} for msg in live]
             if not seed:
                 return
-            session["_branch_seed_pending"] = (key, live, seed)
+            session["_branch_seed_pending"] = (key, live, seed, int(session.get("history_version", 0)))
         else:
-            pending_key, live, seed = pending
-            if pending_key != key:
-                raise ValueError("Seed session changed before persistence completed")
-    with _session_db(session) as db:
-        if db is None:
-            return
-        try:
-            # Chunked so each BEGIN IMMEDIATE stays short (a seed can be hundreds of rows); a mid-copy failure leaves a
-            # partial seed with _branch_seed_persisted unset.
-            # Bounded-chunk transactions (see #23254): a branch seed can be hundreds of rows; chunking keeps
-            # each BEGIN IMMEDIATE short so concurrent writers aren't starved.
-            db.append_messages_batch(key, seed, chunk_rows=500)
-            with session["history_lock"]:
+            pending_key, live, seed, version = pending
+            if pending_key != key or version != int(session.get("history_version", 0)):
+                raise ValueError("Seed session or history changed before persistence completed")
+        with _session_db(session) as db:
+            if db is None:
+                return
+            try:
+                # Chunked so each BEGIN IMMEDIATE stays short (a seed can be hundreds of rows); a mid-copy failure leaves a
+                # partial seed with _branch_seed_persisted unset.
+                # Bounded-chunk transactions (see #23254): a branch seed can be hundreds of rows; chunking keeps
+                # each BEGIN IMMEDIATE short so concurrent writers aren't starved.
+                db.append_messages_batch(key, seed, chunk_rows=500)
                 sync_flushed_message_markers(live, seed)
                 session.pop("_branch_seed_pending", None)
-            session["_branch_seed_persisted"] = True
-        except Exception as exc:
-            _workdir_reraise_disk_full(exc, "branch seed persist failed")
+                session["_branch_seed_persisted"] = True
+            except Exception as exc:
+                _workdir_reraise_disk_full(exc, "branch seed persist failed")
 
 
 def _submit_row_target_key(session: dict) -> str:
@@ -905,6 +906,8 @@ def _rewind_active_session_history(
             outcome = db.rewind_user_turn(
                 session_key, user_ordinal, warm_history=history, require_retryable=require_retryable,
                 adopt_row_ids=True)
+            from .session_seed import finish_seed_replacement
+            finish_seed_replacement(session, session_key)
         installed, live_view, rewound_count = outcome.prefix, outcome.live_view, outcome.rewound_count
     else:
         target_index = user_indices[user_ordinal]

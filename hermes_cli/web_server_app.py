@@ -220,6 +220,13 @@ async def http_lifespan(app: FastAPI):
             if policy(app.state).host_terminal:
                 from hermes_cli.web_host_terminal_sessions import host_terminal_lifespan
                 await surface.enter_async_context(host_terminal_lifespan(app))
+            if policy(app.state).gateway_connections:
+                from hermes_cli import gateway_connections_ssh
+                from hermes_cli.gateway_connections_watch import watch_store
+                # Registered first so it runs last: the watcher stops, then every SSH tunnel this
+                # listener opened (and the remote serve it owns) is closed, never orphaned.
+                surface.push_async_callback(asyncio.to_thread, gateway_connections_ssh.close_all)
+                await surface.enter_async_context(watch_store())
             yield
     finally:
         for task in tasks:

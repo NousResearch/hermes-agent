@@ -19,6 +19,8 @@ def set_session_archived(db, session_id, archived, *, notify=True):
         row = conn.execute("SELECT archived FROM sessions WHERE id = ?", (session_id,)).fetchone()
         ids = db._set_lineage_column_in_transaction(
             conn, "archived", session_id, int(archived), extra_set_sql=", auto_archived = 0")
+        if archived and ids:
+            db._retire_canonical_bot_chat_in_transaction(conn, session_id)
         return ids, bool(archived and ids and row is not None and not row[0])
     ids, newly_archived = guarded_discovered_session_write(
         db, (session_id,), lambda conn: lineage_column_ids(conn, session_id), write)

@@ -185,7 +185,7 @@ def _ensure_tui_workspace(tui_dir: Path) -> None:
         "This usually means `hermes update` left tracked ui-tui files deleted.\n"
         "Recovery:\n"
         "  1. From the Hermes checkout, run `git restore -- ui-tui`\n"
-        "  2. Run `npm install --silent --no-fund --no-audit --progress=false`\n"
+        "  2. Run `pnpm install --frozen-lockfile`\n"
         "  3. Retry `hermes --tui`\n"
         "If the checkout is still inconsistent, run `hermes update --force`.",
         file=sys.stderr)
@@ -226,7 +226,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     # 1. Prebuilt bundle (nix / packaged release / Docker image): just run it.
     # Must run BEFORE _ensure_tui_workspace(): a prebuilt install ships
     # hermes_cli/tui_dist/entry.js but never ui-tui/ (git checkouts only).
-    # 1. A prebuilt install (Docker image, Nix build, or prior `npm run build`) ships
+    # 1. A prebuilt install (Docker image, Nix build, or prior `pnpm run build`) ships
     #   hermes_cli/tui_dist/entry.js but never ships ui-tui/ at all (that directory only exists in a git
     #   checkout) — so requiring the workspace to exist first made every prebuilt dashboard Chat tab
     #   connection hard-exit before it ever got a chance to try the bundled entry.js it already has. See
@@ -241,7 +241,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if bundled is not None:
             return [_tui_node_bin("node"), "--expose-gc", str(bundled)], bundled.parent
 
-    # About to npm install/build from source, so the workspace must exist.
+    # About to pnpm install/build from source, so the workspace must exist.
     if not ext_dir:
         _ensure_tui_workspace(tui_dir)
 
@@ -256,10 +256,10 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     if tui_dev:
         # tsx imports @hermes/ink's built exports; the production bundle instead
         # compiles its source directly through scripts/build/tui.mjs.
-        npm = shutil.which("npm", path=env["PATH"])
-        subprocess.run([npm, "run", "build"], cwd=tui_dir / "packages/hermes-ink", env=env, check=True)
+        pnpm = shutil.which("pnpm", path=env["PATH"])
+        subprocess.run([pnpm, "run", "build"], cwd=tui_dir / "packages/hermes-ink", env=env, check=True, timeout=600)
         tsx = tui_dir / "node_modules/.bin/tsx"
-        return ([str(tsx), "src/entry.tsx"] if tsx.exists() else [npm, "start"]), tui_dir
+        return ([str(tsx), "src/entry.tsx"] if tsx.exists() else [pnpm, "start"]), tui_dir
 
     build_source_tui(project_root, env=env)
     node = shutil.which("node", path=env["PATH"])

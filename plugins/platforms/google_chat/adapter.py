@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import html
 import importlib
 import json
 import logging
@@ -126,7 +127,7 @@ from gateway.config import Platform, PlatformConfig
 # Register the dynamic enum member at import time so ``Platform.GOOGLE_CHAT``
 # resolves before any adapter instance exists.
 Platform("google_chat")
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, numbered_clarify_choices
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, SendResult,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
@@ -1144,17 +1145,24 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
         def _button(text: str, choice: str) -> dict[str, Any]:
             return {"text": text, "action": "hermes_clarify", "parameters": {"clarify_id": clarify_id, "choice": choice}}
-        buttons: list[dict[str, Any]] = []
-        for choice in choices:
-            choice_text = str(choice).strip()
-            if choice_text:
-                buttons.append(_button(choice_text if len(choice_text) <= 80 else choice_text[:77] + "...", choice_text))
+        clean = [s for s in (str(c).strip() for c in choices) if s]
+        # Card buttons clip long labels with no tooltip (#78115): list the full options in the
+        # text widget and label the buttons positionally when any option is that wide.
+        # The text widget renders HTML: escaped so an option reads exactly as written, and appended
+        # after the card build so its Markdown pass (``**bold**`` -> ``*bold*``) never rewrites an option.
+        numbered = numbered_clarify_choices(clean, max_label_cols=48, escape=lambda s: html.escape(s, quote=False))
+        buttons: list[dict[str, Any]] = [
+            _button(str(i) if numbered else choice_text, choice_text)
+            for i, choice_text in enumerate(clean, start=1)
+        ]
         buttons.append(_button(t("platform.google_chat.clarify.other_button"), "__other__"))
         card = card_spec_to_cards_v2({
             "card_id": f"clarify-{clarify_id}", "header": {"title": t("platform.google_chat.clarify.header")},
             "sections": [{"widgets": [{"type": "text", "text": t("platform.google_chat.clarify.question", question=question)},
                                       {"type": "buttons", "buttons": buttons}]}],
         })
+        if numbered:
+            card["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"] += f"\n\n{numbered}"
         result = await self.send_card(chat_id, card, metadata=metadata)
         if result.success:
             self._clarify_state[clarify_id] = session_key

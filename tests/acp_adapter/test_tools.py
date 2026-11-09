@@ -19,6 +19,10 @@ from acp.schema import (
     ToolCallStart,
     ToolCallProgress,
 )
+from gateway.session_tool_events import bounded_result
+from tools.browser_use_cli import _native_screenshot_result
+from tools.registry import tool_error, tool_result
+from toolsets import resolve_toolset
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +157,18 @@ class TestBuildToolStart:
         assert "https://x.com" in result.content[0].content.text
         assert result.raw_input is None
 
+    def test_every_browser_tool_in_the_acp_toolset_reports_execute(self):
+        """A browser tool in the ACP toolset is typed at start, and a refused call ends failed."""
+        browser_tools = [name for name in resolve_toolset("hermes-acp") if name.startswith("browser_")]
+        assert browser_tools
+
+        for name in browser_tools:
+            started = build_tool_start("tc-browser-start", name, {"code": "print(page_info())"})
+            refused = build_tool_complete("tc-browser-done", name, tool_error("Blocked: unsafe URL"))
+            assert (started.kind, started.raw_input) == ("execute", None), name
+            assert (refused.kind, refused.status) == ("execute", "failed"), name
+            assert "Blocked: unsafe URL" in refused.content[0].content.text, name
+
 
 
 
@@ -163,6 +179,11 @@ class TestBuildToolStart:
 # ---------------------------------------------------------------------------
 # build_tool_complete
 # ---------------------------------------------------------------------------
+
+
+_BROWSER_STDOUT = "o" * 2_000 + "STDOUT-KEPT"
+_BROWSER_RUN_CARD = ("STDOUT-KEPT", "STDERR-END", "/tmp/bu/shot.png", "/tmp/bu/workspace")
+_BROWSER_CUT_RUN_CARD = ("STDOUT-KEPT", "event size limit")
 
 
 class TestBuildToolComplete:
@@ -187,6 +208,43 @@ class TestBuildToolComplete:
     def test_build_tool_complete_marks_returncode_nonzero_as_failed(self):
         result = build_tool_complete("tc-fail", "execute_code", '{"output": "bad", "returncode": 2}')
         assert result.status == "failed"
+
+    @pytest.mark.parametrize(
+        "exit_code, stdout, image_chars, card",
+        [
+            pytest.param(1, _BROWSER_STDOUT + "o" * 5_000, None, _BROWSER_RUN_CARD, id="plain_result"),
+            pytest.param(1, _BROWSER_STDOUT + "o" * 70_000, None, _BROWSER_CUT_RUN_CARD, id="plain_result_over_the_event_cap"),
+            pytest.param(0, _BROWSER_STDOUT + "o" * 70_000, None, _BROWSER_CUT_RUN_CARD, id="successful_run_over_the_event_cap"),
+            pytest.param(1, _BROWSER_STDOUT + "o" * 5_000, 1_000, _BROWSER_RUN_CARD, id="screenshot_envelope"),
+            pytest.param(1, _BROWSER_STDOUT + "o" * 5_000, 200_000, _BROWSER_RUN_CARD, id="envelope_cut_at_the_event_cap"),
+            pytest.param(1, _BROWSER_STDOUT + "o" * 70_000, 200_000, _BROWSER_CUT_RUN_CARD, id="stdout_fills_the_cut"),
+            # One pass of the pattern is 16 envelope characters, so these shifts land the cut on each of them.
+            *[pytest.param(1, "STDOUT-KEPT" + "x" * shift + '🐴"' * 3_000, 200_000, _BROWSER_CUT_RUN_CARD,
+                           id=f"cut_lands_{shift}_into_the_escapes") for shift in range(16)],
+        ],
+    )
+    def test_build_tool_complete_for_browser_exec_shows_the_run(self, monkeypatch, exit_code, stdout, image_chars, card):
+        """The card shows the run itself, not the envelope a screenshot or the gateway's event cap wraps it in."""
+        run = {
+            "success": exit_code == 0, "exit_code": exit_code, "output": stdout,
+            "workspace": "/tmp/bu/workspace", "stderr": "e" * 2_000 + "STDERR-END", "screenshot_path": "/tmp/bu/shot.png",
+        }
+        delivered = tool_result(run)
+        if image_chars is not None:
+            monkeypatch.setattr("tools.vision_tools._should_use_native_vision_fast_path", lambda: True)
+            monkeypatch.setattr(
+                "tools.vision_tools._resize_image_for_vision",
+                lambda *_args, **_kwargs: "data:image/jpeg;base64," + "A" * image_chars,
+            )
+            delivered = _native_screenshot_result(run, run["screenshot_path"])
+
+        update = build_tool_complete("tc-browser", "browser_exec", bounded_result(delivered, False), {"code": "print(1)"})
+
+        text = update.content[0].content.text
+        text.encode("utf-8")  # half a surrogate pair would not survive the editor's JSON parser
+        assert [shown for shown in (f"Exit code: {exit_code}", *card) if shown not in text] == []
+        assert [leaked for leaked in ("_multimodal", "base64", '"exit_code"', '"truncated"', "\\") if leaked in text] == []
+        assert (update.kind, update.status, update.raw_output) == ("execute", "failed" if exit_code else "completed", None)
 
 
 

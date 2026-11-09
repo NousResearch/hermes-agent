@@ -1,6 +1,6 @@
 name: coldstart
 repo: https://github.com/zvporter-ops/coldstart
-sha: "224655a9c24798076fb8d4ebd3c55445e17a362a"
+sha: "2f8d036e070f7a4bc593ab9fa5b60dcdd820cab3"
 title: Coldstart
 description: >-
   Evidence-gated answering with a provenance hierarchy, for any local AI deployment.
@@ -12,9 +12,12 @@ description: >-
   quoted spans must be verbatim, and figures, dates, URLs and identifiers must appear in a
   retrieved passage (line and passage references are masked so citations are not mistaken
   for claims); prose paraphrase is reported but never blocked. No model is asked to grade its
-  own answer. The clearance rule covers every path that touches private material: when the
-  model a call would reach is not local, `corpus_ask` answers from public material only, and
-  `corpus_audit` / `/trust` refuse rather than sample internal passages into it. `/trust`
+  own answer. The clearance rule covers every path that touches private material: the model is taken
+  from the turn the host actually runs (`pre_llm_call` reports it, recorded per session),
+  so a session switched with `/model` or a turn that lands on a cloud fallback counts as
+  remote; when it is not local, internal passages are withheld, `corpus_ask` requires both
+  its endpoint and the turn to be local and otherwise answers from public material only,
+  and `corpus_audit` / `/trust` refuse rather than sample internal passages into it. `/trust`
   runs a battery against the configured deployment and scores it:
   invented quote and invented figure must be caught, verbatim quote and paraphrase must
   pass, and the pipeline must abstain on questions the corpus cannot answer. Ships an agent
@@ -31,9 +34,9 @@ description: >-
 maintainer: zvporter-ops
 tier: community
 category: tools
-requires_hermes: ">=0.22.0"
+requires_hermes: ">=0.22.6"
 docs_url: https://github.com/zvporter-ops/coldstart#readme
-version: "0.3.0"
+version: "0.3.1"
 readme: true
 platforms: []
 capabilities:

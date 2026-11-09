@@ -116,6 +116,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     _flag(cron_create, "--paused", default=False,
         help="Create disabled in one write; resume to schedule, or explicitly run now.")
     cron_create.add_argument("--paused-reason", help="Auditable reason; requires --paused.")
+    cron_create.add_argument("--enabled-toolsets", dest="enabled_toolsets", nargs="+",
+        help="Allow only these toolsets for this job, space-separated.")
 
     cron_edit = cron_subparsers.add_parser("edit", help="Edit an existing scheduled job")
     cron_edit.add_argument("job_id", help="Job ID to edit")
@@ -183,6 +185,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--grace-minutes", dest="grace_minutes",
         help="Catch-up window override in minutes (0-1440). 0 = never catch up. "
             "Pass empty string to restore the computed window.")
+    cron_edit.add_argument("--enabled-toolsets", dest="enabled_toolsets", nargs="+",
+        help="Allow only these toolsets for this job, space-separated.")
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")

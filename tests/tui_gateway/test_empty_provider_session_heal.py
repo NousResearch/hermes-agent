@@ -89,22 +89,19 @@ class TestEmptyProviderHealsFromModel:
         assert kwargs["api_key"] == "sk-entry-b"
 
 
-def test_an_empty_provider_row_with_the_main_slots_url_resumes_on_the_entry_serving_its_model(monkeypatch):
-    config = _config(_entry("entry-a", A, "sk-a", "model-a"), _entry("entry-b", B, "sk-b", "model-b"))
-    # The row carries the main slot's URL and wire, stamped by the turns that already went there; entry-a
-    # lists no models, so only the declared model can identify the entry.
-    config["custom_providers"][0].pop("models")
-    override = {"model": "model-b", "provider": None, "base_url": A, "api_mode": "anthropic_messages"}
+def test_an_empty_provider_row_resumes_on_its_entrys_own_route_unless_the_main_slot_serves_it(monkeypatch):
+    """The row's URL and wire may be stamps from turns that already went to the main slot (entry-a lists no
+    models, so only the declared model identifies the entry), or the entry may have moved since."""
+    config = _config(_entry("entry-a", A, "sk-a"), _entry("entry-b", B, "sk-b", "model-b"))
+    for saved_url, saved_mode in ((A, "anthropic_messages"), ("https://retired.example/v1", None)):
+        override = {"model": "model-b", "provider": None, "base_url": saved_url, "api_mode": saved_mode}
 
-    kwargs = _make_agent_with_override(override, monkeypatch, config, model_cfg=config["model"])
+        kwargs = _make_agent_with_override(override, monkeypatch, config, model_cfg=config["model"])
 
-    assert (kwargs["base_url"], kwargs["api_key"], kwargs["api_mode"]) == (B, "sk-b", "chat_completions")
+        assert (kwargs["base_url"], kwargs["api_key"], kwargs["api_mode"]) == (B, "sk-b", "chat_completions")
 
-
-def test_an_empty_provider_row_reaches_its_entrys_current_endpoint(monkeypatch):
-    config = _config(_entry("glm", "https://new.example/v1", "sk-glm", "GLM-5.3"))
-    override = {"model": "GLM-5.3", "provider": None, "base_url": "https://old.example/v1", "api_mode": None}
-
-    kwargs = _make_agent_with_override(override, monkeypatch, config, model_cfg=config["model"])
-
-    assert (kwargs["base_url"], kwargs["api_key"]) == ("https://new.example/v1", "sk-glm")
+    # A row on the main slot's own model ran there; another entry that also lists it must not take it over.
+    config = _config(_entry("proxy", B, "sk-b", "model-a"), _entry("entry-a", A, "sk-a", "model-a"))
+    kwargs = _make_agent_with_override({"model": "model-a", "provider": None, "base_url": None, "api_mode": None},
+                                       monkeypatch, config, model_cfg=config["model"])
+    assert (kwargs["base_url"], kwargs["api_key"]) == (A, "sk-a")

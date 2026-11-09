@@ -97,7 +97,7 @@ def _usable(name: str) -> Optional[DelegationProvider]:
         return bundled
     if registered is None and bundled is None:
         from hermes_cli.plugins import discover_plugins
-        discover_plugins()
+        discover_plugins(force=True)
         registered = _registry.get_provider(name)
         if _available(registered):
             return registered

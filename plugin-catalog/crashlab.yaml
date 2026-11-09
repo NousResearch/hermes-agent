@@ -1,21 +1,22 @@
 name: crashlab
 title: CrashLab
 repo: https://github.com/dolepee/crashlab
-sha: 44578fcefa47aea590891a2eee648ee8692b6087
+sha: bb1415e145538869b3825d36bd2f164b8fe1cefe
 description: Test recovery before delivery, after commit and across restart; inspect saved records, verify the repair and keep a reusable regression.
 maintainer: dolepee
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.5.9"
-docs_url: https://github.com/dolepee/crashlab/blob/44578fcefa47aea590891a2eee648ee8692b6087/README.md
+version: "0.5.10"
+docs_url: https://github.com/dolepee/crashlab/blob/bb1415e145538869b3825d36bd2f164b8fe1cefe/README.md
 platforms:
   - linux
   - macos
 screenshots:
-  - https://raw.githubusercontent.com/dolepee/crashlab/44578fcefa47aea590891a2eee648ee8692b6087/docs/dashboard-desktop.png
-  - https://raw.githubusercontent.com/dolepee/crashlab/44578fcefa47aea590891a2eee648ee8692b6087/docs/dashboard-mobile.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/bb1415e145538869b3825d36bd2f164b8fe1cefe/docs/dashboard-desktop.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/bb1415e145538869b3825d36bd2f164b8fe1cefe/docs/dashboard-mobile.png
 known_issues:
+  - "Reconciliation requires one selected original identity and one selected readback query value; missing or repeated selections are rejected."
   - "Execution needs human approval for the captured plan; trusted local cases and applications remain required."
   - "Historical bundles require their recorded evaluator; prepare new experiments explicitly after evaluator changes. VERIFIED status never transfers."
   - "Noninteractive install can require npm ci; local application runtimes and dependencies are separate."

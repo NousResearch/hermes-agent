@@ -366,11 +366,19 @@ def _apply_active_turn_redirect(agent: Any, messages: list[dict[str, Any]], text
 def _credential_refresh_profile(agent: Any) -> Any:
     """The profile owning the live credential's runtime refresh: the agent's provider by name, else
     (a ``custom`` route at a provider's host) the profile serving the base URL's host. Only profiles
-    that override ``refresh_runtime_credentials`` qualify."""
+    that override ``refresh_runtime_credentials`` qualify. A host-matched profile never owns the refresh
+    of an Anthropic Messages route on a host whose auth core owns (native Anthropic, Azure, MiniMax, ...)."""
     from agent.provider_route_hooks import route_profiles
 
-    profiles = route_profiles("refresh_runtime_credentials", (getattr(agent, "provider", "") or "").strip().lower(),
-                              str(getattr(agent, "base_url", "") or ""))
+    provider = (getattr(agent, "provider", "") or "").strip().lower()
+    base_url = str(getattr(agent, "base_url", "") or "")
+    profiles = route_profiles("refresh_runtime_credentials", provider, base_url)
+    if profiles and getattr(agent, "api_mode", None) == "anthropic_messages":
+        from agent.anthropic_endpoints import _core_owns_anthropic_auth
+        if base_url and _core_owns_anthropic_auth(base_url):
+            from providers import get_provider_profile
+            named = get_provider_profile(provider) if provider else None
+            profiles = [p for p in profiles if named is not None and p is named]
     return profiles[0] if profiles else None
 
 

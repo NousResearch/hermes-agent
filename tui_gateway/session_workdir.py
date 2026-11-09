@@ -700,11 +700,18 @@ def _persist_branch_seed(session: dict) -> None:
     from agent.message_metadata import message_identity
     from agent.transcript_repair import sync_flushed_message_markers
     with session["history_lock"]:  # message_identity stamps the live dicts
-        live = list(session.get("history") or [])
-        seed = [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS},
-                 **message_identity(msg)} for msg in live]
-    if not seed:
-        return
+        pending = session.get("_branch_seed_pending")
+        if pending is None:
+            live = list(session.get("history") or [])
+            seed = [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS},
+                     **message_identity(msg)} for msg in live]
+            if not seed:
+                return
+            session["_branch_seed_pending"] = (key, live, seed)
+        else:
+            pending_key, live, seed = pending
+            if pending_key != key:
+                raise ValueError("Seed session changed before persistence completed")
     with _session_db(session) as db:
         if db is None:
             return
@@ -716,6 +723,7 @@ def _persist_branch_seed(session: dict) -> None:
             db.append_messages_batch(key, seed, chunk_rows=500)
             with session["history_lock"]:
                 sync_flushed_message_markers(live, seed)
+                session.pop("_branch_seed_pending", None)
             session["_branch_seed_persisted"] = True
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "branch seed persist failed")

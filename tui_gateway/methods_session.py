@@ -228,13 +228,11 @@ def _billing_pending_change(result: dict) -> dict:
 # ── session.create / list / most_recent / facts ──────────────────────
 def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list, *, source, cwd, profile_name,
                     model: str, copy_fields=(), compensate: bool = False, title_source: str = "user",
-                    user_id: str | None = None) -> None:
+                    user_id: str | None = None, seed_record: dict | None = None) -> None:
     """Branch child row + parent transcript (bounded-chunk transactions) + title. ``_branched_from`` keeps the
-    row visible in list_sessions_rich() (the live parent never matches the legacy end_reason='branched'
-    heuristic); NULL ``profile_name`` rows drop out of profile-keyed sidebar matching / deep links. ``compensate``
-    deletes a committed row whose transcript/title failed (a durable-but-empty row would defeat the INSERT OR
-    IGNORE first-prompt seed) — except on disk-full, where the delete cannot land. ``user_id`` is the creating
-    login: the child is a Desktop session too, and the row only records identity at insert."""
+    child visible; ``profile_name`` and ``user_id`` preserve its owner. ``seed_record`` tracks verified birth
+    and compensation so lazy retry cannot mistake our retained child for an unrelated fresh-ID collision.
+    ``compensate`` removes failed copies except on disk-full, where deletion cannot be relied on."""
     from agent.message_metadata import message_identity
     from agent.transcript_repair import sync_flushed_message_markers
 
@@ -248,29 +246,37 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
     db._create_fresh_session(new_key, source=source, model=model, model_config={"_branched_from": parent_key},
                              parent_session_id=parent_key, cwd=cwd, profile_name=profile_name, user_id=user_id,
                              system_prompt=parent_prompt or None)
+    if seed_record is not None:
+        seed_record["_fresh_generated_key"] = False
     try:
-        # Compensation guard (#93959 review): if the transcript copy or title write fails AFTER the row
-        # committed, the durable-but-empty row would defeat the lazy first-prompt fallback
-        # (_ensure_session_db_row is INSERT OR IGNORE — the row exists, so the seed never lands and the
-        # renderer fail-latches on a "transcript-less" session again). Roll back just this child so the seed
-        # path can retry cleanly on first submit.
-        # Copy the whole parent history in bounded-chunk transactions — a branch seed can be hundreds of
-        # rows, and per-row transactions were the write-amplification pattern removed in #23254.
+        # Bounded chunks keep large branch copies from starving concurrent writers (#23254).
+        live = list(history)
         rows = [{"role": msg.get("role", "user"), "content": msg.get("content"),
-                 **{field: msg.get(field) for field in copy_fields}, **message_identity(msg)} for msg in history]
+                 **{field: msg.get(field) for field in copy_fields}, **message_identity(msg)} for msg in live]
+        if seed_record is not None:
+            # Keep the child's actual batch: successful chunks stamp row/snapshot proof onto it.
+            seed_record["_branch_seed_pending"] = (new_key, live, rows)
         db.append_messages_batch(new_key, rows, chunk_rows=500)
         if title_source == "user":
             db.set_session_title(new_key, title)
         else:
             db.set_auto_title(new_key, title, source=title_source)
-        sync_flushed_message_markers(history, rows)
+        sync_flushed_message_markers(live, rows)
+        if seed_record is not None:
+            seed_record.pop("_branch_seed_pending", None)
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
         if compensate and not is_disk_full_error(exc):
+            compensated = False
             try:
-                db.discard_unadmitted_session(new_key)
+                compensated = db.discard_unadmitted_session(new_key) is True
             except Exception:
                 logger.debug("branch seed compensation delete failed for %s", new_key, exc_info=True)
+            if seed_record is not None:
+                seed_record["_fresh_generated_key"] = compensated
+                seed_record["_seed_compensation_unverified"] = not compensated
+                if compensated:
+                    seed_record.pop("_branch_seed_pending", None)
         raise
 
 
@@ -286,7 +292,8 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
             _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
                             source=source, cwd=None if _is_remote_launch_cwd(record) else record["cwd"],
                             profile_name=profile_name_for_home(profile_home) or _current_profile_name(),
-                            model=_session_default_route(record)[0], compensate=True, title_source="derived", user_id=_session_auth_user_id(record))
+                            model=_session_default_route(record)[0], compensate=True, title_source="derived",
+                            user_id=_session_auth_user_id(record), seed_record=record)
             record["pending_title"] = None
             # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
             record["_branch_seed_persisted"] = True
@@ -323,6 +330,8 @@ def _seed_row(record: dict) -> None:
                     compensated = db.discard_unadmitted_session(key) is True
         except Exception:
             logger.warning("seed compensation could not be verified for %s", key, exc_info=True)
+        if compensated:
+            record.pop("_branch_seed_pending", None)
         if was_fresh:
             if compensated:
                 record["_fresh_generated_key"] = True

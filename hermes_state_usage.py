@@ -182,8 +182,9 @@ class _TokenBatchWriteReceipt:
         if (not rollback_succeeded or not transaction_active
                 or (commit_attempted and not commit_rollback_proven)):
             self._unknown = True
-        elif (not self._committed and not self._unknown
-              and isinstance(error, sqlite3.Error)):
+        elif not self._committed and not self._unknown:
+            # Settlement comes from the active transaction's verified rollback,
+            # not from the exception class raised by its callback.
             self._retryable_error = error
 
     def retryable_lock_timeout(self, error):
@@ -476,37 +477,18 @@ class SessionUsageMixin:
         if timeout <= 0:
             return False
         deadline = time.monotonic() + timeout
-        batch = None
-        if not self._token_queue_cond.acquire(timeout=max(0.0, deadline - time.monotonic())):
-            return False
         try:
-            try:
-                if self._token_writer_uncertain:
+            while True:
+                if not self._token_queue_cond.acquire(timeout=max(0.0, deadline - time.monotonic())):
                     return False
-                if not self._token_queue and not self._token_writer_busy:
-                    try:
-                        self._release_idle_token_marker()
-                    except Exception:
-                        logger.warning("Cannot release idle accounting marker", exc_info=True)
-                        return False
-                while self._token_queue or self._token_writer_busy:
-                    if self._token_writer_uncertain:
-                        return False
-                    # A live writer is authoritative even when stop-flagged: draining here would
-                    # race its in-flight batch and reorder deltas (breaking last-non-None-wins /
-                    # first-accounted-route / COALESCE-backfill fields). Only a dead writer lets
-                    # the caller take leftovers; a claimed busy means "wait".
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        return False
-                    thread = self._token_writer_thread
-                    if (thread is None or not thread.is_alive()) and not self._token_writer_busy:
-                        batch = self._claim_token_batch_locked()
-                        break
-                    self._token_queue_cond.wait(remaining)
-            finally:
-                self._token_queue_cond.release()
-            if batch:
+                try:
+                    batch = self._wait_or_claim_token_batch(deadline)
+                finally:
+                    self._token_queue_cond.release()
+                if batch is None:
+                    return False
+                if not batch:
+                    return True
                 previous_deadline = getattr(self._token_batch_write_context, "deadline", None)
                 self._token_batch_write_context.deadline = deadline
                 try:
@@ -514,14 +496,36 @@ class SessionUsageMixin:
                         return False
                 finally:
                     self._token_batch_write_context.deadline = previous_deadline
-                with self._token_queue_cond:
-                    return not (self._token_queue or self._token_writer_busy
-                                or self._token_writer_uncertain or self._token_pending_marker is not None)
-            return True
+                # A respawned writer can claim work accepted during our drain. Rejoin
+                # the same deadline-bound barrier rather than snapshotting its busy flag.
 
         finally:
             if self._token_writer_claim_owner == threading.get_ident():
                 self._quarantine_abandoned_claim()
+
+    def _wait_or_claim_token_batch(self, deadline):
+        """Under the queue condition, return a claim, [] for settled, or None for failure."""
+        while True:
+            if self._token_writer_uncertain:
+                return None
+            if not self._token_queue and not self._token_writer_busy:
+                try:
+                    self._release_idle_token_marker()
+                except Exception:
+                    logger.warning("Cannot release idle accounting marker", exc_info=True)
+                    return None
+                return []
+            # A live writer is authoritative even when stop-flagged: draining here would
+            # race its in-flight batch and reorder deltas (breaking last-non-None-wins /
+            # first-accounted-route / COALESCE-backfill fields). Only a dead writer lets
+            # the caller take leftovers; a claimed busy means "wait".
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            thread = self._token_writer_thread
+            if (thread is None or not thread.is_alive()) and not self._token_writer_busy:
+                return self._claim_token_batch_locked()
+            self._token_queue_cond.wait(remaining)
 
     def _token_writer_loop(self) -> None:
         while True:
@@ -591,8 +595,10 @@ class SessionUsageMixin:
                     return coalesced[index:]
                 except BaseException as exc:
                     if receipt.proves_unapplied(exc):
+                        if not isinstance(exc, Exception):
+                            raise _TokenBatchInterrupted(exc, [], coalesced[index:]) from exc
                         logger.warning(
-                            "async token accounting: SQLite write timed out before commit; "
+                            "async token accounting: write proven unapplied; "
                             "retaining the unapplied delta and suffix (session=%s)", session_id)
                         return coalesced[index:]
                     # A callback interruption or ambiguous commit may have persisted this item.

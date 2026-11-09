@@ -1,7 +1,7 @@
 # Catalog entry for Google Workspace for Hermes (plugin v0.3.0).
 name: google-workspace
 repo: https://github.com/francoleff/google-workspace-hermes
-sha: 84212b76e6dbc2a8dfb7b24d09e71407361d88bb
+sha: a423e94e085705f57a316bea732b97d3cd58a478
 description: Gmail, Calendar, Drive, Docs, Sheets and Contacts in one Hermes workspace, with cross-app briefs and approval on every write.
 maintainer: francoleff
 tier: community

@@ -625,6 +625,7 @@ gateway:
     action_always: "Ceadaigh i gCónaí"
     action_deny: "Diúltaigh"
     deadline: "Mura bhfreagraíonn tú laistigh de {window}, NÍ rithfear é."
+    not_requester: "Ní féidir ach le {requester} an cead seo a fhreagairt."
     text_choice_once: "Freagair `{prefix}approve` chun é a rith uair amháin"
     text_choice_session: "`{prefix}approve session` chun an patrún seo a cheadú don chuid eile den seisiún seo"
     text_choice_always: "`{prefix}approve always` chun é a cheadú go buan"
@@ -632,6 +633,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", nó {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Réamhamharc giorraithe: tá an t-ordú iomlán ({total} carachtar) sa teachtaireacht thuas."
+    truncated_deny_only: "Réamhamharc giorraithe ({total} carachtar) agus níorbh fhéidir an t-ordú iomlán a thaispeáint anseo, mar sin níl ach Diúltaigh ar fáil. Athbhreithnigh é sa CLI nó san aip Desktop."
+    text_prompt_deny_only: "Tá an leid cheadaithe iomlán rófhada don ardán seo, mar sin níl ach Diúltaigh ar fáil. Athbhreithnigh é sa CLI nó san aip Desktop."
   notify:
     media_kind:
       audio: "fuaime"
@@ -974,9 +978,6 @@ platform:
     approved: "✅ Ceadaithe."
     denied: "❌ Diúltaithe."
     approval_expired: "⌛ Tá an cead imithe in éag — níor ritheadh an t-ordú (chuaigh sé thar am cheana nó réitíodh é in áit eile)."
-  yuanbao:
-    slow_response_notice: "Tá an tasc seo beagán casta — táim fós ag obair air, fan go fóill le do thoil..."
-    owner_command_denied: "⚠️ Níl {command} ar fáil ach don chruthaitheoir i mód comhrá phríobháidigh"
   shared:
     truncated_suffix: "\n...(giorraithe)"
     unknown: "anaithnid"
@@ -1710,10 +1711,10 @@ slash:
     description: "Scoir den CLI (úsáid --delete chun stair an tseisiúin a bhaint freisin)"
 cli:
   backtrack:
-    title: "↺ Athchas — roghnaigh leid níos luaithe"
-    keys_hint: "↑/↓ roghnaigh · Enter cuir in eagar & athsheol · f gabhlaigh ón áit seo · Esc dún"
-    preview_label: "Leid {number} as {total}:"
-    more_lines: "… ({count} líne eile)"
+    title: "↺ Tras-scríbhinn — roghnaigh leid le cur in eagar"
+    keys_hint: "Ag brabhsáil na tras-scríbhinne · ↑↓/jk scrollaigh · ←→/hl leideanna · ↵ cuir in eagar · f gabhlaigh · esc siar"
+    prime_hint: "esc arís chun an teachtaireacht roimhe seo a chur in eagar"
+    no_previous: "Níl aon teachtaireacht roimhe seo le cur in eagar."
     editing_hint: "↺ Leid {number} á cur in eagar — athchasann Enter go dtí seo agus seolann · cealaíonn Esc Esc"
     edit_cancelled: "↺ Athchasadh cealaithe; níor baineadh aon rud."
     rewound: "↺ Athchasta go leid {number} ({count} teachtaireacht curtha i gcartlann); an t-eagarthóireacht á seoladh."
@@ -3981,3 +3982,8 @@ plan_usage:
   large_notice_limit: "Samhail mhór: tá do theorainn {name} bainte amach ({resets})."
   large_notice_limit_stops: "Samhail mhór: tá do theorainn {name} bainte amach ({resets}), mar sin ní rithfidh sí go dtí sin."
   large_notice_percent: "Samhail mhór: úsáideann sí níos mó de d’úsáid plean in aghaidh na teachtaireachta. Teorainn mhíosúil na samhlacha móra: {percent} úsáidte."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Comhaid a athraíodh sna seal a cealaíodh: {files}. Rith /rollback chun seicphointí a liostú agus ceann a athchóiriú."
+    more: "+{count} eile"

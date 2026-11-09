@@ -625,6 +625,7 @@ gateway:
     action_always: "永久允許"
     action_deny: "拒絕"
     deadline: "若你在 {window} 內未回應，指令將「不會」執行。"
+    not_requester: "只有 {requester} 可以回應此核准請求。"
     text_choice_once: "回覆 `{prefix}approve` 執行一次"
     text_choice_session: "`{prefix}approve session` 在本次工作階段內允許此模式"
     text_choice_always: "`{prefix}approve always` 永久允許"
@@ -632,6 +633,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: "，或 {choice}。\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}：{reason}\n\n"
+    truncated_full_above: "預覽已截斷：完整指令（{total} 個字元）在上方的訊息中。"
+    truncated_deny_only: "預覽已截斷（{total} 個字元），且無法在此顯示完整指令，因此只提供拒絕。請在 CLI 或桌面應用程式中查看。"
+    text_prompt_deny_only: "完整的核准提示對此平台而言過長，因此只提供拒絕。請在 CLI 或桌面應用程式中查看。"
   notify:
     media_kind:
       audio: "音訊"
@@ -974,9 +978,6 @@ platform:
     approved: "✅ 已批准。"
     denied: "❌ 已拒絕。"
     approval_expired: "⌛ 批准已逾期 — 指令未執行（已逾時或已在其他地方處理）。"
-  yuanbao:
-    slow_response_notice: "這個任務比較複雜 — 仍在處理中，請稍候..."
-    owner_command_denied: "⚠️ {command} 僅限建立者在私聊模式下使用"
   shared:
     truncated_suffix: "\n...（已截斷）"
     unknown: "未知"
@@ -1710,10 +1711,10 @@ slash:
     description: "離開 CLI（加上 --delete 同時移除工作階段歷史）"
 cli:
   backtrack:
-    title: "↺ 回溯 — 選擇先前的提示"
-    keys_hint: "↑/↓ 選擇 · Enter 編輯並重新傳送 · f 從此處分支 · Esc 關閉"
-    preview_label: "提示 {number} / {total}:"
-    more_lines: "…(還有 {count} 行)"
+    title: "↺ 對話紀錄 — 選擇要編輯的提示"
+    keys_hint: "瀏覽對話紀錄 · ↑↓/jk 捲動 · ←→/hl 提示 · ↵ 編輯 · f 分支 · esc 返回"
+    prime_hint: "再按一次 esc 以編輯上一則訊息"
+    no_previous: "沒有可編輯的上一則訊息。"
     editing_hint: "↺ 正在編輯提示 {number} — Enter 回溯至此並傳送 · Esc Esc 取消"
     edit_cancelled: "↺ 已取消回溯;未移除任何內容。"
     rewound: "↺ 已回溯至提示 {number}(已封存 {count} 則訊息);正在傳送編輯內容。"
@@ -3981,3 +3982,8 @@ plan_usage:
   large_notice_limit: "大型模型：已達{name}上限（{resets}）。"
   large_notice_limit_stops: "大型模型：已達{name}上限（{resets}），在此之前無法執行。"
   large_notice_percent: "大型模型：每則訊息消耗更多方案用量。每月大型模型上限：已用 {percent}。"
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ 已復原回合中變更的檔案：{files}。執行 /rollback 列出檢查點並還原其中一個。"
+    more: "另外 {count} 個"

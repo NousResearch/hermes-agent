@@ -1,132 +1,17 @@
-"""FTS5 index setup for SessionDB: the CJK-bigram (cjk_unicode61) index DDL and
-tokenizer loader, per-table schema ensure with tokenizer-capability fallback,
+"""FTS5 index setup for SessionDB: per-table schema ensure with tokenizer-capability fallback,
 FTS-scoped corruption detection and the atomic fail-open trigger detach."""
 
 import logging
-import os
 import re
 import sqlite3
 import time
-from pathlib import Path
 from typing import Sequence
 
-from hermes_constants import get_hermes_home
-from hermes_state_common import (FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_TRIGRAM_SQL, _FTS_CJK_TRIGGERS,
-    _FTS_TRIGGERS, routed_sessions_setting)
+from hermes_state_common import FTS_SQL, FTS_STALE_KEY, FTS_TRIGRAM_SQL, _FTS_TRIGGERS
 from hermes_state_errors import is_fts_scoped_corruption_error, is_sqlite_lock_error
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
-
-# ── CJK-bigram FTS index (replaces the trigram index when available) ────
-# Trigram needs >=3 chars per term, so 1-2 char CJK terms fell through to a LIKE
-# table scan; ``cjk_unicode61`` (native/fts5_cjk/, loadable) re-emits CJK runs as
-# overlapping bigrams. Same v23 discipline as the trigram table: external-content
-# over a tool-row-excluding view, triggers gated on a DEDICATED marker pair
-# (fts_cjk_rebuild_high_water / _progress). The table exists ONLY when the
-# tokenizer loads; a process that cannot load it drops the cjk triggers (writes
-# keep working; the index goes stale until the next optimize-storage).
-#
-# Split DDL: the table/view is safe to ensure any time; triggers are created ONLY
-# while the index is complete-or-marker-gated. A stale index must keep its
-# triggers DROPPED — an external-content 'delete' for a rowid the index never
-# held is the canonical FTS5 corruption hazard.
-# The trigram tokenizer needs >=3 chars per query term, so 1-2 char CJK terms (ubiquitous in Korean/Chinese:
-# 일본, 구글, 项目, ...) fall through to a LIKE full-table scan — measured 3-6s CPU per query on multi-GB installs
-# and the dominant base cost of session_search on CJK workloads. ``cjk_unicode61`` (native/fts5_cjk/, a
-# ~250-line loadable FTS5 tokenizer with no dependencies) wraps unicode61: maximal CJK runs are re-emitted
-# as overlapping character bigrams (Lucene CJKAnalyzer semantics), everything else passes through unchanged.
-# FTS5 phrase semantics turn a query term's consecutive bigrams into exact substring matching down to 2
-# chars at index speed. Contributed by Soju06 (PR #65544).
-FTS_CJK_TABLE_SQL = """
-CREATE VIEW IF NOT EXISTS messages_fts_cjk_src AS
-    SELECT id, role, content, tool_name, tool_calls
-    FROM messages
-    WHERE role <> 'tool';
-
-CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_cjk USING fts5(
-    content,
-    tool_name,
-    tool_calls,
-    content='messages_fts_cjk_src',
-    content_rowid='id',
-    tokenize='cjk_unicode61'
-);
-"""
-
-FTS_CJK_TRIGGER_SQL = """
-CREATE TRIGGER IF NOT EXISTS messages_fts_cjk_insert AFTER INSERT ON messages
-WHEN new.role <> 'tool'
-   AND (new.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-                           WHERE key = 'fts_cjk_rebuild_high_water'), -1)
-     OR new.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-                            WHERE key = 'fts_cjk_rebuild_progress'), -1))
-BEGIN
-    INSERT INTO messages_fts_cjk(rowid, content, tool_name, tool_calls)
-    VALUES (new.id, new.content, new.tool_name, new.tool_calls);
-END;
-
-CREATE TRIGGER IF NOT EXISTS messages_fts_cjk_delete AFTER DELETE ON messages
-WHEN old.role <> 'tool'
-   AND (old.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-                           WHERE key = 'fts_cjk_rebuild_high_water'), -1)
-     OR old.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-                            WHERE key = 'fts_cjk_rebuild_progress'), -1))
-BEGIN
-    INSERT INTO messages_fts_cjk(messages_fts_cjk, rowid, content, tool_name, tool_calls)
-    VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
-END;
-
-CREATE TRIGGER IF NOT EXISTS messages_fts_cjk_update
-AFTER UPDATE OF content, tool_name, tool_calls, role ON messages
-WHEN (old.content IS NOT new.content
-    OR old.tool_name IS NOT new.tool_name
-    OR old.tool_calls IS NOT new.tool_calls
-    OR old.role IS NOT new.role)
-   AND (old.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-                           WHERE key = 'fts_cjk_rebuild_high_water'), -1)
-     OR old.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-                            WHERE key = 'fts_cjk_rebuild_progress'), -1))
-BEGIN
-    INSERT INTO messages_fts_cjk(messages_fts_cjk, rowid, content, tool_name, tool_calls)
-    SELECT 'delete', old.id, old.content, old.tool_name, old.tool_calls
-    WHERE old.role <> 'tool';
-    INSERT INTO messages_fts_cjk(rowid, content, tool_name, tool_calls)
-    SELECT new.id, new.content, new.tool_name, new.tool_calls
-    WHERE new.role <> 'tool';
-END;
-"""
-
-
-def fts5_cjk_so_path() -> Path:
-    """Location of the cjk_unicode61 loadable extension."""
-    env = os.getenv("HERMES_FTS5_CJK_SO")
-    return Path(env).expanduser() if env else get_hermes_home() / "lib" / "libfts5_cjk.so"
-
-
-def _cjk_fts_config_enabled() -> bool:
-    """config.yaml ``sessions.cjk_fts`` (default on) for the profile being served."""
-    value = routed_sessions_setting("cjk_fts", "HERMES_CJK_FTS")
-    return value is None or str(value).strip().lower() not in ("0", "false", "off", "no")
-
-
-def load_fts5_cjk_extension(conn: sqlite3.Connection) -> bool:
-    """Best-effort load of the cjk_unicode61 tokenizer; False (never raises) when
-    the .so is absent, ``sessions.cjk_fts`` is off, or loading is compiled out."""
-    path = fts5_cjk_so_path()
-    if not _cjk_fts_config_enabled() or not path.exists():
-        return False
-    try:
-        conn.enable_load_extension(True)
-        try:
-            conn.load_extension(str(path))
-        finally:
-            conn.enable_load_extension(False)
-        return True
-    except Exception:
-        logger.warning("fts5_cjk extension load failed (%s)", path, exc_info=True)
-        return False
-
 
 _FTS_DDL_TABLES = ("messages_fts", "messages_fts_trigram")
 
@@ -210,7 +95,7 @@ def fts_layout_drift(cursor: sqlite3.Cursor) -> list[str]:
 
     Shared by the update notice, doctor and optimize-storage's demote decision. An absent table is not drift
     (the trigram index is optional; the base index is created on open), nor is a base index the next open
-    realigns, nor a definition this code does not recognise. The cjk index owns its own markers.
+    realigns, nor a definition this code does not recognise.
     """
     return [table for table, stored in _stored_vtables(cursor).items()
             if _is_older_layout(table, stored)
@@ -277,6 +162,68 @@ def _drop_orphan_fts_shadow_tables(cursor: sqlite3.Cursor, families: Sequence[st
     return repaired
 
 
+_RETIRED_CJK_TRIGGERS = ("messages_fts_cjk_insert", "messages_fts_cjk_delete", "messages_fts_cjk_update")
+_RETIRED_CJK_OBJECTS = (*_RETIRED_CJK_TRIGGERS, "messages_fts_cjk_src", "messages_fts_cjk",
+                        *(f"messages_fts_cjk_{suffix}" for suffix in _FTS5_SHADOW_SUFFIXES))
+
+
+def retired_cjk_index_present(cursor: sqlite3.Cursor) -> bool:
+    """True when an object of the ``messages_fts_cjk`` index an earlier release built is still in the schema."""
+    return cursor.execute(
+        f"SELECT 1 FROM sqlite_master WHERE name IN ({','.join('?' for _ in _RETIRED_CJK_OBJECTS)}) LIMIT 1",
+        _RETIRED_CJK_OBJECTS,
+    ).fetchone() is not None
+
+
+def drop_retired_cjk_index(cursor: sqlite3.Cursor) -> bool:
+    """Remove the ``messages_fts_cjk`` index an earlier release built with the loadable cjk_unicode61
+    tokenizer, and its markers. The shadow tables are renamed into the FTS trash, which
+    ``optimize_fts_storage`` empties in chunks. Idempotent; True when anything was removed.
+    Reuse a caller's transaction without committing it; otherwise own the atomic retirement."""
+    if not retired_cjk_index_present(cursor):
+        return False
+    owns_transaction = not cursor.connection.in_transaction
+    if owns_transaction:
+        cursor.execute("BEGIN IMMEDIATE")
+    try:
+        removed = _stage_retired_cjk_index(cursor)
+        if owns_transaction:
+            cursor.connection.commit()
+        return removed
+    except BaseException:
+        if owns_transaction:
+            cursor.connection.rollback()
+        raise
+
+
+def _stage_retired_cjk_index(cursor: sqlite3.Cursor) -> bool:
+    """Recheck after acquiring the write lock: another opener may have finished retirement."""
+    if not retired_cjk_index_present(cursor):
+        return False
+    # Triggers first: they call the tokenizer, so while they exist every outside write to messages fails.
+    for trigger in _RETIRED_CJK_TRIGGERS:
+        cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+    cursor.execute("DROP VIEW IF EXISTS messages_fts_cjk_src")
+    cursor.execute(
+        "DELETE FROM state_meta WHERE key IN ('fts_cjk_stale', 'fts_cjk_rebuild_high_water', 'fts_cjk_rebuild_progress')"
+    )
+    # DROP TABLE needs the tokenizer before SQLite 3.47 and deletes every page under the write lock.
+    cursor.execute("PRAGMA writable_schema=ON")
+    cursor.execute("DELETE FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts_cjk'")
+    cursor.execute("PRAGMA writable_schema=RESET")
+    # Nothing references the shadow tables once the triggers and view are gone, so the rename need not re-parse
+    # the schema; the modern rename does, and fails on another index whose tokenizer this build lacks (trigram).
+    cursor.execute("PRAGMA legacy_alter_table=ON")
+    try:
+        for suffix in _FTS5_SHADOW_SUFFIXES:
+            shadow = f"messages_fts_cjk_{suffix}"
+            if cursor.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (shadow,)).fetchone():
+                cursor.execute(f"ALTER TABLE {shadow} RENAME TO {SessionFtsSetupMixin._FTS_TRASH_PREFIX}{shadow}")
+    finally:
+        cursor.execute("PRAGMA legacy_alter_table=OFF")
+    return True
+
+
 class SessionFtsSetupMixin:
     """FTS table/trigger lifecycle shared by schema init, optimize and the write path."""
 
@@ -288,10 +235,9 @@ class SessionFtsSetupMixin:
 
     @staticmethod
     def _is_trigram_unavailable_error(exc: sqlite3.OperationalError) -> bool:
-        """Only an optional tokenizer is missing (trigram needs SQLite >= 3.34;
-        cjk_unicode61 is loadable): "this one index can't be served", never "disable FTS"."""
-        err = str(exc).lower()
-        return "no such tokenizer: trigram" in err or "no such tokenizer: cjk_unicode61" in err
+        """Only the trigram tokenizer is missing (it needs SQLite >= 3.34): "this one index can't be served",
+        never "disable FTS"."""
+        return "no such tokenizer: trigram" in str(exc).lower()
 
     @staticmethod
     def _db_has_legacy_inline_fts(cursor: sqlite3.Cursor) -> bool:
@@ -348,83 +294,6 @@ class SessionFtsSetupMixin:
             self.db_path,
             exc,
         )
-
-    def _ensure_fts_cjk_schema(self, cursor) -> None:
-        """Create / repair / self-heal the CJK-bigram index (see the module comment).
-        Sets ``_fts_cjk_available``; never raises. Loaded + absent → create (a
-        populated DB gets backfill markers and is NOT served until optimize-storage
-        backfills); loaded + present → ensure triggers, honour the stale breadcrumb;
-        NOT loaded + live triggers → drop them (INSERTs must not fail at trigger time)."""
-        try:
-            cjk_present = bool(cursor.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts_cjk'"
-            ).fetchone())
-            if not self._fts_cjk_loaded:
-                if cjk_present:
-                    live = [r[0] for r in cursor.execute(
-                        "SELECT name FROM sqlite_master WHERE type = 'trigger' "
-                        f"AND name IN ({','.join('?' for _ in _FTS_CJK_TRIGGERS)})",
-                        _FTS_CJK_TRIGGERS,
-                    ).fetchall()]
-                    if live:
-                        # Breadcrumb FIRST (a crash between the two is merely conservative).
-                        logger.warning(
-                            "messages_fts_cjk triggers present but the "
-                            "cjk_unicode61 tokenizer is unavailable (%s) — "
-                            "dropping the cjk triggers so message writes keep "
-                            "working. CJK search falls back to trigram/LIKE; "
-                            "run `hermes sessions optimize-storage` on a host "
-                            "with the extension to rebuild.",
-                            fts5_cjk_so_path(),
-                        )
-                        cursor.execute(
-                            "INSERT INTO state_meta (key, value) VALUES (?, '1') "
-                            "ON CONFLICT(key) DO UPDATE SET value = '1'",
-                            (FTS_CJK_STALE_KEY,),
-                        )
-                        for trig in live:
-                            cursor.execute(f"DROP TRIGGER IF EXISTS {trig}")
-                self._fts_cjk_available = False
-                return
-        except sqlite3.OperationalError:
-            logger.warning(
-                "messages_fts_cjk presence check failed; CJK search stays on "
-                "trigram/LIKE", exc_info=True,
-            )
-            self._fts_cjk_available = False
-            return
-        try:
-            cursor.executescript(FTS_CJK_TABLE_SQL)
-            if not cjk_present:
-                # An old stale breadcrumb refers to a table that no longer exists.
-                cursor.execute("DELETE FROM state_meta WHERE key = ?", (FTS_CJK_STALE_KEY,))
-                # Empty DB: complete by construction, no markers. Populated DB: the
-                # marker pair keeps the id-gated triggers correct until backfill.
-                if cursor.execute("SELECT COUNT(*) FROM messages WHERE role <> 'tool'").fetchone()[0] > 0:
-                    hw = cursor.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
-                    for k, v in (
-                        ("fts_cjk_rebuild_high_water", str(hw)), ("fts_cjk_rebuild_progress", "0"),
-                    ):
-                        cursor.execute(
-                            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
-                            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                            (k, v),
-                        )
-            if cursor.execute("SELECT 1 FROM state_meta WHERE key = ?", (FTS_CJK_STALE_KEY,)).fetchone():
-                # Gap of unknown extent: do NOT reinstall triggers (see module comment).
-                self._fts_cjk_available = False
-                return
-            cursor.executescript(FTS_CJK_TRIGGER_SQL)
-            backfill_pending = cursor.execute(
-                "SELECT 1 FROM state_meta WHERE key = 'fts_cjk_rebuild_high_water' LIMIT 1"
-            ).fetchone()
-            self._fts_cjk_available = not backfill_pending
-        except sqlite3.OperationalError:  # incl. "no such tokenizer" after a failed registration
-            logger.warning(
-                "messages_fts_cjk ensure failed; CJK search stays on "
-                "trigram/LIKE", exc_info=True,
-            )
-            self._fts_cjk_available = False
 
     @staticmethod
     def _drop_fts_triggers(cursor: sqlite3.Cursor) -> None:
@@ -493,18 +362,6 @@ class SessionFtsSetupMixin:
                             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                             (FTS_STALE_KEY,),
                         )
-                        cjk_triggers_present = self._conn.execute(
-                            "SELECT 1 FROM sqlite_master WHERE type = 'trigger' "
-                            f"AND name IN ({','.join('?' for _ in _FTS_CJK_TRIGGERS)}) "
-                            "LIMIT 1",
-                            _FTS_CJK_TRIGGERS,
-                        ).fetchone()
-                        if cjk_triggers_present:
-                            self._conn.execute(
-                                "INSERT INTO state_meta (key, value) VALUES (?, '1') "
-                                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                                (FTS_CJK_STALE_KEY,),
-                            )
                         self._drop_all_fts_triggers(self._conn.cursor())
                         self._conn.commit()
                     except BaseException:
@@ -525,7 +382,6 @@ class SessionFtsSetupMixin:
         self._fts_stale = True
         self._fts_enabled = False
         self._trigram_available = False
-        self._fts_cjk_available = False
         logger.error(
             "state.db FTS indexes remain corrupt (%s); disabled FTS sync and "
             "retrying the canonical write. Search temporarily uses LIKE until "
@@ -577,6 +433,5 @@ class SessionFtsSetupMixin:
             (self._FTS_TRASH_PREFIX.replace("_", "\\_") + "%",),
         ).fetchone())
 
-    # FTS5 tables merged on optimize; each is probed before touching (trigram may
-    # be disabled, cjk exists only with the loadable tokenizer).
-    _FTS_TABLES = ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
+    # FTS5 tables merged on optimize; each is probed before touching (trigram may be disabled).
+    _FTS_TABLES = ("messages_fts", "messages_fts_trigram")

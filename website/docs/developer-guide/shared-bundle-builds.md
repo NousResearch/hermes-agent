@@ -15,7 +15,7 @@ interfaces, not proof that every distribution passed native acceptance.
 
 Providers retain their package managers and locks. Product builders do not
 install missing dependencies or download inputs. The Node dependency provider
-uses one locked workspace union. Nix supplies its own npm and Python inputs.
+uses one locked workspace union. Nix supplies its own Node and Python inputs.
 Termux supplies bionic tools and wheels. Shared recipes do not imply identical
 bytes, dependency selections, or Python environments across targets.
 
@@ -43,12 +43,12 @@ The current-checkout retry, pulled-checkout, and ZIP update paths all use
 `update_cmd_maint._prepare_updated_checkout`: one PM dependency sync, then a
 fresh process on the selected interpreter for the frontend builds. Build
 failure aborts completion; an existing stale product is not a successful
-update. There is no updater-specific npm cache, fallback install, extra
+update. There is no updater-specific pnpm store, fallback install, extra
 refresh, or memory-provider reinstall. PM owns the complete Python union.
 
 Build a desktop distribution from a clean checkout at its release tag. Start
 with a host Python that can run the entrypoint and Git; preparation acquires the
-pinned Python, Node and npm through PM. Native compilers/SDKs remain host inputs:
+pinned Python, Node and pnpm through PM. Native compilers/SDKs remain host inputs:
 
 ```sh
 python -m scripts.bundles.desktop --tag=vX.Y.Z
@@ -129,7 +129,7 @@ come from the selected revision.
 
 `hermes pm bundle --out /work/agent-payload --ref HEAD` stages native tools,
 the application environment, and the agent. That PM command does not build
-frontends. `npm run payload --workspace apps/desktop` uses the stage driver
+frontends. `pnpm --dir apps/desktop run payload` uses the stage driver
 that includes them. Neither command creates an Electron installer.
 
 ### Split PM Bundle preparation and assembly
@@ -155,10 +155,10 @@ bootstraps or repairs dependencies. The receipt and lock are output siblings
 Assembly deliberately supplies no frontend products, as with `hermes pm bundle`.
 
 The `payload-test` producer on the existing cache action selects only `tools`,
-`python/runtime` and `native`. It excludes source `node_modules`, npm caches,
+`python/runtime` and `native`. It excludes source `node_modules`, pnpm stores,
 icon environments and packagers. PM's managed tool bootstrap still includes Node
-and npm, but does not run desktop `npm ci`. Native compiler identity and Windows
-ARM64 prerequisites use the shared owner once. Cache hits always undergo provider
+and npm, but does not install the desktop workspace dependencies. Native
+compiler identity and Windows ARM64 prerequisites use the shared owner once. Cache hits always undergo provider
 admission; native SDK/compiler prerequisites still belong to the host. PR jobs
 only restore; saves require successful preparation on the default-branch trusted
 lane with no alternate source ref. No signing or publication is added.
@@ -254,13 +254,13 @@ at `/opt/hermes/hermes_cli/web_dist`. The assembler also plants its shared TUI
 asset layout beneath `hermes_cli/tui_dist`. Venv command symlinks preserve the
 paths used by s6 and the privilege-drop shim.
 
-The Docker frontend stage owns npm dependencies and compilation. The runtime
-stage copies only the frontend products and the locked TypeScript package for
+The Docker frontend stage owns pnpm workspace dependencies and compilation. The
+runtime stage copies only the frontend products and the locked TypeScript package for
 runtime linting. Node/npm and Photon's separately installed sidecar dependencies
 remain runtime inputs. Python dependency preparation precedes the application
 source copy. Actual cache-hit and layer-size claims require build evidence.
 
-Nix retains `importNpmLock`, uv2nix, platform overrides, and store references.
+Nix retains `fetchPnpmDeps`, uv2nix, platform overrides, and store references.
 Its builders run during derivation builds, not evaluation. Per-product source
 filters keep frontend, Python, and resource inputs separate. Nix wrappers
 consume the assembler's command map and retain their PATH and extra-Python
@@ -338,8 +338,8 @@ consumers. They are not interchangeable cleanup targets.
 The native cache behavior is in `scripts/bundles/native.py`.
 Removing all caches from a payload can break offline environment reconstruction.
 
-Desktop transport selects PM tool entries, Python download/wheel caches, npm's
-content-addressed downloads, prepared workspace dependencies, and native/package
+Desktop transport selects PM tool entries, Python download/wheel caches, pnpm's
+content-addressable store, prepared workspace dependencies, and native/package
 tool inputs through `scripts/ci/desktop_build_cache.py`. It does not select the
 workdir, virtual environments, live user home, signing tokens, or products.
 The signature-result cache is separate. Native wheel partitions depend on

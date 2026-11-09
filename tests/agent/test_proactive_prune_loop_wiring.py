@@ -195,6 +195,22 @@ class TestProactivePruneLoopWiring:
         assert len(calls) == 3  # one shot per tool iteration
         assert all(t == 120_000 for t in calls)  # fed the real usage reading
 
+    def test_armed_checkpoint_gate_withholds_the_prune(self, agent):
+        """compression.checkpoint_required: no checkpoint precedes the prune's durable
+        rewrite, so the loop never consults it (the control is the test above)."""
+        calls = []
+        agent.compression_checkpoint_required = True
+        # The suppression counter is shared with the on_turn_complete gate; a declared observer
+        # keeps this test about the prune.
+        agent.context_compressor.compacts_outside_compress = False
+        agent.context_compressor.prune_tool_results_only = (
+            lambda messages, current_tokens=None: (calls.append(current_tokens), (messages[:-1], 1))[1]
+        )
+        result = _run_tool_loop(agent, n_tool_iterations=3)
+        assert result["completed"] is True
+        assert calls == []
+        assert agent._checkpoint_gate_suppression_count == 3
+
     def test_committed_prune_replaces_messages(self, agent):
         marker = "[old tool output pruned]"
 

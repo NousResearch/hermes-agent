@@ -236,7 +236,7 @@ Point-in-time copies of `config.yaml` itself (taken before `hermes setup` rewrit
 
 For git installs, Hermes auto-stashes dirty tracked files, plus any untracked file at a path the update adds, before checking out the update branch or pulling. Untracked files the update never writes stay in place. Interactive terminal updates ask whether to keep the changes before stashing anything; answering no deletes them instead of leaving a stash entry behind. Non-interactive updates (desktop/chat app, gateway, or `--yes`) use `updates.non_interactive_local_changes`: `stash` restores local source edits after a successful pull, while `discard` drops the update-created stash after a successful pull. Use `discard` only on managed installs where local source edits are never meant to persist.
 
-Before that stash step, Hermes also restores tracked `package-lock.json` diffs left by npm install/build churn. Commit or manually stash intentional lockfile edits before updating.
+Before that stash step, Hermes also restores tracked `package-lock.json` diffs that npm installs leave in the WhatsApp bridge and Photon sidecar. Commit or manually stash intentional lockfile edits before updating.
 
 ## Terminal Backend Configuration
 
@@ -3225,14 +3225,14 @@ The delegation provider uses the same credential resolution as CLI/gateway start
 
 ## Clarify
 
-Configure how long Hermes waits for a response to a clarifying question. One value covers every surface — the classic CLI modal, the TUI/Desktop card, and the messaging gateway. The canonical key is `agent.clarify_timeout` (default `3600` seconds; `0` or less = unlimited); a legacy top-level `clarify.timeout` is still honored if explicitly set:
+Configure how long Hermes waits for a response to a clarifying question. One value covers every surface — the classic CLI modal, the TUI/Desktop card, and the messaging gateway. The canonical key is `agent.clarify_timeout` (default `90` seconds; `0` or less = unlimited); a legacy top-level `clarify.timeout` is still honored if explicitly set:
 
 ```yaml
 agent:
-  clarify_timeout: 3600        # Seconds to wait for user clarification response (0 or less = unlimited)
+  clarify_timeout: 90          # Seconds to wait for user clarification response (0 or less = unlimited)
 ```
 
-When the timeout expires, the agent unblocks with `"outcome": "timed_out"` (answers the user already locked are kept) and continues on its own. A clarify prompt is never cut by the generic per-tool deadline (`timeouts.tools.sequential_call`); only `agent.clarify_timeout` bounds the wait.
+When the timeout expires, the agent unblocks with `"outcome": "timed_out"` (answers the user already locked are kept) and continues on its own. On a messaging platform, sending any other message instead of an answer cancels the question at once, and the agent carries on with that message. A clarify prompt is never cut by the generic per-tool deadline (`timeouts.tools.sequential_call`); only `agent.clarify_timeout` bounds the wait.
 
 ## Context Files (SOUL.md, AGENTS.md)
 

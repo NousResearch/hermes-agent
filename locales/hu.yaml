@@ -628,6 +628,7 @@ gateway:
     action_always: "Engedélyezés mindig"
     action_deny: "Elutasítás"
     deadline: "Ha {window} alatt nem válaszolsz, NEM fut le."
+    not_requester: "Csak {requester} válaszolhat erre a jóváhagyásra."
     text_choice_once: "Válaszolj `{prefix}approve` az egyszeri futtatáshoz"
     text_choice_session: "`{prefix}approve session` a minta engedélyezéséhez a munkamenet hátralévő részére"
     text_choice_always: "`{prefix}approve always` a végleges engedélyezéshez"
@@ -641,6 +642,9 @@ gateway:
       {command}
       ```
       {reason_label}: {reason}
+    truncated_full_above: "Rövidített előnézet: a teljes parancs ({total} karakter) a fenti üzenetben van."
+    truncated_deny_only: "Rövidített előnézet ({total} karakter), és a teljes parancsot nem lehetett itt megjeleníteni, ezért csak az Elutasítás érhető el. Nézd át a CLI-ben vagy az asztali alkalmazásban."
+    text_prompt_deny_only: "A teljes jóváhagyási kérés túl hosszú ehhez a platformhoz, ezért csak az Elutasítás érhető el. Nézd át a CLI-ben vagy az asztali alkalmazásban."
 
   notify:
     media_kind:
@@ -988,9 +992,6 @@ platform:
     approved: "✅ Jóváhagyva."
     denied: "❌ Elutasítva."
     approval_expired: "⌛ A jóváhagyás lejárt — a parancs nem futott le (időtúllépés, vagy máshol már eldőlt)."
-  yuanbao:
-    slow_response_notice: "Ez a feladat kicsit összetettebb — még dolgozom rajta, kis türelmet..."
-    owner_command_denied: "⚠️ A(z) {command} privát csevegés módban csak a létrehozó számára érhető el"
   shared:
     truncated_suffix: "\n...(csonkolva)"
     unknown: "ismeretlen"
@@ -1727,10 +1728,10 @@ slash:
     description: "Kilépés a CLI-ből (a --delete a munkamenet előzményeit is törli)"
 cli:
   backtrack:
-    title: "↺ Visszatekerés — válassz egy korábbi promptot"
-    keys_hint: "↑/↓ választás · Enter szerkesztés és újraküldés · f elágazás innen · Esc bezárás"
-    preview_label: "{number}. prompt / {total}:"
-    more_lines: "… (még {count} sor)"
+    title: "↺ Átirat — válassz egy szerkesztendő promptot"
+    keys_hint: "Átirat böngészése · ↑↓/jk görgetés · ←→/hl promptok · ↵ szerkesztés · f elágazás · esc vissza"
+    prime_hint: "nyomd meg újra az esc-et az előző üzenet szerkesztéséhez"
+    no_previous: "Nincs szerkeszthető előző üzenet."
     editing_hint: "↺ A(z) {number}. prompt szerkesztése — az Enter idáig teker vissza és elküldi · Esc Esc megszakítja"
     edit_cancelled: "↺ Visszatekerés megszakítva; semmi sem lett eltávolítva."
     rewound: "↺ Visszatekerve a(z) {number}. promptig ({count} üzenet archiválva); a szerkesztés elküldése."
@@ -3998,3 +3999,8 @@ plan_usage:
   large_notice_limit: "Nagy modell: elérted a(z) {name} korlátot ({resets})."
   large_notice_limit_stops: "Nagy modell: elérted a(z) {name} korlátot ({resets}), így addig nem fut."
   large_notice_percent: "Nagy modell: üzenetenként többet használ a csomagodból. Nagy modellekre vonatkozó havi korlát: {percent} felhasználva."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ A visszavont körökben módosított fájlok: {files}. Futtasd a /rollback parancsot az ellenőrzőpontok listázásához és egy visszaállításához."
+    more: "+{count} további"

@@ -625,6 +625,7 @@ gateway:
     action_always: "Дозволяти завжди"
     action_deny: "Відхилити"
     deadline: "Якщо ви не відповісте протягом {window}, команду НЕ буде виконано."
+    not_requester: "Відповісти на цей запит може лише {requester}."
     text_choice_once: "Відповідайте `{prefix}approve`, щоб виконати один раз"
     text_choice_session: "`{prefix}approve session`, щоб дозволити цей шаблон до кінця сеансу"
     text_choice_always: "`{prefix}approve always`, щоб дозволити назавжди"
@@ -632,6 +633,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", або {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Попередній перегляд скорочено: повна команда ({total} символів) — у повідомленні вище."
+    truncated_deny_only: "Попередній перегляд скорочено ({total} символів), і повну команду не вдалося показати тут, тому доступно лише «Відхилити». Перегляньте її в CLI або в настільному застосунку."
+    text_prompt_deny_only: "Повний запит на підтвердження задовгий для цієї платформи, тому доступно лише «Відхилити». Перегляньте його в CLI або в настільному застосунку."
   notify:
     media_kind:
       audio: "аудіо"
@@ -974,9 +978,6 @@ platform:
     approved: "✅ Схвалено."
     denied: "❌ Відхилено."
     approval_expired: "⌛ Час схвалення минув — команду не виконано (час уже вичерпано або її вирішено в іншому місці)."
-  yuanbao:
-    slow_response_notice: "Це завдання трохи складніше — я ще працюю над ним, зачекайте, будь ласка..."
-    owner_command_denied: "⚠️ {command} доступна лише творцеві в режимі приватного чату"
   shared:
     truncated_suffix: "\n...(скорочено)"
     unknown: "невідомо"
@@ -1710,10 +1711,10 @@ slash:
     description: "Вийти з CLI (--delete також видаляє історію сеансу)"
 cli:
   backtrack:
-    title: "↺ Відкат — виберіть попередній запит"
-    keys_hint: "↑/↓ вибір · Enter редагувати й надіслати знову · f відгалузитися звідси · Esc закрити"
-    preview_label: "Запит {number} з {total}:"
-    more_lines: "… (ще рядків: {count})"
+    title: "↺ Стенограма — виберіть запит для редагування"
+    keys_hint: "Перегляд стенограми · ↑↓/jk прокрутка · ←→/hl запити · ↵ редагувати · f відгалузити · esc назад"
+    prime_hint: "натисніть esc ще раз, щоб редагувати попереднє повідомлення"
+    no_previous: "Немає попереднього повідомлення для редагування."
     editing_hint: "↺ Редагування запиту {number} — Enter відкочує сюди й надсилає · Esc Esc скасовує"
     edit_cancelled: "↺ Відкат скасовано; нічого не видалено."
     rewound: "↺ Відкочено до запиту {number} (повідомлень в архіві: {count}); надсилання зміненого запиту."
@@ -3981,3 +3982,8 @@ plan_usage:
   large_notice_limit: "Велика модель: досягнуто {name} ({resets})."
   large_notice_limit_stops: "Велика модель: досягнуто {name} ({resets}), до скидання вона не запуститься."
   large_notice_percent: "Велика модель: витрачає більше ліміту плану на повідомлення. Місячний ліміт великих моделей: використано {percent}."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Файли, змінені у скасованих ходах: {files}. Виконайте /rollback, щоб переглянути контрольні точки й відновити одну."
+    more: "ще {count}"

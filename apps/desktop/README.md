@@ -84,28 +84,32 @@ shortcut helper. Prebuilt installers include it; no compiler is needed at runtim
 Want to hack on the app itself? Install workspace deps from the repo root once, then run the dev server from this directory:
 
 ```bash
-npm install          # from repo root — links apps/desktop, web, apps/shared
+pnpm install         # from repo root — links apps/desktop, web, apps/shared
 cd apps/desktop
-npm run dev          # Vite renderer + Electron, which boots the Python backend
+pnpm run dev         # Vite renderer + Electron, which boots the Python backend
 ```
+
+`just desktop` runs the same dev server from the repository root.
+
+On Windows x64, the first `pnpm run dev` (and `profile:main`) fetches `get-windows`' native binding into `node_modules`, because the dependency install skips its script; if that fails or takes over two minutes, dev starts without `read_window_below` and retries next time. That fetch reads a mirror or proxy only from the environment (`npm_config_node_get_windows_binary_host_mirror`, `HTTP_PROXY` or `npm_config_proxy`), not from `.npmrc`.
 
 Point the app at a specific source checkout, or sandbox it away from your real config:
 
 ```bash
 # throwaway HERMES_HOME, separate Electron userData, distinct app name to avoid the single-instance lock
-../../scripts/dev-sandbox.sh npm run dev
-HERMES_DESKTOP_HERMES_ROOT=/path/to/clone npm run dev
-HERMES_HOME=$HOME/.hermes/cache/scratch/throwaway npm run dev
-npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
+../../scripts/dev-sandbox.sh pnpm run dev
+HERMES_DESKTOP_HERMES_ROOT=/path/to/clone pnpm run dev
+HERMES_HOME=$HOME/.hermes/cache/scratch/throwaway pnpm run dev
+pnpm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 ```
 
 ### Building installers
 
 ```bash
-npm run dist:mac     # DMG + zip
-npm run dist:win     # MSIX
-npm run dist:linux   # AppImage + deb + rpm
-npm run pack         # unpacked app under release/ (no installer)
+pnpm run dist:mac     # DMG + zip
+pnpm run dist:win     # MSIX
+pnpm run dist:linux   # AppImage + deb + rpm
+pnpm run pack         # unpacked app under release/ (no installer)
 ```
 
 These are ordinary packaging commands, not complete tagged payload builds.
@@ -217,14 +221,14 @@ and retained background sockets continue receiving events from running jobs.
 Run before opening a PR (lint may surface pre-existing warnings but must exit cleanly):
 
 ```bash
-npm run fix
-npm run typecheck
-npm run lint
-npm run test:ui
-npm run test:desktop:platforms
+pnpm run fix
+pnpm run typecheck
+pnpm run lint
+pnpm run test:ui
+pnpm run test:desktop:platforms
 ```
 
-Run `npm run test:desktop:all` for install, boot, update, packaging, or other
+Run `pnpm run test:desktop:all` for install, boot, update, packaging, or other
 release-path changes.
 
 ### Troubleshooting

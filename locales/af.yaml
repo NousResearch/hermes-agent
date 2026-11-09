@@ -625,6 +625,7 @@ gateway:
     action_always: "Altyd toelaat"
     action_deny: "Weier"
     deadline: "As jy nie binne {window} antwoord nie, sal dit NIE uitgevoer word nie."
+    not_requester: "Slegs {requester} kan hierdie goedkeuring beantwoord."
     text_choice_once: "Antwoord `{prefix}approve` om dit eenmalig uit te voer"
     text_choice_session: "`{prefix}approve session` om hierdie patroon vir die res van hierdie sessie toe te laat"
     text_choice_always: "`{prefix}approve always` om dit permanent toe te laat"
@@ -632,6 +633,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", of {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Voorskou verkort: die volledige opdrag ({total} karakters) is in die boodskap hierbo."
+    truncated_deny_only: "Voorskou verkort ({total} karakters) en die volledige opdrag kon nie hier gewys word nie, dus is slegs Weier beskikbaar. Hersien dit in die CLI of die Desktop-toep."
+    text_prompt_deny_only: "Die volledige goedkeuringsboodskap is te lank vir hierdie platform, dus is slegs Weier beskikbaar. Hersien dit in die CLI of die Desktop-toep."
   notify:
     media_kind:
       audio: "klank"
@@ -974,9 +978,6 @@ platform:
     approved: "✅ Goedgekeur."
     denied: "❌ Geweier."
     approval_expired: "⌛ Goedkeuring het verval — die opdrag is nie uitgevoer nie (reeds uitgetel of elders afgehandel)."
-  yuanbao:
-    slow_response_notice: "Hierdie taak is 'n bietjie omvattend — ek werk nog daaraan, hou asseblief aan..."
-    owner_command_denied: "⚠️ {command} is slegs vir die skepper beskikbaar in privaatgesprek-modus"
   shared:
     truncated_suffix: "\n...(afgekap)"
     unknown: "onbekend"
@@ -1710,10 +1711,10 @@ slash:
     description: "Verlaat die CLI (gebruik --delete om ook sessiegeskiedenis te verwyder)"
 cli:
   backtrack:
-    title: "↺ Spoel terug — kies 'n vroeëre opdrag"
-    keys_hint: "↑/↓ kies · Enter wysig & stuur weer · f vurk van hier · Esc sluit"
-    preview_label: "Opdrag {number} van {total}:"
-    more_lines: "… ({count} meer reëls)"
+    title: "↺ Transkripsie — kies 'n opdrag om te wysig"
+    keys_hint: "Blaai deur transkripsie · ↑↓/jk rol · ←→/hl opdragte · ↵ wysig · f vurk · esc terug"
+    prime_hint: "esc weer om die vorige boodskap te wysig"
+    no_previous: "Geen vorige boodskap om te wysig nie."
     editing_hint: "↺ Wysig opdrag {number} — Enter spoel hierheen terug en stuur · Esc Esc kanselleer"
     edit_cancelled: "↺ Terugspoel gekanselleer; niks is verwyder nie."
     rewound: "↺ Teruggespoel na opdrag {number} ({count} boodskap(pe) geargiveer); stuur die wysiging."
@@ -3981,3 +3982,8 @@ plan_usage:
   large_notice_limit: "Groot model: {name} bereik ({resets})."
   large_notice_limit_stops: "Groot model: {name} bereik ({resets}), dit sal nie tot dan loop nie."
   large_notice_percent: "Groot model: gebruik meer van jou plan per boodskap. Maandelikse limiet vir groot modelle: {percent} gebruik."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Lêers wat in die ongedane beurte verander is: {files}. Voer /rollback uit om kontrolepunte te lys en een te herstel."
+    more: "+{count} meer"

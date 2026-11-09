@@ -625,6 +625,7 @@ gateway:
     action_always: "始终允许"
     action_deny: "拒绝"
     deadline: "如果你在 {window} 内未回应，它将不会运行。"
+    not_requester: "只有 {requester} 可以回应此审批请求。"
     text_choice_once: "回复 `{prefix}approve` 运行一次"
     text_choice_session: "`{prefix}approve session` 在本会话剩余时间内允许此模式"
     text_choice_always: "`{prefix}approve always` 永久允许"
@@ -632,6 +633,9 @@ gateway:
     text_choice_joiner: "，"
     text_choice_last: "，或 {choice}。\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}：{reason}\n\n"
+    truncated_full_above: "预览已截断：完整命令（{total} 个字符）在上面的消息中。"
+    truncated_deny_only: "预览已截断（{total} 个字符），且无法在此显示完整命令，因此只提供拒绝。请在 CLI 或桌面应用中查看。"
+    text_prompt_deny_only: "完整的批准提示对此平台而言过长，因此只提供拒绝。请在 CLI 或桌面应用中查看。"
   notify:
     media_kind:
       audio: "音频"
@@ -974,9 +978,6 @@ platform:
     approved: "✅ 已批准。"
     denied: "❌ 已拒绝。"
     approval_expired: "⌛ 审批已过期——命令未执行（已超时或已在别处处理）。"
-  yuanbao:
-    slow_response_notice: "任务有点复杂，正在努力处理中，请耐心等待..."
-    owner_command_denied: "⚠️ {command} 仅在私聊模式下对创建者可用"
   shared:
     truncated_suffix: "\n...（已截断）"
     unknown: "未知"
@@ -1710,10 +1711,10 @@ slash:
     description: "退出 CLI（加 --delete 可同时删除会话历史）"
 cli:
   backtrack:
-    title: "↺ 回溯 — 选择之前的提示"
-    keys_hint: "↑/↓ 选择 · Enter 编辑并重新发送 · f 从此处分叉 · Esc 关闭"
-    preview_label: "提示 {number} / {total}:"
-    more_lines: "…(还有 {count} 行)"
+    title: "↺ 对话记录 — 选择要编辑的提示"
+    keys_hint: "浏览对话记录 · ↑↓/jk 滚动 · ←→/hl 提示 · ↵ 编辑 · f 分叉 · esc 返回"
+    prime_hint: "再按一次 esc 编辑上一条消息"
+    no_previous: "没有可编辑的上一条消息。"
     editing_hint: "↺ 正在编辑提示 {number} — Enter 回溯到此处并发送 · Esc Esc 取消"
     edit_cancelled: "↺ 已取消回溯;未删除任何内容。"
     rewound: "↺ 已回溯到提示 {number}(已归档 {count} 条消息);正在发送编辑内容。"
@@ -3981,3 +3982,8 @@ plan_usage:
   large_notice_limit: "大型模型：已达{name}上限（{resets}）。"
   large_notice_limit_stops: "大型模型：已达{name}上限（{resets}），在此之前无法运行。"
   large_notice_percent: "大型模型：每条消息消耗更多套餐用量。每月大型模型上限：已用 {percent}。"
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ 已撤销回合中更改的文件：{files}。运行 /rollback 列出检查点并恢复其中一个。"
+    more: "另外 {count} 个"

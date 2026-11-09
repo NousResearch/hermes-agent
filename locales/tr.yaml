@@ -625,6 +625,7 @@ gateway:
     action_always: "Her Zaman İzin Ver"
     action_deny: "Reddet"
     deadline: "{window} içinde yanıt vermezseniz komut çalıştırılMAYACAK."
+    not_requester: "Bu onayı yalnızca {requester} yanıtlayabilir."
     text_choice_once: "Bir kez çalıştırmak için `{prefix}approve` yazın"
     text_choice_session: "bu deseni oturumun geri kalanında izin vermek için `{prefix}approve session`"
     text_choice_always: "kalıcı olarak izin vermek için `{prefix}approve always`"
@@ -632,6 +633,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", veya {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Önizleme kısaltıldı: komutun tamamı ({total} karakter) yukarıdaki mesajda."
+    truncated_deny_only: "Önizleme kısaltıldı ({total} karakter) ve komutun tamamı burada gösterilemedi, bu yüzden yalnızca Reddet sunuluyor. CLI'de veya masaüstü uygulamasında inceleyin."
+    text_prompt_deny_only: "Tam onay istemi bu platform için çok uzun, bu yüzden yalnızca Reddet sunuluyor. CLI'de veya masaüstü uygulamasında inceleyin."
   notify:
     media_kind:
       audio: "ses"
@@ -974,9 +978,6 @@ platform:
     approved: "✅ Onaylandı."
     denied: "❌ Reddedildi."
     approval_expired: "⌛ Onay süresi doldu — komut çalıştırılmadı (zaten zaman aşımına uğradı veya başka bir yerde sonuçlandı)."
-  yuanbao:
-    slow_response_notice: "Bu görev biraz kapsamlı — hâlâ üzerinde çalışıyorum, lütfen bekleyin..."
-    owner_command_denied: "⚠️ {command} yalnızca özel sohbet modunda oluşturucu tarafından kullanılabilir"
   shared:
     truncated_suffix: "\n...(kısaltıldı)"
     unknown: "bilinmiyor"
@@ -1710,10 +1711,10 @@ slash:
     description: "CLI'dan çık (oturum geçmişini de silmek için --delete kullanın)"
 cli:
   backtrack:
-    title: "↺ Geri sar — önceki bir istemi seç"
-    keys_hint: "↑/↓ seç · Enter düzenle ve yeniden gönder · f buradan çatalla · Esc kapat"
-    preview_label: "İstem {number} / {total}:"
-    more_lines: "… ({count} satır daha)"
+    title: "↺ Döküm — düzenlemek için bir istem seç"
+    keys_hint: "Döküme göz atılıyor · ↑↓/jk kaydır · ←→/hl istemler · ↵ düzenle · f çatalla · esc geri"
+    prime_hint: "önceki mesajı düzenlemek için tekrar esc"
+    no_previous: "Düzenlenecek önceki mesaj yok."
     editing_hint: "↺ İstem {number} düzenleniyor — Enter buraya geri sarar ve gönderir · Esc Esc iptal eder"
     edit_cancelled: "↺ Geri sarma iptal edildi; hiçbir şey kaldırılmadı."
     rewound: "↺ İstem {number}'e geri sarıldı ({count} mesaj arşivlendi); düzenleme gönderiliyor."
@@ -3981,3 +3982,8 @@ plan_usage:
   large_notice_limit: "Büyük model: {name} limitine ulaşıldı ({resets})."
   large_notice_limit_stops: "Büyük model: {name} limitine ulaşıldı ({resets}), o zamana kadar çalışmaz."
   large_notice_percent: "Büyük model: mesaj başına planından daha fazla kullanım harcar. Aylık büyük model limiti: {percent} kullanıldı."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Geri alınan turlarda değişen dosyalar: {files}. Kontrol noktalarını listelemek ve birini geri yüklemek için /rollback çalıştırın."
+    more: "+{count} daha"

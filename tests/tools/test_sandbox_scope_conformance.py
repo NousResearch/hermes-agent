@@ -264,13 +264,30 @@ def test_stopping_an_exited_leader_still_stops_its_descendants(tmp_path):
 
 
 def _alive(pid: int) -> bool:
+    """Cross-platform liveness: no process lives behind a Linux-only ``/proc/<pid>/stat`` read on
+    the POSIX hosts this suite declares (macOS has no /proc), and a pid that vanishes between the
+    signal probe and the status read is simply dead."""
+    from gateway.status import _pid_exists
+    return _pid_exists(pid)
+
+
+@pytest.mark.platforms("posix")
+def test_alive_tolerates_a_posix_host_without_proc_stat(monkeypatch):
+    """A pid the signal probe accepts but the status file cannot describe (every pid on a /proc-less
+    POSIX host) is answered with a verdict, never an exception."""
+    import builtins
     import os
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    with open(f"/proc/{pid}/stat") as fh:
-        return fh.read().split(") ", 1)[1][0] != "Z"
+
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+    real_open = builtins.open
+
+    def no_proc_stat(file, *args, **kwargs):
+        if os.fsdecode(file).startswith("/proc/"):
+            raise FileNotFoundError(os.fsdecode(file))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", no_proc_stat)
+    assert isinstance(_alive(4242), bool)
 
 
 def test_a_tui_poller_leaves_another_agents_event_for_it():

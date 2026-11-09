@@ -161,6 +161,62 @@ def test_line_budget_fails_closed_before_tokenizing_every_line(
     assert 0 < lexers < 10
 
 
+# --- non-shell script bodies (sys-l9ftcw) ------------------------------------
+
+
+def test_readonly_chain_admitted_python_wrapper(tmp_path):
+    """sys-l9ftcw: a read-only command through a python wrapper must not hard-block on budget.
+
+    Observed shape (``./bin/cilog 254``): the wrapper misses locally, so the backend serves its
+    text; the body names a local data file whose every line carries a "/". Parsing the python body
+    as shell commands that RUN turns each data-file record into a remote-read miss, and the
+    ``_MAX_LIFECYCLE_SCAN_REMOTE_READS``-th trips the fail-closed budget — against a read-only
+    command with no lifecycle verb anywhere.
+    """
+    ledger = tmp_path / "deploy-ledger.jsonl"
+    lines = lifecycle_guard._MAX_LIFECYCLE_SCAN_REMOTE_READS + 32
+    # One "/"-bearing record per line, compact like the real ledger: each record tokenizes to a
+    # single line-leading word, so the walk treats it as an executed path and burns one remote read.
+    ledger.write_text(
+        "".join(f'{{"ts":"t{i}","log":"/var/log/deploy-{i}.log"}}\n' for i in range(lines)),
+        encoding="utf-8",
+    )
+    # The docstring line that names the ledger sits line-leading, exactly as the real cilog's does
+    # after shlex's quote fallback tokenizes its docstring per physical line.
+    wrapper = (
+        "#!/usr/bin/env python3\n"
+        f"{ledger} - the deploy-and-wait ledger\n"
+        "print(1)\n"
+    )
+
+    def remote(path: str):
+        return wrapper if path.endswith("bin/cilog") else None
+
+    unsafe, refusal = lifecycle_guard.scan_gateway_lifecycle(
+        "./bin/cilog 254",
+        cwd=str(tmp_path / "missing-on-this-host"),
+        read_remote_script=remote,
+    )
+    assert (unsafe, refusal) == (False, None)
+
+
+def test_refusal_names_script_path(monkeypatch):
+    """sys-l9ftcw: a budget refusal names the script whose walk ran out and the way through, so
+    the agent can act on it instead of rewording the same blocked command."""
+    monkeypatch.setattr(lifecycle_guard, "_MAX_LIFECYCLE_SCAN_REMOTE_READS", 1)
+
+    def remote(path: str):
+        return "echo ok\n"
+
+    unsafe, refusal = lifecycle_guard.scan_gateway_lifecycle(
+        "bash /remote/a.sh && bash /remote/b.sh", read_remote_script=remote,
+    )
+    assert unsafe
+    assert refusal is not None
+    assert "/remote/b.sh" in refusal
+    assert "_MAX_LIFECYCLE_SCAN_" in refusal
+
+
 # --- scheduler entry point --------------------------------------------------
 
 

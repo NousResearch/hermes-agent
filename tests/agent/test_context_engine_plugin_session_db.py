@@ -105,6 +105,22 @@ def test_compression_adoption_hands_a_plugin_engine_the_same_session_db(monkeypa
         agent.close()
 
 
+def test_compression_adoption_binds_an_engine_without_on_session_start_with_the_agents_store(monkeypatch, store):
+    monkeypatch.setattr(hermes_state, "_warned", True)
+    store.sessions.end("s1", "compression")
+    seed_session(store, "s1-child", "cli", parent_session_id="s1")
+    seed_messages(store, "s1-child", {"role": "user", "content": "compacted tail"})
+    engine = _StorePluginEngine()
+    monkeypatch.setattr(engine, "on_session_start", None)  # adoption falls back to bind_session_state
+    agent = _agent(store, "s1", engine)
+    try:
+        assert _adopt_live_compression_child(agent, store, "s1", store)
+        assert engine.bound[-1][1]["id"] == "s1-child"
+        assert engine.stores[-1] is store
+    finally:
+        agent.close()
+
+
 def test_a_plugin_engine_whose_bind_names_persistence_gets_the_agents_store(monkeypatch, store):
     monkeypatch.setattr(hermes_state, "_warned", True)
     engine = _StorePluginEngine()

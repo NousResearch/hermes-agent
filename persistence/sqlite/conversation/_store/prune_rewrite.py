@@ -6,8 +6,11 @@ from typing import Any, Optional
 from session_rules.turns import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY
 from persistence.sqlite.conversation._store.sql_common import _id_chunks, _placeholders
 from persistence.sqlite._holder import StoreHolder
+from persistence.sqlite.conversation._store.coverage import _matching_active_ids
+from persistence.sqlite.conversation._store.messages import _check_transcript_write_guards, _decode_content, _display_dedupe_key, _display_identity, _ensure_display_order, _execute_transcript_write, _message_column_names, _message_row_params, _row_identity
 from persistence.sqlite.conversation._store.messages_sql import _INSERT_MESSAGE_SQL, _parse_tool_calls
 from persistence.sqlite.conversation._store.rules import DB_ROW_SNAPSHOT
+from persistence.sqlite.conversation._store.sessions import _merge_model_config_json
 
 
 _MESSAGE_ROW_COLUMNS = tuple(
@@ -265,9 +268,3 @@ def rewrite_pruned_rows(holder: StoreHolder, session_id: str, changes: list[tupl
     # failed or retried commit never leaves the replacements stamped with an uncommitted digest.
     return _execute_transcript_write(holder,
         _do, [replacement for _, replacement in changes])
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.coverage import _matching_active_ids
-from persistence.sqlite.conversation._store.messages import _check_transcript_write_guards, _decode_content, _display_dedupe_key, _display_identity, _ensure_display_order, _execute_transcript_write, _message_column_names, _message_row_params, _row_identity
-from persistence.sqlite.conversation._store.sessions import _merge_model_config_json

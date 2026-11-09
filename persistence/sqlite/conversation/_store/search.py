@@ -15,6 +15,8 @@ from persistence.sqlite._schema import _enter_fts_fail_open, _present_fts_tables
 from persistence.sqlite._schema_ddl import (
     FTS_STALE_KEY, FTS_TOOL_CONTENT_PREFIX_CHARS, FTS_TRIGRAM_EXCLUDED_SOURCES, fts_trigram_session_sql,
 )
+from persistence.sqlite.conversation._store.messages import _decode_content, _row_to_message_dict, get_messages_around
+from persistence.sqlite.conversation._store.sessions import list_sessions_rich
 from persistence.sqlite.conversation._store.sql_common import MAX_FTS5_QUERY_CHARS, escape_like as _escape_like
 
 
@@ -798,8 +800,3 @@ def rebuild_fts(holder: StoreHolder) -> int:
                     else:
                         logger.warning("FTS rebuild failed for %s: %s", tbl, exc)
     return rebuilt
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.messages import _decode_content, _row_to_message_dict, get_messages_around
-from persistence.sqlite.conversation._store.sessions import list_sessions_rich

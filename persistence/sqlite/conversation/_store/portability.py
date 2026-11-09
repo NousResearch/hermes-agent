@@ -9,6 +9,7 @@ from hermes_state_common import _shape_preview
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite._schema import _parse_schema_columns
 from persistence.sqlite._schema_ddl import SCHEMA_SQL
+from persistence.sqlite.conversation._store.core import _session_row_dict
 from persistence.sqlite.conversation._store.sql_common import _sql_preview_raw, _sql_session_last_active
 from persistence.sqlite.conversation._store.local import POLICY_PREFIX
 from persistence.sqlite.conversation._store.rules import (
@@ -61,6 +62,7 @@ _CRON_EXECUTION_SQL = (
 def _compact_session_cols(home) -> str:
     """``s.``-prefixed SELECT list of every SCHEMA_SQL ``sessions`` column except
     prompt storage internals (the compact_rows projection)."""
+    from persistence.sqlite.conversation._store.sessions import _SESSION_COMPACT_EXCLUDED
     global _session_compact_cols_sql
     if _session_compact_cols_sql is None:
         declared = _parse_schema_columns(SCHEMA_SQL, home)["sessions"]
@@ -203,8 +205,3 @@ _SQLITE_INT_MAX = (1 << 63) - 1
 
 
 _session_compact_cols_sql: Optional[str] = None
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.core import _session_row_dict
-from persistence.sqlite.conversation._store.sessions import _SESSION_COMPACT_EXCLUDED

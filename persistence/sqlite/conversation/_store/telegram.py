@@ -6,6 +6,7 @@ import sqlite3
 from typing import Any, Optional
 from persistence.sqlite.conversation._store.sql_common import _sql_preview_raw, _sql_session_last_active
 from persistence.sqlite._holder import StoreHolder
+from persistence.sqlite.conversation._store.portability import _rich_row
 
 
 def _normalize_telegram_topic_profile_name(profile_name: Optional[str] = None) -> str:
@@ -64,7 +65,3 @@ def list_unlinked_telegram_sessions_for_user(
                 _UNLINKED_SELECT_HEAD + _UNLINKED_SELECT_TAIL, (str(user_id), int(limit)),
             ).fetchall()
     return [_rich_row(row) for row in rows]
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.portability import _rich_row

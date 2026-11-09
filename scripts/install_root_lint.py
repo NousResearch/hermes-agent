@@ -13,7 +13,8 @@ Production code is pyproject's ``packages.find`` packages and the root ``*.py`` 
 climb through a variable (``_pkg = Path(__file__).parent`` then ``_pkg.parent``).
 
 Existing sites never fail anything. ``scripts/install_root_lint_baseline.json`` counts them per kind
-and file; the lint fails only when a file's count rises above it. Run ``--update`` after removing a
+and file, and its ``reasons`` map says why each file cannot call the owner; the lint fails only when a
+file's count rises above it. Run ``--update`` after removing a
 site, or to record an intended one.
 """
 
@@ -161,7 +162,9 @@ def main(argv: list[str] | None = None) -> int:
     found = collect()
     current = tally(found)
     if args.update:
-        BASELINE.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
+        reasons = {rel: why for rel, why in read_baseline().get("reasons", {}).items()
+                   if any(rel in current[kind] for kind in KINDS)}
+        BASELINE.write_text(json.dumps({**current, "reasons": reasons}, indent=2) + "\n", encoding="utf-8")
         print(f"wrote {BASELINE.relative_to(ROOT)}")
         return 0
     if rises := regressions(current, read_baseline()):

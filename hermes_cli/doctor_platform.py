@@ -16,6 +16,7 @@ from hermes_cli.doctor_report import (
     warn_on_error,
 )
 from hermes_constants import is_termux as _is_termux
+from hermes_cli._startup_fast import project_root_str
 
 
 def _python_repair_hint() -> str:
@@ -322,7 +323,7 @@ def _desktop_app_bundle() -> Path | None:
     The only layout whose ad-hoc re-signed bundle can invalidate TCC grants. ``/Applications/Hermes.app`` is
     deliberately not probed: it is the separately-signed, certificate-anchored Hermes-Setup launcher.
     """
-    release_dir = Path(__file__).resolve().parents[1] / "apps" / "desktop" / "release"
+    release_dir = Path(project_root_str()) / "apps" / "desktop" / "release"
     candidates = [p for p in release_dir.glob("mac*/Hermes.app") if p.is_dir()]
     return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
 

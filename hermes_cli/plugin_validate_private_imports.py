@@ -17,6 +17,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from hermes_cli.plugin_validate_core_override import _hermes_top_level, _python_files
+from hermes_cli._startup_fast import project_root_str
 
 _PLUGIN_API = Path(__file__).resolve().parent / "data" / "plugin_api.json"
 
@@ -37,7 +38,7 @@ _SHOWN = 10
 def _hermes_packages() -> frozenset:
     """Hermes-owned top-level names: pyproject's ``packages.find`` includes plus the root modules
     setup.py ships as ``py-modules`` (every root ``*.py``)."""
-    root = Path(__file__).resolve().parents[1]
+    root = Path(project_root_str())
     try:
         pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8-sig"))
         packages = {name.split(".")[0] for name in pyproject["tool"]["setuptools"]["packages"]["find"]["include"]}
@@ -79,7 +80,7 @@ def _imported(node: ast.AST) -> list[tuple[str, str]]:
 
 @lru_cache(maxsize=512)
 def _core_module_exists(module: str) -> bool:
-    path = Path(__file__).resolve().parents[1].joinpath(*module.split("."))
+    path = Path(project_root_str()).joinpath(*module.split("."))
     return path.with_suffix(".py").is_file() or path.is_dir()
 
 
@@ -150,7 +151,7 @@ _CORE_HANDLE_SOURCES = ("hermes_state.py", "hermes_state_*.py", "run_agent.py", 
 
 @lru_cache(maxsize=1)
 def _core_private_methods() -> frozenset:
-    root = Path(__file__).resolve().parents[1]
+    root = Path(project_root_str())
     names: set[str] = set()
     for pattern in _CORE_HANDLE_SOURCES:
         for path in root.glob(pattern):

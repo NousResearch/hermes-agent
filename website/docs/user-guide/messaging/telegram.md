@@ -165,14 +165,16 @@ command/media handling, observed group-history writes and plugin observers.
 The receiving adapter and numeric bot ID scope this check; it does not deduplicate
 by text or `message_id`. A genuine edit with a new update ID can still be processed.
 
-This is bounded, **in-memory** protection, not an exactly-once guarantee:
+This is bounded protection, not an exactly-once guarantee:
 
-- The adapter remembers the most recent 4096 completed admissions, with no time
-  expiry. Active updates stay claimed until dispatch and its scheduled PTB handler
-  tasks finish, including nonblocking native plugins and registered error callbacks.
-- Reconnecting the same adapter retains that history. Eviction, adapter replacement
-  or a process restart can allow an old update through again. Nothing is written
-  to a replay ledger on disk.
+- The adapter remembers the most recent 4096 completed admissions per bot. Active
+  updates stay claimed until dispatch and its scheduled PTB handler tasks finish,
+  including nonblocking native plugins and registered error callbacks.
+- Completed update IDs are also saved per bot under the Hermes home and kept for
+  24 hours, the longest Telegram holds an undelivered update. Reconnects, adapter
+  rebuilds and gateway restarts therefore do not answer an already-handled update
+  again, including the backlog answered after a cold boot. A receipt older than
+  24 hours, or a receipts file that cannot be read, no longer protects that update.
 - Failed or cancelled preparation releases its claim if nothing has been handed
   off. Once an update enters a batch/hold queue, gateway dispatch, an observer or
   a native plugin, a later error does not reopen it. Native plugins own their own

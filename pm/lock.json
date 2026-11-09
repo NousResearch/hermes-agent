@@ -810,10 +810,16 @@
     },
     "whispercpp-cpu": {
       "artifacts": {
-        "win32-arm64": {
-          "sha256": "799543b926ab5b6c2d60cab269a2092e0ae8d27820e9e15429e59de3699546fc",
-          "url": "https://github.com/ggml-org/whisper.cpp/releases/download/b5130/whisper-bin-win-cpu-arm64.zip"
-        }
+        "win32-arm64": [
+          {
+            "sha256": "799543b926ab5b6c2d60cab269a2092e0ae8d27820e9e15429e59de3699546fc",
+            "url": "https://github.com/ggml-org/whisper.cpp/releases/download/b5130/whisper-bin-win-cpu-arm64.zip"
+          },
+          {
+            "sha256": "4090d939c83e50ba36a3023bd46c7ea622082fadd88a42bd0a9bba445ff710c8",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/3984a6ef-2ffc-4c07-962e-bf9e9b862819/4090d939c83e50ba36a3023bd46c7ea622082fadd88a42bd0a9bba445ff710c8/Microsoft.VC.14.51.CRT.Redist.ARM64.base.vsix"
+          }
+        ]
       },
       "version": "b5130"
     }

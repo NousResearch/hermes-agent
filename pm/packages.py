@@ -1489,3 +1489,14 @@ class WhisperCppCpu(BinaryPackage):
     binary_rel = {"win32-arm64": "whisper-cli.exe"}
     probe_args = ["--help"]
     url = "https://github.com/ggml-org/whisper.cpp/releases/download/{version}/whisper-bin-win-cpu-arm64.zip"
+
+    def fetch_urls(self, version: str, target: str) -> list[str]:
+        return [self.fetch_url(version, target), _VC_RUNTIME[target]]
+
+    def unpack(self, archive: Path, staged: Path, target: str) -> None:
+        if archive.name.endswith(".vsix"):
+            _unpack_vc_runtime(self.name, archive, staged, target)
+            return
+        super().unpack(archive, staged, target)
+        # Before the runtime merges in beside Release/, which would leave stage() nothing to hoist.
+        flatten_single_dir(staged)

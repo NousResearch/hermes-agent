@@ -93,3 +93,12 @@ def test_windows_engine_stages_the_vc_runtime_beside_llama_server(tmp_path, name
     assert ("vcruntime140_1.dll" in beside) is (arch == "x64")
     assert "msvcp140d.dll" not in beside
     assert not {"Contents", "manifest.json", "[Content_Types].xml"} & beside
+
+
+def test_arm64_whisper_cpp_stages_the_vc_runtime_beside_whisper_cli(tmp_path):
+    """whisper-cli.exe and whisper.dll import MSVCP140.dll too; upstream nests them under Release/."""
+    cli = _stage(tmp_path, "whispercpp-cpu", "win32-arm64", lambda filename: {
+        "Release/whisper-cli.exe": _pe("arm64"), "Release/whisper.dll": _pe("arm64")})
+
+    assert cli.is_file()
+    assert {"msvcp140.dll", "vcruntime140.dll", "whisper.dll"} <= {p.name for p in cli.parent.iterdir()}

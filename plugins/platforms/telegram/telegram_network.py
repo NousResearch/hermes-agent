@@ -8,6 +8,7 @@ import ipaddress
 import logging
 import os
 import socket
+import sys
 from typing import Iterable, Optional
 
 import httpx
@@ -91,8 +92,7 @@ def getupdates_keepalive_connections() -> int:
     fresh TCP+TLS connection per ~10 s poll parks every closed socket in client-side TIME_WAIT,
     which exhausts macOS's 16k ephemeral range after ~2 days and turns each connect blip on the
     path into a polling gap (#107880); one reused socket is enough for the single in-flight poll."""
-    from hermes_platform.host.facts import os_family
-    return 0 if os_family() == "win32" else 1
+    return 0 if sys.platform == "win32" else 1
 
 
 def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optional[str], verify=None) -> tuple:

@@ -1,17 +1,17 @@
 name: chronos
 repo: https://github.com/Shikhyy/hermes-agent
-sha: "7000d93050ad3b230686973ab452da9534dcc66e"
+sha: "5b2a4b4a2c43e8a9b1e7bf8d32484a651bffedf0"
 subdir: plugins/chronos
 title: Chronos
 description: >-
   Speculative branching: try several candidate fixes in isolated git
   worktrees, verify each against the project's tests through Hermes' terminal
-  tool, and merge only a verified winner as a patch.
+  tool, and merge only a verified winner through Hermes' file tools.
 maintainer: Shikhyy
 tier: community
 category: tools
 requires_hermes: ">=0.4.0"
-docs_url: https://github.com/Shikhyy/hermes-agent/blob/7000d93050ad3b230686973ab452da9534dcc66e/plugins/chronos/README.md
+docs_url: https://github.com/Shikhyy/hermes-agent/blob/5b2a4b4a2c43e8a9b1e7bf8d32484a651bffedf0/plugins/chronos/README.md
 version: "1.0.0"
 capabilities:
   provides_tools:

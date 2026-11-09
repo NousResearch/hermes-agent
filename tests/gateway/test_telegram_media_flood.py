@@ -343,6 +343,34 @@ async def test_failed_private_copy_still_posts_the_promised_notice(flooded, tmp_
 
 
 @pytest.mark.asyncio
+async def test_every_lost_file_in_a_flooded_batch_gets_its_notice(flooded, tmp_path):
+    """A batch of documents still refused after the window: no request goes out inside a known
+    window, and each lost file gets exactly one notice through the real send()."""
+    adapter, _doc = flooded
+    del adapter.send  # the real send(): a notice refused by a re-armed window must not be lost
+    loop = asyncio.get_running_loop()
+    uploads, notices = [], []
+
+    async def send_document(**kwargs):
+        uploads.append(adapter._send_flood_cooldown_remaining(kwargs["chat_id"]) is None)
+        raise RetryAfter(1.0)
+
+    async def send_message(**kwargs):
+        notices.append(loop.time())
+        return _ok(len(notices))
+
+    adapter._bot = SimpleNamespace(send_document=send_document, send_message=send_message)
+    for i in range(5):
+        path = tmp_path / f"part{i}.txt"
+        path.write_text(str(i))
+        assert (await adapter.send_document("12345", str(path))).raw_response["failure_notice_sent"]
+    await async_wait_until(lambda: not adapter._background_tasks, timeout=60, what="every deferred upload settled")
+
+    assert all(uploads), "a request went out inside a known flood window"
+    assert len(notices) == 5
+
+
+@pytest.mark.asyncio
 async def test_promised_notice_survives_a_sibling_refused_as_it_goes_out(flooded, tmp_path, monkeypatch):
     """The deferred task owes a notice (its file is gone); a sibling send is refused by Telegram right
     as that notice goes out. The notice must wait out the new window, not be refused locally and lost."""

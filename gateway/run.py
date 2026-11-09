@@ -34,9 +34,10 @@ from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from agent.conversation_compression import (
     COMPACTION_DONE_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_STATUS, COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
-    COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING, COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
+from gateway.run_status_filter import _status_template_to_regex, hidden_outside_dm
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
@@ -103,7 +104,7 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
-    rf"|{re.escape(COMPACTION_DONE_STATUS)}"
+    rf"|{re.escape(COMPACTION_DONE_STATUS)}|{re.escape(COMPRESSION_REFUSED_WOULD_GROW_WARNING)}"
     r")",
     re.IGNORECASE | re.DOTALL)
 
@@ -314,14 +315,6 @@ def _record_hygiene_cooldown(
         recorder(session_id, time.time() + cooldown_seconds, error)
     except Exception as exc:
         logger.debug("session hygiene cooldown persist failed: %s", exc)
-
-
-def _status_template_to_regex(template: str) -> str:
-    """Compile a compression status template constant into a regex source.
-
-    Literal text is escaped verbatim (wording drift can't diverge from the matcher); ``{field}`` -> numeric."""
-    parts = re.split(r"\{[^{}]*\}", template)
-    return r"[\d,]+".join(re.escape(part) for part in parts)
 
 
 # ROUTINE compression progress statuses, derived from the SAME template constants the emit sites format.
@@ -721,15 +714,18 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
-def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
+def _prepare_gateway_status_message(platform: Any, event_type: str, message: str, chat_type: Any = "dm") -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
-    Local/CLI keep the raw diagnostic stream; messaging surfaces drop transient aux/compression noise."""
+    Local/CLI keep the raw diagnostic stream; messaging surfaces drop transient aux/compression noise, and
+    non-DM chats drop DM-only warnings (gateway/run_status_filter.py)."""
     text = str(message or "").strip()
     if not text:
         return None
     if _gateway_surface_passes_raw_text(platform):
         return text
+    if hidden_outside_dm(chat_type, str(message or "")):
+        return None
 
     text = _redact_gateway_user_facing_secrets(text)
     # Opt-in `compression.progress_notices` lets ROUTINE (template-derived) progress through; other noise stays.

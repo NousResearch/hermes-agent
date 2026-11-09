@@ -99,27 +99,26 @@ Notes:
 
 ### Cold-boot pending queue (Optional)
 
-By default the adapter drops server-side pending updates on a cold boot
-(`drop_pending_updates=True` on the first `start_polling`). That fits
-always-on servers: a restart means "clean up," and the queue is treated as
-stale. It does not fit hosts that turn off (a desktop shut down overnight):
-messages sent while the gateway is offline sit in Telegram's Bot API queue,
-and the next boot discards them before Hermes ever sees them — silently, no
-log, no retry.
+Messages sent while the gateway is off (a desktop shut down overnight, a
+restart, an update) wait in Telegram's Bot API queue for up to 24 hours. By
+default the adapter keeps that queue on a cold boot and answers the backlog
+in order once it starts; updates Hermes already handled before the restart
+are skipped by its persisted update receipts, so they are not answered twice.
 
-Set `drop_pending_on_cold_boot: false` to receive that backlog in order on
-startup instead:
+Set `drop_pending_on_cold_boot: true` to discard that backlog on startup
+instead (an always-on server where a restart means "start clean"):
 
 ```yaml
 platforms:
   telegram:
     extra:
-      drop_pending_on_cold_boot: false
+      drop_pending_on_cold_boot: true
 ```
 
 Notes:
 
-- Default is `true`: existing behavior is unchanged unless you opt in.
+- Default is `false`: the backlog is answered. An explicit value in your
+  config is respected either way.
 - Watcher reconnects (brief network outages with the process still alive)
   always preserve the queue regardless of this setting.
 - Conflict recovery (another poller holding the bot's `getUpdates` session)
@@ -166,14 +165,16 @@ command/media handling, observed group-history writes and plugin observers.
 The receiving adapter and numeric bot ID scope this check; it does not deduplicate
 by text or `message_id`. A genuine edit with a new update ID can still be processed.
 
-This is bounded, **in-memory** protection, not an exactly-once guarantee:
+This is bounded protection, not an exactly-once guarantee:
 
-- The adapter remembers the most recent 4096 completed admissions, with no time
-  expiry. Active updates stay claimed until dispatch and its scheduled PTB handler
-  tasks finish, including nonblocking native plugins and registered error callbacks.
-- Reconnecting the same adapter retains that history. Eviction, adapter replacement
-  or a process restart can allow an old update through again. Nothing is written
-  to a replay ledger on disk.
+- The adapter remembers the most recent 4096 completed admissions per bot. Active
+  updates stay claimed until dispatch and its scheduled PTB handler tasks finish,
+  including nonblocking native plugins and registered error callbacks.
+- Completed update IDs are also saved per bot under the Hermes home and kept for
+  24 hours, the longest Telegram holds an undelivered update. Reconnects, adapter
+  rebuilds and gateway restarts therefore do not answer an already-handled update
+  again, including the backlog answered after a cold boot. A receipt older than
+  24 hours, or a receipts file that cannot be read, no longer protects that update.
 - Failed or cancelled preparation releases its claim if nothing has been handed
   off. Once an update enters a batch/hold queue, gateway dispatch, an observer or
   a native plugin, a later error does not reopen it. Native plugins own their own
@@ -1032,7 +1033,7 @@ Shows the current topic's binding: session title, session ID, and hints for `/ne
 - BotFather setup screenshots are rate-limited to one send per 5 minutes per **(profile, chat)** — repeated `/topic` attempts while Threads Settings are still disabled won't re-upload the same image
 - `/bg <prompt>` started inside a topic delivers its result back to the same topic; background sessions don't trigger auto-rename of the owning topic
 - `/topic` itself is gated by the bot's user authorization check — unauthorized DMs get a refusal instead of activation
-- When Telegram rejects a topic with `message thread not found` (the topic was deleted, or topics were turned off in the Telegram client), Hermes retries the same topic once by `direct_messages_topic_id`, then delivers the reply to the root chat without its reply anchor and drops that topic's binding. A reply whose anchor message was deleted keeps its topic and only loses the anchor. A send to a topic Hermes just created by name fails instead, so the topic is recreated rather than the reply landing in the root. Removing the chat's last binding turns topic mode off, so the root DM works as a normal chat again
+- When Telegram rejects a topic with `message thread not found` (the topic was deleted, or topics were turned off in the Telegram client), Hermes retries the same topic once, then delivers the reply to the root chat without its reply anchor and drops that topic's binding. A reply whose anchor message was deleted keeps its topic and only loses the anchor. A send to a topic Hermes just created by name fails instead, so the topic is recreated rather than the reply landing in the root. Removing the chat's last binding turns topic mode off, so the root DM works as a normal chat again
 
 ### Disabling multi-session mode
 

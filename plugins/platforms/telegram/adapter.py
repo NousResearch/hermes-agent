@@ -179,12 +179,13 @@ _MEDIA_KIND_KEYS = {
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_audio_meta import (
     _coerce_duration_seconds, _probe_voice_duration_seconds, audio_player_fields, fit_thumbnail_jpeg)
-from plugins.platforms.telegram.telegram_dm_topic_send import dead_topic_may_reroute, dead_topic_retry_kwargs, direct_topic_retry_kwargs, private_chat, topic_gone
-from plugins.platforms.telegram.telegram_entities import expand_link_entities, expand_quote_link_entities, rich_message_filter, rich_message_text
+from plugins.platforms.telegram.telegram_dm_topic_send import dead_topic_may_reroute, dead_topic_retry_kwargs, private_chat, topic_gone
+from plugins.platforms.telegram.telegram_entities import (
+    addressing_sources, addressing_text, expand_link_entities, expand_quote_link_entities, rich_message_filter, rich_message_text)
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_polling_probe import TelegramPendingProbeMixin
 from plugins.platforms.telegram.telegram_intake import effective_update_message
-from plugins.platforms.telegram.telegram_media_group import flush_media_group_event, queue_media_group_event, tracking_album_items
+from plugins.platforms.telegram.telegram_media_group import add_item_note, flush_media_group_event, queue_media_group_event, tracking_album_items
 from plugins.platforms.telegram.telegram_media_flood import TelegramMediaFloodMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
@@ -640,11 +641,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         self._status_indicator_enabled: bool = bool(extra.get("status_indicator", False))
         self._status_online_text: str = str(extra.get("status_online", "Online"))
         self._status_offline_text: str = str(extra.get("status_offline", "Offline"))
-        # Cold-boot queue: drop server-side pending updates on first boot (default True,
-        # preserves historical behaviour). Set extra.drop_pending_on_cold_boot: false to
-        # receive messages sent while the gateway was offline (e.g. nightly-off hosts).
-        # Watcher reconnects always preserve the queue regardless of this setting.
-        self._drop_pending_on_cold_boot: bool = self._coerce_bool_extra("drop_pending_on_cold_boot", True)
+        # Cold-boot queue: answer messages sent while the gateway was off (default False; Telegram holds
+        # them up to 24 h, update receipts dedupe ones already handled). extra.drop_pending_on_cold_boot:
+        # true discards that backlog on boot instead. Watcher reconnects always preserve the queue.
+        self._drop_pending_on_cold_boot: bool = self._coerce_bool_extra("drop_pending_on_cold_boot", False)
         self._dm_topics_config: list[dict[str, Any]] = extra.get("dm_topics", [])
         # chat_ids with DM topics configured (O(1) root-DM ignore check)
         self._dm_topic_chat_ids: set[str] = {str(e["chat_id"]) for e in self._dm_topics_config if "chat_id" in e}
@@ -999,8 +999,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         Live replies send the private topic thread id together with a reply anchor. Synthetic/resumed sends
         without an anchor (loop wakeups, background-process notifications, queued follow-ups after a gateway
         restart) prefer the Hermes topic's ``message_thread_id`` so they stay in the active topic lane (#87051).
-        ``direct_messages_topic_id`` is a first route only when no topic thread resolves, and otherwise a retry
-        after Telegram rejected the thread id twice: native DM topics accept only that id (#137568).
+        ``direct_messages_topic_id`` is a first route only when no topic thread resolves; it is never a retry for a
+        rejected private-chat thread id, since Bot API honours it only in a channel's DM supergroup (#151852).
         """
         fallback = cls._dm_topic_fallback(metadata)
         if fallback and reply_to_mode != "off":
@@ -1114,7 +1114,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         ``send()`` so a file upload cannot land between two chunks of the text it accompanies."""
         async with self._media_send_slot(send_kwargs.get("chat_id")):
             same_thread_retried = False  # a one-off "thread not found" flake retries the same thread first, as send() does
-            while True:  # anchor drop / same thread once / native id (only from a thread route) / chat root, so it ends
+            while True:  # anchor drop / same thread once / chat root, so it ends
                 try:
                     return await _await_with_thread_deadline(
                         send_fn(**send_kwargs), timeout=_MEDIA_SEND_DEADLINE, label="telegram-media-send", dump_on_blocked_loop=False)
@@ -1124,8 +1124,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                         send_kwargs = {**send_kwargs, "reply_to_message_id": None}  # the topic route stays
                     elif gone and send_kwargs.get("message_thread_id") and not same_thread_retried:
                         same_thread_retried = True
-                    elif gone and send_kwargs.get("message_thread_id") and (direct := direct_topic_retry_kwargs(send_kwargs.get("chat_id"), None, metadata, send_kwargs)):
-                        send_kwargs = {**send_kwargs, **direct}  # telegram_dm_topic_send.py: the same topic by its native id
                     elif gone and (send_kwargs.get("message_thread_id") or send_kwargs.get("direct_messages_topic_id")):
                         send_kwargs = dead_topic_retry_kwargs(send_kwargs)  # the topic is gone: chat root, no anchor
                         self._prune_stale_dm_topic_binding(send_kwargs.get("chat_id"), self._metadata_thread_id(metadata), metadata=metadata)
@@ -2926,7 +2924,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         """Whether THIS connection asks Telegram to discard its queued updates.
 
         A watcher reconnect always preserves them (#46621); a cold boot follows
-        ``platforms.telegram.extra.drop_pending_on_cold_boot`` (default true). The decision is logged
+        ``platforms.telegram.extra.drop_pending_on_cold_boot`` (default false). The decision is logged
         on every cold boot — a command that never ran is otherwise invisible (#71811)."""
         drop_pending = self._drop_pending_on_cold_boot if not is_reconnect else False
         if not is_reconnect:
@@ -2998,8 +2996,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect via long polling, or a webhook server if ``TELEGRAM_WEBHOOK_URL`` is set.
 
-        ``is_reconnect``: False = cold boot (drop the Bot API queue unless
-        ``extra.drop_pending_on_cold_boot`` is false); True = watcher reconnect (preserve
+        ``is_reconnect``: False = cold boot (keep the Bot API queue unless
+        ``extra.drop_pending_on_cold_boot`` is true); True = watcher reconnect (preserve
         queued updates, else every message sent during the outage is lost). Webhook env:
         TELEGRAM_WEBHOOK_URL, TELEGRAM_WEBHOOK_PORT (8443), TELEGRAM_WEBHOOK_HOST,
         TELEGRAM_WEBHOOK_SECRET."""
@@ -3351,12 +3349,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                             retried_thread_not_found = True
                             logger.warning("[%s] Thread %s not found, retrying once with same thread_id", self.name, effective_thread_id)
                             continue
-                        if private_dm_topic_send or private_chat(chat_id):  # telegram_dm_topic_send.py: native id, then root
-                            thread_kwargs = direct_topic_retry_kwargs(chat_id, thread_id, metadata, thread_kwargs) or {}
-                            if not thread_kwargs:
-                                reply_to_id, used_thread_fallback = None, True
-                                self._prune_stale_dm_topic_binding(chat_id, effective_thread_id or thread_id, metadata=metadata)
-                            effective_thread_id = None
+                        if private_dm_topic_send or private_chat(chat_id):  # telegram_dm_topic_send.py: root, no dead anchor
+                            self._prune_stale_dm_topic_binding(chat_id, effective_thread_id or thread_id, metadata=metadata)
+                            thread_kwargs, reply_to_id, used_thread_fallback, effective_thread_id = {}, None, True, None
                             continue
                         # Thread is genuinely gone: retry without it and prune the stale binding.
                         logger.warning("[%s] Thread %s not found, retrying without message_thread_id", self.name, effective_thread_id)
@@ -3957,8 +3952,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
 
     async def _send_message_with_thread_fallback(self, **kwargs):
         """Send a control-style message (approval prompts, pickers, update prompts) that can carry a stale
-        thread_id from a DM reply chain: on a missing topic, a private chat tries the native id, then the root
-        without the anchor; a forum retries without message_thread_id. ``_send_chunk_with_retries`` has its own.
+        thread_id from a DM reply chain: on a missing topic, a private chat goes to the root without the anchor;
+        a forum retries without message_thread_id. ``_send_chunk_with_retries`` has its own.
         """
         if not self._bot:
             raise RuntimeError("Not connected")
@@ -3968,16 +3963,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                 self._bot.send_message(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
         except Exception as send_err:
             if (message_thread_id is not None and self._is_bad_request_error(send_err) and self._is_thread_not_found_error(send_err)):
-                direct = direct_topic_retry_kwargs(kwargs.get("chat_id"), None, None, kwargs)
-                if direct:
-                    try:
-                        return await _await_with_thread_deadline(
-                            self._bot.send_message(**{**kwargs, **direct}), timeout=_TEXT_SEND_DEADLINE, label="telegram-send",
-                            dump_on_blocked_loop=False)
-                    except Exception as direct_err:
-                        # Only a confirmed missing topic moves on: a timeout may have delivered, a flood is not "gone".
-                        if not (self._is_bad_request_error(direct_err) and topic_gone(kwargs.get("chat_id"), direct_err)):
-                            raise
                 logger.warning(
                     "[%s] Thread %s not found for control message, retrying without message_thread_id", self.name, message_thread_id)
                 # Same prune as the text send path; an anchor into the dead topic must not steer the retry.
@@ -5642,16 +5627,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         reply_user = getattr(replied, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
 
-    @staticmethod
-    def _entity_sources(message: Message):
-        """``(text, entities)`` pairs for the message text and caption; a text-less ``rich_message``
-        contributes its text minus code spans (as a code entity hides a handle) for the raw @handle fallback."""
-        text = getattr(message, "text", None) or ""
-        caption = getattr(message, "caption", None) or ""
-        yield text, getattr(message, "entities", None) or []
-        yield caption, getattr(message, "caption_entities", None) or []
-        if not text and not caption:
-            yield rich_message_text(message, skip_code=True), []
+    _entity_sources = staticmethod(addressing_sources)  # telegram_entities.py: text, caption, or rich blocks
 
     @staticmethod
     def _entity_type(entity) -> str:
@@ -5795,11 +5771,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
     def _message_matches_mention_patterns(self, message: Message) -> bool:
         if not self._mention_patterns:
             return False
-        return any(
-            pattern.search(candidate)
-            for candidate in (getattr(message, "text", None), getattr(message, "caption", None),
-                              rich_message_text(message)) if candidate
-            for pattern in self._mention_patterns)
+        text = addressing_text(message)
+        return bool(text) and any(pattern.search(text) for pattern in self._mention_patterns)
 
     def _is_guest_mention(self, message: Message) -> bool:
         """Guest-mode bypass: explicit bot mention (caller already verified group chat)."""
@@ -6336,9 +6309,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         """Download a voice/audio/video attachment into the local cache. An oversized one only gets a note:
         the caller's tail dispatches the event, so an album item still joins its album's turn."""
         try:
-            allowed, note = self._telegram_media_size_allowed(source, label)
+            name = getattr(source, "file_name", None)
+            allowed, note = self._telegram_media_size_allowed(source, f"{label} '{name}'" if isinstance(name, str) and name else label)
             if not allowed:
-                event.text = self._append_observed_note(event.text, note or "")
+                self._note_instead_of_media(event, note or "")
                 logger.info("[Telegram] Skipped oversized user %s (size=%s)", kind, getattr(source, "file_size", None))
                 return
             file_obj = await source.get_file()
@@ -6358,9 +6332,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
 
     @staticmethod
     def _note_instead_of_media(event: MessageEvent, text: str) -> bool:
-        """Append a user-facing note to the event text (the caption survives); False lets the caller's tail
-        dispatch it (through the album queue for an album item, so the album stays one turn)."""
-        event.text = f"{event.text}\n\n{text}" if event.text else text
+        """Append an item note (kept per item by an album merge); False lets the caller dispatch the event."""
+        add_item_note(event, text)
         return False
 
     @staticmethod
@@ -6387,7 +6360,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             if not doc.file_size or doc.file_size > self._max_doc_bytes:
                 logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
                 return self._note_instead_of_media(
-                    event, f"The document is too large or its size could not be verified. Maximum: {self._max_doc_bytes // (1024 * 1024)} MB.")
+                    event, f"Document '{display}' is too large or its size could not be verified. Maximum: {self._max_doc_bytes // (1024 * 1024)} MB.")
             # Screenshots/photos sent as documents take the image cache + batching path.
             if ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/"):
                 file_obj = await doc.get_file()

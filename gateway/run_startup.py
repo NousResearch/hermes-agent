@@ -36,6 +36,8 @@ from typing import Any, Dict, Optional, Tuple
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+# What adapters' ``get_chat_info`` reports for a chat every member reads (a handoff home that is no DM).
+_HANDOFF_SHARED_CHAT_TYPES = frozenset({"group", "channel", "forum", "room", "supergroup", "thread"})
 
 
 def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> list[str]:
@@ -1855,10 +1857,10 @@ class GatewayStartupMixin:
             chat_type = "dm" if home_chat_id.startswith("D") else "group"
             scope_for_chat = getattr(transport.adapter, "scope_id_for_chat", None)
             scope_id = home.scope_id or (scope_for_chat(home_chat_id) if callable(scope_for_chat) else None)
-        if platform == Platform.MATRIX:
-            # Matrix likewise keys an in-thread reply on the ROOM's type (#112918); the adapter's
-            # get_chat_info reports "dm"/"group" for the home room.
-            chat_type = "dm" if await self._handoff_home_is_dm(transport.adapter, home_chat_id) else "group"
+        if platform == Platform.MATRIX or (not is_thread and platform not in (Platform.TELEGRAM, Platform.SLACK)):
+            # Matrix keys replies on the room's type (#112918); a turn in no fresh thread keeps the home's
+            # real type on every platform: a group home is not a DM (its DM-only statuses, #101003).
+            chat_type = await self._handoff_home_chat_type(transport.adapter, home_chat_id, platform)
         # Discord builds in-thread messages with ``chat_id == thread id``: key on the thread's OWN id.
         dest_source = SessionSource(
             platform=platform,
@@ -1881,15 +1883,19 @@ class GatewayStartupMixin:
         )
 
     @staticmethod
-    async def _handoff_home_is_dm(adapter, home_chat_id: str) -> bool:
-        """Whether the home chat is a DM by the adapter's own ``get_chat_info`` (``type: "dm"``);
-        unknown/failed → not a DM, the common handoff target."""
+    async def _handoff_home_chat_type(adapter, home_chat_id: str, platform: Platform) -> str:
+        """The home chat's type by the adapter's own ``get_chat_info``. Matrix and Discord key a room or
+        guild channel ``group`` (unknown/failed → ``group``, the common handoff target); elsewhere the
+        reported shared label is kept, and an unclassifiable home keeps ``dm``."""
         try:
             info = await adapter.get_chat_info(home_chat_id)
         except Exception:
             logger.debug("Handoff: get_chat_info failed for %s", home_chat_id, exc_info=True)
-            return False
-        return isinstance(info, dict) and info.get("type") == "dm"
+            info = None
+        kind = str(info.get("type") or "").strip().lower() if isinstance(info, dict) else ""
+        if platform in (Platform.MATRIX, Platform.DISCORD):
+            return "dm" if kind == "dm" else "group"
+        return kind if kind in _HANDOFF_SHARED_CHAT_TYPES else "dm"
 
     def _handoff_session_key(self, dest, profile_name: Optional[str]) -> str:
         """Destination session_key by the adapters' own rules. Thread keys omit user_id so the next

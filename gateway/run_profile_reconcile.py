@@ -718,14 +718,13 @@ def migrate_profile_identity_verb(runner):
             return {"ok": False, "error": "live gateway has no session store"}
         acquired = []
         try:
-            from persistence_assembly import open_persistence, profile_scope, store_location
+            from persistence_assembly import open_persistence, profile_scope, store_exists
             db_counts: dict[str, dict[str, int]] = {}
             if (routing := getattr(store, "_routing_persistence", None)) is not None:
                 db_counts["routing"] = routing.profile_identity.rekey_profile(old, new).as_dict()
             routing_home = getattr(store, "_routing_home", None)
             scope = profile_scope(home=Path(routing_home) / "profiles" / new) if routing_home else None
-            profile_path = store_location(scope) if scope is not None else None
-            if scope is not None and (profile_path is None or profile_path.exists()):
+            if scope is not None and store_exists(scope):
                 profile_store = open_persistence(scope)
                 acquired.append(profile_store)
                 db_counts["profile"] = profile_store.profile_identity.rekey_profile(old, new).as_dict()

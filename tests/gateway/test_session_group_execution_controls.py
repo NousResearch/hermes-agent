@@ -13,7 +13,7 @@ from tests.gateway.fixtures.storage_handles import close_storage_handles, storag
 
 class RoomService:
     def __init__(self, path, owner, store):
-        self.db_path, self.store = path, store
+        self.db_path, self.store, self.placement = path, store, 'profile'
         self.owner = owner
         self.calls = []
         self.runtime = SimpleNamespace(status=lambda: {'running': True, 'stopping': False})

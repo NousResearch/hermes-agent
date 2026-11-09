@@ -1494,7 +1494,8 @@ def context_engine_persistence(hook, persistence):
 def context_engine_session_db(agent, session_db):
     """The ``session_db`` the agent's context engine binds. The built-in compressor takes the agent's store; a plugin
     engine is outside code written against ``SessionDB``, so over a storage interface handle it takes the deprecated
-    ``hermes_state.SessionDB`` on the same profile's store, one per agent (``close_context_engine_session_db``)."""
+    ``hermes_state.SessionDB`` on the same profile's store, one per agent (``close_context_engine_session_db``). The
+    ``hermes_state`` deprecation warning goes to an engine with a session hook that cannot take ``persistence``."""
     from agent.context_compressor import ContextCompressor
     from persistence_assembly import Persistence
 
@@ -1504,8 +1505,20 @@ def context_engine_session_db(agent, session_db):
     if plugin_db is None:
         import hermes_state
 
-        plugin_db = agent._context_engine_session_db = hermes_state.SessionDB(
+        plugin_db = agent._context_engine_session_db = hermes_state._SessionDB(
             session_db.scope.profile_dir / "state.db", read_only=session_db.read_only)
+        engine = agent.context_compressor
+        hooks = [getattr(engine, name, None) for name in ("bind_session_state", "on_session_start")]
+        if not all(_accepts_keyword_argument(hook, "persistence") for hook in hooks if callable(hook)) \
+                and hermes_state._first_warning():
+            import warnings
+
+            warnings.warn(
+                f"context engine {type(engine).__module__}.{type(engine).__qualname__} gets session_db, a "
+                f"hermes_state.SessionDB, which is deprecated and is removed in {hermes_state._REMOVAL_RELEASE}; accept "
+                "the persistence= keyword in its bind_session_state and on_session_start to read through the agent's "
+                "store handle instead (https://hermes-agent.nousresearch.com/docs/developer-guide/context-engine-plugin"
+                "#session-storage).", DeprecationWarning, stacklevel=2)
     return plugin_db
 
 

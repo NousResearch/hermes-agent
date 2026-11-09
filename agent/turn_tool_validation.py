@@ -118,6 +118,24 @@ def validate_tool_calls(
     _mixed_invalid_batch = bool(invalid_tool_calls) and any(
         tc.function.name in valid_names for tc in tool_calls
     )
+    if getattr(agent, "_repetition_fallback_no_tools", False):
+        # The one-shot fallback is answer-only after a completed tool checkpoint. The model
+        # should not emit calls because its request had no tool schemas, but enforce that
+        # boundary here too: valid_tool_names still reflects the normal session toolset.
+        append_message(messages, agent._build_assistant_message(assistant_message, finish_reason))
+        _append_tool_error_results(
+            messages, tool_calls,
+            lambda _tc: (
+                "Not executed: repetition recovery is answer-only because completed tool results "
+                "are already present in this turn's context. Review them before continuing."
+            ),
+        )
+        return _verdict("return", _partial_exit(
+            agent, messages, conversation_history, api_call_count,
+            "The fallback response requested another tool action. It was not executed; "
+            "the completed tool results remain in the conversation for review.",
+        ))
+
     if _mixed_invalid_batch:
         agent._invalid_tool_retries = 0
         _n_valid = sum(1 for tc in tool_calls if tc.function.name in valid_names)

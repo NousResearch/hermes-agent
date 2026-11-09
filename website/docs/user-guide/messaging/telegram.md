@@ -158,6 +158,10 @@ platforms:
       media_group_wait_seconds: 3.0
 ```
 
+A short text followed right away by a photo (a question, then the screenshot it is about) also
+reaches the agent as one message. If the photo starts arriving before the text has been sent on,
+the text waits up to 8 seconds for the photo's download and joins it.
+
 ### Repeated inbound updates
 
 Hermes suppresses repeated Telegram `update_id` values before message batching,

@@ -460,6 +460,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 flush_event.set()
 
     def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
+        # Text before a boundary is interim, never the final answer: an unsure send of it must
+        # not get the clean final redelivered as "may be a duplicate". Cleared even when the
+        # no-edit sentinel keeps the rest of the segment state.
+        self._delivery_uncertain = False
         if preserve_no_edit and self._message_id == "__no_edit__":
             return
         # Retain the segment's visible text so has_delivered_text still matches.

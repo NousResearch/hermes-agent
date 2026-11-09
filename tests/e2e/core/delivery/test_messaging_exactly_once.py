@@ -360,6 +360,24 @@ def test_slow_turn_interrupted_by_followup(gw, director, platform):
     assert len([c for c in copies if c.complete]) <= 1, dump(gw, platform, chat)
 
 
+@pytest.mark.parametrize("platform", ["fk_tg", "fk_dc"])
+def test_interim_ack_lost_then_clean_final(gw, director, platform):
+    """Only the commentary before a tool call is sent-but-ack-lost; the final answer after the tool
+    lands cleanly. Its delivery was never unclear, so it shows once and is never resent marked."""
+    token = f"{platform}.interim-ack-lost"
+    chat = f"ia-{platform}"
+    aid = f"A-{token}"
+    director.script(token, ToolCall("terminal", {"command": "echo hi"}, text="Let me check that first. "),
+                    Director.answer(aid, "the final answer after the tool."))
+    gw.fault(platform=platform, op="send", kind="ack_lost", contains="Let me check", chat_id=chat)
+    gw.inject(platform, f"[in:{token}] please answer", message_id=f"in-{token}", chat_id=chat)
+    gw.wait_idle([chat], f"{token} turn to finish")
+    wait_until(lambda: ledger_quiescent(gw.db_path, chat), f"{token} ledger to settle", proc=gw.proc, log=gw.log)
+    fired = [f for f in read_jsonl(gw.spool / "faults_fired.jsonl") if f.get("chat_id") == chat]
+    assert fired, f"injected ack_lost never hit the commentary send\n{dump(gw, platform, chat)}"
+    assert_exactly_once(gw, director, platform, chat, token, aid)
+
+
 def test_parallel_threads_are_independent(gw, director):
     """Two Discord threads in one channel run slow turns at the same time: each gets exactly one
     complete reply, delivered into its own thread."""

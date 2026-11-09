@@ -1,0 +1,59 @@
+name: omni-fabric-runtime
+repo: https://github.com/aidonerightcorp/omni-fabric-runtime
+sha: be28e1a7b8c2a518e2947393d9b6a5a97066eba8
+title: Omni-Fabric Adaptive Swarm & 7-Runtime Weight-Space Compiler
+description: >-
+  Environment-adaptive multi-agent runtime: SQLite WAL monotonic CAS lease queue, affinity
+  bundle dispatch, distinct maker!=checker object cache with FTS5 RRF search, 6-stage
+  weight-space compiler across 6 model classes, check-gated Actor x {Transfer, Transform, Save}
+  DAG decomposer, leak-free holdout recursive RL trial engine, topic-nullspace generator
+  attribution, zero-token Koopman + CEGAR trajectory planner, 7-target portable cartridge and
+  in-memory IEEE-754 WASM / WebGPU WGSL synthesizer, (epsilon, delta)-DP Nullspace Woodbury
+  federated merge, and optional loopback OpenAI-v1 swarm proxy. Disclosure — zero default
+  outbound network calls, zero shell execution, zero third-party API keys, and zero telemetry;
+  optional owner-configured upstream_endpoint and local_runner_url default to off and use
+  DNS-pinned http.client connections with zero redirect following and metadata/private-range
+  blocks; optional fabric_swarm_proxy_control binds an in-process HTTP server strictly to
+  127.0.0.1 with Host/Origin guards and atexit shutdown; persists state in the active profile's
+  HERMES_HOME/plugin-data SQLite WAL database.
+maintainer: aidonerightcorp
+tier: community
+category: automation
+requires_hermes: ">=0.20.0"
+docs_url: https://github.com/aidonerightcorp/omni-fabric-runtime#readme
+version: "0.6.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - fabric_probe_and_configure
+    - fabric_task_queue
+    - fabric_claim_bundle
+    - fabric_object_store
+    - fabric_compile_workflow_dag
+    - fabric_grid_and_rl_optimize
+    - fabric_boil_down_and_edit
+    - fabric_swarm_proxy_control
+    - fabric_federated_sync
+    - fabric_compile_weight_unit
+    - fabric_decompose_horizon
+    - fabric_recursive_trial
+    - fabric_attribute_generator_profile
+    - fabric_plan_koopman_trajectory
+    - fabric_export_portable_cartridge
+    - fabric_compile_wasm_wgsl_kernel
+    - fabric_dp_federated_merge
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+    - pre_verify
+    - post_api_request
+    - post_tool_call
+    - subagent_start
+    - subagent_stop
+    - kanban_task_claimed
+    - kanban_task_completed
+    - on_kanban_worker_stale_claim
+  provides_middleware:
+    - llm_request
+  requires_env: []

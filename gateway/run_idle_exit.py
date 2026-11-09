@@ -7,7 +7,8 @@ it has served nobody and has nothing to do for ``gateway.unmanaged_idle_exit_sec
 ``0`` disables):
 
 - no attached client (live ticketed WebSocket, outstanding ticket, or recent HTTP/WS activity);
-- no messaging adapter configured, connected or reconnecting (any profile);
+- no messaging adapter configured, connected or reconnecting (any profile), except adapters that
+  set ``keeps_gateway_up = False`` (a bridge whose connection alone is not work);
 - no runnable cron job and no kanban task the dispatcher must act on;
 - no queued/started admission, live managed worker, in-flight agent/cron/API run, background
   process or async delegation, active heartbeat/loop, pending handoff or hosted-room task.
@@ -70,18 +71,33 @@ def attached_client(runner):
         note_client_activity(runner)
 
 
+def _quiet_platforms(instances) -> set:
+    """Platforms whose every known adapter instance sets ``keeps_gateway_up = False``. A platform
+    with no instance to ask (never built, or only a secondary's reconnect task) still holds the gateway."""
+    holds, quiet = set(), set()
+    for platform, adapter in instances:
+        if adapter is not None:
+            (quiet if getattr(adapter, "keeps_gateway_up", True) is False else holds).add(platform)
+    return quiet - holds
+
+
 def _messaging_busy(runner) -> str | None:
     from gateway.config import Platform
-    live = list(getattr(runner, "adapters", None) or {})
+    instances = list((getattr(runner, "adapters", None) or {}).items())
     for adapters in (getattr(runner, "_profile_adapters", None) or {}).values():
-        live.extend(adapters)
+        instances.extend(adapters.items())
+    live = [platform for platform, _adapter in instances]
     for pending in (getattr(runner, "_profile_failed_platforms", None) or {}).values():
         live.extend(pending or {})
-    live.extend(getattr(runner, "_failed_platforms", None) or {})
+    failed = getattr(runner, "_failed_platforms", None) or {}
+    live.extend(failed)
+    instances.extend((p, entry.get("predecessor")) for p, entry in failed.items() if isinstance(entry, dict))
     config = getattr(runner, "config", None)
     if config is not None:
         live.extend(p for p, cfg in config.platforms.items() if getattr(cfg, "enabled", False))
-    live = {getattr(p, 'value', str(p)) for p in live if p != Platform.LOCAL}  # LOCAL never holds the gateway
+    quiet = _quiet_platforms(instances)
+    live = {getattr(p, 'value', str(p)) for p in live
+            if p != Platform.LOCAL and p not in quiet}  # LOCAL never holds the gateway
     return f"messaging {sorted(live)}" if live else None
 
 

@@ -59,6 +59,18 @@ def may_have_delivered(error: Exception) -> bool:
     return send_error_kind(error) in MAY_HAVE_DELIVERED
 
 
+def maybe_delivered_result(error: Exception, safe_error: str, **fields):
+    """The gateway ``SendResult`` for a failed send: one that may be in the chat (``LOST``) is
+    ``delivery_uncertain`` and not retryable, so ``_send_with_retry`` neither resends it nor falls
+    back to plain text; everything else stays retryable as before."""
+    from gateway.platforms.base import SendResult
+
+    if send_error_kind(error) == LOST:
+        return SendResult(success=False, error=safe_error, retryable=False,
+                          raw_response={"delivery_uncertain": True}, **fields)
+    return SendResult(success=False, error=safe_error, retryable=True, **fields)
+
+
 def is_entity_parse_error(error: Exception, markers: tuple = ("parse", "markdown", "html", "entit")) -> bool:
     """A failure a plain-text resend fixes: Telegram refused the formatting (a ``BadRequest`` such
     as ``can't parse entities``), or a local error naming it that never reached Telegram. Never a

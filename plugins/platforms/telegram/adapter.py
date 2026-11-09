@@ -197,7 +197,7 @@ from plugins.platforms.telegram.telegram_network import (
     proxy_target_hosts)
 from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
 from plugins.platforms.telegram.telegram_send_path_recovery import TelegramSendPathRecoveryMixin, mark_send_path_recovered
-from plugins.platforms.telegram.telegram_send_errors import is_entity_parse_error
+from plugins.platforms.telegram.telegram_send_errors import LOST, is_entity_parse_error, maybe_delivered_result as _maybe_delivered_result, send_error_kind
 from plugins.platforms.telegram.telegram_typing_gate import typing_may_fire
 from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, shared_sender_suffix
 from plugins.platforms.telegram.telegram_picker_labels import model_button_labels
@@ -1409,9 +1409,11 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramTo
         caller must NOT legacy-resend); retry semantics mirror legacy send()."""
         safe_error = _redact_telegram_error_text(exc)
         logger.warning("[%s] %s transient failure (no legacy resend): %s", self.name, what, safe_error)
-        return SendResult(
-            success=False, error=safe_error,
-            retryable=(self._looks_like_connect_timeout(exc) or not self._is_timed_out(exc)), retry_after=retry_after)
+        return _maybe_delivered_result(exc, safe_error, retry_after=retry_after)
+
+    def _send_retry_is_final(self, result: SendResult) -> bool:
+        """A send that may already be in the chat is never retried or re-sent as plain text."""
+        return isinstance(result.raw_response, dict) and bool(result.raw_response.get("delivery_uncertain"))
 
     @staticmethod
     async def _record_rich_sent(chat_id: Any, message_id: Any, content: str) -> None:
@@ -3361,14 +3363,11 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramTo
                         reply_to_id = None
                         continue
                     raise  # other BadRequest errors are permanent
-                # TimedOut also subclasses NetworkError: a generic timeout may have reached Telegram (don't
-                # retry); a wrapped ConnectTimeout or an httpx pool timeout is safe to retry.
-                is_pool_timeout = self._looks_like_pool_timeout(send_err)
-                if (
-                    _TimedOut and isinstance(send_err, _TimedOut)
-                    and not self._looks_like_connect_timeout(send_err) and not is_pool_timeout):
+                # A request that left and got no readable answer (a generic timeout, a reset after the
+                # write) may be in the chat: never resend it. Connect/pool failures never left.
+                if send_error_kind(send_err) == LOST:
                     raise
-                if is_pool_timeout:
+                if self._looks_like_pool_timeout(send_err):
                     await self._drain_general_connections_after_pool_timeout()
                 if _send_attempt >= 2:
                     raise
@@ -3529,12 +3528,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramTo
         if "message_too_long" in err_str or "too long" in err_str:
             logger.debug("[%s] send() content too long, falling back to new-message continuation", self.name)
             return SendResult(success=False, error="message_too_long", error_kind="too_long")
-        _to = error_types[2]
-        is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
-        return SendResult(
-            success=False, error=safe_error,
-            retryable=(self._looks_like_connect_timeout(e) or self._looks_like_pool_timeout(e) or not is_timeout),
-            error_kind=error_kind)
+        return _maybe_delivered_result(e, safe_error, error_kind=error_kind)
 
     async def _send_chunks(
         self, chat_id: str, chunks: list[str], delivered: list[str], reply_to: Optional[str],

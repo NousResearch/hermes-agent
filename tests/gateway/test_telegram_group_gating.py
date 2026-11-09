@@ -1300,3 +1300,26 @@ def test_rich_message_handle_inside_code_span_does_not_wake_the_bot():
     assert adapter._should_process_message(plain) is False
     assert adapter._should_process_message(in_code) is False
     assert adapter._should_process_message(outside) is True
+
+
+def _channel_post(text, *, chat_id, mention):
+    entities = [_mention_entity(text)] if mention else []
+    return SimpleNamespace(
+        message_id=44, text=text, caption=None, entities=entities, caption_entities=[],
+        message_thread_id=None, is_topic_message=False,
+        chat=SimpleNamespace(id=chat_id, type="channel", title="Broadcast", is_forum=False),
+        from_user=None, sender_chat=SimpleNamespace(id=chat_id, type="channel"), reply_to_message=None, date=None)
+
+
+@pytest.mark.parametrize("guest_mode", [False, True])
+def test_channel_posts_run_the_group_gates(guest_mode):
+    adapter = _make_adapter(require_mention=True, allowed_chats=["-100"], guest_mode=guest_mode)
+    # Outside allowed_chats a channel post is dropped even when it mentions the bot: guest mode is
+    # a group affordance, and anyone who can post in a channel would otherwise cross the allowlist.
+    assert adapter._should_process_message(_channel_post("hi @hermes_bot", chat_id=-200, mention=True)) is False
+    # Allowlisted channel: require_mention holds, an explicit mention triggers.
+    assert adapter._should_process_message(_channel_post("ordinary post", chat_id=-100, mention=False)) is False
+    assert adapter._should_process_message(_channel_post("hi @hermes_bot", chat_id=-100, mention=True)) is True
+    # Guest mode still lets a group mention cross the allowlist.
+    group = _group_message("hi @hermes_bot", chat_id=-200, entities=[_mention_entity("hi @hermes_bot")])
+    assert adapter._should_process_message(group) is guest_mode

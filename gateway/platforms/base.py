@@ -426,7 +426,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union, cast
+from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -449,7 +449,6 @@ from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
 
 if TYPE_CHECKING:
     from agent.display import ToolPreview
-    from gateway.relay.adapter import RelayAdapter
 
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
@@ -4254,6 +4253,10 @@ class BasePlatformAdapter(ABC):
             return
         record_delivery(result)
 
+    def _final_delivery_metadata(self, source: SessionSource, metadata: dict[str, Any]) -> dict[str, Any]:
+        """Resolve transport metadata before recording and sending the same final."""
+        return metadata
+
     async def send_final_ledgered(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: dict[str, Any], *,
         reply_to: Optional[str], is_ephemeral_response: bool = False,
@@ -4266,12 +4269,7 @@ class BasePlatformAdapter(ABC):
         Returns the result with the adapter that sent it: that adapter owns ``result.message_id``
         (an ephemeral delete must go to the same transport)."""
         delivery_adapter = self._final_delivery_adapter(event.source)
-        if delivery_adapter.platform is Platform.RELAY:
-            metadata = dict(metadata or {})
-            for key in ("scope_id", "user_id", "profile"):
-                if value := getattr(event.source, key, None):
-                    metadata.setdefault(key, value)
-            metadata = cast("RelayAdapter", delivery_adapter)._with_scope(event.source.chat_id, metadata)
+        metadata = delivery_adapter._final_delivery_metadata(event.source, metadata)
         logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
                     len(text_content), event.source.chat_id)
         obligation_id = await self._record_delivery_obligation(

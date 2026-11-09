@@ -1121,6 +1121,13 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
     def _with_scope(self, chat_id: str, metadata: Optional[dict[str, Any]]) -> dict[str, Any]:
         return with_cached_scope(self, chat_id, metadata)
 
+    def _final_delivery_metadata(self, source, metadata):
+        metadata = dict(metadata or {})
+        for key in ("scope_id", "user_id", "profile"):
+            if value := getattr(source, key, None):
+                metadata.setdefault(key, value)
+        return self._with_scope(source.chat_id, metadata)
+
     def fronts_platform(self, platform: Any) -> bool:
         """Whether the authenticated relay transport advertises ``platform`` — a
         restart-safe ownership signal from the identity set sent at handshake, not

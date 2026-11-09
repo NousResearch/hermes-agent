@@ -5086,7 +5086,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             chat_id, self._metadata_thread_id(metadata), metadata, reply_to_message_id=reply_to_id, reply_to_mode=self._reply_to_mode)
         return reply_to_id, {
             "chat_id": normalize_telegram_chat_id(chat_id), "reply_to_message_id": reply_to_id,
-            "read_timeout": _MEDIA_SEND_READ_TIMEOUT, **thread_kwargs, **self._notification_kwargs(metadata)}
+            "read_timeout": _MEDIA_SEND_READ_TIMEOUT, "write_timeout": _MEDIA_SEND_DEADLINE,
+            **thread_kwargs, **self._notification_kwargs(metadata)}
 
     async def _send_media(
         self, send_fn: Any, chat_id: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]], media_label: str,
@@ -5183,9 +5184,16 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.error(
-                "[%s] Failed to send Telegram voice/audio, falling back to base adapter: %s", self.name,
+                "[%s] Failed to send Telegram voice/audio, falling back to document: %s", self.name,
                 _redact_telegram_error_text(e), exc_info=True)
-            return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
+            try:
+                return await self.send_document(
+                    chat_id=chat_id, file_path=audio_path, caption=caption, reply_to=reply_to, metadata=metadata)
+            except Exception as doc_err:
+                logger.error(
+                    "[%s] Fallback send_document also failed, falling back to base adapter: %s", self.name,
+                    _redact_telegram_error_text(doc_err), exc_info=True)
+                return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
         finally:
             if _transcoded_voice_path:
                 with contextlib.suppress(OSError):
@@ -5213,7 +5221,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             delivered = anim_result.success
         if not photos:
             return SendResult(success=delivered, error=None if delivered else "all images failed to send")
-        from urllib.parse import unquote as _unquote
+        if len(photos) == 1:
+            single_result = await super().send_multiple_images(chat_id, photos, metadata, human_delay=human_delay)
+            delivered = delivered or single_result.success
+            return SendResult(success=delivered, error=None if delivered else single_result.error)
+        from urllib.request import url2pathname
         CHUNK = 10  # Telegram's album limit
         chunks = [photos[i:i + CHUNK] for i in range(0, len(photos), CHUNK)]
         for chunk_idx, chunk in enumerate(chunks):
@@ -5226,7 +5238,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 for image_url, alt_text in chunk:
                     source: Any = image_url
                     if image_url.startswith("file://"):
-                        local_path = _unquote(image_url[7:])
+                        local_path = url2pathname(image_url[7:])
+                        if sys.platform == "win32" and local_path:
+                            m = re.match(r'^[/\\]([a-zA-Z])[:/\\](.*)$', local_path)
+                            if m:
+                                local_path = f"{m.group(1).upper()}:/{m.group(2)}"
                         if not os.path.exists(local_path):
                             logger.warning("[%s] Skipping missing image in media group: %s", self.name, local_path)
                             continue
@@ -5240,6 +5256,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                         opened_files.append(source)
                     media.append(InputMediaPhoto(media=source, caption=self._caption_1024(alt_text)))
                 if not media:
+                    continue
+                if len(media) == 1:
+                    logger.info("[%s] Single photo remaining in chunk, sending individually (Telegram requires >=2 for media group)", self.name)
+                    single_fb = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                    delivered = delivered or single_fb.success
                     continue
                 logger.info("[%s] Sending media group of %d photo(s) (chunk %d/%d)", self.name, len(media), chunk_idx + 1, len(chunks))
                 reply_to_id, send_kwargs = self._media_send_kwargs(chat_id, None, metadata)

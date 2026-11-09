@@ -850,8 +850,9 @@ def _media_delivery_allowed_roots() -> list[Path]:
         root for chunk in media_delivery_allow_dirs().split(os.pathsep)
         for raw_root in chunk.split(",")
         if (root := Path(os.path.expanduser(raw_root.strip()))).is_absolute())
+    bh_tmp = Path(os.path.expanduser("~")) / ".config" / "browser-harness" / "tmp"
     return [*map(Path, MEDIA_DELIVERY_SAFE_ROOTS), *_profile_cache_roots(),
-            *_kanban_attachment_roots(), *operator_roots]
+            *_kanban_attachment_roots(), bh_tmp, *operator_roots]
 
 
 def _media_delivery_recency_seconds() -> float:
@@ -1293,7 +1294,12 @@ def _normalize_media_tag_path(raw: str) -> str:
     path = str(raw or "").strip()
     if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
         path = path[1:-1].strip()
-    return path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+    path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+    if sys.platform == "win32" and path:
+        m = re.match(r'^[/\\]([a-zA-Z])[:/\\](.*)$', path)
+        if m:
+            path = f"{m.group(1).upper()}:/{m.group(2)}"
+    return path
 
 
 def _path_lacks_deliverable_extension(path: str) -> bool:
@@ -3260,8 +3266,13 @@ class BasePlatformAdapter(ABC):
         # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png) and relative paths (./foo.png)
         # (?:~/|/)    anchors to absolute or home-relative Unix paths (?:[A-Za-z]:[/\\]) anchors to Windows
         # drive-letter paths (#34632)
+        seg = r'[^\s\r\n/\\*?\x22<>|:]+(?:[ \t]+[^\s\r\n/\\*?\x22<>|:]+)*'
         path_re = re.compile(
-            r'(?<![/:\w.])(?:~/|/|[A-Za-z]:[/\\])(?:[\w.\-]+[/\\])*[\w.\-]+\.(?:' + ext_part + r')\b',
+            r'(?<![/:\w.])(?:'
+            r'["\'](?P<qpath>(?:~/|/|[A-Za-z]:[/\\])[^"\'\r\n]+\.(?:' + ext_part + r'))["\']'
+            r'|'
+            r'(?P<bpath>(?:~/|/|[A-Za-z]:[/\\])(?:' + seg + r'[/\\])*' + seg + r'\.(?:' + ext_part + r')\b)'
+            r')',
             re.IGNORECASE)
         code_spans = _code_spans(content)
         unique: dict = {}  # expanded_path -> raw_match_text, deduped in discovery order
@@ -3269,12 +3280,17 @@ class BasePlatformAdapter(ABC):
             if any(s <= match.start() < e for s, e in code_spans):
                 continue
             raw = match.group(0)
-            expanded = os.path.expanduser(raw)
+            candidate = match.group("qpath") or match.group("bpath")
+            if sys.platform == "win32" and candidate:
+                m = re.match(r'^[/\\]([a-zA-Z])[:/\\](.*)$', candidate)
+                if m:
+                    candidate = f"{m.group(1).upper()}:/{m.group(2)}"
+            expanded = os.path.expanduser(candidate)
             if os.path.isfile(expanded):
                 unique.setdefault(expanded, raw)
             else:
                 # Most common reason a promised file never arrives — log the gap.
-                logger.info("Skipping bare file path in reply (no file on disk): %s", _log_safe_path(raw))
+                logger.info("Skipping bare file path in reply (no file on disk): %s", _log_safe_path(candidate))
         if not unique:
             return [], content
         cleaned = content

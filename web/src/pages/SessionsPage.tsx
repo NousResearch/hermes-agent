@@ -55,6 +55,7 @@ import {
   sourceBelongsToCategory,
   sourceLabel,
 } from "./SessionsPage_sources";
+import { SnippetHighlight } from "./SessionsPage_snippet";
 import { StructuredReasoning } from "@/components/StructuredReasoning";
 import { PlatformsCard } from "@/components/PlatformsCard";
 import { shouldRenderStructuredReasoning } from "@/lib/reasoning-markup";
@@ -84,36 +85,8 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
+import { isImeComposing } from "@/lib/ime";
 
-
-/** Render an FTS5 snippet with highlighted matches.
- *  The backend wraps matches in >>> and <<< delimiters. */
-function SnippetHighlight({ snippet }: { snippet: string }) {
-  const parts: React.ReactNode[] = [];
-  const regex = />>>(.*?)<<</g;
-  let last = 0;
-  let match: RegExpExecArray | null;
-  let i = 0;
-  while ((match = regex.exec(snippet)) !== null) {
-    if (match.index > last) {
-      parts.push(snippet.slice(last, match.index));
-    }
-    parts.push(
-      <mark key={i++} className="bg-warning/30 text-warning px-0.5">
-        {match[1]}
-      </mark>,
-    );
-    last = regex.lastIndex;
-  }
-  if (last < snippet.length) {
-    parts.push(snippet.slice(last));
-  }
-  return (
-    <p className="font-mondwest normal-case mt-0.5 min-w-0 max-w-full truncate text-xs text-text-secondary">
-      {parts}
-    </p>
-  );
-}
 
 function ToolCallBlock({
   toolCall,
@@ -572,6 +545,7 @@ function SessionRow({
                       value={renameValue}
                       onChange={(e) => setRenameValue(e.target.value)}
                       onKeyDown={(e) => {
+                        if (isImeComposing(e)) return;
                         if (e.key === "Enter") void submitRename();
                         else if (e.key === "Escape") setRenaming(false);
                       }}

@@ -40,6 +40,7 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
+import { isSubmitEnter } from "@/lib/ime";
 
 /* ------------------------------------------------------------------ */
 /*  Provider grouping                                                  */
@@ -577,7 +578,7 @@ function CustomKeysCard({
                 value={newKey}
                 onChange={(e) => setNewKey(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") handleAdd();
+                  if (isSubmitEnter(e)) handleAdd();
                 }}
                 placeholder={t.env.customKeyNamePlaceholder}
                 aria-label={t.env.customKeyName}

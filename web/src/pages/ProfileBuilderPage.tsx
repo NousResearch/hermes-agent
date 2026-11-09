@@ -24,6 +24,7 @@ import {
 } from "@/lib/mcp-server-create";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
+import { isSubmitEnter } from "@/lib/ime";
 
 // Profile name rule mirrors the backend (`^[a-z0-9][a-z0-9_-]{0,63}$`).
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -463,7 +464,7 @@ export default function ProfileBuilderPage() {
                       setHubQuery(e.target.value)
                     }
                     onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
-                      if (e.key === "Enter") runHubSearch();
+                      if (isSubmitEnter(e)) runHubSearch();
                     }}
                   />
                   <Button

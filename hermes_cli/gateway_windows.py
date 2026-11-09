@@ -473,20 +473,57 @@ def _launcher_scripts() -> list[tuple[Path, str, str]]:
     The .vbs is what the Scheduled Task and the Startup-folder fallback run through wscript.exe
     (issue #45599 fix A); the .cmd stays as a generated helper/compatibility artifact.
     """
-    settings = _launcher_settings()
-    script_path = get_task_script_path()
+    return _render_launchers(_launcher_settings(), get_task_script_path())
+
+
+def _render_launchers(settings: tuple[str, str, str, str], script_path: Path) -> list[tuple[Path, str, str]]:
     return [(script_path, _build_gateway_cmd_script(*settings), "utf-8"),
             (script_path.with_suffix(".vbs"), _build_gateway_vbs_script(*settings), "utf-16")]
+
+
+def _write_launcher_scripts(scripts: list[tuple[Path, str, str]]) -> None:
+    for path, content, encoding in scripts:
+        tmp = path.with_suffix(".tmp") if encoding == "utf-8" else path.with_name(path.name + ".tmp")
+        _atomic_write(path, content, tmp, encoding=encoding)
 
 
 def _write_task_script() -> Path:
     """Generate the launcher scripts (``_launcher_scripts``); return the .cmd path."""
     _assert_windows()
     scripts = _launcher_scripts()
-    for path, content, encoding in scripts:
-        tmp = path.with_suffix(".tmp") if encoding == "utf-8" else path.with_name(path.name + ".tmp")
-        _atomic_write(path, content, tmp, encoding=encoding)
+    _write_launcher_scripts(scripts)
     return scripts[0][0]
+
+
+def refresh_dead_launcher(home: Path, task_name: str) -> bool:
+    """Re-render ``home``'s launcher when the interpreter it runs no longer exists; True if rewritten.
+
+    A Store update replaces the versioned payload folder that interpreter lived in, and a Store
+    install has no ``hermes update`` to re-render it, so the task and the Startup entry kept running a
+    dead launcher (#150448). Only a launcher this installer wrote for ``home`` is touched, and only
+    its files: the task and the Startup entry already point at them.
+    """
+    from hermes_cli.gateway_runtime_service_identity import _vbs_identity, launcher_text, read_definition
+
+    vbs = home / "gateway-service" / f"{_sanitize_filename(task_name)}.vbs"
+    try:
+        configured, argv = _vbs_identity(launcher_text(read_definition(vbs)))
+    except (OSError, ValueError):
+        return False
+    interpreter = Path(argv[0]) if argv else None
+    if (interpreter is None or not interpreter.is_absolute() or interpreter.exists()
+            or os.path.normcase(str(Path(configured).resolve())) != os.path.normcase(str(home.resolve()))):
+        return False
+    scripts = _render_launchers(_launcher_settings(home), vbs.with_suffix(".cmd"))
+    if all(path.exists() and path.read_bytes() == content.encode(encoding) for path, content, encoding in scripts):
+        return False
+    try:
+        _write_launcher_scripts(scripts)
+    except OSError:
+        logger.warning("Could not re-render the gateway launcher %s", vbs, exc_info=True)
+        return False
+    logger.info("Re-rendered the gateway launcher %s: its interpreter %s no longer exists", vbs, interpreter)
+    return True
 
 
 def launcher_script_drift() -> list[str]:

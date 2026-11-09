@@ -529,6 +529,12 @@ def apply_llm_output_transform(
         return final_response, transformed, pre_transform
     if not final_response:
         return final_response, False, None
+    # A recovery seam can own the first transform; it must see prior native refs.
+    from types import SimpleNamespace
+    from agent.responses_images import append_pending_response_images
+    message = SimpleNamespace(content=final_response, provider_data={})
+    append_pending_response_images(agent, message)
+    final_response = message.content
     if platform is None:
         platform = getattr(agent, "platform", None) or ""
     transformed, pre_transform = False, None
@@ -565,16 +571,47 @@ def _run_held_transforms(callbacks, payload: dict, logger) -> Optional[str]:
 
 
 def settle_held_final(agent, result: Any) -> None:
-    """A held turn's reply leaves only through its transform snapshot. ``finish_text_response``,
-    ``finalize_turn``, the Codex runtime and the truncation ceiling run it before persisting; every
-    other exit (provider errors, retry exhaustion, interrupts, compression failures, ...) returns its
-    text through ``run_conversation``, which calls this, so no path hands the user text the plugin
-    did not see first, and a failed transform yields the withheld notice."""
-    if getattr(agent, "_hold_stream", False) is not True or not isinstance(result, dict):
+    """Settle direct terminal exits before publishing their authoritative final.
+
+    Normal finals and native-aware recovery seams already own their first final write.
+    API errors, retry exhaustion and compression/refusal returns can flush interim rows
+    without going through those seams. Publish a NEW native-bearing final here, never
+    rewrite those earlier rows. No-image static errors keep the held-only safety net.
+    """
+    if not isinstance(result, dict):
         return
     text, turn_id = result.get("final_response"), getattr(agent, "_current_turn_id", "") or ""
     recorded = getattr(agent, "_llm_output_transform", None)
-    if not isinstance(text, str) or not text or (isinstance(recorded, tuple) and recorded[:1] == (turn_id,)):
+    if not isinstance(text, str) or not text:
+        return
+    artifacts = list((getattr(agent, "_responses_image_artifacts", None) or {}).values())
+    pending = any(not item.get("delivered") for item in artifacts)
+    if artifacts and result.get("failure_reason") == "content_policy_blocked":
+        # Refusal messages are the clean MODEL history, not a publication list. The
+        # owner retains this final as a display-only notice after the lease releases.
+        final, transformed, pre_transform = apply_llm_output_transform(agent, text, turn_id=turn_id)
+        from agent.responses_images import delivered_response_image_refs
+        # Even an empty suffix marks a native notice for owner-only retention.
+        # Do not duplicate the full final in the private worker frame or resend media.
+        result.update(final_response=final, response_transformed=transformed,
+                      pre_transform_response=public_pre_transform(agent, pre_transform),
+                      refused_turn_artifacts=delivered_response_image_refs(agent))
+        return
+    if pending:
+        from agent.responses_images import preserve_recovery_response_images
+
+        messages = result["messages"]
+        final, transformed, pre_transform = preserve_recovery_response_images(
+            agent, messages, text, "interrupted" if result.get("interrupted") else "error",
+        )
+        if getattr(agent, "_hold_stream", False) is True and result.get("error") == text:
+            result["error"] = final
+        result.update(final_response=final, response_transformed=transformed, pre_transform_response=pre_transform)
+        agent._persist_session(messages, None)
+        return
+    if isinstance(recorded, tuple) and recorded[:1] == (turn_id,):
+        return
+    if getattr(agent, "_hold_stream", False) is not True:
         return
     final, transformed, _ = apply_llm_output_transform(agent, text, turn_id=turn_id)
     if result.get("error") == text:  # keep the mirror an error card reads
@@ -720,6 +757,12 @@ def finalize_turn(
         final_response, _recovered_from_stream = _recover_final_from_stream(
             agent, final_response, interrupted, failed
         )
+        # Settle native refs before the first transform, never after a plugin's rewrite.
+        if any(not item.get("delivered") for item in (getattr(agent, "_responses_image_artifacts", None) or {}).values()):
+            from agent.responses_images import preserve_recovery_response_images
+            final_response, _, _ = preserve_recovery_response_images(
+                agent, messages, final_response or "", "interrupted" if interrupted else "incomplete",
+            )
         # Recovery paths (stream-recovered / prior-turn text) reach here with a response no
         # earlier seam transformed; the normal text turn already did this before its flush and
         # gets the recorded outcome back. Either way the tail close below writes the text the
@@ -751,7 +794,13 @@ def finalize_turn(
         )
 
     _platform = getattr(agent, "platform", None) or ""
-    _response_transformed = False
+    # Held interrupted native finals already settled before their durable write.
+    recorded = getattr(agent, "_llm_output_transform", None)
+    _response_transformed = bool(
+        interrupted and getattr(agent, "_hold_stream", False) is True
+        and isinstance(recorded, tuple) and len(recorded) == 3
+        and recorded[0] == turn_id and recorded[1]
+    )
     _pre_transform_response = None
     if final_response and not interrupted:
         final_response, _response_transformed, _pre_transform_response = _apply_output_hooks(

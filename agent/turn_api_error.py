@@ -264,6 +264,15 @@ class UnrecoveredErrorVerdict:
     result: Optional[dict[str, Any]] = None
 
 
+def _client_error_allows_fallback(agent, classified, *, unclassified_local, shrink_spent, reasoning_spent) -> bool:
+    """Do not regenerate completed native output after an exception-form refusal."""
+    if classified.reason == FailoverReason.content_policy_blocked and any(
+        (getattr(agent, "_responses_image_artifacts", None) or {}).values()
+    ):
+        return False
+    return bool(classified.should_fallback or unclassified_local or shrink_spent or reasoning_spent)
+
+
 def settle_unrecovered_error(
     agent: Any, *, api_error: Any, classified: Any, _retry: Any, status_code: Any, error_msg: Any,
     is_context_length_error: Any, is_rate_limited: Any, _is_zai_coding_overload: Any,
@@ -345,7 +354,10 @@ def settle_unrecovered_error(
         # the cascade. An UNCLASSIFIED local ValueError/TypeError keeps its historical fallback;
         # a recognised verdict that opts out wins even when the exception is a ValueError subclass.
         _unclassified_local = is_local_validation_error and classified.reason == FailoverReason.unknown
-        if classified.should_fallback or _unclassified_local or shrink_spent or reasoning_spent:
+        if _client_error_allows_fallback(
+            agent, classified, unclassified_local=_unclassified_local,
+            shrink_spent=shrink_spent, reasoning_spent=reasoning_spent,
+        ):
             # Announce the fallback only when a chain exists, else "trying fallback..." lies
             # before a silent abort.
             if agent._has_pending_fallback():
@@ -358,8 +370,11 @@ def settle_unrecovered_error(
                 active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
                 retry_count = compression_attempts = 0
                 return _verdict("break")
-        # Terminal from here: collapse the continuation trail once, before the persist.
-        _delivered = settle_delivered_partial(agent, messages, current_turn_user_idx)
+        # A refusal discards the continuation trail with the whole turn. Do not
+        # consume its final transform receipt on a partial that cannot be published.
+        _delivered = "" if classified.reason == FailoverReason.content_policy_blocked else settle_delivered_partial(
+            agent, messages, current_turn_user_idx,
+        )
         return _verdict("return", nonretryable_client_error_result(
             agent, api_error, classified, status_code=status_code, api_kwargs=api_kwargs,
             api_messages=api_messages, messages=messages, conversation_history=conversation_history,

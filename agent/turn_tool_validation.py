@@ -57,9 +57,7 @@ def _partial_exit(agent, messages, conversation_history, api_call_count, final_r
     """Terminal partial result. Prior retries or an earlier tool batch leave a tool-result
     tail; close it as interrupt aborts do so the next turn is not tool→user (#48879).
     This path never reaches finalize_turn, so persist here."""
-    close_interrupted_tool_sequence(messages, final_response)
-    agent._persist_session(messages, conversation_history)
-    return stamp_failure({
+    result = stamp_failure({
         "final_response": final_response,
         "messages": messages,
         "api_calls": api_call_count,
@@ -67,6 +65,14 @@ def _partial_exit(agent, messages, conversation_history, api_call_count, final_r
         "partial": True,
         "error": final_response,
     }, "truncated", True)
+    # Unlike other direct returns, this consumer can append its final while closing
+    # a tool tail. Settle native output at the shared seam BEFORE that first write.
+    if any(not item.get("delivered") for item in (getattr(agent, "_responses_image_artifacts", None) or {}).values()):
+        from agent.turn_finalizer import settle_held_final
+        settle_held_final(agent, result)
+    close_interrupted_tool_sequence(messages, result["final_response"])
+    agent._persist_session(messages, conversation_history)
+    return result
 
 
 def validate_tool_calls(

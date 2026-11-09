@@ -88,9 +88,11 @@ def collapse_continuation_trail(
     partial = agent._strip_think_blocks(
         _join_truncated_parts(join_parts)
     ).strip()
-    if partial and getattr(agent, "_hold_stream", False) is True:
-        # A held turn showed none of these fragments: the stitched text reaches the user and the
-        # stored row only through the turn's transform snapshot (fail closed: the withheld notice).
+    if partial and (getattr(agent, "_hold_stream", False) is True or (
+        getattr(agent, "_responses_image_artifacts", None) and not getattr(agent, "_interrupt_requested", False)
+    )):
+        # A native image can precede a fallback onto this wire. Settle it before
+        # appending the authoritative final, including the prior artifact refs.
         from agent.turn_finalizer import apply_llm_output_transform
         partial, _, _ = apply_llm_output_transform(agent, partial, turn_id=getattr(agent, "_current_turn_id", "") or "")
     if partial:
@@ -243,11 +245,19 @@ class _Trunc(TruncationVerdict):
         agent = self.agent
         if cleanup:
             agent._cleanup_task_resources(self.effective_task_id)
+        transformed, pre_transform = False, None
+        if getattr(agent, "_responses_image_artifacts", None) or getattr(agent, "_hold_stream", False) is True:
+            from agent.responses_images import preserve_recovery_response_images
+            final_response, transformed, pre_transform = preserve_recovery_response_images(
+                agent, self.messages, final_response, self.finish_reason,
+            )
         agent._persist_session(self.messages, self.conversation_history)
-        return self.done("return", stamp_failure(partial_result(
+        result = stamp_failure(partial_result(
             self.messages if result_messages is None else result_messages, self.api_call_count,
             final_response, error, failed=failed, compression_exhausted=compression_exhausted,
-        ), *failure))
+        ), *failure)
+        result.update(response_transformed=transformed, pre_transform_response=pre_transform)
+        return self.done("return", result)
 
     @property
     def is_stub(self) -> bool:
@@ -444,12 +454,16 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
         )
         _final_response = _TRUNCATED_FINAL
     agent._cleanup_task_resources(st.effective_task_id)
+    from agent.responses_images import preserve_recovery_response_images
+    _final_response, _transformed, _pre_transform = preserve_recovery_response_images(agent, st.messages, _final_response, st.finish_reason)
     # Prior tool batches can leave a tool-result tail; this path never reaches finalize_turn.
     close_interrupted_tool_sequence(st.messages, _final_response)
-    return st.end_turn(
+    verdict = st.end_turn(
         _final_response, cleanup=False,
         failure=(_failure, True),
     )
+    verdict.result.update(response_transformed=_transformed, pre_transform_response=_pre_transform)
+    return verdict
 
 
 def recover_from_truncation(
@@ -520,6 +534,10 @@ def recover_from_truncation(
         )
 
     _trunc_msg = normalize_response_for_agent(agent, response)
+    # Truncated function-call responses bypass ordinary intake; their completed native
+    # images still belong to this turn even while the existing tool-call retry proceeds.
+    from agent.responses_images import materialize_response_images
+    materialize_response_images(agent, _trunc_msg)
     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
     _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
 
@@ -696,10 +714,14 @@ def continue_codex_incomplete(
 
     agent._codex_incomplete_retries = 0
     agent._codex_reasoning_only_streak = 0
-    agent._persist_session(messages, conversation_history)
-    return partial_result(
-        messages, api_call_count, "Codex response remained incomplete after 3 continuation attempts"
+    from agent.responses_images import preserve_recovery_response_images
+    terminal, transformed, pre_transform = preserve_recovery_response_images(
+        agent, messages, "Codex response remained incomplete after 3 continuation attempts", finish_reason,
     )
+    agent._persist_session(messages, conversation_history)
+    result = partial_result(messages, api_call_count, terminal)
+    result.update(response_transformed=transformed, pre_transform_response=pre_transform)
+    return result
 
 
 @dataclass
@@ -738,6 +760,9 @@ def handle_content_policy_refusal(
             f"provider refusal category: {_stop_details['category']}" if _stop_details.get("category") else ""
         )
 
+    from agent.responses_images import materialize_response_images
+    materialize_response_images(agent, _refusal_result)
+
     agent._invoke_api_request_error_hook(
         task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
         api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,
@@ -748,11 +773,15 @@ def handle_content_policy_refusal(
     )
     stop_thinking_spinner(agent, thinking_spinner)
 
-    if agent._has_pending_fallback():
-        agent._buffer_diagnostic_status("⚠️ Model declined to respond (safety refusal) — trying fallback...")
-    if agent._try_activate_fallback():
-        active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
-        return RefusalVerdict("break", None, active_system_prompt)
+    # Completed native output is already paid for, even when its sibling refused.
+    # Keep refusal classification, but do not ask another provider to generate it again.
+    has_images = any((getattr(agent, "_responses_image_artifacts", None) or {}).values())
+    if not has_images:
+        if agent._has_pending_fallback():
+            agent._buffer_diagnostic_status("⚠️ Model declined to respond (safety refusal) — trying fallback...")
+        if agent._try_activate_fallback():
+            active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
+            return RefusalVerdict("break", None, active_system_prompt)
 
     agent._flush_status_buffer()
     _refusal_log = _refusal_text[:500] + "..." if len(_refusal_text) > 500 else _refusal_text

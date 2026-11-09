@@ -151,6 +151,38 @@ _REFUSAL_DETAIL = "I can't help with breaking into someone else's property."
 _NEW_REQUEST = "What is the capital of France?"
 
 
+def test_acp_native_refusal_reference_survives_real_finish_and_reload(acp, monkeypatch):
+    from types import SimpleNamespace
+    from acp_adapter.server import HermesACPAgent
+    from acp_adapter.session import SessionManager
+    from agent.turn_failure_copy import CONTENT_REFUSED_METADATA_KEY
+    from tests.agent.native_responses_image_support import image_item, media_paths, response, text_item
+
+    provider, prompt, _rows, db, sid, _conn, server = acp
+    provider.script = [{"finish_reason": "stop", "content": "Accepted answer."}]
+    prompt("Accepted ask.")
+    state = server.session_manager.get_session(sid)
+    state.agent.api_mode = "codex_responses"
+    raw = response(text_item("Synthetic refusal."), image_item(), status="incomplete")
+    raw.incomplete_details = SimpleNamespace(reason="content_filter")
+    monkeypatch.setattr(state.agent, "_interruptible_api_call", lambda *a, **k: raw)
+    monkeypatch.setattr(state.agent, "_interruptible_streaming_api_call", lambda *a, **k: raw)
+    prompt("Synthetic refused image request.")
+    assert all(row.get("content") != "Synthetic refused image request." for row in state.history)
+    display = db.get_messages_as_conversation(sid, include_compacted=True)
+    notice = display[-1]["display_metadata"][CONTENT_REFUSED_METADATA_KEY]["notice"]
+    paths = media_paths(notice)
+    assert len(paths) == 1 and paths[0].is_file()
+    assert not any("MEDIA:" in str(row.get("content")) for row in db.get_messages_as_conversation(sid))
+    reopened_conn = _RecordingConn()
+    reopened = HermesACPAgent(session_manager=SessionManager(db=db))
+    reopened.on_connect(reopened_conn)
+    asyncio.run(reopened.load_session(cwd=state.cwd, session_id=sid))
+    texts = [getattr(getattr(u, "content", None), "text", None) or getattr(u, "text", None)
+             for u in reopened_conn.updates]
+    assert any(str(paths[0]) in (text or "") for text in texts)
+
+
 def test_acp_refusal_never_poisons_the_next_prompt(acp):
     """Turn 1: HTTP-200 ``content_filter`` refusal. Turn 2: unrelated request.
 

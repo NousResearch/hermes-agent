@@ -3,7 +3,9 @@ accounting fields of ``run_conversation`` and the owner commits them with ``usag
 ``-z --usage-file`` on a managed session reports tokens, cost, model and exit reason."""
 import io
 
-from agent.managed_worker import accept_result, encode_frame, read_frame, result_frame
+import pytest
+
+from agent.managed_worker import MAX_FRAME, accept_result, encode_frame, read_frame, result_frame
 from hermes_cli.oneshot import _USAGE_KEYS
 
 
@@ -19,6 +21,24 @@ def _run_conversation_result():
             'last_prompt_tokens': 10, 'estimated_cost_usd': 0.0125, 'cost_status': 'estimated',
             'cost_source': 'catalog', 'service_tier': None, 'session_id': 'worker-session',
             'error': 'x' * 10000}
+
+
+@pytest.mark.parametrize("refs", ["", "MEDIA:/profile/cache/images/offline.png\n" * 200])
+def test_native_refusal_refs_survive_the_bounded_worker_wire(refs):
+    raw = {"final_response": "A permitted final notice.", "failure_reason": "content_policy_blocked",
+           "refused_turn_artifacts": refs}
+    wire = read_frame(io.BytesIO(encode_frame({"type": "result", "result": result_frame(raw)})))
+    accepted, _ = accept_result(wire["result"])
+    assert accepted["refused_turn_artifacts"] == refs
+    assert accepted["final_response"] == raw["final_response"]
+    with pytest.raises(ValueError, match="managed_worker_frame_too_large"):
+        encode_frame({"type": "result", "result": {**raw, "refused_turn_artifacts": "x" * MAX_FRAME}})
+
+
+@pytest.mark.parametrize("bad", [None, 1, [], {}])
+def test_owner_rejects_non_text_native_refusal_refs(bad):
+    with pytest.raises(ValueError, match="invalid_worker_result"):
+        accept_result({"final_response": "notice", "refused_turn_artifacts": bad})
 
 
 def test_worker_result_frame_carries_the_usage_ledger():

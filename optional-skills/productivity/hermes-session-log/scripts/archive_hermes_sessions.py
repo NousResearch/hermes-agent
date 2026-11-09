@@ -16,6 +16,7 @@ Idempotent: re-runs rewrite only changed sessions and print nothing on no-op
 Configuration: scripts/config.json next to this file (copy config.example.json),
 or the HERMES_SESSION_LOG_CONFIG environment variable pointing at a JSON file.
 """
+import hashlib
 import json
 import os
 import re
@@ -29,6 +30,21 @@ HERE = Path(__file__).resolve().parent
 INDEX_NAME = "Session Index.md"
 RAW_FIELDS = ("id", "role", "timestamp", "tool_name", "content", "tool_calls",
               "reasoning", "compacted", "active", "_compressed_summary")
+
+
+def fingerprint(s: dict, msgs: list) -> str:
+    """sha256 over every session/message field that feeds the note + raw
+    transcript. Catches in-place changes that keep the max message ID and
+    the session end time stable (compaction flags, summaries, edits)."""
+    h = hashlib.sha256()
+    sess = [s.get(k) for k in ("ended_at", "end_reason", "title", "model",
+                                "cwd", "profile_name", "source")]
+    h.update(json.dumps(sess, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+    for m in msgs:
+        h.update(json.dumps([m.get(k) for k in RAW_FIELDS],
+                            sort_keys=True, ensure_ascii=False).encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()
 
 
 def load_cfg() -> dict:
@@ -138,6 +154,8 @@ def export_db_session(con, s: dict, state: dict, vault: Path, raw_clip: int, too
     stem = f"{datetime.fromtimestamp(float(s['started_at'])):%Y-%m-%d %H-%M} {sfx}"
     st = state.get("db:" + sid)
     if not full and st and st.get("max_id") == max_id and st.get("ended_at") == s["ended_at"] \
+            and st.get("fingerprint") is not None \
+            and st["fingerprint"] == fingerprint(s, msgs) \
             and (vault / (st["note"] + ".md")).exists():
         return {"note": st["note"], "changed": False}
 
@@ -204,7 +222,8 @@ def export_db_session(con, s: dict, state: dict, vault: Path, raw_clip: int, too
     with open(vault / raw_name, "w", encoding="utf-8") as fh:
         for m in msgs:
             fh.write(json.dumps({k: m.get(k) for k in RAW_FIELDS}, ensure_ascii=False) + "\n")
-    state["db:" + sid] = {"note": stem, "max_id": max_id, "ended_at": s["ended_at"], "title": title}
+    state["db:" + sid] = {"note": stem, "max_id": max_id, "ended_at": s["ended_at"],
+                          "title": title, "fingerprint": fingerprint(s, msgs)}
     return {"note": stem, "changed": True}
 
 

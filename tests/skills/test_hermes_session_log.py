@@ -133,3 +133,38 @@ def test_open_session_status(tmp_path):
     _run(tmp_path, db)
     text = _notes(tmp_path / "vault" / "Hermes Sessions")[0].read_text(encoding="utf-8")
     assert 'status: "open"' in text
+
+
+def test_inplace_compaction_refreshes(tmp_path):
+    """In-place compaction keeps max message ID and session end time stable,
+    so the change must be detected by content fingerprint, not by max_id."""
+    db = tmp_path / "state.db"
+    _make_db(db)
+    first = _run(tmp_path, db)
+    assert "1 updated" in first.stdout
+    vault = tmp_path / "vault" / "Hermes Sessions"
+    note = _notes(vault)[0]
+    assert "Context compaction" not in note.read_text(encoding="utf-8")
+
+    sid = "local-" + "ab" * 32
+    con = sqlite3.connect(db)
+    con.execute(
+        "UPDATE messages SET compacted=1, _compressed_summary=? "
+        "WHERE session_id=? AND id=(SELECT MAX(id) FROM messages)",
+        ("earlier turns were compacted", sid))
+    con.commit()
+    con.close()
+
+    second = _run(tmp_path, db)
+    assert "1 updated" in second.stdout, second.stdout
+    text = note.read_text(encoding="utf-8")
+    assert "Context compaction" in text
+    assert "earlier turns were compacted" in text
+    assert "compacted: 1" in text
+    raw = [json.loads(l) for l in
+           (vault / (note.stem + ".jsonl")).read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert raw[-1]["compacted"] == 1
+    assert raw[-1]["_compressed_summary"] == "earlier turns were compacted"
+
+    third = _run(tmp_path, db)
+    assert third.returncode == 0 and third.stdout == "", third.stdout

@@ -1,6 +1,6 @@
 name: ballast
 repo: https://github.com/1momoh/ballast
-sha: ef8bd929607de6510e068a65a10c20fc3e85a189
+sha: c35e298eed1e39fbbc8a660514e418b6a9a245c5
 subdir: plugin/ballast
 description: Free a target amount of disk space by clearing the developer and AI caches you'll miss least, with Hermes approval and rebuild recipes.
 maintainer: 1momoh

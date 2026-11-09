@@ -683,6 +683,12 @@ class GatewayBusySessionMixin:
                 _match = self._plaintext_approval_words().get(_raw_text)
                 if _match is not None:
                     _verb, _normalized_args = _match
+                    _denied = self._check_slash_access(event.source, _verb)
+                    if _denied is not None:
+                        _adapter = self._delivery_adapter_for(event.source)
+                        if _adapter:
+                            await self._send_busy_reply(event, _adapter, _denied, plain_anchor=True)
+                        return True
                     _approval_handler = (
                         self._handle_approve_command if _verb == "approve" else self._handle_deny_command
                     )

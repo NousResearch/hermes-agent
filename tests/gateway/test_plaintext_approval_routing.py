@@ -111,6 +111,27 @@ def test_plaintext_yes_resolves_approval(reply):
     _clear_approval_state()
 
 
+@pytest.mark.parametrize("reply", ["yes", "no"])
+def test_plaintext_approval_obeys_slash_access_policy(reply):
+    """Bare approval replies must use the same policy as /approve and /deny."""
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    runner.config.platforms[next(iter(runner.config.platforms))].extra = {
+        "allow_admin_from": ["admin"],
+        "user_allowed_commands": [],
+    }
+    session_key, entry = _register_blocking_approval(runner)
+
+    handled = asyncio.run(
+        runner._handle_active_session_busy_message(_make_event(reply), session_key)
+    )
+
+    assert handled is True
+    assert not entry.event.is_set()
+    adapter._send_with_retry.assert_awaited()
+    _clear_approval_state()
+
+
 def test_no_pending_approval_does_not_consume_conversational_yes():
     """A bare 'yes' with NO blocking approval must NOT be treated as an
     approval — it falls through to normal busy handling (design intent:

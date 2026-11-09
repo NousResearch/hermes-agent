@@ -1,11 +1,16 @@
-```yaml
 name: shotlane
 title: Shotlane
 repo: https://github.com/shotlane/shotlane
 subdir: hermes
 sha: 26e288a89a5ed8e858c9bf608d741400b02c8017
 version: "1.0.0"
-description: "A real browser for your agent: screenshots, phone, tablet and desktop checks, pages as Markdown and HTML to PDF, from Shotlane's hosted MCP server (https://shotlane.dev)>
+description: >-
+  A real browser for your agent: screenshots, phone, tablet and desktop checks,
+  pages as Markdown and HTML to PDF, from Shotlane's hosted MCP server
+  (https://shotlane.dev). Disclosure — hosted-only connector with no local code:
+  every tool call, with its URL or HTML, goes to shotlane.dev with the API key in
+  SHOTLANE_API_KEY as a Bearer header. The tool set is served by the remote server
+  at runtime and is not covered by the pinned sha.
 maintainer: Shotlane
 tier: community
 category: web
@@ -18,4 +23,3 @@ capabilities:
   provides_hooks: []
   provides_middleware: []
   requires_env: [SHOTLANE_API_KEY]
-```

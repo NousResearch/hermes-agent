@@ -80,3 +80,41 @@ async def test_an_edge_during_a_running_sweep_coalesces_into_one_rerun():
     gate.set()
     await _drain(adapter)
     assert runner.sweeps == [("telegram", "work"), ("telegram", "work")]
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_whose_failed_row_lands_after_recovery_is_still_swept(monkeypatch):
+    """The edge's sweep runs while ``_send_with_retry`` still holds the delivery-failure notice open;
+    the ``failed`` row written after that sweep must re-arm it (healthy polling has no second edge)."""
+    import gateway.delivery_ledger as ledger
+    from gateway.config import Platform
+    from gateway.platforms.base import SendResult
+    from gateway.session import SessionSource
+    from gateway.platforms.event import MessageEvent
+
+    runner = _Runner()
+    adapter, generation = _degraded_adapter(runner)
+    marked = []
+    monkeypatch.setattr(ledger, "mark_failed", lambda oid, error: marked.append((oid, error)))
+    notice_open, release_notice = asyncio.Event(), asyncio.Event()
+
+    async def _send_with_retry(**_kw):
+        notice_open.set()
+        await release_notice.wait()  # the notice send outlives the settle delay
+        return SendResult(success=False, error="send_path_degraded", retryable=True)
+    adapter._send_with_retry = _send_with_retry
+    event = MessageEvent(text="q", source=SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm"),
+                         message_id="m1")
+    adapter._record_delivery_obligation = lambda *a, **k: asyncio.sleep(0, result="oid-1")
+
+    final = asyncio.ensure_future(adapter.send_final_ledgered(event, "sk", "answer", {}, reply_to=None))
+    await notice_open.wait()
+    assert adapter._record_polling_progress(generation)
+    await _drain(adapter)
+    assert runner.sweeps == [("telegram", "work")]  # ran before the row existed
+
+    release_notice.set()
+    await final
+    assert marked == [("oid-1", "send_path_degraded")]
+    await _drain(adapter)
+    assert runner.sweeps == [("telegram", "work"), ("telegram", "work")]

@@ -44,7 +44,7 @@ import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
 import { createComposerAttachmentScope, draftTitleFor, takeSessionDraft } from '@/store/composer'
 import { $gatewaySwitching } from '@/store/gateway-switch'
-import { $pinnedSessionIds, pinSession } from '@/store/layout'
+import { $pinnedSessionIds } from '@/store/layout'
 import { $activeGatewayProfile, $gatewaySwapTarget, $profiles } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import { sessionAwaitingInput } from '@/store/prompts'
@@ -59,7 +59,7 @@ import {
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
-import { unpinSession } from '@/store/session-pin-sync'
+import { pinSession, unpinSession } from '@/store/session-pin-sync'
 import { isSessionRemovalPending } from '@/store/session-removal'
 import { requestForSessionProfile } from '@/store/session-request-router'
 import {
@@ -251,10 +251,10 @@ export function toggleTilePin(storedSessionId: string): void {
   const stored = tileStoredRow(storedSessionId)
   const pinId = stored ? sessionPinId(stored) : storedSessionId
 
-  if ($pinnedSessionIds.get().includes(pinId)) {
-    unpinSession(pinId)
+  if ($pinnedSessionIds.get().includes(pinId) || stored?.pinned === true) {
+    unpinSession(pinId, stored)
   } else {
-    pinSession(pinId)
+    pinSession(pinId, stored)
   }
 }
 
@@ -914,7 +914,7 @@ function useSessionTabActions({ onClose, onHideTabBar, storedSessionId, tabPaneI
     onClose,
     onDelete: () => void sessionTileDelegate()?.deleteSession(storedSessionId),
     onHideTabBar,
-    onPin: () => (pinned ? unpinSession(pinId, tileStoredRow(storedSessionId) ?? undefined) : pinSession(pinId)),
+    onPin: () => toggleTilePin(storedSessionId),
     pinned,
     profile,
     renameable,

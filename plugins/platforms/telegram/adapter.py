@@ -187,6 +187,7 @@ from plugins.platforms.telegram.telegram_polling_probe import TelegramPendingPro
 from plugins.platforms.telegram.telegram_intake import effective_update_message
 from plugins.platforms.telegram.telegram_media_group import add_item_note, flush_media_group_event, queue_media_group_event, tracking_album_items
 from plugins.platforms.telegram.telegram_media_flood import TelegramMediaFloodMixin
+from plugins.platforms.telegram import telegram_flood_window as _flood_window
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, log_resolved, tap_matches_prompt
@@ -1529,6 +1530,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramTo
                 self._bot.do_api_request("sendRichMessageDraft", api_kwargs=payload),
                 timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False))
         except Exception as exc:
+            if _flood_window.note_flood(self, chat_id, exc):
+                return False
             if self._is_rich_capability_error(exc):
                 self._rich_draft_disabled = True
                 logger.debug(
@@ -3853,21 +3856,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramTo
         return SendResult(success=True, message_id=last_id, continuation_message_ids=tuple(continuation_ids))
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
-        """Delete a bot-posted message (Bot API allows it within 48h); failures are non-fatal.
-
-        Used by the stream consumer's fresh-final cleanup path (ported from openclaw/openclaw#72038) to
-        remove long-lived preview messages after sending the completed reply as a fresh message. Telegram's
-        Bot API ``deleteMessage`` works for bot-posted messages in the last 48 hours. Failures are non-fatal
-        — the caller leaves the preview in place and logs at debug level.
-        """
-        if not self._bot:
-            return False
-        try:
-            await self._bot.delete_message(chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id))
-            return True
-        except Exception as e:
-            logger.debug("[%s] Failed to delete Telegram message %s: %s", self.name, message_id, _redact_telegram_error_text(e))
-            return False
+        """Delete a bot-posted message (Bot API allows it within 48h); failures are non-fatal (False).
+        Used by the stream consumer's fresh-final cleanup (openclaw/openclaw#72038); waits out the chat's flood window."""
+        return await _flood_window.delete_message(self, chat_id, message_id)
 
     def supports_draft_streaming(self, chat_type: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> bool:
         """sendMessageDraft works for private chats only (Bot API 9.5) and needs PTB >= 22.6; groups and
@@ -3879,45 +3870,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramTo
     async def send_draft(self, chat_id: str, draft_id: int, content: str, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Stream a partial message via ``sendRichMessageDraft`` (when rich is enabled and supported) else
         ``sendMessageDraft``; reusing ``draft_id`` animates the preview. The caller sends the final text."""
-        if not self._bot:
-            return SendResult(success=False, error="not_connected")
-        # Rich draft fast-path; any failure degrades to the plain draft below. Drafts have no message_id.
-        if self._should_attempt_rich_draft(content) and await self._try_send_rich_draft(chat_id, draft_id, content, metadata):
-            return SendResult(success=True, message_id=None)
-        if not hasattr(self._bot, "send_message_draft"):
-            return SendResult(success=False, error="api_unavailable")
-        # Drafts share the regular-send UTF-16 length contract.
-        text = content if len(
-            content) <= self.MAX_MESSAGE_LENGTH else self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)[0]
-        # Same MarkdownV2 conversion as ``send`` (MarkdownV2 then plain) so the draft doesn't snap at the end. Exception: a Rich
-        # final with rich drafts disabled previews raw — the legacy formatter would turn pipe tables into bullets.
-        plain_rich_preview = bool(
-            getattr(self, "_rich_messages_enabled", False) and not getattr(self, "_rich_drafts_enabled", False)
-            and self._needs_rich_rendering(text))
-        draft_thread_kwargs = self._thread_kwargs_for_draft(chat_id, metadata)
-        for use_markdown in ((False,) if plain_rich_preview else (True, False)):
-            kwargs: dict[str, Any] = {
-                "chat_id": normalize_telegram_chat_id(chat_id), "draft_id": int(draft_id),
-                "text": self.format_message(text) if use_markdown else text}
-            if use_markdown:
-                kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
-            kwargs.update(draft_thread_kwargs)
-            try:
-                if await _await_with_thread_deadline(
-                    self._bot.send_message_draft(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False):
-                    return SendResult(success=True, message_id=None)
-                return SendResult(success=False, error="draft_rejected")
-            except Exception as e:
-                # MarkdownV2 parse failure → retry once as plain text; anything else returns to the caller,
-                # which falls back to edit-based streaming for this response.
-                if use_markdown and self._is_bad_request_error(e):
-                    logger.debug(
-                        "[%s] sendMessageDraft MarkdownV2 rejected, retrying as plain text (chat=%s draft_id=%s): %s",
-                        self.name, chat_id, draft_id, _redact_telegram_error_text(e))
-                    continue
-                logger.debug("[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s", self.name, chat_id, draft_id, e)
-                return SendResult(success=False, error=_redact_telegram_error_text(e))
-        return SendResult(success=False, error="draft_rejected")
+        return await _flood_window.send_draft(self, chat_id, draft_id, content, metadata)
 
     async def _send_message_with_thread_fallback(self, **kwargs):
         """Send a control-style message (approval prompts, pickers, update prompts) that can carry a stale

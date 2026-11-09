@@ -507,6 +507,74 @@ def _legacy_post_swap_invocation(argv: list[str]) -> tuple[Path, list[str]] | No
 harden_import_path(str(_root))
 
 
+# This module is imported by every entry-point module, so its body also runs for a plain
+# library import: ``agent/process_bootstrap.py`` takes one socket helper from here, which
+# is how an ordinary state-db write reached ``os.execv`` and replaced a caller's image
+# with no traceback and no output (upstream #122160, #145512). Only a process that is
+# *becoming* a Hermes entry point may re-exec itself, take over an update handoff, or
+# exit for a dependency remedy. Repair, PM activation, the Happy Eyeballs shim and the
+# scratch TMPDIR stay unconditional — every importer needs those, none of them is fatal.
+_ENTRY_POINT_MODULES = frozenset({
+    "__main__", "hermes_cli.main", "agent.legacy_cli", "agent.managed_worker",
+    "agent.transports.hermes_tools_mcp_server", "acp_adapter.entry", "batch_runner",
+    "cli", "run_agent", "gateway.run", "tui_gateway.entry", "tui_gateway.slash_worker",
+    "tui_gateway.compute_host", "cron.worker_bootstrap", "hermes_cli.kanban_worker_client",
+    "hermes_cli.plugin_host_child", "hermes_cli.update_finish", "tools.bot_mode_dm",
+})
+
+
+def _importing_module_name() -> str | None:
+    """Name of the module whose ``import`` statement is running this body right now.
+
+    Importlib, runpy and this module's own frames are machinery, not the importer.
+    """
+    frame = sys._getframe(1)
+    while frame is not None:
+        name = frame.f_globals.get("__name__", "")
+        if name.startswith(("importlib", "runpy", "_bootstrap", "hermes_bootstrap")):
+            frame = frame.f_back
+            continue
+        return name or None
+    return None
+
+
+def _launched_as_entry_point() -> bool:
+    """True when this process is becoming the CLI, not merely importing hermes.
+
+    Deliberately not argv-based (HX003 forbids inferring process identity from argv, and
+    a PM install's console script does not live under the checkout to compare against).
+    ``-c`` launchers and ``python -m <entry>`` land on ``__main__`` and keep the tail,
+    which ``relaunch_command``'s ``argv[0] == "-c"`` branch requires.
+    """
+    return _importing_module_name() in _ENTRY_POINT_MODULES
+
+
+# Evaluated here, at import time, while the importing frame is still on the stack.
+_LAUNCHED_AS_ENTRY_POINT = _launched_as_entry_point()
+
+
+def _defer_launch_action(what: str) -> None:
+    """Report a launch-only step that a library importer must not take, where it is read.
+
+    Silent withholding is what made the replaced image undebuggable; under a test runner
+    the contract test asserts this path instead, so the line would only bury its output.
+    """
+    if "pytest" in sys.modules:
+        return
+    print(f"hermes: not {what}: this process imported hermes as a library, so it will not "
+          "replace its own image; run `hermes update` from a shell to finish it",
+          file=sys.stderr)
+
+
+def _restore_then_maybe_relaunch(recovery) -> None:
+    """Restore a torn tree for every importer; only the entry point may re-exec into it."""
+    if recovery.restore_interrupted_pull(_root):
+        if _LAUNCHED_AS_ENTRY_POINT:
+            recovery.relaunch_after_restore()
+        else:
+            _defer_launch_action("relaunch after restoring a half-finished update")
+
+
 def _settle_interrupted_update() -> None:
     """Put back the tree a killed ``hermes update`` left half-moved, before PM, launch preparation or
     any Hermes package imports from it (``hermes_cli._early_recovery``; ``hermes_cli.main`` repeats the
@@ -530,14 +598,12 @@ def _settle_interrupted_update() -> None:
         try:
             from hermes_cli import _early_recovery as recovery
 
-            if recovery.restore_interrupted_pull(_root):
-                recovery.relaunch_after_restore()
+            _restore_then_maybe_relaunch(recovery)
         finally:
             for name in [n for n in sys.modules if n == "hermes_cli" or n.startswith("hermes_cli.")]:
                 del sys.modules[name]
         return
-    if recovery.restore_interrupted_pull(_root):
-        recovery.relaunch_after_restore()
+    _restore_then_maybe_relaunch(recovery)
 
 
 _settle_interrupted_update()
@@ -557,10 +623,12 @@ def _pin_launcher_home() -> None:
 _pin_launcher_home()
 
 _legacy_post_swap = _legacy_post_swap_invocation(sys.argv[1:])
-if _legacy_post_swap is not None:
+if _legacy_post_swap is not None and _LAUNCHED_AS_ENTRY_POINT:
     # This continuation exists precisely because the replacement tree may not
     # run under the old release's dependency graph. Take it over before PM
     # activation, launch preparation, or argparse imports any of that graph.
+    # An importer that is not becoming the CLI does not own the handoff: taking it
+    # over here would end its process.
     from hermes_cli.update_handoff import _continue_legacy_post_swap
 
     _handoff_path, _argv_tail = _legacy_post_swap
@@ -581,10 +649,17 @@ from hermes_cli._parser import command_argv
 # Repair needs only stdlib. Do not activate the damaged tree to reach it.
 _pm_repair = command_argv(sys.argv[1:])[:2] == ["pm", "repair"]
 if not _pm_repair:
-    from hermes_cli.venv_sync import prepare_launch, relaunch_command
+    from hermes_cli.venv_sync import completion_pending_path, prepare_launch, relaunch_command
 
     try:
-        _launch_python = prepare_launch(_root, sys.argv[1:])
+        if _LAUNCHED_AS_ENTRY_POINT:
+            _launch_python = prepare_launch(_root, sys.argv[1:])
+        else:
+            # A library importer keeps its image. The owed work is named where an operator
+            # reads it rather than silently withheld, so a stale generation stays visible.
+            if completion_pending_path(_root).is_file():
+                _defer_launch_action("finish a source update")
+            _launch_python = None
         if _launch_python is not None:
             _main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
             _command = relaunch_command(

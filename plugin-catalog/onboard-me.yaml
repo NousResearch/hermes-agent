@@ -1,0 +1,22 @@
+name: onboard-me
+repo: https://github.com/skeptical-agency/onboard-me
+sha: f5d808460eb4d8120e36c2fe505dcdfde4eea2e8
+description: "Onboard Me: the deep-intake onboarding every new Hermes user should get. Two guided experiences in one plugin: (1) a warm structured intake conversation — 9 sections covering identity, daily life, work, goals, AI expectations, taste, hard rules, weekly rhythms and vision, with per-section opener guidance, follow-up prompts and care rules for sensitive topics, resumable across sessions (progress saved per section), three depths (quick ~25min / standard ~50-70min / deep 90+), compiling via onboard_finish into memory-ready declarative facts, verbatim hard rules, and automation candidates harvested from what the user says they keep forgetting; (2) onboard_setup_check — inspects the actual install (model, gateway, memory, MCP, plugins, skills, crons) and returns a personalized beginner-safe plan with exact commands plus a curated FAQ of real failure modes researched from the official docs, GitHub issues and community guides. Client-intake mode for agencies: engagement section, per-client profiles that never mix, handoff brief. Adds a /onboard slash command and a first-session pre_llm_call hook that offers the intake once per session on fresh installs only (never nags after a profile exists or on dismiss). Disclosure — runs entirely locally: no network calls, no credentials, no shell execution; the plugin only reads config structure (key names/counts, never secret values) and reads/writes its own JSON profiles under ~/.hermes/plugin-data/onboard-me/ which the user can inspect or delete; the hook injects a short one-time context suggestion and fails silent on any error. 45/45 offline lifecycle tests + live in-host verification."
+maintainer: skeptical-agency
+tier: community
+category: productivity
+docs_url: https://github.com/skeptical-agency/onboard-me/blob/f5d808460eb4d8120e36c2fe505dcdfde4eea2e8/README.md
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - onboard_start
+    - onboard_next
+    - onboard_save
+    - onboard_status
+    - onboard_finish
+    - onboard_setup_check
+    - onboard_profiles
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

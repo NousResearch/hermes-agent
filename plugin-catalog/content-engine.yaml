@@ -1,14 +1,14 @@
 name: content-engine
 title: Content Engine
 repo: https://github.com/PXMichael/content-engine
-sha: 41e4ff0f89941863c681c432a7bacc79c226ebbf
+sha: 19e5ae8cac70e34af3c849b7ed61506fef53c2f0
 version: "0.1.0"
 description: "One long video in, a week of content out. Paste a YouTube URL, get scored 45 to 60 second clips and per-platform social copy. Live in 90 seconds, no editing software."
 maintainer: PXMichael
 category: tools
 tier: community
 requires_hermes: ">=0.19"
-docs_url: https://github.com/PXMichael/content-engine/blob/41e4ff0f89941863c681c432a7bacc79c226ebbf/README.md
+docs_url: https://github.com/PXMichael/content-engine/blob/19e5ae8cac70e34af3c849b7ed61506fef53c2f0/README.md
 platforms: []
 readme: true
 capabilities:

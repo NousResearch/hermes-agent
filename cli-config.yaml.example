@@ -1528,6 +1528,9 @@ platform_toolsets:
 #         allow_silence: true
 #   slack:
 #     extra:
+#       # auto (default): follow existing engaged threads. root_mention: only
+#       # follow unmentioned replies when the head explicitly mentions this bot.
+#       thread_followup_mode: auto
 #       # Render live tool calls as Slack-native plan/task cards. This explicit
 #       # opt-in works even though Slack text tool_progress defaults to off.
 #       native_task_cards: false

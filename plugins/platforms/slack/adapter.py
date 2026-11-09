@@ -58,11 +58,13 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 try:  # sibling modules; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
+    from .adapter_thread_policy import should_wake_on_unmentioned_message, thread_followup_mode
     from .adapter_slash_lane import SlashHandoffLanes
     from .adapter_slash_payload import slash_command_text, slash_thread_id
     from .adapter_reactions_context import slack_reactions_marker
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
+    from adapter_thread_policy import should_wake_on_unmentioned_message, thread_followup_mode
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
     from adapter_reactions_context import slack_reactions_marker  # type: ignore
@@ -1088,6 +1090,7 @@ class SlackAdapter(BasePlatformAdapter):
         # fallback switches, ...) edit ONE message in place instead of appending a new bubble per event —
         # long retry loops used to spam threads with dozens of out-of-order status messages.
         self._status_message_ids: dict[tuple[str, str, str], str] = {}
+        self._root_mention_cache: dict[tuple[str, str, str], tuple[float, bool]] = {}
         self._thread_context_cache: dict[str, _ThreadContextCache] = {}
         # Threads already rehydration-checked this process (first reply after a restart injects
         # missed messages exactly once); message IDs with reaction lifecycle (bounded: an exception
@@ -4080,48 +4083,10 @@ class SlackAdapter(BasePlatformAdapter):
     async def _should_wake_on_unmentioned_message(
         self, event_thread_ts, channel_id: str, user_id: str, is_thread_reply: bool,
         team_id: str = "", chat_type: str = "group") -> bool:
-        """Return True if the bot should wake on an un-mentioned message. Checks, in order: root
-        sent via send() (_bot_message_ts); thread previously @-mentioned; active session;
-        bot-authored root via raw chat.postMessage; thread parent @-mentioned the bot.
-
-        1. 2. _mentioned_threads        (someone @-mentioned us earlier) 3. _has_active_session... (there's
-        already an agent session) 4. _bot_authored_thread_root (#63530: the bot posted the thread root via
-        direct chat.postMessage, outside the gateway send() path — derived from the Slack API, so it also
-        survives restarts).
-        """
-        if not event_thread_ts:
-            return False
-        thread_marker = self._workspace_message_marker(team_id, event_thread_ts)
-        # Check scoped marker AND bare ts: entries recorded before team_id was
-        # known are bare, and a scoped-vs-bare mismatch must not silence the bot.
-        if is_thread_reply and (
-            thread_marker in self._bot_message_ts or event_thread_ts in self._bot_message_ts):
-            return True
-        if thread_marker in self._mentioned_threads or event_thread_ts in self._mentioned_threads:
-            return True
-        if is_thread_reply and self._has_active_session_for_thread(
-            channel_id=channel_id, thread_ts=event_thread_ts, user_id=user_id, team_id=team_id,
-            chat_type=chat_type):
-            return True
-        if is_thread_reply and await self._bot_authored_thread_root(
-            channel_id=channel_id, thread_ts=event_thread_ts, team_id=team_id, chat_type=chat_type):
-            return True
-        # Thread PARENT @-mentioned the bot before this process (restart): a bare "run" is for us.
-        # 5th check (#24848): the thread PARENT @-mentioned the bot, but the mention event predates this
-        # process (restart) or the parent asked the bot to wait for a follow-up (e.g. A plain reply like
-        # "run" in that thread is addressed to the bot even though the reply itself carries no mention.
-        if is_thread_reply:
-            bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-            if bot_uid:
-                parent_text = await self._fetch_thread_parent_text(
-                    channel_id=channel_id, thread_ts=event_thread_ts, team_id=team_id,
-                    strip_bot_mention=False)
-                if parent_text and f"<@{bot_uid}>" in parent_text:
-                    # Remember so later replies skip the fetch.
-                    if not self._slack_strict_mention():
-                        self._register_mentioned_thread(event_thread_ts)
-                    return True
-        return False
+        """Apply the selected channel-thread policy; auto mode retains native wake signals."""
+        return await should_wake_on_unmentioned_message(
+            self, event_thread_ts, channel_id, user_id, is_thread_reply, team_id, chat_type,
+            _slack_mention_detection_text)
 
     @staticmethod
     def _append_block_text(text: str, blocks: list, bot_uid: str) -> str:
@@ -4197,6 +4162,10 @@ class SlackAdapter(BasePlatformAdapter):
                 "(thread_require_mention=true): channel=%s thread_ts=%s", channel_id,
                 event_thread_ts)
             return False
+        if (is_thread_reply and not is_dm and not is_mentioned
+                and thread_followup_mode(self.config.extra) == "root_mention"):
+            return await self._should_wake_on_unmentioned_message(
+                event_thread_ts, channel_id, user_id, is_thread_reply, team_id, "group")
         if free_channel:
             return True
         if not is_mentioned:
@@ -4553,7 +4522,8 @@ class SlackAdapter(BasePlatformAdapter):
         # top-level @mention STARTS a thread whose replies must trigger too.
         if (
             thread_ts and not self._slack_strict_mention()
-            and not self._slack_thread_require_mention()):
+            and not self._slack_thread_require_mention()
+            and thread_followup_mode(self.config.extra) == "auto"):
             self._register_mentioned_thread(thread_ts, team_id=team_id)
         return text, original_text, command_probe_text, is_command_text
 

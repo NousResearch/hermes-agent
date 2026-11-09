@@ -1,13 +1,25 @@
 name: hermes-sentinel
 repo: https://github.com/SaltProphet/hermes-sentinel
-commit: 456ce6ee84f0ce6d92bce112937214b7d844147b
-author: Justin Strange
-license: MIT
-description: "Deterministic runtime circuit breaker, loop trap prevention, and execution truth auditor for Hermes Agent. Disclosure — registers pre_llm_call, pre_tool_call, and post_tool_call hooks; persists local audit logs to SQLite; zero network telemetry."
-entrypoint: hermes_sentinel:register
-hooks:
-  - pre_llm_call
-  - pre_tool_call
-  - post_tool_call
-cli_commands:
-  - sentinel
+sha: "ea578eaffb871802162186adcc93ebbf71f99f92"
+maintainer: Justin Strange
+tier: community
+category: tools
+description: >-
+  Deterministic runtime circuit breaker and local execution auditor.
+  Disclosure: blocks credential-shaped strings in new user messages and
+  repetitive tool calls; redacts and truncates tool results before the model
+  sees them; stores audit events under the active Hermes home's
+  plugin-data/hermes-sentinel/sentinel_audit.db, falling back to memory-only
+  storage or skipped auditing on failure; performs no external network
+  requests or telemetry.
+requires_hermes: ">=0.22.6"
+version: "0.1.1"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - transform_tool_result
+  provides_middleware: []
+  requires_env: []

@@ -196,11 +196,4 @@ class StagedPlugin:
             # The staging folder's private Windows DACL must not travel with the plugin (#111804 is the
             # unreadable-at-install sibling); the plugin takes plugins/'s entries like any new file.
             inherit_parent_acl(self.target)
-            # Before the commit: a caller killed after it would leave an elevated install's tree
-            # Administrators-only (the tempfile staging DACL). This worker has no pywin32, so the
-            # grant takes the icacls fallback, whose inheritable ACE on the root reaches the whole
-            # tree in one call; a per-entry walk would start two processes per file.
-            from hermes_dir_acl import grant_user_access
-
-            grant_user_access(self.target, repair_children=True)
             durable_write_bytes(self.metadata, proposed)

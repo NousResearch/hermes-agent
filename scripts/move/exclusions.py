@@ -1,0 +1,102 @@
+"""Sites the move rewrite leaves alone.
+
+``EXCLUDED`` rows are ``(path, first line, last line, reason)``; first line 0 means the whole file. An
+excluded site is neither rewritten nor flagged, and the run prints each reason once with its site count.
+``BY_HAND`` rows are ``(path, line)``: a rewrite at that line is flagged as ``by-hand`` instead.
+"""
+from __future__ import annotations
+
+SHIPPED = "called by shipped updaters and installers of earlier releases"
+PERSISTED = "text persisted into units, launchers and desktop entries that outlive this tree"
+IDENTITY = "matches processes started before the move by their old command line"
+FROZEN = "frozen code for historical updaters"
+TORN_UPDATE = "torn-update fallback that reads the directory a killed update moved aside"
+
+EXCLUDED: tuple[tuple[str, int, int, str], ...] = (
+    ("hermes_cli/_old_updater.py", 0, 0, FROZEN),
+    ("tests/compat/old_updater_dependencies.py", 0, 0, FROZEN),
+    ("hermes_cli/_launchers.py", 60, 68, PERSISTED),
+    ("hermes_cli/_launchers.py", 350, 442, PERSISTED),
+    ("hermes_cli/_launchers.py", 475, 515, PERSISTED),
+    ("hermes_bootstrap.py", 510, 540, TORN_UPDATE),
+    (".github/actions/plugin-validate/action.yml", 70, 70, SHIPPED),
+    ("apps/bootstrap-installer/src-tauri/src/update.rs", 703, 703, SHIPPED),
+    ("apps/desktop/electron/desktop-uninstall.ts", 248, 248, SHIPPED),
+    ("apps/desktop/electron/main.ts", 2977, 2977, SHIPPED),
+    ("apps/desktop/electron/main.ts", 3645, 3645, SHIPPED),
+    ("apps/desktop/electron/main.ts", 17173, 17173, SHIPPED),
+    ("apps/desktop/electron/source-backend.ts", 31, 31, SHIPPED),
+    ("apps/desktop/electron/source-backend.ts", 98, 98, SHIPPED),
+    ("apps/desktop/electron/updater-process.ts", 93, 93, SHIPPED),
+    ("apps/desktop/electron/updater-process.ts", 150, 150, SHIPPED),
+    ("apps/desktop/electron/updater/checkout-source.ts", 101, 101, SHIPPED),
+    ("apps/desktop/electron/updater/checkout-source.ts", 106, 106, SHIPPED),
+    ("apps/desktop/electron/updater/state-db-preflight.ts", 60, 60, SHIPPED),
+    ("apps/desktop/electron/windows-hermes-path.ts", 176, 176, SHIPPED),
+    ("apps/desktop/electron/windows-runtime-command.ts", 15, 15, SHIPPED),
+    ("gateway/status.py", 512, 512, IDENTITY),
+    ("gateway/status.py", 664, 664, IDENTITY),
+    ("gateway/status.py", 676, 676, IDENTITY),
+    ("gateway/status.py", 756, 756, IDENTITY),
+    ("hermes_cli/_launchers.py", 39, 39, PERSISTED),
+    ("hermes_cli/_launchers.py", 87, 87, PERSISTED),
+    ("hermes_cli/_launchers.py", 108, 108, PERSISTED),
+    ("hermes_cli/_launchers.py", 109, 109, PERSISTED),
+    ("hermes_cli/_launchers.py", 485, 485, PERSISTED),
+    ("hermes_cli/_launchers.py", 494, 494, PERSISTED),
+    ("hermes_cli/_launchers.py", 499, 499, PERSISTED),
+    ("hermes_cli/_launchers.py", 577, 577, PERSISTED),
+    ("hermes_cli/_subprocess_compat.py", 686, 686, IDENTITY),
+    ("hermes_cli/container_boot.py", 202, 202, IDENTITY),
+    ("hermes_cli/dashboard_procs.py", 226, 226, IDENTITY),
+    ("hermes_cli/data_cleanup.py", 46, 46, SHIPPED),
+    ("hermes_cli/gateway.py", 1786, 1786, IDENTITY),
+    ("hermes_cli/gateway.py", 2563, 2563, IDENTITY),
+    ("hermes_cli/gateway.py", 3253, 3253, PERSISTED),
+    ("hermes_cli/gateway.py", 3255, 3255, PERSISTED),
+    ("hermes_cli/gateway_connections_ssh_remote.py", 399, 399, IDENTITY),
+    ("hermes_cli/gateway_launchd.py", 285, 285, PERSISTED),
+    ("hermes_cli/gateway_windows.py", 358, 358, PERSISTED),
+    ("hermes_cli/linux_desktop_entry.py", 134, 134, PERSISTED),
+    ("hermes_cli/main_dashboard.py", 354, 354, IDENTITY),
+    ("hermes_cli/main_desktop.py", 487, 487, IDENTITY),
+    ("hermes_cli/main_desktop.py", 975, 975, IDENTITY),
+    ("hermes_cli/source_completion.py", 176, 176, SHIPPED),
+    ("hermes_cli/update_cmd_windows.py", 197, 197, IDENTITY),
+    ("hermes_cli/update_cmd_windows.py", 639, 639, IDENTITY),
+    ("hermes_cli/update_completion.py", 86, 86, SHIPPED),
+    ("hermes_cli/update_completion.py", 364, 364, SHIPPED),
+    ("hermes_cli/update_handoff.py", 76, 76, SHIPPED),
+    ("hermes_cli/update_owning_install.py", 34, 34, SHIPPED),
+    ("hermes_cli/update_owning_install.py", 60, 60, SHIPPED),
+    ("hermes_cli/update_owning_install.py", 76, 76, SHIPPED),
+    ("hermes_state_holders.py", 259, 259, IDENTITY),
+    ("scripts/code_health/py_rules.py", 307, 307, IDENTITY),
+    ("scripts/desktop-update/posix.sh", 943, 943, SHIPPED),
+    ("scripts/desktop-update/posix.sh", 1146, 1146, SHIPPED),
+    ("scripts/desktop-update/runtime.ps1", 46, 46, SHIPPED),
+    ("scripts/desktop-update/runtime.ps1", 67, 67, SHIPPED),
+    ("scripts/desktop-update/windows.ps1", 1935, 1935, SHIPPED),
+    ("scripts/install.ps1", 1372, 1372, SHIPPED),
+    ("scripts/install.ps1", 1393, 1393, SHIPPED),
+    ("scripts/install.sh", 1120, 1120, SHIPPED),
+    ("setup-hermes.sh", 220, 220, SHIPPED),
+    ("tools/bot_desktop/runtime.py", 810, 810, SHIPPED),
+    ("tools/mcp_tool_lifecycle.py", 85, 85, IDENTITY),
+    ("tui_gateway/host_supervisor.py", 139, 139, IDENTITY),
+)
+
+BY_HAND: tuple[tuple[str, int], ...] = (
+    ("cron/lifecycle_guard.py", 65),
+    ("cron/lifecycle_guard.py", 100),
+    ("gateway/status.py", 541),
+    ("gateway/status.py", 783),
+    ("gateway/status_inline_source.py", 98),
+    ("hermes_cli/gateway_runtime_service_identity.py", 84),
+    ("hermes_cli/profiles.py", 1509),
+    ("hermes_cli/update_cmd_windows.py", 268),
+    ("hermes_cli/update_receipt.py", 1063),
+    ("hermes_cli/windows_ssh_runtime.py", 332),
+    ("hermes_state_holders.py", 37),
+    ("tools/skill_lock.py", 269),
+)

@@ -2,6 +2,9 @@
 
 Usage: python scripts/move/rewrite_imports.py --from-commit <A> [--paths P ...] [--check]
 
+Sites listed in ``exclusions.py`` are left as they are and printed once per reason as ``excluded <reason>``;
+sites listed as by-hand are flagged instead of rewritten.
+
 Rewritten: ``import`` and ``from`` statements, attribute chains of plain ``import`` bindings,
 ``"-m", "<module>"`` argv pairs and ``-m <module>`` in strings, ``sys.modules`` keys and logger names
 (the strict compat finder in tests cannot see those). Every other site that names a moved module or path
@@ -26,10 +29,11 @@ from libcst.helpers import get_full_name_for_node
 from libcst.metadata import MetadataWrapper, ParentNodeProvider, PositionProvider, ScopeProvider
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from exclusions import BY_HAND, EXCLUDED, IDENTITY
 from renames import current_name, git, module_renames, moved_modules, renamed_paths
 
-DYNAMIC, STRING_REF, BY_PATH, FILE_MATH, OTHER = (
-    "dynamic-import", "string-module-ref", "by-path", "file-math", "other")
+DYNAMIC, STRING_REF, BY_PATH, FILE_MATH, BY_HAND_KIND, OTHER = (
+    "dynamic-import", "string-module-ref", "by-path", "file-math", "by-hand", "other")
 _DASH_M = re.compile(r"(?<![\w-])(-m(?:\s+|[\"'],\s*[\"']))([A-Za-z_][\w.]*)")
 _CODE_IMPORT = re.compile(r"(?<![\w.])((?:from|import)\s+)([A-Za-z_][\w.]*)(?=\s+import\b|\s*(?:$|[\n,;)]|\\n| as\b))",
                           re.MULTILINE)
@@ -47,6 +51,8 @@ class Plan:
     paths: list[tuple[str, str]]
     names: dict[str, set[str]]
     """Every moved module's old name -> the names its top level defines."""
+    excluded: tuple[tuple[str, int, int, str], ...] = EXCLUDED
+    by_hand: tuple[tuple[str, int], ...] = BY_HAND
 
     @property
     def moved_files(self) -> set[str]:
@@ -89,6 +95,7 @@ class Result:
     source: str | None = None
     counts: dict[str, int] = field(default_factory=dict)
     flags: list[str] = field(default_factory=list)
+    excluded: list[str] = field(default_factory=list)
     error: str | None = None
 
 
@@ -96,6 +103,7 @@ class Result:
 class _Sink:
     kind: str
     attribute_allowed: bool | None = None
+    by_hand: bool = False
     """None: rewrite any literal; otherwise rewrite only a name that resolves in the moved tree."""
 
 
@@ -107,9 +115,14 @@ class _Rewriter(cst.CSTTransformer):
         self.plan, self.path, self.accesses = plan, path, accesses
         self.counts: dict[str, int] = {}
         self.flags: list[str] = []
+        self.excluded: list[str] = []
+        self.ranges = [(first, last, reason) for p, first, last, reason in plan.excluded if p == path]
+        self.by_hand_lines = {line for p, line in plan.by_hand if p == path}
         self.sinks: dict[int, _Sink] = {}
         self.prose: set[int] = set()
         self.blocked: dict[int, str] = {}
+        self.matchers: dict[int, str] = {}
+        self.caught: set[str] = set()
         self.moved = path in plan.moved_files
         self.tops = {old.split(".")[0] for old in plan.renames}
 
@@ -117,8 +130,26 @@ class _Rewriter(cst.CSTTransformer):
         self.counts[kind] = self.counts.get(kind, 0) + 1
 
     def _flag(self, node: cst.CSTNode, kind: str, name: str, reason: str) -> None:
+        if self._in_range(node):
+            return
         line = self.get_metadata(PositionProvider, node).start.line
         self.flags.append(f"{self.path}:{line}  {kind}  {name}  {reason}")
+
+    def _in_range(self, node: cst.CSTNode) -> bool:
+        line = self.get_metadata(PositionProvider, node).start.line
+        return any(first <= line <= last or first == 0 for first, last, _ in self.ranges)
+
+    def _held(self, node: cst.CSTNode, name: str = "") -> bool:
+        """True when ``node`` sits at an excluded site (not touched, not flagged) or a by-hand one (flagged)."""
+        line = self.get_metadata(PositionProvider, node).start.line
+        for first, last, reason in self.ranges:
+            if first <= line <= last or first == 0:
+                self.excluded.append(reason)
+                return True
+        if line in self.by_hand_lines:
+            self.flags.append(f"{self.path}:{line}  {BY_HAND_KIND}  {name or _code(node)}  {IDENTITY}; edit by hand")
+            return True
+        return False
 
     def _new(self, dotted: str | None) -> str | None:
         return current_name(dotted, self.plan.renames) if dotted else None
@@ -129,7 +160,7 @@ class _Rewriter(cst.CSTTransformer):
         names = []
         for alias in updated.names:
             new = self._new(get_full_name_for_node(alias.name))
-            if new is not None:
+            if new is not None and not self._held(original, get_full_name_for_node(alias.name)):
                 alias = alias.with_changes(name=cst.parse_expression(new))
                 self._count("import")
             names.append(alias)
@@ -140,6 +171,8 @@ class _Rewriter(cst.CSTTransformer):
             return updated
         module = get_full_name_for_node(updated.module)
         new_module = self._new(module)
+        if self._held(original, module):
+            return original
         if not isinstance(updated.names, cst.ImportStar):
             split = self._split_parent(original, updated, module, new_module or module)
             if split is not None:
@@ -195,6 +228,8 @@ class _Rewriter(cst.CSTTransformer):
         if new is None:
             self._flag(original, OTHER, get_full_name_for_node(original), reason)
             return updated
+        if self._held(original, get_full_name_for_node(original)):
+            return updated
         self._count("attribute")
         return cst.parse_expression(new)
 
@@ -205,7 +240,27 @@ class _Rewriter(cst.CSTTransformer):
                 and isinstance(node.slice[0].slice, cst.Index):
             self._mark(node.slice[0].slice.value, "sys-modules")
 
+    def visit_ExceptHandler(self, node: cst.ExceptHandler) -> None:
+        if node.name is not None and isinstance(node.name.name, cst.Name):
+            self.caught.add(node.name.name.value)
+
+    def _hold_matcher(self, node: cst.BaseExpression, reason: str) -> None:
+        self.matchers.update((id(string), reason) for string in _strings(node))
+
+    def _visit_matcher(self, node: cst.Comparison) -> None:
+        sides = [node.left, *(target.comparator for target in node.comparisons)]
+        exception_name = any(isinstance(side, cst.Attribute) and side.attr.value == "name"
+                             and get_full_name_for_node(side.value) in self.caught for side in sides)
+        for side in sides:
+            if exception_name:
+                self._hold_matcher(side, "ImportError.name literal; the module part must match by hand")
+            elif isinstance(side, (cst.List, cst.Tuple)) and isinstance(node.comparisons[0].operator,
+                                                                         (cst.Equal, cst.NotEqual)):
+                for element in side.elements:
+                    self._hold_matcher(element.value, "command-line matcher; accept both names by hand")
+
     def visit_Comparison(self, node: cst.Comparison) -> None:
+        self._visit_matcher(node)
         target = node.comparisons[0]
         if len(node.comparisons) == 1 and isinstance(target.operator, (cst.In, cst.NotIn)) \
                 and _is_sys_modules(target.comparator):
@@ -213,6 +268,9 @@ class _Rewriter(cst.CSTTransformer):
 
     def visit_Call(self, node: cst.Call) -> None:
         func = get_full_name_for_node(node.func) or ""
+        if isinstance(node.func, cst.Attribute) and node.func.attr.value == "startswith" \
+                and any(f"{name}.name" in _code(arg.value) for arg in node.args for name in self.caught):
+            self._hold_matcher(node.func.value, "ImportError.name literal; the module part must match by hand")
         owner_node = node.func.value if isinstance(node.func, cst.Attribute) else None
         method = node.func.attr.value if owner_node is not None else func
         positional = [arg.value for arg in node.args if arg.keyword is None and not arg.star]
@@ -259,6 +317,8 @@ class _Rewriter(cst.CSTTransformer):
     def on_leave(self, original, updated):
         updated = super().on_leave(original, updated)
         sink = self.sinks.get(id(original))
+        if id(original) in self.matchers:
+            return self._leave_matcher(original, updated)
         if sink is not None:
             return self._leave_sink(original, updated, sink)
         if isinstance(original, cst.SimpleString):
@@ -268,8 +328,10 @@ class _Rewriter(cst.CSTTransformer):
         return updated
 
     def _leave_sink(self, original, updated, sink: _Sink):
+        if id(original) in self.matchers:
+            return self._leave_matcher(original, updated)
         if isinstance(updated, cst.SimpleString) and isinstance(text := updated.evaluated_value, str):
-            if self._new(text.partition(":")[0]) is None:
+            if self._new(text.partition(":")[0]) is None or self._held(original, text):
                 return updated
             if sink.attribute_allowed is not None and not self.plan.resolves(text, sink.attribute_allowed):
                 self._flag(original, sink.kind, text, "string target does not resolve in the moved tree; fix by hand")
@@ -289,10 +351,18 @@ class _Rewriter(cst.CSTTransformer):
         module, colon, attr = text.partition(":")
         return (self._new(module) or module) + colon + attr
 
+    def _leave_matcher(self, original, updated):
+        text = original.evaluated_value if isinstance(original, cst.SimpleString) else ""
+        if isinstance(text, str) and self._new(text.partition(":")[0]) is not None:
+            self._flag(original, BY_HAND_KIND, text, f"{self.matchers[id(original)]}; edit by hand")
+        return updated
+
     def _leave_string(self, original: cst.SimpleString, updated: cst.SimpleString):
         text = original.evaluated_value
         if not isinstance(text, str):
             return updated
+        if id(original) in self.matchers:
+            return self._leave_matcher(original, updated)
         rewritten = self._text(text, original)
         if self.plan.names_module(rewritten):
             self._flag(original, OTHER, text, "string names a moved module; rewrite or confirm by hand")
@@ -302,7 +372,7 @@ class _Rewriter(cst.CSTTransformer):
                     where = "docstring prose" if id(original) in self.prose else "string"
                     self._flag(original, BY_PATH, old, f"{where} names a moved path (now {new})")
                     break
-        if rewritten == text:
+        if rewritten == text or self._held(original, text):
             return updated
         dashed = _DASH_M.sub(self._dash_m, text)
         replaced = _with_text(updated, lambda raw: _DASH_M.sub(self._dash_m, raw)) if rewritten == dashed \
@@ -341,7 +411,7 @@ class _Rewriter(cst.CSTTransformer):
         for part in updated.parts:
             if isinstance(part, cst.FormattedStringText):
                 text = _DASH_M.sub(self._dash_m, part.value)
-                if text != part.value:
+                if text != part.value and not self._held(original, text):
                     self._count("string-code")
                     part = part.with_changes(value=text)
             parts.append(part)
@@ -490,7 +560,7 @@ def rewrite_source(source: str, path: str, plan: Plan) -> Result:
         return Result(path, error=f"{path}: parse error: {str(error).splitlines()[0]}")
     rewriter = _Rewriter(plan, path, _binding_accesses(wrapper, plan.renames))
     new = wrapper.visit(rewriter).code
-    return Result(path, new if new != source else None, rewriter.counts, rewriter.flags)
+    return Result(path, new if new != source else None, rewriter.counts, rewriter.flags, rewriter.excluded)
 
 
 def top_level_names(source: str) -> set[str]:
@@ -579,12 +649,13 @@ def main(argv: list[str] | None = None) -> int:
     with ProcessPoolExecutor(max_workers=os.cpu_count()) as pool:
         results = list(pool.map(_work, [(root, f, plan) for f in files], chunksize=8))
     counts: dict[str, int] = {}
-    flags, failed, changed = [], [], []
+    flags, failed, changed, excluded = [], [], [], []
     for result in results:
         if result.error:
             failed.append(result.error)
             continue
         flags += result.flags
+        excluded += result.excluded
         for kind, n in result.counts.items():
             counts[kind] = counts.get(kind, 0) + n
         if result.source is not None:
@@ -594,6 +665,8 @@ def main(argv: list[str] | None = None) -> int:
     moves = update_moves(root, plan.renames, write=not args.check)
     for line in failed + flags:
         print(line)
+    for reason in sorted(set(excluded)):
+        print(f"excluded {reason}  ({excluded.count(reason)} sites)")
     kinds = " ".join(f"{kind}={n}" for kind, n in sorted(counts.items()))
     print(f"files={len(changed)} moves={moves} {kinds}".rstrip())
     print(f"rewritten={sum(counts.values())} flagged={len(flags)} failed={len(failed)}")

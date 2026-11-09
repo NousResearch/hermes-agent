@@ -366,3 +366,64 @@ def test_the_cli_rewrites_extensionless_files_with_a_python_shebang_only(repo):
     assert (repo / "hermes").read_text() == (
         "#!/usr/bin/env python3\nimport hermes_agent.watchdog\nhermes_agent.watchdog.arm()\n")
     assert (repo / "launcher").read_text().startswith("#!/bin/sh\nexec python -m tui_gateway.entry")
+
+
+def _plan_with(excluded=(), by_hand=()):
+    return rw.Plan(RENAMES, PATHS, NAMES, excluded=tuple(excluded), by_hand=tuple(by_hand))
+
+
+def test_excluded_sites_are_neither_rewritten_nor_flagged_and_name_their_reason():
+    source = 'import watchdog\nCODE = "import watchdog"\nfrom tui_gateway import entry\nlog = logging.getLogger("watchdog")\n'
+    plan = _plan_with(excluded=[("x.py", 2, 3, "frozen"), ("x.py", 4, 4, "persisted")])
+    result = rw.rewrite_source(source, "x.py", plan)
+    assert result.source == source.replace("import watchdog\nCODE", "import hermes_agent.watchdog\nCODE", 1)
+    assert not result.flags and result.excluded == ["frozen", "frozen", "persisted"]
+
+
+def test_a_whole_file_exclusion_leaves_the_file_alone():
+    result = rw.rewrite_source("import watchdog\nwatchdog.arm()\nsys.modules.pop('watchdog')\n", "old.py",
+                               _plan_with(excluded=[("old.py", 0, 0, "frozen")]))
+    assert result.source is None and not result.flags and set(result.excluded) == {"frozen"}
+
+
+def test_an_exclusion_does_not_reach_a_def_that_starts_on_the_line():
+    source = 'def f(module="watchdog"):\n    import tui_gateway.entry\n'
+    result = rw.rewrite_source(source, "x.py", _plan_with(excluded=[("x.py", 1, 1, "kept")]))
+    assert result.source == 'def f(module="watchdog"):\n    import hermes_agent.tui_gateway.entry\n'
+
+
+def test_a_by_hand_line_is_flagged_instead_of_rewritten():
+    source = 'a = argv[1:3] == ["-m", "watchdog"]\nb = ["-m", "watchdog"]\n'
+    result = rw.rewrite_source(source, "x.py", _plan_with(by_hand=[("x.py", 1)]))
+    assert result.source == 'a = argv[1:3] == ["-m", "watchdog"]\nb = ["-m", "hermes_agent.watchdog"]\n'
+    assert [f.split("  ")[:2] for f in result.flags] == [["x.py:1", "by-hand"]]
+
+
+@pytest.mark.parametrize("source", [
+    'try:\n    import watchdog\nexcept ImportError as exc:\n    if exc.name != "watchdog":\n        raise\n',
+    'try:\n    pass\nexcept ImportError as exc:\n    if exc.name == "tui_gateway.entry" or "tui_gateway.entry".startswith(f"{exc.name}."):\n        raise\n',
+])
+def test_exc_name_literals_are_flagged_by_hand_never_rewritten(source):
+    out, result = _rewrite(source)
+    assert '"watchdog"' in out or '"tui_gateway.entry"' in out
+    assert '"hermes_agent.' not in out
+    assert result.flags and {f.split("  ")[1] for f in result.flags} == {"by-hand"}
+
+
+@pytest.mark.parametrize("source", [
+    'msg = t("watchdog.restart.title")\nconfig["tui_gateway.timeout"] = 5\nstore.get("watchdog.arm.enabled")\n',
+    'KEYS = {"tui_gateway.entry.main": 1}\nprefix = "watchdog."\nrow = db.execute("SELECT 1 WHERE k LIKE \'watchdog.%\'")\n',
+])
+def test_i18n_config_and_stored_keys_outside_the_known_sinks_are_never_rewritten(source):
+    out, result = _rewrite(source)
+    assert out == dedent(source) and not result.counts
+
+
+def test_the_cli_prints_each_exclusion_reason_once_and_does_not_fail_on_excluded_sites(repo):
+    _write(repo, {"hermes_cli/_old_updater.py": "import watchdog\nwatchdog.arm()\nimport tui_gateway.entry\n"})
+    _git(repo, "add", "-A")
+    result = _cli(repo)
+    assert result.returncode == 0, result.stdout
+    lines = result.stdout.splitlines()
+    assert lines.count("excluded frozen code for historical updaters  (3 sites)") == 1
+    assert (repo / "hermes_cli/_old_updater.py").read_text().startswith("import watchdog\n")

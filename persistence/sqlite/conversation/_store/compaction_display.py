@@ -23,6 +23,7 @@ def not_a_later_tool_copy_sql(alias: str) -> str:
 def later_tool_copy_ids(db: Any, rows: Iterable[Any]) -> set[int]:
     """Python twin of :func:`not_a_later_tool_copy_sql` over display-set *rows*: the ids it skips.
     Empty when the rows carry no slot (``display_order``) or archive flag (``compacted``)."""
+    from persistence.sqlite.conversation._store.messages import _is_model_only_row
     tools = [row for row in rows if row["role"] == "tool"]
     if not tools or "compacted" not in tools[0].keys():
         return set()
@@ -40,7 +41,3 @@ def later_tool_copy_ids(db: Any, rows: Iterable[Any]) -> set[int]:
             first_slot[owner(row)] = min(first_slot.get(owner(row), slot), slot)
     return {row["id"] for row in candidates if row["message_uid"] and row["display_order"] is not None
             and first_slot.get(owner(row), row["display_order"]) < row["display_order"]}
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.messages import _is_model_only_row

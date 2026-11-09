@@ -4,6 +4,7 @@
 from __future__ import annotations
 from typing import Any
 from persistence.sqlite._holder import StoreHolder
+from persistence.sqlite.conversation._store.messages import _encode_content
 
 
 def set_latest_user_api_content(holder: StoreHolder, session_id: str, content: Any, api_content: str) -> int:
@@ -58,7 +59,3 @@ def set_message_api_content(
         "UPDATE messages SET api_content = ? WHERE id = ? AND session_id = ? "
         "AND role = 'user' AND active = 1 AND content IS ?",
         (_scrub_surrogates(api_content), row_id, session_id, _encode_content(content)))
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.messages import _encode_content

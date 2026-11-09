@@ -1,5 +1,5 @@
 name: eyes
-repo: https://github.com/REPLACE_OWNER/eyes
+repo: https://github.com/Agenziamaia/eyes
 sha: 5f30bd487be26ed9b074fddd3a4408709b92154c
 description: "The agent sees what it just made. Images, videos and sounds written in the last minutes get a measured note appended to the tool result (frame filled, motion, brightness, loudness, silences, contact sheet, plus a warning for black, empty, frozen or silent output) before the agent claims done. Zero model calls; needs ffmpeg. Disclosure — registers one transform_tool_result hook; reads image/video/audio files that a terminal, execute_code, process, image_generate, text_to_speech, write_file or patch result names, when modified in the last 5 minutes (any path the result names, inside or outside the workspace; at most 3 per result); runs ffprobe/ffmpeg subprocesses on them (25-40 s timeouts); writes contact-sheet PNGs to $HERMES_HOME/cache/eyes; no network, no model calls, no telemetry; EYES_OFF=1 disables."
 maintainer: REPLACE_OWNER

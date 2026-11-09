@@ -58,7 +58,7 @@ permissions:
 # ref as before.
 concurrency:
   group: ci-${{ inputs.release == true && github.run_id || (github.event_name == 'pull_request' && github.event.pull_request.number || github.ref) }}
-  cancel-in-progress: ${{ inputs.release != true && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')) }}
+  cancel-in-progress: ${{ inputs.release != true && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main')) }}
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────

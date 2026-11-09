@@ -30,6 +30,7 @@ def _cancels(event: str, ref: str, release: bool = False) -> bool:
     ("push", "refs/heads/main", False, False),
     ("workflow_call", "refs/heads/main", True, False),
     ("workflow_dispatch", "refs/heads/fix/some-branch", True, False),
+    ("workflow_dispatch", "refs/tags/v0.23.1", False, False),
 ])
 def test_only_pr_and_side_branch_dispatch_runs_are_superseded(event, ref, release, cancels):
     assert _cancels(event, ref, release) is cancels

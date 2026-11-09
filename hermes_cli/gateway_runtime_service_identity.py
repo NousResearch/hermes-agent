@@ -221,12 +221,22 @@ def _launchd_command(argv: list[str]) -> tuple[list[str], bool]:
     """``(command, wrapped)``: the command the launchd job runs, and whether it came out of the Local
     Network wrapper (gateway_launchd.launchd_program_arguments, #71206). The wrapper is accepted only when
     the installer regenerates it byte for byte from the inner command and the two log paths it carries,
-    so no shell operator, substitution, extra JXA or foreign osascript rides along."""
-    if argv[:1] != ["/usr/bin/osascript"]:
+    so no shell operator, substitution, extra script or foreign interpreter rides along.
+
+    Two wrapper shapes exist: the current Apple Python one and the osascript/JXA one older installers
+    wrote. Both are rebuilt from what is recovered and compared byte for byte, so neither is trusted.
+    """
+    from hermes_cli.gateway_launchd import LAUNCHD_WRAPPER, launchd_program_arguments
+    if argv[:1] != [LAUNCHD_WRAPPER] and argv[:1] != ["/usr/bin/osascript"]:
         return argv, False
-    from hermes_cli.gateway_launchd import launchd_program_arguments
+    if argv[:1] == [LAUNCHD_WRAPPER]:
+        # import subprocess,sys;rc=subprocess.call("<shell>",shell=True);sys.exit(...)
+        script, opener = argv[-1], "subprocess.call("
+        mode = "python3"
+    else:
+        script, opener = argv[-1], "$.system("
+        mode = "osascript"
     # Recover the inputs, then let the installer rebuild the whole argv: the comparison is the check.
-    script, opener = argv[-1], "$.system("
     try:
         shell = json.JSONDecoder().raw_decode(script, script.index(opener) + len(opener))[0]
         tokens = shlex.split(shell) if isinstance(shell, str) else []
@@ -235,7 +245,10 @@ def _launchd_command(argv: list[str]) -> tuple[list[str], bool]:
     if len(tokens) < 6 or tokens[0] != "exec" or tokens[-4] != ">>" or tokens[-2] != "2>>":
         _unverified()
     command = tokens[1:-4]
-    if launchd_program_arguments(command, Path(tokens[-3]), Path(tokens[-1])) != argv:
+    # Rebuild in the mode the plist ALREADY uses, not the mode config currently selects: otherwise a
+    # config key that was removed or reverted turns a perfectly valid running job into
+    # service_identity_unverified (found in review 2026-11-03, the drift case a `hermes update` creates).
+    if launchd_program_arguments(command, Path(tokens[-3]), Path(tokens[-1]), mode=mode) != argv:
         _unverified()
     return command, True
 

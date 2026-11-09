@@ -114,6 +114,22 @@ def scoped_current_session_id(session_id: str | None = None) -> Iterator[None]:
 
 
 @contextmanager
+def scoped_turn_actor(event: Any) -> Iterator[None]:
+    """Bind *event*'s sender as the actor of a turn run inside an already bound one (a queued follow-up
+    drained as the next turn), restoring the outer turn's actor on exit. The sender rides on the event,
+    else its source (``MessageEvent.sender_id``)."""
+    actor = event if getattr(event, "user_id", None) is not None else getattr(event, "source", None)
+    tokens = ((_SESSION_ACTOR_ID, _SESSION_ACTOR_ID.set(str(getattr(actor, "user_id", None) or ""))),
+              (_SESSION_ACTOR_NAME, _SESSION_ACTOR_NAME.set(str(getattr(actor, "user_name", None) or ""))),
+              (_SESSION_TURN_EVENT, _SESSION_TURN_EVENT.set(event)))
+    try:
+        yield
+    finally:
+        for var, token in reversed(tokens):
+            var.reset(token)
+
+
+@contextmanager
 def scoped_session_key(session_key: str) -> Iterator[None]:
     """Bind only the route key of the session a call works for (a hook fired for it outside its
     turn) and restore the prior value on exit; never touches ``os.environ``."""

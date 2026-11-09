@@ -1,0 +1,24 @@
+name: nightstop
+repo: https://github.com/decentralpapi/nightstop
+sha: 0298dbd8eeecacb82b0c450a861d5a4021b1e84c
+description: "Last-minute ride + room SOS — real OpenStreetMap stays near you ranked by OSRM drive time, with Uber/Lyft/Booking/Airbnb links prefilled (no checkout, no invented prices). Disclosure — sends the place names or coordinates you ask about to nominatim.openstreetmap.org (geocoding, max 1 req/s), overpass-api.de and fallback overpass.kumi.systems (nearby OSM lodging), router.project-osrm.org (driving) and routing.openstreetmap.de (walking). Returns (does not contact) m.uber.com, lyft.com, www.google.com/maps, www.booking.com, www.airbnb.com and www.openstreetmap.org links. No API keys, no credentials, no telemetry, no self-updater, no binaries. Cannot log in or pay: you finish booking in the third-party app. Map data © OpenStreetMap contributors (ODbL)."
+maintainer: Omimi
+tier: community
+category: tools
+version: "0.1.1"
+title: Nightstop
+docs_url: https://github.com/decentralpapi/nightstop#readme
+platforms: [linux, macos, windows]
+screenshots:
+  - https://raw.githubusercontent.com/decentralpapi/nightstop/0298dbd8eeecacb82b0c450a861d5a4021b1e84c/previews/night-full.png
+  - https://raw.githubusercontent.com/decentralpapi/nightstop/0298dbd8eeecacb82b0c450a861d5a4021b1e84c/previews/stay-list.png
+  - https://raw.githubusercontent.com/decentralpapi/nightstop/0298dbd8eeecacb82b0c450a861d5a4021b1e84c/previews/stay-detail.png
+  - https://raw.githubusercontent.com/decentralpapi/nightstop/0298dbd8eeecacb82b0c450a861d5a4021b1e84c/previews/ride.png
+capabilities:
+  provides_tools:
+    - find_stay
+    - find_ride
+    - plan_night
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

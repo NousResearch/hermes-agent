@@ -354,7 +354,7 @@ def derive_title(user_message: str, title_preview: str | None = None) -> Optiona
     return line or None
 
 
-_TITLE_QUOTES = "\"'“”‘’「」『』"
+_TITLE_QUOTES = "\"'“”‘’「」『』«»„"
 # Terminal punctuation a model appends when it writes a sentence instead of a title. The prompt asks
 # for none, and only the ASCII set was stripped — so a title in a language that punctuates with the
 # full-width forms kept its stop and read as a truncated sentence in the sidebar (#141969 sibling).

@@ -958,3 +958,12 @@ class TestCleanTitleLocalizedPunctuation:
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("登录按钮坏了，帮我修一下", "answer") == "修复移动端登录按钮"
 
+    @pytest.mark.parametrize(("raw", "expected"), [
+        ("«Titre : Corriger la connexion.»", "Corriger la connexion"),
+        ("Titel: „Fehler beheben.“", "Fehler beheben"),
+    ])
+    def test_strips_locale_quote_wrappers(self, raw, expected):
+        """French guillemets and German low quotes cannot hide labels or stops."""
+        from agent.title_generator import _clean_title
+
+        assert _clean_title(raw) == expected

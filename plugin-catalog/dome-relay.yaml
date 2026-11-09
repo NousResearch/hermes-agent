@@ -1,6 +1,6 @@
 name: dome-relay
 repo: https://github.com/nerdcakes/hermes-dome-relay
-sha: de26303d884f37d29cb4a67106ab41ea217e8fab
+sha: cb5ddc9c56948e7247452a193e741eced7408b67
 subdir: ""
 title: Dome Relay
 description: >
@@ -33,6 +33,7 @@ capabilities:
     - dome_relay_cancel
   provides_hooks:
     - pre_llm_call
+    - post_compaction
   provides_middleware: []
   requires_env:
     - DOME_RELAY_KEY

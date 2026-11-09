@@ -393,27 +393,6 @@ def consume_oauth_heal_notices() -> list[str]:
     return notes
 
 
-def _oauth_identity(entry: dict[str, Any]) -> Optional[str]:
-    """Stable account identity for an OAuth row when the token carries one.
-
-    Codex / xAI access tokens are JWTs with ``sub`` / ``email`` / ``chatgpt_account_id`` claims;
-    Anthropic ``sk-ant-oat`` tokens carry none (None → lineage rests on id / token material).
-    """
-    from hermes_cli.auth import _nonempty_str
-    if not isinstance(entry, dict):
-        return None
-    for token in (entry.get("access_token"), entry.get("id_token")):
-        claims = _decode_jwt_claims(token)
-        if not claims:
-            continue
-        nested = claims.get("https://api.openai.com/auth")
-        account = nested.get("chatgpt_account_id") if isinstance(nested, dict) else None
-        for value in (account, claims.get("sub"), claims.get("email")):
-            if _nonempty_str(value):
-                return value.strip()
-    return None
-
-
 def _oauth_stamps(
         entry: dict[str, Any]) -> tuple[Optional[float], Optional[float], Optional[float]]:
     """(JWT iat, local issue stamp, expires) epoch seconds of an OAuth pair."""

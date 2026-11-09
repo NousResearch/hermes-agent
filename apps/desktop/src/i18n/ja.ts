@@ -20,6 +20,7 @@ import { jaNotices } from './ja_notices'
 import { jaNotifications } from './ja_notifications'
 import { jaOnboarding } from './ja_onboarding'
 import { jaPluginPreviewAccess } from './ja_plugin_preview_access'
+import { jaPluginUpdateAll } from './ja_plugin_update_all'
 import { jaPluginSettings, jaPluginsTab } from './ja_plugins'
 import { jaPreviewWeb } from './ja_preview_web'
 import { jaProjects } from './ja_projects'
@@ -28,6 +29,11 @@ import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
 
 export const jaOverrides = {
+  gatewayGroupOpen: {
+    opening: "グループチャットを開いています…",
+    lookupFailed: "ゲートウェイでこのグループを検索できませんでした。もう一度お試しください。",
+    missing: "このグループチャットはもう存在しません。"
+  },
   catalog: jaCatalog,
   connectors: jaConnectors.connectors,
   externalOpenFailed: {
@@ -1298,15 +1304,20 @@ export const jaOverrides = {
       browserRealProfile: {
         label: '実際のブラウザプロファイルを使用',
         description:
-          '既定ブラウザのログイン情報と Cookie を管理されたスナップショットにコピーし、エージェントはそれを使ってブラウジングします。実際のプロファイルが直接開かれることはありません。新しいセッションに適用されます。',
+          '既定ブラウザのログイン情報と Cookie を管理されたスナップショットにコピーし、エージェントはそれを使ってブラウジングします。アプリ内ブラウザにもそれでログインします。実際のプロファイルが直接開かれることはありません。新しいセッションに適用されます。',
         enabledTitle: '実プロファイルブラウジング：オン',
         enabledMessage: '新しいセッションは既定ブラウザプロファイルのスナップショットでブラウジングします。',
         disabledTitle: '実プロファイルブラウジング：オフ',
-        disabledMessage: 'プロファイルのスナップショットは削除され、新しいセッションはクリーンなブラウザを使用します。',
+        disabledMessage: 'プロファイルのスナップショットは削除され、アプリ内ブラウザもそのログインから外れます。新しいセッションはクリーンなブラウザを使用します。',
         failedSave: '実プロファイル設定を保存できませんでした',
+        reimportSignins: 'ログイン情報を再インポート',
+        signinsImportedTitle: 'アプリ内ブラウザのログイン',
+        signinsImported: count => `ブラウザプロファイルの Cookie ${count} 件でアプリ内ブラウザにログインしました。`,
+        signinsRemote: 'このバックエンドは別のマシンで動作しているため、そのブラウザプロファイルはアプリ内ブラウザにインポートされません。',
+        signinsFailed: 'アプリ内ブラウザにログイン情報をインポートできませんでした',
         prompt: {
           title: 'サイトにログインしたまま利用',
-          body: 'Hermes が既定ブラウザプロファイルのスナップショットでブラウジングできるようにすると、サイトはログイン済みの状態で開きます。',
+          body: 'Hermes が既定ブラウザプロファイルのスナップショットでブラウジングできるようにすると、エージェントでもアプリ内ブラウザでも、サイトはログイン済みの状態で開きます。',
           bulletSnapshot: 'Cookie とログイン情報は管理されたスナップショットにコピーされます。',
           bulletLiveProfile: '実際のブラウザプロファイルが直接開かれることはありません。',
           bulletLocal: 'データがこのコンピュータの外に出ることはありません。',
@@ -1320,7 +1331,7 @@ export const jaOverrides = {
 
   skillDeepLink: jaSkillDeepLink,
   skills: {
-    plugins: { ...jaPluginPreviewAccess, ...jaPluginsTab },
+    plugins: { ...jaPluginPreviewAccess, ...jaPluginsTab, ...jaPluginUpdateAll },
     hub: {
       search: '検索',
       searching: '検索中…',
@@ -3047,6 +3058,15 @@ export const jaOverrides = {
           system_prompt: 'システムプロンプト',
           tool_definitions: 'ツール定義'
         },
+        compact: {
+          action: '会話を圧縮',
+          busyHint: '先に実行中の応答を終了するか停止してください',
+          confirm: '圧縮',
+          hint: '古いコンテキストを要約して空きを作ります。同じ会話を続けられます。',
+          question: 'この会話を要約に圧縮しますか？',
+          questionNamed: title => `「${title}」を要約に圧縮しますか？`,
+          working: '圧縮中…'
+        },
         empty: 'コンテキストデータはまだありません',
         loading: '内訳を読み込み中…',
         percentFull: percent => `${percent}% 使用中`,
@@ -3276,6 +3296,12 @@ export const jaOverrides = {
   },
 
   assistant: {
+    mcpSetup: {
+      launchCommand: target => `実行: ${target}`,
+      launchRemote: target => `接続先: ${target}`,
+      launchEnv: keys => `環境変数: ${keys}`,
+      launchCwd: dir => `作業ディレクトリ: ${dir}`
+    },
     catalogInstall: {
       preparing: 'インストールを準備中…',
       install: 'インストール',
@@ -3426,6 +3452,7 @@ export const jaOverrides = {
       readAloud: '読み上げ',
       copyFullResponse: '回答全体をコピー',
       readAloudFullResponseHint: 'Shiftを押しながらクリック: 回答全体を読み上げ',
+      contentRefusedNotice: 'このメッセージはモデルの安全フィルターによって拒否されました。別の内容でお試しください。',
       editMessage: 'メッセージを編集',
       stop: '停止',
       restorePrevious: '前のチェックポイントに戻す',

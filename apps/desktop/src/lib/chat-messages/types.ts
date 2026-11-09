@@ -81,6 +81,13 @@ export type ChatMessage = {
   serverRowSpan?: number
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
+  /** A safety-refused turn kept for display only. The backend dropped the whole
+   *  refused turn from the model's context but retained the user's own message
+   *  (projected as a `content_refused` user row). It renders as a greyed,
+   *  non-interactive block showing the text plus `notice` — never a normal user
+   *  bubble and never the model's reply. `notice` is absent on older backends;
+   *  the renderer falls back to an i18n string. */
+  contentRefused?: { notice?: string }
 }
 
 export type GatewayEventPayload = {

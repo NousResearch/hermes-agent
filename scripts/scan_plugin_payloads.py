@@ -42,6 +42,8 @@ _ARCHIVE_SOURCE_SUFFIXES = {
     ".c", ".h", ".cpp", ".hpp", ".cc", ".rs", ".go", ".java", ".kt", ".rb", ".lua",
     ".patch", ".diff", ".lock", ".gitignore", ".gitattributes", ".env", ".service",
     ".xml", ".properties", ".gradle", ".cmake", ".mk", ".conf", ".d.ts", ".map",
+    # Linked-data / RDF text serialisations (data corpora ship JSON-LD contexts + Turtle).
+    ".jsonld", ".ttl", ".nt", ".nq", ".n3", ".rdf", ".owl", ".trig",
 }
 # Inert, non-executable asset types that may ride along inside a source bundle:
 # fonts and images carry no code the scanner needs to read. An unknown binary

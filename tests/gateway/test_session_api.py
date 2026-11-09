@@ -172,7 +172,8 @@ async def test_list_sessions_resurrects_bot_chat_off_the_event_loop(adapter, ses
     session_id = session_db.create_session("archived-bot-chat", "gateway_botmode")
     assert session_db.set_session_title(session_id, "Bot Chat")
     session_db.end_session(session_id, "ws_orphan_reap")
-    assert session_db.set_session_archived(session_id, True)
+    # The legacy accidental archive, as old code stored it: archived=1, title and recoverable stamp kept.
+    session_db._write_sql("UPDATE sessions SET archived = 1, auto_archived = 0 WHERE id = ?", (session_id,))
 
     loop_thread = threading.get_ident()
     call_threads = {}

@@ -61,6 +61,11 @@ SHA = "a" * 40
     ({"repo": "https://x/y\n::error::x", "sha": SHA}, "repo must be an https:// git URL"),
     ({"repo": "https://x/y", "sha": SHA + "\n"}, "sha must be exactly 40 lowercase hex"),
     ({"repo": "https://x/y", "sha": "main"}, "sha must be exactly 40 lowercase hex"),
+    ({"repo": "https://x/y", "sha": SHA, "attested_binaries": ["bin/host"]}, ""),
+    ({"repo": "https://x/y", "sha": SHA, "attested_binaries": ["../../etc/passwd"]},
+     "attested_binaries entry '../../etc/passwd' is not a plain relative path"),
+    ({"repo": "https://x/y", "sha": SHA, "attested_binaries": ["/bin/sh"]},
+     "attested_binaries entry '/bin/sh' is not a plain relative path"),
     (["not", "a", "mapping"], "entry yaml must be a mapping"),
     (None, "entry yaml is empty or unparseable"),
 ])

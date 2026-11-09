@@ -219,9 +219,11 @@ def _launchd(home: Path, deadline: float) -> ExistingService | None:
 
 
 def _windows(home: Path, deadline: float) -> ExistingService | None:
-    from hermes_cli.gateway_windows import _decode_schtasks_output
+    from hermes_cli.gateway_windows import _decode_schtasks_output, refresh_dead_launcher
     suffix = service_suffix(home)
     name = f"Hermes_Gateway{'_' + suffix if suffix else ''}"
+    # Before the task runs it, and for the next logon: a Store update deletes the launcher's interpreter.
+    refresh_dead_launcher(home, name)
 
     def query(refusal: str, *argv: str) -> str:
         # schtasks/whoami write the console code page, and /XML declares UTF-16 over those bytes:

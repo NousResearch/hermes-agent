@@ -107,6 +107,57 @@ class KanbanHandoffExhaustedTests(unittest.TestCase):
         self.assertFalse(session_called_kanban_terminal(_TERMINAL_WRONG_TASK))
         self.assertTrue(kanban_handoff_exhausted(_TERMINAL_WRONG_TASK, attempts=2))
 
+    def test_orphan_assistant_terminal_call_is_not_handoff(self):
+        messages = [_TERMINAL[0]]
+        self.assertFalse(session_called_kanban_terminal(messages))
+        self.assertTrue(kanban_handoff_exhausted(messages, attempts=2))
+
+    def test_mismatched_tool_call_id_is_not_handoff(self):
+        messages = [_TERMINAL[0], {
+            "role": "tool", "name": "kanban_complete",
+            "tool_call_id": "unrelated", "content": "done",
+        }]
+        self.assertFalse(session_called_kanban_terminal(messages))
+
+    def test_mismatched_tool_name_is_not_handoff(self):
+        messages = [_TERMINAL[0], {
+            "role": "tool", "name": "kanban_block",
+            "tool_call_id": "1", "content": "done",
+        }]
+        self.assertFalse(session_called_kanban_terminal(messages))
+
+    def test_standalone_cross_task_success_is_not_handoff(self):
+        messages = [{
+            "role": "tool", "name": "kanban_complete",
+            "tool_call_id": "1",
+            "content": json.dumps({"ok": True, "task_id": "t_other"}),
+        }]
+        self.assertFalse(session_called_kanban_terminal(messages))
+
+    def test_matched_call_with_foreign_result_task_is_not_handoff(self):
+        messages = [_TERMINAL[0], {
+            "role": "tool", "name": "kanban_complete",
+            "tool_call_id": "1",
+            "content": json.dumps({"ok": True, "task_id": "t_other"}),
+        }]
+        self.assertFalse(session_called_kanban_terminal(messages))
+
+    def test_error_then_orphan_call_is_not_handoff(self):
+        messages = list(_TERMINAL_FAILED) + [{
+            "role": "assistant", "tool_calls": [{
+                "id": "2", "type": "function",
+                "function": {"name": "kanban_complete", "arguments": "{}"},
+            }],
+        }]
+        self.assertFalse(session_called_kanban_terminal(messages))
+
+    def test_malformed_result_is_not_handoff(self):
+        messages = [_TERMINAL[0], {
+            "role": "tool", "name": "kanban_complete",
+            "tool_call_id": "1", "content": "{unparseable",
+        }]
+        self.assertFalse(session_called_kanban_terminal(messages))
+
     def test_retry_after_failed_terminal_tool_succeeds(self):
         # Initial failure followed by successful completion counts as handed off.
         messages = list(_TERMINAL_FAILED) + [

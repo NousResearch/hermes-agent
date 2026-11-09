@@ -81,7 +81,7 @@ export const SETTINGS_MANIFEST = {
     ),
     simplifiedAgents: {
       subpage: 'window-layout',
-      keywords: ['agents', 'sidebar', 'simple', 'bots'],
+      keywords: ['redesign', 'interface', 'classic', 'layout', 'agents', 'sidebar', 'bots'],
       copy: t => ({ label: t.simplifiedAgents.title, description: t.simplifiedAgents.description })
     },
     interfaceMode: {

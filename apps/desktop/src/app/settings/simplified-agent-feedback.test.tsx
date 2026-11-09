@@ -26,12 +26,12 @@ afterEach(() => {
 it('restores the original sidebar immediately and accepts one optional reason inline', async () => {
   setDesktopMetricsGate('on')
   render(<InterfaceModeSettings />)
-  fireEvent.click(screen.getByRole('switch', { name: 'Simplified agent mode' }))
+  fireEvent.click(screen.getByRole('switch', { name: 'Redesigned interface' }))
   expect($simplifiedAgentMode.get()).toBe(false)
   expect(screen.queryByRole('dialog')).toBeNull()
   const feedback = screen.getByRole('combobox', { name: 'Why switch back? (optional)' })
   fireEvent.keyDown(feedback, { key: 'ArrowDown' })
-  fireEvent.click(await screen.findByRole('option', { name: 'I prefer the original sidebar' }))
+  fireEvent.click(await screen.findByRole('option', { name: 'I prefer the classic interface' }))
   expect(screen.getByRole('status').textContent).toContain('Thanks')
   expect(screen.queryByRole('combobox')).toBeNull()
   await vi.waitFor(() =>
@@ -45,7 +45,7 @@ it('restores the original sidebar immediately and accepts one optional reason in
 it('does not ask for feedback or report a disable when usage sharing is off', async () => {
   setDesktopMetricsGate('off')
   render(<InterfaceModeSettings />)
-  fireEvent.click(screen.getByRole('switch', { name: 'Simplified agent mode' }))
+  fireEvent.click(screen.getByRole('switch', { name: 'Redesigned interface' }))
   expect($simplifiedAgentMode.get()).toBe(false)
   expect(screen.queryByRole('combobox')).toBeNull()
   await act(async () => {})
@@ -55,7 +55,7 @@ it('does not ask for feedback or report a disable when usage sharing is off', as
 it('lets users ignore feedback and removes it when they re-enable or revoke consent', () => {
   setDesktopMetricsGate('on')
   render(<InterfaceModeSettings />)
-  const toggle = screen.getByRole('switch', { name: 'Simplified agent mode' })
+  const toggle = screen.getByRole('switch', { name: 'Redesigned interface' })
   fireEvent.click(toggle)
   expect(screen.getByRole('combobox')).toBeTruthy()
   fireEvent.click(toggle)

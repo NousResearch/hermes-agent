@@ -1,5 +1,6 @@
 /* Shared columns: action, state glyph, content, optional trailing actions. */
 [data-slot='composer-status-stack'] {
+  container: composer-status / inline-size;
   --status-nest: 0.25rem;
   --status-section-indent: 0rem;
   --status-action-width: 0.75rem;
@@ -104,4 +105,27 @@
 
 [data-slot='composer-status-stack'] .status-subagent-detail {
   padding-left: calc(0.5rem + var(--status-nest) * 2 + var(--status-action-width) + var(--status-icon-width) + var(--status-gap) * 2);
+}
+
+/* Keep consent and trial choices reachable in narrow chat panes. */
+@container composer-status (max-width: 28rem) {
+  [data-slot='composer-status-stack'] .status-notice-row .status-row-content {
+    grid-column: 3 / -1;
+  }
+
+  [data-slot='composer-status-stack'] .status-notice-row .status-row-content > span {
+    white-space: normal;
+  }
+
+  [data-slot='composer-status-stack'] .status-notice-row .status-row-actions {
+    grid-column: 2 / -1;
+    grid-row: 2;
+    flex-wrap: wrap;
+  }
+
+  [data-slot='composer-status-stack'] .status-notice-row .status-row-actions > button {
+    min-height: 1.75rem;
+    max-width: 100%;
+    white-space: normal;
+  }
 }

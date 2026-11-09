@@ -54,7 +54,7 @@ an agent when there is more than one; Start blank uses the current gateway's def
 The sidebar replaces the Bots tab and gateway/profile selectors with gateway-grouped agents.
 Each agent includes its canonical **Bot Chat**. Changing the layout does not migrate, relabel or
 delete profiles, conversations or pins. For recovery, turn off **Settings → Appearance →
-Window layout → Simplified agent mode** to return to the classic shell; turn it on to restore
+Window layout → Redesigned interface** to return to the classic shell; turn it on to restore
 the redesigned workspace. The earlier experimental sidebar is no longer a separate layout.
 
 ### Dogfood the public redesign against your gateway

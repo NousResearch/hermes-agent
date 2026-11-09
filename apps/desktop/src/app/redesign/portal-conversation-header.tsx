@@ -84,9 +84,9 @@ export function PortalConversationHeader({ paneId, title }: { paneId: string; ti
       <span className="hidden max-w-[40%] truncate text-xs text-(--ui-text-tertiary) @min-[36rem]/conversation:block">
         {agent ? `${agent.gateway} // ${agent.label}` : ownerProfile}
       </span>
-      <Button className="h-8 shrink-0 rounded-md border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) px-3 text-xs" disabled={!ownerProfile} onClick={openSettings} size="sm" variant="outline">
+      <Button aria-label={t.simplifiedAgents.settings} className="h-8 shrink-0 rounded-md border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) px-3 text-xs" disabled={!ownerProfile} onClick={openSettings} size="sm" variant="outline">
         <Codicon name="settings-gear" size={12} />
-        {t.simplifiedAgents.settings}
+        <span className="hidden @min-[22rem]/conversation:inline">{t.simplifiedAgents.settings}</span>
       </Button>
     </header>
   )

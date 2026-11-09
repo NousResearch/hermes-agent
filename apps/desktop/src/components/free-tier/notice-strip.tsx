@@ -60,6 +60,7 @@ export function FreeTierNoticeStrip() {
 
   return (
     <StatusRow
+      className="status-notice-row"
       leading={<Codicon aria-hidden className="text-(--ui-text-tertiary)" name="account" size="0.8rem" />}
       trailing={
         <>

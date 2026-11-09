@@ -291,8 +291,13 @@ export function useComposerDraft({
   useEffect(() => {
     if (!inputDisabled && paneVisible && !floating) {
       // Revealing a session must not open a phone keyboard or take focus from
-      // its tab header. Explicit composer requests below still focus normally.
-      if (isTouchInteraction() || document.activeElement?.closest('[role="tab"]')) {
+      // another control. Explicit composer requests below still focus normally.
+      const active = document.activeElement
+
+      const anotherControl = active instanceof HTMLElement && active !== editorRef.current &&
+        active !== document.body && !isElementInHiddenPane(active)
+
+      if (isTouchInteraction() || anotherControl) {
         markActiveComposer(target)
       } else {
         focusInput()

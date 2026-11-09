@@ -299,7 +299,9 @@ export function NarrowOverlays() {
               : wcOverlap
                 ? wcOverlap.y + wcOverlap.height
                 : undefined,
-            width: `min(${overlayWidth}, 85vw)`
+            width: `min(${overlayWidth}, 85vw)`,
+            // Global/developer rails take space outside this overlay's layout root.
+            maxWidth: '100%'
           }}
         >
           {wcOverlap && (

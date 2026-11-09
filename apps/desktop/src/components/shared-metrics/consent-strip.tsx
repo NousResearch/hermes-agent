@@ -48,6 +48,7 @@ export function SharedMetricsConsentStrip() {
 
   return (
     <StatusRow
+      className="status-notice-row"
       leading={<Codicon aria-hidden className="text-(--ui-text-tertiary)" name="graph" size="0.8rem" />}
       trailing={
         <>

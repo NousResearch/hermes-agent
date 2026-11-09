@@ -19,7 +19,13 @@ logger = logging.getLogger(__name__)
 _SCOPE = {'profile_id', 'session_id', 'execution_id', 'generation', 'pid', 'birth', 'secret'}
 
 
-def _claim(connection, ref, params):
+def _claim(connection, ref, params, *, require_live=False):
+    """The producer claim for one worker operation.
+
+    ``require_live`` is for the lane that CREATES the assignment (``register``): it never reaches
+    ``_verify``, so the psutil probe is its only evidence the pid is live and ours. Every other
+    caller is digest-gated by ``_verify`` and keeps the permissive default.
+    """
     import psutil
     authority = connection.authority
     if params.get('profile_id') != authority.profile_id or connection.actor.profile_id != authority.profile_id:
@@ -46,8 +52,14 @@ def _claim(connection, ref, params):
         # to answer the persist with JSON-RPC -32603 "internal error": the worker's store then
         # refused every later write, the child exited 1, the owner settled the attempt `unknown`
         # and the Kanban run died with "execution unknown; retained by owner" after doing its work.
-        # The claim digest below still binds this caller to its stored assignment, so an
-        # unevaluable liveness probe must not fail an authenticated write.
+        #
+        # Only the digest-gated lanes may continue: the claim below binds the caller to its stored
+        # assignment through _verify's hmac, so an unevaluable probe is not evidence against it.
+        # `register` CREATES that assignment and never runs _verify, so the probe is its only
+        # evidence the pid exists, is not a zombie and is ours: refuse cleanly (the dispatcher
+        # retries) rather than park a `registered` row for a pid nothing ever verified.
+        if require_live:
+            raise RuntimeStoreError('worker_not_live') from exc
         logger.warning('worker liveness probe unprovable for pid %s: %r', pid, exc)
     else:
         if not live:
@@ -89,7 +101,7 @@ async def worker_request(connection, ref, params, *, operation):
     extra = {'register': {'kind'}, 'adopt': set(), 'persist': {'epoch', 'sequence', 'operation', 'payload'}}[operation]
     if set(params) != _SCOPE | extra:
         raise RuntimeStoreError('invalid_params')
-    claim = _claim(connection, ref, params)
+    claim = _claim(connection, ref, params, require_live=operation == 'register')
     authority = connection.authority
     if operation == 'register':
         authority._require_admission_open()

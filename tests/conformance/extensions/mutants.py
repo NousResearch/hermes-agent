@@ -98,7 +98,23 @@ def _reference_owner_blind(monkeypatch):
 def _reference_switch_forgets_agent(monkeypatch):
     """One switch row per entry, shared by every agent of the tenant."""
     from hermes_conformance.extensions.reference import ReferenceExtensionRegistry
-    monkeypatch.setattr(ReferenceExtensionRegistry, "_switch_key", lambda self, agent, name: ("everyone", name))
+    monkeypatch.setattr(ReferenceExtensionRegistry, "_switch_key",
+                       lambda self, agent, entry: ("everyone", entry["level"],
+                                                   owner_key(entry["owner"]), entry["name"]))
+
+
+def _reference_switch_forgets_entry_identity(monkeypatch):
+    """The switch row is keyed by the name alone, not the entry's identity: removing one
+    owner's entry drops another owner's switch, and a new entry of the name inherits one."""
+    from hermes_conformance.extensions.reference import ReferenceExtensionRegistry
+    monkeypatch.setattr(ReferenceExtensionRegistry, "_switch_key",
+                       lambda self, agent, entry: (agent, entry["name"]))
+
+
+def _local_switch_forgets_entry_identity(monkeypatch):
+    """The local switch row is keyed by the name alone, not the entry's identity."""
+    from hermes_extension_registry_port_local import LocalExtensionRegistry
+    monkeypatch.setattr(LocalExtensionRegistry, "_switch_key", lambda self, entry: entry["name"])
 
 
 def _reference_resolves_by_actor(monkeypatch):
@@ -163,9 +179,11 @@ MUTANTS = {
     "local_pin_forgets_owner": _local_pin_forgets_owner,
     "local_admin_not_required": _local_admin_not_required,
     "local_accepts_tenant_entries": _local_accepts_tenant_entries,
+    "local_switch_forgets_entry_identity": _local_switch_forgets_entry_identity,
     "reference_tenant_writes_without_provisioning": _reference_tenant_writes_without_provisioning,
     "reference_owner_blind": _reference_owner_blind,
     "reference_switch_forgets_agent": _reference_switch_forgets_agent,
+    "reference_switch_forgets_entry_identity": _reference_switch_forgets_entry_identity,
     "reference_resolves_by_actor": _reference_resolves_by_actor,
     "reference_pin_forgets_agent": _reference_pin_forgets_agent,
     "reference_pin_forgets_tenant": _reference_pin_forgets_tenant,

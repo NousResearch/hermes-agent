@@ -130,6 +130,12 @@ class LocalExtensionRegistry(ExtensionRegistry):
                 return row
         return candidates[0] if candidates else None
 
+    def _switch_key(self, entry: dict[str, Any]) -> str:
+        """The per-agent switch row's key: the entry's identity — its level and name (the local
+        owner is the only owner) — so a switch belongs to one entry alone: removing an entry
+        drops its own switch, and another entry the same name resolves to never inherits it."""
+        return f"{entry.get('level')}:{entry['name']}"
+
     def _visible(self, data: dict[str, Any], owner: Owner, *, kind: Optional[str]) -> list[dict[str, Any]]:
         rows = [self._row(e) for e in data["entries"]
                 if entry_visible_to(owner, _owner_from_json(e.get("owner")))
@@ -186,7 +192,7 @@ class LocalExtensionRegistry(ExtensionRegistry):
         if row is None:
             return False
         data["entries"].remove(row)
-        data["switches"].pop(name, None)
+        data["switches"].pop(self._switch_key(row), None)
         self._save(data)
         return True
 
@@ -195,9 +201,10 @@ class LocalExtensionRegistry(ExtensionRegistry):
         self._administer(scope)
         owner = LOCAL_OWNER if scope is None or scope.owner is None else scope.owner
         data = self._load()
-        if self._resolve(data, name, owner) is None:
+        row = self._resolve(data, name, owner)
+        if row is None:
             return False
-        data["switches"][name] = bool(enabled)
+        data["switches"][self._switch_key(row)] = bool(enabled)
         self._save(data)
         return True
 
@@ -205,9 +212,10 @@ class LocalExtensionRegistry(ExtensionRegistry):
         scope = self._pin()
         owner = LOCAL_OWNER if scope is None or scope.owner is None else scope.owner
         data = self._load()
-        if self._resolve(data, name, owner) is None:
+        row = self._resolve(data, name, owner)
+        if row is None:
             return False
-        return bool(data["switches"].get(name))
+        return bool(data["switches"].get(self._switch_key(row)))
 
     def enabled_extensions(self, *, kind=None):
         scope = self._pin()
@@ -215,7 +223,7 @@ class LocalExtensionRegistry(ExtensionRegistry):
         data = self._load()
         # ``_visible`` returns converted rows already, so the filter runs on the port's shape.
         return [r for r in self._visible(data, owner, kind=kind)
-                if r["enabled"] and data["switches"].get(r["name"])]
+                if r["enabled"] and data["switches"].get(self._switch_key(r))]
 
 
 class LocalExtensionRegistryProvider(ExtensionRegistryProvider):

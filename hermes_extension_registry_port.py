@@ -184,8 +184,9 @@ class ExtensionRegistry(ABC):
     @abstractmethod
     def set_agent_enabled(self, name: str, enabled: bool) -> bool:
         """Turn this agent's per-agent switch for the resolved entry on or off; ``False`` when no
-        visible entry has that name. The switch is this agent's own row, whatever level the
-        entry sits at: other agents of the same owner keep their own, and the agent's
+        visible entry has that name. The switch is this agent's own row, keyed by the entry's
+        identity — its level, owner and name — whatever level the entry sits at: other agents
+        keep their own, another entry the name resolves to keeps its own, and the agent's
         administration right is the one that writes it."""
 
     @abstractmethod

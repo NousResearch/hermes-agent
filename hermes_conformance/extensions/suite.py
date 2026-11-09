@@ -397,6 +397,31 @@ class LevelConformance:
         with level.bind("b"):
             assert level.open("b").get("dup")["level"] == "tenant"
 
+    def test_removing_one_owners_entry_leaves_another_owners_of_the_same_name(self, level):
+        """A switch row belongs to one entry — its level, owner and name — so removing an
+        entry drops its own switches alone: another owner's entry of the same name, and this
+        agent's switch for it, are untouched."""
+        a1, b = level.open("a1"), level.open("b")
+        with level.bind("a1"):
+            install(a1, name="dup")
+            assert a1.set_agent_enabled("dup", True) is True
+        with level.bind("b"):
+            install(b, name="dup")
+            assert b.remove("dup") is True  # its own entry alone
+        with level.bind("a1"):
+            assert a1.get("dup") is not None
+            assert a1.agent_enabled("dup") is True
+            assert _names(a1.enabled_extensions()) == ["dup"]
+
+    def test_an_entry_never_inherits_the_switch_of_another_level_of_its_name(self, level):
+        a1 = level.open("a1")
+        with level.bind_provisioning("a1"):
+            install(a1, name="dup", level="tenant")
+        with level.bind("a1"):
+            assert a1.set_agent_enabled("dup", True) is True  # the tenant-wide one's switch
+            install(a1, name="dup")                           # the owner-wide one shadows it
+            assert a1.agent_enabled("dup") is False           # a fresh entry starts switched off
+
     def test_pinning_an_agent_never_widens_the_tenant(self, level):
         """A scope naming the same owner's OTHER agent is still a foreign pin on this one's
         registry: it is refused, and the refusal says nothing about the rows."""

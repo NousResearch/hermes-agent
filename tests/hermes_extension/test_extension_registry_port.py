@@ -109,7 +109,9 @@ def test_the_local_backend_records_rows_in_its_own_file(registry, tmp_path):
         assert [r["name"] for r in registry.enabled_extensions()] == ["weather"]
     data = json.loads((tmp_path / REGISTRY_FILE).read_text(encoding="utf-8"))
     assert [e["name"] for e in data["entries"]] == ["weather"]
-    assert data["switches"] == {"weather": True}
+    # the switch row is keyed by its entry's identity — the level and the name (the local
+    # owner is the only owner) — so another entry the name resolves to keeps its own switch
+    assert data["switches"] == {"owner:weather": True}
     # the files today's local plugin loading reads are untouched by the registry
     assert not (tmp_path / "plugins").exists()
 

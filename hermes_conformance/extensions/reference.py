@@ -37,8 +37,10 @@ class TenantStore:
         self.lock = threading.Lock()
         #: ``(owner_key, name)`` → the entry dict, whose ``owner`` is the owner object.
         self.entries: dict[tuple[Optional[tuple[str, str]], str], dict[str, Any]] = {}
-        #: the per-agent switch rows: ``(agent, name)`` → on/off.
-        self.switches: dict[tuple[str, str], bool] = {}
+        #: the per-agent switch rows: ``(agent, entry identity)`` → on/off. The identity is the
+        #: entry's level, owner and name, so a switch belongs to one entry: removing an entry
+        #: drops its own switches alone, and a new entry of the same name never inherits one.
+        self.switches: dict[tuple, bool] = {}
 
 
 class ReferenceExtensionRegistry(ExtensionRegistry):
@@ -78,9 +80,12 @@ class ReferenceExtensionRegistry(ExtensionRegistry):
         """Whether an entry at *entry_owner_key* resolves for the bound scope's agent owner."""
         return entry_owner_key is None or entry_owner_key == owner_key(scope.owner)
 
-    def _switch_key(self, agent: str, name: str) -> tuple[str, str]:
-        """The per-agent switch row's key: one row per ``(agent, entry)``."""
-        return (agent, name)
+    def _switch_key(self, agent: str, entry: dict[str, Any]) -> tuple:
+        """The per-agent switch row's key: one row per ``(agent, entry identity)``. The identity
+        is the entry's level, owner and name, so a switch belongs to one entry alone — removing
+        an entry drops its own switches, and another entry the same name resolves to (another
+        owner's, or another level's) never inherits one."""
+        return (agent, entry["level"], owner_key(entry["owner"]), entry["name"])
 
     # --- resolution ------------------------------------------------------------------------
 
@@ -161,27 +166,29 @@ class ReferenceExtensionRegistry(ExtensionRegistry):
                 require_provisioning(scope)
             del self.store.entries[(owner_key(row["owner"]), name)]
             for agent in {key[0] for key in self.store.switches}:
-                self.store.switches.pop(self._switch_key(agent, name), None)
+                self.store.switches.pop(self._switch_key(agent, row), None)
             return True
 
     def set_agent_enabled(self, name, enabled):
         scope = self._pin()
         self._administer(scope)
         with self.store.lock:
-            if self._resolve(scope, name) is None:
+            row = self._resolve(scope, name)
+            if row is None:
                 return False
-            self.store.switches[self._switch_key(self.agent, name)] = bool(enabled)
+            self.store.switches[self._switch_key(self.agent, row)] = bool(enabled)
             return True
 
     def agent_enabled(self, name):
         scope = self._pin()
         with self.store.lock:
-            if self._resolve(scope, name) is None:
+            row = self._resolve(scope, name)
+            if row is None:
                 return False
-            return bool(self.store.switches.get(self._switch_key(self.agent, name)))
+            return bool(self.store.switches.get(self._switch_key(self.agent, row)))
 
     def enabled_extensions(self, *, kind=None):
         scope = self._pin()
         with self.store.lock:
             return [self._row(r) for r in self._visible_rows(scope, kind=kind)
-                    if r["enabled"] and self.store.switches.get(self._switch_key(self.agent, r["name"]))]
+                    if r["enabled"] and self.store.switches.get(self._switch_key(self.agent, r))]

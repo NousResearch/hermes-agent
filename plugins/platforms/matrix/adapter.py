@@ -352,6 +352,7 @@ class _MatrixApprovalPrompt:
     resolved: bool = False
     requester_user_id: str | None = None
     expires_at: float | None = None
+    admin_user_id: str = ""  # delegation admin user_id
     request_id: str | None = None  # the tools.approval request this prompt answers
     offered: tuple[str, ...] = ()  # choices the card seeded; a Deny-only card offers only "deny"
     bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
@@ -1676,9 +1677,12 @@ class MatrixAdapter(BasePlatformAdapter):
     _EA_TYPED_HINT_KEYS = {"once": "platform.matrix.approval.typed_hint_once",
                            "session": "platform.matrix.approval.typed_hint_session",
                            "always": "platform.matrix.approval.typed_hint_always"}
+    _enforces_delegation_admin_identity = True
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Reaction-driven approval: the bot seeds one reaction per offered choice."""
+        """Reaction-driven approval: the bot seeds one reaction per offered choice.
+        ``prompt.admin_user_id`` (delegation) rides on the stored prompt so the reaction
+        callback can validate the exact configured admin."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
         choices = prompt.choices
@@ -1692,15 +1696,18 @@ class MatrixAdapter(BasePlatformAdapter):
             f"{t('platform.matrix.approval.legend_intro')}\n" + "\n".join(t(self._EA_LEGEND_KEYS[c]) for c in choices))
         reactions = tuple(self._EA_REACTIONS[c] for c in choices)
         session_key, chat_id = prompt.session_key, prompt.chat_id
+        _deleg_admin = str(prompt.admin_user_id or "")
 
         def _make(message_id, requester, expires_at):
             old_event = self._approval_prompt_by_session.get(session_key)
             if old_event:
                 self._approval_prompts_by_event.pop(old_event, None)
             self._approval_prompt_by_session[session_key] = message_id
-            return _MatrixApprovalPrompt(
+            matrix_prompt = _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
                 expires_at=expires_at, request_id=prompt.request_id, offered=tuple(choices))
+            matrix_prompt.admin_user_id = _deleg_admin
+            return matrix_prompt
         return await self._send_reaction_prompt(
             chat_id, text, prompt.metadata, _make, self._approval_prompts_by_event, reactions, "approval")
 
@@ -2553,6 +2560,22 @@ class MatrixAdapter(BasePlatformAdapter):
         from gateway.approval_actor import approval_refusal, refusal_text
         if requester := approval_refusal(prompt.session_key, sender, extra=self.config.extra, request_id=prompt.request_id):
             await self._send_invalid_reaction_feedback(room_id, reacts_to, refusal_text(requester))
+            return True
+        # Delegation admin identity gate (cross-platform): the reaction must come from the
+        # configured admin user, not just any room member. Layered after upstream's
+        # same-scope approval_refusal above — both must pass.
+        if not prompt.admin_user_id:
+            logger.warning(
+                "[Matrix] admin_user_id empty in approval state — "
+                "admin identity gate is not enforced (session_key=%s)",
+                prompt.session_key[:16],
+            )
+        elif sender and sender != prompt.admin_user_id:
+            logger.warning(
+                "[Matrix] Unauthorized approval reaction: expected admin %s, "
+                "got %s (room=%s, session_key=%s)",
+                prompt.admin_user_id, sender, room_id, prompt.session_key[:16],
+            )
             return True
         try:
             from tools.approval import resolve_gateway_approval_card

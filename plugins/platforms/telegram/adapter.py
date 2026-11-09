@@ -652,7 +652,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         self._max_doc_bytes: int = 2 * 1024 * 1024 * 1024 if extra.get("base_url") else 20 * 1024 * 1024
         self._model_picker_state: dict[str, dict] = {}  # per-chat interactive picker state
         self._choice_picker_state: dict[str, dict] = {}
-        self._approval_state: dict[int, str] = {}  # message_id → session_key
+        # Approval button state: approval_id → session_key (claim) + delegation admin info.
+        self._approval_state: dict[int, str] = {}
+        self._approval_admin: dict[int, tuple[str, str]] = {}  # approval_id → (chat_id, admin_user_id)
         self._approval_request_ids: dict[int, str] = {}  # message_id → tools.approval request id
         self._slash_confirm_state: dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: dict[str, ClarifyPrompt] = {}  # clarify_id → prompt bound to its sent message
@@ -4070,10 +4072,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
     def _EA_ACTION_LABELS(self) -> dict[str, str]:
         # Shorter than the base wording on purpose: two buttons share a row on mobile.
         return {choice: t(f"platform.telegram.approval.action_{choice}") for choice in ("once", "session", "always", "deny")}
+    _enforces_delegation_admin_identity = True
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
-        text ``/approve`` flow."""
+        text ``/approve`` flow. ``prompt.admin_user_id`` (delegation) is stored in the callback
+        state so the click can be validated against the configured admin."""
         def build():
             # Short monotonic ids in callback_data map back to session_key.
             import itertools
@@ -4084,6 +4088,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                        for label, choice, _ in prompt.actions]
             def on_sent(_msg):
                 self._approval_state[approval_id] = prompt.session_key
+                self._approval_admin[approval_id] = (str(prompt.chat_id), str(prompt.admin_user_id or ""))
                 if prompt.request_id:
                     self._approval_request_ids[approval_id] = prompt.request_id
             return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), on_sent
@@ -4582,8 +4587,39 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         request_id = self._approval_request_ids.get(approval_id)
         if requester := approval_refusal(session_key, getattr(query.from_user, "id", ""), extra=self.config.extra, request_id=request_id):
             return await answer_callback(query, refusal_text(requester)[:_TOAST_LIMIT], show_alert=True)
-        if not self._approval_state.pop(approval_id, None):  # a concurrent tap claimed it first
-            return await answer_callback(query, resolved)
+        # Delegation admin identity gate (cross-platform): the clicker must match the configured
+        # admin recorded when the card was sent. Validated with .get() BEFORE the atomic pop, so an
+        # unauthorized click (e.g. a group member on a forwarded card) cannot consume the pending
+        # entry and lock out the real admin. Layered after upstream's same-scope approval_refusal
+        # above — both must pass.
+        _admin_info = self._approval_admin.get(approval_id)
+        if _admin_info:
+            expected_chat_id, expected_admin_uid = _admin_info
+            if not expected_admin_uid:
+                logger.warning(
+                    "[Telegram] admin_user_id empty in approval state — "
+                    "admin identity gate is not enforced (approval_id=%s)", approval_id,
+                )
+            if expected_chat_id and cb.get("chat_id") is not None and str(cb["chat_id"]) != expected_chat_id:
+                logger.warning(
+                    "[Telegram] Approval click from wrong chat: expected %s, got %s (approval_id=%s)",
+                    expected_chat_id, cb["chat_id"], approval_id,
+                )
+                await query.answer(text=_unauthorized())
+                return
+            if expected_admin_uid and query.from_user:
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if caller_id != expected_admin_uid:
+                    logger.warning(
+                        "[Telegram] Unauthorized approval click: expected admin %s, "
+                        "got %s (approval_id=%s)", expected_admin_uid, caller_id, approval_id,
+                    )
+                    await query.answer(text=_unauthorized())
+                    return
+        # All validation passed: consume the state (also prevents double-click), the delegation
+        # admin record and the request id that pins the resolution to this exact request.
+        self._approval_state.pop(approval_id, None)
+        self._approval_admin.pop(approval_id, None)
         self._approval_request_ids.pop(approval_id, None)
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
         try:  # resolve FIRST, render after: a tap after the wait timed out (count == 0) is not "Approved" (#63501)

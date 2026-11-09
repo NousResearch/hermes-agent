@@ -6,8 +6,10 @@ over-pins the ambient caller; ``reads_on_ambient_root``, ``boards_on_ambient_roo
 their operation's kanban root from the environment at call time, so an operation drifts onto
 whatever root the ambient environment names (another agent's boards); ``claim_without_compare``
 claims without the compare-and-set, so two replicas both win; ``refusal_commits_first`` refuses
-only after the write has landed. Each mutant is applied by the ``backend`` fixture when
-``HERMES_KANBAN_MUTANT`` names it.
+only after the write has landed; ``tenant_only_pin`` drops the store's declaration of its one
+shared board root while the pin keeps checking the tenant alone, so a backend that claims agent
+isolation serves another same-tenant agent's scope on the same handle. Each mutant is applied by
+the ``backend`` fixture when ``HERMES_KANBAN_MUTANT`` names it.
 """
 
 import os
@@ -115,6 +117,14 @@ def _refusal_commits_first(monkeypatch):
         monkeypatch.setattr(LocalKanbanStore, name, after)
 
 
+def _tenant_only_pin(monkeypatch):
+    """The store stops declaring its one shared board root while the pin keeps checking the
+    tenant alone: a backend that claims agent isolation its pin does not enforce, serving
+    another same-tenant agent's scope on the same handle (reading and claiming its rows)."""
+    from hermes_kanban_port_local import LocalKanbanStore
+    monkeypatch.delattr(LocalKanbanStore, "LOCAL_SHARED_BOARD")
+
+
 _READS = ("get_task", "list_tasks", "list_events", "list_comments", "list_boards",
           "list_notify_subs", "latest_run", "list_runs", "unseen_events_for_sub")
 _NOTIFY = ("list_notify_subs", "unseen_events_for_sub", "claim_unseen_events_for_sub",
@@ -132,6 +142,7 @@ MUTANTS = {
     "sweep_on_ambient_root": lambda m: _on_ambient_root(m, _SWEEP),
     "claim_without_compare": _claim_without_compare,
     "refusal_commits_first": _refusal_commits_first,
+    "tenant_only_pin": _tenant_only_pin,
 }
 
 

@@ -16,6 +16,13 @@ Covered:
   another agent's expired claim; a worker of one agent cannot leave for a board that exists only
   in another agent's board set (it looks like a board that does not exist); another agent's
   notify targets are invisible — its subscriptions, cursors and events;
+- the same-tenant cross-agent matrix: every operation of A's handle run under a bound scope of
+  another agent of the same tenant (B's worker) is refused — a read may instead answer exactly
+  what a missing row would — and changes nothing A can observe, unless the backend declares the
+  one local exception on its own class (:attr:`KanbanStore.LOCAL_SHARED_BOARD`
+  ``hermes_kanban_port``: a single-user machine's one board root, shared by every profile,
+  which today's dispatcher handoff needs), when the matrix asserts the inverse: B's scope is
+  served on A's handle, as A's own is;
 - claims: a ready task is claimed by at most one of two replicas, and the loser sees ``None``
   with no trace of a claim; a review claim behaves the same.
 
@@ -63,8 +70,10 @@ class Backend:
       opened last to catch a backend that re-resolves per call.
     - ``replica(agent)``: an independent second handle on the same agent's storage (another
       replica's connection).
-    - ``bind(agent)``: bind the agent's scope (a worker of that agent). Must not touch the
-      process environment.
+    - ``bind(agent)``: bind the agent's scope (a worker of that agent, of the suite's one
+      tenant — both agents belong to it, so binding the second agent is the same-tenant
+      cross-agent scope the suite's cross-agent matrix runs under). Must not touch the process
+      environment.
     - ``foreign_tenant(agent)``: bind a scope of ANOTHER tenant that names the same agent id.
     - ``unbound()``: run with no scope pinned.
     - ``serves_unbound``: whether the backend serves the ambient caller with no scope bound
@@ -253,6 +262,28 @@ WRITES: list[tuple[str, Callable[[KanbanStore, AgentWorld], Any], Callable[[Any]
 #: The positive control: every operation, read and write, once for its own agent.
 OPERATIONS = [(name, call) for name, call, _ok in WRITES] + READS
 
+#: What each read answers for a row the bound scope may not see: exactly what a missing one
+#: gives (``get_task`` → ``None``, a listing → empty, an unseen-events probe → nothing new).
+READ_MISSING: dict[str, Callable[[Any], bool]] = {
+    "get_task": lambda r: r is None,
+    "list_tasks": lambda r: r == [],
+    "list_events": lambda r: r == [],
+    "list_comments": lambda r: r == [],
+    "list_boards": lambda r: r == [],
+    "list_notify_subs": lambda r: r == [],
+    "latest_run": lambda r: r is None,
+    "list_runs": lambda r: r == [],
+    "unseen_events_for_sub": lambda r: r == (0, []),
+}
+
+
+def _shared_board_root(store: KanbanStore) -> bool:
+    """Whether the backend declares the one local exception on its own class
+    (``KanbanStore.LOCAL_SHARED_BOARD``): a single-user machine's one board root, shared by
+    every profile. Never a fixture option — a backend that wants the inverse matrix says so
+    where its own code lives, and ``resolve_kanban_storage`` refuses it in hosted mode."""
+    return bool(getattr(type(store), "LOCAL_SHARED_BOARD", False))
+
 
 class PinningConformance:
     """The store serves only the pins it declares, and a refusal changes nothing."""
@@ -405,5 +436,63 @@ class IsolationConformance:
         assert len(winners) == 1, "two replicas both claimed the same ready task"
 
 
-class KanbanConformance(PinningConformance, IsolationConformance):
+class CrossAgentConformance:
+    """A's handle under a bound same-tenant scope of another agent (B's worker).
+
+    The gap between "the tenant is mine" and "the agent is mine": a backend whose pin checks
+    the tenant alone would pass the foreign-tenant matrix and still let B's worker read, claim
+    and rewrite A's rows through A's handle. Here that backend fails: every operation of A's
+    handle under B's scope is refused — a read may instead answer exactly what a missing row
+    would — and changes nothing A can observe, unless the backend declares the one local
+    exception on its own class (:func:`_shared_board_root`), when the matrix asserts the
+    inverse: B's scope is served on A's handle, as today's dispatcher handoff needs.
+    """
+
+    @pytest.fixture
+    def world(self, backend):
+        return make_world(backend)
+
+    @pytest.mark.parametrize("name,operation", READS, ids=[name for name, _ in READS])
+    def test_every_read_is_refused_or_missing_under_a_same_tenant_other_agents_scope(
+            self, backend, world, name, operation):
+        """The cross-agent read: B's worker holding A's handle never sees A's rows — the
+        operation is refused, or answers exactly what a missing row would — unless the backend
+        declares its one board root shared, when B's scope reads A's rows like A's own."""
+        a = world["a"]
+        with backend.bind("b"):
+            if _shared_board_root(a.store):
+                assert operation(a.store, a) is not None
+                return
+            try:
+                result = operation(a.store, a)
+            except KanbanPinRefused:
+                return
+            assert READ_MISSING[name](result), \
+                f"{name} under a same-tenant other agent's scope answered with A's rows"
+
+    @pytest.mark.parametrize("name,operation", [(n, c) for n, c, _ in WRITES],
+                             ids=[n for n, _, _ in WRITES])
+    def test_every_write_is_refused_under_a_same_tenant_other_agents_scope_and_changes_nothing(
+            self, backend, world, name, operation):
+        """The cross-agent write: unless the backend declares its one board root shared (when
+        B's scope writes A's rows like A's own), the operation is refused and nothing A can
+        observe changes — no row moves, no event lands, no subscription or cursor does."""
+        a = world["a"]
+        shared = _shared_board_root(a.store)
+        with backend.bind("a"):
+            before = observe(a.store, a)
+        with backend.bind("b"):
+            if shared:
+                result = operation(a.store, a)
+            else:
+                _refused(lambda: operation(a.store, a))
+        if shared:
+            checks = {name: ok for name, _c, ok in WRITES}
+            assert checks[name](result)
+        else:
+            with backend.bind("a"):
+                assert observe(a.store, a) == before
+
+
+class KanbanConformance(PinningConformance, IsolationConformance, CrossAgentConformance):
     """The whole suite: a backend plugin subclasses this and supplies the ``backend`` fixture."""

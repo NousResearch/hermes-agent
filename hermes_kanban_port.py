@@ -28,6 +28,13 @@ backend refuses a pin it cannot serve with :class:`KanbanPinRefused`, saying not
 whether the target exists. The local backend serves the local tenant (its one shared board root,
 shared by every profile on the machine by design) and refuses any other tenant; it also serves
 the ambient caller with no scope bound, as today's CLI does.
+
+The local backend's shared root is the one declared exception to agent isolation
+(:attr:`KanbanStore.LOCAL_SHARED_BOARD`): a single-user machine's dispatcher and its workers hand
+off through that one root, so the local store serves any scope of its tenant, whatever the
+profile. It is a property of the backend's own class, never a fixture option, and it is refused
+wherever the process runs hosted (:func:`resolve_kanban_storage`): a shared deployment's tenants
+each get their own agents' boards, behind a backend that pins the agent too.
 """
 
 from __future__ import annotations
@@ -57,6 +64,15 @@ class KanbanStore(ABC):
     reads return nothing and a claim or a dispatch sweep moves nothing. Methods take the board
     slug where today's call sites pass one; ``board=None`` keeps today's resolution.
     """
+
+    #: Whether this backend's one board root is shared by every profile of a single-user machine:
+    #: the local exception, declared on the backend's own class and nowhere else. Such a store
+    #: serves any scope of its tenant, whatever the profile, because that machine's dispatcher
+    #: and its workers hand off through the one root; the conformance suite
+    #: (``hermes_conformance.kanban``) asserts the inverse cross-agent matrix for a store that
+    #: declares it. A backend that pins the agent — anything a shared deployment serves — never
+    #: sets it.
+    LOCAL_SHARED_BOARD: bool = False
 
     # --- Boards
 
@@ -260,6 +276,12 @@ class KanbanStorageProvider(ABC):
 
     #: The ownership levels this backend stores (see :data:`LEVELS`).
     levels: frozenset[str] = frozenset({"agent"})
+
+    #: Whether this provider's store keeps one board root shared across every profile of a
+    #: single-user machine (``KanbanStore.LOCAL_SHARED_BOARD``, the local exception): refused
+    #: wherever the process runs hosted (:func:`resolve_kanban_storage`), because a shared
+    #: deployment's tenants each get their own agents' boards.
+    LOCAL_SHARED_BOARD: bool = False
 
     def is_available(self) -> bool:
         """Whether this backend can run here. No network calls."""

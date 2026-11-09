@@ -217,14 +217,7 @@ class GatewayModelCommandsMixin:
         Returns the warning for a ``--global`` switch whose ``config.yaml`` write or stale-override
         cleanup failed (the switch then stays a session override), else ``None``.
         """
-        from hermes_cli.model_switch import DIRECT_ALIASES, _ensure_direct_aliases, format_model_for_display
-
-        # Catalog alias names carry no credential authority; only a direct endpoint does.
-        direct_alias = None
-        alias_name = getattr(result, "resolved_via_alias", None)
-        if alias_name:
-            _ensure_direct_aliases()
-            direct_alias = DIRECT_ALIASES.get(alias_name)
+        from hermes_cli.model_switch import format_model_for_display
 
         # Persist the new model to the session DB so the dashboard shows the updated model (#34850).
         _sess_db = getattr(self, "_session_db", None)
@@ -256,7 +249,8 @@ class GatewayModelCommandsMixin:
         self._session_model_overrides[ctx.session_key] = {
             "model": result.new_model, "provider": result.target_provider, "api_key": result.api_key,
             "base_url": result.base_url, "api_mode": result.api_mode,
-            "owns_credentials": bool(direct_alias and direct_alias.base_url),
+            # Catalog alias names carry no credential authority; only a direct alias endpoint does.
+            "owns_credentials": bool(getattr(result, "alias_endpoint_applied", False)),
             "request_overrides": dict(result.request_overrides or {}),
             "capabilities": dict(result.runtime_capabilities or {}),
         }

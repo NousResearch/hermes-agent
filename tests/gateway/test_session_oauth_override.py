@@ -105,7 +105,7 @@ async def test_recorded_explicit_routes_keep_their_own_key(tmp_path, monkeypatch
     result = ModelSwitchResult(
         success=True, new_model="selected-model", target_provider=provider,
         api_key="explicit-key", base_url=endpoint, api_mode="codex_responses",
-        resolved_via_alias=alias)
+        resolved_via_alias=alias, alias_endpoint_applied=bool(alias))
     await runner._record_model_switch(result, ctx, source=None, one_turn=False, picker=False)
     _write_auth(tmp_path, provider, "managed-key")
     # Pool discovery is not credential authority for a route with its own explicit key.

@@ -1,0 +1,21 @@
+name: shorts-factory
+repo: https://github.com/skeptical-agency/shorts-factory
+sha: 291df7fabe603336083fd342c76ba69df015c15b
+description: "The 9:16 short-video pipeline as executable tools, distilled from a production pipeline shipping daily shorts across YouTube/TikTok/Instagram/Facebook/X: sf_loudness (ebur128 measure, two-pass loudnorm to -14 LUFS/-2 dBTP, sidechain music ducking with amix normalize=0, atempo), sf_concat (mixed stills+video with full in-graph fps/SAR/bt709 normalization, exact still frame counts, post-build VIDEO-STREAM duration asserts — kills the silent concat killers: vanishing overlays, dropped audio, one-frame stills), sf_captions (script-aligned word-timed punch captions rendered as Pillow PNGs — no libass/drawtext needed — with boundary-safe enable windows and pixel-diff band verification), sf_footage_audit (contact sheets, per-second brightness, full-res fine grabs, review checklist), sf_safezone (thumbnail safe band y=400..1500 checks + simulated grid crop), sf_motion_lint (deterministic build-script lint for stutter-prone zoompan/time-driven motion). Disclosure — everything runs locally through ffmpeg/ffprobe subprocesses; the plugin stores and uses NO credentials, NO OAuth, NO API keys, and makes no network calls except an optional one-time Bebas Neue font download from github.com/google/fonts (skipped when a local font exists); requires ffmpeg+ffprobe installed on the machine (sf_status checks and explains install)."
+maintainer: skeptical-agency
+tier: community
+category: tools
+docs_url: https://github.com/skeptical-agency/shorts-factory/blob/291df7fabe603336083fd342c76ba69df015c15b/README.md
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - sf_status
+    - sf_loudness
+    - sf_concat
+    - sf_captions
+    - sf_footage_audit
+    - sf_safezone
+    - sf_motion_lint
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

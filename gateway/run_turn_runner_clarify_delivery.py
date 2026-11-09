@@ -112,7 +112,12 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
         return late.undeliverable, False
     if response == clarify_mod.CANCELLED:
         return response, False
-    if response is None or response == "":
+    if response == "":
+        # Clients send "" for a skipped card (Desktop, TUI), and Desktop sends the same for Stop.
+        # A skip reads as SKIPPED, like a typed "skip"; during a stopped turn it is a cancel.
+        from tools.interrupt import is_interrupted
+        return (clarify_mod.CANCELLED, False) if is_interrupted() else (clarify_mod.SKIPPED, True)
+    if response is None:
         return f"[user did not respond within {int(timeout / 60)}m]", False
     return response, True
 

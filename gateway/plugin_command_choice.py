@@ -52,7 +52,7 @@ def _ask_chat(runner, source, session_key, loop, question, labels) -> Optional[s
     response, answered = _clarify_send_then_wait(card, clarify_id=clarify_id, session_key=session_key,
                                                  clarify_mod=clarify_gateway, fallback=fallback)
     if answered:
-        return response
+        return None if response == clarify_gateway.SKIPPED else response  # a skip picks nothing
     retire = getattr(type(adapter), "retire_clarify_card", None)
     if callable(retire):  # a persistent card must stop looking answerable
         from gateway.run_turn_runner import _clarify_expired_notice

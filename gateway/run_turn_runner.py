@@ -617,7 +617,13 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # viewer (TUI / Desktop / CLI) renders main's modal with its own skip control, unhinted.
         platform = getattr(getattr(self._ctx, "source", None), "platform", None)
         hint = "" if platform == Platform.LOCAL else f"\n{t('gateway.clarify.skip_hint')}"
+        from tools.interrupt import is_interrupted
         for index, entry in enumerate(questions):
+            if index and is_interrupted():
+                # Stop after an earlier card settled (Desktop sends "" for Skip and Stop alike):
+                # end the batch here instead of sending the next card.
+                reply["outcome"] = "cancelled"
+                break
             question = f"{entry['question']}{hint}"
             raw, answered = self._ask_clarify_question(
                 question, entry["choices"], bool(entry["multi_select"]), rearm=index == last)

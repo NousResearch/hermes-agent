@@ -402,7 +402,7 @@ def _built_by_pm(venv: Path) -> bool:
 
     try:
         lines = (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines()
-    except OSError:
+    except (OSError, ValueError):  # unreadable or not UTF-8: no PM-built env writes that
         return False
     home = next((value.strip() for key, _, value in (line.partition("=") for line in lines)
                  if key.strip() == "home"), "")

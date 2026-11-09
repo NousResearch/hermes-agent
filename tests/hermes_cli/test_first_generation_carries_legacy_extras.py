@@ -267,6 +267,15 @@ def test_a_whole_selection_sync_beside_a_developer_venv_selects_the_default(deve
     assert _recorded(developer_tree) == ["all"]
 
 
+def test_an_old_venv_with_an_undecodable_pyvenv_cfg_is_still_carried(legacy_tree, tmp_path, monkeypatch):
+    """A hand-damaged ``pyvenv.cfg`` is no PM env's: the sync carries the old venv instead of failing."""
+    (legacy_tree / "venv" / "pyvenv.cfg").write_bytes(b"home = /opt/\xff\xfepython/bin\n")
+
+    _completion_bootstrap(legacy_tree, tmp_path, monkeypatch)
+
+    assert {"telegram", "discord", "fal"} <= set(_recorded(legacy_tree))
+
+
 def test_a_bare_venv_holds_no_old_install(legacy_tree):
     """`uv venv .venv` with nothing installed: no Hermes, so nothing of an old install to carry."""
     import shutil

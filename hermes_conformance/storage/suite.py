@@ -359,6 +359,15 @@ class PinningConformance:
             if operation == "sessions.append_turn":
                 with backend.turn(world.storage, "s1", world.claimed):
                     ALL_WRITES[operation](world.storage, world)
+            elif operation == "admission.begin_epoch":
+                # Its contract says the caller holds the owner lock, so the positive control holds
+                # it: a backend that enforces the precondition passes this matrix. The refusal
+                # matrix still calls it bare — a foreign pin is what must refuse it there.
+                owner = world.storage.admission.acquire_owner()
+                try:
+                    ALL_WRITES[operation](world.storage, world)
+                finally:
+                    owner.release()
             else:
                 ALL_WRITES[operation](world.storage, world)
         if operation not in _NO_VISIBLE_CHANGE:

@@ -189,7 +189,7 @@ class TestPowerShellPositionalScriptAndAbbreviatedSwitches:
         r"Stop-Process -Name idleproc",
         r"Stop-Service -Name spooler",
         r"wmic shadowcopy list brief",
-        "wmic shadowcopy list && rm x -- delete",
+        "wmic shadowcopy list && rm x",
         "cmd /c echo wmic shadowcopy delete",
         "cat access.log | grep -i remove-item",
         # A hyphenated word is not the alias.

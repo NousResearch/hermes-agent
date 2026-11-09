@@ -413,6 +413,23 @@ _PS_EXE_AT_COMMAND_POSITION = (
     r"\s*(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
 )
 
+# `rm` must be a command WORD, not an argument to something else: at the start, after a shell
+# separator (`;` `&&` `||` `|` `(` `{` backtick), after `$(`, or after a newline — optionally
+# through sudo/env/wrapper commands. Without this anchor `echo rm a b` reads as a two-target
+# delete, and `git commit -m "remove these"` prose would be scanned as a command.
+_RM_CMDPOS = (
+    r'(?:^|[\n;|&(){`]|\$\()'
+    r'\s*'
+    r'(?:(?:sudo|doas|exec|nohup|setsid|time|command|env)\s+(?:-\S+\s+|\w+=\S*\s+)*)?'
+)
+# Operand-run prefix for the relative-delete rules below: `rm`, its flag group (a leading `-`
+# is always a flag, never an operand), then the first operand. Stops at whitespace, quotes,
+# command separators and redirections, so the run cannot be attributed across `; | &` or into a
+# redirect target.
+_RM_OPERAND_PREFIX = _RM_CMDPOS + r'rm\s+(?:(?:-[^\s"\';|&<>]+)\s+)*'
+_RM_OPERAND_FIRST = r'[^\s"\';|&<>-]'
+_RM_OPERAND_REST = r'[^\s"\';|&<>]*'
+
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
@@ -427,6 +444,22 @@ DANGEROUS_PATTERNS = [
      # spellings the two patterns above catch — without this rule they run with no approval prompt at all.
      # Port of openai/codex#33464 ("recognize force options when they follow operands").
      "recursive delete (flags after operands)"),
+    # The rules above key on the FIRST CHARACTER of the argument, so a deletion's approval
+    # depended on how it was spelled rather than on what it removes: after a `cd`,
+    # `rm logs/archive/*.log.gz` deleted 30 files with no prompt while the same files by
+    # absolute path prompted (#151542). Flag the shapes whose reach does not depend on the
+    # shell's working directory — a glob, a `..` traversal, or more than one target. A single
+    # plain relative file stays quiet, which is also the direction #18083 asks for: keying on
+    # the target's effect, not on whether its path starts with `/`.
+    (_RM_OPERAND_PREFIX + r'(?=[^\s"\';|&<>]*[*?\[])' + _RM_OPERAND_FIRST,
+     "delete with a glob"),
+    (_RM_OPERAND_PREFIX + _RM_OPERAND_FIRST + _RM_OPERAND_REST + r'\.\.',
+     "delete outside the working directory through .."),
+    (_RM_OPERAND_PREFIX + _RM_OPERAND_FIRST + _RM_OPERAND_REST + r'\s+(?!\d*[<>])' + _RM_OPERAND_REST + r'[^\s"\';|&<>]',
+     # `rm a.txt b.txt` removes both; GNU rm permutes flags, so the second target may follow a
+     # flag group. The `(?!\d*[<>])` guard keeps `rm a.txt 2>/dev/null` (one target plus a
+     # redirection) out of it.
+     "delete of multiple paths"),
 
     # Windows cmd/powershell destructive built-ins: gate only when executed through the shell so
     # prose/filenames containing "del"/"rd" do not trip.
@@ -709,6 +742,12 @@ DANGEROUS_PATTERNS_COMPILED = [
 _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
     "find dynamic shell word may expand to destructive flag",
     "dynamic shell word may expand to arbitrary program execution flag",
+    # Glob, `..` and multi-target deletes are matched on the quote-masked variant for the same
+    # reason: `grep 'rm *.log'` and `git commit -m "rm old new"` carry the shape as DATA. Quoting
+    # an operand also stops the shell expanding it, so a quoted glob is not a glob deletion.
+    "delete with a glob",
+    "delete outside the working directory through ..",
+    "delete of multiple paths",
 })
 # A quoted `| ri -r` is prose (`Write-Host "run gci | ri -r"`), unless an unquoted launcher runs the
 # quoted text as a script: `ssh host "gci | ri -r"`, `cmd /c "..."`, `iex "..."`, `echo "..." | pwsh -`.

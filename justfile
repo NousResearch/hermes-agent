@@ -23,18 +23,23 @@ js-install:
 [group('check')]
 [positional-arguments]
 check *args:
-    scripts/run-in-hermes-env python scripts/check "$@"
+    scripts/hermes-python scripts/check "$@"
 
 # Apply ruff and JS workspace autofixes to the tree
 [group('check')]
 fix:
-    scripts/run-in-hermes-env python -m scripts.code_health.ruff_runner check --fix .
+    scripts/hermes-python -m scripts.code_health.ruff_runner check --fix .
     pnpm -r fix
 
 # Run every JS workspace check
 [group('check')]
 check-js:
     pnpm -r check
+
+# Run every JS workspace check in parallel, as CI does (.github/scripts/run-workspace-checks.mjs)
+[group('check')]
+check-js-ci:
+    node .github/scripts/run-workspace-checks.mjs
 
 # Run the named test files or directories (pytest flags pass through)
 [group('test')]
@@ -93,7 +98,7 @@ lock:
 [group('hooks')]
 [positional-arguments]
 ruff +files:
-    scripts/run-in-hermes-env python -m scripts.code_health.ruff_runner check --config ruff.pre-commit.toml "$@"
+    scripts/hermes-python -m scripts.code_health.ruff_runner check --config ruff.pre-commit.toml "$@"
 
 # Pre-commit: eslint on the given files, from the calling workspace
 [group('hooks')]

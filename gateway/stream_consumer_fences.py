@@ -13,6 +13,15 @@ def escape_code_fences_for_display(text: str) -> str:
     return text.replace("```", "\\`\\`\\`") if isinstance(text, str) else text
 
 
+def open_code_fence_line(text: str) -> str | None:
+    """The opening ``` line (with its language tag) of a code block ``text`` leaves open."""
+    if text.count("```") % 2 == 0:
+        return None
+    start = text.rfind("```")
+    end = text.find("\n", start)
+    return text[start:] if end < 0 else text[start:end]
+
+
 def ensure_closed_code_fences(text: str) -> str:
     """Append a closing ``` and/or ` if the text has orphaned code markers.
 

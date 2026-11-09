@@ -9,7 +9,7 @@ import logging
 from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
-from gateway.stream_consumer_fences import ensure_closed_code_fences
+from gateway.stream_consumer_fences import ensure_closed_code_fences, open_code_fence_line
 
 logger = logging.getLogger("gateway.stream_consumer")
 
@@ -67,7 +67,13 @@ class StreamFallbackMixin:
                 )
                 if boundary >= 0:
                     cut = boundary + 1
-            return final_text[cut:].lstrip()
+            opener = open_code_fence_line(final_text[:cut])
+            if opener is None:
+                return final_text[cut:].lstrip()
+            # The tail starts inside a code block the user saw closed: reopen it, and keep the
+            # code's indentation.
+            tail = final_text[cut:].lstrip("\n")
+            return f"{opener}\n{tail}" if tail.strip() else tail
         return final_text
 
     @staticmethod

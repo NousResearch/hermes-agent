@@ -63,6 +63,45 @@ class KanbanLengthContinuationTests(unittest.TestCase):
             "Finish the answer directly.]",
         )
 
+    def test_context_compressor_classifies_worker_nudge_as_internal(self):
+        # SessionDB strips synthetic metadata, so the compressor must recognize
+        # the new Kanban continuation message by its exact content marker.
+        context_source = (ROOT / "agent" / "context_compressor.py").read_text()
+        tree = ast.parse(context_source)
+        method = next(
+            node for cls in tree.body if isinstance(cls, ast.ClassDef)
+            and cls.name == "ContextCompressor"
+            for node in cls.body if isinstance(node, ast.FunctionDef)
+            and node.name == "_is_synthetic_compression_user_turn"
+        )
+        imports = [
+            name.name for node in ast.walk(method)
+            if isinstance(node, ast.ImportFrom)
+            and node.module == "agent.conversation_loop"
+            for name in node.names
+        ]
+        self.assertIn("_LENGTH_CONTINUATION_KANBAN_OUTPUT_LIMIT", imports)
+        # Imported names are AST aliases, so one Name reference proves membership use.
+        matches = [
+            node for node in ast.walk(method)
+            if isinstance(node, ast.Name)
+            and node.id == "_LENGTH_CONTINUATION_KANBAN_OUTPUT_LIMIT"
+        ]
+        self.assertEqual(len(matches), 1)
+
+    def test_context_compressor_runtime_recognizes_worker_nudge(self):
+        try:
+            from agent.context_compressor import ContextCompressor
+        except ModuleNotFoundError as exc:
+            # Lightweight maintenance worktrees may lack ruamel; the normal CI
+            # environment and deployed Hermes venv exercise the runtime check.
+            self.skipTest(f"Full context-compressor dependencies unavailable: {exc.name}")
+        with patch("agent.delegation_context.owned_kanban_task", return_value="t_probe"):
+            prompt = self.continue_prompt(False)
+        self.assertTrue(ContextCompressor._is_synthetic_compression_user_turn(
+            {"role": "user", "content": prompt}
+        ))
+
     def test_network_stub_for_worker_unmodified(self):
         with patch("agent.delegation_context.owned_kanban_task", return_value="t_probe"):
             prompt = self.continue_prompt(True)

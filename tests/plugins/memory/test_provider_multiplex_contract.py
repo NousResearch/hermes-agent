@@ -143,8 +143,9 @@ def test_retaindb_two_profiles_interleaving_stay_in_their_own_projects(homes, fa
 # -- shared driver -----------------------------------------------------------------------------------
 
 def _run_interleaved(managers, tool, args_template, rounds=5):
-    """Each profile's turn, on its own thread and scope: a tool call, a turn sync and a built-in
-    memory-write mirror per round, all carrying that profile's name in their content."""
+    """Each profile's turn, on its own thread and scope: a tool call, a turn sync, the turn-complete
+    hook and a built-in memory-write mirror per round, all carrying that profile's name in their
+    content. Mirrors ``AIAgent._sync_external_memory_for_turn``, which fires both per-turn hooks."""
     barrier, errors = threading.Barrier(len(managers)), []
 
     def turns(home, manager):
@@ -156,6 +157,7 @@ def _run_interleaved(managers, tool, args_template, rounds=5):
                     result = json.loads(manager.handle_tool_call(tool, args))
                     assert "error" not in result, result
                     manager.sync_all(f"{home.name}-turn-{i} what did we decide", "the plan", session_id="s")
+                    manager.on_turn_complete_all(f"{home.name}-turn-{i} what did we decide", "the plan", session_id="s")
                     manager.on_memory_write("add", "memory", f"{home.name}-write-{i}")
                 assert manager.flush_pending(timeout=10)
         except Exception as exc:  # surfaced below

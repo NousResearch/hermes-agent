@@ -199,6 +199,7 @@ workspace; absent or empty cwd remains unpinned.
 | `prefetch(query, *, session_id="")` | Before each API call | Return recalled context |
 | `queue_prefetch(query, *, session_id="")` | After each turn | Pre-warm for next turn |
 | `sync_turn(user, assistant, *, session_id="", messages=None)` | After each completed turn | Persist conversation |
+| `on_turn_complete(user, assistant, *, session_id="", should_store=False)` | After each completed turn, after `sync_turn` | Cross-dialogue writes (memory extraction/storage). `should_store` is Hermes's hint that the user asked to remember this turn |
 | `on_session_end(messages)` | Conversation ends | Final extraction/flush |
 | `on_pre_compress(messages)` | Before context compression | Save insights before discard |
 | `on_memory_write(action, target, content, metadata=None)` | Built-in memory writes | Mirror to your backend |

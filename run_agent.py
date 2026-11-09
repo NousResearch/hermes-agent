@@ -892,9 +892,27 @@ class AIAgent(
             _quietly(lambda: self._memory_manager.on_session_end(messages or []))
         _notify_context_engine_session_end(self, messages)
 
+    @staticmethod
+    def _detect_storage_intent(user_text: str) -> bool:
+        """Detect if user text contains explicit storage intent keywords.
+
+        Returns True when the user explicitly asks to remember, save, or store information.
+        This is a hint to memory providers that the content is storage-worthy.
+        """
+        if not user_text:
+            return False
+        text_lower = user_text.lower()
+        # Keywords indicating explicit storage intent
+        storage_keywords = [
+            "remember this", "remember that", "don't forget", "keep in mind",
+            "save this", "store this", "make a note", "take note",
+            "important to remember", "keep track of", "write down",
+        ]
+        return any(keyword in text_lower for keyword in storage_keywords)
+
     def _sync_external_memory_for_turn(self, *, original_user_message: Any, final_response: Any, interrupted: bool,
                                        messages: list | None = None) -> None:
-        """Mirror a completed turn into external memory providers (``sync_all`` + ``queue_prefetch_all``).
+        """Mirror a completed turn into external memory providers (``sync_all`` + ``queue_prefetch_all`` + ``on_turn_complete_all``).
 
         Uses ``original_user_message`` (``user_message`` may carry injected skill content). Interrupted turns
         are skipped: partial output is not durable truth. Best-effort — an offline backend never blocks.
@@ -922,6 +940,14 @@ class AIAgent(
             # Sibling of the build_turn_context() prefetch gate: don't key recall on zero-signal prompts.
             if not is_trivial_prompt(user_text):
                 self._memory_manager.queue_prefetch_all(user_text, session_id=self.session_id or "")
+            
+            # Detect storage intent from user text (explicit keywords).
+            should_store = self._detect_storage_intent(user_text)
+            self._memory_manager.on_turn_complete_all(
+                user_text, response_text,
+                session_id=self.session_id or "",
+                should_store=should_store
+            )
         except Exception:
             pass
 

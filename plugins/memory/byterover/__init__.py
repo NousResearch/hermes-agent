@@ -221,9 +221,21 @@ class ByteRoverMemoryProvider(MemoryProvider):
         """No-op: prefetch() runs synchronously at turn start."""
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Curate the conversation turn in background (non-blocking); only substantive turns."""
+        """History bookkeeping only. The knowledge-store write is ``on_turn_complete``."""
         self._turn_count += 1
-        if not self._auto_extract_enabled("sync_turn") or len(user_content.strip()) < _MIN_QUERY_LEN:
+
+    def on_turn_complete(
+        self, user_content: str, assistant_content: str, *,
+        session_id: str = "", should_store: bool = False,
+    ) -> None:
+        """Curate the turn into the knowledge store (cross-dialogue write; non-blocking).
+
+        This is the hook with write permission — ``sync_turn`` only records. A turn the user
+        explicitly asked to remember (``should_store``) is curated even when it is short.
+        """
+        if not self._auto_extract_enabled("on_turn_complete"):
+            return
+        if not should_store and len(user_content.strip()) < _MIN_QUERY_LEN:
             return
         if self._sync_thread and self._sync_thread.is_alive():  # wait for the previous sync so curates don't pile up
             self._sync_thread.join(timeout=5.0)

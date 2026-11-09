@@ -450,6 +450,42 @@ class MemoryManager:
             providers=providers,
         ), kind="prefetch")
 
+    def on_turn_complete_all(self, user_content: str, assistant_content: str, *,
+                              session_id: str = "", should_store: bool = False) -> None:
+        """Call ``on_turn_complete`` hook on all providers on the background worker.
+
+        This hook explicitly supports cross-dialogue write operations (memory storage, extraction)
+        unlike ``sync_turn`` which is designed for conversation history recording. Providers can
+        use this to automatically detect and store key information without manual intervention.
+
+        Args:
+            user_content: The user's message text (cleaned, multimodal flattened).
+            assistant_content: The assistant's response text (cleaned, multimodal flattened).
+            session_id: The conversation session identifier.
+            should_store: Hint indicating storage-worthy content detected by Hermes.
+        """
+        if self._fork_turn_hooks_suppressed():
+            return
+        providers = list(self._providers)
+        clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
+        if not clean_user_content or not self._owner_allows("on_turn_complete"):
+            return
+        clean_user_content, assistant_content = _redact_for_provider(clean_user_content, assistant_content)
+
+        def _on_complete(provider: MemoryProvider) -> None:
+            self._call_unless_stalled(
+                provider,
+                lambda: provider.on_turn_complete(
+                    clean_user_content, assistant_content,
+                    session_id=session_id, should_store=should_store
+                )
+            )
+
+        self._submit_background(
+            lambda: self._each_provider("on_turn_complete failed", _on_complete, level=logging.WARNING, providers=providers),
+            kind="write"
+        )
+
     @staticmethod
     def _provider_sync_accepts(provider: MemoryProvider, keyword: str) -> bool:
         """Whether ``sync_turn`` accepts ``keyword`` (uninspectable → assume yes)."""

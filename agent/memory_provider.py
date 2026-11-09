@@ -2,7 +2,7 @@
 
 Plugins ship in ``plugins/memory/<name>/``, activated via ``memory.provider`` (ONE external
 provider at a time). Lifecycle, driven by MemoryManager: initialize -> system_prompt_block /
-prefetch / sync_turn per turn -> tool dispatch -> shutdown, plus optional ``on_*`` hooks.
+prefetch / sync_turn / on_turn_complete per turn -> tool dispatch -> shutdown, plus optional ``on_*`` hooks.
 """
 
 from __future__ import annotations
@@ -161,6 +161,25 @@ class MemoryProvider(ABC):
     ) -> None:
         """Persist a completed turn (non-blocking). ``messages`` is the OpenAI-style list so far.
         ``turn_author`` (``{"id", "name", "is_bot"}``) is who wrote the user side; the manager sends it only to signatures that accept it."""
+
+    def on_turn_complete(
+        self, user_content: str, assistant_content: str, *,
+        session_id: str = "", should_store: bool = False,
+    ) -> None:
+        """Called after turn completion with explicit permission to write cross-dialogue memory.
+
+        Unlike ``sync_turn`` (designed for conversation history recording), this hook explicitly
+        supports write operations such as extracting and storing key facts, decisions, or learnings
+        from the conversation into long-term memory stores.
+
+        Args:
+            user_content: The user's message text (cleaned, multimodal flattened).
+            assistant_content: The assistant's response text (cleaned, multimodal flattened).
+            session_id: The conversation session identifier.
+            should_store: Hint from Hermes indicating storage-worthy content detected
+                         (e.g., user said "remember this", important decision made).
+                         Providers may implement their own detection logic and ignore this hint.
+        """
 
     @abstractmethod
     def get_tool_schemas(self) -> list[dict[str, Any]]:

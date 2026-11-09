@@ -50,3 +50,23 @@ def test_the_profiles_own_credential_file_still_invalidates(process_provider):
     _write(process_provider / ".fp-process" / "account.json", '{"account": "two"}')
 
     assert _credential_fingerprint("fp-process") != before
+
+
+@pytest.mark.platforms("posix")
+def test_retargeting_an_override_symlink_invalidates(process_provider, monkeypatch):
+    # The override text stays the same while an upgrade repoints the symlink it names.
+    from hermes_cli.models import _credential_fingerprint
+
+    monkeypatch.setattr(_providers._REGISTRY["fp-process"], "process_command_env_vars", ("FP_PROCESS_COMMAND",))
+    for version in ("1", "2"):
+        _write(process_provider / "versions" / version / "fp", "#!/bin/sh\n")
+        (process_provider / "versions" / version / "fp").chmod(0o755)
+    link = process_provider / "bin" / "fp"
+    link.parent.mkdir()
+    link.symlink_to(process_provider / "versions" / "1" / "fp")
+    monkeypatch.setenv("FP_PROCESS_COMMAND", str(link))
+    before = _credential_fingerprint("fp-process")
+    link.unlink()
+    link.symlink_to(process_provider / "versions" / "2" / "fp")
+
+    assert _credential_fingerprint("fp-process") != before

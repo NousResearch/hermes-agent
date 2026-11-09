@@ -13,7 +13,7 @@ import pytest
 from pm.plugin_inputs import Candidates, Selection, StagedUpdate
 
 from tests.pm.test_worker import client, isolated_python, _current_environment
-from tests.pm._fixtures import installing_member, worker_toolchain
+from tests.pm._fixtures import installing_member, windows_account, worker_toolchain
 
 
 def test_worker_publishes_selection_even_when_dependencies_are_current(client, tmp_path, monkeypatch):
@@ -395,9 +395,10 @@ def test_published_plugin_takes_the_plugins_dir_permissions_not_the_staging_fold
         }))
 
     assert (target / "pkg" / "mod.py").read_text(encoding="utf-8-sig") == "x = 1\n"
+    users = windows_account("S-1-5-32-545")
     for path in (target, target / "pkg", target / "pkg" / "mod.py"):
         entries = _icacls(path)
-        assert any(line.startswith("BUILTIN\\Users:(I)") for line in entries), (path, entries)
+        assert any(line.startswith(f"{users}:(I)") for line in entries), (path, entries)
         assert all("(I)" in line for line in entries), (path, entries)
 
 

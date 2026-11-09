@@ -805,13 +805,14 @@ class GatewayBusySessionMixin:
 
     def _fold_into_running_turn(self, running_agent, session_key: str, event: MessageEvent):
         """The running turn now answers *event* too (steer, redirect): if *event* was addressed to
-        the bot, a bare silence marker must not end the turn. Returns the turn, or None when a newer
-        turn already owns the slot."""
+        the bot, a bare silence marker must not end the turn, and once another sender's input joins
+        it the turn has no single actor (approvals raised after it fail closed). Returns the turn,
+        or None when a newer turn already owns the slot."""
         turn = self._session_state(session_key).turn
         if turn.agent is not running_agent:
             return None
         if turn.event is not None and turn.event is not event:
-            turn.event.absorb_reply_expected(event)
+            turn.event.absorb_turn_input(event)
             if turn.ctx is not None:
                 turn.ctx.reply_expected = turn.event.reply_expected
         return turn

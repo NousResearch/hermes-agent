@@ -49,6 +49,12 @@ _SESSION_VARS = (
     "HERMES_SESSION_ACTOR_ID", "HERMES_SESSION_ACTOR_NAME",
 ))
 
+# The MessageEvent of the running gateway turn. Another sender's input folded into the running turn
+# (steer, redirect) clears its user in place (``absorb_turn_input``); the worker's copied ACTOR vars
+# cannot change from outside, so ``get_session_env`` re-reads the actor through it.
+_SESSION_TURN_EVENT: ContextVar[Any] = ContextVar("HERMES_SESSION_TURN_EVENT", default=None)
+_ACTOR_VAR_NAMES = frozenset({"HERMES_SESSION_ACTOR_ID", "HERMES_SESSION_ACTOR_NAME"})
+
 # Whether this channel can route an ASYNC completion back AFTER the turn ends (see
 # ``async_delivery_supported()``).  _UNSET => supported (CLI, contextvar-unaware paths); stateless
 # adapters (API server, Kanban workers) opt OUT via ``supports_async_delivery = False`` at bind.
@@ -139,6 +145,7 @@ def set_session_vars(
     message_id: str = "", profile: str = "", cwd: str = "", async_delivery: bool = True,
     ui_session_id: str = "", cron_session: Any = _UNSET, parent_chat_id: str = "",
     session_history_delivery: str | None = None, actor_id: str | None = None, actor_name: str | None = None,
+    turn_event: Any = None,
 ) -> list:
     """Set all session context variables and return reset tokens.  Call
     ``clear_session_vars(tokens)`` in a ``finally``; not nestable, clearing resets every var
@@ -159,6 +166,7 @@ def set_session_vars(
     tokens = [var.set(value) for var, value in zip(_SESSION_VARS, values)]
     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
     tokens.append(_SESSION_HISTORY_DELIVERY.set(_UNSET if session_history_delivery is None else session_history_delivery))
+    tokens.append(_SESSION_TURN_EVENT.set(turn_event))
     _runtime_cwd("set_session_cwd", cwd)
     return tokens
 
@@ -173,6 +181,7 @@ def clear_session_vars(tokens: list) -> None:
         var.set("")
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
+    _SESSION_TURN_EVENT.set(None)
     _runtime_cwd("clear_session_cwd")
 
 
@@ -186,12 +195,15 @@ def reset_session_vars() -> None:
         var.set(_UNSET)
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
+    _SESSION_TURN_EVENT.set(None)
     _runtime_cwd("clear_session_cwd")
 
 
 def get_session_env(name: str, default: str = "") -> str:
     """Read a session var by legacy ``HERMES_SESSION_*`` name; drop-in for os.getenv.  The
     ContextVar wins if ever set here (even to ``""``); else ``os.environ``; else *default*."""
+    if name in _ACTOR_VAR_NAMES and getattr(_SESSION_TURN_EVENT.get(), "user_id", None) == "":
+        return ""  # another sender's input joined the running turn: it has no single actor any more
     var = _VAR_MAP.get(name)
     if var is not None and (value := var.get()) is not _UNSET:
         return value

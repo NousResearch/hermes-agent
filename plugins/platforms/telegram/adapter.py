@@ -186,7 +186,8 @@ from plugins.platforms.telegram.telegram_ingress import TelegramContactMixin
 from plugins.platforms.telegram.telegram_replacement import TelegramReplacementMixin
 from plugins.platforms.telegram.telegram_polling_probe import TelegramPendingProbeMixin
 from plugins.platforms.telegram.telegram_intake import effective_update_message
-from plugins.platforms.telegram.telegram_media_group import add_item_note, flush_media_group_event, queue_media_group_event, tracking_album_items
+from plugins.platforms.telegram.telegram_media_group import add_item_note, flush_media_group_event, queue_media_group_event
+from plugins.platforms.telegram.telegram_text_photo_pairing import absorb_claimed_text, tracking_media_items, wait_text_flush
 from plugins.platforms.telegram.telegram_media_flood import TelegramMediaFloodMixin
 from plugins.platforms.telegram import telegram_flood_window as _flood_window
 from plugins.platforms.telegram.telegram_media_fetch import (
@@ -6041,14 +6042,14 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             record_typed_text(existing, merged)
         self._accept_update()
 
-    async def _flush_buffered(self, pending: dict, tasks: dict, key: str, delay: float, where: str, log_fn=None) -> None:
-        """Shared delayed-flush body: sleep, pop, hold if teardown started, else dispatch. A cancel after
-        the pop but before durable dispatch re-holds the event (never lose it)."""
+    async def _flush_buffered(self, pending: dict, tasks: dict, key: str, delay: float, where: str, log_fn=None, pause=None) -> None:
+        """Shared delayed-flush body: sleep (or ``pause(delay)``), pop, hold if teardown started, else dispatch.
+        A cancel after the pop but before durable dispatch re-holds the event (never lose it)."""
         current_task = asyncio.current_task()
         committed = self.__dict__.setdefault("_committed_flush_tasks", {})
         event = None
         try:
-            await asyncio.sleep(delay)
+            await (pause or asyncio.sleep)(delay)
             # Superseded flush (a newer chunk re-armed the timer while our sleep was already done):
             # CancelledError only lands at the next await, so check synchronously before the pop.
             owner = tasks.get(key)
@@ -6096,13 +6097,12 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         return self._text_batch_delay_seconds
 
     async def _flush_text_batch(self, key: str) -> None:
-        """Telegram keeps its own flush body: a cancel after the pop must HOLD the event and re-raise
-        (PTB already acked the update; the hold queue redispatches after reconnect) rather than shield
-        the dispatch — teardown must be able to stop a flush from reaching a torn-down session."""
+        """Own flush body (a cancel after the pop HOLDs the event: PTB acked it); a claiming image holds it (#33270)."""
         await self._flush_buffered(
             self._pending_text_batches, self._pending_text_batch_tasks, key,
             self._text_batch_delay_for(self._pending_text_batches.get(key)), "text",
-            lambda ev: logger.info("[Telegram] Flushing text batch %s (%d chars)", key, len(ev.text or "")))
+            lambda ev: logger.info("[Telegram] Flushing text batch %s (%d chars)", key, len(ev.text or "")),
+            pause=lambda delay: wait_text_flush(self, key, delay))
 
     # -- Photo batching --
 
@@ -6141,8 +6141,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """Album items debounce on media_group_id; singles go through the photo burst batcher."""
         if self._drop_unresolved(event):  # identity FIRST: the batch lane is derived from it
             return
-        media_group_id = getattr(msg, "media_group_id", None)
-        if media_group_id:
+        absorb_claimed_text(self, msg, event)  # the question typed just before this image joins its turn
+        if media_group_id := getattr(msg, "media_group_id", None):
             await self._queue_media_group_event(str(media_group_id), event)
         else:
             self._enqueue_photo_event(self._photo_batch_key(event, msg), event)
@@ -6273,7 +6273,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             await self._surface_media_cache_failure(msg, event, "attachment", e, display_name=getattr(doc, "file_name", None) or None)
         return False
 
-    @tracking_album_items
+    @tracking_media_items
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
         msg = self._effective_update_message(update)  # channel posts arrive as update.channel_post

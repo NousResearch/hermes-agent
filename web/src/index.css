@@ -222,6 +222,21 @@ code { font-size: 0.875rem; }
   display: none;
 }
 
+/* The phone-adaptive preview is a real 390px viewport in an iframe, not a
+   scaled desktop screenshot: every responsive rule and matchMedia call inside
+   the app behaves exactly as it does on a phone. */
+.phone-view-frame {
+  width: 390px;
+  max-width: calc(100vw - 2rem);
+  height: 844px;
+  max-height: calc(100dvh - 8rem);
+  overflow: hidden;
+  border-radius: 1.25rem;
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.15));
+  background: var(--background-base, #041c1c);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
 /* System UI-monospace stack — distinct from `font-courier` (Courier
    Prime), used for dense data readouts where the display font would
    break the grid. Routes through the theme's mono stack so themes

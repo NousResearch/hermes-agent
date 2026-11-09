@@ -54,6 +54,8 @@ import { setPreviewDirty } from '@/store/preview-edit'
 import { $connection, $currentCwd } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
+import { CopyDocumentButton } from './copy-document-button'
+
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 const SOURCE_CHUNK_LINES = 200
@@ -1095,7 +1097,12 @@ export function LocalFilePreview({
           active="source"
           modes={[]}
           onSelect={() => {}}
-          trailing={<EditControls dirty={dirty} onCancel={cancelEdit} onSave={() => void saveEdit()} saving={saving} />}
+          trailing={
+            <span className="flex items-center gap-2">
+              <CopyDocumentButton getText={() => draftRef.current} key={filePath} />
+              <EditControls dirty={dirty} onCancel={cancelEdit} onSave={() => void saveEdit()} saving={saving} />
+            </span>
+          }
         />
         {conflict && (
           <div className="shrink-0 border-b border-amber-400/40 bg-amber-50 px-3 py-2 text-[0.7rem] text-amber-900 dark:border-amber-300/30 dark:bg-amber-300/10 dark:text-amber-100">
@@ -1260,16 +1267,19 @@ export function LocalFilePreview({
           onSelect={selectMode}
           trailing={
             canEdit ? (
-              <Tip label={`${t.preview.edit} (e)`}>
-                <button
-                  className="flex items-center gap-1 text-[0.625rem] font-bold text-muted-foreground underline-offset-4 transition-colors hover:text-foreground"
-                  onClick={beginEdit}
-                  type="button"
-                >
-                  <Pencil className="size-3" />
-                  {t.preview.edit}
-                </button>
-              </Tip>
+              <span className="flex items-center gap-2">
+                <CopyDocumentButton getText={() => state.text ?? ''} key={`${filePath}:${reloadKey}:${selfReload}`} />
+                <Tip label={`${t.preview.edit} (e)`}>
+                  <button
+                    className="flex items-center gap-1 text-[0.625rem] font-bold text-muted-foreground underline-offset-4 transition-colors hover:text-foreground"
+                    onClick={beginEdit}
+                    type="button"
+                  >
+                    <Pencil className="size-3" />
+                    {t.preview.edit}
+                  </button>
+                </Tip>
+              </span>
             ) : null
           }
         />

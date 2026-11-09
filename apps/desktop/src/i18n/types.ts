@@ -3743,6 +3743,8 @@ export interface Translations extends NoticeTranslations {
     noInlineBody: (mimeType: string) => string
     edit: string
     editing: string
+    copyDocument: string
+    copyDocumentTruncated: (length: number) => string
     unsavedChanges: string
     saveFailed: (message: string) => string
     saveScopeChanged: string

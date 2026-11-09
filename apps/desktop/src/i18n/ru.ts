@@ -3424,6 +3424,9 @@ export const ruOverrides = {
     noInlineBody: mimeType => `${mimeType || 'Этот тип файла'} всё равно можно прикрепить как контекст.`,
     edit: 'Изменить',
     editing: 'Изменение',
+    copyDocument: 'Копировать весь документ',
+    copyDocumentTruncated: length =>
+      `Показаны первые 4 000 символов из ${length}. Полный документ находится в буфере обмена.`,
     unsavedChanges: 'Несохранённые изменения',
     saveFailed: message => `Не удалось сохранить: ${message}`,
     saveScopeChanged: 'Чтобы сохранить этот черновик, вернитесь к исходному подключению и профилю.',

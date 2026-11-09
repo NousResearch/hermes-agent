@@ -1325,13 +1325,9 @@ def main() -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument(
-        "-j",
-        "--jobs",
-        type=int,
-        default=_default_job_count(),
-        help="Parallel worker count (default: $HERMES_TEST_WORKERS, else cpu_count capped by cgroup memory.max)",
-    )
+    parser.add_argument("-j", "--jobs", type=int,
+                        default=_default_job_count(),
+                        help="Parallel worker count (default: $HERMES_TEST_WORKERS, else cpu_count capped by cgroup memory.max)")
     parser.add_argument(
         "--paths",
         default=os.environ.get("HERMES_TEST_PATHS", ":".join(_DEFAULT_ROOTS)),

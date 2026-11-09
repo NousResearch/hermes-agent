@@ -193,37 +193,21 @@ class TestRedactKey:
         assert redact_key("short") == "***"
 
 
-class TestSessionTokenInjection:
-    """The desktop shell mints HERMES_DASHBOARD_SESSION_TOKEN and signs its
-    /api + /api/ws calls with it. The backend must adopt that token, else every
-    desktop request 401s ("gateway is offline"). A main-merge once silently
-    dropped this read — this guards the contract, not a literal value.
-    """
-
-    def test_honors_injected_token(self, monkeypatch):
-        import hermes_cli.web_server as ws
-
-        original_app = ws.app
-        original_token = ws._SESSION_TOKEN
-        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-seeded-token")
-        assert ws._resolve_session_token() == "desktop-seeded-token"
-        # No module reload: the loaded app and its adopted token are untouched.
-        assert ws.app is original_app
-        assert ws._SESSION_TOKEN == original_token
 
 
     def test_session_token_resolution_preserves_loaded_app_auth(self, monkeypatch):
         import hermes_cli.web_server as ws
+        import hermes_cli.web_server_session_token as st
         from starlette.testclient import TestClient
 
         original_app = ws.app
         original_header_name = ws._SESSION_HEADER_NAME
         original_token = ws._SESSION_TOKEN
         monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-seeded-token")
-        assert ws._resolve_session_token() == "desktop-seeded-token"
+        assert st.resolve_session_token() == "desktop-seeded-token"
         monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
-        with patch.object(ws.secrets, "token_urlsafe", return_value="generated-token"):
-            assert ws._resolve_session_token() == "generated-token"
+        with patch.object(st.secrets, "token_urlsafe", return_value="generated-token"):
+            assert st.resolve_session_token() == "generated-token"
 
         client = TestClient(original_app)
         client.headers[original_header_name] = original_token
@@ -2675,7 +2659,6 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert _is_anthropic_frontier_tier(None) is False
 
 
-
 # ---------------------------------------------------------------------------
 # _build_schema_from_config tests
 # ---------------------------------------------------------------------------
@@ -4818,7 +4801,7 @@ class TestDashboardPluginManifestExtensions:
 # monkeypatch that hook.
 # ---------------------------------------------------------------------------
 
-from hermes_cli import main_tui_launch
+from hermes_cli import main as _main_mod, main_tui_launch
 
 
 skip_on_windows = pytest.mark.skipif(
@@ -4852,8 +4835,8 @@ class TestPtyWebSocket:
         return f"/api/pty?{urlencode(q)}"
 
 
-    def test_tui_python_command_uses_child_path(self, tmp_path):
-        """Bare Python commands are resolved from the TUI child's PATH."""
+    def test_tui_python_env_is_this_process_not_the_shell(self, tmp_path):
+        """A dev shell's interpreter and tree never reach the TUI's gateway child."""
 
         command = f"hermes-review-python{Path(sys.executable).suffix}"
         bin_dir = tmp_path / "bin"
@@ -4863,14 +4846,14 @@ class TestPtyWebSocket:
         # the venv (tmpfs /tmp vs disk home) where hard links raise EXDEV.
         shutil.copy2(sys.executable, executable)
         env = {
-            "HERMES_CWD": str(tmp_path),
-            "HERMES_PYTHON": command,
+            "HERMES_CWD": str(tmp_path), "HERMES_PYTHON_SRC_ROOT": str(tmp_path),
+            "HERMES_PYTHON": str(executable),
             "PATH": str(bin_dir),
         }
 
         main_tui_launch._apply_tui_python_env(env)
 
-        assert env["HERMES_PYTHON"] == command
+        assert (env["HERMES_PYTHON"], env["HERMES_PYTHON_SRC_ROOT"]) == (sys.executable, str(_main_mod.PROJECT_ROOT))
 
 
     def test_unavailable_platform_closes_with_message(self, monkeypatch):

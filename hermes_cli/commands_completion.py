@@ -34,9 +34,9 @@ def _personalities_from_cli_config() -> dict[str, Any]:
     from hermes_cli.personality import available_personalities
     try:
         from hermes_cli.config import get_config_path
-        from hermes_cli.config_backend import config_version
+        from hermes_cli.config_backend import config_cache_version
         cfg_path = get_config_path()
-        sig = (str(cfg_path), *config_version(cfg_path))
+        sig = (str(cfg_path), *config_cache_version(cfg_path))
     except Exception:
         sig = (None, None, None, None, None)
     if _personalities_memo is None or _personalities_memo[0] != sig:

@@ -289,11 +289,6 @@
   },
   {
     "path": "hermes_cli/main_tui_launch.py",
-    "symbol": "_apply_tui_python_env",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/main_tui_launch.py",
     "symbol": "_make_tui_argv",
     "kind": "bare_which"
   },
@@ -406,6 +401,11 @@
   {
     "path": "hermes_constants.py",
     "symbol": "find_node_executable",
+    "kind": "bare_which"
+  },
+  {
+    "path": "pm/build_compilers.py",
+    "symbol": "_linux_defaults",
     "kind": "bare_which"
   },
   {

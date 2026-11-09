@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { ContextMenu, ContextMenuTrigger, HERMES_CONTEXT_MENU_TRIGGER_ATTR } from './context-menu'
 import { PaneTab, PaneTabLabel } from './pane-tab'
 
 afterEach(cleanup)
@@ -133,5 +134,26 @@ describe('PaneTab hover close button', () => {
     )
 
     expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
+  })
+})
+
+describe('PaneTab under a context-menu trigger', () => {
+  // The trigger's injected data-slot used to replace ours, so the close-width and
+  // label-mask rules keyed on [data-slot='pane-tab'] stopped matching session tabs.
+  it('keeps its own data-slot and the menu marker', () => {
+    render(
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <PaneTab onClose={vi.fn()}>
+            <PaneTabLabel>tab</PaneTabLabel>
+          </PaneTab>
+        </ContextMenuTrigger>
+      </ContextMenu>
+    )
+
+    const tab = screen.getByText('tab').closest('[data-closeable]')
+
+    expect(tab?.getAttribute('data-slot')).toBe('pane-tab')
+    expect(tab?.hasAttribute(HERMES_CONTEXT_MENU_TRIGGER_ATTR)).toBe(true)
   })
 })

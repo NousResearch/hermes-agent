@@ -504,6 +504,7 @@ def _wake_detect_handler(transport, sid: str, phrase: str, new_session: bool):
         try:
             _emit("wake.detected", sid, {
                 "phrase": matched_phrase or phrase, "profile": matched_profile or None,
+                # detached-spawn: ok — not a spawn: a wake.detected event field
                 "start_new_session": new_session})
         finally:
             reset_transport(token)
@@ -536,7 +537,8 @@ def _(rid, params: dict) -> dict:
         if transport.desktop_local:
             from tui_gateway import server
             server.begin_local_desktop_boot()
-    return _ok(rid, {"server_requests": sorted(contracts.SERVER_REQUESTS), "declines_not_shown": True})
+    return _ok(rid, {"server_requests": sorted(contracts.SERVER_REQUESTS), "declines_not_shown": True,
+                     "canonical_clarify_batch": True})
 
 
 @method("ping")

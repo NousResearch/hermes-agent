@@ -382,6 +382,36 @@ class HubLockFile(_JsonStateFile):
     def list_installed(self) -> list[dict]:
         return [{"name": name, **entry} for name, entry in self.load()["installed"].items()]
 
+    def by_identifier(self) -> dict[str, dict]:
+        """Installed entries keyed by identifier. A ClawHub row is also keyed by the
+        ``clawhub/<slug>`` id a catalog card installs, since the lock records ``@owner/slug``.
+        That alias names its source, so a ClawHub install never answers for another source's
+        id. Exact identifiers win."""
+        from tools.skills_hub_clawhub import ClawHubSource
+
+        rows = [entry for entry in self.list_installed() if entry.get("identifier")]
+        installed = {entry["identifier"]: entry for entry in rows}
+        for entry in rows:
+            if entry.get("source") == "clawhub":
+                if alias := ClawHubSource.catalog_identifier(entry["identifier"]):
+                    installed.setdefault(alias, entry)
+        return installed
+
+
+def installed_entry(installed: dict[str, dict], identifier: str,
+                    source: Optional[str] = None) -> Optional[dict]:
+    """The ``HubLockFile.by_identifier`` entry a hub result names. Search and the index list a
+    ClawHub skill by its bare slug, so a ``source="clawhub"`` result also matches through its
+    ``clawhub/<slug>`` card id. Any other source matches its exact id only."""
+    if identifier in installed:
+        return installed[identifier]
+    if source != "clawhub":
+        return None
+    from tools.skills_hub_clawhub import ClawHubSource
+
+    alias = ClawHubSource.catalog_identifier(identifier)
+    return installed.get(alias) if alias else None
+
 
 class TapsManager(_JsonStateFile):
     """skills/.hub/taps.json — custom GitHub repo sources."""

@@ -102,6 +102,9 @@ def main(argv: list[str]) -> int:
             files.extend(p for p in t.rglob("*.py") if "node_modules" not in p.parts)
         elif t.suffix == ".py" and t.exists():
             files.append(t)
+        elif not t.exists():
+            print(f"{t} does not exist: a scan target that moved would be skipped in silence", file=sys.stderr)
+            return 2
     problems: list[str] = []
     for f in sorted(set(files)):
         if f.resolve() in ALLOWED_FILES:

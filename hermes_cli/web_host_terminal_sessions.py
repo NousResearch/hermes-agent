@@ -30,8 +30,13 @@ from hermes_constants import assert_named_profile_home_live, get_hermes_home
 # No survival across backend restart. Disconnects retain a bounded ANSI tail.
 RETENTION_SECONDS = 15 * 60
 _MAX_SHELLS = 16
-# Inbound frames buffered while one batch is written (backpressure bound).
-_INPUT_BATCH_FRAMES = 64
+# Inbound input buffered while one batch is written (backpressure bound): full only once it holds
+# both ``_INPUT_QUEUE_FRAMES`` frames and ``_INPUT_QUEUE_BYTES`` bytes, each frame also costing
+# ``_FRAME_OVERHEAD_BYTES``. Until then the reader keeps reading the socket, which is where the
+# server's keepalive pongs arrive (``_InputQueue``).
+_INPUT_QUEUE_FRAMES = 64
+_INPUT_QUEUE_BYTES = 1024 * 1024
+_FRAME_OVERHEAD_BYTES = 256
 # How often a reader held up by that bound checks that the tab is still there (``_queue_frame``).
 # Once the connection is gone a check fails within about three: the first can still reach the
 # kernel before the peer's reset comes back.
@@ -73,6 +78,10 @@ class HostOwner:
         """Blocking filesystem reads (home, tombstone): call off-loop."""
         return _home_live(self.home)
 
+    def matches(self, ws: WebSocket) -> bool:
+        return (getattr(ws.state, "ssh_terminal", None) is None
+                and _request_home(ws.query_params.get("profile")) == self.home)
+
     def admit(self, write):
         """Run ``write`` while this owner's profile home is live, or raise ``TerminalExpired``.
 
@@ -85,8 +94,7 @@ class HostOwner:
 
 
 def _request_identity(ws: WebSocket) -> tuple[str, str]:
-    """``(provider, user)`` of the terminal ticket that admitted *ws*; ``_ws_gate`` admits no other
-    credential to the host terminal."""
+    """``(provider, user)`` from the admitted host-terminal ticket, or relay ticket for SSH."""
     identity = getattr(ws, "_hermes_auth_identity", None) or {}
     user, provider = identity.get("user_id"), identity.get("provider")
     if not isinstance(user, str) or not user or not isinstance(provider, str) or not provider:
@@ -133,17 +141,24 @@ class HostTerminalRegistry(PtySessionRegistry):
 
         def spawn():
             nonlocal owner
-            home = _request_home(ws.query_params.get("profile"))
-            if not _home_live(home):
-                raise TerminalExpired()
-            argv, cwd, env, shell = resolve_argv(home=home, requested_cwd=ws.query_params.get("cwd"))
+            if getattr(ws.state, "ssh_terminal", None) is not None:
+                from hermes_cli.web_host_terminal_ssh import prepare_shell
+                owner, argv, cwd, env = prepare_shell(ws, identity)
+            else:
+                home = _request_home(ws.query_params.get("profile"))
+                if not _home_live(home):
+                    raise TerminalExpired()
+                argv, cwd, env, shell = resolve_argv(home=home, requested_cwd=ws.query_params.get("cwd"))
+                owner = HostOwner(identity, home, shell, cwd)
             bridge = PtyBridge.spawn(
                 argv, cwd=cwd, env=env,
                 cols=query_dimension(ws.query_params.get("cols"), 80, 2000),
                 rows=query_dimension(ws.query_params.get("rows"), 24, 1000))
-            owner = HostOwner(identity, home, shell, cwd)
             return bridge
 
+        if getattr(ws.state, "ssh_terminal", None) is not None:
+            from hermes_cli.web_host_terminal_ssh import warm_tunnel
+            await asyncio.to_thread(warm_tunnel, ws)
         session, _ = await self.attach_or_spawn(token, spawn=spawn)
         assert owner is not None  # spawn completed
         self.owners[token] = owner
@@ -161,7 +176,7 @@ class HostTerminalRegistry(PtySessionRegistry):
             raise TerminalDenied()
 
         def validate():
-            if _request_home(ws.query_params.get("profile")) != owner.home:
+            if not owner.matches(ws):
                 raise TerminalDenied()
             owner.admit(lambda: None)
 
@@ -304,6 +319,56 @@ async def _admit(ws: WebSocket, registry: HostTerminalRegistry):
     return session, owner
 
 
+def _frame_payload(msg: dict) -> bytes:
+    """What a frame writes to the program: a binary frame's bytes, a text frame's UTF-8. The
+    WebSocket library decodes a text frame strictly, so its text always encodes back."""
+    raw = msg.get("bytes")
+    return (msg.get("text") or "").encode("utf-8") if raw is None else raw
+
+
+def _frame_cost(item) -> int:
+    """What a queued item counts against ``_INPUT_QUEUE_BYTES``: its payload and the per-frame overhead."""
+    if not isinstance(item, dict):  # the reader's last item: None or the error that ended reading
+        return _FRAME_OVERHEAD_BYTES
+    # The bytes ``_input_runs`` writes, not characters: a CJK or emoji paste is 3-4 bytes each.
+    return len(_frame_payload(item)) + _FRAME_OVERHEAD_BYTES
+
+
+class _InputQueue(asyncio.Queue):
+    """The frames a tab sent while a batch is written, full once it holds at least
+    ``_INPUT_QUEUE_FRAMES`` frames and at least ``_INPUT_QUEUE_BYTES`` charged by ``_frame_cost``.
+
+    A full queue stops the reader, and with it the WebSocket library's own read of the socket once
+    that buffers 32 unread frames: keepalive pongs then go unread, and a bind that pings (any
+    non-loopback Webapp) closes a live tab with 1011 after the ping timeout, dropping the input
+    queued behind it. A frame count alone fills on a few dozen keys typed while a paste waits on a
+    program that is not reading, and a byte count alone on one large paste; needing both gives
+    typing far more room (one-byte keys fill it at 4,081 frames) and never stops the reader before
+    the frame count alone would. Typing past that stalls the reader just as large frames do.
+
+    So the frame count is not a strict limit: small frames can queue thousands. The payload ceiling
+    stays about the frame count alone's: a frame is only taken while the queue holds fewer than
+    ``_INPUT_QUEUE_FRAMES`` frames or charges under ``_INPUT_QUEUE_BYTES``, and each frame is at
+    most the server's ``ws_max_size``.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.queued = 0
+
+    def full(self) -> bool:
+        return self.qsize() >= _INPUT_QUEUE_FRAMES and self.queued >= _INPUT_QUEUE_BYTES
+
+    def _put(self, item):
+        self.queued += _frame_cost(item)
+        super()._put(item)
+
+    def _get(self):
+        item = super()._get()
+        self.queued -= _frame_cost(item)
+        return item
+
+
 async def _queue_frame(ws: WebSocket, inbox: asyncio.Queue, ended: asyncio.Future, msg) -> None:
     """``inbox.put(msg)``, checking that the tab is still there while the inbox stays full.
 
@@ -386,21 +451,20 @@ async def _write_while_open(session: PtySession, ws: WebSocket, data: bytes, fen
 
 def _input_runs(frames: list[dict], resize_re):
     """``frames`` in order: consecutive keystrokes joined into one run, resizes as ``(cols, rows)``."""
-    run = b""
+    run: list[bytes] = []  # joined once: a batch can hold megabytes of pasted input
     for msg in frames:
-        raw = msg.get("bytes")
-        if raw is None:
-            raw = (msg.get("text") or "").encode("utf-8")
+        raw = _frame_payload(msg)
         match = resize_re.fullmatch(raw) if raw else None
         if match is None:
-            run += raw
+            if raw:
+                run.append(raw)
             continue
         if run:
-            yield run
-            run = b""
+            yield b"".join(run)
+            run = []
         yield int(match[1]), int(match[2])
     if run:
-        yield run
+        yield b"".join(run)
 
 
 async def _resize(session: PtySession, ws: WebSocket, size: tuple[int, int], undo):
@@ -440,7 +504,7 @@ async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
     buffers input itself, so Windows writes land at once and keep the bridge's deadline.
     """
     from hermes_cli.web_server_chat import _RESIZE_RE
-    inbox: asyncio.Queue = asyncio.Queue(maxsize=_INPUT_BATCH_FRAMES)
+    inbox: asyncio.Queue = _InputQueue()
     ended = asyncio.get_running_loop().create_future()
     reader = asyncio.create_task(_read_frames(ws, inbox, ended))
     undo = None

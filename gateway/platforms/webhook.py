@@ -55,7 +55,7 @@ _UNPARSEABLE = object()
 _BUILTIN_DELIVER_PLATFORMS = {
     "telegram", "discord", "slack", "signal", "sms", "whatsapp", "matrix", "mattermost",
     "email", "dingtalk", "feishu", "wecom", "wecom_callback", "weixin",
-    "bluebubbles", "qqbot", "yuanbao"}
+    "bluebubbles", "qqbot"}
 
 # ``None`` → aiohttp binds BOTH address families. "0.0.0.0" is IPv4-only (unreachable on IPv6-only
 # networks such as Fly.io 6PN); "::" becomes IPv6-only where the kernel sets IPV6_V6ONLY=1, breaking
@@ -439,19 +439,23 @@ class WebhookAdapter(BasePlatformAdapter):
         """Reload agent-created subscriptions when the file's stat identity changes.
 
         Runs on every POST before auth, so it never takes the CLI writer lock: writers publish via
-        atomic rename, which also gives the file a new inode, so a restored mtime cannot hide a change.
+        atomic rename, which also gives the file a new inode, so a restored mtime cannot hide a change;
+        ``file_cache_version`` also catches a same-tick same-size edit made in place (a hand edit).
         """
         from hermes_constants import get_hermes_home
+        from utils import file_cache_version
         subs_path = get_hermes_home() / _DYNAMIC_ROUTES_FILENAME
         try:
-            st = subs_path.stat()
+            stat_key = file_cache_version(subs_path)
         except FileNotFoundError:
             if self._dynamic_routes:
                 self._dynamic_routes, self._routes = {}, dict(self._static_routes)
                 logger.debug("[webhook] Dynamic subscriptions file removed, cleared dynamic routes")
             self._dynamic_routes_stat = None
             return
-        stat_key = (st.st_mtime_ns, st.st_size, st.st_ino)
+        except OSError as e:
+            logger.error("[webhook] Failed to read dynamic routes: %s", e)
+            return
         if stat_key == self._dynamic_routes_stat:
             return  # No change
         try:

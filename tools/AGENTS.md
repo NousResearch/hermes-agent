@@ -72,7 +72,7 @@ Rules for tool code:
 Single `TOOLSETS` dict. Keys today: `browser, clarify, code_execution, cronjob, debugging,
 delegation, discord, discord_admin, feishu_doc, feishu_drive, file, image_gen,
 kanban, memory, messaging, moa, rl, safe, search, session_search, skills, terminal, todo,
-tts, video, vision, web, yuanbao` (don't assert the list in tests). Per-platform enable/disable via
+tts, video, vision, web` (don't assert the list in tests). Per-platform enable/disable via
 `hermes tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. `browser_exec` is the
 one core browser tool (beside `browser_cdp` / `browser_dialog` / `browser_vault`, all CDP).
 
@@ -82,8 +82,13 @@ one core browser tool (beside `browser_cdp` / `browser_dialog` / `browser_vault`
 CDP endpoint comes from is `browser_session.get_session_info(cache_key)`: operator `BU_CDP_*` env (in
 browser_exec) > CDP override (live `/browser connect` > `BROWSER_CDP_URL` > `browser.cdp_url`) >
 hybrid `::local` sidecar > cloud provider (failure → local session marked `fallback_from_cloud`) >
-real profile (consented) > Lightpanda > the packaged Chromium from `browser_launcher.launch_chromium`
-(one browser per cache key, `--remote-debugging-port=0` + `DevToolsActivePort`). State lives in
+local. The local branch is not a further fallback chain: it tries the consented real profile when
+`browser.use_real_profile` is on, and otherwise (consent off, the profile can't load, or a
+no-profile engine like Lightpanda) runs a browser that does not load the real profile, on the
+configured engine — the packaged Chromium from `browser_launcher.launch_chromium` by default, or
+Lightpanda only when `browser.engine: lightpanda` is set (never tried automatically). That browser
+is fresh unless a persistent profile is configured (`browser.user_data_dir`, Bot Desktop). One
+browser per cache key (`--remote-debugging-port=0` + `DevToolsActivePort`). State lives in
 `browser_session.py`; siblings late-import it inside functions. Every launched Chromium is stopped
 parent-first and recorded in a private 0700 dir (a throwaway profile's in
 `<HERMES_HOME>/cache/browser/chromium-records`; a persistent profile's per OS user under the host lock dir,
@@ -152,7 +157,7 @@ and the stall clock arms when the runner starts, so a queued unit is never judge
 no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execute_code`) and
 `orchestrator` (keeps `delegate_task`; gated by `delegation.orchestrator_enabled`, bounded by
 `delegation.max_spawn_depth`, default 2). Config knobs under `delegation:`:
-`max_concurrent_children, independent_completions, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
+`max_concurrent_children, independent_completions, gateway_mode, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
 subagent_auto_approve, inherit_mcp_toolsets, max_iterations, backend, backends`. **Routes:** `delegation.backend` picks a
 delegation provider (`agent/delegation_provider.py`, `ctx.register_delegation_provider`; its settings live in
 `delegation.backends.<name>`) that answers each task's route (`tools/delegate_tool_routes.py`: model/provider fields

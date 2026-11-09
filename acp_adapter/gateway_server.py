@@ -117,7 +117,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._titles = {}
         # Session -> the mode (edit approval policy) the editor was last shown (``current_mode_update``).
         self._modes = {}
-        # Session -> the mode / model / effort the editor's ``configOptions`` last showed (``config_option_update``).
+        # Session -> the settings the editor's ``configOptions`` last showed (``config_option_update``).
         self._configs = {}
         # Session -> the owner's latest usage dict (``session.usage`` / ``session.stats``).
         self._usage = {}
@@ -193,7 +193,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 logger.info("ACP session %s not re-attached after reconnect", session_id, exc_info=True)
                 self._snapshots.pop(session_id, None)
                 continue
-            await self._adopt(session_id, snapshot)
+            await self._adopt(session_id, snapshot, client=gateway)
             # Before this session's cards are offered again: until ``_client`` returns, ``self._gateway`` is
             # not this connection, so a card answered while the request is out would lose its answer.
             await self._request_live_reasoning(gateway, session_id)
@@ -201,7 +201,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 self._permission(session_id, pending)
             await self._notify_unknown(session_id)
 
-    async def _adopt(self, session_id, snapshot, resumes=None):
+    async def _adopt(self, session_id, snapshot, resumes=None, client=None):
         """Install a fresh ``session.resume`` snapshot as a session's projection: every install (create, load,
         fork, a control's refresh, reconnect, replay gap) goes through here.
 
@@ -213,7 +213,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             if resumes is not None:
                 self._adopted[session_id] = resumes
             self._changed.notify_all()
-        await self._project_mode(session_id, self._editor_id(session_id), snapshot.get("info") or {})
+        await self._project_mode(session_id, self._editor_id(session_id), snapshot.get("info") or {}, client=client)
 
     async def _request_live_reasoning(self, client, session_id):
         """Ask the owner to stream this session's reasoning (``show_reasoning``), as the CLI does.
@@ -299,22 +299,27 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def _session_fields(self, session_id, info, editor_id):
         """Main's new/load/resume/fork reply fields (model picker, modes, provenance ``_meta``); the
         command list and context indicator follow once the reply is queued, as main scheduled them."""
-        from acp_adapter.gateway_session_meta import config_options, model_state, provenance_meta, session_modes
-        from acp_adapter.modes import MODE_TO_EDIT_APPROVAL_POLICY
+        from acp_adapter.gateway_session_meta import model_state, provenance_meta, session_config_options, session_modes
+        from acp_adapter.modes import EDIT_APPROVAL_POLICY_CONFIG_ID, MODE_TO_EDIT_APPROVAL_POLICY
         title = info.get("title")
         if isinstance(title, str) and title.strip():
             self._titles[session_id] = title
         models = await asyncio.to_thread(model_state, info)
         meta = await asyncio.to_thread(provenance_meta, self._home / "state.db", editor_id, session_id)
+        mode = self._modes.setdefault(session_id, session_modes(info).current_mode_id)
+        options = await session_config_options(self._gateway, session_id, models, info, mode)
+        # ``_adopt`` seeded the mode from the snapshot: a change the pump projected since is what the reply shows.
+        policy = MODE_TO_EDIT_APPROVAL_POLICY[self._modes[session_id]]
+        modes = session_modes({"edit_approval_policy": policy})
+        for option in options:
+            if option.id == EDIT_APPROVAL_POLICY_CONFIG_ID:
+                option.current_value = policy
         if self._conn:
             task = asyncio.get_running_loop().create_task(self._after_attach(session_id, editor_id))
             self._background.add(task)
             task.add_done_callback(self._background.discard)
-        # ``_adopt`` seeded the mode from the snapshot: a change the pump projected since is what the reply shows.
-        modes = session_modes({"edit_approval_policy": MODE_TO_EDIT_APPROVAL_POLICY[self._modes.setdefault(
-            session_id, session_modes(info).current_mode_id)]})
         return {"models": models, "modes": modes, "field_meta": meta,
-                "config_options": config_options(models, info, modes.current_mode_id)}
+                "config_options": options}
 
     async def _after_attach(self, session_id, editor_id):
         from acp_adapter.gateway_session_meta import available_commands_update
@@ -577,11 +582,13 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def set_config_option(self, config_id, session_id, value=None, **kwargs):
         """The pickers ``config_options`` advertises: the edit mode is the modes select's owner setting,
         the model ``set_session_model``'s pick, the effort the owner's ``reasoning`` mutation (``default``
-        = ``/reasoning reset``). Another id is accepted so editors do not fail on their own config writes,
+        = ``/reasoning reset``), and the tier its session-scoped speed setting.
+        Another id is accepted so editors do not fail on their own config writes,
         as main did. The reply is the full list, read back from the owner."""
         from acp.schema import SetSessionConfigOptionResponse
         from acp_adapter.gateway_session_meta import (
-            REASONING_CONFIG_ID, config_options, current_mode, model_state, reasoning_choices,
+            REASONING_CONFIG_ID, SERVICE_TIER_CONFIG_ID, SERVICE_TIER_LABELS, current_mode, model_state,
+            reasoning_choices, session_config_options,
         )
         from acp_adapter.modes import EDIT_APPROVAL_POLICY_CONFIG_ID, EDIT_APPROVAL_POLICY_TO_MODE
         editor_id, session_id = session_id, self._held_session(session_id)
@@ -598,10 +605,15 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 raise GatewayClientError("invalid_params")
             await self._idle_control(session_id, "reasoning", {"effort": None if value == "default" else value},
                                      "Reasoning effort")
+        elif config_id == SERVICE_TIER_CONFIG_ID:
+            if not isinstance(value, str) or value not in SERVICE_TIER_LABELS:
+                raise GatewayClientError('invalid_params')
+            self._unacked.pop(session_id, None)
+            await (await self._client()).rpc('config.set', session_id=session_id, key='fast', value=value)
         info = await (await self._client()).rpc("session.info", session_id=session_id)
         models = await asyncio.to_thread(model_state, info)
-        return SetSessionConfigOptionResponse(config_options=config_options(
-            models, info, self._modes.get(session_id) or current_mode(info)))
+        return SetSessionConfigOptionResponse(config_options=await session_config_options(
+            self._gateway, session_id, models, info, self._modes.get(session_id) or current_mode(info)))
 
     async def _set_edit_policy(self, session_id, policy):
         """The owner's ``edit_policy`` mutation; every surface attached to the session reads the
@@ -1071,7 +1083,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         await self._project_title(sid, editor_id, payload.get("title"))
         await self._project_mode(sid, editor_id, payload)
 
-    async def _project_mode(self, sid, editor_id, payload):
+    async def _project_mode(self, sid, editor_id, payload, client=None):
         """Another surface's ``edit_policy`` change (its ``session.info``) as ``current_mode_update``."""
         from acp_adapter.modes import EDIT_APPROVAL_POLICY_TO_MODE
         mode = EDIT_APPROVAL_POLICY_TO_MODE.get(payload.get("edit_approval_policy"))
@@ -1082,20 +1094,20 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 from acp.schema import CurrentModeUpdate  # ``acp`` does not re-export ``update_current_mode``
                 await self._conn.session_update(session_id=editor_id, update=CurrentModeUpdate(
                     session_update="current_mode_update", current_mode_id=mode))
-        await self._project_config(sid, editor_id, payload)
+        await self._project_config(sid, editor_id, payload, client=client)
 
-    async def _project_config(self, sid, editor_id, payload):
+    async def _project_config(self, sid, editor_id, payload, client=None):
         """Zed draws its pickers only from ``configOptions`` once an agent sends them (it then ignores
-        ``current_mode_update``), so a mode, model or effort change from another surface or a typed
-        ``/model`` / ``/reasoning`` resends the full list. A partial ``session.info`` keeps what it omits."""
-        from acp_adapter.gateway_session_meta import config_options, current_mode, model_state
+        ``current_mode_update``), so a mode, model, effort or tier change from another surface resends
+        the full list. A partial ``session.info`` keeps what it omits."""
+        from acp_adapter.gateway_session_meta import current_mode, model_state, session_config_options
         fields = ("model", "provider", "reasoning_effort")
-        if not any(key in payload for key in (*fields, "edit_approval_policy")):
+        if not any(key in payload for key in (*fields, "edit_approval_policy", "service_tier")):
             return
         seen = self._configs.get(sid)
         shown = {**(seen or {}), **{key: payload[key] for key in fields if key in payload},
                  "mode": self._modes.get(sid) or current_mode(payload)}
-        if seen == shown:
+        if seen == shown and "service_tier" not in payload:
             return  # an equal observation must not take over from a build still running for it
         self._configs[sid] = shown
         # Seeded silently like the mode: the attach's reply carries the options.
@@ -1103,10 +1115,11 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             return
         from acp.schema import ConfigOptionUpdate
         models = await asyncio.to_thread(model_state, shown)
+        options = await session_config_options(client or self._gateway, sid, models, shown, shown["mode"])
         if self._configs.get(sid) is not shown:
             return  # a newer projection (an event or ``_adopt``) replaced it during the build and sends its own
         await self._conn.session_update(session_id=editor_id, update=ConfigOptionUpdate(
-            session_update="config_option_update", config_options=config_options(models, shown, shown["mode"])))
+            session_update="config_option_update", config_options=options))
 
     async def _project_usage(self, sid, editor_id, stats):
         """The owner's usage dict: kept for the turn's ``PromptResponse.usage``, shown as ``usage_update``."""

@@ -1,0 +1,24 @@
+name: omlx
+title: oMLX
+repo: https://github.com/vitaliy-blprnt/hermes-plugin-omlx
+sha: eb748caf0a3080cd3b8d9426eb995d2722ec3406
+description: "Managed oMLX runtime and MLX model library for Hermes Desktop on Apple Silicon. Disclosure — on explicit setup downloads the oMLX 0.7.2 macOS app (SHA-256-pinned) from the official jundot/omlx GitHub release and runs it as a long-running loopback server (127.0.0.1, bearer key) under HERMES_HOME/plugin-data/omlx; downloads public Hugging Face model snapshots the user names; generates a local API key stored as HERMES_OMLX_LOCAL_API_KEY in the profile's .env; \"Use\" rewrites the profile's default model in config.yaml."
+maintainer: vitaliy-blprnt
+tier: community
+category: models
+version: "0.1.0"
+requires_hermes: ">=0.23.0"
+platforms:
+  - macos
+docs_url: https://github.com/vitaliy-blprnt/hermes-plugin-omlx/blob/eb748caf0a3080cd3b8d9426eb995d2722ec3406/README.md
+screenshots:
+  - https://raw.githubusercontent.com/vitaliy-blprnt/hermes-plugin-omlx/eb748caf0a3080cd3b8d9426eb995d2722ec3406/docs/desktop.png
+readme: true
+known_issues:
+  - Requires macOS 15 or newer and Apple Silicon on the inference host.
+  - The model-provider client requires in-process plugin execution.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

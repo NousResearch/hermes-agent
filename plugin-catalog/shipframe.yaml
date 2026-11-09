@@ -1,0 +1,29 @@
+name: shipframe
+repo: https://github.com/juanitourquiza/shipframe
+sha: 2d0a246206b7a3235c3167af5512d8dd4d8a29dd
+description: >-
+  AI coding workflows for teams that plan, prove, and ship — 44 read-only skills
+  covering project context refresh, feature discovery, planning, implementation,
+  TDD, two-phase code review, release evidence, PR/MR creation, project wiki
+  knowledge, and accessibility/security auditing. Native plugin: a plugin.yaml
+  manifest plus a dependency-free Python entrypoint that registers every skill
+  through ctx.register_skill (no tools, hooks, middleware, or env vars).
+  Disclosure — the skills themselves instruct the agent to run shell commands
+  (git, gh, project test suites, occasional installer commands) as part of the
+  workflows they describe, and some skills write project context files such as
+  AGENTS.md or CLAUDE.md in the user's repositories; the plugin code makes no
+  network calls, spawns no processes, reads no credentials or files outside its
+  own tree, ships no telemetry, and contains no self-updater (updates arrive
+  only through sha-bump PRs in this catalog).
+maintainer: juanitourquiza
+tier: community
+category: tools
+title: ShipFrame
+docs_url: https://shipframe.hackeruna.com/
+version: "1.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-10-26T02:45:22Z",
+  "updated_at": "2026-10-26T19:00:43Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -86,6 +86,10 @@
         },
         {
           "id": "openai/gpt-6.1-sol-pro",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-6.1-terra",
           "description": ""
         },
         {
@@ -363,6 +367,9 @@
         },
         {
           "id": "openai/gpt-6.1-sol-pro"
+        },
+        {
+          "id": "openai/gpt-6.1-terra"
         },
         {
           "id": "openai/gpt-6-sol"

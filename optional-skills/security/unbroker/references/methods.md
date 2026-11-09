@@ -8,7 +8,8 @@ the subject's before acting on any THIRD-PARTY / indirect record (see "Distingui
 
 **Autonomy:** `pdd.py next <subject>` sequences all of this - it decides which method applies, orders
 parents first, and routes human-only work to the digest. In `autonomy=full` (default), execute its
-actions without pausing per submission; the consent recorded at intake is the authorization. These
+actions without pausing per submission; the consent recorded at intake is the authorization (an
+action with `confirm_first: true`, such as `dnc_register`, still waits for the operator). These
 playbooks are the HOW for each action type.
 
 ## Opt-out posture: blind opt-out is the default (not a fallback)
@@ -207,6 +208,12 @@ actually sends depends on `email_mode`:
 3. **draft_only fallback:** `pdd.py render-email <subject> <broker> --listing <url>`; a digest entry
    tells the operator to send it, and the agent records `submitted --channel email` afterward.
 
+- **Confirm the contact email with the operator before anything is filed.** Every opt-out form,
+  the registry one-shots, and `send-email` disclose whatever `contact_email_for_optouts` carries, and
+  every confirmation link lands in that inbox. The env default mailbox may be a work address, and a
+  personal run filed to it is a disclosure nobody asked for — ask once at intake; re-filing is the
+  only remedy after the fact.
+
 Then follow the **Verification loop** if the broker emails a confirmation link.
 
 ## Verification loop (email_verification brokers)
@@ -246,16 +253,22 @@ reCAPTCHA checkbox - as normal operation, so those brokers stay T1 and you just 
 **not** CAPTCHA solving: no solver service, no fingerprint spoofing.
 
 Only a **hard** challenge the browser genuinely can't pass (interactive image grids, behavioral
-scoring that flags the session) becomes a fallback: `record ... blocked` and requeue it for the
-stealth/operator-browser pass (`methods.md` → scan ladder 3b - the operator's own residential
-browser is the reliable unblock). Without a cloud browser configured, soft-CAPTCHA brokers drop to
-T2 and become human tasks. **Never use a third-party CAPTCHA-defeating service.**
+scoring that flags the session) becomes a fallback: `record ... human_task_queued --reason "..."`
+so it parks as one standing digest task (the operator's own residential browser is the
+reliable unblock; a `blocked` case would re-scan, re-find the listing and re-queue the opt-out).
+Without a cloud browser configured, soft-CAPTCHA brokers drop to T2 and become human tasks. **Never use a third-party CAPTCHA-defeating service.**
 
 ### CAPTCHA policy, clarified (on a consenting first-party opt-out)
 
 - **Do NOT defeat** behavioral / token challenges: a Cloudflare Turnstile that will not auto-clear,
   **DataDome**, and **"slide-to-verify" gesture-entropy sliders** (the InfoPay lane). These are hard
-  stops -> take the email lane (rule above) or record `blocked`.
+  stops -> take the email lane (rule above) or record `human_task_queued` with the reason.
+- **A visible Google reCAPTCHA v2 / Enterprise checkbox is in this class** (verified live 2026-10-26 across two sites): synthetic CDP clicks on a debug-profile Chrome do NOT toggle it -
+  no token, no challenge appears, no error surfaces, `grecaptcha.getResponse()` stays empty -
+  so it is a silent hard stop for the automation browser. By contrast a managed Cloudflare
+  **Turnstile** auto-cleared on the same residential setup as normal operation. So: Turnstile ->
+  drive the form; reCAPTCHA checkbox -> do not fight it, take the email lane or queue the manual
+  step.
 - **Acceptable to solve** on the subject's own first-party opt-out: a **static distorted-text image
   CAPTCHA** (read it with the vision tool) or a **plain arithmetic CAPTCHA** ("8 + 13 = ?"). That is OCR
   / arithmetic on a consenting removal, not evasion of a bot-detection system.
@@ -263,6 +276,35 @@ T2 and become human tasks. **Never use a third-party CAPTCHA-defeating service.*
   available") after a correct answer, it is fingerprinting the automation itself, not grading the answer
   -> **stop, do not loop** (e.g. PrivateRecords' distorted-text-THEN-arithmetic double gate). If no cited
   rights-email exists, that is a genuine `blocked`.
+
+## Spam-call lane (reverse-phone search + DNC registration)
+
+A phone-led run ("my number keeps getting spam calls") is the same loop entered from the number:
+`intake --phone ... --focus-phone ...` (the focus number is what phone-asking opt-out forms
+disclose), then `next` as usual. `search_vectors` already emits one `by: phone` vector per dossier
+phone on every broker that declares phone search (14 of the live records; five curated
+brokers are defunct - dead domains excluded from planning). Three phone-specific notes:
+
+- **Reverse-phone pages SEO-echo the number too.** The title/H1 templating trap applies: a real
+  result is a card naming the subscriber (name / age / city), not the query echo. Corroborate
+  against the dossier before recording `found`.
+- **The page answers "whose number is this".** Running it reveals the subscriber behind the
+  number - only run phone vectors on the consenting subject's own numbers.
+- **An SSRF-guard refusal can mean the broker is dead, not blocked.** A 'URL targets a private
+  or internal network address' refusal is the fetch guard refusing what DNS actually returns -
+  check the domain against a public resolver before rerunning through a browser: nuwber.com
+  (NXDOMAIN) and clustrmaps.com (public DNS answering 127.0.0.1) both turned out defunct,
+  their 'blocks' being DNS kill-switches. A dead domain is `not_found`, not `blocked`.
+
+**DNC one-shot** (`pdd.py dnc <subject>`, surfaced by `next` for US subjects with phones until
+`--filed`): register on the FTC's National Do Not Call Registry. Free, personal numbers only
+(business/fax lines are not covered), up to three numbers per registration pass with one
+confirmation email PER number (open each link within 72 hours or that number is not registered),
+sales calls stop within 31 days, registration never expires. It stops lawful telemarketers - it
+does NOT stop scammers, who ignore the list: broker removal is the complementary half, because the
+people-search listings are where lead lists come from. If the FTC form defeats the configured
+browser, present it as a manual step in the end-of-run digest; `dnc --filed` records completion so
+the loop stops re-surfacing it.
 
 ## Browser backends: scan vs execute
 

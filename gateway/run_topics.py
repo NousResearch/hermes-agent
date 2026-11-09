@@ -85,10 +85,14 @@ class GatewayTopicThreadsMixin:
         )
 
     def _is_telegram_topic_lane(self, source: SessionSource) -> bool:
-        """True for a user-created Telegram private-chat topic lane."""
+        """True for a user-created Telegram private-chat topic lane. Never a conversation its chat
+        moved past (gateway/session_detached.py): its turns neither heal nor rewrite the topic's
+        binding, nor rename the topic, which belong to the chat's current conversation."""
+        from gateway.session_detached import detached_route_of
         tid = str(source.thread_id or "")
         return (
-            self._is_telegram_dm(source) and self._telegram_topic_mode_enabled(source)
+            detached_route_of(source) is None
+            and self._is_telegram_dm(source) and self._telegram_topic_mode_enabled(source)
             and bool(tid) and tid not in self._TELEGRAM_GENERAL_TOPIC_IDS
         )
 
@@ -138,8 +142,12 @@ class GatewayTopicThreadsMixin:
 
     # ── Telegram topic bindings ─────────────────────────────────────────────────────────────
 
-    def _record_telegram_topic_binding(self, source: SessionSource, session_entry) -> None:
-        """Persist the Telegram topic -> Hermes session binding for topic lanes (off-loop)."""
+    def _record_telegram_topic_binding(
+        self, source: SessionSource, session_entry, *, expected_session_id: Optional[str] = None,
+    ) -> None:
+        """Persist the Telegram topic -> Hermes session binding for topic lanes (off-loop).
+        ``expected_session_id`` only replaces a binding still naming that id (see
+        ``bind_telegram_topic``)."""
         session_db = self._sync_session_db()
         if session_db is None or not source.chat_id or not source.thread_id:
             return
@@ -147,6 +155,7 @@ class GatewayTopicThreadsMixin:
             chat_id=str(source.chat_id), thread_id=str(source.thread_id), user_id=str(source.user_id or ""),
             session_key=session_entry.session_key, session_id=session_entry.session_id,
             profile_name=self._telegram_topic_profile_name(source),
+            expected_session_id=expected_session_id,
         )
 
     def _sync_telegram_topic_binding(self, source: SessionSource, session_entry, *, reason: str) -> None:

@@ -316,10 +316,11 @@ class StreamFallbackMixin:
         if not self._fallback_final_send:
             await self._try_strip_cursor()
         visible = self._fallback_prefix or self._visible_prefix()
-        tail = self._accumulated
+        # Clean the whole buffer before cutting: a trailing silence marker cut off on its own
+        # would read as a bare marker and survive the cleaner.
+        tail = self._clean_for_display(self._accumulated)
         if visible and tail.startswith(visible):
             tail = tail[len(visible):].lstrip()
-        tail = self._clean_for_display(tail)
         if not tail.strip():
             return
         try:

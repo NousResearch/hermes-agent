@@ -28,6 +28,16 @@ def local_adapter_map(authority):
     return profile_adapters.setdefault(name, {})
 
 
+def local_adapter(authority):
+    """The LOCAL adapter *authority*'s local sessions, and the conversations its chats moved past
+    (gateway/session_detached.py), deliver through: created on first use."""
+    adapters = local_adapter_map(authority)
+    if (adapter := adapters.get(Platform.LOCAL)) is None:
+        from gateway.session_local import LocalSessionAdapter
+        adapter = adapters[Platform.LOCAL] = LocalSessionAdapter(authority)
+    return adapter
+
+
 def local_source(authority, chat_id, user_id):
     """LOCAL SessionSource for a session owned by *authority*. A served secondary's local sessions
     carry its profile so ``build_session_key`` namespaces them (``agent:<name>:local:...``) and the
@@ -86,7 +96,7 @@ def _checked_entry(authority, receipt, source, route):
         raise ValueError('route mismatch')
     entry = SessionEntry.from_dict(receipt['entry'])
     # Older local receipts omitted the served profile from the origin. The receipt's
-    # home and route already matched this authority; fill only that absent field,
+    # route already matched this authority; fill only that absent field,
     # never accept an explicitly different profile or change the durable route.
     if 'profile' not in receipt['entry']['origin']:
         entry.origin.profile = source.profile
@@ -100,10 +110,13 @@ def _checked_entry(authority, receipt, source, route):
 
 
 def owned_receipt(authority, sid):
-    """*sid*'s stored receipt with its LOCAL source, route and entry, once all are this owner's."""
+    """*sid*'s stored receipt with its LOCAL source, route and entry, once all are this owner's.
+
+    The receipt's ``profile_id`` is the home path that minted it, kept as stored: the session id
+    hashes it (``local_identity``; a legacy-adopted receipt is bound by its route alone), so a
+    store that moved with its profile (another machine, a moved home) still owns its rows. Its
+    owner is this store; the route namespace binds the profile."""
     receipt = local_receipt(authority.db, sid)
-    if receipt['profile_id'] != authority.profile_id:
-        raise RuntimeStoreError('profile_mismatch')
     chat_id = (receipt['legacy_session_id'] if 'legacy_session_id' in receipt else
                local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id']))
     if receipt['session_id'] != sid or sid != chat_id:
@@ -111,6 +124,23 @@ def owned_receipt(authority, sid):
     source = local_source(authority, chat_id, receipt['principal_id'])
     route = authority.runner.session_store._generate_session_key(source)
     return receipt, source, route, _checked_entry(authority, receipt, source, route)
+
+
+def restorable_receipt(authority, sid):
+    """*sid*'s receipt and entry once ``restore_local_session``'s checks on the stored receipt pass,
+    judged read-only: ``owned_receipt`` plus the stored policy and lineage. A compression catch-up
+    still to adopt is judged as the restore would commit it (``with_adopted_compression``)."""
+    from gateway.session_policy import restore_policy
+    from hermes_state_local_lineage import adoptable_compression, validate_local_lineage, with_adopted_compression
+    receipt, source, route, entry = owned_receipt(authority, sid)
+    restore_policy(receipt['policy'])
+    with authority.db._read_ctx() as conn:
+        adoptable = adoptable_compression(conn, receipt)
+        if adoptable is not None:
+            receipt = with_adopted_compression(receipt, adoptable[0])
+        validate_local_lineage(conn, receipt)
+    # Outside the read: _checked_entry reads the stored row itself (a writer-fallback read holds the lock).
+    return receipt, (entry if adoptable is None else _checked_entry(authority, receipt, source, route))
 
 
 def unused_session(conn, session_id):
@@ -164,15 +194,13 @@ def restore_local_session(authority, sid):
         if isinstance(exc, RuntimeStoreError):
             raise _ReceiptRefused(exc.reason, field=exc.field, detail=exc.detail) from exc
         raise _ReceiptRefused('storage_unavailable') from exc
-    adapters = local_adapter_map(authority)
-    adapter = adapters.get(Platform.LOCAL)
-    if adapter is None:
-        adapter = LocalSessionAdapter(authority)
-        adapters[Platform.LOCAL] = adapter
+    adapter = local_adapter(authority)
     if not isinstance(adapter, LocalSessionAdapter) or adapter.authority is not authority:
         raise RuntimeStoreError('runtime_draining')
     live = authority.sessions.get(sid)
-    if live is None:
+    from gateway.session_history_mount import is_history_mount
+    if live is None or is_history_mount(live):
+        source = adapter.kept_source(source)
         with store._lock:
             store._ensure_loaded_locked()
             current = store._entries.get(route)
@@ -188,12 +216,20 @@ def restore_local_session(authority, sid):
             entry.origin = source
             store._entries[route] = entry
         adapter.policies[chat_id] = policy
-        authority.sessions[sid] = LiveSession(source, route)
+        if live is None:
+            authority.sessions[sid] = LiveSession(source, route)
+            authority.retired_local.discard(sid)  # back in memory (session_retirement)
+        else:
+            # A read-only view opened before the adoption (a metadata read, another viewer) becomes the
+            # adopted conversation in place, so its viewers keep their subscriptions (as restore_api_session).
+            live.source, live.route = source, route
         adapter.register_source(source)
     elif (not adapter.authorize_source(live.source)
           or live.source.to_dict() != source.to_dict()
           or adapter.policies.get(chat_id) != policy):
         raise RuntimeStoreError('storage_unavailable')
+    elif _route_already_restored(store, route, target, receipt.get('lineage', [sid])):
+        pass  # every claim of a live session lands here: no write, so no wait on the store lock
     else:
         with store._lock:
             current = store._entry_locked(route)
@@ -208,6 +244,15 @@ def restore_local_session(authority, sid):
             else:
                 current.session_id = target
     return SessionRef(authority.profile_id, sid)
+
+
+def _route_already_restored(store, route, target, lineage):
+    """The loaded route already names *target*, a lineage member: the locked branch would only
+    re-assign the same id. Read without ``store._lock`` (one dict lookup, atomic under the GIL),
+    because worker threads hold that lock across state.db writes and the restore runs on the loop.
+    Any other shape takes the lock and is re-checked there."""
+    current = store._entries.get(route)
+    return current is not None and current.session_id == target and target in lineage
 
 
 def transcript_target(authority, ref):
@@ -263,6 +308,17 @@ async def prepare_history(authority, ref):
     """``local_history``'s lineage read, off the owner loop; the locked part re-reads only the live tip."""
     target = transcript_target(authority, ref)
     return target, await asyncio.to_thread(display_rows, authority.db, target)
+
+
+def omitted_history_state(db, target):
+    """``(todo_state, message_count)`` of a resume that omits its transcript: the physical *target*'s stored
+    count and its todo plan. Skips the display-row lineage read; the todo lookup still walks the lineage's
+    todo rows (removed ones included, so an undone plan stays gone)."""
+    from tui_gateway.tool_progress import _todo_state_from_db
+    row = db.get_session(target)
+    if row is None:  # deleted since the attach resolved it
+        raise RuntimeStoreError('not_found')
+    return _todo_state_from_db(db, target), int(row.get('message_count') or 0)
 
 
 def _merge_live_in_stored_order(display, live):

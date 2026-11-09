@@ -13,6 +13,7 @@ import time
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 from agent.error_classifier import FailoverReason
+from agent.stream_max_lifetime import StreamLifetimeExceeded
 from hermes_constants import display_hermes_home
 
 # Failure codes minted by loop sites that are not provider verdicts (see module docstring).
@@ -72,6 +73,21 @@ OPEN_TURN_TAIL_ROLES = frozenset({"user", "tool"})
 # ``messages.display_kind`` of that row: display-only (stripped before every provider request),
 # so renderers show a Hermes notice and room pollers never read it as the model's reply.
 FAILED_TURN_DISPLAY_KIND = "failed_turn"
+
+
+# ---- safety-refused turn, retained for display only -------------------------------------------
+# A content-policy refusal is deterministic for the unchanged conversation (the filter judges the
+# whole thread), so the whole refused turn leaves the MODEL's context — otherwise every later
+# message re-trips the filter and the chat locks (the "stuck session" report). But the user keeps
+# SEEING their message: the user row is retained in the DISPLAY projection (never the model read)
+# and tagged with this display_kind, while the raw tool rounds + refusal detail collapse into
+# CONTENT_REFUSED_NOTICE. Rendered cross-surface (Desktop, CLI/TUI, ACP) as a greyed block.
+CONTENT_REFUSED_DISPLAY_KIND = "content_refused"
+CONTENT_REFUSED_NOTICE = (
+    "This message was refused by the model's safety filter — try a different query."
+)
+# messages.display_metadata key carrying the stored notice, so every surface renders one copy.
+CONTENT_REFUSED_METADATA_KEY = "content_refused"
 
 
 def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
@@ -260,8 +276,10 @@ _AUTH_COPY: dict[str, str] = {
 }
 
 CONTENT_POLICY_NEXT_STEPS = (
-    "Try rewording your message or removing sensitive attachments, or switch to another "
-    "model with /model."
+    "That message has been left out of this conversation, so you're not stuck — just ask "
+    "something else and you can keep going. Rewording it, removing any sensitive attachments, "
+    "or switching models with /model can also help. If a later message is refused too, start a "
+    "new chat with /new (in a Bot Chat, Archive it from its tab menu)."
 )
 
 # ---- one reason → "what happened" gloss, shared by cron, subagent and chat notices ------------
@@ -395,9 +413,16 @@ def site_copy(code: str, **fields: Any) -> str:
     return _SITE_COPY[code].format_map(_Defaults(fields))
 
 
-def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None) -> str:
+def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None,
+                   error: Any = None) -> str:
     """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``). A rate
-    limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401)."""
+    limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401).
+    A stream cut by ``agent.stream_max_lifetime`` names the setting: the provider was responding,
+    so neither waiting nor a backup provider helps."""
+    if isinstance(error, StreamLifetimeExceeded):
+        return (f"The response was still streaming when agent.stream_max_lifetime ({error.cap:g}s) cut it, "
+                f"on all {attempts} attempts. Raise agent.stream_max_lifetime, or set it to 0 to turn the "
+                "cap off, if this model legitimately streams this long.")
     first_attempt = attempts == 1 and reason in _EXHAUSTED_FIRST_ATTEMPT_LEADS
     lead = (_EXHAUSTED_FIRST_ATTEMPT_LEADS if first_attempt else _EXHAUSTED_LEADS).get(
         reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)

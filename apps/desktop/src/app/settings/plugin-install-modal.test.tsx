@@ -20,6 +20,7 @@ vi.mock('@/hermes', async importOriginal => ({
 
 import { $pluginDecisions, $pluginRecords, dropPlugin, patchPlugin, publishPlugin } from '@/contrib/plugins-store'
 import { queryClient } from '@/lib/query-client'
+import { $notifications } from '@/store/notifications'
 import {
   $pluginInstallRequest,
   closePluginInstallRequest,
@@ -208,6 +209,78 @@ describe('A reviewed catalog pick', () => {
 
     await waitFor(() => expect(installCalls()).toHaveLength(2))
   })
+
+  it('a desktop-only pick hands Electron its catalog entry, and a refusal shows Force reinstall', async () => {
+    // Accent Picker: the card had no installed state, so a second Install stopped at "already exists"
+    // with Force hidden behind a collapsed Advanced (a catalog pick never offered Force at all).
+    const ACCENT = {
+      ...BLENDER,
+      catalogName: 'accent-picker',
+      repo: `${BLENDER.repo.split('#')[0]}#accent-picker`,
+      title: 'Accent Picker'
+    }
+
+    probePluginRepo.mockResolvedValue({
+      ok: true,
+      agent: false,
+      desktop: true,
+      desktopName: 'accent-picker',
+      warnings: []
+    })
+    installDesktopPlugin.mockResolvedValue({
+      ok: false,
+      exists: true,
+      error: "Desktop plugin 'accent-picker' already exists. Enable force reinstall to replace it."
+    })
+    renderFlow()
+    act(() => openPluginInstallRequest(ACCENT))
+    const dialog = await screen.findByRole('dialog', { name: 'Accent Picker' })
+    await waitFor(() => expect(probePluginRepo).toHaveBeenCalled())
+    fireEvent.click(installButton())
+
+    await waitFor(() =>
+      expect(installDesktopPlugin).toHaveBeenCalledWith(
+        expect.objectContaining({ catalogName: 'accent-picker', sha: ACCENT.sha })
+      )
+    )
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('already exists')
+    const force = within(dialog).getByRole('switch')
+    fireEvent.click(force)
+    installDesktopPlugin.mockResolvedValue({ ok: true, pluginName: 'accent-picker' })
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+
+    await waitFor(() => expect(installDesktopPlugin).toHaveBeenLastCalledWith(expect.objectContaining({ force: true })))
+  })
+
+  it('a refusal Force cannot fix offers no Force', async () => {
+    const ACCENT = {
+      ...BLENDER,
+      catalogName: 'accent-picker',
+      repo: `${BLENDER.repo.split('#')[0]}#accent-picker`,
+      title: 'Accent Picker'
+    }
+
+    probePluginRepo.mockResolvedValue({
+      ok: true,
+      agent: false,
+      desktop: true,
+      desktopName: 'accent-picker',
+      warnings: []
+    })
+    installDesktopPlugin.mockResolvedValue({ ok: false, error: 'git clone failed: network unreachable' })
+    renderFlow()
+    act(() => openPluginInstallRequest(ACCENT))
+    const dialog = await screen.findByRole('dialog', { name: 'Accent Picker' })
+    await waitFor(() => expect(probePluginRepo).toHaveBeenCalled())
+    fireEvent.click(installButton())
+
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('network unreachable')
+    // Advanced stays as it was; opened, it still holds no Force switch.
+    expect(within(dialog).queryByText('Source code')).toBeNull()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Advanced' }))
+    expect(within(dialog).getByText('Source code')).toBeTruthy()
+    expect(within(dialog).queryByRole('switch')).toBeNull()
+  })
 })
 
 describe('A raw git URL', () => {
@@ -335,6 +408,26 @@ describe('Unified package desktop half on a local backend', () => {
     expect(installDesktopPlugin).not.toHaveBeenCalled()
   })
 
+  it('holds both halves to the commit Electron inspected', async () => {
+    const reviewed = '0123456789abcdef0123456789abcdef01234567'
+    $connection.set({ mode: 'remote' } as NonNullable<ReturnType<typeof $connection.get>>)
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'pkg', desktop: true, sha: reviewed, warnings: [] })
+    requestGateway.mockImplementation(async (method, params) =>
+      method === 'plugins.manage' && params?.action === 'install' ? { ok: true, plugin_name: 'pkg' } : { plugins: [] }
+    )
+    installDesktopPlugin.mockResolvedValue({ ok: true, pluginName: 'pkg' })
+    vi.stubGlobal('hermesDesktop', { installDesktopPlugin, probePluginRepo, reconcileDesktopPlugins })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/pkg' }))
+    expect(await screen.findByText('This package includes')).toBeTruthy()
+    await waitFor(() => expect(installButton().disabled).toBe(false))
+    fireEvent.click(installButton())
+
+    await waitFor(() => expect(installDesktopPlugin).toHaveBeenCalled())
+    expect(installCalls()[0]?.[1]).toMatchObject({ action: 'install', inspected_sha: reviewed })
+    expect(installDesktopPlugin).toHaveBeenCalledWith({ identifier: 'https://github.com/example/pkg', force: false, sha: reviewed })
+  })
+
   it('still clones the desktop half for a remote backend', async () => {
     // A remote backend's plugins/ folder is unreadable from this machine, so
     // the separate clone remains the only door for its desktop half.
@@ -342,6 +435,34 @@ describe('Unified package desktop half on a local backend', () => {
 
     expect(installDesktopPlugin).toHaveBeenCalledWith({ identifier: 'https://github.com/example/pkg', force: false })
     expect(reconcileDesktopPlugins).not.toHaveBeenCalled()
+  })
+
+  it('offers no Force for a desktop half refused as installed once the agent half went in', async () => {
+    // Force reinstalls both halves: offered here, it would replace the agent plugin just installed.
+    $connection.set({ mode: 'remote' } as NonNullable<ReturnType<typeof $connection.get>>)
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'pkg', desktop: true, warnings: [] })
+    requestGateway.mockImplementation(async (method, params) =>
+      method === 'plugins.manage' && params?.action === 'install' ? { ok: true, plugin_name: 'pkg' } : { plugins: [] }
+    )
+    installDesktopPlugin.mockResolvedValue({ ok: false, exists: true, error: "Desktop plugin 'pkg' already exists." })
+    vi.stubGlobal('hermesDesktop', { installDesktopPlugin, probePluginRepo, reconcileDesktopPlugins })
+    renderFlow()
+    act(() =>
+      openPluginInstallRequest({ ...BLENDER, catalogName: 'pkg', repo: 'https://github.com/example/pkg', title: 'Pkg' })
+    )
+    const dialog = await screen.findByRole('dialog', { name: 'Pkg' })
+    await waitFor(() => expect(installButton().disabled).toBe(false))
+    fireEvent.click(installButton())
+
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('already exists')
+    expect(installDesktopPlugin).toHaveBeenCalled()
+
+    if (!within(dialog).queryByText('Source code')) {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Advanced' }))
+    }
+
+    expect(within(dialog).getByText('Source code')).toBeTruthy()
+    expect(within(dialog).queryByRole('switch')).toBeNull()
   })
 
   it('turns the desktop half on with the agent half: install means ready for the whole package', async () => {
@@ -373,6 +494,30 @@ describe('Unified package desktop half on a local backend', () => {
     $pluginDecisions.set({})
   })
 
+  it('never reports a desktop half installed when the reconcile only pruned the old copy', async () => {
+    // A force reinstall whose new tree dropped its desktop entry: Electron's pass deletes
+    // desktop-plugins/pkg and names it among the folders it touched.
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'pkg', desktop: true, warnings: [] })
+    requestGateway.mockImplementation(async (method, params) =>
+      method === 'plugins.manage' && params?.action === 'install'
+        ? { ok: true, plugin_name: 'pkg', enabled: false }
+        : { plugins: [] }
+    )
+    reconcileDesktopPlugins.mockImplementation(async () => ['/app/desktop-plugins/pkg'])
+    const desktopPluginsRoot = vi.fn(async () => '/app/desktop-plugins')
+    const readDir = vi.fn(async () => ({ entries: [] }))
+    vi.stubGlobal('hermesDesktop', { desktopPluginsRoot, installDesktopPlugin, probePluginRepo, readDir, reconcileDesktopPlugins })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/pkg' }))
+    expect(await screen.findByText('This package includes')).toBeTruthy()
+    await waitFor(() => expect(installButton().disabled).toBe(false))
+    fireEvent.click(installButton())
+
+    expect(await screen.findByText('Desktop plugin install failed')).toBeTruthy()
+    expect(readDir).toHaveBeenCalledWith('/app/desktop-plugins')
+    expect(installDesktopPlugin).not.toHaveBeenCalled()
+  })
+
   it('does not start the desktop half or offer a retry when the agent install outcome is unknown', async () => {
     $connection.set({ mode: 'remote' } as NonNullable<ReturnType<typeof $connection.get>>)
     probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'pkg', desktop: true, warnings: [] })
@@ -394,5 +539,36 @@ describe('Unified package desktop half on a local backend', () => {
     expect(installDesktopPlugin).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
     expect(installButton().disabled).toBe(true)
+  })
+
+  it('reports the desktop half as failed when the reconcile refused the package it just installed', async () => {
+    // A combined package whose desktop/ folder holds a symlink: the agent half installs, the reconcile
+    // refuses to publish the desktop half, and the dialog must say so instead of "installed".
+    const reason = 'The desktop plugin contains a symbolic link (asset.txt); it is not installed.'
+    const reconcileDesktopPluginsReport = vi.fn(async () => ({ published: [], refused: [{ name: 'pkg', reason }] }))
+    $notifications.set([])
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'pkg', desktop: true, warnings: [] })
+    requestGateway.mockImplementation(async (method, params) =>
+      method === 'plugins.manage' && params?.action === 'install'
+        ? { ok: true, plugin_name: 'pkg', enabled: false }
+        : { plugins: [] }
+    )
+    vi.stubGlobal('hermesDesktop', {
+      installDesktopPlugin,
+      probePluginRepo,
+      reconcileDesktopPlugins,
+      reconcileDesktopPluginsReport
+    })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/pkg' }))
+    expect(await screen.findByText('This package includes')).toBeTruthy()
+    await waitFor(() => expect(installButton().disabled).toBe(false))
+    fireEvent.click(installButton())
+
+    expect(await screen.findByText(reason)).toBeTruthy()
+    const toasts = $notifications.get().map(n => n.message)
+    expect(toasts).toContain('Agent plugin pkg installed')
+    expect(toasts).not.toContain('Desktop plugin pkg installed')
+    expect(installDesktopPlugin).not.toHaveBeenCalled()
   })
 })

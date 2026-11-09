@@ -1,12 +1,3 @@
-/**
- * The two creation dialogs: New Bot, and the group-chat creation flow the
- * roster's group button opens (plus the per-bot group membership dialog it
- * sits beside).
- *
- * New Bot creates its profile LAZILY, so it owns the single-flight guard and
- * the name pattern that gates the draft.
- */
-
 import {
   Badge,
   Button,
@@ -37,6 +28,14 @@ import {
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
+/**
+ * The two creation dialogs: New Bot, and the group-chat creation flow the
+ * roster's group button opens (plus the per-bot group membership dialog it
+ * sits beside).
+ *
+ * New Bot creates its profile LAZILY, so it owns the single-flight guard and
+ * the name pattern that gates the draft.
+ */
 import { useEffect, useRef, useState } from 'react'
 
 import { avatarColor, blobatarSvg, botAppearance, BotFace } from './avatar'
@@ -44,27 +43,29 @@ import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
+import { canonicalMemberName } from './canonical-group-activity'
 import {
-  groupCreationSource,
-  groupExecutionMode,
+  botOnConnection,
+  connectionName,
+  groupCreationEngine,
+  groupSeatsPeers,
+  revalidateGroupCreation,
   seatableGroupBots,
   useGroupCapability
 } from './canonical-group-capabilities'
-import type { GroupCapabilityState } from './canonical-group-capabilities'
-import { registerCanonicalGroup } from './canonical-group-registry'
+import type { GroupCreationPlan } from './canonical-group-capabilities'
+import { createGroupAcrossConnections, peerSetupText, usePeerTargets } from './canonical-group-peers'
+import { refreshGatewayGroupRooms, registerCanonicalGroup } from './canonical-group-registry'
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
-import { canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
-import type { CanonicalGroupRoute } from './canonical-groups'
-import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
+import { canonicalGroupCreateError, canonicalGroupCreateNotice, createCanonicalGroup } from './canonical-groups'
+import type { GroupCreationIntent } from './canonical-groups'
+import { $botMeta, $lastRoster, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
-import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
-import type { GroupChatRoom } from './group-chat'
-import { GroupImageControls } from './group-chat-parts'
-import { setGroupMembership } from './group-chat-view-members'
+import { GROUP_CHAT_MAX_MEMBERS, uniqueGroupChatName } from './group-chat'
+import { memberMachineOffline, setGroupMembership } from './group-chat-view-members'
 import {
   botGroups,
   durableGroupChatMembers,
-  groupMembershipPatch,
   knownGroups,
   liveGroupChatNames
 } from './group-membership'
@@ -543,6 +544,12 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
             }
           : {})
       })
+
+      // Prefs a deleted profile left under this name must not become the new
+      // bot's. Older builds without the door keep them, as before.
+      if (typeof host.dropLeftoverProfilePrefs === 'function') {
+        host.dropLeftoverProfilePrefs(slug, target || null)
+      }
 
       // Discarded mid-create: delete the profile this flight minted, configure nothing.
       if (generation !== draftGenRef.current) {
@@ -1141,26 +1148,45 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
 interface GroupDialogProps {
   bot: RosterRow
   onClose: () => void
+  /** Called with the group chat New group chat created for a new name. */
+  onCreated?: (group: string, origin: CanonicalGroupOrigin) => void
 }
 
 /** Assign a bot to a group-chat membership without replacing its others.
- *  Existing groups are independent toggles; the input creates and joins a new
- *  one. Canonical groups + the legacy scalar projection ride ui_meta. */
-export function GroupDialog({ bot, onClose }: GroupDialogProps) {
+ *  Existing groups are independent toggles. A new name is a new group chat, so
+ *  Create & join opens New group chat with this bot and the name filled in: a
+ *  gateway runs it, and nothing here makes a Desktop-run room. */
+export function GroupDialog({ bot, onClose, onCreated }: GroupDialogProps) {
   const b = useBots()
   const meta = useValue($botMeta)
   const [name, setName] = useState('')
+  const connectionId = useValue(host.state.connectionId)
+  const roster: RosterRow[] = useValue($lastRoster)
   const current = botGroups(botRosterMeta(bot, meta))
   const groups = knownGroups(meta)
+  const botName = displayName(bot, botRosterMeta(bot, meta))
+  // Its groups[] also live on its own machine: a change saved while that
+  // machine is offline would land only here and be undone on reconnect.
+  const row = roster.find(candidate => botRosterKey(candidate) === botRosterKey(bot)) || bot
+  const locked = memberMachineOffline(row, connectionId)
+  const [creating, setCreating] = useState<null | string>(null)
 
-  const setMembership = (group: string, enabled: boolean) => {
-    void setGroupMembership(bot, group, enabled)
-    host.notify({
-      kind: 'info',
-      message: enabled
-        ? `${displayName(bot, botRosterMeta(bot, meta))} added to “${group}”`
-        : `${displayName(bot, botRosterMeta(bot, meta))} removed from “${group}”`
-    })
+  if (creating !== null) {
+    return <CreateGroupChatDialog onClose={onClose} onCreated={onCreated} open roster={roster} seed={{ bots: [row], name: creating }} />
+  }
+
+  const setMembership = async (group: string, enabled: boolean) => {
+    try {
+      await setGroupMembership(bot, group, enabled)
+    } catch (error) {
+      host.notify({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
+
+      return false
+    }
+
+    host.notify({ kind: 'info', message: enabled ? b.group.memberAdded(botName, group) : b.group.memberRemoved(botName, group) })
+
+    return true
   }
 
   return (
@@ -1187,11 +1213,20 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
                   className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-(--chrome-action-hover)"
                   key={group}
                 >
-                  <Checkbox checked={enabled} onCheckedChange={checked => setMembership(group, checked === true)} />
+                  <Checkbox
+                    checked={enabled}
+                    disabled={locked}
+                    onCheckedChange={checked => void setMembership(group, checked === true)}
+                  />
                   <span>{group}</span>
                 </label>
               )
             })}
+          </div>
+        ) : null}
+        {locked ? (
+          <div className="text-xs text-(--ui-text-tertiary)" data-testid="group-dialog-locked">
+            {b.crossGateway.groupsOffline(connectionName(bot), botName)}
           </div>
         ) : null}
         <form
@@ -1200,30 +1235,34 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
             event.preventDefault()
             const trimmed = name.trim()
 
-            if (trimmed) {
-              setMembership(trimmed, true)
-              setName('')
+            if (trimmed && !locked) {
+              setCreating(trimmed)
             }
           }}
         >
           <Input
             autoFocus
+            disabled={locked}
             onChange={event => setName(event.target.value)}
-            placeholder={groups.length ? 'New group…' : 'Group name (e.g. Research)'}
+            placeholder={groups.length ? b.group.newGroup : b.group.namePlaceholder}
             value={name}
           />
-          <Button disabled={!name.trim()} size="sm" type="submit">
-            Create & join
+          <Button disabled={locked || !name.trim()} size="sm" type="submit">
+            {b.group.createAndJoin}
           </Button>
         </form>
         {current.length ? (
           <Button
             className="justify-self-start"
+            disabled={locked}
             onClick={() =>
               void (async () => {
-                // Sequential: each toggle patches groups[] from the current meta.
+                // Sequential: each toggle patches groups[] from the current meta;
+                // stop at the first one that did not land.
                 for (const group of current) {
-                  await setGroupMembership(bot, group, false)
+                  if (!(await setMembership(group, false))) {
+                    return
+                  }
                 }
               })()
             }
@@ -1243,64 +1282,102 @@ interface CreateGroupChatDialogProps {
   onCreated?: (group: string, origin: CanonicalGroupOrigin) => void
   open: boolean
   roster: RosterRow[]
+  /** The bots and name a draft opens with (Manage groups' Create & join). */
+  seed?: { bots: RosterRow[]; name: string }
 }
 
-async function revalidateGroupCreationMode(
-  route: CanonicalGroupRoute,
-  capability: GroupCapabilityState | null,
-  source: string,
-  unavailableMessage: string
-) {
-  const sourceCurrent = groupCreationSource(route, capability?.activationEpoch ?? -1)
+interface GroupPlanNoteProps {
+  connectionId: null | string
+  plan: GroupCreationPlan
+  owner: string
+  selected: RosterRow[]
+}
 
-  if (!capability || capability.source !== source || !sourceCurrent()) {
-    throw new Error(unavailableMessage)
+/** Before creation: where the group chat will run, or exactly what is missing and on which
+ *  computer. Every new group chat runs on a gateway; nothing falls back to this Desktop. */
+function GroupPlanNote({ connectionId, plan, owner, selected }: GroupPlanNoteProps) {
+  const b = useBots()
+  const { engine, reason } = plan
+  const where = plan.connection || owner
+  const local = (plan.connectionId ?? connectionId) === 'local'
+
+  // The dialog's status line already says the owner can't run group chats right now.
+  if (engine === 'gateway' || reason === 'owner_unavailable') {return null}
+
+  const text = engine === 'gateway-peer' ? b.crossGateway.gatewayPeer(owner, (connectionId ?? '') === 'local')
+    : engine === 'checking' ? b.crossGateway.checkingPeers
+      : engine === 'elsewhere' ? b.crossGateway.selectionElsewhere(connectionName(selected[0]))
+        : groupPlanProblem(reason, where, local, b)
+
+  return <p className="text-xs text-(--ui-text-secondary)" data-group-engine={engine} role="note">{text}</p>
+}
+
+function groupPlanProblem(reason: string | undefined, where: string, local: boolean, b: ReturnType<typeof useBots>): string {
+  const place = local ? b.bot.thisDevice : where
+
+  const words: Record<string, string> = {
+    unreachable: b.crossGateway.peerCheckFailed(where, local),
+    owner_update_required: b.crossGateway.ownerUpdateRequired(place),
+    peer_owner_unavailable: b.crossGateway.ownerCannotSeatPeers(place),
+    route_unavailable: b.crossGateway.peerRouteMissing,
+    profile_unseatable: b.canonical.createOtherConnection,
+    peer_gateway_changed: b.crossGateway.peerGatewayChanged(place)
   }
 
-  const mode = capability.mode
-
-  if (mode !== 'canonical' && mode !== 'legacy') {
-    throw new Error(unavailableMessage)
-  }
-
-  const freshMode = groupExecutionMode(await canonicalGroupRequest<unknown>(route, 'groups.capabilities'))
-
-  if (!sourceCurrent() || freshMode !== mode) {
-    throw new Error(unavailableMessage)
-  }
-
-  return { mode, sourceCurrent }
+  return words[reason ?? ''] ?? peerSetupText(reason ?? '', place, b.canonical)
 }
 
 /** Discord-style group chat creation: pick 2+ routable bots via checkboxes
- *  (with search), name the group, create. Legacy assignments append to each
- *  local bot's group membership list and sync through ui_meta; canonical groups
- *  keep members on their authority connection. */
-export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: CreateGroupChatDialogProps) {
+ *  (with search), name the group, create. Every group chat is created on and run
+ *  by this connection's gateway, which keeps it running with Desktop closed; bots
+ *  on other computers are seated through their own gateways. When that is not
+ *  possible the dialog says what is missing on which computer and offers Retry. */
+export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }: CreateGroupChatDialogProps) {
   const { t } = useI18n()
   const b = useBots()
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
-  const { capability, connectionId, mode, observedRoute, seatable, source } = useGroupCapability(open)
+  const [peerCheck, setPeerCheck] = useState(0)
+  const { capability, connectionId, mode, observedRoute, seatable, source } = useGroupCapability(open, peerCheck)
 
+  const intent = useRef<GroupCreationIntent>({})
   const [query, setQuery] = useState('')
   const [checked, setChecked] = useState<Record<string, boolean>>({})
   const [name, setName] = useState('')
-  const [image, setImage] = useState<null | string>(null)
+  const [notice, setNotice] = useState('')
+  // A notice speaks for the draft that asked; a late answer must not land on a newer one.
+  const draft = useRef(0)
+
+  const newDraft = () => {
+    draft.current += 1
+    setNotice('')
+  }
 
   // Reset per open so a cancelled draft doesn't leak into the next one.
+  // eslint-disable-next-line no-restricted-syntax -- Clears a dialog-owned request intent; no reactive state is copied.
   useEffect(() => {
     if (open) {
+      intent.current = {}
+      newDraft()
       setQuery('')
-      setChecked({})
-      setName('')
-      setImage(null)
+      setChecked(Object.fromEntries((seed?.bots ?? []).map(bot => [botRosterKey(bot), true])))
+      setName(seed?.name ?? '')
     }
+    // The seed is read once per open: a re-render must not wipe the person's picks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   // An outage placeholder or a bot the authority will not seat is never offered.
   const selectableRoster = seatableGroupBots(roster, { connectionId, mode, seatable })
 
   const selected = selectableRoster.filter(bot => checked[botRosterKey(bot)])
+  const targets = usePeerTargets(selectableRoster, connectionId, open && groupSeatsPeers(capability?.snapshot), peerCheck)
+  const plan = groupCreationEngine(mode, selected, connectionId, capability?.snapshot, targets)
+  const engine = plan.engine
+
+  const owner = selectableRoster.find(bot => botOnConnection(bot, connectionId))?.connectionLabel ||
+    (connectionId === 'local' ? b.bot.thisDevice : connectionId || b.bot.thisDevice)
+
+  const spansConnections = selectableRoster.some(bot => !botOnConnection(bot, connectionId))
   const visible: RosterRow[] = filterBots(selectableRoster, allMeta, query)
   const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
 
@@ -1309,18 +1386,25 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     : b.group.nameLabel
 
   const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length) &&
-    (mode === 'canonical' || mode === 'legacy')
+    ['gateway', 'gateway-peer'].includes(engine)
+
+  const select = (bot: RosterRow, value: boolean) => {
+    newDraft()
+    setChecked(prev => ({ ...prev, [botRosterKey(bot)]: value }))
+  }
 
   const creating = useRef(false)
 
   const create = async () => {
     if (creating.current) {return}
     creating.current = true
+    const submitted = draft.current
+    setNotice('')
 
     try {
-    const base = (name.trim() || placeholder).slice(0, 64)
+    const entered = name.trim().slice(0, 64)
 
-    if (selected.length < 2 || !base) {
+    if (selected.length < 2) {
       return
     }
 
@@ -1330,77 +1414,47 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       throw new Error(b.canonical.driverUnavailable)
     }
 
-    const { mode: currentMode, sourceCurrent } = await revalidateGroupCreationMode(route, capability, source, b.canonical.driverUnavailable)
+    const { plan: fresh, targets: freshTargets, sourceCurrent } = await revalidateGroupCreation(
+      route, capability, source, selected, engine, b.canonical.driverUnavailable).catch(error => {
+        setPeerCheck(value => value + 1)
+        throw error
+      })
 
-    if (!sourceCurrent()) {
-      throw new Error(b.canonical.driverUnavailable)
-    }
+    if (!sourceCurrent()) {throw new Error(b.canonical.driverUnavailable)}
 
-    if (currentMode === 'canonical') {
-      if (!sourceCurrent()) {
-        throw new Error(b.canonical.driverUnavailable)
-      }
+    const members = durableGroupChatMembers(selected)
 
-      const created = await createCanonicalGroup(route, base, durableGroupChatMembers(selected))
+    // Keyed on the name as entered, blank included: the Bots' names that fill a blank one change
+    // with the roster, so the sent name is chosen once, inside the frozen request.
+    const fallback = placeholder.slice(0, 64)
 
-      // Creation already succeeded; leave it on its owner without adopting a stale result.
-      if (!sourceCurrent()) {return}
-      const key = registerCanonicalGroup(route, created.room)
-      onClose()
-      onCreated?.(key, 'key')
+    const created = fresh.engine === 'gateway-peer'
+      ? await createGroupAcrossConnections(route, entered, members, freshTargets, intent.current, typed => typed || fallback)
+      : { ...await createCanonicalGroup(route, entered, members, intent.current,
+        typed => uniqueGroupChatName(typed || fallback, new Set(liveGroupChatNames()))), unjoined: [] }
 
-      return
-    }
+    // Creation already succeeded; leave it on its owner without adopting a stale result.
+    if (!sourceCurrent()) {return}
+    intent.current = {}
 
-    // Creating a group is always a FRESH room. Without this, re-creating a
-    // group under an existing name (easy — the default name is just the
-    // member names) silently reopens the old room with its full log, which
-    // reads as "not a fresh group" (db's Aug 2026 report). Uniquify against
-    // both live rooms and any bot's current grouping, then mint a fresh
-    // roomId: member sessions are titled by that roomId, so a
-    // disbanded-and-recreated group with the SAME display name still gets
-    // new sessions instead of resuming the old room's by title.
-    const taken = new Set(liveGroupChatNames())
-
-    for (const meta of Object.values($botMeta.get() || {})) {
-      for (const existing of botGroups(meta)) {
-        taken.add(existing)
-      }
-    }
-
-    const groupName = uniqueGroupChatName(base, taken)
-    const roomId = mintGroupRoomId()
-
-    if (!sourceCurrent()) {
-      throw new Error(b.canonical.driverUnavailable)
-    }
-
-    for (const bot of selected) {
-      void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, allMeta), groupName, true))
-    }
-
-    // Persist every machine identity, including today's active source. That
-    // member becomes remote after a source switch and cannot rely on the new
-    // gateway's name-keyed bot metadata to remain seated in this room.
-    const roomMembers = durableGroupChatMembers(selected)
-    updateGroupChat(groupName, (room: GroupChatRoom) => {
-      room.members = roomMembers
-      room.roomId = roomId
-
-      if (image) {
-        room.image = image
-      }
-
-      return room
-    })
-    host.notify({
-      kind: 'info',
-      message: `“${groupName}” created with ${selected.length} bots`
-    })
+    const key = registerCanonicalGroup(route, created.room, { created: true })
+    refreshGatewayGroupRooms()
     onClose()
-    onCreated?.(groupName, 'name')
+    onCreated?.(key, 'key')
+
+    // The room is made either way; say who is missing so a seat that failed is never silent.
+    if (created.unjoined.length) {
+      host.notify({ kind: 'warning', message: b.canonical.createdNotJoined
+        .replace('{names}', created.unjoined.map(({ member }) => canonicalMemberName(member)).join(', ')) })
+    }
     } catch (error) {
-      host.notify({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
+      const next = canonicalGroupCreateNotice(error, b.canonical)
+
+      if (!next) {
+        host.notify({ kind: 'error', message: canonicalGroupCreateError(error, b.canonical) })
+      } else if (draft.current === submitted) {
+        setNotice(next)
+      }
     } finally { creating.current = false }
   }
 
@@ -1416,9 +1470,12 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{b.group.newTitle}</DialogTitle>
-          <DialogDescription>{`Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots. Local memberships sync through each Bot profile; cross-machine members stay scoped to this room.`}</DialogDescription>
+          <DialogDescription>{b.crossGateway.pickBots(GROUP_CHAT_MAX_MEMBERS)} {b.crossGateway.gatewayMembership}</DialogDescription>
         </DialogHeader>
         {mode === 'unavailable' && <p role="status">{b.canonical.driverUnavailable}</p>}
+        <GroupPlanNote connectionId={connectionId} owner={owner} plan={plan} selected={selected} />
+        {engine === 'unavailable' &&
+          <Button onClick={() => setPeerCheck(value => value + 1)} size="sm" variant="ghost">{t.common.retry}</Button>}
         {/* TODO(bot-mode-types): this search box never takes focus when the dialog
             opens — SearchField accepts no `autoFocus` prop and forwards no extra
             props, so the `autoFocus` that used to sit here was inert. */}
@@ -1441,12 +1498,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
               >
                 <Tip label={b.group.removeFromSelection}>
                   <RowButton
-                    onClick={() =>
-                      setChecked(prev => ({
-                        ...prev,
-                        [botRosterKey(bot)]: false
-                      }))
-                    }
+                    onClick={() => select(bot, false)}
                   >
                     {displayName(bot, botRosterMeta(bot, allMeta))}
                     <Codicon className="text-[0.6rem]" name="close" />
@@ -1484,41 +1536,32 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-xs text-foreground">{displayName(bot, meta)}</div>
                       <div className="truncate text-[0.625rem] text-(--ui-text-quaternary)">
-                        {[
-                          currentGroups.length
-                            ? `@${botHandle(bot.name, bot)} · in ${currentGroups.map(group => `“${group}”`).join(', ')}`
-                            : `@${botHandle(bot.name, bot)}`,
-                          bot.remoteSource && bot.connectionLabel ? ` · ${bot.connectionLabel}` : ''
-                        ].join('')}
+                        {currentGroups.length
+                          ? `@${botHandle(bot.name, bot)} · ${b.group.memberGroups(currentGroups.map(group => `“${group}”`).join(', '))}`
+                          : `@${botHandle(bot.name, bot)}`}
                       </div>
                     </div>
+                    {spansConnections && (
+                      <Badge className="shrink-0 rounded-full px-1.5 text-[0.625rem]" data-device-badge variant="muted">
+                        {bot.connectionLabel || (botOnConnection(bot, connectionId) ? b.bot.thisDevice : bot.connectionId)}
+                      </Badge>
+                    )}
                     <Checkbox
                       checked={isChecked}
                       disabled={disabled}
-                      onCheckedChange={value =>
-                        setChecked(prev => ({
-                          ...prev,
-                          [botRosterKey(bot)]: Boolean(value)
-                        }))
-                      }
+                      onCheckedChange={value => select(bot, Boolean(value))}
                     />
                   </label>
                 )
               })
             ) : (
               <div className="px-1.5 py-3 text-center text-xs text-(--ui-text-tertiary)">
-                {query.trim() ? `No bots match “${query.trim()}”` : 'No bots yet — create one first.'}
+                {query.trim() ? b.group.noBotsMatch(query.trim()) : b.group.createBotFirst}
               </div>
             )}
           </div>
         </div>
         <div className="grid gap-2">
-          <GroupImageControls
-            image={image}
-            onImage={setImage}
-            seedMembers={selected.map(bot => displayName(bot, botRosterMeta(bot, allMeta)))}
-            seedName={name.trim() || (selected.length ? placeholder : '')}
-          />
           <form
             onSubmit={event => {
               event.preventDefault()
@@ -1528,12 +1571,16 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
             <Input
               aria-label={b.group.nameLabel}
               maxLength={64}
-              onChange={event => setName(event.target.value)}
+              onChange={event => {
+                setName(event.target.value)
+                newDraft()
+              }}
               placeholder={placeholder}
               value={name}
             />
           </form>
         </div>
+        {notice && <p className="text-xs text-(--ui-text-secondary)" role="status">{notice}</p>}
         <DialogFooter>
           <Button onClick={onClose} variant="secondary">
             {t.common.cancel}
@@ -1541,7 +1588,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <Button
             disabled={!canCreate}
             onClick={create}
-          >{`Create Group${selected.length ? ` (${selected.length})` : ''}`}</Button>
+          >{`${b.group.createAction}${selected.length ? ` (${selected.length})` : ''}`}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

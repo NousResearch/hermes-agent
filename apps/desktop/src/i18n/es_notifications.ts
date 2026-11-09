@@ -35,6 +35,19 @@ export const esNotifications = {
       description: 'Un complemento de escritorio envió una notificación mientras Hermes estaba en segundo plano.'
     }
   },
+  browserPermission: {
+    title: 'Notificaciones del navegador',
+    allow: 'Permitir',
+    states: {
+      default:
+        'Muestra avisos de este navegador mientras la pestaña está en segundo plano. Hasta que lo permitas, solo parpadea el título de la pestaña.',
+      granted:
+        'Permitido. Los avisos aparecen mientras esta pestaña está en segundo plano; el título de la pestaña también parpadea.',
+      denied: 'Bloqueado en la configuración del sitio de este navegador. El título de la pestaña sigue parpadeando.',
+      insecure: 'Requiere HTTPS, como Tailscale serve. Con HTTP simple solo parpadea el título de la pestaña.',
+      unsupported: 'Este navegador no puede mostrar notificaciones. El título de la pestaña sigue parpadeando.'
+    }
+  },
   test: 'Enviar notificación de prueba',
   testTitle: 'Hermes',
   testBody: 'Las notificaciones funcionan.',

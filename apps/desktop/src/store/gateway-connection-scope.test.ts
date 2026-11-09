@@ -44,6 +44,7 @@ const {
   closeLegacySecondaryGateways,
   closeSecondaryGateways,
   configureGatewayRegistry,
+  dialedGatewayModeFor,
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   openGatewayForAgent,
@@ -107,6 +108,30 @@ describe('primary gateway registry scope', () => {
     expect(activeGatewayConnectionId()).toBeNull()
     expect(setApiRequestConnection).toHaveBeenLastCalledWith(null)
   })
+
+  // The recorded route (id AND mode) describes one socket: re-publishing that socket keeps it, a
+  // replacement socket starts unknown until its own route is recorded.
+  it.each(['local', 'remote'] as const)(
+    'keeps a %s primary route while the socket is reused and clears it when a new socket replaces it',
+    mode => {
+      const socket = { connectionState: 'open' } as never
+
+      setPrimaryGateway(socket, 'default')
+      setPrimaryGatewayConnectionId('primary-1', mode)
+      setPrimaryGateway(socket, 'default')
+
+      expect(dialedGatewayModeFor(null, 'default')).toBe(mode)
+      expect(dialedGatewayModeFor('primary-1', 'default')).toBe(mode)
+      expect(activeGatewayConnectionId()).toBe('primary-1')
+
+      setPrimaryGateway({ connectionState: 'open' } as never, 'default')
+
+      expect(dialedGatewayModeFor(null, 'default')).toBeNull()
+      expect(dialedGatewayModeFor('primary-1', 'default')).toBeNull()
+      expect(activeGatewayConnectionId()).toBeNull()
+      expect(setApiRequestConnection).toHaveBeenLastCalledWith(null)
+    }
+  )
 
   it('records a primary re-dial made while a secondary scope is foregrounded (#95628 keeps ambient routing)', async () => {
     setPrimaryGateway({ connectionState: 'open' } as never, 'default')

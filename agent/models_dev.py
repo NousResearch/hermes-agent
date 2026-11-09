@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 MODELS_DEV_URL = "https://models.dev/api.json"
 _MODELS_DEV_CACHE_TTL = 4 * 3600  # 4 hours — ETag conditional GET makes refresh cheap
 _MODELS_DEV_RETRY_DELAY = 300  # 5 minutes after a failed refresh
+_MODELS_DEV_FETCH_DEADLINE = 15.0  # whole download; ~600 KB gzipped fits at ~40 KB/s
 # In-memory cache
 _models_dev_cache: dict[str, Any] = {}
 _models_dev_cache_time: float = 0
@@ -34,6 +35,7 @@ _models_dev_retry_after: float = 0
 _models_dev_fetch_lock = threading.Lock()
 _models_dev_refresh_lock = threading.Lock()
 _models_dev_refresh_in_flight = False
+_models_dev_download_slot = threading.Lock()  # held by the one live download, abandoned or not
 
 
 @dataclass
@@ -342,18 +344,48 @@ def _fetch_models_dev_from_network(*, conditional: bool = False) -> tuple[dict[s
     errors and on an empty/invalid payload. ``conditional`` sends ``If-None-Match`` with the sidecar's
     ETag and raises ``_NotModified`` on 304 — pass True ONLY while holding ``_models_dev_fetch_lock``
     AND a servable registry, or a 304 leaves the process with no data."""
+    from agent.deadline import DeadlineExpired, run_bounded_sync
+
     headers: dict[str, str] = {}
     if conditional and (etag := _load_etag()):
         headers["If-None-Match"] = etag
-    # (connect, read): 5 s connect fails fast on blackholed hosts; 10 s read tolerates a slow registry.
-    response = requests.get(_get_models_dev_url(), headers=headers, timeout=(5, 10))
-    if response.status_code == 304:
+    url = _get_models_dev_url()
+    # A download abandoned at the deadline keeps its thread and socket until the server stops; it
+    # owns this slot until then, so a later attempt (force_refresh skips the backoff) fails fast
+    # instead of stacking a second transfer on the same slow link.
+    if not _models_dev_download_slot.acquire(blocking=False):
+        raise RuntimeError("an abandoned models.dev download is still running")
+    started = threading.Event()
+
+    def download() -> tuple[int, Any, str]:
+        started.set()
+        try:
+            # (connect, read) bounds each socket op, not the download: a trickling body never trips it.
+            response = requests.get(url, headers=headers, timeout=(5, 10))
+            if response.status_code == 304:
+                return 304, None, ""
+            response.raise_for_status()
+            return response.status_code, response.json(), response.headers.get("ETag", "")
+        finally:
+            _models_dev_download_slot.release()
+
+    # The cold-cache fetch runs inside a caller's request (a fresh home's first session.create
+    # reaches it through tool availability), so the whole exchange, DNS included, gets one
+    # wall-clock cap; on expiry the caller falls back to the stale/empty cache and the backoff.
+    try:
+        bounded = run_bounded_sync(download, _MODELS_DEV_FETCH_DEADLINE, label="models.dev fetch")
+    except BaseException:
+        if not started.is_set():  # the worker never ran (thread start failed), so the slot is ours
+            _models_dev_download_slot.release()
+        raise
+    if bounded.timed_out:
+        raise DeadlineExpired("models.dev fetch", _MODELS_DEV_FETCH_DEADLINE)
+    status, data, etag = bounded.value
+    if status == 304:
         raise _NotModified()
-    response.raise_for_status()
-    data = response.json()
     if not _validate_registry(data):
         raise ValueError("models.dev returned an empty or invalid registry")
-    return data, response.headers.get("ETag", "")
+    return data, etag
 
 
 def _mark_stale_cache_grace() -> None:

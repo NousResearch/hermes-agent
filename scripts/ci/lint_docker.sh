@@ -3,9 +3,10 @@
 #
 # hadolint runs from its image, pinned by digest, on the Dockerfiles; rules and ignores live in
 # .hadolint.yaml. shellcheck runs from PATH at error severity on the shell scripts under docker/
-# the way CI's ludeeus/action-shellcheck selects them: `*.sh` files, plus executable files with
-# no extension whose first line is a sh/bash/ksh/zsh shebang. CI runs only the hadolint half
-# here; its shellcheck comes from that action.
+# that CI's ludeeus/action-shellcheck (00cae500) selects: its shell file names and extensions,
+# plus executable files with no extension whose first line is a sh/bash/ash/ksh shebang (its
+# regex, which does not match zsh). CI runs only the hadolint half here; its shellcheck comes
+# from that action.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
@@ -21,7 +22,13 @@ run_shellcheck() {
     local files=() file
     while IFS= read -r -d '' file; do
         case "${file##*/}" in
-            *.sh) files+=("$file") ;;
+            *.sh | *.bash | *.ksh | *.zsh | *.shlib | profile | .profile | suid_profile)
+                files+=("$file") ;;
+            .bashrc | bashrc | .bash_aliases | .bash_completion | .bash_login | .bash_logout)
+                files+=("$file") ;;
+            .bash_profile | bash_profile | .zlogin | zlogin | .zlogout | zlogout | .zprofile)
+                files+=("$file") ;;
+            zprofile | .zsenv | zsenv | .zshrc | zshrc) files+=("$file") ;;
             *.*) ;;
             *) if [ -x "$file" ] && head -n1 "$file" | grep -Eqs '^#! */[^ ]*/(env *)?[abk]*sh'; then
                    files+=("$file")

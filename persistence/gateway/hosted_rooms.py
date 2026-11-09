@@ -1,6 +1,6 @@
 """Hosted Bot Mode rooms: owners, transport bindings, rooms and their event log, peer links and grants, replicas, room drivers, policy checkpoints and attachments.
 
-The hosted-room tables live in two files of one install. ``placement`` (:data:`HostedPlacement`) chooses between them on every verb that acts on those tables: ``'profile'`` is the bound profile's ``state.db``, where the canonical hosted service keeps them; ``'shared'`` is the install's root ``shared-state.db``, derived from the bound profile's folder (``<root>/shared-state.db`` for a profile under ``<root>/profiles/``, else ``<profile>/shared-state.db``), so every profile of one install reaches the same shared tables. The owner claims, transport bindings, the two member-session verbs and the two member-home verbs act on the bound profile's ``state.db`` and take no placement; so do the hand-off verbs, which act on the install's ``shared-state.db`` (``import_fenced_rooms`` copies from it into the bound profile's ``state.db``).
+The hosted-room records live in two stores of one install. ``placement`` (:data:`HostedPlacement`) chooses between them on every verb that acts on those records: ``'profile'`` is the bound profile's own store, where the canonical hosted service keeps them; ``'shared'`` is the install-wide store, found from the bound profile's folder (the install root for a profile under ``<root>/profiles/``, else the profile's own folder), so every profile of one install reaches the same shared records. The owner claims, transport bindings, the two member-session verbs and the two member-home verbs act on the bound profile's store and take no placement; so do the hand-off verbs, which act on the install-wide store (``import_fenced_rooms`` copies from it into the bound profile's store).
 
 The pure validators (identifiers, names, actors, payload bounds, page shapes) run in the gateway before each call; a verb's transaction starts at its first read. ``now=None`` reads the wall clock. Writes are one transaction each (10 s patience); a read is one read context. Errors are the hosted-room error classes below, with their messages and ``reason`` attributes; each joins the core class its condition belongs to, so ``except NotFound`` and ``except ValueError`` both catch a missing room.
 """
@@ -86,7 +86,7 @@ __all__ = [
     "room_grant_hard_expiry",
 ]
 
-# The file holding the hosted-room tables a verb acts on: the bound profile's ``state.db`` or the install's root ``shared-state.db``.
+# The store holding the hosted-room records a verb acts on: the bound profile's own store or the install-wide store.
 HostedPlacement = Literal["profile", "shared"]
 
 # Room-driver task statuses.
@@ -452,7 +452,7 @@ class HostedRoomRepository(Protocol):
     """
 
     def claim_owner(self, *, epoch: int, room_id: str, actor: str, owner: OwnerRule | None) -> None:
-        """One write on the bound profile's ``state.db``: the epoch fence (:class:`persistence.FenceStale`), then the stored owner must belong to ``actor`` under ``owner`` (``session_rules.legacy_local.same_owner``; without a rule only the equal stamp), else ``AuthorityRefusal('permission_denied')``. Writes nothing."""
+        """One write on the bound profile's store: the epoch fence (:class:`persistence.FenceStale`), then the stored owner must belong to ``actor`` under ``owner`` (``session_rules.legacy_local.same_owner``; without a rule only the equal stamp), else ``AuthorityRefusal('permission_denied')``. Writes nothing."""
         ...
 
     def create_room(self, *, placement: HostedPlacement, room_id: str, name: str, members: Sequence[Mapping[str, JsonValue]], authority_gateway_id: str, owner: HostedOwnerClaim | None = None, now: float | None = None) -> Mapping[str, JsonValue]:
@@ -463,7 +463,7 @@ class HostedRoomRepository(Protocol):
         ...
 
     def bind_transport(self, *, epoch: int, session_id: str, binding: str) -> None:
-        """One write on the bound profile's ``state.db``: the epoch fence, then insert-if-absent of the caller-encoded ``binding`` for ``session_id``; a different stored text (byte-exact) refuses ``AuthorityRefusal('permission_denied')`` and an identical one is a no-op."""
+        """One write on the bound profile's store: the epoch fence, then insert-if-absent of the caller-encoded ``binding`` for ``session_id``; a different stored text (byte-exact) refuses ``AuthorityRefusal('permission_denied')`` and an identical one is a no-op."""
         ...
 
     def label_room_session(self, *, epoch: int, session_id: str, title: str) -> None:
@@ -493,7 +493,7 @@ class HostedRoomRepository(Protocol):
         ...
 
     def disband_room(self, *, placement: HostedPlacement, room_id: str, expected_gateway_id: str, expected_epoch: int, now: float | None = None) -> Mapping[str, JsonValue]:
-        """Tombstone a room permanently and idempotently in one write: replays bypass the fence (a retired id with no row returns ``history_expired``; a disbanded row returns its tombstone and stored event); then the authority; a held owed revoke of the room expiring after ``now`` refuses ``RoomHeldGrantsPendingError('Group chat grants still need revoking; retry Disband.')``, and the room's expired held rows are deleted; then the ``room.disbanded`` event, the fenced update, the retired id, the room's recorded member and attempt homes forgotten (``record_member_home``, ``record_attempt_home``; only a file holding ``state_meta`` has them) and the retention prune. Returns ``{room_id, disbanded_at, idempotent, event}``."""
+        """Tombstone a room permanently and idempotently in one write: replays bypass the fence (a retired id with no row returns ``history_expired``; a disbanded row returns its tombstone and stored event); then the authority; a held owed revoke of the room expiring after ``now`` refuses ``RoomHeldGrantsPendingError('Group chat grants still need revoking; retry Disband.')``, and the room's expired held rows are deleted; then the ``room.disbanded`` event, the fenced update, the retired id, the room's recorded member and attempt homes forgotten (``record_member_home``, ``record_attempt_home``; only the profile placement holds them) and the retention prune. Returns ``{room_id, disbanded_at, idempotent, event}``."""
         ...
 
     def claim_router_call(self, *, placement: HostedPlacement, room_id: str, discussion_event_id: str, owner: str, expires_at: float, now: float | None = None) -> bool:
@@ -505,15 +505,15 @@ class HostedRoomRepository(Protocol):
         ...
 
     def record_member_home(self, *, room_id: str, member_id: str, home: str) -> None:
-        """One write on the bound profile's ``state.db``: ``home`` joins the member's recorded homes, after those already recorded, unless it is one of them. ``disband_room`` with ``placement='profile'`` forgets the room's recorded homes."""
+        """One write on the bound profile's store: ``home`` joins the member's recorded homes, after those already recorded, unless it is one of them. ``disband_room`` with ``placement='profile'`` forgets the room's recorded homes."""
         ...
 
     def member_homes(self, *, room_id: str, member_id: str) -> tuple[str, ...]:
-        """The member's recorded homes in the bound profile's ``state.db``, in the order they were first recorded; ``()`` when none."""
+        """The member's recorded homes in the bound profile's store, in the order they were first recorded; ``()`` when none."""
         ...
 
     def record_attempt_home(self, *, room_id: str, member_id: str, task_id: str, generation: int, home: str) -> None:
-        """One write on the bound profile's ``state.db``: first drop this member's attempt homes whose attempt is over (the driver task row on the profile placement is gone, at another execution generation, or outside ``running``, ``stopping``, ``deferred`` and ``indeterminate``), then record ``home`` for the attempt ``(task_id, generation)`` unless one is recorded (the first home wins). ``disband_room`` with ``placement='profile'`` forgets them with the member homes."""
+        """One write on the bound profile's store: first drop this member's attempt homes whose attempt is over (the driver task row on the profile placement is gone, at another execution generation, or outside ``running``, ``stopping``, ``deferred`` and ``indeterminate``), then record ``home`` for the attempt ``(task_id, generation)`` unless one is recorded (the first home wins). ``disband_room`` with ``placement='profile'`` forgets them with the member homes."""
         ...
 
     def attempt_home(self, *, room_id: str, member_id: str, task_id: str, generation: int) -> str | None:
@@ -529,15 +529,15 @@ class HostedRoomRepository(Protocol):
         ...
 
     def owner(self, room_id: str) -> str | None:
-        """The stored owner of ``room_id`` in the bound profile's ``state.db``, or None."""
+        """The stored owner of ``room_id`` in the bound profile's store, or None."""
         ...
 
     def owned_rooms(self) -> frozenset[str]:
-        """Every room id with a stored owner in the bound profile's ``state.db``."""
+        """Every room id with a stored owner in the bound profile's store."""
         ...
 
     def probe_room_owner(self, room_id: str) -> bool:
-        """Whether the bound profile's ``state.db`` holds an owner for ``room_id``, without creating, migrating or waiting: False when the file or its ``state_meta`` table is absent; a store failure raises ``RoomProbeUnavailableError('native room ownership is temporarily unavailable')``."""
+        """Whether the bound profile's store holds an owner for ``room_id``, without creating, migrating or waiting: False when that store, or the part of it that keeps owners, does not exist yet; a store failure raises ``RoomProbeUnavailableError('native room ownership is temporarily unavailable')``."""
         ...
 
     def transport_binding(self, session_id: str) -> str | None:
@@ -545,7 +545,7 @@ class HostedRoomRepository(Protocol):
         ...
 
     def member_authorized(self, guard: HostedMemberGuard, *, epoch: int, operation: str) -> bool:
-        """The hosted member check as one read on the bound profile's ``state.db``: the epoch fence (``FenceStale``), then owner key, live room, room authority, seated local member, ``guard.home_current``, then, with ``guard.task``, the task row's identity, generation, target and a status ``operation`` allows. False on any mismatch."""
+        """The hosted member check as one read on the bound profile's store: the epoch fence (``FenceStale``), then owner key, live room, room authority, seated local member, ``guard.home_current``, then, with ``guard.task``, the task row's identity, generation, target and a status ``operation`` allows. False on any mismatch."""
         ...
 
     def list_rooms(self, *, placement: HostedPlacement, include_disbanded: bool = False, limit: int = 500, offset: int = 0) -> list[Mapping[str, JsonValue]]:
@@ -561,11 +561,11 @@ class HostedRoomRepository(Protocol):
         ...
 
     def probe_hosted_room(self, *, placement: HostedPlacement, room_id: str) -> bool:
-        """Whether a live room exists, without creating, migrating or waiting: False when the file or table is absent; a store failure raises ``RoomProbeUnavailableError('hosted room ownership is temporarily unavailable')``."""
+        """Whether a live room exists, without creating, migrating or waiting: False when the placement's store, or the part of it that keeps rooms, does not exist yet; a store failure raises ``RoomProbeUnavailableError('hosted room ownership is temporarily unavailable')``."""
         ...
 
     def latest_event_payload(self, *, placement: HostedPlacement, room_id: str, kind: str, before_seq: int | None = None) -> Mapping[str, JsonValue] | None:
-        """The payload of the room's newest event of ``kind``, of the newest below ``before_seq`` when given, or None. One read of the event log that reads no room row, so a room the file does not hold has none."""
+        """The payload of the room's newest event of ``kind``, of the newest below ``before_seq`` when given, or None. One read of the event log that reads no room row, so a room the placement's store does not hold has none."""
         ...
 
     def event_by_id(self, *, placement: HostedPlacement, room_id: str, event_id: str) -> Mapping[str, JsonValue] | None:
@@ -573,21 +573,21 @@ class HostedRoomRepository(Protocol):
         ...
 
     def fenced_room_ids(self, *, handoff_gateway_id: str) -> frozenset[str]:
-        """The live rooms of ``shared-state.db`` whose authority is ``handoff_gateway_id`` and whose id the hand-off record does not hold."""
+        """The live rooms of the install-wide store whose authority is ``handoff_gateway_id`` and whose id the hand-off record does not hold."""
         ...
 
     def record_room_handoff(self, *, room_ids: Collection[str], now: float | None = None) -> None:
-        """One write on ``shared-state.db``: each id joins the hand-off record at ``now``; an id already recorded keeps its first time."""
+        """One write on the install-wide store: each id joins the hand-off record at ``now``; an id already recorded keeps its first time."""
         ...
 
     def handed_room_ids(self, *, handoff_gateway_id: str) -> frozenset[str]:
-        """Every room of ``shared-state.db``, live or disbanded, whose authority is ``handoff_gateway_id``, recorded or not."""
+        """Every room of the install-wide store, live or disbanded, whose authority is ``handoff_gateway_id``, recorded or not."""
         ...
 
     def import_fenced_rooms(self, *, epoch: int | None, room_ids: Collection[str], owner: str, local_gateway_id: str, handoff_gateway_id: str, now: float | None = None) -> int:
-        """Copy the ``room_ids`` the bound profile's ``state.db`` has never known from ``shared-state.db`` and claim them, in one write on ``state.db``; returns the rooms copied.
+        """Copy the ``room_ids`` the bound profile's store has never known from the install-wide store and claim them, in one write on the profile's store; returns the rooms copied.
 
-        Order: with ``epoch``, the epoch fence (``FenceStale``); the ids with neither a room row nor a retired id in ``state.db`` are copied with every row of theirs ``shared-state.db`` holds, except driver leases and rows of no room (a row ``state.db`` already holds fails the whole write with ``PermanentStoreError``); then each copied room is claimed: an ``authority.claimed`` event at the room's next sequence and epoch + 1, naming ``handoff_gateway_id`` as the previous and ``local_gateway_id`` as the new authority, the room moves to that authority and epoch with its sequence and revision advanced and ``updated_at`` at ``now``, and its owner key becomes ``owner`` unless one is stored. ``shared-state.db`` is only read.
+        Order: with ``epoch``, the epoch fence (``FenceStale``); the ids with neither a room row nor a retired id in the profile's store are copied with every row of theirs the install-wide store holds, except driver leases and rows of no room (a row the profile's store already holds fails the whole write with ``PermanentStoreError``); then each copied room is claimed: an ``authority.claimed`` event at the room's next sequence and epoch + 1, naming ``handoff_gateway_id`` as the previous and ``local_gateway_id`` as the new authority, the room moves to that authority and epoch with its sequence and revision advanced and ``updated_at`` at ``now``, and its owner key becomes ``owner`` unless one is stored. The install-wide store is only read.
         """
         ...
 
@@ -803,7 +803,7 @@ class HostedRoomDriverRepository(Protocol):
 class HostedRoomPolicyRepository(Protocol):
     """The room policy checkpoint: cursors, active policy events, threads, watermarks and terminal publication receipts.
 
-    Every verb takes the caller's configured active-event budget ``max_active_events`` (default 64), a positive int, else ``ValueError('max_active_events must be a positive integer')`` before any read or write. The placement's file records the largest budget a verb gave it, never below 64, and every verb bounds a discussion's active events by that recorded capacity; the thread transcript bound follows it.
+    Every verb takes the caller's configured active-event budget ``max_active_events`` (default 64), a positive int, else ``ValueError('max_active_events must be a positive integer')`` before any read or write. The placement's store records the largest budget a verb gave it, never below 64, and every verb bounds a discussion's active events by that recorded capacity; the thread transcript bound follows it.
     """
 
     def snapshot(self, *, placement: HostedPlacement, room_id: str, latest_seq: int, max_active_events: int = 64) -> PolicySnapshot:
@@ -828,7 +828,7 @@ class HostedRoomAttachmentRepository(Protocol):
     """Room attachment rows and their blobs, kept in ``hosted-room-attachments/`` beside the placement's file. The caller validates identifiers, manifests, content and ranges before the call (``AttachmentError``)."""
 
     def prepare(self, *, placement: HostedPlacement, now: float | None = None) -> None:
-        """Run the file's attachment setup unless this process already ran it on that file: the attachment tables, the reconciliation of the commitments their durable events name, and the prune of expired rows and their blobs. Every other verb runs it first too."""
+        """Run the store's attachment setup unless this process already ran it on that store: the attachment records, the reconciliation of the commitments their durable events name, and the prune of expired rows and their blobs. Every other verb runs it first too."""
         ...
 
     def put(self, *, placement: HostedPlacement, room_id: str, upload_id: str, kind: str, name: str, mime: str, data: bytes, now: float | None = None) -> Mapping[str, JsonValue]:

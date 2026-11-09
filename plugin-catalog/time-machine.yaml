@@ -1,6 +1,6 @@
 name: time-machine
 repo: https://github.com/Prasad-PingFederate/hermes-time-machine
-sha: 7e27497bcdcbf331c6ed90c28a70df0cd10e8e89
+sha: 9e02342fd088075395e6252699460e73b44b425a
 description: >-
   Visual timeline scrubber, split diff inspector, surgical per-file rollback, and failure diagnosis for Hermes Agent and Desktop. Captures pre-mutation snapshots in an isolated store, diagnoses broken edits in dry-run mode, and restores files upon user approval via /tm restore or the Desktop UI.
 maintainer: Prasad-PingFederate

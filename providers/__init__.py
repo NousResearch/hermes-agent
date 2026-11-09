@@ -83,8 +83,8 @@ class _HomeLayer:
     registry: dict[str, ProviderProfile] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
     stamps: tuple = ()
-    # ``plugins.disabled`` as of the last scan: enabling a skipped plugin changes no directory
-    disabled: frozenset = frozenset()
+    # ``plugins.disabled`` when the last scan skipped a plugin it names, else None: enabling it changes no dir
+    disabled: frozenset | None = None
     stamp_checked_at: float | None = None
     # name -> when its miss last forced a stamp check (see ``_miss_recheck_due``)
     misses: dict[str, float] = field(default_factory=dict)
@@ -466,19 +466,16 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
     ):
         return False
     stamps = _plugin_dir_stamps(home)
-    from hermes_cli.plugins_discovery import _get_disabled_plugins
-
-    disabled = frozenset(_get_disabled_plugins())
-    if stamps != layer.stamps or disabled != layer.disabled:
+    if stamps != layer.stamps or _skipped_plugin_enabled(layer):
         # Judge the stamps' age before scanning: a slow scan must not let a stamp read before it
         # look settled afterwards and get remembered over an install that landed mid-scan.
         settled = _plugin_dir_stamps_settled(stamps)
+        layer.disabled = None  # the scan records it again if it still skips a plugin
         _scan_home_layer(layer, key)
         # A stamp still inside its mtime tick may not move for an install landing in that same
         # tick, which would hide the plugin until some later change: keep it unremembered so the
         # next periodic check scans again, until the stamps settle.
         layer.stamps = stamps if settled else ()
-        layer.disabled = disabled
         # Publish the completed layer -- stamps AND check time -- before auth
         # sync: it calls list_providers(), which re-enters this function. An
         # unpublished stamp rescanned forever; an unpublished check time
@@ -488,6 +485,15 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
             _sync_auth_registry()
     layer.stamp_checked_at = now
     return True
+
+
+def _skipped_plugin_enabled(layer: _HomeLayer) -> bool:
+    """Whether ``plugins.disabled`` moved since a scan skipped a plugin; config is read only in that case."""
+    if layer.disabled is None:
+        return False
+    from hermes_cli.plugins_discovery import _get_disabled_plugins
+
+    return frozenset(_get_disabled_plugins()) != layer.disabled
 
 
 def _plugin_dir_stamps(home: Path) -> tuple:
@@ -608,7 +614,12 @@ def _plugin_disabled(plugin_dir: Path) -> bool:
     if not disabled:
         return False
     names = {plugin_dir.name, f"model-providers/{plugin_dir.name}", _manifest_field(plugin_dir, "name")}
-    return bool(names & disabled)
+    if not names & disabled:
+        return False
+    layer = _REGISTRATION_TARGET.get()
+    if layer is not None:
+        layer.disabled = frozenset(disabled)
+    return True
 
 
 def _user_module_name(plugin_dir: Path, home_key: str) -> str:

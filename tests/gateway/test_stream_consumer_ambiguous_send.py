@@ -176,24 +176,65 @@ async def test_timed_out_continuation_is_not_followed_by_the_whole_answer_again(
     assert consumer.delivered_final_matches("first part second part.") is not False
 
 
-@pytest.mark.asyncio
-async def test_timed_out_continuation_that_telegram_splits_again_is_not_counted_as_shown():
-    """3,000 periods fit one fallback chunk raw but escape to two MarkdownV2 messages: when that send
-    times out, the second message was never attempted, so the turn must stay undelivered for the
-    gateway's final send instead of silently losing that text."""
-    from plugins.platforms.telegram.telegram_markdown import to_markdown_v2
+def _timing_out_telegram(delivered: list) -> MagicMock:
+    """A stream double whose sends go through the real TelegramAdapter send path (rich messages
+    on) to a bot whose every send reaches Telegram and then times out."""
+    from gateway.config import PlatformConfig
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from telegram.error import TimedOut
 
-    delivered: list = []
+    def lost_ack(text):
+        delivered.append(text)
+        raise TimedOut("Timed out")
+
+    telegram = TelegramAdapter(PlatformConfig(enabled=True, token="t", extra={"rich_messages": True}))
+    telegram._telegram_chat_outbound_slot_secs = 0
+    bot = telegram._bot = MagicMock()
+    bot.send_message = AsyncMock(side_effect=lambda **kw: lost_ack(kw["text"]))
+    bot.do_api_request = AsyncMock(
+        side_effect=lambda method, api_kwargs: lost_ack(api_kwargs["rich_message"]["markdown"]))
     adapter = _telegram_flagged(_landing_adapter(delivered))
-    adapter.format_message = to_markdown_v2
-    adapter.send.side_effect = lambda **kw: delivered.append(kw["content"]) or _TIMED_OUT
+    adapter.format_message = telegram.format_message
+
+    async def send(*, chat_id, content, reply_to=None, metadata=None):
+        return await telegram.send(chat_id, content, reply_to, metadata)
+
+    adapter.send.side_effect = send
+    return adapter
+
+
+async def _stream_then_tail(adapter: MagicMock, delivered: list, tail: str) -> GatewayStreamConsumer:
     consumer = GatewayStreamConsumer(
-        adapter, "chat", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=""))
+        adapter, "123", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=""))
     consumer.on_delta("first part ")
     task = asyncio.create_task(consumer.run())
     await async_wait_until(lambda: delivered, timeout=5)
-    consumer.on_delta("." * 3000)
+    consumer.on_delta(tail)
     consumer.finish()
     await asyncio.wait_for(task, timeout=10)
+    return consumer
 
+
+@pytest.mark.asyncio
+async def test_timed_out_continuation_that_telegram_splits_again_is_not_counted_as_shown():
+    """3,000 periods fit one fallback chunk raw but escape to two MarkdownV2 messages: when the
+    first times out, the second was never attempted, so the turn must stay undelivered for the
+    gateway's final send instead of silently losing that text."""
+    delivered: list = []
+    consumer = await _stream_then_tail(_timing_out_telegram(delivered), delivered, "." * 3000)
+
+    assert len(delivered) == 2  # the preview and the first half of the split continuation
     assert consumer.final_content_delivered is False
+
+
+@pytest.mark.asyncio
+async def test_timed_out_rich_continuation_is_counted_as_shown():
+    """The same tail with a table goes out as ONE sendRichMessage (its MarkdownV2 form would not
+    fit one message): nothing was left unattempted, so its timeout counts as shown and the gateway
+    does not resend the whole answer."""
+    delivered: list = []
+    tail = "| a | b |\n|---|---|\n| 1 | 2 |\n\n" + "." * 3000
+    consumer = await _stream_then_tail(_timing_out_telegram(delivered), delivered, tail)
+
+    assert delivered[1:] == [tail]
+    assert consumer.final_content_delivered is True

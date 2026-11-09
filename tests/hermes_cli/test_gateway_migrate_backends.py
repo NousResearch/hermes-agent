@@ -1,0 +1,303 @@
+"""``hermes gateway migrate --backends``: the read-only serve/dashboard service report.
+
+A fake host (process table, cgroups, systemctl, launchctl) drives the real detection code. Every
+test also proves the report is read-only: no signal, no file write/rename/delete and no mutating
+systemctl/launchctl verb is ever issued.
+"""
+
+from __future__ import annotations
+
+import builtins
+import io
+import json
+import os
+import plistlib
+import shlex
+import subprocess
+import sys
+from types import SimpleNamespace
+
+import pytest
+
+from hermes_cli import gateway_migrate as gm
+from hermes_cli import gateway_migrate_backends as gmb
+from hermes_cli import main_dashboard
+
+_READ_ONLY_SYSTEMCTL = {"show", "list-unit-files"}
+_READ_ONLY_LAUNCHCTL = {"print"}
+
+
+def _argv(*tail):
+    return ["/opt/venv/bin/python", "-m", "hermes_cli.main", *tail]
+
+
+class FakeHost:
+    """Process table, cgroups and systemd state behind ``subprocess.run``; records every call."""
+
+    def __init__(self):
+        self.procs: dict[int, tuple[int, list[str]]] = {}  # pid -> (ppid, argv)
+        self.cgroups: dict[int, str] = {}
+        self.units: dict[tuple[str, str], dict[str, str]] = {}  # (scope, unit) -> show properties
+        self.unit_files: dict[str, list[tuple[str, str]]] = {"user": [], "system": []}
+        self.calls: list[list[str]] = []
+        self.home = None
+
+    def proc(self, pid, argv, *, ppid=1, cgroup=None):
+        self.procs[pid] = (ppid, argv)
+        if cgroup:
+            self.cgroups[pid] = cgroup
+
+    def unit(self, scope, name, *, main_pid=0, path, state="enabled", env=""):
+        self.units[(scope, name)] = {"MainPID": str(main_pid), "FragmentPath": path, "UnitFileState": state,
+                                     "ActiveState": "active" if main_pid else "inactive", "Environment": env}
+        self.unit_files[scope].append((name, state))
+
+    def run(self, cmd, *args, **kwargs):
+        cmd = [str(c) for c in cmd]
+        self.calls.append(cmd)
+        out, rc = "", 0
+        if cmd[0] == "ps":
+            if cmd[1:3] == ["-A", "-o"]:
+                out = "".join(f"{pid} {shlex.join(argv)}\n" for pid, (_pp, argv) in self.procs.items())
+            elif "ppid=" in cmd:
+                pid = int(cmd[-1])
+                out, rc = (f"{self.procs[pid][0]}\n", 0) if pid in self.procs else ("", 1)
+            elif "command=" in cmd:
+                pid = int(cmd[2])
+                out, rc = (shlex.join(self.procs[pid][1]) + "\n", 0) if pid in self.procs else ("", 1)
+        elif cmd[0] == "systemctl":
+            scope = "user" if "--user" in cmd else "system"
+            rest = [c for c in cmd[1:] if c != "--user"]
+            if rest[0] == "list-unit-files":
+                out = "".join(f"{n} {s} enabled\n" for n, s in self.unit_files[scope])
+            elif rest[0] == "show":
+                props = self.units.get((scope, rest[1]), {})
+                wanted = [c.split("=", 1)[1] for c in rest if c.startswith("--property=")]
+                if "--value" in rest:
+                    out = "".join(f"{props.get(w, '')}\n" for w in wanted)
+                else:
+                    out = "".join(f"{w}={props.get(w, '')}\n" for w in wanted)
+            else:
+                rc = 1
+        elif cmd[0] == "launchctl":
+            rc = 1
+        return subprocess.CompletedProcess(cmd, rc, out, "")
+
+    def assert_read_only(self):
+        for cmd in self.calls:
+            assert cmd[0] in ("ps", "systemctl", "launchctl"), cmd
+            verbs = [c for c in cmd[1:] if not c.startswith("-")]
+            if cmd[0] == "systemctl":
+                assert verbs and verbs[0] in _READ_ONLY_SYSTEMCTL, cmd
+            if cmd[0] == "launchctl":
+                assert verbs and verbs[0] in _READ_ONLY_LAUNCHCTL, cmd
+
+
+@pytest.fixture
+def host(monkeypatch, tmp_path):
+    fake = FakeHost()
+    monkeypatch.setattr(subprocess, "run", fake.run)
+    monkeypatch.setattr(main_dashboard, "_pid_unified_cgroup_entries",
+                        lambda pid: iter([fake.cgroups[pid]] if pid in fake.cgroups else []))
+    monkeypatch.setattr(main_dashboard, "_dashboard_cmdline_for_pid",
+                        lambda pid: list(fake.procs[pid][1]) if pid in fake.procs else None)
+    monkeypatch.setattr("hermes_cli._startup_fast.is_container_startup_environment", lambda: False)
+    monkeypatch.setattr("hermes_cli.dashboard_procs._pid_environ", lambda pid: None)
+    monkeypatch.setattr(main_dashboard, "_loaded_launchd_backend_jobs", list)
+    monkeypatch.delenv("HERMES_DESKTOP_CHILD_PID", raising=False)
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    fake.home = home
+    yield fake
+    fake.assert_read_only()
+
+
+@pytest.fixture
+def no_writes(monkeypatch):
+    """Fail the test on any signal, file write, rename or delete."""
+    def boom(*a, **k):
+        raise AssertionError(f"mutation attempted: {a!r}")
+
+    real_open = builtins.open
+
+    def guarded_open(file, mode="r", *a, **k):
+        if any(m in mode for m in "wax+"):
+            boom(file, mode)
+        return real_open(file, mode, *a, **k)
+
+    for name in ("kill", "killpg", "replace", "rename", "unlink", "remove", "rmdir", "mkdir", "makedirs"):
+        if hasattr(os, name):
+            monkeypatch.setattr(os, name, boom)
+    monkeypatch.setattr(builtins, "open", guarded_open)
+    monkeypatch.setattr(io, "open", guarded_open)
+    monkeypatch.setattr(subprocess, "Popen", boom)
+
+
+def _by_supervisor(items):
+    return {i.supervisor: i for i in items}
+
+
+def test_systemd_units_by_mainpid_with_scope_path_and_nix_detection(host, no_writes):
+    host.proc(4101, _argv("dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open"),
+              cgroup="/user.slice/user-1000.slice/user@1000.service/app.slice/hermes-web.service")
+    host.unit("user", "hermes-web.service", main_pid=4101, path="/home/u/.config/systemd/user/hermes-web.service")
+    host.proc(4102, _argv("serve", "--host", "0.0.0.0", "--port", "9120"),
+              cgroup="/system.slice/hermes-backend.service")
+    host.unit("system", "hermes-backend.service", main_pid=4102,
+              path="/nix/store/abc-unit-hermes-backend.service/hermes-backend.service")
+
+    items = _by_supervisor(gmb.collect_backends())
+
+    web = items["systemd"]
+    assert (web.unit, web.scope, web.pid, web.running) == ("hermes-web.service", "user", 4101, True)
+    assert web.unit_path == "/home/u/.config/systemd/user/hermes-web.service"
+    assert "Stop and disable" in web.would and "Report only" in web.not_applied
+    nix = items["nix-systemd"]
+    assert (nix.unit, nix.scope) == ("hermes-backend.service", "system")
+    assert "backend.mode" in nix.would and "read-only" in nix.not_applied
+    # `hermes update`'s systemd pass does not match either name; both say so.
+    assert any("hermes-backend.service" in n for n in nix.notes)
+    assert any("hermes-web.service" in n for n in web.notes)
+
+
+def test_cgroup_without_mainpid_is_not_claimed_by_the_unit(host, no_writes):
+    """A dashboard started from a shell inside some unit's cgroup is not that unit's backend."""
+    host.proc(4201, _argv("dashboard", "--port", "9119"), ppid=4200,
+              cgroup="/user.slice/user-1000.slice/user@1000.service/app.slice/tmux.service")
+    host.proc(4200, ["bash"], ppid=900)
+    host.unit("user", "tmux.service", main_pid=4200, path="/usr/lib/systemd/user/tmux.service")
+
+    (item,) = [i for i in gmb.collect_backends() if i.pid == 4201]
+    assert item.supervisor == "manual" and item.unit is None
+
+
+def test_installed_enabled_unit_that_is_not_running_is_reported_once(host, no_writes):
+    host.unit("user", "hermes-dashboard.service", path="/home/u/.config/systemd/user/hermes-dashboard.service",
+              env="HERMES_HOME=/srv/hermes PATH=/usr/bin")
+    host.unit("system", "hermes-serve-old.service", path="/etc/systemd/system/hermes-serve-old.service",
+              state="disabled")
+
+    items = gmb.collect_backends()
+
+    assert [(i.unit, i.running, i.state, i.hermes_home) for i in items] == [
+        ("hermes-dashboard.service", False, "enabled", "/srv/hermes")]
+
+
+def test_s6_docker_desktop_and_detached_shapes(host, no_writes, monkeypatch):
+    host.proc(4300, ["s6-supervise", "/run/service/dashboard"], ppid=1)
+    host.proc(4301, _argv("dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open"), ppid=4300)
+    host.proc(4310, _argv("dashboard", "--host", "127.0.0.1", "--no-open"), ppid=4309,
+              cgroup="/system.slice/docker-0123abcd.scope")
+    host.proc(4309, ["tini", "--"], ppid=4000)
+    host.proc(4320, _argv("serve", "--isolated", "--ssh-session-token-file", "/tmp/t", "--port", "0"))
+    host.proc(4330, _argv("serve", "--host", "127.0.0.1", "--port", "0"), ppid=4329)
+    host.proc(4329, ["/Applications/Hermes"], ppid=1)
+    host.proc(4340, _argv("serve", "--host", "100.64.0.2", "--port", "9119"), ppid=1)
+    host.proc(4350, ["vim", "notes about hermes serve"], ppid=1)  # not a backend
+
+    items = {i.pid: i for i in gmb.collect_backends()}
+
+    assert set(items) == {4301, 4310, 4320, 4330, 4340}
+    assert (items[4301].supervisor, items[4301].unit, items[4301].unit_path) == (
+        "s6", "dashboard", "/run/service/dashboard")
+    assert items[4310].supervisor == "container"
+    assert items[4320].supervisor == "desktop-ssh" and items[4320].would.startswith("Nothing")
+    assert items[4330].supervisor == "desktop-local"
+    assert items[4340].supervisor == "detached"
+
+
+@pytest.fixture
+def launch_agents(tmp_path):
+    agents = tmp_path / "LaunchAgents"
+    agents.mkdir()
+    jobs = {"com.me.dash": _argv("dashboard", "--port", "9119"),
+            "org.nix-community.home.hermes-backend": _argv("serve", "--port", "9120")}
+    for label, argv in jobs.items():
+        with open(agents / f"{label}.plist", "wb") as f:
+            plistlib.dump({"Label": label, "ProgramArguments": argv}, f)
+    return agents, jobs
+
+
+def test_launchd_job_with_plist_path_and_nix_store_plist(host, launch_agents, no_writes, monkeypatch):
+    agents, jobs = launch_agents
+    nix_plist = str(agents / "org.nix-community.home.hermes-backend.plist")
+    # Home Manager links the plist into the read-only store; stand in for that link target.
+    monkeypatch.setattr(gmb, "_nix_managed", lambda p: p == nix_plist)
+    monkeypatch.setattr(main_dashboard, "_launchd_plist_dirs", lambda: [("agent", agents)])
+    monkeypatch.setattr(main_dashboard, "_loaded_launchd_backend_jobs", lambda: [
+        ("gui/501", "com.me.dash", jobs["com.me.dash"], 4401),
+        ("gui/501", "org.nix-community.home.hermes-backend", jobs["org.nix-community.home.hermes-backend"], None)])
+    host.proc(4401, jobs["com.me.dash"], ppid=1)
+
+    items = {i.unit: i for i in gmb.collect_backends()}
+
+    dash = items["com.me.dash"]
+    assert (dash.supervisor, dash.pid, dash.scope) == ("launchd", 4401, "gui/501")
+    assert dash.unit_path == str(agents / "com.me.dash.plist")
+    assert "Boot out" in dash.would and "KeepAlive" in dash.not_applied
+    nix = items["org.nix-community.home.hermes-backend"]
+    assert (nix.supervisor, nix.running) == ("nix-launchd", False)
+
+
+def test_home_ownership_is_reported_against_this_hermes_home(host, no_writes, monkeypatch):
+    host.proc(4501, _argv("dashboard", "--port", "9119"), ppid=1)
+    host.proc(4502, _argv("serve", "--port", "9120"), ppid=1)
+    monkeypatch.setattr("hermes_cli.dashboard_procs._hermes_home_for_pid",
+                        lambda pid: {4501: str(host.home), 4502: "/other/home"}[pid])
+
+    items = {i.pid: i for i in gmb.collect_backends()}
+
+    assert (items[4501].this_home, items[4502].this_home) == (True, False)
+
+
+def test_cli_json_mode_exits_zero_and_never_applies(host, no_writes, capsys):
+    host.proc(4601, _argv("dashboard", "--port", "9119"), ppid=1)
+
+    gm.cmd_migrate(SimpleNamespace(backends=True, json=True, dry_run=True, yes=False, multiplex=False))
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["applied"] is False
+    assert [(b["pid"], b["supervisor"]) for b in report["backends"]] == [(4601, "detached")]
+
+
+def test_cli_text_mode_with_nothing_found(host, no_writes, capsys):
+    gm.cmd_migrate(SimpleNamespace(backends=True, json=False, dry_run=False, yes=False, multiplex=False))
+    out = capsys.readouterr().out
+    assert "nothing was changed" in out and "No running or enabled" in out
+
+
+@pytest.mark.parametrize("flags", [{"yes": True}, {"multiplex": True}])
+def test_backends_refuses_apply_flags(host, flags):
+    args = SimpleNamespace(backends=True, json=False, dry_run=False, **{"yes": False, "multiplex": False, **flags})
+    with pytest.raises(SystemExit) as exc:
+        gm.cmd_migrate(args)
+    assert exc.value.code == 2
+    assert host.calls == []
+
+
+def test_json_without_backends_is_an_argument_error(host):
+    with pytest.raises(SystemExit) as exc:
+        gm.cmd_migrate(SimpleNamespace(backends=False, json=True, dry_run=True, yes=False, multiplex=True))
+    assert exc.value.code == 2
+
+
+def test_parser_accepts_backends_dry_run_json():
+    import argparse
+
+    from hermes_cli.subcommands.gateway import build_gateway_parser
+    parser = argparse.ArgumentParser()
+    noop = lambda args: None
+    build_gateway_parser(parser.add_subparsers(dest="command"), cmd_gateway=noop, cmd_proxy=noop,
+                         cmd_gateway_enroll=noop)
+    args = parser.parse_args(["gateway", "migrate", "--backends", "--dry-run", "--json"])
+    assert (args.backends, args.dry_run, args.json) == (True, True, True)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="ps-based scan")
+def test_scan_failure_still_exits_zero(host, no_writes, monkeypatch, capsys):
+    def broken(cmd, *a, **k):
+        raise FileNotFoundError(cmd[0])
+    monkeypatch.setattr(subprocess, "run", broken)
+    gm.cmd_migrate(SimpleNamespace(backends=True, json=True, dry_run=True, yes=False, multiplex=False))
+    assert json.loads(capsys.readouterr().out)["backends"] == []

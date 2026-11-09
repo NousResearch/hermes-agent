@@ -2,7 +2,10 @@
 import asyncio
 import hashlib
 import json
+import logging
 import uuid
+
+logger = logging.getLogger(__name__)
 
 
 class CronExecutionUnknown(RuntimeError):
@@ -52,6 +55,23 @@ def _lift_pause(job_id, pause):
             pass
 
 
+def _flag_never_reached_model(job, exc):
+    """Flag a DEFINITE non-admission so the bookkeeping tail parks the bounded re-run ladder
+    (``cron/unreachable_retry.py``) instead of booking a hard failure that costs a whole schedule
+    period — the same classification ``run_job``'s inline handler makes (#151585).
+
+    Only the two refusal paths here call it: the owner recovered no admission, or nothing was
+    submitted at all. The unverified path (``CronExecutionUnknown``) must never flag — an
+    admission that may have run cannot be re-fired."""
+    try:
+        from cron.unreachable_retry import is_model_unreachable_failure
+
+        if is_model_unreachable_failure(exc):
+            job['_model_unreachable'] = True
+    except Exception:  # health: allow BLE001 -- classification must never mask the real failure
+        logger.debug('cron refusal: unreachable-failure classification failed', exc_info=True)
+
+
 def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id=None):
     from gateway.session_cron import owner_for_home, operation
     from hermes_cli.gateway_client import connect_gateway
@@ -91,6 +111,8 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                 state = await call('recover', params)
                 if state['status'] == 'missing':
                     error = f'{type(exc).__name__}: {exc}'
+                    # The owner holds no admission: nothing ran, so the ladder may re-run it.
+                    _flag_never_reached_model(job, exc)
                     result = [False, f'# Cron Job: {job["id"]} (FAILED)\n\n{error}\n', '', error]
                     record['refusal'] = result
                     record['job'] = dict(job)
@@ -143,6 +165,8 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
     except Exception as exc:
         if attempted:
             raise CronExecutionUnknown(f'Cron execution unverified; reconcile {journal}: {exc}') from exc
+        # Nothing was submitted: the fire never reached the gateway, let alone the model.
+        _flag_never_reached_model(job, exc)
         error = f'{type(exc).__name__}: {exc}'
         return False, f'# Cron Job: {job["id"]} (FAILED)\n\n{error}\n', '', error
 

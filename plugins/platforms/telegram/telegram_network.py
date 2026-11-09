@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import logging
 import os
 import socket
@@ -53,6 +54,9 @@ def tcp_keepalive_socket_options() -> list[tuple[int, int, int]]:
 # DNS-over-HTTPS providers: discover Telegram API IPs the (possibly unreachable) local resolver may not
 # return. Bounded so connect() isn't delayed.
 _DOH_TIMEOUT = 4.0
+# A real A-record answer is well under 1 KiB; anything past this is a misbehaving endpoint, captive
+# portal or proxy, so that provider is ignored rather than buffered (#55087).
+_DOH_MAX_BODY_BYTES = 64 * 1024
 _DOH_PROVIDERS: list[dict] = [
     {"url": "https://dns.google/resolve", "params": {"name": _TELEGRAM_API_HOST, "type": "A"}, "headers": {}},
     {
@@ -353,11 +357,19 @@ def _resolve_system_dns() -> set[str]:
 
 
 async def _query_doh_provider(client: httpx.AsyncClient, provider: dict) -> list[str]:
-    """Query one DoH provider and return A-record IPs."""
+    """Query one DoH provider and return A-record IPs; a body over ``_DOH_MAX_BODY_BYTES`` counts as a
+    failed provider. The raw (identity-requested) stream is counted, so a compressed body cannot
+    inflate past the cap before it is measured."""
     try:
-        resp = await client.get(provider["url"], params=provider["params"], headers=provider["headers"])
-        resp.raise_for_status()
-        data = resp.json()
+        headers = {**provider["headers"], "Accept-Encoding": "identity"}
+        async with client.stream("GET", provider["url"], params=provider["params"], headers=headers) as resp:
+            resp.raise_for_status()
+            body = bytearray()
+            async for chunk in resp.aiter_raw():
+                body.extend(chunk)
+                if len(body) > _DOH_MAX_BODY_BYTES:
+                    raise ValueError(f"DoH response exceeds {_DOH_MAX_BODY_BYTES} bytes")
+        data = json.loads(body)
         ips: list[str] = []
         for answer in data.get("Answer", []):
             if answer.get("type") != 1:  # A record

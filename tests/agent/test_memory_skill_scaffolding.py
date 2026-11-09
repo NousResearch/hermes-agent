@@ -12,7 +12,7 @@ MemoryManager._strip_skill_scaffolding.
 
 from agent.memory_manager import MemoryManager
 from agent.memory_provider import MemoryProvider
-from agent.skill_commands import extract_user_instruction_from_skill_message
+from agent.skill_commands import extract_user_instruction_from_skill_message, _SKILL_DIR_NOTE_END
 
 
 _SINGLE_SKILL_TURN = (
@@ -117,7 +117,25 @@ class TestMemoryManagerStripsScaffolding:
         mgr.flush_pending(timeout=5.0)
         assert provider.queued == ["fix the failing retrieval test"]
 
-
+    def test_auto_loaded_skills_keep_only_typed_text(self):
+        skill_footer = f"[Skill directory: /skills/example]\nResolve relative paths, {_SKILL_DIR_NOTE_END}"
+        turn = (
+            '[IMPORTANT: The "example" skill is auto-loaded. Follow its instructions for this session.]\n'
+            "The skill body contains the terminal tool absolute path footer as quoted text.\n"
+            + skill_footer + "\n\n"
+            + '[IMPORTANT: The "another" skill is auto-loaded. Follow its instructions for this session.]\n'
+            "Second skill body.\n[Skill directory: /skills/another]\nResolve paths, " + _SKILL_DIR_NOTE_END
+            + "\n\nnot remember anything i tell you"
+        )
+        mgr, provider = _manager_with_recorder()
+        mgr.prefetch_all(turn)
+        mgr.queue_prefetch_all(turn)
+        mgr.sync_all(turn, "I will investigate.")
+        mgr.flush_pending(timeout=5.0)
+        expected = ["not remember anything i tell you"]
+        assert provider.prefetched == expected
+        assert provider.queued == expected
+        assert provider.synced == expected
 
     def test_sync_all_skips_bare_skill(self):
         mgr, provider = _manager_with_recorder()

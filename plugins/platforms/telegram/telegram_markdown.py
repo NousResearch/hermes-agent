@@ -125,13 +125,18 @@ def _resolve_emphasis(text: str, stash, escape) -> str:
 def _crosses_quote_edge(text: str, start: int, end: int) -> bool:
     """True when a newline in text[start:end] borders a quote line: Telegram ends a blockquote at a
     newline into non-quote text, an entity still open there is rejected, and an entity spanning
-    quote lines would swallow the next line's > marker."""
+    quote lines would swallow the next line's > marker. A span with no newline cannot cross one, so
+    the prefix scan that locates the enclosing line only runs once a newline is present: a long
+    single line of short links stays linear (#151728 review)."""
+    pos = text.find("\n", start, end)
+    if pos < 0:
+        return False
     line_start = text.rfind("\n", 0, start) + 1
-    for m in re.finditer("\n", text[start:end]):
-        pos = start + m.start()
+    while pos >= 0:
         if _bordering_quote_newline(text, pos, line_start):
             return True
         line_start = pos + 1
+        pos = text.find("\n", line_start, end)
     return False
 
 

@@ -307,3 +307,50 @@ class TestRefresh:
             await refresh
         asyncio.run(scenario())
         assert session.sent == [] and _routes(home) == {}
+
+
+def _modern_routing_session(result):
+    """Keep real SDK request serialization; replace only network dispatch."""
+    from unittest.mock import AsyncMock
+    from mcp import ClientSession, types
+
+    dispatcher = SimpleNamespace(send_raw_request=AsyncMock(return_value=result))
+    session = ClientSession(dispatcher=dispatcher)
+    session.adopt(types.DiscoverResult.model_validate({
+        "supportedVersions": ["2026-07-28"], "capabilities": {},
+        "ttlMs": 60000, "cacheScope": "private", "resultType": "complete"}))
+    return session, dispatcher
+
+
+@pytest.mark.parametrize("method", ["events/subscribe", "events/unsubscribe"])
+@pytest.mark.parametrize("name", ["room.message", "通知.新着"])
+def test_named_event_requests_emit_modern_name_routing_header(method, name):
+    async def scenario():
+        session, dispatcher = _modern_routing_session({})
+        assert await events._send(session, method, {"name": name, "arguments": ARGS}) == {}
+        sent_method, params, options = dispatcher.send_raw_request.call_args.args
+        expected_name = name if name.isascii() else f"=?base64?{base64.b64encode(name.encode()).decode()}?="
+        assert sent_method == method
+        assert params["name"] == name and params["arguments"] == ARGS
+        assert "name_param" not in params
+        assert options["headers"]["mcp-protocol-version"] == "2026-07-28"
+        assert options["headers"]["mcp-method"] == method
+        assert options["headers"].get("mcp-name") == expected_name
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("cursor", [None, "next-page"])
+def test_event_list_requests_remain_unnamed(cursor):
+    async def scenario():
+        result = {"events": [], "nextCursor": "another-page"}
+        session, dispatcher = _modern_routing_session(result)
+        assert await events._send(session, "events/list", {"cursor": cursor} if cursor else {}) == result
+        sent_method, params, options = dispatcher.send_raw_request.call_args.args
+        assert sent_method == "events/list"
+        assert params.get("cursor") == cursor
+        assert "name_param" not in params
+        assert options["headers"]["mcp-method"] == "events/list"
+        assert "mcp-name" not in options["headers"]
+
+    asyncio.run(scenario())

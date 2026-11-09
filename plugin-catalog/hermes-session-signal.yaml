@@ -1,0 +1,16 @@
+name: hermes-session-signal
+repo: https://github.com/raitoxlol/hermes-session-signal
+sha: 25393aeca199e67e8431b2be7cc97480558b03a7
+title: Session Signal
+description: 'T3 Code inspired session rows for Hermes Desktop: slim rows, quiet Working / Input / Done labels, and titlebar counts that jump to the next session needing you. Desktop-only. No tools, hooks, middleware, network, or env vars.'
+maintainer: raitoxlol
+tier: community
+category: desktop
+version: "0.2.0"
+docs_url: https://github.com/raitoxlol/hermes-session-signal#readme
+platforms: [macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

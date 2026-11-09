@@ -6289,12 +6289,19 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         if status == "ok":
             event.media_urls = []
             event.media_types = []
+            if getattr(event, "media_text_inlined", None):
+                event.media_text_inlined = []
             self._attach_cached(event, cached, cached.context_note(), "[Telegram] Cached observed group %s at %s")
 
     def _attach_cached(self, event: MessageEvent, cached, note: str, log_fmt: str) -> None:
         """Append a cached attachment to the event (message type follows the kind only for the first one)."""
         event.media_urls.append(cached.path)
         event.media_types.append(cached.media_type)
+        # Keep media_text_inlined aligned with media_urls: an event that already carries inline
+        # flags (e.g. a document with injected text) must not end up with fewer flags than urls,
+        # or native admission refuses the whole message (media_text_inlined_length).
+        if getattr(event, "media_text_inlined", None):
+            event.media_text_inlined.append(False)
         if len(event.media_urls) == 1 and cached.kind in self._CACHED_KIND_TO_MESSAGE_TYPE:
             event.message_type = self._CACHED_KIND_TO_MESSAGE_TYPE[cached.kind]
         event.text = self._append_observed_note(event.text, note)
@@ -6659,8 +6666,17 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             pending[key] = event
             return
         existing.absorb_reply_expected(event)
+        prior_count = len(existing.media_urls)
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
+        # Keep media_text_inlined aligned with media_urls: album items (e.g. several documents, each
+        # with injected text -> [True]) would otherwise leave the merged event with fewer flags than
+        # urls, and native admission refuses the whole message (media_text_inlined_length).
+        if event.media_urls:
+            existing_flags = list(getattr(existing, "media_text_inlined", []) or [])
+            existing.media_text_inlined = existing_flags + [None] * (prior_count - len(existing_flags))
+            incoming_flags = list(getattr(event, "media_text_inlined", []) or [])
+            existing.media_text_inlined += incoming_flags + [None] * (len(event.media_urls) - len(incoming_flags))
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
 

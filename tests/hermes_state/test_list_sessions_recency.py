@@ -83,3 +83,25 @@ def test_compression_tip_list_uses_tip_mutation_fence(db):
     )
     assert result["revision"] == 8
     assert db.get_session("tip")["title"] == "Renamed after compression"
+
+
+@pytest.mark.parametrize("compact_rows", [True, False])
+def test_every_projected_tip_row_names_one_rows_fence(db, compact_rows):
+    """Full rows (dashboard ``?full=1``) and the pinned back-fill go through the same projector:
+    whatever id a listed row carries, its counters are that row's own (#151582)."""
+    db.create_session("root", source="cli")
+    db.append_message(session_id="root", role="user", content="before compression")
+    db.end_session("root", "compression")
+    db.create_session("tip", source="cli", parent_session_id="root")
+    db.append_message(session_id="tip", role="user", content="after compression")
+    db._conn.execute("UPDATE sessions SET runtime_revision = 3, runtime_generation = 2 WHERE id = 'root'")
+    db._conn.execute("UPDATE sessions SET runtime_revision = 9, runtime_generation = 5 WHERE id = 'tip'")
+    db._conn.commit()
+    db.set_session_pinned("root", True)
+
+    rows = db.list_sessions_rich(compact_rows=compact_rows, include_pinned=True, limit=1)
+    assert [r["id"] for r in rows] == ["tip"]
+    for row in rows:
+        own = db.get_session(row["id"])
+        assert (row["runtime_revision"], row["runtime_generation"]) == (
+            own["runtime_revision"], own["runtime_generation"])

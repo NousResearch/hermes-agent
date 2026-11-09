@@ -514,6 +514,13 @@ def _find_literal_path_expressions(roots: list[str]) -> list[str]:
     return [re.sub(r"([*?\[\]])", r"\\\1", root) for root in roots]
 
 
+def _dash_safe_root(root: str) -> str:
+    """``./``-prefix a root that starts with "-". find has no ``--`` and would parse the bare
+    root as an expression; file search merges rg's files with find's directories and stats
+    them, so both must report the same path form."""
+    return f"./{root}" if root.startswith("-") else root
+
+
 class SearchMixin:
     """File-name and content search via rg with find/grep fallbacks. Requires
     ``_exec``, ``_has_command``, ``_expand_path``, ``_escape_shell_arg``,
@@ -908,7 +915,8 @@ class SearchMixin:
             else:
                 glob_expr_probe = glob_expr
             probe_words = [rg, flags, "--count-matches", glob_expr_probe,
-                           self._escape_shell_arg(pattern, translate_path=False), self._escape_native_tool_arg(path)]
+                           "-e", self._escape_shell_arg(pattern, translate_path=False),
+                           "--", self._escape_native_tool_arg(path)]
             probe = self._run_rg_bounded(probe_words, 50, timeout=30)
             total, per_file = 0, []
             for line in (probe.stdout or "").strip().splitlines():
@@ -1034,7 +1042,7 @@ class SearchMixin:
         if fetch_limit <= 0 or not self._has_command("find"):
             return [], None
 
-        escaped_path = self._escape_shell_arg(path)
+        escaped_path = self._escape_shell_arg(_dash_safe_root(path))
         escaped_pattern = self._escape_shell_arg(pattern)
         q_roots = [escaped_path]
         hidden_prune = self._hidden_prune_expr(q_roots)
@@ -1116,9 +1124,8 @@ class SearchMixin:
                       "https://github.com/BurntSushi/ripgrep#installation")
 
         # Prune hidden descendant dirs (and hidden files, matching rg's default) while
-        # still allowing an explicitly selected hidden root; dash-prefixed roots get
-        # ``./`` so find doesn't parse them as options.
-        find_roots = [f"./{root}" if root.startswith("-") else root for root in roots]
+        # still allowing an explicitly selected hidden root.
+        find_roots = [_dash_safe_root(root) for root in roots]
         q_roots = [self._escape_shell_arg(root) for root in find_roots]
         hidden_prune = f" {self._hidden_prune_expr(q_roots)} -o"
         protected_paths = [absolute for _r, _rel, absolute in self._effective_macos_search_exclusions(roots)]
@@ -1215,7 +1222,7 @@ class SearchMixin:
                 return SearchResult(error=capability_error)
         rg = self._quote_executable(rg_executable)
         sort_arg = " --sortr=modified" if order == "modified" else ""
-        root_args = " ".join(self._escape_native_tool_arg(root) for root in command_roots)
+        root_args = " ".join(self._escape_native_tool_arg(_dash_safe_root(root)) for root in command_roots)
         cd_prefix = f"cd {self._escape_shell_arg(scoped_common)} && " if scoped_common else ""
         # ``--`` terminates options so a dash-prefixed root is never parsed as a flag.
         rg_cmd = (f"{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
@@ -1357,7 +1364,8 @@ class SearchMixin:
             cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             cmd_parts.append(_OUTPUT_MODE_FLAGS[output_mode])
-        cmd_parts.append(self._escape_shell_arg(pattern, translate_path=False))
+        # -e / -- so a pattern or root starting with "-" is never parsed as an rg flag.
+        cmd_parts.extend(["-e", self._escape_shell_arg(pattern, translate_path=False), "--"])
         # rg is a native Windows binary (winget/cargo/choco): needs C:/... not MSYS /c/...
         cmd_parts.append(self._escape_native_tool_arg(path))
         ml_note = (
@@ -1368,7 +1376,8 @@ class SearchMixin:
 
     def _grep_cmd(self, head: list[str], pattern: str, output_mode: str, context: int,
                   file_glob: Optional[str] = None) -> list[str]:
-        """``head`` + context/include/mode flags + quoted pattern (argument order is fixed)."""
+        """``head`` + context/include/mode flags + ``-e`` quoted pattern (argument order is fixed;
+        ``-e`` keeps a pattern starting with "-" from being parsed as a grep option)."""
         parts = list(head)
         if context > 0:
             parts.extend(["-C", str(context)])
@@ -1376,7 +1385,7 @@ class SearchMixin:
             parts.extend(["--include", self._escape_shell_arg(file_glob)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             parts.append(_OUTPUT_MODE_FLAGS[output_mode])
-        parts.append(self._escape_shell_arg(pattern, translate_path=False))
+        parts.extend(["-e", self._escape_shell_arg(pattern, translate_path=False)])
         return parts
 
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
@@ -1415,7 +1424,7 @@ class SearchMixin:
         (#18473: grep's ``--exclude-dir='.*'`` would drop the root). Trade-off: find folds
         grep's exit code, so a hard grep error surfaces as an empty result."""
         grep_parts = self._grep_cmd(["grep", "-nHE"], pattern, output_mode, context)
-        q_root = self._escape_shell_arg(path or ".")
+        q_root = self._escape_shell_arg(_dash_safe_root(path or "."))
         # ``-H``: follow a symlink handed in as the OPERAND (and only the operand). Without
         # it ``find <link> -type f`` tests the link itself and hands grep nothing, so a
         # symlinked root answered a confident ``total_count: 0`` on every platform (#116270).

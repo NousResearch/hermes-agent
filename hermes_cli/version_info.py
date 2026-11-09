@@ -126,8 +126,12 @@ def _resolve_stamp_file() -> Path | None:
     return p if p.is_file() else None
 
 
-def _stamp_version_info() -> VersionInfo | None:
-    """Read provenance from a build-time install stamp."""
+def _stamp_version_info(*, validate_release: bool = True) -> VersionInfo | None:
+    """Read provenance from a build-time install stamp.
+
+    SHA-only callers may skip release validation: they need the existing live-HEAD check but not
+    the additional tag probe used to keep user-facing source versions current.
+    """
     stamp_file = _resolve_stamp_file()
     if stamp_file is None:
         return None
@@ -167,6 +171,21 @@ def _stamp_version_info() -> VersionInfo | None:
         live_commit = _run_git(stamp_file.parent, "rev-parse", "HEAD")
         if live_commit and live_commit != commit:
             return None
+        if validate_release and live_commit == commit:
+            direct_tags = _run_git(
+                stamp_file.parent, "tag", "--points-at", "HEAD", "--list", "v[0-9]*"
+            )
+            newest_direct_version = max(
+                (
+                    tag[1:]
+                    for tag in (direct_tags or "").splitlines()
+                    if STABLE_TAG_RE.fullmatch(tag)
+                ),
+                default=None,
+                key=lambda value: tuple(int(part) for part in value.split(".")),
+            )
+            if newest_direct_version and newest_direct_version != str(data.get("baseVersion") or "unknown"):
+                return None
 
     base_version = data.get("baseVersion") or "unknown"
     display_version = data.get("displayVersion") or base_version
@@ -274,7 +293,7 @@ def _reset_version_info_cache() -> None:
     _cached_version_info = None
 
 
-def _stamp_or_none() -> VersionInfo | None:
+def _stamp_or_none(*, validate_release: bool = True) -> VersionInfo | None:
     """The install stamp's provenance, or None without a valid stamp.
 
     A malformed stamp (missing/illegal updateMechanism, mispackaged "light"
@@ -284,7 +303,7 @@ def _stamp_or_none() -> VersionInfo | None:
     tests surface the malformed stamp.
     """
     try:
-        return _stamp_version_info()
+        return _stamp_version_info(validate_release=validate_release)
     except RuntimeError:
         return None
 
@@ -367,7 +386,7 @@ def installed_commit_sha() -> str | None:
     For a long-lived process that must report both: :func:`get_code_identity` stays the code it
     booted from, this names what an update has since put on disk.
     """
-    stamp = _stamp_or_none()
+    stamp = _stamp_or_none(validate_release=False)
     if stamp is not None:
         return stamp.commit
     repo_dir = _resolve_repo_dir()

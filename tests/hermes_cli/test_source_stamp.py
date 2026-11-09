@@ -68,3 +68,33 @@ def test_stale_source_stamp_defers_to_live_checkout(tmp_path, monkeypatch):
     assert info.commit == _git(repo, "rev-parse", "HEAD")
     assert info.derived_version.startswith("0.21.4+1.g")
     assert info.source == "git"
+
+
+def test_source_stamp_defers_to_new_stable_tag_at_same_head(tmp_path, monkeypatch):
+    from hermes_cli.source_stamp import write_source_stamp
+    from hermes_cli.version_info import _reset_version_info_cache, get_version_info
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.name", "Hermes Test")
+    _git(repo, "config", "user.email", "hermes@example.invalid")
+    (repo / "tracked").write_text("release\n", encoding="utf-8")
+    _git(repo, "add", "tracked")
+    _git(repo, "commit", "-qm", "release")
+    _git(repo, "tag", "v0.21.4")
+    write_source_stamp(repo)
+
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(repo))
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: repo)
+    _reset_version_info_cache()
+    assert get_version_info().base_version == "0.21.4"
+
+    _git(repo, "tag", "v0.21.5")
+    _reset_version_info_cache()
+
+    info = get_version_info()
+
+    assert info.base_version == "0.21.5"
+    assert info.derived_version == "0.21.5"
+    assert info.source == "git"

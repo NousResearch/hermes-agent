@@ -18,7 +18,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _run_logging_git(tmp_path: Path, code: str) -> tuple[dict, list[str]]:
+def _run_logging_git(tmp_path: Path, code: str, *, source_stamp: bool = False) -> tuple[dict, list[str]]:
     real_git = shutil.which("git")
     if real_git is None:
         pytest.skip("git not installed")
@@ -38,6 +38,16 @@ def _run_logging_git(tmp_path: Path, code: str) -> tuple[dict, list[str]]:
     git = [real_git, "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-C", str(repo)]
     for args in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "r"], ["tag", "v1.2.3"]):
         subprocess.run([*git, *args], check=True, env=fixture_env)
+    if source_stamp:
+        commit = subprocess.run(
+            [*git, "rev-parse", "HEAD"], check=True, env=fixture_env, capture_output=True, text=True,
+        ).stdout.strip()
+        (repo / "install-stamp.json").write_text(json.dumps({
+            "commit": commit,
+            "baseVersion": "1.2.3",
+            "source": "git",
+            "updateMechanism": "self",
+        }), encoding="utf-8")
 
     log = tmp_path / "git.log"
     bindir = tmp_path / "bin"
@@ -51,6 +61,8 @@ def _run_logging_git(tmp_path: Path, code: str) -> tuple[dict, list[str]]:
         "PYTHONPATH": str(ROOT),
         "HERMES_HOME": str(home),
     }
+    if source_stamp:
+        env["HERMES_INSTALL_ROOT"] = str(repo)
     out = subprocess.run(
         [sys.executable, "-c", code], cwd=str(ROOT), env=env, capture_output=True, text=True,
         encoding="utf-8", timeout=120, check=False, stdin=subprocess.DEVNULL,
@@ -117,14 +129,15 @@ def test_provider_headers_run_no_git_until_read_and_stay_a_dict_for_overrides(tm
 
 
 @pytest.mark.platforms("linux", "macos")
-def test_startup_checkout_sha_read_is_one_rev_parse(tmp_path):
+@pytest.mark.parametrize("source_stamp", [False, True], ids=["unstamped", "source-stamped"])
+def test_startup_checkout_sha_read_is_one_rev_parse(tmp_path, source_stamp):
     code = (
         "import json\n"
         "from hermes_cli.update_cmd_fleet import _current_checkout_sha\n"
         "sha = _current_checkout_sha()\n"
         "print(json.dumps({'sha': sha}))\n"
     )
-    result, calls = _run_logging_git(tmp_path, code)
+    result, calls = _run_logging_git(tmp_path, code, source_stamp=source_stamp)
 
     assert calls == ["rev-parse HEAD"]
     assert result["sha"] and len(result["sha"]) == 40

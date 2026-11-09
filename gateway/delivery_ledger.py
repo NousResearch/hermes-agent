@@ -1,9 +1,9 @@
 """Durable delivery-obligation ledger for gateway final responses (rows in the shared ``state.db``;
 WAL, owner pid + process-start liveness, bounded retention) so a crash between finalize and
-platform ACK cannot lose a response silently. Checkpoints: record_obligation() 'pending' before
-any send | mark_attempting() 'attempting' right before the await | mark_delivered() 'delivered'
+platform ACK cannot lose a response silently. Checkpoints: record_obligation() 'attempting' before
+any send | mark_delivered() 'delivered'
 only on SendResult.success | mark_failed() 'failed' on a definitive rejection. Crash semantics
-(never silently resend an ambiguous send): pending = never started, redeliver plainly; attempting
+(never silently resend an ambiguous send): legacy pending = never started, redeliver plainly; attempting
 = crashed mid-await, platform MAY have it, redeliver WITH a visible recovered marker; failed =
 rejected once, restart is a retry boundary, also marked; delivered = prune. Attempts are capped
 and stale rows expire, both -> 'abandoned' (kept briefly, then pruned). Everything is
@@ -269,7 +269,7 @@ def compute_obligation_id(session_key: str, message_ref: str, content: str) -> s
 
 def record_obligation(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
                       thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None) -> None:
-    """Record a final response as owed to the platform (state='pending')."""
+    """Atomically record a final response as attempting before the best-effort send."""
     now, (pid, started) = time.time(), _owner_stamp()
     with _DB_LOCK, _transaction() as conn:
         conn.execute(
@@ -277,7 +277,7 @@ def record_obligation(*, obligation_id: str, session_key: str, platform: str, ch
                (obligation_id, session_key, platform, chat_id, thread_id,
                 content, state, attempts, created_at, updated_at,
                 owner_pid, owner_started_at, adapter_profile)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, 'attempting', 0, ?, ?, ?, ?, ?)""",
             (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
              content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
         # Same transaction, same connection: the cron ledgers prune this way too

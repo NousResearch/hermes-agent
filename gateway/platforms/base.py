@@ -4147,7 +4147,7 @@ class BasePlatformAdapter(ABC):
             return None
         try:
             from gateway.delivery_ledger import (
-                compute_obligation_id, ledger_enabled, mark_attempting, record_obligation)
+                compute_obligation_id, ledger_enabled, record_obligation)
             if not await asyncio.to_thread(ledger_enabled):
                 return None
             source = event.source
@@ -4164,7 +4164,6 @@ class BasePlatformAdapter(ABC):
                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
                 content=text_content,
                 adapter_profile=getattr(delivery_adapter, "_owner_profile", None))
-            await asyncio.to_thread(mark_attempting, obligation_id)
             return obligation_id
         except Exception:
             logger.debug("delivery ledger record failed", exc_info=True)

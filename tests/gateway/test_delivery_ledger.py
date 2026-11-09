@@ -58,6 +58,13 @@ def _row(oid):
     }
 
 
+def _record_pending():
+    """Persist the unattempted state older producers could leave for recovery."""
+    _record()
+    with dl._connect() as conn:
+        conn.execute("UPDATE delivery_obligations SET state='pending' WHERE obligation_id='ob-1'")
+
+
 def _blocking_probe():
     """Return a blocking ledger call and an event-loop progress witness."""
     ledger_started = threading.Event()
@@ -127,9 +134,9 @@ class TestSchemaMigration:
 
 
 class TestStateMachine:
-    def test_record_starts_pending(self):
+    def test_record_starts_attempting(self):
         _record()
-        assert _row("ob-1")["state"] == "pending"
+        assert _row("ob-1")["state"] == "attempting"
 
 
 class TestObligationId:
@@ -150,7 +157,7 @@ class TestSweep:
         assert dl.sweep_recoverable() == []
 
     def test_dead_owner_pending_claimed_without_marker(self):
-        _record()
+        _record_pending()
         _orphan("ob-1")
         claimed = dl.sweep_recoverable()
         assert len(claimed) == 1
@@ -413,7 +420,7 @@ class TestGatewayRedeliverySweep:
 
     @pytest.mark.asyncio
     async def test_pending_redelivers_plain_and_clears_resume(self):
-        _record()  # pending
+        _record_pending()
         _orphan("ob-1")
         adapter = self._adapter()
         runner = self._runner(adapter)
@@ -465,7 +472,7 @@ class TestGatewayRedeliverySweep:
 
         assert n == 0
         default_adapter.send.assert_not_awaited()
-        assert _row("ob-1")["state"] == "pending"
+        assert _row("ob-1")["state"] == "attempting"
         assert _row("ob-1")["attempts"] == 0
 
     @pytest.mark.asyncio
@@ -488,7 +495,7 @@ class TestGatewayRedeliverySweep:
         """Once a boot has claimed a row it may have sent it: every later copy carries the marker."""
         import asyncio
 
-        _record()
+        _record_pending()
         _orphan("ob-1")
         if earlier_boot == "killed_inside_send":
             # The platform accepts the plain resend, then the boot dies before mark_delivered.
@@ -523,7 +530,7 @@ class TestGatewayRedeliverySweep:
     @pytest.mark.asyncio
     async def test_boot_claim_whose_adapter_vanishes_is_left_for_the_reconnect_sweep(self, claimed_state):
         """A boot claim never sent (platform went away before dispatch) must not strand in 'attempting'."""
-        _record()
+        _record_pending()
         if claimed_state == "failed":
             dl.mark_failed("ob-1", "send_path_degraded")
         _orphan("ob-1")

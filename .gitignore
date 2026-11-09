@@ -13,15 +13,10 @@ act/
 .act-sandbox-agent.*
 .venv/
 .venv
-.vscode/
-.env
 .op.env
-.env.local
 .env.development.local
 .env.test.local
 .env.production.local
-.env.development
-.env.test
 .hermes-docker/
 .notebooklm-home/
 .notebooklm-cli-venv/
@@ -339,3 +334,4 @@ infografico/
 /pm/.lock.json.lock
 
 apps/desktop/.dist-build*
+config.bat

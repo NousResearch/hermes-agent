@@ -7,7 +7,7 @@
   },
   "type": "module",
   "scripts": {
-    "build": "esbuild src/entry-exports.ts --bundle --platform=node --format=esm --packages=external --outdir=dist",
+    "build": "node init && esbuild src/entry-exports.ts --bundle --platform=node --format=esm --packages=external --outdir=dist",
     "check": "pnpm run typecheck",
     "typecheck": "tsc -b . --noEmit",
     "lint": "echo 'ok!'",

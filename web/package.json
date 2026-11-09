@@ -7,8 +7,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "node ../scripts/build/web.mjs",
+    "dev": "node init && vite",
+    "build": "node init && node ../scripts/build/web.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "fix": "pnpm run lint:fix",

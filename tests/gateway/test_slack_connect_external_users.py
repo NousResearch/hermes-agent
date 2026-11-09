@@ -242,6 +242,16 @@ def test_resolver_multi_install_no_match_is_empty():
     assert adapter._event_team_id(event, body, install_set={"T_A", "T_B"}) == ""
 
 
+@pytest.mark.asyncio
+async def test_multi_install_unattributed_external_dm_is_refused():
+    """A resolver miss must reject the DM at intake, not dispatch it with an empty scope."""
+    adapter = _make_adapter()
+    adapter._team_clients = {"T_A": MagicMock(), "T_B": MagicMock()}
+    event = _dm_event(EXT_TEAM, "1712345689.000100")
+    body = {"team_id": EXT_TEAM, "authorizations": [{"team_id": EXT_TEAM}]}
+    assert await adapter._prefilter_inbound(event, body) is None
+
+
 def test_resolver_legacy_call_without_install_set_keeps_envelope_first():
     """External/Bolt callers without an install set keep the envelope-first order."""
     adapter = _make_adapter()

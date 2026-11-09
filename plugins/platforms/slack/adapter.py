@@ -4571,6 +4571,10 @@ class SlackAdapter(BasePlatformAdapter):
         # the same ts must not suppress each other.
         event_ts = event.get("_slack_changed_event_ts") or event.get("ts", "")
         dedup_team_id = self._event_team_id(event, payload, install_set=getattr(self, "_team_clients", None))
+        if getattr(self, "_team_clients", None) and not dedup_team_id:
+            logger.info("[Slack] Ignoring event with no authenticated workspace: type=%s channel=%s",
+                        event.get("type"), event.get("channel", ""))
+            return None
         if event_ts and self._dedup.is_duplicate(self._workspace_event_id(dedup_team_id, event_ts)):
             return None
         channel_id = event.get("channel", "")

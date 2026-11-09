@@ -118,6 +118,9 @@ def test_an_uncached_check_answers_for_its_own_caller_while_another_runs(monkeyp
 
     monkeypatch.setattr(kanban_tools, "_profile_has_kanban_toolset", configured_profile)
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    # The parent's probe is held until the child has answered: give it a budget a loaded runner
+    # cannot exhaust (the file's 0.3 s default is for the wedged-probe tests).
+    monkeypatch.setattr(registry_module, "_CHECK_FN_PROBE_TIMEOUT_SECONDS", 10.0)
     reg = ToolRegistry()
     _register(reg, "kanban_probe", kanban_tools._check_kanban_mode)
 

@@ -1129,6 +1129,26 @@ def test_touch_card_tap_opens_instead_of_dragging():
     assert "PASS" in result.stdout
 
 
+def test_ime_composition_keys_are_left_to_the_ime():
+    """The new-task title, comment and inline editors submit on Enter and the dialogs close on
+    Escape. An Enter or Escape that commits or cancels an IME composition must not count: Chrome
+    on macOS sends a Korean Enter twice, so a submit-and-clear field created the task twice, the
+    second one titled with the last syllable alone, and posted each comment twice. Runs the real
+    isImeComposing() extracted from the bundle against composing and ordinary key events."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    bundle = Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    probe = Path(__file__).parent / "fixtures" / "kanban_ime_probe.js"
+    result = subprocess.run(
+        [node, str(probe), str(bundle)],
+        capture_output=True, text=True, timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "PASS" in result.stdout
+
+
 # Run clock: current run start, not first-ever start
 # ---------------------------------------------------------------------------
 

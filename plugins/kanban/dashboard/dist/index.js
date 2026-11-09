@@ -24,6 +24,17 @@
   const { useState, useEffect, useCallback, useMemo, useRef } = SDK.hooks;
   const { cn, timeAgo } = SDK.utils;
 
+  // An Enter or Escape that an input method (Korean, Japanese, Chinese) uses to commit or cancel
+  // its composition belongs to the IME, not to the field or dialog. Chrome on macOS sends a Korean
+  // Enter twice (mid-composition, then after the IME commits the last syllable), so a field that
+  // submits and clears on the first gets that syllable typed back in and submits it again.
+  // Same policy as the desktop app's apps/desktop/src/lib/ime.ts: isComposing, or keyCode 229
+  // for the commit Enter that can follow compositionend.
+  function isImeComposing(e) {
+    const native = e.nativeEvent || e;
+    return Boolean(native.isComposing || e.isComposing) || native.keyCode === 229 || e.keyCode === 229;
+  }
+
   // Newer host dashboards expose a DS-styled Checkbox on the plugin SDK.
   // Fall back to a native <input type="checkbox"> shim so older hosts that
   // predate the design-system rollout still render. The shim normalises
@@ -2452,7 +2463,7 @@
     return h("div", {
       className: "hermes-kanban-dialog-backdrop",
       onClick: function (e) { if (e.target === e.currentTarget) props.onCancel(); },
-      onKeyDown: function (e) { if (e.key === "Escape") props.onCancel(); },
+      onKeyDown: function (e) { if (e.key === "Escape" && !isImeComposing(e)) props.onCancel(); },
     },
       h("form", {
         className: "hermes-kanban-dialog",
@@ -3361,7 +3372,7 @@
     return h("div", {
       className: "hermes-kanban-dialog-backdrop",
       onClick: function (e) { if (e.target === e.currentTarget) props.onCancel(); },
-      onKeyDown: function (e) { if (e.key === "Escape") props.onCancel(); },
+      onKeyDown: function (e) { if (e.key === "Escape" && !isImeComposing(e)) props.onCancel(); },
     },
       h("form", {
         className: "hermes-kanban-dialog hermes-kanban-create-dialog",
@@ -3377,7 +3388,7 @@
               value: title,
               onChange: function (e) { setTitle(e.target.value); },
               onKeyDown: function (e) {
-                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+                if (e.key === "Enter" && !e.shiftKey && !isImeComposing(e)) { e.preventDefault(); submit(); }
               },
               placeholder: props.columnName === "triage"
                 ? tx(t, "triagePlaceholder", "Rough idea — AI will spec it…")
@@ -3562,7 +3573,7 @@
     useEffect(function () { load(); }, [load, props.eventTick]);
     useEffect(function () { loadHomeChannels(); }, [loadHomeChannels]);
     useEffect(function () {
-      function onKey(e) { if (e.key === "Escape" && !editing) props.onClose(); }
+      function onKey(e) { if (e.key === "Escape" && !editing && !isImeComposing(e)) props.onClose(); }
       window.addEventListener("keydown", onKey);
       return function () { window.removeEventListener("keydown", onKey); };
     }, [props.onClose, editing]);
@@ -3857,7 +3868,7 @@
               value: newComment,
               onChange: function (e) { setNewComment(e.target.value); },
               onKeyDown: function (e) {
-                if (e.key === "Enter" && !e.shiftKey) {
+                if (e.key === "Enter" && !e.shiftKey && !isImeComposing(e)) {
                   e.preventDefault(); handleComment();
                 }
               },
@@ -4347,6 +4358,7 @@
         value: v, autoFocus: true,
         onChange: function (e) { setV(e.target.value); },
         onKeyDown: function (e) {
+          if (isImeComposing(e)) return;
           if (e.key === "Enter") { e.preventDefault(); save(); }
           if (e.key === "Escape") props.onCancel();
         },
@@ -4385,6 +4397,7 @@
         value: v, autoFocus: true,
         onChange: function (e) { setV(e.target.value); },
         onKeyDown: function (e) {
+          if (isImeComposing(e)) return;
           if (e.key === "Enter") { e.preventDefault(); save(); }
           if (e.key === "Escape") setEditing(false);
         },
@@ -4422,6 +4435,7 @@
         type: "number", value: v, autoFocus: true,
         onChange: function (e) { setV(e.target.value); },
         onKeyDown: function (e) {
+          if (isImeComposing(e)) return;
           if (e.key === "Enter") { e.preventDefault(); save(); }
           if (e.key === "Escape") setEditing(false);
         },
@@ -4539,6 +4553,7 @@
           placeholder: tx(t, "modelFreeTextPlaceholder", "model name (empty = profile default)"),
           onChange: function (e) { setFreeText(e.target.value); },
           onKeyDown: function (e) {
+            if (isImeComposing(e)) return;
             if (e.key === "Enter") { e.preventDefault(); saveFree(); }
             if (e.key === "Escape") setEditing(false);
           },
@@ -4575,7 +4590,7 @@
             autoFocus: true,
             onChange: function (e) { onPick(e.target.value); },
             onKeyDown: function (e) {
-              if (e.key === "Escape") setEditing(false);
+              if (e.key === "Escape" && !isImeComposing(e)) setEditing(false);
             },
           },
             h("option", { value: "" },

@@ -97,7 +97,7 @@ function renderConfigSettings(activeSectionId = 'safety') {
   render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ConfigSettings activeSectionId={activeSectionId} importInputRef={importInputRef} />
+        <ConfigSettings activeSectionId={activeSectionId} importInputRef={importInputRef} subpage={activeSectionId === 'safety' ? 'checkpoints' : undefined} />
       </QueryClientProvider>
     </MemoryRouter>
   )

@@ -4,6 +4,7 @@ import type { ChangeEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 
+import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { SegmentedControl } from '@/components/ui/segmented-control'
@@ -59,6 +60,7 @@ import { MemoryLayersSlot } from './memory/memory-layers'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { OnboardingSettings } from './onboarding-settings'
+import { PortalSafetyFields } from './portal-safety-fields'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
@@ -327,6 +329,7 @@ function ConfigSettingsInner({
 
   const showDesktopSettings = activeSectionId === 'advanced' && (subpage === undefined || subpage === 'desktop')
   const showAttachments = activeSectionId === 'chat' && (subpage === undefined || subpage === 'attachments')
+  const portalSafety = usePortalRedesign() && activeSectionId === 'safety'
   const showSharedMetrics = activeSectionId === 'safety' && subpage === 'privacy'
 
   // Deep-link target from the command palette (?field=<key>): scroll the row
@@ -459,6 +462,26 @@ function ConfigSettingsInner({
   const visibleFields = (
     activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
   ).filter(([key]) => key !== DELEGATION_ROUTE_COMPANION_KEY)
+
+  if (portalSafety) {
+    return renderPage(<>
+      <PortalSafetyFields
+        advancedOpen={Boolean(targetField && targetField !== 'approvals.mode' && targetField !== 'security.redact_secrets') || subpage === 'checkpoints'}
+        config={config}
+        fields={sectionFields.get('safety') ?? []}
+        onChange={updateConfig}
+        onManagePasswords={() => setSearchParams(previous => {
+          const next = new URLSearchParams(previous)
+          next.set('tab', 'vault')
+          next.delete('page')
+          next.delete('field')
+
+          return next
+        })}
+      />
+      {showSharedMetrics && <SharedMetricsSettings />}
+    </>)
+  }
 
   const showEmptyState =
     visibleFields.length === 0 &&

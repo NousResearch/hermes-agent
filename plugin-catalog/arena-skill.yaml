@@ -1,0 +1,16 @@
+name: arena-skill
+repo: https://github.com/J182Razor/hermes-arena-skill
+sha: 0fdb521220f0d4507044e97a56eadee1cea9b65e
+description: "Tournament of N sub-agents competing to produce the best answer. Portable Agent Plugins v1 package (skills/ only). Adapted from Jakeschincariol/arena-skill (MIT) to use Hermes delegate_task. Disclosure — derived from Jakeschincariol/arena-skill (MIT); a full run spawns many delegate_task sub-agents (about 600 calls at the default 100 agents, about 90 with --quick), so cost scales with agent count; the skill runs its bundled bracket.py through the terminal and writes run files under `.arena/` in the current directory."
+maintainer: J182Razor
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+docs_url: https://github.com/J182Razor/hermes-arena-skill

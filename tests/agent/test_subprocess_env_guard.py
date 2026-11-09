@@ -75,12 +75,12 @@ ALLOWED_RAW_SPAWN_ENV_FILES = {
 def _iter_source_files():
     for d in SCAN_DIRS:
         root = REPO_ROOT / d
-        if root.is_dir():
-            yield from root.rglob("*.py")
+        assert root.is_dir(), f"{d}/ is gone: update SCAN_DIRS, or this guard scans nothing there"
+        yield from root.rglob("*.py")
     for f in SCAN_ROOT_FILES:
         p = REPO_ROOT / f
-        if p.is_file():
-            yield p
+        assert p.is_file(), f"{f} is gone: update SCAN_ROOT_FILES, or this guard scans nothing there"
+        yield p
 
 
 def _raw_spawn_env_sites():

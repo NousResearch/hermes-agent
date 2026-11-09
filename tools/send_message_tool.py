@@ -16,9 +16,9 @@ from tools.send_message_targets import (
 )
 from tools.send_message_senders import (
     _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
-    _adapter_media_method, _error, _live_adapter, _media_caption_split, _plugin_standalone_sender,
-    _registry_standalone_send, _resolve_slack_user_target, _sanitize_error_text,
-    _send_matrix_via_adapter, _send_telegram)
+    _adapter_media_method, _error, _live_adapter, _media_caption_split, _optional_sender_kwargs,
+    _plugin_standalone_sender, _registry_standalone_send, _resolve_slack_user_target, _sanitize_error_text,
+    _send_matrix_via_adapter)
 from tools.registry import tool_error
 
 # A bare Slack user id (session metadata / home-channel config) is opened as a DM; same shape the
@@ -103,11 +103,8 @@ def _authorize_relay_target(platform_name: str, chat_id, thread_id=None, *,
         # an unattributable FAULT — never proof that there is no relay here.
         # I previously admitted the nameless case to protect the CLI/cron path;
         # that reasoning was wrong, because that path does not produce one.
-        _missing = getattr(exc, "name", None)
-        if not isinstance(exc, ModuleNotFoundError) or _missing not in (
-            "gateway",
-            "gateway.relay",
-            "gateway.relay.egress",
+        if not isinstance(exc, ModuleNotFoundError) or (
+            exc.name != "gateway.relay.egress" and not "gateway.relay.egress".startswith(f"{exc.name}.")
         ):
             logger.exception(
                 "relay egress module failed to import for %s — refusing the send",
@@ -683,11 +680,11 @@ _CHUNKED_ROUTES = {
     "slack": (False, [], _via_adapter_route),
     "wecom": (True, None, _via_adapter_route)}
 
-_MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp, slack and qqbot"
+_MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, feishu, whatsapp, slack and qqbot"
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
-                            force_document=False, mentions=None, args=None):
+                            force_document=False, mentions=None, args=None, notify=None):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
@@ -697,11 +694,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if platform_name == "weixin":  # plugin standalone sender only: no other plugin's import can block it
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, [message], media_files,
                                              thread_id=thread_id, max_len=None, force_document=force_document)
-    # Telegram chunks internally on the *formatted* text (escaping inflates length).
+    # Telegram's plugin sender chunks internally on the *formatted* text (escaping inflates length).
     if platform == Platform.TELEGRAM:
-        return await _send_telegram(
-            pconfig.token, chat_id, message, media_files=media_files, thread_id=thread_id, force_document=force_document,
-            disable_link_previews=bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")))
+        sender, err = _plugin_standalone_sender(platform_name)
+        return err or await sender(pconfig, chat_id, message, thread_id=thread_id, media_files=media_files,
+                                   force_document=force_document, **_optional_sender_kwargs(sender, notify=notify))
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]

@@ -185,7 +185,7 @@ def lazy_installs_allowed() -> bool:
     try:
         from hermes_cli.config import cfg_get, load_config_readonly, require_readable_config_before_write
     except ModuleNotFoundError as exc:
-        return exc.name in {"hermes_cli", "hermes_cli.config"}
+        return exc.name == "hermes_cli.config" or "hermes_cli.config".startswith(f"{exc.name}.")
     except ImportError:
         return False
     try:

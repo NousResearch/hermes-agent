@@ -350,26 +350,18 @@ def _safe_tui_cwd(env: Optional[dict] = None) -> str:
 
 
 def _apply_tui_python_env(env: dict) -> None:
-    """Seed/repair Python-related env vars shared by CLI and dashboard TUI launches."""
+    """Pin the TUI's Python helpers to this process's tree and interpreter; repair its cwd.
+
+    Inherited values name whatever shell launched us (a checkout's dev shell exports both),
+    and the gateway child must run the code and interpreter of the Hermes that spawned it.
+    """
     from hermes_cli.main import PROJECT_ROOT
-    src_root = str(env.get("HERMES_PYTHON_SRC_ROOT") or "").strip()
-    if not src_root or not Path(src_root).is_dir():
-        env["HERMES_PYTHON_SRC_ROOT"] = str(PROJECT_ROOT)
+    env["HERMES_PYTHON_SRC_ROOT"] = str(PROJECT_ROOT)
+    env["HERMES_PYTHON"] = sys.executable
 
     cwd = str(env.get("HERMES_CWD") or "").strip()
     if not cwd or not Path(cwd).is_dir():
         env["HERMES_CWD"] = _safe_tui_cwd(env)
-
-    python = str(env.get("HERMES_PYTHON") or "").strip()
-    if os.path.dirname(python):
-        python_path = Path(python)
-        if not python_path.is_absolute():
-            python_path = Path(env["HERMES_CWD"]) / python_path
-        python_is_executable = python_path.is_file() and os.access(python_path, os.X_OK)
-    else:
-        python_is_executable = bool(shutil.which(python, path=env.get("PATH")))
-    if not python_is_executable:
-        env["HERMES_PYTHON"] = sys.executable
 
 
 def _setup_tui_worktree() -> dict:

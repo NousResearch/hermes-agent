@@ -293,11 +293,17 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
         mounts = None
-        # Official Codex backend only: zstd request bodies when the stdlib codec exists (None otherwise).
+        # Observe the final serialized provider payload before optional transport compression.
+        from agent.outbound_reasoning_audit import (
+            audit_outbound_reasoning_request,
+            audit_outbound_reasoning_request_async,
+        )
         from agent.codex_headers import codex_request_compression_hooks
-        hooks = codex_request_compression_hooks(base_url, async_mode=async_mode)
-        if hooks:
-            client_cls = functools.partial(client_cls, event_hooks=hooks)
+        existing_hooks = codex_request_compression_hooks(base_url, async_mode=async_mode) or {}
+        hooks = {name: list(callbacks) for name, callbacks in existing_hooks.items()}
+        audit_hook = audit_outbound_reasoning_request_async if async_mode else audit_outbound_reasoning_request
+        hooks["request"] = [audit_hook, *hooks.get("request", [])]
+        client_cls = functools.partial(client_cls, event_hooks=hooks)
         if proxy is None:
             happy_eyeballs = not async_mode and _uses_codex_cloud_transport(base_url)
             # One pool serves every agent in the process, so its ceiling must cover a whole

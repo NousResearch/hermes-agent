@@ -340,3 +340,42 @@ async def test_failed_private_copy_still_posts_the_promised_notice(flooded, tmp_
     assert "Couldn't deliver" in adapter.send.await_args.args[1]
     assert adapter.send.await_args.kwargs["metadata"] == {"thread_id": "7"}
     assert adapter._bot.send_voice.await_count == 1  # no upload of a file that no longer exists
+
+
+@pytest.mark.asyncio
+async def test_promised_notice_survives_a_sibling_refused_as_it_goes_out(flooded, tmp_path, monkeypatch):
+    """The deferred task owes a notice (its file is gone); a sibling send is refused by Telegram right
+    as that notice goes out. The notice must wait out the new window, not be refused locally and lost."""
+    from plugins.platforms.telegram import telegram_media_flood as flood
+
+    adapter, _doc = flooded
+    del adapter.send  # the real send(): its local refusal inside a window is what loses the notice
+    clip = tmp_path / "reply.ogg"
+    clip.write_bytes(b"OggS-voice")
+
+    def disk_full(*_args, **_kwargs):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(flood.shutil, "copy2", disk_full)
+    notices = []
+
+    async def send_message(**kwargs):
+        if kwargs["text"] == "sibling":
+            raise RetryAfter(1.0)
+        notices.append(kwargs["text"])
+        return _ok(len(notices))
+
+    adapter._bot = SimpleNamespace(send_voice=AsyncMock(side_effect=RetryAfter(0.2)), send_message=send_message)
+    notify = adapter._notify_media_delivery_failure
+
+    async def notify_as_a_sibling_is_refused(*args, **kwargs):
+        sibling = asyncio.create_task(adapter.send("12345", "sibling"))
+        await asyncio.wait([sibling], timeout=0.5)  # holding the chat lock, the notice keeps it from going first
+        await notify(*args, **kwargs)
+
+    monkeypatch.setattr(adapter, "_notify_media_delivery_failure", notify_as_a_sibling_is_refused)
+    await adapter.send_voice("12345", str(clip))
+    clip.unlink()  # what auto-TTS does as soon as send_voice returns
+    await async_wait_until(lambda: not adapter._background_tasks, timeout=10, what="deferred task done")
+
+    assert len(notices) == 1 and "Couldn't deliver" in notices[0]

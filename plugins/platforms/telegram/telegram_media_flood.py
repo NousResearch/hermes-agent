@@ -199,15 +199,21 @@ class TelegramMediaFloodMixin:
                 logger.info("[%s] Deferred upload of %s: delivered", self.name, what)
                 return
             # redo's own failure handling posts the notice once it reached the upload; a file that is
-            # gone (no private copy, and the caller deleted its own) or a raise never got that far.
-            if result is None or (upload and not await asyncio.to_thread(os.path.exists, upload)):
+            # gone (no private copy, and the caller deleted its own), a raise, or a notice a sibling's
+            # re-armed window refused (``retry_after``) never landed.
+            if (result is None or result.retry_after is not None
+                    or (upload and not await asyncio.to_thread(os.path.exists, upload))):
                 chat_id, metadata = target
                 logger.error("[%s] Deferred upload of %s lost: %s", self.name, what,
-                             "file gone" if result is not None else "raised")
-                if (still := self._send_flood_cooldown_remaining(chat_id)) is not None:
-                    await asyncio.sleep(still)  # the window can outlast ``wait`` (1 s floor): land the notice
-                await self._notify_media_delivery_failure(
-                    chat_id, source or "", is_voice=what.startswith("voice "), metadata=metadata)
+                             result.error if result is not None else "raised")
+                for _ in range(_MAX_WINDOW_WAITS + 1):  # check and send under the chat lock: no sibling re-arms between
+                    async with self._chat_send_lock(chat_id):
+                        if (still := self._send_flood_cooldown_remaining(chat_id)) is None:
+                            await self._notify_media_delivery_failure(
+                                chat_id, source or "", is_voice=what.startswith("voice "), metadata=metadata)
+                            return
+                    await asyncio.sleep(still)
+                logger.error("[%s] Failure notice for %s not sent: flood window kept re-arming", self.name, what)
             else:
                 logger.error("[%s] Deferred upload of %s: %s", self.name, what, result.error)
 

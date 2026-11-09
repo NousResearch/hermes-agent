@@ -54,3 +54,35 @@ async def test_a_queued_follow_up_runs_under_its_own_sender(monkeypatch, tmp_pat
 
     assert [(m.rsplit("] ", 1)[-1], uid, name) for m, uid, name in _ApprovingAgent.calls] == [
         ("alice-task", "111", "Alice"), ("follow-task", follow_uid, follow_name)]
+
+
+@pytest.mark.asyncio
+async def test_another_members_steer_into_a_queued_follow_up_fails_closed(monkeypatch, tmp_path):
+    """Carol steers into Bob's drained follow-up: the fold clears the actor of the turn actually
+    running (Bob's), so its approval names no one, not Bob alone."""
+    _ApprovingAgent.calls = []
+    _install_fake_agent(monkeypatch, tmp_path, _ApprovingAgent)
+    adapter = HookRecordingAdapter()
+    runner = _make_runner(adapter)
+    alice = _event("alice-task", "111", "Alice", True)
+    adapter._pending_messages[KEY] = _event("bob-task", "222", "Bob", True)
+    turn = runner._session_state(KEY).turn
+    turn.event = alice  # the claim binds the slot to the opener
+    carol = _event("carol-steer", "333", "Carol", True)
+    original = _ApprovingAgent.run_conversation
+
+    def steer_then_run(self, message, *args, **kwargs):
+        if message.endswith("bob-task"):
+            runner._fold_into_running_turn(turn.agent, KEY, carol)
+        return original(self, message, *args, **kwargs)
+
+    monkeypatch.setattr(_ApprovingAgent, "run_conversation", steer_then_run)
+    tokens = runner._set_session_env(build_session_context(alice.source, GatewayConfig(), event=alice))
+    try:
+        await runner._run_agent(message="alice-task", context_prompt="", history=[], source=alice.source,
+                                session_id="s1", session_key=KEY)
+    finally:
+        runner._clear_session_env(tokens)
+
+    assert [(m.rsplit("] ", 1)[-1], uid) for m, uid, _ in _ApprovingAgent.calls] == [
+        ("alice-task", "111"), ("bob-task", "")]

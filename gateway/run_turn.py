@@ -1799,7 +1799,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         try:
             await self._refresh_agent_cache_message_count(session_key, session_id)
             # The follow-up is its own sender's turn: approvals it raises name that sender, not the opener.
-            with scoped_turn_actor(pending_event) if pending_event is not None else nullcontext():
+            with scoped_turn_actor(pending_event, self._session_state(session_key).turn) if pending_event is not None else nullcontext():
                 followup_result = await self._run_agent(
                     message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
                     source=next_source, session_id=session_id, session_key=next_session_key,

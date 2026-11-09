@@ -9,5 +9,5 @@ capabilities:
   hooks:
     - on_session_start
 repo: https://github.com/Alvinagustus/provider-endpoint-healer
-sha: 6cd2009fd68aa459389926e0e2929c31df9d0979
+sha: 3d39a6585fd63df02ffcba76ad7deb492e019fab
 version: "0.1.0"

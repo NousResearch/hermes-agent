@@ -2,8 +2,9 @@
 
 A ``default`` package (see ``Package.default``) joins the installers' PM stage,
 a bare ``hermes pm install`` and ``hermes update`` on every target it builds
-for. The user can decline one (``install.sh --skip-browser``,
-``install.ps1 -SkipBrowser``, ``hermes pm install --without NAME``). The choice
+for. The user can decline one (``install.sh --skip-browser`` /
+``--skip-computer-use``, ``install.ps1 -SkipBrowser`` / ``-SkipComputerUse``,
+``hermes pm install --without NAME``). The choice
 is recorded per installation beside PM's other install state, so a later
 update or bare install never re-adds it. An explicit
 ``hermes pm install NAME`` clears it.
@@ -19,6 +20,17 @@ from collections.abc import Iterable
 from pathlib import Path
 
 DECLINED_FILENAME = "declined-packages.json"
+
+# A retired default whose opt-out carries over to the package that took its
+# place: `--without agent-browser` declined the browser, which is Chromium now.
+# Read through on every load, so a record written by an older installer keeps
+# skipping the browser. The installers still pass the old name on purpose: the
+# stable PM they install by default accepts only `agent-browser`.
+RETIRED_DEFAULTS = {"agent-browser": "chromium"}
+
+
+def canonical_default_name(name: str) -> str:
+    return RETIRED_DEFAULTS.get(name, name)
 
 
 def declined_path(project_root: Path | None = None) -> Path:
@@ -41,7 +53,7 @@ def declined(project_root: Path | None = None) -> frozenset[str]:
         raise InstallError("defaults", f"cannot read {declined_path(project_root)}: {exc}",
                            "fix or delete the file, then retry") from exc
     names = data.get("declined") if isinstance(data, dict) else None
-    return frozenset(name for name in names or () if isinstance(name, str))
+    return frozenset(canonical_default_name(name) for name in names or () if isinstance(name, str))
 
 
 def record_declined(*, add: Iterable[str] = (), remove: Iterable[str] = (),
@@ -50,7 +62,7 @@ def record_declined(*, add: Iterable[str] = (), remove: Iterable[str] = (),
     from pm.filesystem import durable_write_bytes
 
     current = declined(project_root)
-    updated = (current | set(add)) - set(remove)
+    updated = (current | {canonical_default_name(name) for name in add}) - set(remove)
     if updated != current:
         body = json.dumps({"schema": 1, "declined": sorted(updated)}, indent=2) + "\n"
         durable_write_bytes(declined_path(project_root), body.encode("utf-8"))

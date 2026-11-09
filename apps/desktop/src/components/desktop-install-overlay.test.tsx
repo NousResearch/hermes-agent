@@ -33,6 +33,7 @@ function installDesktopMock(state: DesktopBootstrapState) {
       return () => bootstrapListeners.delete(listener)
     }),
     continueBootstrapLocal: vi.fn().mockResolvedValue({ ok: true }),
+    resetBootstrap: vi.fn().mockResolvedValue({ ok: true }),
     probeConnectionConfig: vi.fn(),
     testConnectionConfig: vi.fn(),
     applyConnectionConfig: vi.fn(),
@@ -544,6 +545,34 @@ describe('DesktopInstallOverlay first-run setup', () => {
 
     await waitFor(() => expect(screen.queryByText('Gateway URL')).toBeNull())
     expect(screen.queryByText('Hermes needs a one-time install')).toBeNull()
+  })
+
+  it('dismisses a cancelled/failed install via the footer Close button, without reloading or resetting bootstrap', async () => {
+    const desktop = installDesktopMock(bootstrapState({ error: 'cancelled by user' }))
+
+    render(<DesktopInstallOverlay />)
+
+    expect(await screen.findByText('Installation failed')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Close'))
+
+    await waitFor(() => expect(screen.queryByText('Installation failed')).toBeNull())
+    expect(desktop.resetBootstrap).not.toHaveBeenCalled()
+  })
+
+  it('dismisses a failed install on Escape', async () => {
+    installDesktopMock(bootstrapState({ error: 'cancelled by user' }))
+
+    render(<DesktopInstallOverlay />)
+
+    expect(await screen.findByText('Installation failed')).toBeTruthy()
+
+    // The Escape listener is bound in a passive effect that can flush after the failed state is
+    // already painted; a key landing in that gap is (correctly) ignored, so press until it is heard.
+    await waitFor(() => {
+      fireEvent.keyDown(window, { key: 'Escape' })
+      expect(screen.queryByText('Installation failed')).toBeNull()
+    })
   })
 })
 

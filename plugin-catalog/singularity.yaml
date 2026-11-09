@@ -1,0 +1,27 @@
+name: singularity
+repo: https://github.com/NousResearch/hermes-official-plugins
+sha: d46aced3031a8f533fdbf0806bc4cf0d0b28be07
+subdir: singularity
+description: 'Singularity/Apptainer terminal backend: Hermes''s terminal, file and code tools run inside a
+  hardened, rootless container on this machine (--containall --no-home), with CPU/memory limits and an
+  optional per-session persistent overlay (`hermes config set terminal.backend singularity`; image from
+  `terminal.singularity_image`). Formerly built into Hermes core; existing users are migrated automatically.
+  Disclosure — no Python dependencies and no network calls of its own: it drives the `apptainer` (or
+  `singularity`) CLI you install, which pulls the configured image (default
+  `docker://nousresearch/hermes-sandbox:desktop`) and caches a SIF under your scratch directory. Your skills
+  and registered credential files are bind-mounted read-only into the container, and because the container
+  is a disposable sandbox Hermes skips its dangerous-command prompts there, as for its other container backends.'
+maintainer: NousResearch
+tier: official
+category: tools
+requires_hermes: ">=0.21.6"
+version: "1.0.0"
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/d46aced3031a8f533fdbf0806bc4cf0d0b28be07/assets/singularity.jpg
+docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/singularity
+platforms:
+  - linux
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

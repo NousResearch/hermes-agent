@@ -61,9 +61,22 @@ def test_auth_surface_names_oauth_vs_api_key_recovery():
 
     key = build_error_surface_from_result(_failed_result("auth"), provider="openrouter")
     assert key["auth_kind"] == "api_key"
+    assert key["api_key_env"] == "OPENROUTER_API_KEY"
+    assert "api_key_env" not in oauth
+
+    opencode = build_error_surface_from_result(_failed_result("auth"), provider="opencode-go")
+    assert opencode["api_key_env"] == "OPENCODE_GO_API_KEY"
 
     # Non-auth layers never carry the field (clients gate the button on it).
     assert "auth_kind" not in build_error_surface_from_result(_failed_result("rate_limit"), provider="nous")
+
+
+def test_every_provider_surface_carries_the_display_label():
+    """Card copy names the provider ("OpenCode Go did not answer…"); without the
+    label on non-auth layers clients fell back to the config slug."""
+    surface = build_error_surface_from_result(_failed_result("timeout"), provider="opencode-go")
+    assert surface["provider_label"] == "OpenCode Go"
+    assert "provider_label" not in build_error_surface_from_result(_failed_result("timeout"))
 
 
 def test_result_billing_block_wins():
@@ -209,6 +222,7 @@ def test_anthropic_usage_limit_routes_to_billing_recovery():
         "code": "billing",
         "retryable": False,
         "provider": "anthropic",
+        "provider_label": "Anthropic",
         "model": "claude-opus-5",
     }
 

@@ -277,27 +277,3 @@ def gateway_log_message(hits: list[AdvisoryHit]) -> Optional[str]:
                 f"matches {h.advisory.title}. See {h.advisory.url}")
     return (f"{len(fresh)} security advisories active (IDs: {', '.join(h.advisory.id for h in fresh)}). "
             "Run `hermes doctor` on the gateway host for details.")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def render_doctor_section(hits: list[AdvisoryHit]) -> tuple[bool, list[str]]:
-    """Render the security-advisory section for ``hermes doctor``.
-
-    Returns ``(has_problems, lines)``. Caller is responsible for printing
-    with whatever color scheme it uses.
-    """
-    fresh = filter_unacked(hits)
-    if not fresh:
-        return False, ["No active security advisories.  ✓"]
-
-    lines: list[str] = []
-    for i, hit in enumerate(fresh):
-        if i:
-            lines.append("")
-        lines.extend(full_remediation_text(hit))
-    return True, lines
-# ---- END PLUGIN-COMPAT ----

@@ -19,6 +19,7 @@ def test_docker_image_contains_license_file(built_image: str) -> None:
         ["docker", "run", "--rm", "--entrypoint", "test",
          built_image, "-f", "/opt/hermes/LICENSE"],
         capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert r.returncode == 0, (
         f"LICENSE file not found at /opt/hermes/LICENSE inside the Docker "

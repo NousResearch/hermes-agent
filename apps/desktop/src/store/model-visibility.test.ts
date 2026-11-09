@@ -1,5 +1,5 @@
 import type { ModelOptionProvider } from '@hermes/shared'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   collapseModelFamilies,
@@ -277,6 +277,91 @@ describe('featured defaults', () => {
   })
 })
 
+describe('seedKnownModels', () => {
+  const featuredProvider = (slug: string, models: string[], featured_models: string[]): ModelOptionProvider => ({
+    featured_models,
+    models,
+    name: slug,
+    slug
+  })
+
+  // Fresh module per load: the atoms read localStorage at import, so a
+  // re-import stands in for a renderer reload after a pre-snapshot persist.
+  const loadStore = () => import('./model-visibility')
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  it('does not adopt a stale allowlist as a judgement over catalog-present defaults', async () => {
+    // A visible set persisted before the snapshot existed, first loaded by a
+    // build whose catalog already ships gpt-6 — the bug class from 122053:
+    // seeding everything as judged would keep gpt-6 hidden forever.
+    window.localStorage.setItem('hermes.desktop.visible-models', JSON.stringify(['openai-codex::gpt-5.5']))
+
+    const store = await loadStore()
+
+    const providers = [
+      featuredProvider('openai-codex', ['gpt-5.5', 'gpt-6'], ['gpt-5.5', 'gpt-6']),
+      featuredProvider('qwen', ['qwen3-coder', 'qwen4'], ['qwen3-coder'])
+    ]
+
+    store.seedKnownModels(providers)
+
+    const visible = store.effectiveVisibleKeys(store.$visibleModels.get(), providers)
+
+    // The curated defaults the stale allowlist omitted come back…
+    expect(visible.has(modelVisibilityKey('openai-codex', 'gpt-5.5'))).toBe(true)
+    expect(visible.has(modelVisibilityKey('openai-codex', 'gpt-6'))).toBe(true)
+    expect(visible.has(modelVisibilityKey('qwen', 'qwen3-coder'))).toBe(true)
+    // …while the user's explicit hide of the non-default qwen4 holds verbatim.
+    expect(visible.has(modelVisibilityKey('qwen', 'qwen4'))).toBe(false)
+  })
+
+  it('re-seeding is inert once a snapshot exists (never a running union)', async () => {
+    window.localStorage.setItem('hermes.desktop.visible-models', JSON.stringify(['openai-codex::gpt-5.5']))
+
+    const store = await loadStore()
+    const first = [featuredProvider('openai-codex', ['gpt-5.5'], ['gpt-5.5'])]
+    store.seedKnownModels(first)
+
+    // A later catalog refresh with a brand-new model must not mark it judged.
+    const grown = [featuredProvider('openai-codex', ['gpt-5.5', 'gpt-7'], ['gpt-5.5', 'gpt-7'])]
+    store.seedKnownModels(grown)
+
+    const visible = store.effectiveVisibleKeys(store.$visibleModels.get(), grown)
+    expect(visible.has(modelVisibilityKey('openai-codex', 'gpt-7'))).toBe(true)
+  })
+
+  it('honours an explicit hide-all sentinel: its defaults stay unknown, not re-admitted', async () => {
+    window.localStorage.setItem('hermes.desktop.visible-models', JSON.stringify(['nous::']))
+
+    const store = await loadStore()
+    const providers = [featuredProvider('nous', ['hermes-4', 'hermes-5'], ['hermes-4', 'hermes-5'])]
+
+    store.seedKnownModels(providers)
+
+    const visible = store.effectiveVisibleKeys(store.$visibleModels.get(), providers)
+    expect(visible.has(modelVisibilityKey('nous', 'hermes-4'))).toBe(false)
+    expect(visible.has(modelVisibilityKey('nous', 'hermes-5'))).toBe(false)
+  })
+
+  it('leaves a fresh install unseeded: no stored set, nothing to adopt', async () => {
+    const store = await loadStore()
+    const providers = [featuredProvider('openai-codex', ['gpt-5.5', 'gpt-6'], ['gpt-5.5', 'gpt-6'])]
+
+    store.seedKnownModels(providers)
+
+    // Nothing was persisted before the snapshot existed, so there is no
+    // adoption to do; the curated defaults show and `known` stays null.
+    expect(store.$knownModels.get()).toBeNull()
+    expect(store.effectiveVisibleKeys(store.$visibleModels.get(), providers)).toEqual(
+      store.defaultVisibleKeys(providers)
+    )
+  })
+})
+
 describe('setProviderVisibility', () => {
   const providers = [provider('openai', ['gpt-a', 'gpt-b']), provider('nous', ['hermes-x', 'hermes-y'])]
 
@@ -332,5 +417,70 @@ describe('setProviderVisibility', () => {
     expect(next.has(modelVisibilityKey('nous', 'model'))).toBe(true)
     // The -fast sibling is represented by its base family, not its own key.
     expect(next.has(modelVisibilityKey('nous', 'model-fast'))).toBe(false)
+  })
+})
+
+describe('resetModelVisibility', () => {
+  // Fresh module per load: the atoms read localStorage at import, so a
+  // re-import is a renderer reload.
+  const loadStore = () => import('./model-visibility')
+
+  const catalog = [provider('openai-codex', ['gpt-5.5', 'gpt-6']), provider('qwen', ['qwen3-coder'])]
+  const gpt6 = modelVisibilityKey('openai-codex', 'gpt-6')
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  it('brings back a model the known snapshot froze hidden, and the reset survives a reload', async () => {
+    // A curation saved while the snapshot machinery was live: gpt-6 was listed
+    // when the user kept gpt-5.5 and switched it off, so the snapshot counts it
+    // as judged and the default rule never re-admits it.
+    window.localStorage.setItem('hermes.desktop.visible-models', JSON.stringify(['openai-codex::gpt-5.5']))
+    window.localStorage.setItem(
+      'hermes.desktop.known-models',
+      JSON.stringify(['openai-codex::gpt-5.5', 'openai-codex::gpt-6', 'qwen::qwen3-coder'])
+    )
+
+    const stuck = await loadStore()
+
+    const before = stuck.effectiveVisibleKeys(stuck.$visibleModels.get(), catalog)
+    expect(before.has(gpt6)).toBe(false)
+    expect(before.has(modelVisibilityKey('qwen', 'qwen3-coder'))).toBe(true)
+
+    stuck.resetModelVisibility()
+
+    expect(stuck.effectiveVisibleKeys(stuck.$visibleModels.get(), catalog)).toEqual(stuck.defaultVisibleKeys(catalog))
+
+    vi.resetModules()
+    const reloaded = await loadStore()
+    reloaded.seedKnownModels(catalog)
+
+    expect(reloaded.effectiveVisibleKeys(reloaded.$visibleModels.get(), catalog)).toEqual(
+      reloaded.defaultVisibleKeys(catalog)
+    )
+  })
+
+  it('forgets what the old snapshot counted as judged, so later arrivals are new again', async () => {
+    // gpt-6-mini was listed (and left hidden) before the reset, then dropped
+    // out of the catalog.
+    const store = await loadStore()
+    store.setVisibleModels(new Set(['openai-codex::gpt-5.5']), [provider('openai-codex', ['gpt-5.5', 'gpt-6-mini'])])
+
+    store.resetModelVisibility()
+
+    // Curate again without it, then it comes back: the user never judged it
+    // since the reset, so it lands visible through the default rule.
+    store.setVisibleModels(
+      store.toggleModelVisibility(store.$visibleModels.get(), catalog, 'openai-codex', 'gpt-5.5'),
+      catalog
+    )
+
+    const returned = [provider('openai-codex', ['gpt-5.5', 'gpt-6', 'gpt-6-mini']), catalog[1]]
+    const visible = store.effectiveVisibleKeys(store.$visibleModels.get(), returned)
+
+    expect(visible.has(modelVisibilityKey('openai-codex', 'gpt-6-mini'))).toBe(true)
+    expect(visible.has(modelVisibilityKey('openai-codex', 'gpt-5.5'))).toBe(false)
   })
 })

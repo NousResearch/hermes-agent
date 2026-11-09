@@ -1,0 +1,21 @@
+name: codex-truly
+repo: https://github.com/kyssta-exe/hermes-codex-truly
+sha: 1913d2a0a4b2dd3e4283af5c78241de4d3a2995e
+description: "Gives ChatGPT/Codex-subscription models the context window the backend actually accepts instead of the one its catalog advertises. Measured live on 2026-10-14: gpt-6.1-sol advertises 500K, caps at 872K and accepts 919,956 input tokens, while the -900k opt-in variant had silently stopped working because Hermes only raises a legacy 272K advertisement. The plugin reads the live catalog, writes one scoped model_overrides.<provider>.<model_id>.context_window entry per model (a documented step of context resolution, so no core patch), and ships a probe that bisects the API for the true ceiling because the refusal is a late SSE event, not an HTTP error. It also selects core's Codex-backed image provider so image_generate runs on the subscription with no OPENAI_API_KEY. Disclosure - uses the profile's Codex sign-in through Hermes's credentialed_provider_request (requires_auth: [openai-codex]); the plugin never reads auth.json and never holds a token, and network calls go only to chatgpt.com. Its only writes are scoped model_overrides entries and image_gen.provider (only when unset), through Hermes's atomic config writers; revert removes exactly what it wrote. No telemetry, no background processes, no shell commands, no self-updater. probe spends subscription quota (refused requests are free, accepted ones bill) and is never run automatically. Disclosure — uses the profile's Codex sign-in only through Hermes's credentialed_provider_request (requires_auth: openai-codex) and calls chatgpt.com only; its CLI and the model-callable codex_truly tool write scoped model_overrides context_window entries and image_gen.provider (only when unset) to config.yaml with no approval prompt, and `probe` sends large padding requests that spend subscription quota."
+maintainer: kyssta-exe
+title: Codex Truly
+tier: community
+category: models
+requires_hermes: ">=0.21.7"
+version: "1.0.0"
+docs_url: https://github.com/kyssta-exe/hermes-codex-truly#readme
+platforms: []
+known_issues:
+  - "Full 1M of input is not reachable on the Codex OAuth route: ~1.05M total context is shared with a 128K output reserve, leaving ~920K of input. The plugin defaults to 900,000 and clamps to 918,000 rather than promising more."
+  - "An over-large window fails late - the request streams response.created and then returns context_length_exceeded - so it surfaces as a mid-turn crash rather than a configuration error. Lower target_context_window and re-apply if a turn dies that way."
+capabilities:
+  provides_tools:
+    - codex_truly
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

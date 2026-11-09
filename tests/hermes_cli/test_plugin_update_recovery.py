@@ -41,7 +41,7 @@ if sys.argv[4] == "True":
 os._exit(17)
 '''
     child = subprocess.run([sys.executable, "-c", program, str(project), str(staged), str(target), str(committed)],
-                           env=env, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+                           env=env, cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False)
     assert child.returncode == 17, child.stderr
     recovery = '''
 from pathlib import Path
@@ -53,7 +53,7 @@ with runtime_lock(project):
     recover_publication(project)
 '''
     result = subprocess.run([sys.executable, "-c", recovery, str(project)], env=env, cwd=tmp_path,
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert (target / "__init__.py").read_text(encoding="utf-8") == ("new code" if committed else "old code")
     assert json.loads(metadata.read_text(encoding="utf-8"))["example"]["revision"] == ("new" if committed else "old")

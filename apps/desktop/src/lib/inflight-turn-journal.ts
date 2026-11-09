@@ -6,6 +6,7 @@ import {
 } from '@/lib/chat-messages'
 import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
+import { scheduleStreamWork } from '@/lib/stream-work-clock'
 
 /**
  * Crash-survivable in-flight turn journal.
@@ -41,9 +42,10 @@ const MAX_TEXT_PART_CHARS = 64 * 1024
 const MAX_METADATA_CHARS = 2 * 1024
 const MAX_USER_ATTACHMENT_REFS = 256
 const MAX_USER_ATTACHMENT_REF_CHARS = 64 * 1024
-/** Streaming repaints arrive every ~33ms; localStorage writes are synchronous.
- *  Trailing-edge throttle keeps the journal off the hot path — a crash costs at
- *  most this much of the newest tail. */
+/** Streaming commits arrive every ~33ms; localStorage writes are synchronous.
+ *  Coalesce writes for 400ms, with incoming commits draining overdue timers.
+ *  A native fallback keeps quiet tails independent of hidden paint/timer throttling;
+ *  blocked event loops and OS sleep still prevent a hard crash-loss bound. */
 const PERSIST_THROTTLE_MS = 400
 
 // A renderer can accumulate one entry per session over its lifetime. Sweep the
@@ -52,6 +54,9 @@ const PERSIST_THROTTLE_MS = 400
 let sessionStoreSwept = false
 
 export interface InFlightTurnSnapshot {
+  /** The owner admission whose execution streamed this tail (`turnAdmissionId`); absent from older entries and from
+   *  owners that stamp no execution. */
+  admissionId?: string
   messages: ChatMessage[]
   streamId: null | string
   turnStartedAt: null | number
@@ -64,6 +69,7 @@ export interface JournalableSessionState {
   messages: ChatMessage[]
   storedSessionId: null | string
   streamId: null | string
+  turnAdmissionId?: null | string
   turnStartedAt: null | number
 }
 
@@ -74,12 +80,79 @@ interface JournalStore {
 
 export interface InFlightRecoveryResult {
   applied: boolean
-  /** The base transcript already contains the journaled turn's completed
-   *  reply — the journal entry is stale and has been cleared. */
+  /** The journaled turn is finished (the base holds its completed reply, or the
+   *  owner no longer lists it): the journal entry is stale and has been cleared. */
   caughtUp: boolean
   messages: ChatMessage[]
   streamId: null | string
   turnStartedAt: null | number
+  /** The recovered turn's admission when it may still be pending on the owner: the session's live turn now runs it. */
+  admissionId?: null | string
+}
+
+/** What a session's owner has not finished, from its reopen snapshot's pending
+ *  list (`pending`): every admission still queued, running, or lost in a crash
+ *  (`unknown`), by the owner's admission id and the client's submission id. */
+export interface OwnerPendingTurns {
+  admissionIds: ReadonlySet<string>
+  submissionIds: ReadonlySet<string>
+  /** The owner listed any admission at all. */
+  listed: boolean
+  /** The page beside this list could not be read after the owner answered, so it may lack a finished turn's reply:
+   *  that turn's journal folds as settled output instead of being retired. */
+  replyUnread?: boolean
+}
+
+/** The owner's pending list, or undefined when the snapshot carries none (an
+ *  owner without an admission ledger): then only the transcript can judge. */
+export function ownerPendingTurns(pendingSubmissions: unknown): OwnerPendingTurns | undefined {
+  if (!Array.isArray(pendingSubmissions)) {
+    return undefined
+  }
+
+  const ids = (field: 'admission_id' | 'input_id') =>
+    new Set(pendingSubmissions.flatMap(raw => (typeof raw?.[field] === 'string' ? [raw[field] as string] : [])))
+
+  return { admissionIds: ids('admission_id'), submissionIds: ids('input_id'), listed: pendingSubmissions.length > 0 }
+}
+
+/** The admission the owner executes now: its pending list's `started` row (a queued row in transfer to that
+ *  execution also reads `started`, flagged `steering`). Null when it lists none. */
+export function runningAdmission(pendingSubmissions: unknown): null | string {
+  const row = Array.isArray(pendingSubmissions)
+    ? pendingSubmissions.find(raw => raw?.status === 'started' && raw?.steering !== true)
+    : undefined
+
+  return typeof row?.admission_id === 'string' ? row.admission_id : null
+}
+
+// An entry that names no execution (an older build's) falls back to its prompts: a send's optimistic prompt is
+// `user-<submission id>` (use-prompt-actions/submit.ts). That is the id of the prompt's FIRST send only: a
+// regenerate keeps the bubble and a queue drain adds none, which is why entries now carry `admissionId`.
+const SUBMITTED_PROMPT_ID = /^user-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
+
+/** A journaled turn the owner no longer lists has finished: its stored rows are
+ *  the transcript, wherever the loaded page ends, so the journal is stale. A
+ *  listed turn is still running (folded live) or was lost in a crash (`unknown`:
+ *  recovered, which is what the journal is for). An entry that names neither its
+ *  execution nor a sent prompt can only be judged finished when the owner lists nothing. */
+function ownerFinishedJournaledTurn(snapshot: InFlightTurnSnapshot, owner: OwnerPendingTurns): boolean {
+  if (typeof snapshot.admissionId === 'string') {
+    return !owner.admissionIds.has(snapshot.admissionId)
+  }
+
+  const submissions = snapshot.messages.flatMap(message =>
+    message.role === 'user' ? (SUBMITTED_PROMPT_ID.exec(message.id)?.slice(1, 2) ?? []) : []
+  )
+
+  return submissions.length > 0 ? !submissions.some(id => owner.submissionIds.has(id)) : !owner.listed
+}
+
+/** Whether the session's journal holds a turn its owner has finished (see `ownerFinishedJournaledTurn`). */
+export function journaledTurnFinished(storedSessionId: null | string, owner: OwnerPendingTurns | undefined): boolean {
+  const snapshot = owner ? readInFlightTurnJournal(storedSessionId) : null
+
+  return Boolean(owner && snapshot && ownerFinishedJournaledTurn(snapshot, owner))
 }
 
 function storage(): Storage | null {
@@ -901,13 +974,13 @@ export function mergeInFlightMessages(
   }
 }
 
-const persistTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const persistTimers = new Map<string, { cancel: () => void; dueAt: number }>()
 const persistLatest = new Map<string, JournalableSessionState>()
 
 /** @internal Test-only reset for module-scoped throttles and sweep state. */
 export function resetInFlightTurnJournalStateForTests(): void {
   for (const timer of persistTimers.values()) {
-    clearTimeout(timer)
+    timer.cancel()
   }
 
   persistTimers.clear()
@@ -943,6 +1016,7 @@ function writeSnapshot(storedSessionId: string, state: JournalableSessionState):
   }
 
   const raw = serializeSnapshot({
+    ...(state.turnAdmissionId ? { admissionId: state.turnAdmissionId } : {}),
     messages,
     streamId: state.streamId,
     turnStartedAt: state.turnStartedAt,
@@ -1008,13 +1082,22 @@ export function persistInFlightTurnState(state: JournalableSessionState): void {
 
   persistLatest.set(storedSessionId, state)
 
-  if (persistTimers.has(storedSessionId)) {
+  const pending = persistTimers.get(storedSessionId)
+
+  if (pending) {
+    if (performance.now() >= pending.dueAt) {
+      pending.cancel()
+      persistTimers.delete(storedSessionId)
+      persistLatest.delete(storedSessionId)
+      writeSnapshot(storedSessionId, state)
+    }
+
     return
   }
 
-  persistTimers.set(
-    storedSessionId,
-    setTimeout(() => {
+  persistTimers.set(storedSessionId, {
+    dueAt: performance.now() + PERSIST_THROTTLE_MS,
+    cancel: scheduleStreamWork(() => {
       persistTimers.delete(storedSessionId)
       const latest = persistLatest.get(storedSessionId)
 
@@ -1024,7 +1107,7 @@ export function persistInFlightTurnState(state: JournalableSessionState): void {
         writeSnapshot(storedSessionId, latest)
       }
     }, PERSIST_THROTTLE_MS)
-  )
+  })
 }
 
 export function readInFlightTurnJournal(storedSessionId: null | string): InFlightTurnSnapshot | null {
@@ -1040,7 +1123,7 @@ export function readInFlightTurnJournal(storedSessionId: null | string): InFligh
 export function recoverInFlightTurnJournal(
   storedSessionId: null | string,
   baseMessages: ChatMessage[],
-  options: { keepPending?: boolean } = {}
+  options: { keepPending?: boolean; owner?: OwnerPendingTurns } = {}
 ): InFlightRecoveryResult {
   const snapshot = readInFlightTurnJournal(storedSessionId)
 
@@ -1050,11 +1133,31 @@ export function recoverInFlightTurnJournal(
       caughtUp: false,
       messages: baseMessages,
       streamId: null,
-      turnStartedAt: null
+      turnStartedAt: null,
+      admissionId: null
     }
   }
 
-  const recovered = mergeInFlightMessages(baseMessages, snapshot.messages, options)
+  // The owner's ledger answers directly whether the journaled turn finished,
+  // wherever the loaded page ends; the transcript match below can only infer it.
+  const finished = Boolean(options.owner && ownerFinishedJournaledTurn(snapshot, options.owner))
+
+  if (finished && !options.owner?.replyUnread) {
+    clearInFlightTurnJournal(storedSessionId)
+
+    return {
+      applied: false,
+      caughtUp: true,
+      messages: baseMessages,
+      streamId: null,
+      turnStartedAt: null,
+      admissionId: null
+    }
+  }
+
+  // A finished turn is never the one running now, so it folds without a stream target or turn clock.
+  const keepPending = Boolean(options.keepPending) && !finished
+  const recovered = mergeInFlightMessages(baseMessages, snapshot.messages, { keepPending })
 
   if (recovered.caughtUp) {
     clearInFlightTurnJournal(storedSessionId)
@@ -1066,8 +1169,11 @@ export function recoverInFlightTurnJournal(
     // keepPending=false the session is not running, so the recovered rows are
     // settled history and the journal must clear on the next state update —
     // otherwise the same stale tail is folded again on every open.
-    streamId: recovered.applied ? (recovered.streamId ?? (options.keepPending ? snapshot.streamId : null)) : null,
-    turnStartedAt: recovered.applied ? snapshot.turnStartedAt : null
+    streamId: recovered.applied ? (recovered.streamId ?? (keepPending ? snapshot.streamId : null)) : null,
+    turnStartedAt: recovered.applied && !finished ? snapshot.turnStartedAt : null,
+    // A turn the owner finished is not the one the session runs now.
+    admissionId:
+      recovered.applied && !finished && typeof snapshot.admissionId === 'string' ? snapshot.admissionId : null
   }
 }
 
@@ -1079,11 +1185,96 @@ export function clearInFlightTurnJournal(storedSessionId: null | string): void {
   const timer = persistTimers.get(storedSessionId)
 
   if (timer) {
-    clearTimeout(timer)
+    timer.cancel()
     persistTimers.delete(storedSessionId)
   }
 
   persistLatest.delete(storedSessionId)
 
   removeSnapshot(storedSessionId)
+}
+
+/** Purge journaled in-flight tails for a deleted session.
+ *
+ *  Deleting a session removes its authoritative history, but the journal
+ *  kept the deleted turn's user prompt and tool calls in localStorage until
+ *  the entry aged out — the delete gesture did not reach the local copy (the
+ *  sibling `composer-queue` store was already cleared on delete; this one
+ *  was missed, which is the #77486 journal requirement).
+ *
+ *  A session has more than one id, so callers pass every id they hold: the
+ *  stored tip, the durable lineage root, and (the sidebar delete) the closing
+ *  runtime id. The store keys on the stored id, so each id drains its own key
+ *  in a single pass; entries under a stored id NO live path can still name
+ *  are NOT reachable this way — those age out under `MAX_AGE_MS`, which is
+ *  the retention floor this file already documents. Rotation closes that gap:
+ *  `migrateInFlightTurnJournal` re-keys an entry the moment its stored id
+ *  rotates, so a mid-lineage tip cannot strand its journal key. */
+function migrateSnapshot(store: Storage, oldKey: string, newKey: string, raw: string): void {
+  // Copy first, delete second. A crash between the two writes leaves BOTH
+  // keys holding the same recoverable tail — resume folds either one — and
+  // the old key is still reachable by the id the deleter holds (tip, lineage
+  // root, runtime id), so nothing escapes the delete gesture. Deleting first
+  // would instead trade recovery for a crash window.
+  if (readRaw(store, newKey) === null && !writeRaw(store, newKey, raw)) {
+    return
+  }
+
+  removeRaw(store, oldKey)
+}
+
+/** Re-key a journaled in-flight tail when its session's stored id rotates
+ *  (e.g. auto-compression forks a continuation: tip A -> tip B).
+ *
+ *  The old stored id leaves every live index (`runtimeIdByStoredSessionId`,
+ *  tiles, lineage resolution to the tip), so the key under it would otherwise
+ *  be unreachable by a later permanent delete and simply age out after
+ *  MAX_AGE_MS — a sensitive prompt tail surviving its session's delete.
+ *  Move the entry to the new id so recovery keeps working and deletion by
+ *  the new id reaches it. A null/cleared new id is a detach, not a rotation —
+ *  the old id remains the session's live tip, so its key stays reachable and
+ *  is left alone. */
+export function migrateInFlightTurnJournal(oldStoredSessionId: string, newStoredSessionId: null | string): void {
+  if (!oldStoredSessionId || !newStoredSessionId || oldStoredSessionId === newStoredSessionId) {
+    return
+  }
+
+  const store = storage()
+  const oldKey = sessionStorageKey(oldStoredSessionId)
+  const newKey = sessionStorageKey(newStoredSessionId)
+
+  if (!store || !oldKey || !newKey) {
+    return
+  }
+
+  const raw = readRaw(store, oldKey)
+
+  if (raw === null) {
+    return
+  }
+
+  // A tombstone or expired entry carries nothing recoverable — retire it.
+  const snapshot = raw === DISCARDED_SNAPSHOT_RAW ? null : parseSnapshot(raw)
+
+  if (!snapshot || isExpired(snapshot)) {
+    removeRaw(store, oldKey)
+
+    return
+  }
+
+  migrateSnapshot(store, oldKey, newKey, raw)
+}
+
+export function purgeInFlightTurnJournals(sessionIds: readonly (null | string | undefined)[]): void {
+  const store = storage()
+
+  if (!store) {
+    return
+  }
+
+  for (const storedSessionId of sessionIds) {
+    if (storedSessionId) {
+      clearInFlightTurnJournal(storedSessionId)
+    }
+  }
 }

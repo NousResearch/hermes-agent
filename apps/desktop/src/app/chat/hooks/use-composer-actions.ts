@@ -5,6 +5,7 @@ import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { LARGE_PASTE_TITLE_PREVIEW_CHARS, pasteSizeLabel } from '@/app/chat/composer/large-paste'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
+import { attachmentPathNeedsUpload } from '@/lib/attachment-upload-policy'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import { readDesktopFileDataUrlLocalFirst, selectDesktopPaths } from '@/lib/desktop-fs'
 import { downscaleDataUrlForPreview } from '@/lib/image-resize'
@@ -19,9 +20,11 @@ import {
   setComposerTerminalSelection,
   updateComposerAttachment
 } from '@/store/composer'
-import { notify, notifyError } from '@/store/notifications'
+import { notify, notifyError, readableError } from '@/store/notifications'
 
 import type { ImageDetachResponse } from '../../types'
+
+import { type DropFailure, dropWarning } from './drop-warning'
 
 const IMAGE_EXTENSION_PATTERN = /\.(png|jpe?g|gif|webp|bmp|tiff?|svg|ico)$/i
 
@@ -44,6 +47,11 @@ function blobExtension(blob: Blob): string {
 
 export function isImagePath(filePath: string): boolean {
   return IMAGE_EXTENSION_PATTERN.test(filePath)
+}
+
+/** A dropped File the composer sends as an image; never a folder, which has no bytes. */
+function isDroppedImage(file: File, filePath: string, isDirectory?: boolean): boolean {
+  return !isDirectory && (file.type.startsWith('image/') || isImagePath(file.name) || isImagePath(filePath))
 }
 
 /**
@@ -77,6 +85,21 @@ async function queuedAttachmentPreview(filePath: string): Promise<{ previewUrl: 
   return task
 }
 
+/**
+ * Prefer a cheap object-URL preview when the drop/paste still has a Blob/File
+ * handle. `readFileDataUrl` base64-loads the whole file over IPC (capped at
+ * 16 MB) and was freezing Desktop on Windows Explorer image drops (#63682).
+ * Object URLs skip that read; path-only attaches (paperclip) still fall back
+ * to the IPC data-URL path.
+ */
+export async function resolveImageAttachmentPreview(filePath: string, previewSource?: Blob | null): Promise<string> {
+  if (previewSource && previewSource.size > 0) {
+    return URL.createObjectURL(previewSource)
+  }
+
+  return attachmentPreviewDataUrl(filePath)
+}
+
 export interface DroppedFile {
   /** Browser-native File handle. Absent for in-app drags (e.g. project tree). */
   file?: File
@@ -91,6 +114,40 @@ export interface DroppedFile {
   lineEnd?: number
   /** A link dragged out of a browser (`text/uri-list`). Path-less; becomes an `@url:` chip. */
   url?: string
+}
+
+/** Resolve a native drop to a host-visible path, staging browser File bytes
+ * when the shell cannot expose a native filesystem path. Shared by both the
+ * main composer and message-edit composer so neither silently drops files.
+ * Empty when there is nothing to stage; a rejected stage keeps the server's
+ * or a proxy's reason (an nginx 413) for the caller to report. */
+export async function stageDroppedFilePath(candidate: DroppedFile): Promise<string> {
+  if (candidate.path) {
+    return candidate.path
+  }
+
+  // A folder without a host path has no bytes to stage.
+  if (candidate.isDirectory) {
+    throw new Error("Folders can't be attached by dropping them. Use Attach → Folder… instead.")
+  }
+
+  if (!candidate.file || !window.hermesDesktop?.stageFileForAttach) {
+    return ''
+  }
+
+  return window.hermesDesktop.stageFileForAttach(candidate.file)
+}
+
+/** Stage a drop for the main composer's chips. A rejected stage keeps its
+ * reason in the failure the drop warning shows, not a bare "Could not attach". */
+async function stageDropForChip(candidate: DroppedFile, name: string): Promise<{ failure: DropFailure; path: string }> {
+  try {
+    return { failure: { name }, path: await stageDroppedFilePath(candidate) }
+  } catch (error) {
+    const reason = readableError(error, '').message
+
+    return { failure: reason ? { name, reason } : { name }, path: '' }
+  }
 }
 
 /** MIME emitted by in-app drag sources (project tree, gutter line numbers).
@@ -193,10 +250,10 @@ export function extractDroppedFiles(transfer: DataTransfer): DroppedFile[] {
       seenPaths.add(path)
     }
 
+    // A folder with no host path (the browser Webapp) keeps its File, so the
+    // drop reaches the attach pipeline and is reported there, not dropped.
     if (isDirectory) {
-      if (path) {
-        result.push({ isDirectory: true, path })
-      }
+      result.push(path ? { isDirectory: true, path } : { file, isDirectory: true, path })
 
       return
     }
@@ -295,8 +352,54 @@ function droppedLinkUrls(transfer: DataTransfer): string[] {
  * in remote mode, and an image needs its bytes uploaded to get vision either
  * way. So OS drops must go through the attachment/upload pipeline rather than
  * leaking a local path into the prompt text.
+ *
+ * `staging` narrows that: when the session's backend resolves this machine's
+ * paths as-is (a local connection on a shared filesystem — #52427), a
+ * non-image OS drop keeps its original-path inline `@file:` ref instead of
+ * being copied into the gateway's staging dir. Without it (legacy callers)
+ * every OS drop is staged, as before.
  */
-export function partitionDroppedFiles(candidates: DroppedFile[]): {
+export interface OsDropStagingContext {
+  /** The session's backend cwd — cross-filesystem detection (Windows host → POSIX backend). */
+  backendCwd?: null | string
+  /** Whether the connection owning the session is a remote gateway. */
+  remote?: boolean
+  /** Terminal backend name from session.info (local | docker | ssh | ...). */
+  terminalBackend?: null | string
+}
+
+function osDropNeedsStaging(candidate: DroppedFile, staging?: OsDropStagingContext): boolean {
+  if (!staging) {
+    return true
+  }
+
+  // No path -> no inline ref is possible; keep it on the upload pipeline so
+  // the failure surfaces ("Could not attach") instead of the drop vanishing.
+  if (!candidate.path) {
+    return true
+  }
+
+  // Images keep the attach pipeline everywhere: vision needs the bytes queued
+  // gateway-side even when the path itself resolves.
+  const file = candidate.file
+
+  if (file && (file.type.startsWith('image/') || isImagePath(file.name))) {
+    return true
+  }
+
+  if (isImagePath(candidate.path)) {
+    return true
+  }
+
+  return (
+    Boolean(staging.remote) || attachmentPathNeedsUpload(candidate.path, staging.backendCwd, staging.terminalBackend)
+  )
+}
+
+export function partitionDroppedFiles(
+  candidates: DroppedFile[],
+  staging?: OsDropStagingContext
+): {
   osDrops: DroppedFile[]
   inAppRefs: DroppedFile[]
 } {
@@ -304,7 +407,7 @@ export function partitionDroppedFiles(candidates: DroppedFile[]): {
   const inAppRefs: DroppedFile[] = []
 
   for (const candidate of candidates) {
-    if (candidate.file) {
+    if (candidate.file && osDropNeedsStaging(candidate, staging)) {
       osDrops.push(candidate)
     } else {
       inAppRefs.push(candidate)
@@ -352,7 +455,21 @@ export function useComposerActions({
    *  attach paths funnel through here. */
   const attachToMain = useCallback(
     (attachment: ComposerAttachment) => {
-      scope.add(attachment)
+      const stagedUpload =
+        attachment.kind === 'file' && attachment.path
+          ? window.hermesDesktop?.getStagedFileForAttach?.(attachment.path)
+          : undefined
+
+      const displayName =
+        attachment.kind === 'file' && attachment.path && attachment.label === pathLabel(attachment.path)
+          ? window.hermesDesktop?.getStagedFileDisplayName?.(attachment.path)
+          : undefined
+
+      scope.add({
+        ...attachment,
+        ...(stagedUpload ? { stagedUpload } : {}),
+        ...(displayName ? { label: displayName } : {})
+      })
       requestComposerFocus(scope.target)
     },
     [scope]
@@ -396,11 +513,21 @@ export function useComposerActions({
 
   const pickContextPaths = useCallback(
     async (kind: 'file' | 'folder') => {
-      const paths = await selectDesktopPaths({
-        title: kind === 'file' ? 'Add files as context' : 'Add folders as context',
-        defaultPath: currentCwd || undefined,
-        directories: kind === 'folder'
-      })
+      let paths: string[]
+
+      try {
+        paths = await selectDesktopPaths({
+          title: kind === 'file' ? 'Add files as context' : 'Add folders as context',
+          defaultPath: currentCwd || undefined,
+          directories: kind === 'folder'
+        })
+      } catch (err) {
+        // As in pickImages: the browser stages a pick before returning its path, and a refused
+        // stage (a file over the upload limit) is reported here, not left as an unhandled rejection.
+        notifyError(err, copy.attachFailed)
+
+        return
+      }
 
       if (!paths?.length) {
         return
@@ -419,7 +546,7 @@ export function useComposerActions({
         })
       }
     },
-    [attachToMain, currentCwd]
+    [attachToMain, copy.attachFailed, currentCwd]
   )
 
   const insertContextPathInlineRef = useCallback(
@@ -465,7 +592,7 @@ export function useComposerActions({
   )
 
   const attachImagePath = useCallback(
-    async (filePath: string) => {
+    async (filePath: string, previewSource?: Blob | null) => {
       if (!filePath) {
         return false
       }
@@ -482,6 +609,18 @@ export function useComposerActions({
       attachToMain(baseAttachment)
 
       try {
+        // OS drops / clipboard blobs pass their File/Blob so preview never
+        // base64-loads the full image over IPC (Windows freeze on Explorer
+        // drag-drop — #63682). Path-only picks keep the queued IPC thumbnail
+        // path; blob previews skip the read entirely.
+        if (previewSource && previewSource.size > 0) {
+          const previewUrl = URL.createObjectURL(previewSource)
+
+          scope.updateIfCurrent(baseAttachment, { previewUrl })
+
+          return true
+        }
+
         const { previewUrl, thumbnailUrl } = await queuedAttachmentPreview(filePath)
 
         if (previewUrl) {
@@ -532,7 +671,10 @@ export function useComposerActions({
           return false
         }
 
-        return isCurrent() ? attachImagePath(savedPath) : false
+        // Reuse the in-hand blob for the chip preview — do not re-read the
+        // just-written temp file as a data URL. A late component unmount must
+        // not leak the attach: attach only while still current.
+        return isCurrent() ? attachImagePath(savedPath, blob) : false
       } catch (err) {
         notifyError(err, copy.imageAttachFailed)
 
@@ -543,16 +685,26 @@ export function useComposerActions({
   )
 
   const pickImages = useCallback(async () => {
-    const paths = await selectDesktopPaths({
-      title: copy.attachImages,
-      defaultPath: currentCwd || undefined,
-      filters: [
-        {
-          name: t.composer.images,
-          extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff']
-        }
-      ]
-    })
+    let paths: string[]
+
+    try {
+      paths = await selectDesktopPaths({
+        title: copy.attachImages,
+        defaultPath: currentCwd || undefined,
+        filters: [
+          {
+            name: t.composer.images,
+            extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff']
+          }
+        ]
+      })
+    } catch (err) {
+      // The browser stages a pick before returning its path; a refused stage (an image over the
+      // upload limit) is reported here, not left as an unhandled rejection.
+      notifyError(err, copy.imageAttachFailed)
+
+      return
+    }
 
     if (!paths?.length) {
       return
@@ -561,7 +713,7 @@ export function useComposerActions({
     for (const path of paths) {
       await attachImagePath(path)
     }
-  }, [attachImagePath, copy.attachImages, currentCwd, t.composer.images])
+  }, [attachImagePath, copy.attachImages, copy.imageAttachFailed, currentCwd, t.composer.images])
 
   const pasteClipboardImage = useCallback(
     async ({ silent = false }: { silent?: boolean } = {}) => {
@@ -666,7 +818,8 @@ export function useComposerActions({
       }
 
       let attached = false
-      let lastFailure: string | null = null
+      // Every item that failed, so a drop that attached some files still names the rest.
+      const failures: DropFailure[] = []
 
       for (const candidate of candidates) {
         const { file, isDirectory, path: knownPath } = candidate
@@ -680,7 +833,7 @@ export function useComposerActions({
               continue
             }
 
-            lastFailure = `Could not attach folder ${knownPath || ''}`
+            failures.push({ name: `folder ${knownPath || ''}` })
 
             continue
           }
@@ -692,7 +845,7 @@ export function useComposerActions({
               continue
             }
 
-            lastFailure = `Could not attach ${knownPath}`
+            failures.push({ name: knownPath })
 
             continue
           }
@@ -703,7 +856,7 @@ export function useComposerActions({
             continue
           }
 
-          lastFailure = `Could not attach ${knownPath || 'file'}`
+          failures.push({ name: knownPath || 'file' })
 
           continue
         }
@@ -712,43 +865,47 @@ export function useComposerActions({
           !knownPath && window.hermesDesktop?.getPathForFile ? window.hermesDesktop.getPathForFile(file) : ''
 
         const filePath = knownPath || fallbackPath || ''
-        const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (filePath && isImagePath(filePath))
+        const isImage = isDroppedImage(file, filePath, isDirectory)
 
         if (isImage) {
-          // Finder may expose a dropped screenshot through a short-lived
-          // TemporaryItems/NSIRD_screencaptureui path even when the visible
-          // file has already landed on Desktop. Reading that path for the
-          // preview can succeed, then image.attach fails after macOS removes
-          // it before submit. Persist the File bytes into Desktop's durable
-          // composer-image cache first; keep the native path as a compatibility
-          // fallback for older shells that cannot save the buffer.
-          if ((await attachImageBlob(file)) || (filePath && (await attachImagePath(filePath)))) {
+          // Persist the File bytes into Desktop's durable composer-image cache
+          // FIRST: Finder may expose a dropped screenshot through a short-lived
+          // TemporaryItems/NSIRD_screencaptureui path even when the visible file
+          // has already landed on Desktop — reading that path for the preview
+          // can succeed, then image.attach fails after macOS removes it before
+          // submit. attachImageBlob also hands the in-hand blob through for a
+          // non-blocking object-URL chip preview (#63682); the native path stays
+          // the fallback for shells that cannot save the buffer.
+          if ((await attachImageBlob(file)) || (filePath && (await attachImagePath(filePath, file)))) {
             attached = true
 
             continue
           }
 
-          lastFailure = `Could not attach ${file.name || 'image'}`
+          failures.push({ name: file.name || 'image' })
 
           continue
         }
 
-        if (filePath && attachContextFilePath(filePath)) {
+        // The resolved native path wins; with none, the File bytes are staged.
+        const staged = await stageDropForChip({ ...candidate, path: filePath }, file.name || 'file')
+
+        if (staged.path && attachContextFilePath(staged.path)) {
           attached = true
 
           continue
         }
 
-        lastFailure = `Could not attach ${file.name || 'file'}`
+        failures.push(staged.failure)
       }
 
-      if (!attached && lastFailure) {
-        notify({ kind: 'warning', title: copy.dropFiles, message: lastFailure })
+      if (failures.length) {
+        notify({ kind: 'warning', title: copy.dropFiles, ...dropWarning(failures, copy.dropFilesMore) })
       }
 
       return attached
     },
-    [attachContextFilePath, attachContextFolderPath, attachImageBlob, attachImagePath, copy.dropFiles]
+    [attachContextFilePath, attachContextFolderPath, attachImageBlob, attachImagePath, copy.dropFiles, copy.dropFilesMore]
   )
 
   const removeAttachment = useCallback(

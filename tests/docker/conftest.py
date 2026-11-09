@@ -29,13 +29,14 @@ def _docker_available() -> bool:
     try:
         r = subprocess.run(
             ["docker", "info"], capture_output=True, timeout=5,
+            check=False,
         )
         return r.returncode == 0
     except (subprocess.TimeoutExpired, OSError):
         return False
 
 
-def pytest_collection_modifyitems(config, items):  # noqa: D401 - pytest hook
+def pytest_collection_modifyitems(config, items):
     """Apply docker-suite policy: timeout bump + skip on missing docker."""
     docker_ok = _docker_available()
     skip_docker = pytest.mark.skip(
@@ -63,6 +64,7 @@ def built_image() -> str:
     result = subprocess.run(
         ["docker", "build", "-t", IMAGE_TAG, repo_root],
         capture_output=True, text=True, timeout=1200,
+        check=False,
     )
     assert result.returncode == 0, (
         f"docker build failed:\n{result.stderr[-2000:]}"
@@ -79,6 +81,7 @@ def container_name(request) -> Iterator[str]:
     subprocess.run(
         ["docker", "rm", "-f", name],
         capture_output=True, timeout=10,
+        check=False,
     )
 
 
@@ -119,6 +122,7 @@ def docker_exec(
     cmd = ["docker", "exec", "-u", user, *extra_docker_args, container, *args]
     return subprocess.run(
         cmd, capture_output=True, text=True, timeout=timeout,
+        check=False,
     )
 
 
@@ -233,16 +237,29 @@ def poll_container(
     ``deadline_s`` elapses.
 
     Returns ``(success, last_stdout)``. Useful for waiting on a process
-    to appear, a port to open, a file to contain a string, etc.
+    to appear, a port to open, a file to contain a string, etc. Raises
+    ``AssertionError`` when no attempt completed (every ``docker exec``
+    stalled): that is no verdict, so a negative ``assert not ok`` must not pass.
     """
     end = time.monotonic() + deadline_s
     last = ""
-    while time.monotonic() < end:
-        r = docker_exec_sh(container, probe, user=user, timeout=10)
+    completed = False
+    while (remaining := end - time.monotonic()) > 0:
+        try:
+            r = docker_exec_sh(container, probe, user=user, timeout=min(10.0, remaining))
+        except subprocess.TimeoutExpired as exc:
+            # A stalled ``docker exec`` (busy daemon on a loaded runner) is one failed attempt,
+            # not the verdict: keep polling until the deadline. Keep the last real stdout if any.
+            if not completed:
+                last = f"docker exec stalled: {exc}"
+            continue
+        completed = True
         last = r.stdout
         if r.returncode == 0:
             return True, last
-        time.sleep(interval_s)
+        time.sleep(min(interval_s, max(0.0, end - time.monotonic())))
+    if not completed:
+        raise AssertionError(f"No probe of {container} completed within {deadline_s}s; {last}")
     return False, last
 
 
@@ -257,7 +274,8 @@ def wait_for_path(
     """Poll ``test -<kind> <path>`` inside the container until success or timeout.
 
     ``kind`` is the ``test`` flag: ``'f'`` for file, ``'d'`` for directory,
-    ``'e'`` for existence. Returns ``True`` on success, ``False`` on timeout.
+    ``'e'`` for existence. Returns ``True`` on success, ``False`` on timeout;
+    raises ``AssertionError`` if no probe completed.
     """
     return poll_container(
         container, f"test -{kind} {path}",
@@ -305,6 +323,7 @@ def wait_for_docker_logs(
         r = subprocess.run(
             ["docker", "logs", container],
             capture_output=True, text=True, timeout=10,
+            check=False,
         )
         last = r.stdout + r.stderr
         if needle in last:

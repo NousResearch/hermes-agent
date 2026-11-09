@@ -33,6 +33,13 @@ def test_a_mirrored_switch_reaches_the_config_file(config_home, key):
     assert _set(key, "true")["result"] == {"key": key, "value": True}
     assert yaml.safe_load(config_home.read_text())[section][name] is True
 
+def test_timestamps_persists_display_timestamps(config_home):
+    """Ink's /timestamps on a standalone backend writes the classic CLI's key, not 4002."""
+    assert _set("timestamps", "on")["result"] == {"key": "timestamps", "value": "on"}
+    assert yaml.safe_load(config_home.read_text())["display"]["timestamps"] is True
+    assert _set("timestamps", "off")["result"] == {"key": "timestamps", "value": "off"}
+    assert yaml.safe_load(config_home.read_text())["display"]["timestamps"] is False
+
 def test_a_non_boolean_is_refused_rather_than_written(config_home):
     answer = _set("display.in_app_tips", "sometimes")
 

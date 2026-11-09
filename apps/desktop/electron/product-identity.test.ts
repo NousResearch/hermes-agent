@@ -229,7 +229,7 @@ test('packaging isolates boot metadata and executable names without renaming rel
 
     const {
       AppInfo
-    }: { AppInfo: typeof BuilderAppInfo } = require('../../../node_modules/app-builder-lib/dist/appInfo.js')
+    }: { AppInfo: typeof BuilderAppInfo } = require('app-builder-lib')
 
     const appInfo: BuilderAppInfo = new AppInfo(
       { config, metadata: { ...pkg, ...config.extraMetadata } } as Packager,
@@ -242,10 +242,7 @@ test('packaging isolates boot metadata and executable names without renaming rel
     assert.equal(appInfo.productFilename, identity.windowsExecutableName)
     assert.equal(config.mac.extendInfo.CFBundleExecutable, config.executableName)
     assert.equal(config.artifactName, stable.artifactName)
-    assert.equal(
-      config.msix.customManifestPath,
-      'build/msix-manifest.xml'
-    )
+    assert.equal(config.msix.customManifestPath, 'build/msix-manifest.xml')
 
     const {
       appIdentity

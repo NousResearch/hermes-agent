@@ -53,7 +53,7 @@ def partial_clone(tmp_path: Path):
 
 def _fetched(clone: Path, sha: str) -> bool:
     env = {**_ENV, "GIT_NO_LAZY_FETCH": "1"}
-    return subprocess.run(["git", "cat-file", "-e", sha], cwd=clone, env=env, capture_output=True).returncode == 0
+    return subprocess.run(["git", "cat-file", "-e", sha], cwd=clone, env=env, capture_output=True, check=False).returncode == 0
 
 
 def test_update_check_ancestry_probe_never_fetches_from_the_promisor(partial_clone):

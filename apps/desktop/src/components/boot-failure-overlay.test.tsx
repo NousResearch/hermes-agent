@@ -1,12 +1,13 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
+import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import { $desktopBoot } from '@/store/boot'
 import { $notifications } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 
-import { BootFailureOverlay } from './boot-failure-overlay'
+import { BootFailureOverlay, StartupOverlay } from './boot-failure-overlay'
 
 // Remote-backend users hit a hard boot failure that isn't OAuth reauth (token
 // auth, wrong URL, unreachable host). The recovery screen must let them fix the
@@ -115,6 +116,66 @@ describe('BootFailureOverlay', () => {
     fireEvent.click(screen.getByRole('button', { name: /back/i }))
     expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /back/i })).toBeNull()
+  })
+
+  it('hides the modal on dismiss without clearing the boot error', () => {
+    const { rerender } = render(<BootFailureOverlay />)
+    const error = $desktopBoot.get().error
+
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect($desktopBoot.get().error).toBe(error)
+    expect($desktopBoot.get().error).toBeTruthy()
+
+    $desktopBoot.set({ ...$desktopBoot.get(), error: 'A different startup failure' })
+    rerender(<BootFailureOverlay />)
+    expect(screen.getByRole('dialog', { name: /Hermes couldn't start/i })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    $desktopBoot.set({ ...$desktopBoot.get(), error: null, running: false })
+    rerender(<BootFailureOverlay />)
+    $desktopBoot.set({ ...$desktopBoot.get(), error, running: false })
+    rerender(<BootFailureOverlay />)
+
+    expect(screen.getByRole('dialog', { name: /Hermes couldn't start/i })).toBeTruthy()
+  })
+
+  it('dismisses on Escape and keeps the boot error latched', () => {
+    render(<BootFailureOverlay />)
+    const error = $desktopBoot.get().error
+
+    fireEvent.keyDown(screen.getByRole('dialog', { name: /Hermes couldn't start/i }), { key: 'Escape' })
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect($desktopBoot.get().error).toBe(error)
+  })
+
+  it('dismisses from the embedded gateway settings view', async () => {
+    render(<BootFailureOverlay />)
+
+    fireEvent.click(screen.getByRole('button', { name: /gateway settings/i }))
+    expect(await screen.findByRole('dialog', { name: /gateway settings/i })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect($desktopBoot.get().error).toBeTruthy()
+  })
+
+  it('re-shows the same error after a retry starts and fails again', () => {
+    render(<BootFailureOverlay />)
+    const error = $desktopBoot.get().error
+
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    act(() => $desktopBoot.set({ ...$desktopBoot.get(), running: true }))
+    act(() => $desktopBoot.set({ ...$desktopBoot.get(), error, running: false }))
+
+    expect(screen.getByRole('dialog', { name: /Hermes couldn't start/i })).toBeTruthy()
   })
 
   it('drops local-only Repair and Use-local-gateway on a local failure', () => {
@@ -226,6 +287,45 @@ describe('BootFailureOverlay', () => {
       expect(cloudStatus).toHaveBeenCalledTimes(1)
       expect(cloudLogin).toHaveBeenCalledTimes(1)
       expect(nativeLogin).not.toHaveBeenCalled()
+    } finally {
+      restore()
+    }
+  })
+
+  it('asks a signed-out Webapp tab to sign in instead of offering recovery for a working service', async () => {
+    const restore = stubDesktop({ mode: 'local' })
+    $desktopBoot.set({
+      error: WEBAPP_LAUNCH_REQUIRED,
+      fakeMode: false,
+      message: 'boot failed',
+      phase: 'renderer.error',
+      progress: 40,
+      running: false,
+      timestamp: Date.now(),
+      visible: true
+    })
+
+    try {
+      render(<StartupOverlay />)
+      expect(await screen.findByText(en.boot.failure.webappTitle)).toBeTruthy()
+      expect(screen.getByText(en.boot.failure.webappDescription)).toBeTruthy()
+      expect(screen.queryByText(en.boot.failure.title)).toBeNull()
+      expect(screen.queryByRole('button', { name: /retry/i })).toBeNull()
+      expect(screen.queryByRole('button', { name: /repair/i })).toBeNull()
+      expect(screen.queryByRole('button', { name: /logs/i })).toBeNull()
+      expect(screen.queryByRole('button', { name: /close/i })).toBeNull()
+    } finally {
+      restore()
+    }
+  })
+
+  it('shows the recovery steps for any other startup failure', async () => {
+    const restore = stubDesktop({ mode: 'local' })
+
+    try {
+      render(<StartupOverlay />)
+      expect(await screen.findByText(en.boot.failure.title)).toBeTruthy()
+      expect(screen.queryByText(en.boot.failure.webappTitle)).toBeNull()
     } finally {
       restore()
     }

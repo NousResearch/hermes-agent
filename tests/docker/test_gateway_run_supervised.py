@@ -31,7 +31,10 @@ from tests.docker.conftest import (
 
 
 def _svstat(container: str, slot: str = "gateway-default") -> str:
-    r = docker_exec_sh(container, f"/command/s6-svstat /run/service/{slot}")
+    # Profile gateway slots live in the hermes-owned scandir; static
+    # services such as the dashboard stay in the root scandir.
+    scandir = "/run/hermes-service" if slot.startswith("gateway-") else "/run/service"
+    r = docker_exec_sh(container, f"/command/s6-svstat {scandir}/{slot}")
     return r.stdout if r.returncode == 0 else ""
 
 
@@ -67,6 +70,7 @@ def _wait_for_gateway_or_exit(
         r = subprocess.run(
             ["docker", "inspect", "-f", "{{.State.Status}}", container],
             capture_output=True, text=True, timeout=10,
+            check=False,
         )
         status = r.stdout.strip()
         if status == "exited":
@@ -126,6 +130,7 @@ def test_gateway_run_redirects_to_supervised(
     r = subprocess.run(
         ["docker", "inspect", "-f", "{{.State.Status}}", container_name],
         capture_output=True, text=True, timeout=10,
+        check=False,
     )
     assert r.returncode == 0 and r.stdout.strip() == "running", (
         f"container exited prematurely: {r.stdout!r}; "

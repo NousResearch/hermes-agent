@@ -19,6 +19,7 @@ from tools.checkpoint_manager import (
     _ref_name,
     _project_meta_path,
     _touch_project,
+    _dir_file_count,
 )
 from tools.checkpoint_maintenance import (
     clear_all, clear_legacy, maybe_auto_prune_checkpoints, prune_checkpoints, store_status,
@@ -239,17 +240,29 @@ class TestRealPruning:
     def test_max_file_size_mb_skips_large_files(
         self, tmp_path, checkpoint_base, monkeypatch,
     ):
+        """An over-cap file is excluded before Git invokes its clean filter."""
         monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         wd = tmp_path / "proj"
         wd.mkdir()
         (wd / "small.py").write_text("tiny\n")
         big = wd / "weights.bin"
         big.write_bytes(b"\0" * (2 * 1024 * 1024))  # 2 MB
+        (wd / ".gitattributes").write_text("weights.bin filter=must-not-run\n")
+
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(wd)) is None
+        assert _run_git(
+            ["config", "filter.must-not-run.clean", "hermes-filter-must-not-run"],
+            store, str(wd),
+        )[0]
+        assert _run_git(
+            ["config", "filter.must-not-run.required", "true"],
+            store, str(wd),
+        )[0]
 
         m = CheckpointManager(enabled=True, max_snapshots=5, max_file_size_mb=1)
         assert m.ensure_checkpoint(str(wd), "initial") is True
 
-        store = _store_path(checkpoint_base)
         ok, files, _ = _run_git(
             ["ls-tree", "-r", "--name-only", _ref_name(_project_hash(str(wd)))],
             store, str(wd),
@@ -259,12 +272,100 @@ class TestRealPruning:
         assert "small.py" in names
         assert "weights.bin" not in names  # filtered by size cap
 
+    def test_max_file_size_mb_drops_a_tracked_file_that_grows(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        """A prior small blob must not survive after its worktree file grows."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        wd = tmp_path / "proj"
+        wd.mkdir()
+        weights = wd / "weights.bin"
+        weights.write_bytes(b"small\n")
+
+        m = CheckpointManager(enabled=True, max_snapshots=5, max_file_size_mb=1)
+        assert m.ensure_checkpoint(str(wd), "small baseline") is True
+
+        weights.write_bytes(b"\0" * (2 * 1024 * 1024))
+        (wd / ".gitattributes").write_text("weights.bin filter=must-not-run\n")
+        store = _store_path(checkpoint_base)
+        assert _run_git(
+            ["config", "filter.must-not-run.clean", "hermes-filter-must-not-run"],
+            store, str(wd),
+        )[0]
+        assert _run_git(
+            ["config", "filter.must-not-run.required", "true"],
+            store, str(wd),
+        )[0]
+
+        m.new_turn()
+        assert m.ensure_checkpoint(str(wd), "file grew past cap") is True
+
+        ok, files, _ = _run_git(
+            ["ls-tree", "-r", "--name-only", _ref_name(_project_hash(str(wd)))],
+            store, str(wd),
+        )
+        assert ok
+        assert "weights.bin" not in set(files.splitlines())
+
 
 # =========================================================================
 # CheckpointManager — restoring
 # =========================================================================
 
 class TestRestore:
+    def test_restore_refuses_uncaptured_nested_repository(self, mgr, tmp_path):
+        project = tmp_path / "project"
+        nested = project / "nested"
+        nested.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=nested, check=True)
+        (nested / "main.py").write_text("committed\n")
+        subprocess.run(["git", "add", "main.py"], cwd=nested, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"],
+            cwd=nested, check=True,
+        )
+        assert mgr.ensure_checkpoint(str(project), "initial") is True
+        checkpoint = mgr.list_checkpoints(str(project))[0]["hash"]
+        (nested / "main.py").write_text("agent overwrite\n")
+
+        result = mgr.restore(str(project), checkpoint)
+
+        assert result["success"] is False
+        assert result["nested_repositories"] == ["nested"]
+        assert "rollback was not performed" in result["error"]
+        assert (nested / "main.py").read_text() == "agent overwrite\n"
+
+    def test_restore_selective_scope_ignores_unrelated_nested_repository(self, mgr, tmp_path):
+        project = tmp_path / "project"
+        nested = project / "nested"
+        nested.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=nested, check=True)
+        (nested / "main.py").write_text("committed\n")
+        subprocess.run(["git", "add", "main.py"], cwd=nested, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"],
+            cwd=nested, check=True,
+        )
+        notes = project / "notes.txt"
+        notes.write_text("before\n")
+        assert mgr.ensure_checkpoint(str(project), "initial") is True
+        checkpoint = mgr.list_checkpoints(str(project))[0]["hash"]
+
+        notes.write_text("after\n")
+        (nested / "main.py").write_text("agent overwrite\n")
+        result = mgr.restore(str(project), checkpoint, file_path="notes.txt")
+
+        assert result["success"] is True
+        assert notes.read_text() == "before\n"
+        assert (nested / "main.py").read_text() == "agent overwrite\n"
+
+        for requested in ("nested", "nested/main.py"):
+            notes.write_text("changed again\n")
+            result = mgr.restore(str(project), checkpoint, file_path=requested)
+            assert result["success"] is False
+            assert result["nested_repositories"] == ["nested"]
+            assert (nested / "main.py").read_text() == "agent overwrite\n"
+
     def test_restore_unknown_hash_fails(self, mgr, work_dir):
         assert mgr.restore(str(work_dir), "abc123")["success"] is False  # no checkpoints
         mgr.ensure_checkpoint(str(work_dir), "initial")
@@ -686,6 +787,77 @@ class TestErrorResilience:
         assert mgr.ensure_checkpoint(str(work_dir), "test") is False
 
 
+class TestDirFileCount:
+    """The 50k-file breadth guard counts only what a snapshot would stage."""
+
+    def test_checkpoint_guard_ignores_default_excluded_trees(
+        self, mgr, work_dir, monkeypatch
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager._MAX_FILES", 5)
+        build_dir = Path(work_dir) / "build"
+        build_dir.mkdir()
+        for idx in range(10):
+            (build_dir / f"generated-{idx}.o").write_text("generated")
+        # git applies a slash-less pattern (``*.log``) to a directory too.
+        log_dir = Path(work_dir) / "run.log"
+        log_dir.mkdir()
+        for idx in range(10):
+            (log_dir / f"part-{idx}.txt").write_text("log")
+
+        assert mgr.ensure_checkpoint(work_dir, "before_edit") is True
+
+    def test_checkpoint_guard_counts_retained_files_and_stops_at_limit(
+        self, mgr, work_dir, monkeypatch
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager._MAX_FILES", 5)
+        source_dir = Path(work_dir) / "src"
+        source_dir.mkdir()
+        for idx in range(10):
+            (source_dir / f"module-{idx}.py").write_text("pass\n")
+
+        assert _dir_file_count(work_dir) == 6
+        assert mgr.ensure_checkpoint(work_dir, "before_edit") is False
+
+
+class TestSnapshotScopeGuards:
+    def test_home_ancestors_are_never_snapshotted(self, mgr, fake_home, monkeypatch):
+        nested_home = fake_home / "users" / "me"
+        nested_home.mkdir(parents=True)
+        (nested_home / "notes.md").write_text("mine\n")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: nested_home))
+        for broad in (nested_home.parent, nested_home.parent.parent):
+            assert mgr.ensure_checkpoint(str(broad), "broad") is False
+
+    def test_existing_store_drops_a_browser_profile_it_already_captured(
+        self, mgr, work_dir, monkeypatch,
+    ):
+        import tools.checkpoint_manager as cm
+
+        profile = work_dir / "chrome_cdp_profile" / "Default"
+        profile.mkdir(parents=True)
+        (profile / "Cookies").write_text("locked sqlite")
+        # A build that predates the browser-profile exclude captures the profile...
+        with monkeypatch.context() as old_build:
+            old_build.setattr(cm, "DEFAULT_EXCLUDES",
+                              [p for p in cm.DEFAULT_EXCLUDES if "chrome" not in p])
+            assert mgr.ensure_checkpoint(str(work_dir), "old build") is True
+        # ...Chromium then rewrites and locks it (unreadable here), and the next snapshot on this
+        # build drops it from the same store without ever reading it.
+        (profile / "Cookies").write_text("rewritten while locked")
+        (profile / "Cookies").chmod(0)
+        mgr.new_turn()
+        (work_dir / "main.py").write_text("print('again')\n")
+        assert mgr.ensure_checkpoint(str(work_dir), "new build") is True
+
+        tree = subprocess.run(
+            ["git", f"--git-dir={_store_path()}", "ls-tree", "-r", "--name-only",
+             _ref_name(_project_hash(str(work_dir)))],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()
+        assert "main.py" in tree
+        assert not any(p.startswith("chrome_cdp_profile/") for p in tree)
+
+
 class TestTouchProjectMalformedMeta:
     """_touch_project must not raise when the project metadata file is corrupted.
 
@@ -789,6 +961,7 @@ class TestGpgIsolation:
             result = subprocess.run(
                 ["git", "config", "--file", str(store / "config"), "--get", key],
                 capture_output=True, text=True,
+                check=False,
             )
             assert result.stdout.strip() == "false", key
 
@@ -817,7 +990,7 @@ class TestGpgIsolation:
 # prune_checkpoints + maybe_auto_prune_checkpoints
 # =========================================================================
 
-def _seed_legacy_repo(base: Path, name: str, workdir: Path, mtime: float = None) -> Path:
+def _seed_legacy_repo(base: Path, name: str, workdir: Path, mtime: float | None = None) -> Path:
     """Create a minimal pre-v2 shadow repo directly under base."""
     shadow = base / name
     shadow.mkdir(parents=True)

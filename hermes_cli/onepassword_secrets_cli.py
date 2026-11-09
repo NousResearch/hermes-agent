@@ -386,34 +386,11 @@ def _op_whoami(binary: Path, account: str, *, token_value: str = "") -> Optional
     try:
         res = subprocess.run(
             cmd, env=env, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=10
+            encoding="utf-8", errors="replace", timeout=10,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
     if res.returncode != 0:
         return None
     return (res.stdout or "").strip().replace("\n", " ")[:120] or "authenticated"
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from rich.table import Table  # noqa: F401,E402
-import sys  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'masked_secret_prompt': ('hermes_cli.secret_prompt', 'masked_secret_prompt'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

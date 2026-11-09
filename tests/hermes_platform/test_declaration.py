@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from hermes_platform.declaration import DeclarationError, parse_declaration
-from hermes_platform.resolver.app import AppDef, AppResolver
+from hermes_platform.resolver.app import AppDef, AppLocation, AppResolver
 from hermes_platform.resolver.availability import Availability, availability, version_at_least
 
 WHERE = "test-plugin/plugin.yaml"
@@ -63,6 +63,21 @@ def test_app_block_parses_into_one_appdef_per_os():
     ({"darwin": {"presence": "bundle", "location": "Relative/Thing.app"}}, None, "must be absolute"),
     ({"darwin": {"presence": "bundle", "location": "https://example.test/Thing.app"}}, None, "must be absolute"),
     ({"win32": {"presence": "executable", "location": "Thing/thing.exe"}}, None, "must be absolute"),
+    (None, {"gpu": "amd"}, "requires.gpu must be one of"),
+    ({"darwin": {"presence": "bundle", "location": "/Applications/Thing */**/Thing.app"}}, None, "must be absolute"),
+    ({"linux": {"presence": "executable", "location": []}}, None, "location is required"),
+    ({"linux": {"presence": "executable", "location": [{"kind": "registry", "name": "thing"}]}}, None,
+     "must be a path or a mapping with kind one of"),
+    ({"linux": {"presence": "executable", "location": [{"kind": "app_bundle", "name": "Thing.app"}]}}, None,
+     "only valid under app.darwin"),
+    ({"darwin": {"presence": "bundle", "location": [{"kind": "command", "name": "thing"}]}}, None,
+     "needs app.darwin.presence executable"),
+    ({"linux": {"presence": "executable", "location": [{"kind": "snap", "name": "../thing"}]}}, None,
+     "location\\[0\\].name must be a bare name"),
+    ({"win32": {"presence": "executable", "location": [{"kind": "uninstall_registry", "display_name_prefix": "Thing"}]}},
+     None, "location\\[0\\].file must be a relative path"),
+    ({"linux": {"presence": "executable", "location": "/usr/bin/thing"}}, {"app": True, "min_version": "1.0"},
+     "needs a version source under app.linux"),
 ])
 def test_invalid_blocks_name_the_rule(raw_app, raw_requires, message):
     with pytest.raises(DeclarationError, match=message):
@@ -73,6 +88,28 @@ def test_availability_no_requirements_does_no_io():
     decl = parse_declaration("thing-mcp", None, None, where=WHERE)
     result = availability(decl, os_family="freebsd")
     assert result.state == "no_requirements" and result.offerable
+
+
+@pytest.mark.parametrize("gpu_class, state", [
+    ("nvidia", "no_requirements"),
+    ("unknown", "no_requirements"),
+    ("intel", "unsupported_gpu"),
+    ("apple_silicon", "unsupported_gpu"),
+    ("none", "unsupported_gpu"),
+])
+def test_requires_gpu_gates_on_the_host_gpu_class(monkeypatch, gpu_class, state):
+    """No `app:` block is needed; an unreadable GPU passes; the OS gate runs first and reads no GPU."""
+    from hermes_platform.host import facts
+
+    monkeypatch.setattr(facts, "gpu_class", lambda: gpu_class)
+    decl = parse_declaration("thing-mcp", None, {"gpu": "nvidia"}, where=WHERE)
+    result = availability(decl, os_family="win32")
+    assert result.state == state and result.offerable == (state == "no_requirements")
+
+    monkeypatch.setattr(facts, "gpu_class", lambda: pytest.fail("the OS gate must not read the GPU"))
+    both = parse_declaration("thing-mcp", {"win32": {"presence": "executable", "location": "C:/x/y.exe"}},
+                             {"app": True, "gpu": "nvidia"}, where=WHERE)
+    assert availability(both, os_family="darwin").state == "unsupported_os"
 
 
 def test_availability_unsupported_os_when_no_block_for_host():
@@ -106,6 +143,50 @@ def test_availability_missing_then_present_then_version_gate(tmp_path):
     assert availability(decl, os_family="darwin").state == "version_too_old"
 
 
+def test_location_list_parses_each_kind_in_order():
+    decl = parse_declaration("thing-mcp", {
+        "win32": {"presence": "executable", "location": [
+            {"kind": "uninstall_registry", "display_name_prefix": "Thing", "file": "bin/thing.exe"},
+            "%ProgramFiles%/Thing */thing.exe",
+        ]},
+        "linux": {"presence": "executable", "location": [
+            {"kind": "command", "name": "thing"}, {"kind": "flatpak", "app_id": "org.thing.Thing"},
+        ]},
+    }, None, where=WHERE)
+    win, linux = decl.app_for("win32"), decl.app_for("linux")
+    assert win is not None and linux is not None
+    assert win.locations == (AppLocation("uninstall_registry", "Thing", "bin/thing.exe"),
+                             AppLocation("path", "%ProgramFiles%/Thing */thing.exe"))
+    assert linux.locations == (AppLocation("command", "thing"), AppLocation("flatpak", "org.thing.Thing"))
+
+
+def test_min_version_lets_a_linux_block_go_without_a_version_source():
+    decl = parse_declaration("thing-mcp", {
+        "darwin": {"presence": "bundle", "location": "/Applications/Thing.app", "version": {"kind": "plist"}},
+        "linux": {"presence": "executable", "location": [{"kind": "command", "name": "thing"}]},
+    }, {"app": True, "min_version": "2.0"}, where=WHERE)
+    linux = decl.app_for("linux")
+    assert decl.min_version == "2.0" and linux is not None and linux.version_kind == "none"
+
+
+@pytest.mark.platforms("macos")
+def test_min_version_picks_a_newer_copy_found_after_an_old_one(tmp_path, monkeypatch):
+    monkeypatch.setenv("THINGROOT", str(tmp_path))
+    _bundle(tmp_path / "old", "1.0")
+    _bundle(tmp_path / "new", "2.4")
+    decl = parse_declaration("thing-mcp", {"darwin": {
+        "presence": "bundle",
+        "location": ["$THINGROOT/old/Applications/Thing.app", "$THINGROOT/new/Applications/Thing.app"],
+        "version": {"kind": "plist"},
+    }}, {"app": True, "min_version": "2.0"}, where=WHERE)
+    ok = availability(decl, os_family="darwin")
+    assert ok.state == "available" and ok.version == "2.4" and str(tmp_path / "new") in (ok.path or "")
+    too_old = parse_declaration("thing-mcp", {"darwin": {
+        "presence": "bundle", "location": "$THINGROOT/old/Applications/Thing.app", "version": {"kind": "plist"},
+    }}, {"app": True, "min_version": "2.0"}, where=WHERE)
+    assert availability(too_old, os_family="darwin").version == "1.0"
+
+
 def test_availability_is_not_a_boolean():
     with pytest.raises(TypeError):
         bool(Availability("available"))
@@ -129,7 +210,7 @@ def test_unexpanded_locations_are_missing_even_when_cwd_contains_them(tmp_path, 
         path = tmp_path / location
         path.parent.mkdir(exist_ok=True)
         path.write_text("fixture", encoding="utf-8")
-        definition = AppDef("thing", sys.platform, "executable", location)
+        definition = AppDef("thing", sys.platform, "executable", (AppLocation("path", location),))
         assert AppResolver(definition).locate().kind == "missing"
 
 

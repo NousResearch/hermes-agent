@@ -1,0 +1,83 @@
+{
+  "fixtureVersion": 1,
+  "name": "unset-restores-upper-value",
+  "description": "Proves rule-6: After the profile level unsets model.default it stops overriding and the tenant value applies again; unset of an absent key is accepted.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "model": {
+          "default": "hermes-3"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {
+        "model": {
+          "default": "hermes-4-405b"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "model": {
+          "provider": "nous"
+        }
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "model": {
+        "default": "hermes-4-405b",
+        "provider": "nous"
+      }
+    },
+    "provenance": {
+      "model.default": "tenant",
+      "model.provider": "profile"
+    },
+    "locks": []
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "unset",
+      "path": "model.default",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "unset",
+      "path": "model.provider",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "unset",
+      "path": "model.not_there",
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

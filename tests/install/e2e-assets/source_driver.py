@@ -14,12 +14,21 @@ import subprocess
 import sys
 
 
+def _live_app_dirs(app: Path, patterns: tuple[str, ...]) -> list[Path]:
+    # electron-builder's appOutDir names (win-unpacked, linux-arm64-unpacked,
+    # mac-arm64) never hold a dot; rollback copies beside them do: a raw
+    # Windows pack's before-pack keeps `<appOutDir>.bak`, which a later
+    # stage-and-swap update leaves alone, and the swap's `.previous` aside.
+    # The product never launches those, so neither may the verifier judge them.
+    return [path for pattern in patterns for path in app.glob(pattern)
+            if "." not in path.relative_to(app / "release").parts[0]]
+
+
 def desktop_outputs(root: Path) -> list[Path]:
-    desktop = root / "apps/desktop"
-    return [path for pattern in (
+    return _live_app_dirs(root / "apps/desktop", (
         "release/*/resources/app.asar.unpacked/dist",
         "release/mac*/Hermes.app/Contents/Resources/app.asar.unpacked/dist",
-    ) for path in desktop.glob(pattern)]
+    ))
 
 
 def verify_products(root: Path, desktop: str, node: Path | None = None) -> None:
@@ -31,10 +40,10 @@ def verify_products(root: Path, desktop: str, node: Path | None = None) -> None:
     if desktop == "present":
         if not outputs or not any((out / "index.html").is_file() for out in outputs):
             raise RuntimeError("desktop packaged renderer is missing or incomplete")
-        executables = [path for pattern in (
+        executables = [path for path in _live_app_dirs(app, (
             "release/*/Hermes.exe", "release/*/Hermes", "release/*/hermes",
             "release/mac*/Hermes.app/Contents/MacOS/Hermes",
-        ) for path in app.glob(pattern) if path.is_file() and path.stat().st_size]
+        )) if path.is_file() and path.stat().st_size]
         if not executables:
             raise RuntimeError("desktop executable is missing or empty")
     if node is None:

@@ -16,6 +16,11 @@
  *
  *   git merge-base --is-ancestor <stampCommit> HEAD
  *   git rev-list --count <stampCommit>..HEAD -- <RUNTIME_PATHS>
+ *   git ls-tree <stampCommit> / HEAD -- <RUNTIME_PATHS>   (only when the count is positive)
+ *
+ * The count is evidence and the endpoint content is the verdict: a change and its revert
+ * inside one update range leave the runtime byte-identical, which is exactly when
+ * `hermes update` reuses the packaged app (hermes_cli/desktop_build_reuse.py).
  *
  * Ancestry has to come first, because `A..HEAD` only means "how far HEAD is
  * ahead of A" when A is an ancestor of HEAD. When it is not, the range
@@ -56,15 +61,17 @@ export interface BundleSkewResult {
 
 export type RunGit = (
   args: string[],
-  options: { cwd: string }
-) => Promise<{ code: number; stderr: string; stdout: string }>
+  options: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs?: number }
+) => Promise<{ code: number | null; stderr: string; stdout: string }>
 
 /**
- * The apps/desktop paths that actually reach the user: renderer sources,
- * main-process sources, the HTML entry, the public/ assets Vite copies into
- * the bundle, app icons, and the packaging config. Docs, e2e specs, scratch
- * scripts, and dev tooling never reach the shipped app, so a delta confined
- * to them is not a torn install in any way the user can see.
+ * The paths that actually reach the user: renderer sources, main-process
+ * sources, the HTML entry, the public/ assets Vite copies into the bundle, app
+ * icons, and the packaging config -- plus apps/shared, which both bundles
+ * compile in (the renderer through the `@hermes/shared` alias, the main process
+ * by relative import). Docs, e2e specs, scratch scripts, and dev tooling never
+ * reach the shipped app, so a delta confined to them is not a torn install in
+ * any way the user can see.
  */
 export const RUNTIME_PATHS = [
   'apps/desktop/src',
@@ -73,10 +80,85 @@ export const RUNTIME_PATHS = [
   'apps/desktop/public',
   'apps/desktop/assets',
   'apps/desktop/package.json',
-  'apps/desktop/vite.config.ts'
+  'apps/desktop/vite.config.ts',
+  'apps/shared/src',
+  'apps/shared/package.json'
 ] as const
 
 const NOT_STALE: BundleSkewResult = { desktopCommitsBehind: null, outOfSync: false }
+
+type GitOptions = Parameters<RunGit>[1]
+
+/**
+ * True only on proof that every runtime path holds the same object at the stamp and at HEAD
+ * (equal object ids are equal content). An empty or failed listing proves nothing, so the
+ * commit count keeps the verdict.
+ */
+async function runtimeContentMatches(runGit: RunGit, stampCommit: string, options: GitOptions): Promise<boolean> {
+  const [built, head] = await Promise.all(
+    [stampCommit, 'HEAD'].map(commit => runGit(['ls-tree', commit, '--', ...RUNTIME_PATHS], options))
+  )
+
+  return built.code === 0 && head.code === 0 && built.stdout.trim() !== '' && built.stdout === head.stdout
+}
+
+/**
+ * About/version polls share one check per checkout, including failed checks.
+ * `isUpdating` may answer asynchronously (the marker's owner liveness is an
+ * async judgement); a sync answer keeps the check synchronous.
+ */
+export function createBundleSkewChecker(
+  stamp: BundleSkewStamp | null,
+  runGit: RunGit,
+  { isUpdating, now = Date.now }: { isUpdating: () => boolean | Promise<boolean>; now?: () => number }
+): (repoRoot: string) => Promise<BundleSkewResult> {
+  const pending = new Map<string, Promise<BundleSkewResult>>()
+  const cached = new Map<string, { result: BundleSkewResult; at: number }>()
+
+  const checkUnlessUpdating = (repoRoot: string, updating: boolean): Promise<BundleSkewResult> => {
+    if (updating) {
+      cached.clear()
+
+      return Promise.resolve(NOT_STALE)
+    }
+
+    const running = pending.get(repoRoot)
+
+    if (running) {
+      return running
+    }
+
+    const previous = cached.get(repoRoot)
+
+    if (previous && now() - previous.at < 30_000) {
+      return Promise.resolve(previous.result)
+    }
+
+    const check = detectBundleSkew(stamp, runGit, repoRoot)
+      .then(async result => {
+        if (await isUpdating()) {
+          return NOT_STALE
+        }
+
+        cached.set(repoRoot, { result, at: now() })
+
+        return result
+      })
+      .finally(() => pending.delete(repoRoot))
+
+    pending.set(repoRoot, check)
+
+    return check
+  }
+
+  return repoRoot => {
+    const updating = isUpdating()
+
+    return typeof updating === 'boolean'
+      ? checkUnlessUpdating(repoRoot, updating)
+      : updating.then(answer => checkUnlessUpdating(repoRoot, answer))
+  }
+}
 
 /** Matches write-build-stamp.mjs's all-zero placeholder for non-git builds. */
 export function isFallbackCommit(commit: string): boolean {
@@ -93,31 +175,39 @@ export async function detectBundleSkew(
   }
 
   try {
+    // A path-filtered walk of a tree:0 clone can otherwise fetch its entire
+    // missing history. Older Git ignores NO_LAZY_FETCH, so also bound and reap
+    // the process tree in execGit, not just the promise waiting for it.
+    const options = {
+      cwd: repoRoot,
+      env: { ...process.env, GIT_NO_LAZY_FETCH: '1', GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never' },
+      timeoutMs: 5000
+    }
+
     // Exit 0 = ancestor, 1 = unrelated or diverged, anything else = git could
     // not answer (unknown object, shallow clone, not a repo). Only the first
-    // makes the commit count below a statement about skew, and the other two
-    // are the same "unknowable" the branches above already answer quietly.
-    //
-    // Deliberately not falling back to comparing apps/desktop CONTENT here.
-    // Differing content would prove the build and the tree disagree, but not
-    // which way round: a user sitting on an older checkout than their build
-    // would be told "app build out of date" backwards. Ancestry is what makes
-    // this a proof that the renderer PREDATES the tree, which is the claim the
-    // warning actually makes.
-    const ancestry = await runGit(['merge-base', '--is-ancestor', stamp.commit, 'HEAD'], {
-      cwd: repoRoot
-    })
+    // makes the checks below a statement about skew, and the other two are the
+    // same "unknowable" the branches above already answer quietly. Ancestry is
+    // also what gives a content comparison a direction: without it, differing
+    // content could mean the checkout is OLDER than the build.
+    const ancestry = await runGit(['merge-base', '--is-ancestor', stamp.commit, 'HEAD'], options)
 
     if (ancestry.code !== 0) {
       return NOT_STALE
     }
 
-    const result = await runGit(['rev-list', '--count', `${stamp.commit}..HEAD`, '--', ...RUNTIME_PATHS], {
-      cwd: repoRoot
-    })
+    const result = await runGit(['rev-list', '--count', `${stamp.commit}..HEAD`, '--', ...RUNTIME_PATHS], options)
 
     if (result.code !== 0) {
-      return NOT_STALE
+      // A treeless (tree:0) checkout holds trees only for commits it checked
+      // out: the walk above needs every intermediate one and fails, but the
+      // stamp and HEAD endpoints are usually local. With ancestry proven, a
+      // differing endpoint diff means the renderer predates runtime changes.
+      // Exit 1 = differ; anything else (a stamp tree that is missing too) is
+      // still unknowable.
+      const diff = await runGit(['diff', '--quiet', stamp.commit, 'HEAD', '--', ...RUNTIME_PATHS], options)
+
+      return diff.code === 1 ? { desktopCommitsBehind: null, outOfSync: true } : NOT_STALE
     }
 
     const count = Number.parseInt(result.stdout.trim(), 10)
@@ -126,7 +216,10 @@ export async function detectBundleSkew(
       return { desktopCommitsBehind: Number.isFinite(count) ? count : null, outOfSync: false }
     }
 
-    return { desktopCommitsBehind: count, outOfSync: true }
+    // Commits are evidence, content is the verdict: a change and its revert in one update range
+    // count 2 but leave the runtime byte-identical, and `hermes update` then rightly reuses the
+    // packaged app instead of rebuilding it. Warning there would never clear.
+    return { desktopCommitsBehind: count, outOfSync: !(await runtimeContentMatches(runGit, stamp.commit, options)) }
   } catch {
     return NOT_STALE
   }

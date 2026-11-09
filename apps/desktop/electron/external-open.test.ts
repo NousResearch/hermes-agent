@@ -11,12 +11,13 @@ import { EventEmitter } from 'node:events'
 
 import { test } from 'vitest'
 
-import { type ExternalOpenDeps, openExternalUrl } from './external-open'
+import { type ExternalOpenDeps, openExternalUrl, reportPreOpenStatFailure } from './external-open'
 
 function makeDeps(overrides: Partial<ExternalOpenDeps> = {}) {
   const calls = {
     opened: [] as string[],
     fileOpened: [] as string[],
+    localOpened: [] as string[],
     notified: [] as Array<[string, string]>,
     logged: [] as string[]
   }
@@ -31,6 +32,11 @@ function makeDeps(overrides: Partial<ExternalOpenDeps> = {}) {
     },
     openFile: async raw => {
       calls.fileOpened.push(raw)
+    },
+    openLocalPath: async raw => {
+      calls.localOpened.push(raw)
+
+      return true
     },
     notifyFailure: (url, message) => calls.notified.push([url, message]),
     log: line => calls.logged.push(line),
@@ -93,6 +99,72 @@ test('dispatches file:// URLs to openFile', async () => {
   assert.deepEqual(calls.fileOpened, ['file:///C:/x.html'])
 })
 
+test('opens bare local paths through openLocalPath instead of rejecting them', async () => {
+  const { deps, calls } = makeDeps()
+
+  // Every shape `new URL()` cannot express as a web/file URL: a Windows drive
+  // letter parses as the bogus `c:` scheme, POSIX/UNC/`~` make the parser
+  // throw. All previously landed in the "Invalid external URL" reject.
+  for (const raw of [
+    'C:\\Users\\x\\a.md',
+    'C:/Work/report.html',
+    '/tmp/report.pdf',
+    '~/logs/desktop.log',
+    '\\\\server\\share\\a.md'
+  ]) {
+    const result = await openExternalUrl(raw, deps)
+
+    assert.deepEqual(result, { ok: true }, `expected ${raw} to open as a local path`)
+  }
+
+  assert.deepEqual(calls.localOpened, [
+    'C:\\Users\\x\\a.md',
+    'C:/Work/report.html',
+    '/tmp/report.pdf',
+    '~/logs/desktop.log',
+    '\\\\server\\share\\a.md'
+  ])
+  assert.equal(calls.fileOpened.length, 0)
+  assert.equal(calls.opened.length, 0)
+})
+
+test('resolves invalid, with the path logged, when openLocalPath cannot resolve the path', async () => {
+  const { deps, calls } = makeDeps({
+    openLocalPath: async () => false
+  })
+
+  const result = await openExternalUrl('C:\\Users\\x\\a.md', deps)
+
+  assert.deepEqual(result, { ok: false, reason: 'invalid' })
+  assert.ok(
+    calls.logged.some(line => line.includes('openPath resolve rejected') && line.includes('C:\\Users\\x\\a.md'))
+  )
+  assert.equal(calls.notified.length, 0)
+})
+
+test('notifies failed when openLocalPath throws', async () => {
+  const { deps, calls } = makeDeps({
+    openLocalPath: async () => {
+      throw new Error('stat failed')
+    }
+  })
+
+  const result = await openExternalUrl('/tmp/report.pdf', deps)
+
+  assert.deepEqual(result, { ok: false, reason: 'failed', message: 'stat failed' })
+  assert.deepEqual(calls.notified, [['/tmp/report.pdf', 'stat failed']])
+})
+
+test('opens protocol-relative URLs as https, never as local paths', async () => {
+  const { deps, calls } = makeDeps()
+
+  const result = await openExternalUrl('//cdn.example.com/img.png', deps)
+
+  assert.deepEqual(result, { ok: true })
+  assert.deepEqual(calls.opened, ['https://cdn.example.com/img.png'])
+  assert.equal(calls.localOpened.length, 0)
+})
+
 test('wsl: spawns cmd.exe and resolves ok on the happy path', async () => {
   const spawned: string[] = []
   const proc = new EventEmitter() as unknown as ChildProcess
@@ -133,4 +205,41 @@ test('wsl: falls back to openExternal and notifies when cmd.exe fails to spawn',
 
   assert.deepEqual(calls.opened, ['https://example.com/'])
   assert.deepEqual(calls.notified, [['https://example.com/', 'xdg-open missing']])
+})
+
+test('guard: missing-file error is reported once and classified as a miss', () => {
+  const reported: Array<[string, string]> = []
+  const logged: string[] = []
+
+  const error = Object.assign(new Error('This file does not exist: /tmp/gone.html'), { code: 'missing-file' })
+
+  const isMiss = reportPreOpenStatFailure(error, 'file:///tmp/gone.html', {
+    log: line => logged.push(line),
+    reportMissing: (url, message) => reported.push([url, message])
+  })
+
+  assert.equal(isMiss, true)
+  assert.deepEqual(reported, [['file:///tmp/gone.html', 'This file does not exist: /tmp/gone.html']])
+  assert.equal(logged.length, 0)
+})
+
+test('guard: a non-missing stat failure is logged and classified as proceed-to-OS', () => {
+  const reported: Array<[string, string]> = []
+  const logged: string[] = []
+
+  for (const code of ['EACCES', 'ELOOP', 'EPERM', 'ENAMETOOLONG']) {
+    const error = Object.assign(new Error(`${code}: stat failed`), { code })
+
+    const isMiss = reportPreOpenStatFailure(error, 'file:///srv/locked/report.html', {
+      log: line => logged.push(line),
+      reportMissing: (url, message) => reported.push([url, message])
+    })
+
+    assert.equal(isMiss, false, code)
+  }
+
+  // Nothing was fabricated as a miss, and every failure left a log line.
+  assert.equal(reported.length, 0)
+  assert.equal(logged.length, 4)
+  assert.ok(logged.every(line => line.includes('[file] pre-open stat failed')))
 })

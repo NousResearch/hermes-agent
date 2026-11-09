@@ -4,11 +4,13 @@ import { afterEach, describe, expect, it, type Mock, vi } from 'vitest'
 import type { DesktopVersionInfo } from '@/global'
 import { I18nProvider } from '@/i18n'
 import { $previewTabs, closeRightRail } from '@/store/preview'
+import { $updateStatus } from '@/store/updates'
 
 import { VersionDetails } from './version-details'
 
 afterEach((): void => {
   cleanup()
+  $updateStatus.set(null)
   closeRightRail()
   vi.unstubAllGlobals()
 })
@@ -87,7 +89,12 @@ describe('VersionDetails', () => {
     // clone (live provenance, no receipt): both honestly say Source.
     { version: { installedByScript: true }, visible: ['Source (install script)'] },
     { version: { source: 'git' }, visible: ['Distribution', 'Source'], absent: ['Source (install script)'] },
-    { version: {}, visible: ['Version'], absent: ['Distribution'] }
+    { version: {}, visible: ['Version'], absent: ['Distribution', 'This device', 'Connected backend'] },
+    // Both sides, labelled: this machine's install beside the active connection's backend.
+    {
+      version: { appVersion: '0.21.6', clientVersion: '0.22.2', backendVersion: '0.21.6' },
+      visible: ['This device', 'v0.22.2', 'Connected backend', 'v0.21.6']
+    }
   ]
 
   it.each(cases)('renders $version', ({ version, visible, absent = [] }: VersionCase): void => {
@@ -131,5 +138,40 @@ describe('VersionDetails', () => {
       )
     })
     expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  it('names the source channel, and offers the change action only where the caller passes one', () => {
+    const render_ = (action?: boolean) =>
+      render(
+        <I18nProvider>
+          <VersionDetails
+            channelAction={action ? <button type="button">Change</button> : undefined}
+            version={baseVersion}
+          />
+        </I18nProvider>
+      )
+
+    $updateStatus.set({ supported: true, mechanism: 'posix-handoff', channel: 'stable' })
+    render_()
+    expect(screen.getByText('Channel')).toBeTruthy()
+    expect(screen.getByText('Stable releases')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Change' })).toBeNull()
+    cleanup()
+
+    $updateStatus.set({ supported: true, mechanism: 'windows-handoff', branch: 'main' })
+    render_(true)
+    expect(screen.getByText(/Every commit \(main\)/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Change' })).toBeTruthy()
+    cleanup()
+
+    $updateStatus.set({ supported: true, mechanism: 'posix-handoff', branch: 'feature/gui' })
+    render_(true)
+    expect(screen.getByText(/Branch: feature\/gui/)).toBeTruthy()
+    cleanup()
+
+    // A packaged install's channel is the package's, not a source track: no row.
+    $updateStatus.set({ supported: true, mechanism: 'electron-updater', channel: 'stable' })
+    render_(true)
+    expect(screen.queryByText('Channel')).toBeNull()
   })
 })

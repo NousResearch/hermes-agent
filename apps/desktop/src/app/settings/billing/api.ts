@@ -1,3 +1,4 @@
+import { randomUuid } from '@hermes/shared'
 import { createContext, useContext, useMemo } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
@@ -57,6 +58,8 @@ export interface BillingApi {
   scheduleSubscriptionChange: (tierId: string) => Promise<BillingResult<BillingMutationResponse>>
   stepUp: (sessionId?: string) => Promise<BillingResult<BillingMutationResponse>>
   updateAutoReload: (input: UpdateAutoReloadInput) => Promise<BillingResult<BillingMutationResponse>>
+  /** Window plans: "Keep going on credits" (billing.keep_going_on_credits). */
+  updateKeepGoingOnCredits: (enabled: boolean) => Promise<BillingResult<BillingMutationResponse>>
 }
 
 interface RefusalRecord {
@@ -144,7 +147,7 @@ const callBilling = async <T>(
 }
 
 export const createBillingApi = (requestGateway: BillingRequestGateway): BillingApi => ({
-  charge: async (amountUsd, idempotencyKey = crypto.randomUUID()) => {
+  charge: async (amountUsd, idempotencyKey = randomUuid()) => {
     const result = await callBilling<BillingChargeResponse>(requestGateway, 'billing.charge', {
       amount_usd: amountUsd,
       idempotency_key: idempotencyKey
@@ -174,7 +177,9 @@ export const createBillingApi = (requestGateway: BillingRequestGateway): Billing
       enabled: input.enabled,
       ...(input.threshold_usd !== undefined ? { threshold: input.threshold_usd } : {}),
       ...(input.reload_to_usd !== undefined ? { top_up_amount: input.reload_to_usd } : {})
-    })
+    }),
+  updateKeepGoingOnCredits: enabled =>
+    callBilling<BillingMutationResponse>(requestGateway, 'billing.keep_going_on_credits', { enabled })
 })
 
 // An override for the gateway-backed api — DEV fixtures provide a simulated

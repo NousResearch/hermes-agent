@@ -8,7 +8,8 @@ into the WebSocket as binary frames with backpressure both ways, and runs the cl
 only from the viewer that currently holds the lease. noVNC's ``viewOnly`` is UX; this is the gate.
 
 A lease change closes the evicted viewer's socket with 4000 ``control-taken`` so its UI drops back to
-Watch mode and reconnects.
+Watch mode and reconnects. A viewer a browser tab asked for signs out with that tab: ``hermes webapp
+--sign-out`` closes it with 4401, and its ticket opens nothing afterwards.
 
 Design notes. The ticket rides in the query string on purpose: noVNC's Websock owns the socket and
 cannot negotiate a subprotocol or add a header, and the ticket is single-use and expires in 30 s, so
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -86,7 +88,54 @@ async def display_ws(ws: WebSocket) -> None:
     if info is None:
         await ws.close(code=_CLOSE_BAD_TICKET, reason="display ticket missing, expired or used")
         return
+    if _signed_out(ws, info):
+        await ws.close(code=_CLOSE_BAD_TICKET, reason="Signed out")
+        return
     await _bridge(ws, info)
+
+
+def _signed_out(ws: WebSocket, info: dict) -> bool:
+    """True when the browser tab that asked for this viewer has signed out since (the ticket's
+    browser credential generation is no longer current); otherwise the viewer is tracked with that
+    tab's sockets, so signing out closes it too. A ticket a native client minted carries no browser
+    credential and is left alone."""
+    from hermes_cli.browser_credential import is_current
+    from hermes_cli.web_session_sockets import track
+    admitted = info.get("admitted_with")
+    if admitted is None:
+        return False
+    if not is_current(admitted):
+        return True
+    track(ws, admitted)
+    return False
+
+
+async def _open_rfb(profile_home: Path):
+    """``(reader, writer, relay)`` for THIS profile's Xvnc. Gateway-hosted screen: its unix socket. Screen inside
+    the terminal backend: a ``docker exec`` / ``ssh`` relay whose stdio IS the RFB stream (``relay`` is that
+    Popen; None for a socket). Raises OSError when nothing is running."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import runtime as _bd_runtime
+    token = set_hermes_home_override(profile_home)
+    try:
+        if _bd_runtime.sandbox_screen_running():
+            relay = _bd_runtime.open_rfb_stream()
+        else:
+            sock = profile_home / "bot-desktop" / "rfb.sock"
+            if not sock.exists():
+                raise OSError("rfb.sock missing")
+            reader, writer = await asyncio.open_unix_connection(str(sock))
+            return reader, writer, None
+    finally:
+        reset_hermes_home_override(token)
+    loop = asyncio.get_running_loop()
+    reader = asyncio.StreamReader()
+    await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), relay.stdout)
+    # StreamReaderProtocol (not the bare FlowControlMixin) so ``writer.wait_closed()`` in the bridge's teardown has
+    # a close waiter to await; on the bare mixin it raises NotImplementedError.
+    w_transport, w_protocol = await loop.connect_write_pipe(lambda: asyncio.StreamReaderProtocol(asyncio.StreamReader()), relay.stdin)
+    writer = asyncio.StreamWriter(w_transport, w_protocol, None, loop)
+    return reader, writer, relay
 
 
 async def _bridge(ws: WebSocket, info: dict) -> None:
@@ -95,20 +144,15 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
     from hermes_constants import hermes_home_key
     from tools.bot_desktop import lease as _lease
     from tools.bot_desktop.rfb_filter import RfbClientFilter
-    from pathlib import Path
 
-    sock = Path(info["hermes_home"]) / "bot-desktop" / "rfb.sock"
     profile_home = str(info["hermes_home"])
     profile_key = hermes_home_key(profile_home)
     viewer_id = str(info.get("viewer_id") or info.get("user_id") or "viewer")
-    if not sock.exists():
-        await ws.close(code=_CLOSE_DESKTOP_GONE, reason="Bot Desktop is not running")
-        return
     try:
-        reader, writer = await asyncio.open_unix_connection(str(sock))
+        reader, writer, relay = await _open_rfb(Path(profile_home))
     except OSError as exc:
-        _log.warning("display ws: cannot reach RFB socket %s: %s", sock, exc)
-        await ws.close(code=_CLOSE_DESKTOP_GONE, reason="Bot Desktop socket unreachable")
+        _log.warning("display ws: cannot reach RFB endpoint for %s: %s", profile_home, exc)
+        await ws.close(code=_CLOSE_DESKTOP_GONE, reason="Bot Desktop is not running")
         return
 
     loop = asyncio.get_running_loop()
@@ -207,6 +251,8 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
             await writer.wait_closed()
         except OSError:  # Xvnc already gone (ECONNRESET / EPIPE on the FIN)
             pass
+        if relay is not None:
+            relay.kill()  # the exec client; Xvnc inside the sandbox stays up
         # Closing the viewer window hands control back. A DROPPED link (laptop lid, Wi-Fi, 1006)
         # keeps the human's exclusion: they may be mid-login on that screen and the agent must not
         # resume into it. The Desktop reconnects into the same lease, or the human hands back.

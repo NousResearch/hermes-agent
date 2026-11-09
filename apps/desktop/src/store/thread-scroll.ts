@@ -55,8 +55,10 @@ function setSessionValue<T extends boolean | number>(
   target.set(next)
 }
 
-export const setThreadAtBottom = (isAtBottom: boolean, sessionId: string | null = null) => {
-  setSessionValue($threadScrolledUpBySession, sessionId, !isAtBottom, false)
+// `scrolledUp` dims the composer; it diverges from the jump pill once the reader
+// stalls (see list.tsx), so the composer comes back while the pill stays.
+export const setThreadAtBottom = (isAtBottom: boolean, sessionId: string | null = null, scrolledUp = !isAtBottom) => {
+  setSessionValue($threadScrolledUpBySession, sessionId, scrolledUp, false)
   setSessionValue($threadJumpButtonVisibleBySession, sessionId, !isAtBottom, false)
 }
 
@@ -67,13 +69,14 @@ export const resetThreadScroll = (sessionId: string | null = null) => {
 
 export const publishThreadAtBottom = (
   isAtBottom: boolean,
-  publisher: { paneVisible: boolean; sessionId?: string | null }
+  publisher: { paneVisible: boolean; sessionId?: string | null },
+  scrolledUp = !isAtBottom
 ): void => {
   if (!publisher.paneVisible) {
     return
   }
 
-  setThreadAtBottom(isAtBottom, publisher.sessionId)
+  setThreadAtBottom(isAtBottom, publisher.sessionId, scrolledUp)
 }
 
 export const resetPublishedThreadScroll = (publisher: { paneVisible: boolean; sessionId?: string | null }): void => {
@@ -106,6 +109,35 @@ export const onScrollToBottomRequest = (handler: () => void, sessionId: string |
 
 export const requestScrollToBottom = (sessionId: string | null = null) => {
   handlers.get(sessionId)?.forEach(handler => handler())
+}
+
+export type ThreadPageDirection = -1 | 1
+
+// Bare PageUp/PageDown are global keybinds, while the scroll owner lives in
+// the focused thread. Route the intent by stable session key so kept-alive and
+// split transcripts cannot page together.
+const pageHandlers = new Map<string | null, Set<(direction: ThreadPageDirection) => void>>()
+
+export const onThreadPageScrollRequest = (
+  handler: (direction: ThreadPageDirection) => void,
+  sessionKey: string | null = null
+) => {
+  const scoped = pageHandlers.get(sessionKey) ?? new Set<(direction: ThreadPageDirection) => void>()
+
+  scoped.add(handler)
+  pageHandlers.set(sessionKey, scoped)
+
+  return () => {
+    scoped.delete(handler)
+
+    if (scoped.size === 0) {
+      pageHandlers.delete(sessionKey)
+    }
+  }
+}
+
+export const requestThreadPageScroll = (direction: ThreadPageDirection, sessionKey: string | null = null) => {
+  pageHandlers.get(sessionKey)?.forEach(handler => handler(direction))
 }
 
 // Inline edit grows a sticky human bubble. Fire on pointerdown so the viewport

@@ -273,7 +273,7 @@ Hermes 会在执行器或调度提供程序分派之前，将每次已领取的 
 | `"mattermost"` | Mattermost 主频道 | |
 | `"email"` | 邮件 | |
 | `"sms"` | 通过 Twilio 发送 SMS | |
-| `"homeassistant"` | Home Assistant | |
+| `"homeassistant"` | Home Assistant（插件） | 使用 `HASS_HOME_CHANNEL`；需要 [`homeassistant` 插件](../messaging/homeassistant.md) |
 | `"dingtalk"` | 钉钉 | |
 | `"feishu"` | 飞书/Lark | |
 | `"wecom"` | 企业微信 | |
@@ -443,7 +443,7 @@ hermes cron create "every 5m" \
 - 最后一行输出 `{"wakeAgent": false}` → 静默 tick（与 LLM 任务使用相同的门控）。
 - 无 token、无模型、无 provider 回退——任务永远不会触及推理层。
 
-`.sh`/`.bash` 文件在 `/bin/bash` 下运行；其他文件在当前 Python 解释器（`sys.executable`）下运行。脚本必须位于 `~/.hermes/scripts/`（与预运行脚本门控相同的沙箱规则）。
+`.sh`/`.bash` 文件优先使用 `PATH` 中的 `bash`，不可用时回退到 `/bin/bash`（这对 Windows Git Bash 尤其重要）；其他文件默认使用当前 Python 解释器（`sys.executable`）。脚本路径必须解析到 `$HERMES_HOME/scripts/` 内部——只要解析后的目标仍位于该目录，相对路径、绝对路径和以 `~` 开头的路径都可以；逃逸该目录的路径会被拒绝。Python `script` 或 `monitor_script` 也可以通过在创建/编辑时传入 `--interpreter ~/venvs/.../bin/python` 来指定一个用户自管的 venv（用于 Hermes 运行时不携带的包）——参见[使用你自己的 Python 环境](../../guides/cron-script-only.md#使用你自己的-python-环境)。Hermes 管理的 venv 仍归 Hermes 所有；系统不会自动安装或恢复任何包。子进程环境会被净化，因此 cron 脚本**不会**继承 provider API 凭据和其他由 Hermes 管理的秘密。
 
 ### Agent 为你设置这些
 
@@ -742,7 +742,11 @@ cronjob(action="create", name="daily-digest",
 
 任务存储在 `~/.hermes/cron/jobs.json`。任务运行的输出保存到 `~/.hermes/cron/output/{job_id}/{timestamp}.md`。
 
+如果手动编辑使 `jobs.json` 格式出错，调度器会在下次加载时修复它，而不是停止运行：`jobs` 列表中不是 JSON 对象的条目会被丢弃，不是非负整数的 `repeat.completed` 会被规范化为非负整数（无法解析时为 0）。每次修复都会记录一条警告（只记录值的类型，不记录内容）。
+
 任务可能将 `model` 和 `provider` 存储为 `null`。省略这些字段时，Hermes 在执行时从全局配置中解析它们。只有设置了单任务覆盖时，这些字段才会出现在任务记录中。
+
+单任务的 `base_url` 覆盖必须同时指定 `provider`。对于保存了密钥的 provider（具名自定义 provider 或内置 provider），覆盖地址必须与该 provider 配置的端点同源：协议、主机和端口都相同。其他协议、端口或子域名都会被拒绝，因此保存的密钥只会发往你配置的地址。单独的 `provider: custom` 可以使用任何不会携带保存密钥的 `base_url`。如果某个保存的密钥与该 URL 的主机名匹配（例如 `api.deepseek.com` 对应 `DEEPSEEK_API_KEY`），则适用同样的规则：`base_url` 必须与你配置的端点或内置 provider 的端点同源。
 
 存储使用原子文件写入，因此中断的写入不会留下部分写入的任务文件。
 

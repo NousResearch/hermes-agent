@@ -36,6 +36,16 @@ _MERGEABLE_DETAIL_TEXT_KEYS = {"reasoning.text": "text", "reasoning.summary": "s
 _BACKFILL_DETAIL_KEYS = ("signature", "id", "format", "index")
 
 
+def streamed_reasoning_detail_text(detail: Any) -> str:
+    """Readable text from a detail delta; never expose opaque replay material."""
+    dtype = detail.get("type") if isinstance(detail, dict) else getattr(detail, "type", None)
+    key = _MERGEABLE_DETAIL_TEXT_KEYS.get(dtype) if isinstance(dtype, str) else None
+    if key is None:
+        return ""
+    text = detail.get(key) if isinstance(detail, dict) else getattr(detail, key, None)
+    return text if isinstance(text, str) else ""
+
+
 def append_streamed_reasoning_detail(details_acc: list, detail: Any) -> None:
     """Accumulate one streamed ``reasoning_details`` delta entry into *details_acc*.
 

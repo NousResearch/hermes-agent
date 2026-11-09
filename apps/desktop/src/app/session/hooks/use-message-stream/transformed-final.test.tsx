@@ -37,6 +37,7 @@ function getState(): ClientSessionState {
 
 function assistantTexts(): string[] {
   const state = getState()
+
   return state.messages
     .filter(m => m.role === 'assistant' && !m.hidden)
     .map(m => chatMessageText(m))

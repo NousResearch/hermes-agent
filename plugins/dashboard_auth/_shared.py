@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+import math
 import os
 import secrets
 import urllib.parse
@@ -21,10 +22,18 @@ from hermes_cli.dashboard_auth import (
     DashboardAuthProvider, InvalidCodeError, LoginStart, ProviderError, RefreshExpiredError, Session,
     classify_jwks_lookup_error)
 
+_log = logging.getLogger(__name__)
+
 # JWKS Cache-Control max-age (nous contract C7); self-hosted mirrors it.
 JWKS_CACHE_SECONDS = 300
 TOKEN_ENDPOINT_TIMEOUT_SEC = 10.0
 JSON_HEADERS = {"Accept": "application/json"}
+
+# Clock-skew leeway (seconds) for JWT time-claim verification (RFC 7519 §4.1.4-4.1.6
+# allow "some small leeway, usually no more than a few minutes"). Applied symmetrically
+# to exp/nbf/iat by PyJWT; 60s absorbs the sub-second NTP jitter / unsynced-container
+# drift seen in the field (#47815) without meaningfully extending token lifetime.
+DEFAULT_TOKEN_LEEWAY_SECONDS = 60.0
 
 
 # ---- Config / env resolution ----
@@ -36,7 +45,7 @@ def load_config_section(logger: logging.Logger, tag: str, *path: str) -> dict:
         from hermes_cli.config import cfg_get, load_config
 
         cfg = load_config()
-    except Exception as exc:  # noqa: BLE001 — broad catch is intentional
+    except Exception as exc:
         logger.debug("%s: load_config() raised %s; falling back to env-only configuration", tag, exc)
         return {}
     section = cfg_get(cfg, *path, default=None)
@@ -47,6 +56,29 @@ def resolve_env_or_cfg(env_name: str, cfg_value: Any) -> str:
     """Env-wins-over-config; an empty env value is treated as unset so a
     provisioned-but-blank secret can't shadow a valid config.yaml entry."""
     return os.environ.get(env_name, "").strip() or str(cfg_value or "").strip()
+
+
+def parse_leeway(raw: Any) -> float:
+    """Seconds of clock-skew tolerance for JWT time claims, fail-closed.
+
+    Unset → :data:`DEFAULT_TOKEN_LEEWAY_SECONDS` (60s — the zero-leeway default
+    made any issuer-ahead clock skew fail, #47815). An explicit value must be a
+    finite, non-negative number: unparseable / negative / NaN / inf fall back to
+    ``0.0`` so a typo can only ever *lose* tolerance, never widen the window.
+    ``0`` is honoured (strict pre-fix behaviour for operators who want it).
+    """
+    if raw is None:
+        return DEFAULT_TOKEN_LEEWAY_SECONDS
+    text = str(raw).strip()
+    if not text:
+        return DEFAULT_TOKEN_LEEWAY_SECONDS
+    try:
+        value = float(text)
+    except ValueError:
+        return 0.0
+    if not math.isfinite(value) or value < 0:
+        return 0.0
+    return value
 
 
 # ---- register() bookkeeping ----
@@ -117,7 +149,7 @@ def pkce_login_start(authorize_url: str, *, client_id: str, scope: str, redirect
         cookie_payload={"hermes_session_pkce": f"state={state};verifier={code_verifier}"})
 
 
-def parse_json_body(response: httpx.Response) -> Dict[str, Any]:
+def parse_json_body(response: httpx.Response) -> dict[str, Any]:
     """JSON object body, or ``{}`` for non-JSON content-type / parse error / non-dict."""
     if not response.headers.get("content-type", "").startswith("application/json"):
         return {}
@@ -129,8 +161,8 @@ def parse_json_body(response: httpx.Response) -> Dict[str, Any]:
 
 
 def exchange_token(
-    url: str, data: Dict[str, str], *, headers: Optional[Dict[str, str]] = None, bad_request_exc: type[Exception],
-    idp: str, endpoint: str, token_key: str, missing_msg: str) -> tuple[str, Dict[str, Any]]:
+    url: str, data: dict[str, str], *, headers: Optional[dict[str, str]] = None, bad_request_exc: type[Exception],
+    idp: str, endpoint: str, token_key: str, missing_msg: str) -> tuple[str, dict[str, Any]]:
     """POST a token grant and return ``(token, payload)``.
 
     A 400 (OAuth-shaped error envelope) raises ``bad_request_exc`` — ``InvalidCodeError``
@@ -158,7 +190,7 @@ def exchange_token(
     return token, payload
 
 
-def refresh_token_from(payload: Dict[str, Any], fallback: str = "") -> str:
+def refresh_token_from(payload: dict[str, Any], fallback: str = "") -> str:
     """The token response's refresh token, or ``fallback`` when absent/non-string
     (the session then behaves as access-token-only until expiry)."""
     rt = payload.get("refresh_token")
@@ -166,7 +198,7 @@ def refresh_token_from(payload: Dict[str, Any], fallback: str = "") -> str:
 
 
 def session_from_claims(
-    provider: str, claims: Dict[str, Any], *, access_token: str, refresh_token: str,
+    provider: str, claims: dict[str, Any], *, access_token: str, refresh_token: str,
     label: str = "token", email: str = "", display_name: str = "", org_id: str = "") -> Session:
     """Map verified JWT claims onto a Session; ``sub`` is mandatory."""
     user_id = str(claims.get("sub", ""))
@@ -174,7 +206,8 @@ def session_from_claims(
         raise ProviderError(f"{label} missing 'sub' (user_id) claim")
     return Session(
         user_id=user_id, email=email, display_name=display_name, org_id=org_id, provider=provider,
-        expires_at=int(claims["exp"]), access_token=access_token, refresh_token=refresh_token)
+        expires_at=int(claims["exp"]), access_token=access_token, refresh_token=refresh_token,
+        issuer=str(claims.get("iss") or ""))
 
 
 # ---- JWT verification ----
@@ -190,43 +223,46 @@ def make_jwks_client(jwks_url: str) -> Any:
 
 
 def verify_jwt(
-    token: str, jwks_client: Any, *, algorithms: list[str], audience: str, issuer: str, label: str) -> Dict[str, Any]:
+    token: str, jwks_client: Any, *, algorithms: list[str], audience: str, issuer: str, label: str,
+    leeway: float = DEFAULT_TOKEN_LEEWAY_SECONDS,
+) -> dict[str, Any]:
     """Verify ``token`` against ``jwks_client`` with pinned ``aud``/``iss``.
 
-    Unreachable JWKS → ``ProviderError`` (503); a bearer that is not one of our JWTs
-    (opaque peer key, foreign kid) → ``InvalidCodeError`` (None / next provider); folding
-    both into 503 broke peer-key bearers. Expiry raises ``InvalidCodeError`` (verify_session
-    maps it to None); any other claim failure raises ``ProviderError`` with the unverified
-    iss/aud appended so operators can spot config drift.
+    ``leeway`` is seconds of clock-skew tolerance on the time claims (default
+    60 — the previous zero-leeway made any issuer-ahead skew fail login, #47815).
+
+    Only an unreachable (or malformed) JWKS is ``ProviderError`` (503). Every other failure (not a JWT,
+    unknown kid, expired, not yet valid, bad signature, wrong aud/iss, missing claim) is
+    ``InvalidCodeError``: the token is not ours (verify_session -> None -> 401 / next
+    provider). Folding "not ours" into 503 produced #94558 (opaque bearers) and #47815
+    (clock skew), and answered a Portal token minted for another client with "unreachable".
+    A wrong aud/iss is logged with the token's and the configured values, because it is also
+    what config drift (wrong client_id / portal URL) looks like.
     """
     import jwt  # lazy — keeps startup fast for the ungated path
 
     try:
         signing_key = jwks_client.get_signing_key_from_jwt(token)
     except Exception as exc:
-        # Unreachable JWKS -> ProviderError (503); a bearer that is not one of our JWTs (opaque peer key,
-        # foreign kid) -> InvalidCodeError (None / next provider). Folding both into 503 produced #94558.
-        # Unreachable JWKS -> ProviderError (503); a bearer that is not one of our JWTs (opaque peer key,
-        # foreign kid) -> InvalidCodeError (None / next provider). Folding both into 503 produced #94558.
         raise classify_jwks_lookup_error(exc) from exc
     try:
         return jwt.decode(
-            token, signing_key.key, algorithms=algorithms, audience=audience, issuer=issuer,
+            token, signing_key.key, algorithms=algorithms, audience=audience, issuer=issuer, leeway=leeway,
             options={"require": ["exp", "iat", "aud", "iss", "sub"]})
-    except jwt.ExpiredSignatureError as exc:
-        raise InvalidCodeError(f"{label} expired: {exc}") from exc
+    except (jwt.InvalidAudienceError, jwt.InvalidIssuerError) as exc:
+        # Raised only after the signature verified, so only a real IdP-signed token gets here:
+        # a foreign client's token, or config drift (wrong client_id / portal URL). Log it, since
+        # the caller only sees a 401. The re-decode is for diagnostics only; values are capped.
+        unverified = jwt.decode(token, options={"verify_signature": False, "verify_exp": False})
+        message = (
+            f"{label} verification failed: {exc} [token iss={str(unverified.get('iss'))[:128]!r} "
+            f"aud={str(unverified.get('aud'))[:128]!r}; expected iss={issuer!r} aud={audience!r}]")
+        _log.warning("dashboard-auth: %s", message)
+        raise InvalidCodeError(message) from exc
     except jwt.InvalidTokenError as exc:
-        # Decoding without verification is safe here: verification already failed and
-        # these values are surfaced for diagnostics only, never trusted.
-        details = ""
-        try:
-            unverified = jwt.decode(token, options={"verify_signature": False, "verify_exp": False})
-            details = (
-                f" [token iss={unverified.get('iss')!r} aud={unverified.get('aud')!r}; "
-                f"expected iss={issuer!r} aud={audience!r}]")
-        except Exception:
-            pass
-        raise ProviderError(f"{label} verification failed: {exc}{details}") from exc
+        # Expired, not yet valid, bad signature, wrong alg, malformed payload: not logged, since
+        # the last two need no valid signature and a caller would control the line.
+        raise InvalidCodeError(f"{label} verification failed: {exc}") from exc
 
 
 # ---- Shared provider skeletons ----
@@ -250,7 +286,8 @@ class JwtOAuthProvider(DashboardAuthProvider):
     """Authorization-code + PKCE provider whose session token is a JWT we verify ourselves
     (nous: Portal access token; self-hosted: OIDC ID token). Subclasses set ``_client_id`` and
     implement: ``_jwks_uri() -> str``; ``_claims_for(token) -> claims`` (raises
-    ``InvalidCodeError`` on expiry/foreign token, ``ProviderError`` otherwise);
+    ``InvalidCodeError`` for a token that is not ours, ``ProviderError`` for an outage or a
+    provider-wide contract failure);
     ``_grant(data, *, bad_request_exc, headers=None, previous_refresh_token="") -> Session``;
     ``_refresh_request(refresh_token) -> (form_data, extra_headers)``;
     ``_session(token, refresh_token, claims) -> Session``."""
@@ -274,8 +311,14 @@ class JwtOAuthProvider(DashboardAuthProvider):
         if not refresh_token:
             raise RefreshExpiredError("no refresh token present in session")
         data, headers = self._refresh_request(refresh_token)
-        return self._grant(
-            data, headers=headers, bad_request_exc=RefreshExpiredError, previous_refresh_token=refresh_token)
+        try:
+            return self._grant(
+                data, headers=headers, bad_request_exc=RefreshExpiredError, previous_refresh_token=refresh_token)
+        except InvalidCodeError as exc:
+            # The grant succeeded but the token it minted does not verify here (foreign aud,
+            # unknown kid): this provider rejects the RT, so the refresh scan moves on instead
+            # of raising.
+            raise RefreshExpiredError(str(exc)) from exc
 
     def verify_session(self, *, access_token: str) -> Optional[Session]:
         # None on expiry/invalidity (middleware then tries refresh); a ProviderError

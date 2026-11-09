@@ -21,7 +21,7 @@ Provision SaaS services + sync creds via Stripe Projects.
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `Payments`, `Stripe`, `Projects`, `Provisioning`, `Infrastructure` |
-| Related skills | [`stripe-link-cli`](../../optional/payments/payments-stripe-link-cli.md), [`mpp-agent`](../../optional/payments/payments-mpp-agent.md) |
+| Related skills | [`stripe-link-cli`](../../optional/payments/payments-stripe-link-cli.md) |
 
 ## Reference: full SKILL.md
 

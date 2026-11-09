@@ -6,6 +6,7 @@ each carrying its own blocks, so without a shared ceiling the projection grows l
 attachment count while the top-level ``blocks`` path is capped once.
 """
 
+from agent.compression_marker import _COMPRESSION_MARKER_RE
 from plugins.platforms.slack.adapter import SlackAdapter
 
 
@@ -27,7 +28,7 @@ def test_nested_block_text_stops_growing_with_attachment_count():
     per_attachment_growth = (sizes[20] - sizes[5]) / 15
     assert per_attachment_growth < 200, sizes
     assert sizes[20] < 3 * sizes[1], sizes
-    assert "[truncated]" in SlackAdapter._append_link_unfurls("intro", [_attachment(i) for i in range(20)])
+    assert _COMPRESSION_MARKER_RE.search(SlackAdapter._append_link_unfurls("intro", [_attachment(i) for i in range(20)]))
 
 
 def test_first_attachment_keeps_its_body_and_headers_survive_exhaustion():

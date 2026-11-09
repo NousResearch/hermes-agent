@@ -21,6 +21,7 @@ interface ConfirmDialogProps {
   onConfirm: () => Promise<void> | void
   title: ReactNode
   description?: ReactNode
+  children?: ReactNode
   confirmLabel?: string
   busyLabel?: string
   doneLabel?: string
@@ -48,6 +49,7 @@ export function ConfirmDialog({
   onConfirm,
   title,
   description,
+  children,
   confirmLabel,
   busyLabel,
   doneLabel,
@@ -59,6 +61,7 @@ export function ConfirmDialog({
   const { t } = useI18n()
   const confirmRef = useRef<HTMLButtonElement>(null)
   const closeTimerRef = useRef<null | number>(null)
+  const unmountedRef = useRef(false)
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
   const busy = status === 'saving' || status === 'done'
@@ -82,9 +85,15 @@ export function ConfirmDialog({
   // ReferenceError.
   // The write below is a timer handle, and not a mirror of a reactive value.
   // It happens on unmount only, and it clears the handle this component owns.
+  // An onConfirm that unmounts the caller (disband leaves the room) resolves
+  // after cleanup ran, so the timer must not be armed once unmounted.
   // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
+    unmountedRef.current = false
+
     return () => {
+      unmountedRef.current = true
+
       if (closeTimerRef.current !== null) {
         window.clearTimeout(closeTimerRef.current)
         closeTimerRef.current = null
@@ -114,6 +123,11 @@ export function ConfirmDialog({
 
     try {
       await onConfirm()
+
+      if (unmountedRef.current) {
+        return
+      }
+
       setStatus('done')
       closeTimerRef.current = window.setTimeout(() => {
         closeTimerRef.current = null
@@ -153,6 +167,7 @@ export function ConfirmDialog({
           {description ? <DialogDescription className="whitespace-pre-line">{description}</DialogDescription> : null}
         </DialogHeader>
 
+        {children}
         {error && (
           <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />

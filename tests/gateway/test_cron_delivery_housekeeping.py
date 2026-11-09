@@ -3,7 +3,7 @@
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-import cron.scheduler as scheduler
+from cron import scheduler
 from cron import scheduler_preflight as sched_preflight
 import gateway.run as gateway_run
 

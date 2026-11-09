@@ -21,10 +21,10 @@ PAGE_SIZE = 50
 CACHE_TIME_SECONDS = 10
 
 
-def collect_inline_catalog() -> List[Dict[str, str]]:
+def collect_inline_catalog() -> list[dict[str, str]]:
     """Every dispatchable command as ``{name, description}``, first occurrence wins: core gateway commands
     first (menu gating), then plugin + skill commands with ``max_slots=None`` (no cap)."""
-    catalog: List[Dict[str, str]] = []
+    catalog: list[dict[str, str]] = []
     seen: set[str] = set()
 
     def _add(name, desc):
@@ -53,15 +53,15 @@ def collect_inline_catalog() -> List[Dict[str, str]]:
     return catalog
 
 
-def filter_catalog(catalog: List[Dict[str, str]], term: str) -> List[Dict[str, str]]:
+def filter_catalog(catalog: list[dict[str, str]], term: str) -> list[dict[str, str]]:
     """Rank *catalog* against *term*: prefix > name-substring > description.
     Empty term returns the full catalog in collection order (the "browse" view)."""
     term = (term or "").strip().lower().lstrip("/")
     if not term:
         return list(catalog)
-    prefix: List[Dict[str, str]] = []
-    name_sub: List[Dict[str, str]] = []
-    desc_sub: List[Dict[str, str]] = []
+    prefix: list[dict[str, str]] = []
+    name_sub: list[dict[str, str]] = []
+    desc_sub: list[dict[str, str]] = []
     norm_term = term.replace("-", "_")  # hyphens/underscores equivalent, mirroring command dispatch
     for item in catalog:
         norm_name = item["name"].lower().replace("-", "_")
@@ -74,7 +74,7 @@ def filter_catalog(catalog: List[Dict[str, str]], term: str) -> List[Dict[str, s
     return prefix + name_sub + desc_sub
 
 
-def build_inline_results(query: str, offset: str = "", page_size: int = PAGE_SIZE) -> Tuple[List[Dict[str, Any]], str]:
+def build_inline_results(query: str, offset: str = "", page_size: int = PAGE_SIZE) -> tuple[list[dict[str, Any]], str]:
     """One page of inline results for *query*: first token filters the catalog; the remainder becomes the
     command argument (``@bot plan migrate auth`` → ``/plan migrate auth``). ``next_offset == ""`` = last page."""
     parts = (query or "").strip().split(None, 1)
@@ -82,11 +82,12 @@ def build_inline_results(query: str, offset: str = "", page_size: int = PAGE_SIZ
     args = parts[1].strip() if len(parts) > 1 else ""
     matches = filter_catalog(collect_inline_catalog(), term)
     try:
-        start = int(offset) if offset else 0
+        # Client-controlled text: negatives must not slice the catalog from the tail.
+        start = max(0, int(offset)) if offset else 0
     except (TypeError, ValueError):
         start = 0
     next_offset = str(start + page_size) if len(matches) > start + page_size else ""
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
     for item in matches[start:start + page_size]:
         message_text = f"/{item['name']}" + (f" {args}" if args else "")
         results.append({

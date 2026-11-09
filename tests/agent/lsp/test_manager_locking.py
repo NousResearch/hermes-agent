@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
-import agent.lsp.manager as manager
+from agent.lsp import manager
 from agent.lsp.manager import LSPService
 from agent.lsp.servers import ServerDef
 
@@ -43,6 +43,7 @@ def test_reused_multiroot_client_attaches_outside_state_lock(monkeypatch):
             )
 
     client = StubClient()
+    monkeypatch.setattr(service, "_trusted", lambda _root: True)  # trusted roots share the process
     service._clients[(server.server_id, "")] = client  # multi-root client key
     service._last_used[(server.server_id, "")] = 0.0
 

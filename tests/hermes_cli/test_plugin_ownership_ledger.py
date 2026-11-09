@@ -1070,7 +1070,6 @@ def test_unload_cancels_a_deferred_platform_before_module_load():
             scope=scope,
         )
     platform_registry.register_deferred(name, old_loader, scope=scope)
-    displaced = platform_registry.snapshot_registration(name, scope=scope)
     manager = PluginManager(scope_key=scope)
     manifest = PluginManifest(
         name=f"{name}-platform",

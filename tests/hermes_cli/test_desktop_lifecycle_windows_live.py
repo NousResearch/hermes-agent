@@ -26,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.live_process_fixtures import SLEEPER_MARKER, sleeper_script_path
+
 pytestmark = pytest.mark.platforms("windows")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -56,12 +58,12 @@ def sleeper():
 
     def _spawn(*tail: str) -> subprocess.Popen:
         p = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(120)", *tail],
+            [sys.executable, sleeper_script_path(), *tail],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         procs.append(p)
-        assert _wait_until(lambda: _argv_visible(p.pid, "time.sleep(120)")), "sleeper argv never visible"
+        assert _wait_until(lambda: _argv_visible(p.pid, SLEEPER_MARKER)), "sleeper argv never visible"
         return p
 
     yield _spawn

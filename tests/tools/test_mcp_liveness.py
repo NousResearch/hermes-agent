@@ -41,14 +41,14 @@ def test_parse_liveness_contract():
         parse_liveness({"kind": "server_json", "path": "/tmp/example.json", "fields": {"port": "p"}})
 
 def test_invalid_registered_liveness_degrades_to_static(monkeypatch):
-    import hermes_cli.agent_plugins as agent_plugins
+    from hermes_cli import agent_plugins
     from tools.mcp_liveness import liveness_for
 
     monkeypatch.setattr(agent_plugins, "liveness_for", lambda name: {"kind": "server_json"}, raising=False)
     assert liveness_for("example-server").kind == "static"
 
 def test_live_endpoint_reloads_file_and_registers_token_before_use(tmp_path, monkeypatch, caplog):
-    import hermes_cli.agent_plugins as agent_plugins
+    from hermes_cli import agent_plugins
     from agent import redact
     from tools.mcp_tool_transport import _live_endpoint
 
@@ -77,7 +77,7 @@ def test_live_endpoint_reloads_file_and_registers_token_before_use(tmp_path, mon
     assert all(secret not in record.getMessage() for record in caplog.records for secret in calls)
 
 def test_runtime_file_without_token_connects_without_authorization(tmp_path, monkeypatch):
-    import hermes_cli.agent_plugins as agent_plugins
+    from hermes_cli import agent_plugins
     from agent import redact
     from tools.mcp_tool_transport import _live_endpoint
 
@@ -102,7 +102,7 @@ def test_runtime_file_without_token_connects_without_authorization(tmp_path, mon
     assert calls == []
 
 def test_missing_runtime_file_never_falls_back(tmp_path, monkeypatch):
-    import hermes_cli.agent_plugins as agent_plugins
+    from hermes_cli import agent_plugins
     from tools.mcp_tool_transport import LiveEndpointUnavailable, _live_endpoint
 
     decl = _decl(tmp_path)
@@ -119,7 +119,7 @@ def test_missing_runtime_file_never_falls_back(tmp_path, monkeypatch):
         declaration.unregister("example-server")
 
 def test_hydrated_error_shape_for_registered_declaration(tmp_path, monkeypatch):
-    import hermes_cli.agent_plugins as agent_plugins
+    from hermes_cli import agent_plugins
     from tools import mcp_tool, mcp_tool_discovery, mcp_tool_handlers
 
     decl = _decl(tmp_path)
@@ -134,13 +134,15 @@ def test_hydrated_error_shape_for_registered_declaration(tmp_path, monkeypatch):
     payload = json.loads(error)
     assert server is None
     assert payload["server"] == "example-server"
-    assert payload["state"] == "app_not_running"
+    # Static liveness cannot observe the app, so it must not claim the app is not
+    # running: the honest state is the missing MCP connection (#119975).
+    assert payload["state"] == "hermes_not_connected"
     assert payload["app"]["name"] == "Example App"
     assert payload["user_action"]
     assert payload["retry"] == "after_user_action"
 
 def test_connected_interactive_session_server_is_offerable_from_a_service_session(tmp_path, monkeypatch):
-    import hermes_cli.agent_plugins as agent_plugins
+    from hermes_cli import agent_plugins
     from hermes_platform.host import facts
     from tools import mcp_tool_handlers
 
@@ -151,3 +153,98 @@ def test_connected_interactive_session_server_is_offerable_from_a_service_sessio
         assert mcp_tool_handlers._declared_app_offerable("example-server") is True
     finally:
         declaration.unregister("example-server")
+
+def test_running_app_with_live_endpoint_reports_the_missing_connection(tmp_path, monkeypatch):
+    """The #119975 report: the app runs and its endpoint answers, only Hermes' MCP connection
+    is missing. That must read as a missing connection with a reconnect action — not as
+    \"<slug> is not running. Start <slug>\" for an app that IS running."""
+    from hermes_cli import agent_plugins
+    from hermes_platform.resolver.core import CheckState
+    from tools import mcp_liveness
+
+    class _RunningApp:
+        def __init__(self, _definition):
+            pass
+
+        def locate(self, _ctx=None):
+            return object()
+
+        def probe(self, _resolution, effort=None):
+            return type("Probe", (), {
+                "running": type("Value", (), {"value": True})(),
+                "endpoint": type("Endpoint", (), {"state": CheckState.PRESENT})(),
+            })()
+
+    monkeypatch.setattr(mcp_liveness, "AppResolver", _RunningApp)
+    monkeypatch.setattr(agent_plugins, "liveness_for", lambda name: {
+        "kind": "server_json", "path": str(tmp_path / "runtime.json"),
+    }, raising=False)
+    decl = _decl(tmp_path)
+    declaration.register("example-server", decl)
+    try:
+        current = mcp_liveness.status("example-server")
+    finally:
+        declaration.unregister("example-server")
+
+    assert current is not None
+    assert current.state == "hermes_not_connected"
+    sentence = mcp_liveness.describe(decl, current.availability, current.state)
+    assert "MCP connection is missing" in sentence
+    assert "is not running" not in sentence
+    assert current.user_action.startswith("Reconnect")
+
+def test_static_liveness_cannot_claim_the_app_is_not_running(tmp_path, monkeypatch):
+    """Static/unknown liveness kinds have no app probe, so their honest state is the missing
+    connection — not a verdict that an app they cannot see is stopped (#119975)."""
+    from hermes_cli import agent_plugins
+    from tools import mcp_liveness
+
+    monkeypatch.setattr(agent_plugins, "liveness_for", lambda name: {"kind": "static"}, raising=False)
+    decl = _decl(tmp_path)
+    declaration.register("example-server", decl)
+    try:
+        current = mcp_liveness.status("example-server")
+    finally:
+        declaration.unregister("example-server")
+
+    assert current is not None
+    assert current.state == "hermes_not_connected"
+    sentence = mcp_liveness.describe(decl, current.availability, current.state)
+    assert "MCP connection is missing" in sentence
+    assert "is not running" not in sentence
+
+def test_gpu_requirement_hides_a_connected_server_and_says_which_gpu(monkeypatch):
+    """A connected server whose `requires.gpu` the host misses is not offered, and its status is a
+    state the Plugins tab can carry, with a sentence that names the GPU instead of "Install <app>"."""
+    from hermes_cli import agent_plugins
+    from hermes_platform.host import facts
+    from tools import mcp_liveness, mcp_tool_handlers
+    from tui_gateway.contracts.tools_mcp_plugins import PluginServerState
+
+    monkeypatch.setattr(facts, "gpu_class", lambda: "intel")
+    monkeypatch.setattr(agent_plugins, "liveness_for", lambda name: None, raising=False)
+    decl = declaration.parse_declaration("RTX Tool", None, {"gpu": "nvidia"}, where="test")
+    declaration.register("example-server", decl)
+    try:
+        offerable = mcp_tool_handlers._declared_app_offerable("example-server")
+        current = mcp_liveness.status("example-server")
+    finally:
+        declaration.unregister("example-server")
+
+    assert offerable is False
+    assert current is not None and current.state in {s.value for s in PluginServerState}
+    assert current.retry == "never_here"
+    sentence = mcp_liveness.describe(decl, current.availability, current.state)
+    assert "an NVIDIA GPU" in sentence and "Install" not in sentence
+
+
+def test_describe_prefers_the_plugin_title_over_the_server_slug(tmp_path):
+    """The Plugins tab knows the plugin's catalog title; the sentence should name the app by
+    it instead of the declaration's slug (#119975)."""
+    from tools import mcp_liveness
+
+    decl = _decl(tmp_path)
+    sentence = mcp_liveness.describe(decl, None, "hermes_not_connected", display_name="Example Tools")
+    assert sentence.startswith("Example Tools")
+    assert "Example App" not in sentence
+    assert "MCP connection is missing" in sentence

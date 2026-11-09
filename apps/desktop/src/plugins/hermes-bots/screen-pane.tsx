@@ -24,12 +24,13 @@ import {
   type DisplayStatus,
   isDisplayUnavailable,
   isEventForBotScreen,
+  isManagedBackend,
   leaseHeldBy,
   resolveScreenWsUrl,
   retainBotScreen,
   viewerHash
 } from './screen-connection'
-import { ScreenInstallCard } from './screen-install'
+import { ScreenNotInstalled } from './screen-install'
 import {
   $screenState,
   beginScreenStatusRequest,
@@ -51,6 +52,7 @@ type RfbLike = {
   addEventListener: (type: string, handler: (event: { detail?: { clean?: boolean; reason?: string } }) => void) => void
   disconnect: () => void
   focus: () => void
+  clipboardPasteFrom: (text: string) => void
 }
 
 type ConnState = 'idle' | 'attaching' | 'live' | 'error'
@@ -60,6 +62,9 @@ const CLOSE_CONTROL_TAKEN = 4000
 /** Evictions arriving this soon after dialing count toward the loop budget; slower ones reset it. */
 const EVICTION_LOOP_WINDOW_MS = 10_000
 const MAX_RAPID_EVICTIONS = 3
+/** Mirrors tools/bot_desktop/rfb_filter.py's _MAX_CUT_TEXT: the bridge closes the display
+ *  socket on any ClientCutText over this, so an oversized paste must never reach the client. */
+const MAX_PASTE_CUT_TEXT = 256 * 1024
 
 async function loadRfb(): Promise<
   new (target: HTMLElement, socket: WebSocket, options?: Record<string, unknown>) => RfbLike
@@ -71,6 +76,14 @@ async function loadRfb(): Promise<
     socket: WebSocket,
     options?: Record<string, unknown>
   ) => RfbLike
+}
+
+/** The viewer hashes its lease id with crypto.subtle and noVNC needs a secure context: over plain
+ *  HTTP from another machine there is neither, so the pane says why instead of a stream. */
+function ScreenNeedsHttps({ label }: { label: string }) {
+  return globalThis.crypto?.subtle ? null : (
+    <div className="absolute inset-0 grid place-items-center p-6 text-center text-xs text-white/70">{label}</div>
+  )
 }
 
 export function BotScreenPane({ bot }: { bot: RosterRow }) {
@@ -90,6 +103,9 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   // Pins the bot's pooled gateway socket for the attach lifetime so display.lease
   // events keep arriving for an inactive registry-routed bot.
   const retention = useRef<(() => void) | null>(null)
+  // Removes the current attach's `paste` listener; torn down on every detach so a stale
+  // one never outlives its RFB client.
+  const pasteCleanup = useRef<(() => void) | null>(null)
   const [conn, setConn] = useState<ConnState>('idle')
   const [error, setError] = useState<null | string>(null)
   const [busy, setBusy] = useState(false)
@@ -160,6 +176,8 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     socket.current = null
     retention.current?.()
     retention.current = null
+    pasteCleanup.current?.()
+    pasteCleanup.current = null
   }, [])
 
   const attach = useCallback(
@@ -173,6 +191,16 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       }
 
       detach()
+
+      // The viewer hashes its lease id with crypto.subtle, and noVNC needs a secure context too.
+      // A Webapp opened over plain HTTP from another machine has neither: never ask the bot for a
+      // viewer there (the pane says why) instead of failing on a missing digest afterwards.
+      if (!globalThis.crypto?.subtle) {
+        setConn('error')
+
+        return
+      }
+
       const generation = attachGeneration.current
       setConn('attaching')
       setError(null)
@@ -273,6 +301,27 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
           void refresh()
         })
         rfb.current = client
+        // Explicit user paste only: a native `paste` event on the canvas (never polling, never
+        // logged) forwarded as noVNC ClientCutText. `viewOnly` is read live off `client`, so a
+        // paste after control changes hands mid-session is silently dropped, same as the gateway's
+        // own lease-gated RFB filter would drop it.
+        const pasteTarget = canvasHost.current
+
+        const handlePaste = (event: ClipboardEvent) => {
+          if (client.viewOnly) {
+            return
+          }
+
+          const text = event.clipboardData?.getData('text')
+
+          if (text && text.length <= MAX_PASTE_CUT_TEXT) {
+            event.preventDefault()
+            client.clipboardPasteFrom(text)
+          }
+        }
+
+        pasteTarget.addEventListener('paste', handlePaste)
+        pasteCleanup.current = () => pasteTarget.removeEventListener('paste', handlePaste)
       } catch (err) {
         if (generation === attachGeneration.current) {
           setConn('error')
@@ -316,6 +365,24 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       setBusy(false)
     }
   }, [bot])
+
+  // The pending default-image switch: both answers pin an image server-side, so the card
+  // disappears after either; approve leaves the container to be recreated on next terminal use.
+  const decideImageSwitch = useCallback(
+    async (approve: boolean) => {
+      setBusy(true)
+
+      try {
+        const next = await displayRequest<DisplayStatus>(bot, 'display.switchSandboxImage', { approve })
+        setScreenStatus(bot, next)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setBusy(false)
+      }
+    },
+    [bot]
+  )
 
   const takeOver = useCallback(async () => {
     // The button is disabled without a viewer; the guard keeps a keyboard-activated
@@ -364,7 +431,11 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   )
 
   if (state?.unavailable) {
-    return <EmptyState description={t.screen.portalUnavailable} title={t.screen.unavailableTitle} />
+    // A managed (Hermes Cloud) backend cannot be self-updated: its release is the platform's
+    // choice, so say Screen has not reached it yet instead of an update instruction (#120852).
+    const description = isManagedBackend(bot) ? t.screen.portalUnavailableManaged : t.screen.portalUnavailable
+
+    return <EmptyState description={description} title={t.screen.unavailableTitle} />
   }
 
   if (status && !status.supported) {
@@ -372,7 +443,32 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   }
 
   if (status && !status.installed) {
-    return <ScreenInstallCard bot={bot} onInstalled={next => setScreenStatus(bot, next)} status={status} />
+    return <ScreenNotInstalled bot={bot} onInstalled={next => setScreenStatus(bot, next)} status={status} />
+  }
+
+  if (status && !status.running && status.image_switch) {
+    const sw = status.image_switch
+
+    return (
+      <div className="grid min-h-48 place-items-center p-6 text-center">
+        <div className="flex max-w-md flex-col items-center gap-2">
+          <div className="text-sm font-medium">{t.screen.imageSwitchTitle}</div>
+          <div className="text-xs text-muted-foreground">
+            {t.screen.imageSwitchBody(sw.current_image, sw.target_image)}
+          </div>
+          <div className="flex gap-2">
+            <Button disabled={busy} onClick={() => void decideImageSwitch(true)} size="sm">
+              {busy ? <GlyphSpinner /> : <Codicon name="arrow-swap" />}
+              {t.screen.imageSwitchApprove}
+            </Button>
+            <Button disabled={busy} onClick={() => void decideImageSwitch(false)} size="sm" variant="ghost">
+              {t.screen.imageSwitchKeep}
+            </Button>
+          </div>
+          {error ? <div className="text-xs text-red-500">{error}</div> : null}
+        </div>
+      </div>
+    )
   }
 
   if (status && !status.running) {
@@ -401,6 +497,13 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         {status?.display ? (
           <span className="text-muted-foreground">
             {status.display} · {status.geometry}
+          </span>
+        ) : null}
+        {status?.placement?.startsWith('terminal:') ? (
+          // Where the desktop lives matters for what a takeover can reach: inside the terminal's sandbox,
+          // not on the gateway host.
+          <span className="rounded bg-(--ui-bg-tertiary) px-1.5 py-0.5 text-muted-foreground">
+            {t.screen.placementSandbox(status.placement.slice('terminal:'.length))}
           </span>
         ) : null}
         <span className="grow" />
@@ -478,6 +581,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         {conn === 'error' && error ? (
           <div className="absolute inset-x-0 bottom-0 bg-red-950/80 px-3 py-1.5 text-xs text-red-200">{error}</div>
         ) : null}
+        <ScreenNeedsHttps label={t.screen.needsHttps} />
       </div>
     </div>
   )

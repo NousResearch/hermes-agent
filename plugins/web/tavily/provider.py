@@ -25,7 +25,7 @@ _CLIENT_NAME = "hermes-agent"
 _SEARCH_PAYLOAD = {"include_raw_content": False, "include_images": False}
 
 
-def _tavily_headers(api_key: str) -> Dict[str, str]:
+def _tavily_headers(api_key: str) -> dict[str, str]:
     headers = {"X-Client-Name": _CLIENT_NAME}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -34,7 +34,7 @@ def _tavily_headers(api_key: str) -> Dict[str, str]:
     return headers
 
 
-def _tavily_request(endpoint: str, payload: Dict[str, Any], *, api_key: Optional[str] = None) -> Dict[str, Any]:
+def _tavily_request(endpoint: str, payload: dict[str, Any], *, api_key: Optional[str] = None) -> dict[str, Any]:
     """POST to Tavily and return parsed JSON. ``api_key=None`` reads ``TAVILY_API_KEY``;
     pass ``""`` to force the keyless header even when a key exists
     (``web.provider_tier.tavily: free``). Non-2xx raises ValueError with the body so
@@ -50,14 +50,14 @@ def _tavily_request(endpoint: str, payload: Dict[str, Any], *, api_key: Optional
     return response.json()
 
 
-def _normalize_tavily_search_results(response: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_tavily_search_results(response: dict[str, Any]) -> dict[str, Any]:
     return search_ok([
         title_hit(r.get("title", ""), r.get("url", ""), r.get("content", ""), i + 1)
         for i, r in enumerate(response.get("results", []))
     ])
 
 
-def _normalize_tavily_documents(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _normalize_tavily_documents(response: dict[str, Any]) -> list[dict[str, Any]]:
     """Map ``/extract`` to documents without attributing missing URLs to a request."""
     documents = [
         document(r.get("url", ""), r.get("title", ""), r.get("raw_content", "") or r.get("content", ""))
@@ -68,7 +68,7 @@ def _normalize_tavily_documents(response: Dict[str, Any]) -> List[Dict[str, Any]
     return documents
 
 
-def _failed_document(url: str, error: str) -> Dict[str, Any]:
+def _failed_document(url: str, error: str) -> dict[str, Any]:
     return {"url": url, "title": "", "content": "", "raw_content": "", "error": error, "metadata": {"sourceURL": url}}
 
 
@@ -95,8 +95,8 @@ class TavilyWebSearchProvider(BaseWebSearchProvider):
     EXTRACT = True
     KEYLESS = True
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        def _body() -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
+        def _body() -> dict[str, Any]:
             key, missing, prefix = _auth("search")
             if missing:
                 return search_fail(missing)
@@ -106,8 +106,8 @@ class TavilyWebSearchProvider(BaseWebSearchProvider):
 
         return run_search("Tavily", logger, _body)
 
-    def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
-        def _body() -> List[Dict[str, Any]]:
+    def extract(self, urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
+        def _body() -> list[dict[str, Any]]:
             key, missing, prefix = _auth("extract")
             if missing:
                 return extract_fail(urls, missing)
@@ -117,30 +117,8 @@ class TavilyWebSearchProvider(BaseWebSearchProvider):
 
         return run_extract("Tavily", logger, urls, _body)
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return setup_schema(
             "Tavily", "free · key optional", "Search + extract. Opt-in keyless; set TAVILY_API_KEY for higher limits.",
             "TAVILY_API_KEY", "Tavily API key (optional — keyless works when Tavily is selected)", "https://app.tavily.com/home",
         )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'WebSearchProvider': ('agent.web_search_provider', 'WebSearchProvider'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

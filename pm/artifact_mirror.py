@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 
 from pm.downloader import Source
+from pm.index_config import npm_registry, npm_registry_url
 
-_LAYOUT = json.loads(Path(__file__).with_name("artifact-mirror.json").read_text(encoding="utf-8"))
+_LAYOUT = json.loads(Path(__file__).with_name("artifact-mirror.json").read_text(encoding="utf-8-sig"))
 KEY_PREFIX = _LAYOUT["prefix"]
 PUBLIC_PREFIX = _LAYOUT["origin"] + "/" + KEY_PREFIX
 
@@ -25,4 +27,9 @@ def mirror_url(sha256: str) -> str:
 
 def pinned_source(url: str, dest: Path, sha256: str) -> Source:
     archive = mirror_url(sha256)
-    return Source(url, dest, sha256, fallbacks=() if url == archive else (archive,))
+    # The lock records registry.npmjs.org; a user's npm mirror serves the same pinned bytes (#123132).
+    mirrored = npm_registry_url(url, os.environ)
+    # A LAN registry is often plain http (#150032). Only its rewritten URL may use it.
+    registry = npm_registry(os.environ) if mirrored != url else ""
+    return Source(mirrored, dest, sha256, fallbacks=() if mirrored == archive else (archive,),
+                  http_mirror=registry if registry.startswith("http://") else "")

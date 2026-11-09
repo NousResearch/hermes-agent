@@ -76,7 +76,7 @@ def probe_sqlite_runtime(python: str | Path, *, timeout: float = 30.0) -> SQLite
     """Probe SQLite in *python*, never the caller's linked SQLite."""
     try:
         result = subprocess.run(
-            [str(python), "-I", "-c", _PROBE_SCRIPT], capture_output=True, text=True, timeout=timeout,
+            [str(python), "-I", "-c", _PROBE_SCRIPT], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
             check=False, env=isolated_interpreter_env())
     except (OSError, subprocess.TimeoutExpired):
         return None

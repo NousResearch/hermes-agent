@@ -1,6 +1,8 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { useState } from 'react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import { Dialog, DialogContent } from './dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -130,5 +132,116 @@ describe('DropdownMenuSearch hover focus', () => {
 
     hover(row)
     expect(row.ownerDocument.activeElement).toBe(row)
+  })
+})
+
+describe('DropdownMenuSubContent portal', () => {
+  function OpenSubmenu({ portalContainer }: { portalContainer?: HTMLElement | null }) {
+    return (
+      <DropdownMenu open>
+        <DropdownMenuContent portalContainer={portalContainer}>
+          <DropdownMenuSub open>
+            <DropdownMenuSubTrigger>Model</DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              <DropdownMenuItem>High</DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    )
+  }
+
+  it('keeps a submenu on the body portal, at z-50, outside a dialog', () => {
+    render(<OpenSubmenu />)
+
+    const sub = screen.getByText('High').closest('[data-slot="dropdown-menu-sub-content"]')
+
+    expect(sub).not.toBeNull()
+    expect(sub?.closest('[data-slot="dialog-content"]')).toBeNull()
+    expect(sub?.ownerDocument.body.contains(sub)).toBe(true)
+    expect(sub?.className).toContain('z-50')
+    expect(sub?.className).not.toContain('z-(--z-modal-popover)')
+  })
+
+  it('portals a submenu into the dialog content and raises it above the parent menu', () => {
+    render(
+      <Dialog open>
+        <DialogContent>
+          <OpenSubmenu />
+        </DialogContent>
+      </Dialog>
+    )
+
+    const sub = screen.getByText('High').closest('[data-slot="dropdown-menu-sub-content"]')
+    const dialog = screen.getByRole('dialog')
+    const menu = screen.getByRole('menuitem', { name: 'Model' }).closest('[data-slot="dropdown-menu-content"]')
+
+    expect(dialog.contains(sub)).toBe(true)
+    expect(dialog.contains(menu)).toBe(true)
+    expect(sub?.className).toContain('z-(--z-modal-popover)')
+    expect((sub as HTMLElement).style.pointerEvents).toBe('auto')
+  })
+
+  it('uses the same explicit portal container as the parent menu', () => {
+    function Hosted() {
+      const [host, setHost] = useState<HTMLDivElement | null>(null)
+
+      return (
+        <>
+          <div ref={setHost} />
+          {host ? <OpenSubmenu portalContainer={host} /> : null}
+        </>
+      )
+    }
+
+    const { container } = render(<Hosted />)
+
+    const sub = screen.getByText('High').closest('[data-slot="dropdown-menu-sub-content"]')
+    const menu = screen.getByRole('menuitem', { name: 'Model' }).closest('[data-slot="dropdown-menu-content"]')
+    const host = container.firstElementChild
+
+    expect(host?.contains(sub)).toBe(true)
+    expect(host?.contains(menu)).toBe(true)
+    expect(sub?.className).toContain('z-(--z-modal-popover)')
+  })
+
+  it('selects a submenu row inside a dialog without dismissing the parent menu', async () => {
+    const onMenuOpenChange = vi.fn()
+    const onSelect = vi.fn((event: Event) => event.preventDefault())
+
+    function EffortMenu({ subOpen }: { subOpen: boolean }) {
+      return (
+        <Dialog open>
+          <DialogContent>
+            <DropdownMenu onOpenChange={onMenuOpenChange} open>
+              <DropdownMenuContent>
+                <DropdownMenuSub open={subOpen}>
+                  <DropdownMenuSubTrigger>Model</DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent>
+                    <DropdownMenuItem onSelect={onSelect}>High</DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </DialogContent>
+        </Dialog>
+      )
+    }
+
+    // Open the submenu after the parent menu, as a hover would.
+    const { rerender } = render(<EffortMenu subOpen={false} />)
+    rerender(<EffortMenu subOpen />)
+
+    // DismissableLayer registers its document pointerdown listener in a
+    // setTimeout(0); flush it so an outside press would actually dismiss.
+    await act(() => new Promise(resolve => setTimeout(resolve, 10)))
+
+    const row = screen.getByRole('menuitem', { name: 'High' })
+    fireEvent.pointerDown(row, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(row, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(row)
+
+    expect(onSelect).toHaveBeenCalledTimes(1)
+    expect(onMenuOpenChange).not.toHaveBeenCalledWith(false)
   })
 })

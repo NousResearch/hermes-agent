@@ -12,6 +12,10 @@ def _replace_pinning_mtime(path, content: str) -> None:
     before = path.stat()
     other = path.with_name("other.yaml")
     other.write_text(content, encoding="utf-8")
+    # ctime ticks at the kernel's coarse clock (~4 ms): an in-place rewrite inside the tick of the
+    # cached read leaves every stat field equal. Wait until the fs clock has passed that ctime.
+    while other.stat().st_ctime_ns <= before.st_ctime_ns:
+        os.utime(other)
     shutil.copy2(other, path)
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
 

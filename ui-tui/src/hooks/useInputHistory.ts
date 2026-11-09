@@ -1,6 +1,5 @@
+import * as inputHistory from '@hermes/shared/prompt-history'
 import { useRef, useState } from 'react'
-
-import * as inputHistory from '../lib/history.js'
 
 export function useInputHistory() {
   const historyRef = useRef<string[]>(inputHistory.load())

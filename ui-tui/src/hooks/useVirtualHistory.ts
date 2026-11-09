@@ -56,6 +56,20 @@ const NOOP = () => {}
 const validVirtualItemHeight = (value: number): boolean =>
   Number.isFinite(value) && value > 0 && value <= MAX_VIRTUAL_ITEM_HEIGHT
 
+// A laid-out row may really be empty (a hidden trail, an image the gateway
+// answered `off` for), so a measurement or a cached measurement may be 0.
+// Estimates keep the positive floor above: an unmeasured row is never 0.
+const validMeasuredHeight = (value: number): boolean =>
+  Number.isFinite(value) && value >= 0 && value <= MAX_VIRTUAL_ITEM_HEIGHT
+
+// The row's laid-out height, or NaN when there is no Yoga node to read (a
+// missing node is "not measured", never "0 rows").
+const measuredHeight = (node: unknown): number => {
+  const read = (node as MeasuredNode | undefined)?.yogaNode?.getComputedHeight
+
+  return read ? Math.ceil(read.call((node as MeasuredNode).yogaNode)) : Number.NaN
+}
+
 const safeUnsignedGeometry = (value: number, fallback = 0): number =>
   Number.isFinite(value) && value >= 0 && value <= MAX_VIRTUAL_GEOMETRY ? value : fallback
 
@@ -66,7 +80,7 @@ export const pruneVirtualHeightCache = (cache: Map<string, number>, items: reado
   const active = new Set(items.map(item => item.key))
 
   for (const key of cache.keys()) {
-    if (!active.has(key) || !validVirtualItemHeight(cache.get(key)!)) {
+    if (!active.has(key) || !validMeasuredHeight(cache.get(key)!)) {
       cache.delete(key)
     }
   }
@@ -119,7 +133,7 @@ export const ensureVirtualItemHeight = (
 ) => {
   const cached = heights.get(key)
 
-  if (cached !== undefined && validVirtualItemHeight(cached)) {
+  if (cached !== undefined && validMeasuredHeight(cached)) {
     return Math.floor(cached)
   }
 
@@ -148,7 +162,8 @@ export function useVirtualHistory(
     onHeightsChange,
     overscan = OVERSCAN,
     maxMounted = MAX_MOUNTED,
-    coldStartCount = COLD_START
+    coldStartCount = COLD_START,
+    nativeMode = false
   }: VirtualHistoryOptions = {}
 ) {
   const nodes = useRef(new Map<string, unknown>())
@@ -221,7 +236,7 @@ export function useVirtualHistory(
     for (const [k, h] of heights.current) {
       const scaled = Math.round(h * ratio)
 
-      if (validVirtualItemHeight(scaled)) {
+      if (validMeasuredHeight(scaled)) {
         heights.current.set(k, scaled)
       } else {
         heights.current.delete(k)
@@ -325,7 +340,13 @@ export function useVirtualHistory(
   let start = 0
   let end = n
 
-  if (frozenRange) {
+  if (nativeMode) {
+    // Native mode deliberately leaves the transcript in ordinary document
+    // flow. The terminal owns scrollback; there is no viewport window to
+    // virtualize or reconcile against.
+    start = 0
+    end = n
+  } else if (frozenRange) {
     start = frozenRange[0]
     end = Math.min(frozenRange[1], n)
   } else if (n > 0) {
@@ -360,7 +381,7 @@ export function useVirtualHistory(
     }
   }
 
-  if (end - start > maxMounted) {
+  if (!nativeMode && end - start > maxMounted) {
     sticky ? (start = Math.max(0, end - maxMounted)) : (end = Math.min(n, start + maxMounted))
   }
 
@@ -368,7 +389,7 @@ export function useVirtualHistory(
   // viewportH + 2*overscan so the viewport is physically covered even when
   // items are tiny. Pessimistic because uncached items use a floor of 1 —
   // over-mounts when items are large, never leaves blank spacer showing.
-  if (n > 0 && vp > 0 && !frozenRange) {
+  if (!nativeMode && n > 0 && vp > 0 && !frozenRange) {
     const needed = vp + 2 * overscan
     let coverage = 0
 
@@ -400,7 +421,7 @@ export function useVirtualHistory(
   // PageUp skips this; the clamp holds the viewport at the mounted edge
   // during catch-up so there's no blank screen. Only caps range GROWTH;
   // shrinking is unbounded.
-  if (!frozenRange && prevRange.current && vp > 0) {
+  if (!nativeMode && !frozenRange && prevRange.current && vp > 0) {
     const velocity = Math.abs(top - lastScrollTopRef.current) + Math.abs(pendingDelta)
 
     if (velocity > vp * 2) {
@@ -435,8 +456,8 @@ export function useVirtualHistory(
   // is cheap (unmount = remove fiber, no parse).
   const dStart = useDeferredValue(start)
   const dEnd = useDeferredValue(end)
-  let effStart = start < dStart ? dStart : start
-  let effEnd = end > dEnd ? dEnd : end
+  let effStart = nativeMode ? 0 : start < dStart ? dStart : start
+  let effEnd = nativeMode ? n : end > dEnd ? dEnd : end
 
   // Inverted range (large jump with deferred value lagging) or sticky snap
   // (scrollToBottom needs the tail mounted NOW so maxScroll lands on content,
@@ -460,7 +481,7 @@ export function useVirtualHistory(
   // wider than either bound alone. Trim the far edge by viewport position
   // (not pendingDelta direction — that flips mid-settle under concurrent
   // scheduling and yanks scrollTop).
-  if (effEnd - effStart > maxMounted && vp > 0) {
+  if (!nativeMode && effEnd - effStart > maxMounted && vp > 0) {
     const mid = (offsets[effStart]! + offsets[effEnd]!) / 2
 
     if (top < mid) {
@@ -504,11 +525,10 @@ export function useVirtualHistory(
           // the final height before WASM release. Without this, items
           // scrolled out during fast pan keep a stale estimate in heightCache
           // and offset math drifts until the next mount/remount cycle.
-          const existing = nodes.current.get(key) as MeasuredNode | undefined
-          const h = Math.ceil(existing?.yogaNode?.getComputedHeight?.() ?? 0)
+          const h = measuredHeight(nodes.current.get(key))
           const previousHeight = heights.current.get(key)
 
-          if (validVirtualItemHeight(h) && previousHeight !== h) {
+          if (validMeasuredHeight(h) && previousHeight !== h) {
             const s = scrollRef.current
             const measuredBottom = measuredBottoms.current.get(key)
 
@@ -554,6 +574,10 @@ export function useVirtualHistory(
     let dirty = false
     let heightDirty = false
     let anchorDelta = 0
+
+    if (nativeMode) {
+      return
+    }
 
     // Give the renderer the mounted-row coverage for passive scroll clamping.
     // Clamp MUST use the EFFECTIVE (deferred) range, not the immediate one.
@@ -610,10 +634,10 @@ export function useVirtualHistory(
           continue
         }
 
-        const h = Math.ceil((nodes.current.get(k) as MeasuredNode | undefined)?.yogaNode?.getComputedHeight?.() ?? 0)
+        const h = measuredHeight(nodes.current.get(k))
         const previousHeight = heights.current.get(k)
 
-        if (validVirtualItemHeight(h) && previousHeight !== h) {
+        if (validMeasuredHeight(h) && previousHeight !== h) {
           // Keep the same content at the same screen row when estimates above
           // the committed viewport converge. Rows intersecting or below the
           // viewport intentionally retain the current scrollTop.
@@ -660,7 +684,21 @@ export function useVirtualHistory(
     if (heightDirty) {
       bumpMeasuredHeightVersion(n => n + 1)
     }
-  }, [effEnd, effStart, items, liveTailActive, measuredHeightVersion, n, offsets, scrollRef, sticky, top, total, vp])
+  }, [
+    effEnd,
+    effStart,
+    items,
+    liveTailActive,
+    measuredHeightVersion,
+    n,
+    nativeMode,
+    offsets,
+    scrollRef,
+    sticky,
+    top,
+    total,
+    vp
+  ])
 
   return {
     bottomSpacer: Math.max(0, total - (offsets[effEnd] ?? total)),
@@ -686,4 +724,5 @@ interface VirtualHistoryOptions {
   maxMounted?: number
   onHeightsChange?: (heights: ReadonlyMap<string, number>) => void
   overscan?: number
+  nativeMode?: boolean
 }

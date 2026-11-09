@@ -11,7 +11,7 @@ actionable-looking text the user did not quote (#22619).
 from types import SimpleNamespace
 
 from gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter():

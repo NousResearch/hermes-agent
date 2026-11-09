@@ -91,16 +91,38 @@ class TestOpaqueRefMsg:
         ref = _opaque_ref()
         ref["message_item"]["type"] = 99
 
-        assert weixin._extract_text([_text_item("x", ref)]).endswith("x")
+        out = weixin._extract_text([_text_item("x", ref)])
 
-    def test_opaque_quote_is_logged_without_its_content(self):
-        ref = _opaque_ref()
+        assert out == f"[引用: msg {ref['message_item']['msg_id']}]\nx", out
+
+    def test_blank_msg_id_does_not_shadow_a_usable_svr_id(self):
+        ref = _opaque_ref(msg_id="   ", svr_id="svr-7")
+
+        out = weixin._extract_text([_text_item("hi", ref)])
+
+        assert out == "[引用: msg svr-7]\nhi", out
+
+    def test_opaque_quote_is_logged_without_its_id(self):
+        # Only the degraded branch logs at all, so only ids can leak here: a delivered title
+        # or body returns before the debug call.
+        ref = _opaque_ref(msg_id="msg-sentinel-1", svr_id="svr-sentinel-2")
         messages = _capture_debug(weixin.logger, lambda: weixin._extract_text([_text_item("y", ref)]))
 
         assert any("without a delivered body" in message for message in messages), messages
-        assert not any(ref["message_item"]["msg_id"] in message for message in messages), (
-            "only shape metadata belongs in logs: not the quoted id, title or body"
-        )
+        for sentinel in ("msg-sentinel-1", "svr-sentinel-2"):
+            assert not any(sentinel in message for message in messages), (
+                f"only shape metadata belongs in logs: {sentinel} leaked into {messages}"
+            )
+
+    def test_quoted_title_and_body_never_reach_the_log(self):
+        ref = {
+            "title": "title-sentinel-3",
+            "message_item": {"type": weixin.ITEM_TEXT, "text_item": {"text": "body-sentinel-4"}},
+        }
+        messages = _capture_debug(weixin.logger, lambda: weixin._extract_text([_text_item("y", ref)]))
+
+        for sentinel in ("title-sentinel-3", "body-sentinel-4"):
+            assert not any(sentinel in message for message in messages), messages
 
     def test_title_only_quote_is_not_logged_as_degraded(self):
         messages = _capture_debug(

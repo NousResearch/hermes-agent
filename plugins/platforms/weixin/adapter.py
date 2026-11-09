@@ -540,13 +540,18 @@ def _quoted_prefix(item: dict[str, Any]) -> str:
     """
     ref = item.get("ref_msg") or {}
     ref_item = ref.get("message_item") or {}
-    title = str(ref.get("title") or "")
+    title = str(ref.get("title") or "").strip()
     if ref_item.get("type") in {ITEM_IMAGE, ITEM_VIDEO, ITEM_FILE, ITEM_VOICE}:
         return f"[引用媒体: {title}]" if title else "[引用媒体]"
     parts = [p for p in (title, _extract_text([ref_item]) if ref_item else "") if p]
     if parts:
         return f"[引用: {' | '.join(parts)}]"
-    ref_id = str(ref_item.get("msg_id") or ref.get("svr_id") or "").strip()
+    # Normalise both id candidates *before* choosing: a blank ``msg_id`` must not shadow a
+    # usable ``svr_id`` just because the whitelist runs first.
+    ref_id = next(
+        (c for c in (str(ref_item.get("msg_id") or "").strip(), str(ref.get("svr_id") or "").strip()) if c),
+        "",
+    )
     # `svr_id` alone is the other id-only shape: dropping it here would leave the early
     # return contradicting the marker below, silently losing a quote that can be named.
     if not ref_item and not title and not ref_id:

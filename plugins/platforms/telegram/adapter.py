@@ -202,7 +202,7 @@ from plugins.platforms.telegram.telegram_outbound import is_visually_empty, reso
 from plugins.platforms.telegram.telegram_send_path_recovery import TelegramSendPathRecoveryMixin, mark_send_path_recovered
 from plugins.platforms.telegram.telegram_send_errors import LOST, is_entity_parse_error, maybe_delivered_result as _maybe_delivered_result, send_error_kind
 from plugins.platforms.telegram.telegram_typing_gate import typing_may_fire
-from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, shared_sender_suffix
+from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, observed_media_note, shared_sender_suffix
 from plugins.platforms.telegram.telegram_picker_labels import model_button_labels
 from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
 from utils import env_float, env_int
@@ -5756,7 +5756,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             event.media_urls = []
             event.media_types = []
             event.media_text_inlined = []
-            self._attach_cached(event, cached, cached.context_note(), "[Telegram] Cached observed group %s at %s")
+            self._attach_cached(event, cached, observed_media_note(cached), "[Telegram] Cached observed group %s at %s")
 
     def _attach_cached(self, event: MessageEvent, cached, note: str, log_fmt: str) -> None:
         """Append a cached attachment to the event (message type follows the kind only for the first one)."""

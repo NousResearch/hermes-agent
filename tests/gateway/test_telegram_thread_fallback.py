@@ -855,8 +855,8 @@ async def test_deleted_anchor_and_dead_topic_media_reply_still_reaches_chat_root
 
     assert result.success is True
     routes = [(c.get("message_thread_id"), c.get("direct_messages_topic_id"), c.get("reply_to_message_id")) for c in call_log]
-    # anchor dropped with the topic kept, then the native id, then the root without the anchor
-    assert routes == [(20197, None, 462), (20197, None, None), (None, 20197, None), (None, None, None)]
+    # anchor dropped with the topic kept, the same thread once more, then the native id, then the root without the anchor
+    assert routes == [(20197, None, 462), (20197, None, None), (20197, None, None), (None, 20197, None), (None, None, None)]
 
 
 @pytest.mark.asyncio
@@ -946,7 +946,7 @@ async def test_media_ladder_ends_when_even_the_chat_root_is_rejected():
 
     assert result.success is False
     routes = [(c.get("message_thread_id"), c.get("direct_messages_topic_id"), c.get("reply_to_message_id")) for c in call_log]
-    assert routes[:3] == [(20197, None, 462), (None, 20197, 462), (None, None, None)]
+    assert routes[:4] == [(20197, None, 462), (20197, None, 462), (None, 20197, 462), (None, None, None)]
     assert (None, 20197, None) not in routes  # the native id is not rebuilt after the root step
 
 
@@ -974,7 +974,8 @@ async def test_native_topic_deleted_wording_still_reaches_chat_root(tmp_path):
 
     assert sent.message_id == 5 and media.success is True
     routes = [(c.get("message_thread_id"), c.get("direct_messages_topic_id"), c.get("reply_to_message_id")) for c in call_log]
-    assert routes == [(20197, None, 462), (None, 20197, 462), (None, None, None)] * 2
+    control, media = [(20197, None, 462), (None, 20197, 462), (None, None, None)], [(20197, None, 462)] * 2
+    assert routes == control + media + control[1:]
     assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is None
 
 
@@ -1107,3 +1108,69 @@ async def test_text_reply_with_reply_message_not_found_wording_drops_only_the_an
 
     assert result.success is True
     assert [(c.get("message_thread_id"), c.get("reply_to_message_id")) for c in call_log] == [(77, 462), (77, None)]
+
+
+@pytest.mark.asyncio
+async def test_private_topic_media_flake_retries_same_thread_first(tmp_path):
+    """Media follows the text rule: a one-off "thread not found" retries the same thread_id, so a live Hermes lane
+    neither moves to the native DM-topic id (#87051) nor loses its binding."""
+    db = _topic_db(tmp_path)
+    adapter = _make_adapter()
+    adapter._session_store = SimpleNamespace(_db=db)
+    call_log = []
+
+    async def _flake_once(**kwargs):
+        call_log.append(dict(kwargs))
+        if len(call_log) == 1 or kwargs.get("direct_messages_topic_id"):
+            raise FakeBadRequest("Message thread not found")
+        return SimpleNamespace(message_id=11)
+
+    adapter._bot = SimpleNamespace(send_animation=_flake_once)
+
+    result = await adapter.send_animation(
+        chat_id="123", animation_url="https://example.com/anim.gif", metadata=dict(_GATEWAY_META))
+
+    assert result.success is True
+    assert [(c.get("message_thread_id"), c.get("direct_messages_topic_id")) for c in call_log] == [(20197, None), (20197, None)]
+    assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is not None
+
+
+@pytest.mark.asyncio
+async def test_private_topic_media_timeout_is_not_retried():
+    """Only a topic rejection re-sends media: a timeout may have delivered the upload, so it is never sent twice."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def _timed_out(**kwargs):
+        call_log.append(dict(kwargs))
+        raise FakeTimedOut("Timed out")
+
+    adapter._bot = SimpleNamespace(send_animation=_timed_out, send_photo=_timed_out)
+
+    result = await adapter.send_animation(
+        chat_id="123", animation_url="https://example.com/anim.gif", metadata=dict(_GATEWAY_META))
+
+    assert result.success is False
+    assert [c.get("animation") is not None for c in call_log].count(True) == 1
+
+
+@pytest.mark.asyncio
+async def test_native_only_media_route_is_tried_once_before_root():
+    """The same-thread flake retry needs a thread id: a send already routed by direct_messages_topic_id goes to root."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def _topic_gone(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("message_thread_id") or kwargs.get("direct_messages_topic_id"):
+            raise FakeBadRequest("Message thread not found")
+        return SimpleNamespace(message_id=12)
+
+    adapter._bot = SimpleNamespace(send_animation=_topic_gone)
+
+    result = await adapter.send_animation(
+        chat_id="123", animation_url="https://example.com/anim.gif",
+        metadata={"telegram_dm_topic_reply_fallback": True, "direct_messages_topic_id": "20197"})
+
+    assert result.success is True
+    assert [(c.get("message_thread_id"), c.get("direct_messages_topic_id")) for c in call_log] == [(None, 20197), (None, None)]

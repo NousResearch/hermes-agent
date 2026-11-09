@@ -58,19 +58,15 @@ def _write_config(text: str) -> None:
     (get_hermes_home() / "config.yaml").write_text(text)
 
 
-@pytest.mark.parametrize("model", ["claude-opus-5-5[1m]", "claude-sonnet-5-5", "claude-haiku-5-5"])
-def test_external_process_stall_budget_is_the_same_for_every_model(process_agent, model):
-    """A ~325K-token request to a child process: the request timeout bounds a buffered call and the
-    900s local ceiling bounds a stream, the same for every model (opus was cut at 240s while haiku
-    waited without limit)."""
-    assert _budgets(process_agent, model) == (1800.0, 900.0)
-
-
-@pytest.mark.parametrize("seconds", [180, 1200])
-def test_explicit_stale_timeout_wins_on_both_paths(process_agent, seconds):
-    """An explicit value is the operator's deadline as-is; 180 is not mistaken for the unset default."""
-    _write_config(f"providers:\n  {PROVIDER}:\n    stale_timeout_seconds: {seconds}\n")
-    assert _budgets(process_agent, "claude-haiku-5-5") == (float(seconds), float(seconds))
+def test_external_process_stall_budget_is_one_explicit_deadline(process_agent):
+    """A ~325K-token request to a child process: unset, the request timeout bounds a buffered call and the 900s
+    local ceiling bounds a stream, the same for every model (opus was cut at 240s while haiku waited without
+    limit). An explicit value is the operator's deadline on both paths; 180 is not mistaken for the unset default."""
+    for model in ("claude-opus-5-5[1m]", "claude-sonnet-5-5", "claude-haiku-5-5"):
+        assert _budgets(process_agent, model) == (1800.0, 900.0), model
+    for seconds in (180, 1200):
+        _write_config(f"providers:\n  {PROVIDER}:\n    stale_timeout_seconds: {seconds}\n")
+        assert _budgets(process_agent, "claude-haiku-5-5") == (float(seconds), float(seconds)), seconds
 
 
 _DEAF_AFTER_SESSION = """import json, sys, time

@@ -191,4 +191,5 @@ def test_chat_completions_gateway_is_warmed_on_the_five_minute_schedule(priced):
     (sent,) = agent.client.calls
     assert sent["max_tokens"] == 1 and "stream" not in sent and "stream_options" not in sent
     assert sent["messages"] == request["messages"] and sent["extra_body"] == request["extra_body"]
+    assert sent["extra_headers"]["X-OpenRouter-Cache"] == "false"  # a response-cache hit refreshes nothing
     assert pcw.warm_ttl_seconds(_agent(_cache_ttl="1h")) == 3600  # native Anthropic keeps its tier

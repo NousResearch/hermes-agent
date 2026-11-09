@@ -171,6 +171,17 @@ class TestMinimaxTtsT2aV2:
         with open(output, "rb") as f:
             assert f.read() == b"\x00\x01\x02\x03"
 
+    @pytest.mark.parametrize(("minimax", "expected"), [
+        pytest.param({}, "omitted", id="unset"),
+        pytest.param({"emotion": ""}, "omitted", id="empty"),
+        pytest.param({"emotion": "happy"}, "happy", id="configured"),
+    ])
+    def test_emotion_is_sent_only_when_configured(self, tmp_path, monkeypatch, minimax, expected):
+        """Omitting emotion lets MiniMax infer it from the text; a configured value passes through."""
+        mock_post, _ = self._run({"minimax": minimax}, tmp_path, monkeypatch)
+        voice_setting = mock_post.call_args[1]["json"]["voice_setting"]
+        assert voice_setting.get("emotion", "omitted") == expected
+
 
     def test_api_error_raises(self, tmp_path, monkeypatch):
         """Non-zero base_resp.status_code surfaces as RuntimeError."""

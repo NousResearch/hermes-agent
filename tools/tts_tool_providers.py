@@ -407,12 +407,16 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: dict[str, Any
         base_url = f"{base_url}{'&' if '?' in base_url else '?'}GroupId={group_id}"
     is_t2a_v2 = "t2a_v2" in base_url
     if is_t2a_v2:
+        voice_setting = {
+            "voice_id": voice_id, "speed": mm_config.get("speed", 1.0), "vol": mm_config.get("vol", 1.0),
+            "pitch": mm_config.get("pitch", 0),
+        }
+        # An omitted emotion lets MiniMax infer it from the text, which a hardcoded "neutral" disabled.
+        emotion = mm_config.get("emotion")
+        if isinstance(emotion, str) and emotion:
+            voice_setting["emotion"] = emotion
         payload = {
-            "model": model, "text": text,
-            "voice_setting": {
-                "voice_id": voice_id, "speed": mm_config.get("speed", 1.0), "vol": mm_config.get("vol", 1.0),
-                "pitch": mm_config.get("pitch", 0), "emotion": mm_config.get("emotion", "neutral"),
-            },
+            "model": model, "text": text, "voice_setting": voice_setting,
             "audio_setting": {
                 "sample_rate": mm_config.get("sample_rate", 32000), "bitrate": mm_config.get("bitrate", 128000),
                 "format": "mp3", "channel": 1,

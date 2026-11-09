@@ -402,6 +402,33 @@ test.skipIf(process.platform === 'win32')('a reuse check waits for an install ru
   expect(readdirSync(join(source, '.cache'))).toEqual([])
 }, 60000)
 
+// A run that waits for the lock reads its inputs once it holds it: an update that changed the
+// dependencies meanwhile is installed, not judged against the files read before the wait.
+test.skipIf(process.platform === 'win32')('a run that waited for the lock installs the inputs current when it got it', async () => {
+  const { source, env } = fixture()
+  prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env })
+  // A live owner: a lock this test keeps fresh, as the owner's heartbeat would.
+  const lock = join(source, '.cache/node-deps.lock')
+  json(lock, { token: 'live', pid: process.pid, host: hostname() })
+  const beat = setInterval(() => { const now = new Date(); utimesSync(lock, now, now) }, 200)
+  const waiter = spawn(process.execPath, cli(source, '--workspace', 'web', '--reuse'), { env, stdio: 'pipe' })
+  let output = ''
+  waiter.stdout.on('data', data => { output += data })
+  waiter.stderr.on('data', data => { output += data })
+  const exit = new Promise(done => waiter.on('exit', done))
+  try {
+    await until(() => output.includes('waiting up to'))
+    addExtraOnly(source, env)
+  } finally {
+    clearInterval(beat)
+    rmSync(lock, { force: true })
+  }
+  expect(await exit).toBe(0)
+  expect(output).not.toMatch(/reusing completed install/)
+  expect(createRequire(join(source, 'web/package.json'))('extra-only')).toBe('extra-only')
+  prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env, install: false })
+}, 30000)
+
 // A lock nobody refreshes is dead whatever it names: a killed run's pid now reused by another
 // user's process, another host's name (a container, a renamed Mac) or another PID namespace.
 test.each([

@@ -584,13 +584,9 @@ function installedLockMatches(lockText, installedLock, selected) {
         .every(([name, entry]) => same(entry, wanted[project].optionalDependencies?.[name])))
 }
 
-/** Install the full requested workspace union in one strict, locked operation.
- *  ``electron: false`` leaves Desktop's Electron binary unprepared, for builds that never run it. */
-export function prepareNodeDependencies({ source, workspaces, env = process.env, reuse = false, install = true, nativeToolchain, electron = true }) {
-  source = resolve(source)
-  if (!Array.isArray(workspaces) || workspaces.length === 0) {
-    throw new Error('Select at least one workspace; implicit all-workspace installation is not allowed')
-  }
+// What this run installs and the key its receipt carries, read once the run holds the lock: an
+// update that changed them while this run waited is installed, not judged against older files.
+function dependencyInputs({ source, workspaces, env, nativeToolchain, electron }) {
   const lockText = readFileSync(join(source, 'pnpm-lock.yaml'), 'utf8')
   const projects = Object.keys(lockImporters(lockText)).sort()
   const selected = [...new Set(workspaces.map(workspace => {
@@ -615,15 +611,6 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
   const args = ['install', '--frozen-lockfile', '--trust-lockfile', '--prod=false',
     ...selected.flatMap(workspace => ['--filter', `{./${workspace}}...`]),
   ]
-  // This receipt certifies dependency preparation, never compiled product freshness.
-  // Keep it inside the cached tree so removing node_modules also removes the receipt.
-  const receipt = join(source, 'node_modules/.hermes-node-deps')
-  // Ordinary product builders consume the baseline receipt; preparation also
-  // binds lifecycle outputs to its compiler/SDK identity.
-  const nativeReceipt = `${receipt}.native-toolchain`
-  const nativeKey = nativeToolchain === undefined ? undefined : JSON.stringify(nativeToolchain)
-  // pnpm's copy of the lockfile it last installed.
-  const installedLock = join(source, 'node_modules/.pnpm/lock.yaml')
   const inputs = createHash('sha256').update(JSON.stringify({
     node: process.versions.node, pnpm: version, platform: process.platform, arch: process.arch, args,
     // Windows Python uppercases inherited keys. Cache, store and state locations
@@ -636,9 +623,31 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
   for (const file of files) {
     inputs.update(file).update('\0').update(existsSync(join(source, file)) ? readFileSync(join(source, file)) : '<missing>').update('\0')
   }
-  const key = inputs.digest('hex')
+  const nativeKey = nativeToolchain === undefined ? undefined : JSON.stringify(nativeToolchain)
+  return { lockText, projects, selected, prepareElectron, pnpm, args, key: inputs.digest('hex'), nativeKey }
+}
+
+/** Install the full requested workspace union in one strict, locked operation.
+ *  ``electron: false`` leaves Desktop's Electron binary unprepared, for builds that never run it. */
+export function prepareNodeDependencies({ source, workspaces, env = process.env, reuse = false, install = true, nativeToolchain, electron = true }) {
+  source = resolve(source)
+  if (!Array.isArray(workspaces) || workspaces.length === 0) {
+    throw new Error('Select at least one workspace; implicit all-workspace installation is not allowed')
+  }
+  // This receipt certifies dependency preparation, never compiled product freshness.
+  // Keep it inside the cached tree so removing node_modules also removes the receipt.
+  const receipt = join(source, 'node_modules/.hermes-node-deps')
+  // Ordinary product builders consume the baseline receipt; preparation also
+  // binds lifecycle outputs to its compiler/SDK identity.
+  const nativeReceipt = `${receipt}.native-toolchain`
+  // pnpm's copy of the lockfile it last installed.
+  const installedLock = join(source, 'node_modules/.pnpm/lock.yaml')
   const lock = lockCheckout(source)
+  let selected
   try {
+    const inputs = dependencyInputs({ source, workspaces, env, nativeToolchain, electron })
+    const { lockText, projects, prepareElectron, pnpm, args, key, nativeKey } = inputs
+    selected = inputs.selected
     const previous = previousTrees(source, lock.check)
     previous.recover()
     if (reuse && reusable(lock, { source, receipt, installedLock, key, nativeKey })) {

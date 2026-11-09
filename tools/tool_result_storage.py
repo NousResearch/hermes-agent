@@ -408,6 +408,72 @@ def _build_persisted_message(preview: str, has_more: bool, original_size: int,
         + f"\n{PERSISTED_OUTPUT_CLOSING_TAG}")
 
 
+# Tools whose result is EXECUTABLE RULES, not data. For these a generic
+# "this was too large" preview is an asymmetric failure: the model reads the notice as
+# "I have the skill", fills the gap with inferred defaults, and proceeds — the exact
+# silent loss reported in #151283. Such a result must degrade LOUDLY and block action.
+SKILL_RULES_TOOL_NAMES = frozenset({"skill_view"})
+_SKILL_OUTLINE_MAX_HEADINGS = 60
+
+
+def _skill_outline(content: str) -> str:
+    """Markdown headings from the FULL skill body, so the preview shows what was dropped.
+
+    Headings are cheap and non-executable: they tell the model which sections are missing
+    without re-inflating the context with the dropped rules themselves.
+    """
+    headings = [ln.rstrip() for ln in content.splitlines() if re.match(r"^#{1,6}\s+\S", ln)]
+    if not headings:
+        return ""
+    if len(headings) > _SKILL_OUTLINE_MAX_HEADINGS:
+        headings = headings[:_SKILL_OUTLINE_MAX_HEADINGS] + ["- …"]
+    return "\n".join(headings)
+
+
+def _build_skill_persisted_message(preview: str, has_more: bool, original_size: int,
+                                   file_path: str, content: str) -> str:
+    """Replacement block for an oversized skill result: states plainly that the RULES ARE
+    INCOMPLETE and forbids acting until the whole file has been read (#151283)."""
+    outline = _skill_outline(content)
+    outline_block = (
+        f"Structure of the COMPLETE skill — the binding rules you are missing live between "
+        f"these headings:\n{outline}\n\n" if outline else ""
+    )
+    return (
+        f"{PERSISTED_OUTPUT_TAG}\n"
+        "⚠️ SKILL RULES ARE INCOMPLETE — DO NOT EXECUTE THIS SKILL YET.\n"
+        f"This skill is {original_size:,} characters; only the first {len(preview):,} were kept "
+        "inline. The remainder — which can carry fixed parameters, approval steps, prohibitions "
+        "and other binding constraints — is NOT in your context.\n"
+        "Do NOT infer, guess or substitute defaults for rules you did not read. Do NOT perform "
+        "any state-changing action (writes, deploys, submissions, messages, purchases, "
+        "production changes) on the strength of this skill until you have read it in full.\n\n"
+        # This exact phrasing is what extract_persisted_path parses (agent/tool_executor.py
+        # records it so a later result-reference stub cannot dangle). Keep it machine-readable.
+        f"Full output saved to: {file_path}\n"
+        "Read the WHOLE file before acting: "
+        f'read_file(path="{file_path}", offset=1, limit=2000), then continue with '
+        f"offset=2001, 4001, … until you reach the end. The archive is kept while this "
+        "session's transcript references it.\n\n"
+        + outline_block
+        + f"Preview (first {len(preview)} chars):\n"
+        + preview + ("\n..." if has_more else "")
+        + f"\n{PERSISTED_OUTPUT_CLOSING_TAG}")
+
+
+def _build_skill_truncated_message(preview: str, original_size: int) -> str:
+    """Last-resort skill block when no write location succeeded: the dropped rules are unrecoverable,
+    so the model must stop rather than act on the fragment."""
+    return (
+        f"{preview}\n\n"
+        f"[SKILL RULES INCOMPLETE: skill_view returned {original_size:,} characters and the full text "
+        "could not be saved to disk. Only the preview above is in context; the remaining rules are "
+        "LOST. Do NOT act on this skill — do not perform any state-changing operation based on it. "
+        "Re-load the skill (or read its SKILL.md with read_file) so the complete rules are in context "
+        "before proceeding.]"
+    )
+
+
 _PERSISTED_PATH_RE = re.compile(r"^Full output saved to: (.+)$", re.MULTILINE)
 
 
@@ -438,6 +504,9 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     def _persisted(path: str, host_suffix: str = "") -> str:
         logger.info("Persisted large tool result: %s (%s, %d chars -> %s%s)",
                     tool_name, tool_use_id, len(persisted_content), path, host_suffix)
+        if tool_name in SKILL_RULES_TOOL_NAMES:
+            return _build_skill_persisted_message(
+                preview, has_more, len(persisted_content), path, persisted_content)
         return _build_persisted_message(preview, has_more, len(persisted_content), path)
 
     # Always persist host-side first: cache/spillover is the single canonical home.
@@ -459,6 +528,8 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
     logger.info("Inline-truncating large tool result: %s (%d chars, no sandbox write)",
                 tool_name, len(content))
+    if tool_name in SKILL_RULES_TOOL_NAMES:
+        return _build_skill_truncated_message(preview, len(content))
     return (f"{preview}\n\n[Truncated: tool response was {len(content):,} chars. "
             "Full output could not be saved to sandbox.]")
 

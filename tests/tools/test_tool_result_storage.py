@@ -15,11 +15,15 @@ from tools.budget_config import (
 from tools.tool_result_storage import (
     PERSISTED_OUTPUT_TAG,
     PERSISTED_OUTPUT_CLOSING_TAG,
+    SKILL_RULES_TOOL_NAMES,
     STORAGE_DIR,
     _build_persisted_message,
+    _build_skill_persisted_message,
+    _build_skill_truncated_message,
     _pageable_text,
     _resolve_storage_dir,
     _safe_result_filename,
+    _skill_outline,
     _write_to_sandbox,
     cleanup_spillover_cache,
     enforce_turn_budget,
@@ -221,6 +225,74 @@ class TestBuildPersistedMessage:
             file_path="/tmp/hermes-results/test123.txt")
         assert "re-run the original tool" not in msg
         assert "inspect the current state before retrying" in msg
+
+# ── oversized skill results (#151283) ─────────────────────────────────
+
+class TestSkillRulesAreNotSilentlyTruncated:
+    """#151283: skill_view carries EXECUTABLE RULES. A generic "was too large" preview let
+    a model treat a fragment as the whole skill and act on inferred defaults. The degraded
+    block must say plainly that the rules are incomplete and forbid action until re-read."""
+
+    def test_skill_view_is_a_rules_tool(self):
+        assert "skill_view" in SKILL_RULES_TOOL_NAMES
+
+    def test_persisted_block_warns_rules_incomplete_and_blocks_action(self):
+        content = "# Title\nintro\n## Approvals\nsubmit to A\n## Prohibitions\nnever B\n"
+        msg = _build_skill_persisted_message(
+            preview="# Title\nintro\n", has_more=True, original_size=len(content),
+            file_path="/tmp/hermes-results/skill.txt", content=content)
+        assert "SKILL RULES ARE INCOMPLETE" in msg
+        assert "DO NOT EXECUTE THIS SKILL YET" in msg
+        assert "Do NOT infer" in msg
+        assert "/tmp/hermes-results/skill.txt" in msg
+        assert "read_file" in msg
+        # The outline exposes the dropped sections without re-inflating context.
+        assert "## Approvals" in msg and "## Prohibitions" in msg
+        assert msg.startswith(PERSISTED_OUTPUT_TAG)
+        assert msg.endswith(PERSISTED_OUTPUT_CLOSING_TAG)
+
+    def test_persisted_skill_block_keeps_the_machine_readable_path(self):
+        """`extract_persisted_path` parses exactly `Full output saved to: <path>` and
+        agent/tool_executor.py records it so a later result-reference stub cannot dangle. A loud
+        block that reworded that line would silently drop the pointer to the full rules — the very
+        loss this fix exists to prevent."""
+        content = "## R\n" + ("y" * 200)
+        msg = _build_skill_persisted_message(
+            preview="## R\n", has_more=True, original_size=len(content),
+            file_path="/tmp/hermes-results/skill.txt", content=content)
+        assert extract_persisted_path(msg) == "/tmp/hermes-results/skill.txt"
+
+    def test_truncated_fallback_says_rules_are_lost(self):
+        msg = _build_skill_truncated_message(preview="first bit", original_size=120_000)
+        assert "SKILL RULES INCOMPLETE" in msg
+        assert "LOST" in msg
+        assert "Do NOT act on this skill" in msg
+
+    def test_non_skill_tools_keep_the_generic_message(self):
+        """The behaviour change is scoped to rules tools; data tools are untouched."""
+        env = MagicMock()
+        content = "x" * 60_000
+        result = maybe_persist_tool_result(
+            content=content, tool_name="terminal", tool_use_id="tc_data",
+            env=None, threshold=30_000)
+        assert "SKILL RULES" not in result
+        assert PERSISTED_OUTPUT_TAG in result
+
+    def test_skill_view_uses_the_loud_block(self):
+        content = "## Rules\n" + ("y" * 60_000)
+        result = maybe_persist_tool_result(
+            content=content, tool_name="skill_view", tool_use_id="tc_skill",
+            env=None, threshold=30_000)
+        assert "SKILL RULES ARE INCOMPLETE" in result
+        assert "DO NOT EXECUTE THIS SKILL YET" in result
+        assert PERSISTED_OUTPUT_TAG in result
+
+    def test_outline_caps_headings_and_tolerates_no_headings(self):
+        assert _skill_outline("no headings here") == ""
+        many = "\n".join(f"## H{i}" for i in range(200))
+        outline = _skill_outline(many)
+        assert outline.count("\n") < 200
+
 
 # ── maybe_persist_tool_result ─────────────────────────────────────────
 

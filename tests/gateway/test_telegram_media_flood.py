@@ -331,6 +331,8 @@ async def test_failed_private_copy_still_posts_the_promised_notice(flooded, tmp_
     monkeypatch.setattr(flood.shutil, "copy2", disk_full)
     adapter._bot.send_voice = AsyncMock(side_effect=RetryAfter(0.2))
     result = await adapter.send_voice("12345", str(clip), metadata={"thread_id": "7"})
+    assert result.error == "flood_control:0.2"  # deferred, not the immediate base notice
+    adapter.send.assert_not_awaited()
     clip.unlink()  # what auto-TTS does as soon as send_voice returns
 
     assert result.raw_response["failure_notice_sent"]

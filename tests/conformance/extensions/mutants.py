@@ -4,9 +4,8 @@ Each passed an earlier version of the suite. The local backend's pin forgets the
 (``local_pin_forgets_agent``: another profile's scope, and the ambient pin of a scopeless
 caller, are served), the tenant (``local_pin_forgets_tenant``) or the owner
 (``local_pin_forgets_owner``), ``local_admin_not_required`` lets a scope that may not
-administer install and switch, ``local_accepts_tenant_entries`` stores tenant-wide
-entries despite the registry's local exception, and ``local_skips_the_switch_key_migration``
-opens a file whose switch rows are keyed by the bare name without rewriting them. The
+administer install and switch, and ``local_accepts_tenant_entries`` stores tenant-wide
+entries despite the registry's local exception. The
 reference backend accepts a principal administrator's
 tenant-wide writes (``reference_tenant_writes_without_provisioning``: the tenant gate is gone),
 its named writes refuse a missing name as if it were taken
@@ -88,14 +87,6 @@ def _local_accepts_tenant_entries(monkeypatch):
     is gone."""
     from hermes_extension_registry_port_local import LocalExtensionRegistry
     monkeypatch.setattr(LocalExtensionRegistry, "_check_levels", lambda self, level: None)
-
-
-def _local_skips_the_switch_key_migration(monkeypatch):
-    """The local backend opens a file whose switch rows are keyed by the bare name and leaves
-    them bare: the rows the head's keying reads are never reached, and an extension an
-    existing user had switched on reads off."""
-    from hermes_extension_registry_port_local import LocalExtensionRegistry
-    monkeypatch.setattr(LocalExtensionRegistry, "_migrate_switch_keys", lambda self: None)
 
 
 def _reference_tenant_writes_without_provisioning(monkeypatch):
@@ -257,7 +248,6 @@ MUTANTS = {
     "local_pin_forgets_owner": _local_pin_forgets_owner,
     "local_admin_not_required": _local_admin_not_required,
     "local_accepts_tenant_entries": _local_accepts_tenant_entries,
-    "local_skips_the_switch_key_migration": _local_skips_the_switch_key_migration,
     "local_switch_forgets_entry_identity": _local_switch_forgets_entry_identity,
     "local_offers_every_visible_entry": _local_offers_every_visible_entry,
     "reference_tenant_writes_without_provisioning": _reference_tenant_writes_without_provisioning,

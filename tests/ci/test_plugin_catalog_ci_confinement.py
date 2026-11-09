@@ -298,7 +298,13 @@ _AJV_ID = "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/d
     f"{{$id:'{_AJV_ID}'}};fetch('https://raw.githubusercontent.com/o/r/main/plugin.js')",
     # the exempt literal reused as an executable fetch base, not a schema declaration
     f"const u = new URL('/evil/repo/main/plugin.js', '{_AJV_ID}'); fetch(u)",
-], ids=["refs_traversal", "data_json_traversal", "beside_ajv_id", "fetch_base"])
+    # ... or returned by an arrow function whose parameter happens to be named $id: `=>` is not a
+    # declaration separator, so the id is not stripped and the real fetch still shows
+    f"const f = $id => '{_AJV_ID}'; fetch(new URL('/evil/repo/main/plugin.js', f()))",
+    # only ajv's own id is inert: any other raw.githubusercontent URL in a $id still counts
+    "const s = {$id: 'https://raw.githubusercontent.com/o/r/main/plugin.js'}; fetch(s.$id)",
+], ids=["refs_traversal", "data_json_traversal", "beside_ajv_id", "fetch_base", "arrow_fn_base",
+        "other_url_declared"])
 def test_a_real_fetch_near_or_disguised_as_the_ajv_id_still_fails(tmp_path, origin, source):
     # The exemption removes ONLY the inert ajv $id/$ref declaration; any real GitHub fetch that
     # remains -- a sibling/traversal path, a fetch beside the id, or the id reused as a fetch

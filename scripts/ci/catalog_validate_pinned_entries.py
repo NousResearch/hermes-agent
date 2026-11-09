@@ -43,13 +43,14 @@ _MANIFESTS = ("plugin.yaml", "plugin.yml", "plugin.json")
 _SELF_UPDATE_FETCH = r"releases/latest|releases/download|raw\.githubusercontent\.com|codeload\.github\.com"
 # ajv's bundled meta-schema declares its own identifier as `$id`/`$ref` = this URL. The string is
 # matched by value against a schema ajv already holds in memory; it never drives a request. It is
-# inert ONLY as a JSON-schema declaration -- `[$ or "]id/ref [: or =>] "<url>"` -- so the same
-# literal reused as an executable fetch base (new URL('/evil', ajvUrl)) is not exempt. "#" is the
-# only terminator, so a traversal like .../data.json#/../../evil (or out of lib/refs) is a
-# different, non-exempt URL and still counts.
+# inert ONLY as a JSON-schema declaration -- `[$ or "]id/ref : "<url>"` -- so the same literal
+# reused as an executable fetch base (new URL('/evil', ajvUrl)) is not exempt. The match is
+# lexical: a declared id read back as a fetch base (new URL(p, s.$id)) is not caught, and
+# escaped-JSON or backtick spellings stay flagged. "#" is the only terminator, so a traversal like
+# .../data.json#/../../evil (or out of lib/refs) is a different, non-exempt URL and still counts.
 _AJV_ID = "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#"
 _AJV_DECLARATION = re.compile(
-    r"""["$](?:id|ref)["']?\s*(?::|=>)\s*["']""" + re.escape(_AJV_ID) + r"""["']""")
+    r"""["$](?:id|ref)["']?\s*:\s*["']""" + re.escape(_AJV_ID) + r"""["']""")
 _GITHUB_FETCH = re.compile(_SELF_UPDATE_FETCH)
 
 

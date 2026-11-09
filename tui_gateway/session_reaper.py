@@ -117,6 +117,39 @@ def _flush_sessions_before_exit(budget_s: float | None = None) -> int:
 _EXIT_TURN_SETTLE_S = 0.5
 
 
+def _snapshot_running_turn_markers(running: list) -> list:
+    """Marker entries a shutdown is about to orphan. The turn's own ``finally`` retires its marker on ANY
+    conclusion — an interrupted turn included — so a graceful restart used to leave ``session.resume`` no
+    crash evidence and the in-flight work silently dropped (#135286). Snapshot BEFORE the interrupt,
+    keyed the way the turn wrote it. Hosted bot-room turns are excluded: their durable task/lease state
+    machine owns recovery, and nothing ever acts on a marker there."""
+    snapshots = []
+    for _sid, session in running:
+        if not isinstance(session, dict) or session.get("source") == "bot_room":
+            continue
+        key = str(session.get("_active_turn_marker_key") or session.get("session_key") or "")
+        if not key:
+            continue
+        with contextlib.suppress(Exception):
+            if (marker := read_turn_marker(_session_home(session), key)) is not None:
+                snapshots.append((_session_home(session), key, marker))
+    return snapshots
+
+
+def _restore_shutdown_turn_markers(snapshots: list) -> None:
+    """Put the shutdown-snapshotted markers back after the settle window: a graceful interrupt counts as
+    a process death for marker purposes, so ``session.resume`` auto-continues the interrupted work under
+    the existing freshness / attempts / writer-liveness guards. ``record_turn_start`` keeps the original
+    prompt and attempt count; ``started_at`` refreshes so the freshness window spans the restart itself."""
+    for home, key, marker in snapshots:
+        with contextlib.suppress(Exception):
+            record_turn_start(
+                home, key, str(marker.get("prompt") or ""), attempts=int(marker.get("attempts") or 0),
+                auto_continue=bool(marker.get("auto_continue", True)),
+                notification_category=marker.get("notification_category"),
+            )
+
+
 def _stop_turns_before_exit(budget_s: float | None = None) -> None:
     """Interrupt every in-flight turn and give it ``budget_s`` to settle, so a running tool call ends
     with a result the teardown's final persist records. A foreground command runs in its own process
@@ -125,6 +158,7 @@ def _stop_turns_before_exit(budget_s: float | None = None) -> None:
     interrupt's own TERM, 1s, KILL outlasts the SIGTERM path's ~1s grace)."""
     with _sessions_lock:
         running = [(sid, s) for sid, s in _sessions.items() if s.get("running")]
+    markers = _snapshot_running_turn_markers(running)
     threads = []
     for sid, session in running:
         with contextlib.suppress(Exception):
@@ -138,10 +172,15 @@ def _stop_turns_before_exit(budget_s: float | None = None) -> None:
         for t in threads:
             t.join(max(0.0, until - time.monotonic()))
 
-    _join(deadline - budget / 2)
-    from tools.environments.base import kill_live_foreground_processes
-    kill_live_foreground_processes(now=True)
-    _join(deadline)
+    try:
+        _join(deadline - budget / 2)
+        from tools.environments.base import kill_live_foreground_processes
+        kill_live_foreground_processes(now=True)
+        _join(deadline)
+    finally:
+        # Even when the kill/rejoin path fails, the process is still on its way out: the snapshot is the
+        # only record these turns were interrupted mid-flight, so it must reach the marker file.
+        _restore_shutdown_turn_markers(markers)
 
 
 _exit_flush_prev_handlers: dict[int, Any] = {}

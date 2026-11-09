@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from gateway.config import HomeChannel, Platform
 from gateway.session import SessionEntry, build_session_key
 from hermes_state import SessionDB
 from tests.gateway.test_telegram_topic_mode import _make_event, _make_runner, _make_source
@@ -229,3 +230,37 @@ async def test_message_while_newer_resume_waits_on_older_rename_keeps_newer_sess
     assert runner.session_store.peek_session_id(key) == "newer"
     assert _bound_session(db) == "newer"
     assert landed[-1] == "Newer Work"
+
+
+@pytest.mark.asyncio
+async def test_handoff_suspended_after_its_switch_does_not_undo_a_newer_resume(tmp_path):
+    """A handoff repoints the topic at the CLI session and is suspended before its binding write;
+    a /resume finishing meanwhile owns the topic. The handoff must neither rebind the topic to the
+    CLI session nor run its synthetic turn in the resumed conversation: it fails instead."""
+    db, runner = _bound_topic(tmp_path, "cli-session", "newer")
+    db.set_session_title("newer", "Newer Work")
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id=CHAT, name="Test DM", thread_id=THREAD)
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.create_handoff_thread = AsyncMock(return_value=None)
+    runner._handle_message = AsyncMock(return_value="handoff ok")
+    repoint, parked, release = runner._handoff_repoint, asyncio.Event(), asyncio.Event()
+
+    async def park_after_repoint(*args):
+        entry = await repoint(*args)
+        parked.set()
+        await release.wait()
+        return entry
+
+    runner._handoff_repoint = park_after_repoint
+    handoff = asyncio.create_task(runner._process_handoff(
+        {"id": "cli-session", "title": "CLI work", "handoff_platform": "telegram"}))
+    await asyncio.wait_for(parked.wait(), 10)
+    await runner._handle_resume_command(_make_event("/resume Newer Work", thread_id=THREAD))
+    release.set()
+
+    with pytest.raises(RuntimeError, match="switched to another session"):
+        await asyncio.wait_for(handoff, 10)
+    key = build_session_key(_make_source(thread_id=THREAD))
+    assert runner.session_store.peek_session_id(key) == _bound_session(db) == "newer"
+    runner._handle_message.assert_not_awaited()

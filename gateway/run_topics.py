@@ -241,6 +241,36 @@ class GatewayTopicThreadsMixin:
             self._sync_telegram_topic_binding(source, session_entry, reason=reason)
             return True
 
+    async def _handoff_repoint_with_topic_binding(self, dest, session_key: str, cli_session_id: str) -> None:
+        """Handoff's route switch plus its topic-binding move. A Telegram DM topic lane follows its
+        persisted binding, which would switch the route straight back to the topic's previous session
+        on the next turn; the binding moves with the route, as /resume moves it, and only while the
+        route still names the handoff. Raises when a /resume or /branch --here moved the topic
+        meanwhile: the synthetic turn would load the handoff's history into that newer conversation,
+        and failing keeps the CLI session."""
+        with self._telegram_topic_publication(dest.source):
+            ours = self._telegram_topic_publication_token(dest.source)
+            entry = await self._handoff_repoint(dest, session_key, cli_session_id)
+            holds = await asyncio.to_thread(self._bind_telegram_topic_unless_superseded, dest.source, entry, ours)
+        if not holds:
+            raise RuntimeError("the destination topic switched to another session during the handoff")
+
+    def _bind_telegram_topic_unless_superseded(self, source: SessionSource, session_entry, token: tuple) -> bool:
+        """Handoff's guarded bind; ``token`` is snapshotted inside its own publication. When no other
+        /resume, /branch --here or handoff overlapped it, nothing else moved the route and it binds;
+        otherwise the route decides, as for /resume. False = superseded (nothing written); True
+        otherwise, including off a topic lane."""
+        if not self._is_telegram_topic_lane(source):
+            return True
+        with _TOPIC_SWITCH_BIND_LOCK:  # the lock every guarded bind holds: a newer switch writes last
+            overlapped = token[0] > 1 or self._telegram_topic_publication_token(source)[1] != token[1]
+            if overlapped and self.session_store.peek_session_id(session_entry.session_key) != session_entry.session_id:
+                logger.info("Topic binding for %s not moved to %s (handoff): the route switched again since",
+                            session_entry.session_key, session_entry.session_id)
+                return False
+            self._sync_telegram_topic_binding(source, session_entry, reason="handoff")
+            return True
+
     async def _telegram_topic_switch_conflict(self, source: SessionSource, target_session_id: str) -> Optional[str]:
         """Refusal text when ``target_session_id`` is bound to ANOTHER topic: a session links to one
         topic only, so after the route moved the binding write would fail and the next message's heal

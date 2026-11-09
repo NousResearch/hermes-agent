@@ -230,6 +230,18 @@ def _iter_gateway_skills(platform: str):
         yield cmd_key, info, sp.parent.relative_to(root).parts
 
 
+def _gateway_bundles() -> list[tuple[str, dict]]:
+    """Sorted ``(cmd_key, info)`` skill bundles for a platform catalog; a bundle directory that cannot
+    be scanned (e.g. a hand-edited non-UTF-8 file) is logged and lists none, so it never hides the
+    menu's other commands."""
+    from agent.skill_bundles import get_skill_bundles
+    try:
+        return sorted(get_skill_bundles().items())
+    except Exception:
+        logger.warning("Skill bundles could not be scanned; omitting them from the command catalog", exc_info=True)
+        return []
+
+
 def _collect_gateway_skill_entries(
     platform: str, max_slots: int | None, reserved_names: set[str], desc_limit: int = 100,
     sanitize_name: Callable[[str], str] | None = None,
@@ -269,10 +281,8 @@ def _collect_gateway_skill_entries(
     plugin_entries = _entries(_plugin_rows())
     reserved_names.update(n for n, *_rest in plugin_entries)
 
-    from agent.skill_bundles import get_skill_bundles
     bundle_entries = _entries(
-        (cmd_key.lstrip("/"), info.get("description", ""), cmd_key)
-        for cmd_key, info in sorted(get_skill_bundles().items()))
+        (cmd_key.lstrip("/"), info.get("description", ""), cmd_key) for cmd_key, info in _gateway_bundles())
     reserved_names.update(n for n, *_rest in bundle_entries)
     skill_entries = _entries(
         (cmd_key.lstrip("/"), info.get("description", ""), cmd_key)
@@ -335,8 +345,7 @@ def discord_skill_commands_by_category(
     # reserved-command collision from two skills colliding on the clamp (the rename-worthy case).
     names_used: dict[str, str] = dict.fromkeys(reserved_names, "<reserved>")
     hidden = 0
-    from agent.skill_bundles import get_skill_bundles
-    bundle_items = [(cmd_key, info, ()) for cmd_key, info in sorted(get_skill_bundles().items())]
+    bundle_items = [(cmd_key, info, ()) for cmd_key, info in _gateway_bundles()]
     try:
         for cmd_key, info, rel_parts in (*bundle_items, *_iter_gateway_skills("discord")):
             # Bundles are listed first because gateway dispatch gives them precedence over skills

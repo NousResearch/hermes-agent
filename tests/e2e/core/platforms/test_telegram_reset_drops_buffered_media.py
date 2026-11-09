@@ -1,6 +1,6 @@
-"""A photo still in the Telegram adapter's burst buffer when ``/new`` lands on a running turn never
-becomes a turn after it; ``/status`` (not a reset) leaves it alone. REAL gateway + adapter against
-the Bot API stand-in (#81370)."""
+"""A photo still in the Telegram adapter's burst buffer when ``/new`` arrives never becomes a turn
+after it, whether a turn is running or the chat is idle; ``/status`` (not a reset) leaves it alone.
+REAL gateway + adapter against the Bot API stand-in (#81370)."""
 
 from __future__ import annotations
 
@@ -84,6 +84,13 @@ def test_new_during_a_running_turn_drops_buffered_photo(rig) -> None:
     drv.dm("slow [in:slow]")
     wait_until(lambda: director.turns.get("slow"), "the slow turn is running")
     buffered_at = _buffer_photo(drv)
+    _command(drv, "new")
+    _assert_photo_never_reaches_model(drv, director, buffered_at)
+
+
+def test_new_in_an_idle_chat_drops_buffered_photo(rig) -> None:
+    drv, director, _gw = rig
+    buffered_at = _buffer_photo(drv)  # nothing in flight: /new takes the idle dispatch path
     _command(drv, "new")
     _assert_photo_never_reaches_model(drv, director, buffered_at)
 

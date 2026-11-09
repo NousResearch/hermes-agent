@@ -53,10 +53,11 @@ import {{ imessage as real }} from {json.dumps((SDK / '@spectrum-ts/imessage/dis
 import {{ writeFile }} from 'node:fs/promises'
 const records = []
 let pending
+let duration
 const remote = {{
   attachments: {{ upload: async (input) => {{
     await writeFile('upload-' + records.length, input.data)
-    pending = {{ fileName: input.fileName, bytes: input.data.length }}
+    pending = {{ fileName: input.fileName, bytes: input.data.length, duration }}
     return {{ attachment: {{ guid: 'synthetic-upload' }} }}
   }} }},
   messages: {{ sendAttachment: async (chat, guid, options) => {{
@@ -68,6 +69,7 @@ const remote = {{
 const space = {{ id: 'any;-;+15555550100', phone: 'shared', type: 'dm',
   send: async (builder) => {{
     const content = await builder.build()
+    duration = content.duration
     return real.config().__definition.send({{ space, content, client: [{{ phone: 'shared', client: remote }}] }})
   }}
 }}
@@ -121,6 +123,7 @@ def sidecar(tmp_path, monkeypatch, request):
         proc.terminate()
         _, stderr = proc.communicate(timeout=10)
         print(stderr)
+        assert not list(tmp_path.glob("hermes-photon-voice-*"))
 
 
 def _probe_audio(path):
@@ -171,6 +174,7 @@ async def test_tts_reply_uploads_real_m4a_voice(sidecar, tmp_path, monkeypatch, 
     assert len(records) == 1
     record = records[0]
     assert record["options"]["isAudioMessage"] is True
+    assert 0 < record["duration"] <= 300
     assert record["fileName"].endswith(".m4a"), record
     uploaded = (root / "upload-0").read_bytes()
     assert uploaded[4:8] == b"ftyp"
@@ -226,12 +230,67 @@ async def test_voice_upload_identity_is_unique_but_documents_are_unchanged(sidec
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sidecar", ["no_ffmpeg"], indirect=True)
-async def test_missing_encoder_does_not_upload_mislabeled_wav(sidecar, tmp_path):
+@pytest.mark.parametrize("container", ["wav_with_mp3_suffix", "m4a"])
+async def test_missing_encoder_never_uploads_voice(sidecar, tmp_path, container):
     from plugins.platforms.photon.adapter import PhotonSidecarError
 
     adapter, root = sidecar
-    source = tmp_path / "wav-disguised-as.mp3"
-    source.write_bytes(_wrap_pcm_as_wav(b"\x01\x00" * 4800))
+    source = tmp_path / ("valid.m4a" if container == "m4a" else "wav-disguised-as.mp3")
+    wav = _wrap_pcm_as_wav(b"\x01\x00" * 4800)
+    if container == "m4a":
+        await asyncio.to_thread(_write_wav_bytes_as, wav, str(source))
+    else:
+        source.write_bytes(wav)
+    with pytest.raises(PhotonSidecarError):
+        await adapter._sidecar_call("/send-attachment", {
+            "spaceId": "any;-;+15555550100", "path": str(source), "kind": "voice",
+            "mimeType": "audio/mp4",
+        })
+    assert not (root / "capture.json").exists()
+    assert not (root / "upload-0").exists()
+
+
+def _unusable_m4a(root, case):
+    source = root / "unusable.m4a"
+    if case == "empty_audio":
+        source.write_bytes(_wrap_pcm_as_wav(b""))
+        return source
+    if case == "overlong":
+        source.write_bytes(_wrap_pcm_as_wav(b"\x01\x00" * (24000 * 301)))
+        return source
+    if case == "too_large":
+        with source.open("wb") as handle:
+            handle.seek(32 * 1024 * 1024)
+            handle.write(b"x")
+        return source
+    if case == "header_only":
+        source.write_bytes(b"\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00M4A isom")
+        return source
+    if case == "video_only":
+        command = ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=s=16x16:r=10",
+                   "-t", "0.2", "-an", "-c:v", "mpeg4", "-f", "mp4", str(source)]
+    else:
+        wav = root / "input.wav"
+        wav.write_bytes(_wrap_pcm_as_wav(b"\x01\x00" * 4800))
+        command = ["ffmpeg", "-v", "error", "-i", str(wav), "-c:a", "aac",
+                   "-movflags", "+faststart", "-f", "ipod", str(source)]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
+    assert result.returncode == 0, result.stderr
+    if case == "truncated":
+        assert _probe_audio(source).returncode == 0
+        data = source.read_bytes()
+        start = data.index(b"mdat") + 4
+        source.write_bytes(data[:start + max(1, (len(data) - start) // 2)])
+    return source
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["header_only", "truncated", "video_only", "empty_audio", "overlong", "too_large"])
+async def test_unacceptable_audio_fails_before_remote_upload(sidecar, tmp_path, case):
+    from plugins.platforms.photon.adapter import PhotonSidecarError
+
+    adapter, root = sidecar
+    source = await asyncio.to_thread(_unusable_m4a, tmp_path, case)
     with pytest.raises(PhotonSidecarError):
         await adapter._sidecar_call("/send-attachment", {
             "spaceId": "any;-;+15555550100", "path": str(source), "kind": "voice",

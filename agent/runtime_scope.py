@@ -115,6 +115,7 @@ def bind_state(
                 hydrate_profile_secret_sources(Path(home))
             secrets = owner_secret_scope(Path(home))
     kept = current_state()
+    bound_secrets = BoundSecrets(secrets, home if stamp_home else None)
     if terminal_policy is not None:
         policy = terminal_policy
     elif terminal and defer_terminal:
@@ -122,11 +123,14 @@ def bind_state(
         overlay = dict(env_overlay) if env_overlay is not None else None  # the bind's value, not the caller's dict
         policy = DeferredTerminalPolicy(lambda: prepare_profile_terminal_scope(Path(home), env_overlay=overlay))
     elif terminal:
-        policy = prepare_profile_terminal_scope(Path(home), env_overlay=env_overlay)
+        # Under the target's home and secrets: a managed ``${VAR}`` in ``terminal:`` resolves
+        # against the profile being bound, never the one bound now or the launch environment.
+        with push_state(home=home, secrets=bound_secrets):
+            policy = prepare_profile_terminal_scope(Path(home), env_overlay=env_overlay)
     else:
         policy = kept.terminal
     return push_state(scope=scope, home=home if home_override else kept.home,
-                      secrets=BoundSecrets(secrets, home if stamp_home else None), terminal=policy)
+                      secrets=bound_secrets, terminal=policy)
 
 
 def _bind_whole_profile(

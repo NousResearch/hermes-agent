@@ -1,8 +1,8 @@
 name: assumption-ledger
 title: Assumption Ledger
-version: "0.2.0"
+version: "0.2.1"
 repo: https://github.com/itzebe/hermes-assumption-ledger
-sha: 650533a22434c330e6a0fa8f2ee7bb3147b5c029
+sha: 87a2827ca18830755959e6a881b0ff0dd965daad
 description: >-
   Persistent operational-assumption ledger. Captures the assumptions an agent states in its own
   messages (never from tool output), keeps the sentence each came from as provenance, verifies them
@@ -13,8 +13,10 @@ description: >-
   credentials. HTTP checks (http_status, http_json_field) are the only outbound traffic; they accept
   only http/https and refuse loopback, private, link-local, CGNAT and cloud-metadata destinations
   unless you set allow_private_urls, and metadata endpoints stay blocked even then. Command checks
-  (command_succeeds) are disabled until you set command_allowlist; only a listed basename runs, with
-  a minimal environment. It reads local files, git state, environment variables and SQLite
+  (command_succeeds) are disabled until you set command_allowlist; only a listed bare executable
+  name runs (a path is refused), resolved to an absolute path on the child's PATH, with a minimal
+  environment. The allowlist restricts which program may run, not the safety of the arguments the
+  model passes it. It reads local files, git state, environment variables and SQLite
   databases, warns rather than blocking a turn, scopes warnings to the session that recorded the
   decision, and exposes no tools that write to external systems.
 maintainer: itzebe

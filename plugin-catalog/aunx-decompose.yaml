@@ -1,13 +1,13 @@
 name: aunx-decompose
 repo: https://github.com/aunysillyme-dev/aunx-skills
-sha: 98c3b21c8491e162fb71f200f691fbbfd16166b0
+sha: aa5be2e6d4546db5934d6546aa9eecdd17a2f6fd
 subdir: plugins/aunx-decompose
-description: Break a task into checked steps and parallel waves; validates dependencies, cycles and write-path overlap.
+description: "Break a task into the smallest checkable units and parallel waves: typed units, real data edges, clause coverage, an advisor gate and a plan table."
 maintainer: AunySillyMe
 tier: community
 category: tools
 title: Decompose
-version: "0.1.0"
+version: "0.2.0"
 requires_hermes: ">=0.19"
 readme: true
 capabilities:

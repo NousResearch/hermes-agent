@@ -1,8 +1,8 @@
 name: policy-backtester
 title: Policy Backtester
 repo: https://github.com/noviceadam666/policy-backtester
-sha: bc5afc72a43567fcf6e1672760c202f4737b99e6
-version: "0.5.0"
+sha: 7d477a186fa2eea83443770c58bac818c30fc6d5
+version: "0.5.1"
 description: >-
   A test harness for Hermes guardrails: what a rule would break, and what it would miss, on your agents'
   real work. hermes backtest try replays the current profile's past tool calls through a policy, names the
@@ -22,7 +22,7 @@ maintainer: noviceadam666
 tier: community
 category: tools
 requires_hermes: ">=0.22.5"
-docs_url: https://github.com/noviceadam666/policy-backtester/blob/bc5afc72a43567fcf6e1672760c202f4737b99e6/README.md
+docs_url: https://github.com/noviceadam666/policy-backtester/blob/7d477a186fa2eea83443770c58bac818c30fc6d5/README.md
 known_issues:
   - "Enforce is a policy gate, not a security boundary: rules see what a command says, not what it does, and code an agent writes and runs can get past them."
   - "Enforcement runs per profile: install it and promote a policy in each profile you guard."

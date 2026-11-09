@@ -1,6 +1,6 @@
 name: egress-guard
 repo: https://github.com/moussetea315/egress-guard
-sha: "c6b335858db03f546c75e31d5ef11070ed768c19"
+sha: "da45bd37b16c59522fb34f3be8af0f8a747cddc9"
 description: >-
   Policy-driven guard for what leaves the agent. A pre_tool_call hook redacts credentials in
   tool arguments and sends shell commands that upload data to non-allowlisted destinations

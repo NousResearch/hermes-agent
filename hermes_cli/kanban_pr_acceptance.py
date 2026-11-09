@@ -28,6 +28,17 @@ def validate_contract(value: str | None) -> str:
     return value
 
 
+def contract_and_declaration(value: str | None) -> tuple[str, str | None]:
+    """Return ``(contract to store, raw declaration to record)``.
+
+    :func:`validate_contract` folds an *omitted* contract into ``local-only``, so
+    the stored column cannot prove a card declared the report/notify lane. The
+    ``created`` event keeps the raw argument and the ``active_pr`` guard reads it
+    back: only an explicitly declared ``local-only`` is exempt.
+    """
+    return validate_contract(value), value
+
+
 def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
          profile_home: str | None = None):
     command = ["gh", "api", endpoint, "--hostname", "github.com"]

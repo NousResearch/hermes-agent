@@ -1,13 +1,13 @@
 name: guild
 repo: https://github.com/Nnadijoshuac/hermes-guild
-sha: 40fad8293fcee62f63bc4dc7aa9c4b0385540b39
+sha: bf5d32c7b02b1cb3b4a7fe6fdd029f09c3a956d6
 description: >-
   Shared skill library for a team's Hermes agents, or for one person's machines and profiles,
   kept in a git repository the team controls. A skill an agent saved is scrubbed of API keys,
   home folder paths, e-mail addresses and private IPs, pushed as a proposal branch, and merged
   only after a teammate approves it from the CLI, TUI or Desktop. Each member's agent then loads
   approved skills read-only. If an agent tries to edit a team skill, a pre_tool_call hook refuses
-  the edit and tells it to use guild_propose. Commands: `hermes guild
+  the edit and tells it to use guild_propose. Hermes Desktop gets a Guild page to review diffs and approve or decline. Commands: `hermes guild
   init|join|propose|review|show|approve|reject|revert|log` and `/guild`. Disclosure: runs local
   `git` subprocesses (repository hooks disabled, no terminal prompts) that fetch from and push to
   the remote you configure, using your existing git credentials; contacts nothing else and stores
@@ -24,7 +24,10 @@ requires_hermes: ">=0.23.0"
 docs_url: https://github.com/Nnadijoshuac/hermes-guild#readme
 version: "0.1.0"
 title: "Guild"
-image: https://raw.githubusercontent.com/Nnadijoshuac/hermes-guild/40fad8293fcee62f63bc4dc7aa9c4b0385540b39/docs/banner.png
+image: https://raw.githubusercontent.com/Nnadijoshuac/hermes-guild/bf5d32c7b02b1cb3b4a7fe6fdd029f09c3a956d6/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Nnadijoshuac/hermes-guild/bf5d32c7b02b1cb3b4a7fe6fdd029f09c3a956d6/docs/desktop-review.png
+  - https://raw.githubusercontent.com/Nnadijoshuac/hermes-guild/bf5d32c7b02b1cb3b4a7fe6fdd029f09c3a956d6/docs/desktop-library.png
 platforms: []
 capabilities:
   provides_tools:

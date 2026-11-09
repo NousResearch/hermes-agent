@@ -1,17 +1,8 @@
-"""Unit tests for the Kubernetes session-pod execution backend.
+"""Behavioral tests for the Kubernetes session-pod backend.
 
-Ported from upstream PR #37591 and re-specified for this fork's config surface:
-every setting is a ``terminal.kubernetes.*`` config.yaml key bridged as ONE
-internal JSON env var, and the pod shape is ONE ``spec`` posted to the API
-server VERBATIM — the shipped default when unset, no base and no merge when
-set. Validating and constraining
-the pod is the cluster's job (``fieldValidation=Strict``, SCC / PSA / admission
-policy), so these tests pin the passthrough, the ownership and adoption rules,
-the preflight checks the cluster cannot make, and the exec loop — not a local
-judge of pod content.
-
-No cluster required: the kubernetes client is stubbed into ``sys.modules`` and
-manifest builders run with ``api=None``.
+Configuration is one terminal.kubernetes block; the session object is posted
+verbatim. Kubernetes owns admission, while Hermes owns exec and synchronization.
+The SDK is stubbed so no cluster is required.
 """
 
 import base64
@@ -19,6 +10,7 @@ import io
 from copy import deepcopy
 from pathlib import Path
 import json
+import socket
 import time
 import tracemalloc
 import sys
@@ -681,6 +673,7 @@ class _FakeWSClient:
         self.subprotocol = subprotocol
         self.stdin_writes: list[str] = []
         self.channels_closed: list[int] = []
+        self.sock = MagicMock()
 
     def write_stdin(self, data):
         self.stdin_writes.append(data)
@@ -1513,6 +1506,24 @@ def test_stdin_upload_raises_when_the_deadline_expires(monkeypatch):
     monkeypatch.setattr("kubernetes.stream.stream", lambda *a, **k: stuck)
     with pytest.raises(TimeoutError):
         env._stdin_upload("Zm9v\n", timeout=1)
+
+
+def test_stdin_upload_interrupts_a_socket_that_stops_reading(monkeypatch):
+    """Checking time between writes does not bound a single blocked socket send."""
+    env = _make_k8s_env(monkeypatch, [("", 0)])
+    sender, receiver = socket.socketpair()
+    sender.settimeout(3)  # bound the reproduction on the unfixed implementation too
+    client = _FakeWSClient()
+    client.sock = sender
+    client.write_stdin = lambda data: sender.sendall(data.encode())
+    monkeypatch.setattr("kubernetes.stream.stream", lambda *a, **kw: client)
+    try:
+        with pytest.raises(TimeoutError, match="did not finish within 1s"):
+            env._stdin_upload("x" * (1024 * 1024), timeout=1)
+        assert client.closed
+    finally:
+        sender.close()
+        receiver.close()
 
 
 def test_failed_upload_does_not_mark_files_as_synced(monkeypatch, tmp_path):
@@ -2787,20 +2798,6 @@ def test_a_401_reloads_credentials_once_then_surfaces(monkeypatch):
         k8s_mod.api_call(_always)
 
 
-def test_stdin_upload_bounds_the_write_phase(monkeypatch, tmp_path):
-    """The deadline used to be established AFTER the write loop, so the phase
-    most likely to block (a remote tar that stopped draining) was unbounded."""
-    monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
-    env = _make_k8s_env(monkeypatch, [("", 0)])
-
-    class _WedgedStdin(_FakeWSClient):
-        def write_stdin(self, data):
-            time.sleep(0.2)   # never drains
-
-    monkeypatch.setattr("kubernetes.stream.stream",
-                        lambda *a, **kw: _WedgedStdin(open_cycles=10_000))
-    with pytest.raises(TimeoutError):
-        env._stdin_upload("x" * (64 * 1024 * 6), timeout=1)
 
 
 # ---------------------------------------------------------------------------

@@ -205,6 +205,75 @@ def test_bypass_fails_the_gate(tmp_path, origin, case):
     assert not any(line.startswith("::error::forged") for line in res.stdout.splitlines())
 
 
+def _attested_binary(origin: Path) -> str:
+    """Commit a PE binary at plugin/runtime/host.exe and return its catalog path."""
+    (origin / "plugin" / "runtime").mkdir()
+    (origin / "plugin" / "runtime" / "host.exe").write_bytes(b"MZ\x90\x00" + b"\x00" * 64)
+    _commit(origin)
+    return "runtime/host.exe"
+
+
+def _gh_stub(tmp_path: Path, rc: int) -> Path:
+    """A `gh` that records its argv and answers `attestation verify` with ``rc``."""
+    log = tmp_path / "gh.calls"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    stub = bin_dir / "gh"
+    stub.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{log}"\nexit {rc}\n', encoding="utf-8")
+    stub.chmod(0o755)
+    return log
+
+
+def test_an_attested_binary_is_verified_against_the_pin_and_then_allowed(tmp_path, origin):
+    path = _attested_binary(origin)
+    sha = _git(origin, "rev-parse", "HEAD")
+    log = _gh_stub(tmp_path, 0)
+    entry = _entry(tmp_path, "ok.yaml", sha, attested_binaries=[path])
+    res = _gate(tmp_path, origin, [entry])
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert f"PASS: {entry}" in res.stdout
+    [call] = log.read_text(encoding="utf-8").splitlines()
+    # The gate strips only a github.com prefix from the repo, so the fixture URL passes whole.
+    assert call.startswith("attestation verify ")
+    assert call.endswith(f"/plugin/{path} --repo {REPO_URL} --source-digest {sha} "
+                         "--predicate-type https://slsa.dev/provenance/v1")
+
+
+def test_an_attested_binary_without_provenance_fails_the_gate(tmp_path, origin):
+    path = _attested_binary(origin)
+    _gh_stub(tmp_path, 1)
+    entry = _entry(tmp_path, "evil.yaml", _git(origin, "rev-parse", "HEAD"), attested_binaries=[path])
+    res = _gate(tmp_path, origin, [entry])
+    assert res.returncode != 0
+    assert "no build-provenance attestation for runtime/host.exe" in res.stdout
+    assert "PASS" not in res.stdout
+
+
+def test_an_attested_self_updater_still_fails_the_self_updater_gate(tmp_path, origin):
+    # Provenance proves origin, not behaviour: listing an updater script as attested must not
+    # remove it from the tree the self-updater gate reads.
+    (origin / "plugin" / "update.js").write_text(
+        "fetch('releases/latest'); fs.writeFileSync(target, body)\n", encoding="utf-8")
+    _commit(origin)
+    _gh_stub(tmp_path, 0)
+    entry = _entry(tmp_path, "evil.yaml", _git(origin, "rev-parse", "HEAD"),
+                   attested_binaries=["update.js"])
+    res = _gate(tmp_path, origin, [entry])
+    assert res.returncode != 0
+    assert "self-updating code" in res.stdout
+    assert "PASS" not in res.stdout
+
+
+def test_an_attested_binaries_path_that_climbs_out_fails_the_gate(tmp_path, origin):
+    log = _gh_stub(tmp_path, 0)
+    entry = _entry(tmp_path, "evil.yaml", _git(origin, "rev-parse", "HEAD"),
+                   attested_binaries=["../../etc/passwd"])
+    res = _gate(tmp_path, origin, [entry])
+    assert res.returncode != 0
+    assert "is not a plain relative path" in res.stdout
+    assert not log.exists()
+
+
 def test_one_entry_cannot_skip_or_impersonate_the_others(tmp_path, origin):
     """Plugin code that drains stdin must not consume the remaining entry list,
     and an entry whose parser dies must fail itself rather than inherit the

@@ -10,6 +10,8 @@ The supply-chain half of the plugin-catalog admission gate. For every entry path
 * a subdir or any symlink in the clone that resolves outside the pinned clone;
 * a subdir with no ``plugin.yaml``/``plugin.yml``/``plugin.json``;
 * a failing ``hermes plugins validate --install-deps``;
+* an ``attested_binaries`` path that is not a regular file, or has no build-provenance attestation
+  from the entry's repo at the pinned sha (README rule 17);
 * an unscannable payload: compiled binary, bytecode or archive hiding either (README rule 17);
 * a self-updater (README rule 3).
 
@@ -42,6 +44,8 @@ _SCRIPT_GLOBS = ("*.js", "*.mjs", "*.cjs", "*.ts", "*.jsx", "*.tsx", "*.mts", "*
 # false-fail a re-pin on a slow runner.
 _CLONE_SECONDS = 600
 _VALIDATE_SECONDS = 600
+_ATTEST_SECONDS = 120
+_PROVENANCE = "https://slsa.dev/provenance/v1"
 
 
 class EntryRejected(Exception):
@@ -63,7 +67,7 @@ def _substituted(output: bytes) -> str:
     return os.fsdecode(output.replace(b"\0", b"")).rstrip("\n")
 
 
-_FIELDS = ("REPO", "SHA", "SUBDIR", "BAD")
+_FIELDS = ("REPO", "SHA", "SUBDIR", "ATTESTED", "BAD")
 
 
 def _read_fields(entry: str) -> dict[str, str]:
@@ -135,6 +139,25 @@ def _check_confinement(clone_dir: str, plugin_dir: str, subdir: str) -> None:
         raise EntryRejected("a symlink in the repo resolves outside the pinned clone")
 
 
+def _check_attested(attested: str, plugin_dir: str, repo: str, sha: str) -> None:
+    # A plugin that needs a native component lists it under attested_binaries (README rule 17).
+    # Each must have been built by THIS repo at the pinned commit; a verified one is removed from
+    # the clone, so the payload scan that follows ignores it and any other binary still fails.
+    # Provenance says where a file came from, not what it does: every check that reads the
+    # plugin's files (the self-updater grep) must run before this removes any of them.
+    owner_repo = repo.removeprefix("https://github.com/").removesuffix(".git").removesuffix("/")
+    for path in filter(None, attested.split("\n")):
+        binary = f"{plugin_dir}/{path}"
+        if os.path.islink(binary) or not os.path.isfile(binary):
+            raise EntryRejected(f"attested_binaries path is not a regular file: {path}")
+        verify = ["gh", "attestation", "verify", binary, "--repo", owner_repo,
+                  "--source-digest", sha, "--predicate-type", _PROVENANCE]
+        if _run(verify, timeout=_ATTEST_SECONDS).returncode != 0:
+            raise EntryRejected(f"no build-provenance attestation for {path} at "
+                                f"{owner_repo}@{sha} (README rule 17)")
+        os.remove(binary)
+
+
 def _check_payloads(plugin_dir: str) -> None:
     # UNSCANNABLE-PAYLOAD GATE (README rule 17). A reviewer and the install scanner must be able
     # to read everything shipped at the pin as source: no compiled binaries (by header),
@@ -191,8 +214,9 @@ def validate_entry(entry: str, workroot: str) -> None:
     validate = ["hermes", "plugins", "validate", "--install-deps", plugin_dir]
     if _run(validate, timeout=_VALIDATE_SECONDS).returncode != 0:
         raise EntryRejected("hermes plugins validate failed")
-    _check_payloads(plugin_dir)
     _check_self_updater(plugin_dir)
+    _check_attested(fields["ATTESTED"], plugin_dir, repo, sha)
+    _check_payloads(plugin_dir)
 
 
 def main(argv: list[str] | None = None) -> int:

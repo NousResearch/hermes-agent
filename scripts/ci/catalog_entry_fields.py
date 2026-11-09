@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Read the PR-controlled clone source of one catalog entry and print it as one JSON object.
 
-Prints ``{"REPO": ..., "SHA": ..., "SUBDIR": ..., "BAD": ...}``, every value a string. These fields are
+Prints ``{"REPO": ..., "SHA": ..., "SUBDIR": ..., "ATTESTED": ..., "BAD": ...}``, every value a
+string (``ATTESTED`` is newline-separated). These fields are
 PR-controlled, so the entry is rejected here (non-empty ``BAD``) before anything uses them: the
 clone must be remote-only and the subdir a plain relative path, or the pinned sha ends up
 validating files outside the pinned commit. Run it with ``python3 -I``: cwd is the PR tree, and
@@ -54,8 +55,24 @@ def _rejection(data: object, repo: str, sha: object, subdir_raw: object, subdir:
     return ""
 
 
+def _attested(data: object) -> tuple[list[str], str]:
+    """The ``attested_binaries`` paths (README rule 17) and the rejection for a bad one.
+
+    Each is joined onto the clone and echoed into the log, so it must be a plain relative path:
+    no absolute path, no '.' or '..' segment, no whitespace.
+    """
+    paths = data.get("attested_binaries") if isinstance(data, dict) else None
+    if not isinstance(paths, list):
+        return [], ""
+    for path in paths:
+        if not (isinstance(path, str) and re.fullmatch(r"[A-Za-z0-9._/-]+", path)
+                and not any(seg in ("", ".", "..") for seg in path.split("/"))):
+            return [], f"attested_binaries entry {path!r} is not a plain relative path"
+    return paths, ""
+
+
 def source_fields(data: object) -> dict[str, str]:
-    """REPO, SHA, SUBDIR and the BAD verdict for a parsed entry."""
+    """REPO, SHA, SUBDIR, ATTESTED and the BAD verdict for a parsed entry."""
     mapping = data if isinstance(data, dict) else {}
     repo = str(mapping.get("repo", ""))
     sha = mapping.get("sha", "")
@@ -63,8 +80,10 @@ def source_fields(data: object) -> dict[str, str]:
     if subdir_raw is None:
         subdir_raw = ""  # `subdir:` with no value means the repo root
     subdir = subdir_raw if isinstance(subdir_raw, str) else ""
-    bad = _rejection(data, repo, sha, subdir_raw, subdir)
-    return {"REPO": repo, "SHA": str(sha), "SUBDIR": subdir, "BAD": bad}
+    attested, attested_bad = _attested(data)
+    bad = _rejection(data, repo, sha, subdir_raw, subdir) or attested_bad
+    return {"REPO": repo, "SHA": str(sha), "SUBDIR": subdir, "ATTESTED": "\n".join(attested),
+            "BAD": bad}
 
 
 def main(argv: list[str] | None = None) -> int:

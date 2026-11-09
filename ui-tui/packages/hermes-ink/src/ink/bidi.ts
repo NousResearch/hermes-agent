@@ -1,18 +1,25 @@
 /**
  * Bidirectional text reordering for terminal rendering.
  *
- * Terminals on Windows do not implement the Unicode Bidi Algorithm,
- * so RTL text (Hebrew, Arabic, etc.) appears reversed. This module
- * applies the bidi algorithm to reorder ClusteredChar arrays from
- * logical order to visual order before Ink's LTR cell placement loop.
+ * Most terminal emulators do NOT implement the Unicode Bidi Algorithm, so
+ * RTL text (Hebrew, Arabic, etc.) is emitted in logical order and appears
+ * reversed. This module applies the bidi algorithm to reorder ClusteredChar
+ * arrays from logical order to visual order before Ink's LTR cell placement
+ * loop.
  *
- * On macOS terminals (Terminal.app, iTerm2) bidi works natively.
- * Windows Terminal (including WSL) does not implement bidi
- * (https://github.com/microsoft/terminal/issues/538).
+ * Whether reordering is needed is decided per terminal, not per platform.
+ * A handful of terminals lay out RTL runs themselves — macOS CoreText
+ * terminals, VTE-based terminals (GNOME Terminal, Tilix, Xfce Terminal…),
+ * Konsole and mlterm — and on those software reordering would double-apply
+ * and re-reverse the text. Everywhere else, including Windows Terminal and
+ * conhost (https://github.com/microsoft/terminal/issues/538), WSL, VS Code's
+ * xterm.js, Kitty, Alacritty, Ghostty, WezTerm (bidi shipped off) and plain
+ * xterm, codepoints reach the screen in logical order with no bidi, so RTL
+ * runs must be reordered here.
  *
- * Detection: Windows Terminal sets WT_SESSION; native Windows cmd/conhost
- * also lacks bidi. We enable bidi reordering when running on Windows or
- * inside Windows Terminal (covers WSL).
+ * Detection is overridable: HERMES_TUI_BIDI=1 forces software reordering on
+ * (a terminal we misclassify, or a bidi-capable terminal the user wants
+ * handled in-app); HERMES_TUI_BIDI=0 forces it off.
  */
 import bidiFactory from 'bidi-js'
 
@@ -26,15 +33,71 @@ type ClusteredChar = {
 let bidiInstance: ReturnType<typeof bidiFactory> | undefined
 let needsSoftwareBidi: boolean | undefined
 
+// Same override vocabulary as the rest of the TUI's env switches.
+const ENV_ON_RE = /^(?:1|true|yes|on)$/i
+const ENV_OFF_RE = /^(?:0|false|no|off)$/i
+
+/**
+ * Terminals that implement bidi layout themselves. On these we must leave
+ * logical order untouched — reordering here would be applied twice.
+ */
+function terminalHasNativeBidi(env: NodeJS.ProcessEnv): boolean {
+  const termProgram = (env.TERM_PROGRAM ?? '').trim()
+
+  // macOS CoreText-backed terminals run the full bidi algorithm.
+  if (termProgram === 'iTerm.app' || termProgram === 'Apple_Terminal') {
+    return true
+  }
+
+  // VTE-based terminals do bidi themselves since VTE 0.58 (GNOME 3.34).
+  // Same signal the TUI already uses for ANSI dim (shouldUseAnsiDim).
+  if (env.VTE_VERSION) {
+    return true
+  }
+
+  // Konsole lays out RTL runs through Qt's text engine.
+  if (env.KONSOLE_VERSION) {
+    return true
+  }
+
+  // mlterm handles bidi when built/configured with it.
+  if (env.MLTERM || (env.TERM ?? '').trim() === 'mlterm') {
+    return true
+  }
+
+  return false
+}
+
+/**
+ * Whether Ink should reorder RTL runs itself before emitting to the terminal.
+ * Almost every terminal lacks native bidi, so the default is on; HERMES_TUI_BIDI
+ * overrides it in either direction.
+ */
+export function shouldReorderBidi(env: NodeJS.ProcessEnv = process.env): boolean {
+  const override = (env.HERMES_TUI_BIDI ?? '').trim()
+
+  if (ENV_ON_RE.test(override)) {
+    return true
+  }
+
+  if (ENV_OFF_RE.test(override)) {
+    return false
+  }
+
+  return !terminalHasNativeBidi(env)
+}
+
 function needsBidi(): boolean {
   if (needsSoftwareBidi === undefined) {
-    needsSoftwareBidi =
-      process.platform === 'win32' ||
-      typeof process.env['WT_SESSION'] === 'string' || // WSL in Windows Terminal
-      process.env['TERM_PROGRAM'] === 'vscode' // VS Code integrated terminal (xterm.js)
+    needsSoftwareBidi = shouldReorderBidi()
   }
 
   return needsSoftwareBidi
+}
+
+/** Test-only: drop the cached decision so the next call re-detects. */
+export function resetBidiDetectionForTest(): void {
+  needsSoftwareBidi = undefined
 }
 
 function getBidi() {

@@ -124,6 +124,9 @@ class AuthorityState:
         # verbs must publish writes to them atomically with their receipt.
         self._scope_store = scope_store
 
+    def __repr__(self) -> str:
+        return f"AuthorityState({self._committed!r})"
+
     @property
     def snapshot(self) -> dict[str, Any]:
         """The committed authority state, for reads. Callers never mutate it directly; every write goes through :meth:`transaction`."""

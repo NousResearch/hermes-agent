@@ -341,6 +341,19 @@ def _masked_literals(line: str) -> str:
         ("Item(", "Environment(")) else '"***"', line)
 
 
+# The launcher's lines after its env block; None slots hold values, which _vbs_identity checks one by one.
+_LAUNCHER_TAIL = ('existing_pp = env.Item("PYTHONPATH")', 'If Len(existing_pp) > 0 Then', None, 'Else', None,
+                  'End If', None, None)
+
+
+def _tail_mismatch(tail: list[str]) -> int | None:
+    """Offset of the first tail line that breaks the template's shape, or None when it holds."""
+    for offset, expected in enumerate(_LAUNCHER_TAIL):
+        if offset == len(tail) or expected not in (None, tail[offset]):
+            return offset
+    return len(_LAUNCHER_TAIL) if len(tail) > len(_LAUNCHER_TAIL) else None
+
+
 def _vbs_identity(script: str) -> tuple[str, list[str]]:
     # Recognize the vendor's complete template, not a HERMES_HOME substring
     # inside an arbitrary executable script. Doubled quotes are VB literals.
@@ -363,7 +376,9 @@ def _vbs_identity(script: str) -> tuple[str, list[str]]:
         env[match[1]] = match[2][1:-1].replace('""', '"')
         index += 1
     tail = lines[index:]
-    if len(tail) != 8 or tail[:2] != ['existing_pp = env.Item("PYTHONPATH")', 'If Len(existing_pp) > 0 Then'] or tail[3] != 'Else' or tail[5] != 'End If':
+    mismatch = _tail_mismatch(tail)
+    if mismatch is not None:
+        index += mismatch
         line = _masked_literals(lines[index]) if index < len(lines) else "<end of file>"
         _unverified(f"launcher line {index + 1} is not the installer's: {line[:120]!r}")
     if not re.fullmatch(r'  env.Item\("PYTHONPATH"\) = ' + literal + r' & existing_pp', tail[2]) or not re.fullmatch(r'  env.Item\("PYTHONPATH"\) = ' + literal, tail[4]):

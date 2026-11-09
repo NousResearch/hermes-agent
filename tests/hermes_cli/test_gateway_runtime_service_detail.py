@@ -35,13 +35,16 @@ def _installed_vbs(home, configured, *, extra_env="", extra_line=""):
 
 
 def _windows_refusal(tmp_path, monkeypatch, *, xml_rc=0, whoami=None, launcher_env="", run_level="",
-                     launcher_home=None, launcher_line="", xml_error="ERROR: Access is denied.\r\n"):
+                     launcher_home=None, launcher_line="", launcher_edit=None,
+                     xml_error="ERROR: Access is denied.\r\n"):
     from hermes_cli import gateway_runtime_service as service
     from hermes_cli.gateway_windows import _build_scheduled_task_xml
 
     home = tmp_path / "profile"
     home.mkdir()
     script = _installed_vbs(home, str(launcher_home or home), extra_env=launcher_env, extra_line=launcher_line)
+    if launcher_edit:
+        script.write_text(script.read_text(encoding="utf-8").replace(*launcher_edit), encoding="utf-8")
     name = "Hermes_Gateway_" + service.service_suffix(home)
     account, sid = "DESKTOP-1\\owner", "S-1-5-21-123"
     xml = _build_scheduled_task_xml(name, script, account)
@@ -108,6 +111,17 @@ def test_a_rejected_launcher_line_names_the_line_not_its_values(line, kept, tmp_
     assert "launcher line 8 is not the installer's" in refused.detail, refused.detail
     assert _OPAQUE not in refused.detail and _OPAQUE[:8] not in refused.detail, refused.detail
     assert kept in refused.detail, refused.detail
+
+
+@pytest.mark.parametrize("edit,number,needle", [
+    (("0, False\n", '0, False\nWScript.Echo "done"\n'), 17, "WScript.Echo"),
+    (("End If\n", "End Sub\n"), 14, "End Sub"),
+    (("Else\n", "ElseIf\n"), 12, "ElseIf"),
+])
+def test_a_broken_launcher_tail_names_the_line_that_broke(edit, number, needle, tmp_path, monkeypatch):
+    refused = _windows_refusal(tmp_path, monkeypatch, launcher_edit=edit)
+    assert f"launcher line {number} is not the installer's" in refused.detail, refused.detail
+    assert needle in refused.detail and "existing_pp" not in refused.detail, refused.detail
 
 
 def test_child_output_in_a_refusal_is_redacted(tmp_path, monkeypatch):

@@ -223,6 +223,16 @@ def is_machinery_display_kind(display_kind: Any) -> bool:
     return display_kind in MACHINERY_DISPLAY_KINDS
 
 
+def follow_up_cannot_oblige(event: Any) -> bool:
+    """A bot peer or synthetic event never owes the running turn a human answer.
+
+    Adapters may stamp ``reply_expected=True`` on a bot's explicit mention, but #137027 keeps peer
+    traffic silent: carrying that flag onto the turn made a machinery turn answer it with the
+    human-only fallback instead of ending the exchange.
+    """
+    return bool(getattr(event, "internal", False) or getattr(getattr(event, "source", None), "is_bot", False))
+
+
 def follow_up_is_addressed(event: Any) -> bool:
     """True when a message folded into a running turn obliges that turn to answer it.
 
@@ -231,7 +241,7 @@ def follow_up_is_addressed(event: Any) -> bool:
     machinery turn's silence permission and goes unanswered (#149679). Bot peers and internal
     events never create the obligation: their turns must still end the exchange in silence.
     """
-    if getattr(event, "internal", False) or getattr(getattr(event, "source", None), "is_bot", False):
+    if follow_up_cannot_oblige(event):
         return False
     expected = getattr(event, "reply_expected", None)
     if expected is not None:

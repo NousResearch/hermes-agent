@@ -21,7 +21,7 @@ from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.response_filters import follow_up_is_addressed
+from gateway.response_filters import follow_up_cannot_oblige, follow_up_is_addressed
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -812,9 +812,12 @@ class GatewayBusySessionMixin:
         if turn.agent is not running_agent:
             return None
         if turn.event is not None and turn.event is not event:
-            turn.event.absorb_reply_expected(event)
-            if turn.event.reply_expected is None and follow_up_is_addressed(event):
-                turn.event.reply_expected = True  # the adapter left a DM's flag unset (#149679)
+            # Peer/internal traffic cannot owe this turn an answer, so its reply flag is not carried
+            # over either way: a bot's mentioned steer must not summon the human-only fallback (#137027).
+            if not follow_up_cannot_oblige(event):
+                turn.event.absorb_reply_expected(event)
+                if turn.event.reply_expected is None and follow_up_is_addressed(event):
+                    turn.event.reply_expected = True  # the adapter left a DM's flag unset (#149679)
             if turn.ctx is not None:
                 turn.ctx.reply_expected = turn.event.reply_expected
         return turn

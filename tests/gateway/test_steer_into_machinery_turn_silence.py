@@ -100,8 +100,23 @@ def test_bot_peer_follow_up_never_creates_a_reply_obligation():
     assert turn_event.reply_expected is None
 
 
+def test_addressed_bot_peer_does_not_claim_a_human_reply_obligation():
+    # An adapter may stamp reply_expected=True on a peer's explicit mention; the machinery turn must
+    # still end in silence instead of sending the human-only fallback (#137027).
+    peer = _follow_up("status?", chat_type="group", is_bot=True, reply_expected=True)
+    turn_event, ctx = _fold(peer, _notice())
+    assert turn_event.reply_expected is None
+    assert ctx.reply_expected is None
+
+
 def test_internal_follow_up_never_creates_a_reply_obligation():
     internal = MessageEvent(text="[tick]", internal=True, source=_source("dm"))
+    turn_event, _ = _fold(internal, _notice())
+    assert turn_event.reply_expected is None
+
+
+def test_a_stamped_internal_follow_up_does_not_claim_the_obligation_either():
+    internal = MessageEvent(text="[tick]", internal=True, source=_source("dm"), reply_expected=True)
     turn_event, _ = _fold(internal, _notice())
     assert turn_event.reply_expected is None
 

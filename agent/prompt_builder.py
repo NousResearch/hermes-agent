@@ -1665,15 +1665,19 @@ def _project_context_suppressed(cwd: Optional[str], cwd_path: Path, allow_instal
     return cwd is None and not allow_install_tree_fallback and _is_install_tree(cwd_path)
 
 
-def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+def _load_hermes_md(
+    cwd_path: Path, context_length: Optional[int] = None, excluded_paths: set[Path] | None = None,
+) -> str:
     """.hermes.md / HERMES.md — nearest match walking up to the git root."""
     for label, path, content in _hermes_md_candidates(cwd_path):
-        if content:
+        if content and path.resolve() not in (excluded_paths or ()):
             return _context_section(_strip_yaml_frontmatter(content), label, ".hermes.md", path, context_length)
     return ""
 
 
-def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+def _load_agents_md(
+    cwd_path: Path, context_length: Optional[int] = None, excluded_paths: set[Path] | None = None,
+) -> str:
     """AGENTS.md — merged directory chain from git root down to cwd.
 
     Each directory on the chain (see ``_agents_md_candidates``) contributes its ``AGENTS.override.md`` /
@@ -1687,7 +1691,8 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     sections: list[str] = []
     seen_content: set = set()
     for label, candidate, content in _agents_md_candidates(cwd_path):
-        if content and content not in seen_content:  # else: empty, or an identical copy along the chain
+        if (content and candidate.resolve() not in (excluded_paths or ())
+                and content not in seen_content):
             seen_content.add(content)
             sections.append(_context_section(content, label, label, candidate, context_length))
     if len(sections) <= 1:
@@ -1697,19 +1702,24 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
                              read_path=str(cwd_path.resolve() / "AGENTS.md"))
 
 
-def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+def _load_claude_md(
+    cwd_path: Path, context_length: Optional[int] = None, excluded_paths: set[Path] | None = None,
+) -> str:
     """CLAUDE.md / claude.md — cwd only."""
     for name, path, content in _claude_md_candidates(cwd_path):
-        if content:
+        if content and path.resolve() not in (excluded_paths or ()):
             return _context_section(content, name, "CLAUDE.md", path, context_length)
     return ""
 
 
-def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> str:
+def _load_cursorrules(
+    cwd_path: Path, context_length: Optional[int] = None, excluded_paths: set[Path] | None = None,
+) -> str:
     """.cursorrules + .cursor/rules/*.mdc — cwd only, concatenated."""
     cursorrules_content = "".join(
         f"## {label}\n\n{_scan_context_content(content, label)}\n\n"
-        for label, _path, content in _cursorrules_candidates(cwd_path) if content
+        for label, path, content in _cursorrules_candidates(cwd_path)
+        if content and path.resolve() not in (excluded_paths or ())
     )
     if not cursorrules_content:
         return ""
@@ -1726,11 +1736,16 @@ def build_context_files_prompt(
     Only ONE project context type loads, first found wins: .hermes.md/HERMES.md (walk to git root) →
     AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd). SOUL.md
     from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
+    Configured external files are additive, ordered first, and excluded from automatic discovery.
     """
     from agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return ""
+    from agent.prompt_context_external import configured_context, load_external_context_files
+
+    context = configured_context(home_override)
+    external_context, external_paths = load_external_context_files(context, context_length)
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
     if _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
         logger.warning(
@@ -1739,8 +1754,12 @@ def build_context_files_prompt(
         )
         sections = []
     else:
-        sections = [_load_hermes_md(cwd_path, context_length) or _load_agents_md(cwd_path, context_length)
-                    or _load_claude_md(cwd_path, context_length) or _load_cursorrules(cwd_path, context_length)]
+        sections = [("" if context.get("ignore_hermes_md") is True else
+                     _load_hermes_md(cwd_path, context_length, external_paths))
+                    or _load_agents_md(cwd_path, context_length, external_paths)
+                    or _load_claude_md(cwd_path, context_length, external_paths)
+                    or _load_cursorrules(cwd_path, context_length, external_paths)]
+    sections.insert(0, external_context)
     if not skip_soul:
         sections.append(load_soul_md(context_length, home_override=home_override))
     sections = [s for s in sections if s]

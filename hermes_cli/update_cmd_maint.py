@@ -725,11 +725,20 @@ def _verify_state_db_after_snapshot(snapshot_id: str) -> None:
     _snap_state = _quick_snapshot_root(get_hermes_home()) / snapshot_id / "state.db"
     if not _snap_state.exists():
         print("  ⚠ Snapshot does not contain state.db (was skipped or too large).")
-    elif verify_sqlite_integrity(_snap_state, check_header=True, run_pragma=True).get("valid") is not False:
-        print("  ✓ Snapshot copy is valid — continuing update.")
-        print("    If state.db is lost after update it will be auto-restored.")
     else:
-        print("  ✗ Snapshot copy ALSO failed integrity — the source was already corrupted before the backup.")
+        snap_integrity = verify_sqlite_integrity(
+            _snap_state, check_header=True, run_pragma=True,
+        )
+        if snap_integrity.get("valid") is True:
+            print("  ✓ Snapshot copy is valid — continuing update.")
+            print("    If state.db is lost after update it will be auto-restored.")
+        elif snap_integrity.get("valid") is None:
+            print(
+                "  ⚠ Snapshot copy verification deferred: "
+                + snap_integrity.get("message", "unknown error")
+            )
+        else:
+            print("  ✗ Snapshot copy ALSO failed integrity — the source was already corrupted before the backup.")
     print()
 
 

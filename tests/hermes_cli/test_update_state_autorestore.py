@@ -618,3 +618,45 @@ def test_caller_defers_when_snapshot_verify_is_indeterminate(
     assert "verification deferred" in out
     assert "failed state.db verification" not in out
     assert "Auto-restored" not in out
+
+def test_after_snapshot_indeterminate_snapshot_is_not_reported_valid(
+    tmp_path, monkeypatch, capsys
+):
+    """#147938: an unreadable recovery snapshot is not a verified recovery point."""
+    from hermes_cli import backup, backup_integrity
+    from hermes_cli.update_cmd_maint import _verify_state_db_after_snapshot
+
+    home = tmp_path / "home"
+    home.mkdir()
+    state = home / "state.db"
+    _make_valid_db(state, 3)
+    snapshot_id = backup.create_quick_snapshot(label="pre-update", hermes_home=home)
+    assert snapshot_id
+    snapshot = home / "state-snapshots" / snapshot_id / "state.db"
+    assert snapshot.is_file()
+
+    # The live DB is genuinely damaged, but the saved snapshot's second check
+    # cannot decide (e.g. a transient Windows sharing violation).
+    _wreck_sessions_btree(state)
+    real_verify = backup_integrity.verify_sqlite_integrity
+
+    def indeterminate_snapshot(path, **kwargs):
+        if Path(path) == snapshot:
+            return {
+                "valid": None,
+                "message": "temporary sharing violation",
+                "size": snapshot.stat().st_size,
+            }
+        return real_verify(path, **kwargs)
+
+    monkeypatch.setattr(backup_integrity, "verify_sqlite_integrity", indeterminate_snapshot)
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: home)
+
+    _verify_state_db_after_snapshot(snapshot_id)
+
+    out = capsys.readouterr().out
+    assert "state.db integrity check FAILED after snapshot" in out
+    assert "Snapshot copy verification deferred: temporary sharing violation" in out
+    assert "Snapshot copy is valid" not in out
+    assert "will be auto-restored" not in out
+    assert "Snapshot copy ALSO failed integrity" not in out

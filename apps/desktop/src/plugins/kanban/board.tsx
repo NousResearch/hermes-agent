@@ -83,6 +83,7 @@ import {
   useKanbanScope
 } from './api'
 import { BoardSwitcher } from './board-switcher'
+import { CompletionSummaryDialog } from './completion-dialog'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
@@ -1024,8 +1025,11 @@ function SelectionBar({
   // One menu at a time — controlled, so a click on the second trigger can
   // never race Radix's dismiss layer into two open menus.
   const [menu, setMenu] = useState<'assign' | 'move' | null>(null)
+  // Bulk completion needs summary evidence too (same gate as a single card).
+  const [completing, setCompleting] = useState(false)
 
   return (
+    <>
     <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center px-4">
       {/* Flat overlay: stroke + elevated surface do the separating, no shadow. */}
       <div className="pointer-events-auto flex items-center gap-1 rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) py-1 pr-1 pl-3">
@@ -1042,7 +1046,10 @@ function SelectionBar({
             {columns
               .filter(name => !isLockedTarget(name))
               .map(name => (
-                <DropdownMenuItem key={name} onSelect={() => bulk.mutate({ status: name })}>
+                <DropdownMenuItem
+                  key={name}
+                  onSelect={() => (name === 'done' ? setCompleting(true) : bulk.mutate({ status: name }))}
+                >
                   <span className="size-2 rounded-full" style={{ backgroundColor: columnMeta(name).tone }} />
                   {columnLabel(k, name)}
                 </DropdownMenuItem>
@@ -1094,6 +1101,17 @@ function SelectionBar({
         </Tip>
       </div>
     </div>
+      {completing && (
+        <CompletionSummaryDialog
+          count={selected.size}
+          onCancel={() => setCompleting(false)}
+          onConfirm={summary => {
+            bulk.mutate({ result: summary, status: 'done', summary })
+            setCompleting(false)
+          }}
+        />
+      )}
+    </>
   )
 }
 
@@ -1121,6 +1139,9 @@ export function KanbanBoardPage() {
   const [tenant, setTenant] = useState('')
   const [assignee, setAssignee] = useState('')
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+  // Card awaiting a completion summary before it can move to `done` (the
+  // backend refuses an empty completion). `null` = no completion in flight.
+  const [completeId, setCompleteId] = useState<null | string>(null)
 
   // A new-task request raised from outside the page (⌘⌥N, the palette row).
   // The command navigates here and parks the lane; the page picks it up on
@@ -1207,7 +1228,8 @@ export function KanbanBoardPage() {
   const total = filtered?.columns.reduce((sum, col) => sum + col.tasks.length, 0) ?? 0
 
   const moveMut = useMutation({
-    mutationFn: ({ id, status }: { id: string; status: string }) => patchTask(id, { status }),
+    mutationFn: ({ id, result, status, summary }: { id: string; result?: string; status: string; summary?: string }) =>
+      patchTask(id, result === undefined ? { status } : { result, status, summary }),
     onMutate: async ({ id, status }) => {
       await qc.cancelQueries({ queryKey: boardKey(scope, slug, archived) })
       const previous = qc.getQueryData<KanbanBoard>(boardKey(scope, slug, archived))
@@ -1262,6 +1284,14 @@ export function KanbanBoardPage() {
 
     if (isLockedTarget(status)) {
       host.notify({ kind: 'info', message: lockedReason(k, status) })
+
+      return
+    }
+
+    // Completing a card needs result/summary evidence (anything but an approval
+    // out of `review`); collect it first, then dispatch from the dialog.
+    if (status === 'done' && task.status !== 'review') {
+      setCompleteId(id)
 
       return
     }
@@ -1448,6 +1478,16 @@ export function KanbanBoardPage() {
 
       <NewTaskDialog onClose={() => setAddStatus(null)} parents={parentOptions} target={addStatus} />
       <TaskDrawer columns={columnNames} id={openId} onClose={() => setOpenId(null)} onOpen={setOpenId} />
+      {completeId && (
+        <CompletionSummaryDialog
+          count={1}
+          onCancel={() => setCompleteId(null)}
+          onConfirm={summary => {
+            moveMut.mutate({ id: completeId, result: summary, status: 'done', summary })
+            setCompleteId(null)
+          }}
+        />
+      )}
     </div>
   )
 }

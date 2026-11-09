@@ -1,6 +1,6 @@
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-ui/core'
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -132,16 +132,29 @@ export function useSlashCompletions(options: {
     }
   }, [gateway, epoch, keysFor, sessionParams, target])
 
+  // The composer's CURRENT scope, read live: a `/` request's callbacks close over
+  // the scope it started in, so only this ref can tell that the composer moved on.
+  const liveScope = useRef<{ keysFor: typeof keysFor; target: string } | null>(null)
+
+  // Prop mirror (session/profile/target), not an atom: there is no store to read live instead.
+  // eslint-disable-next-line no-restricted-syntax
+  useEffect(() => {
+    liveScope.current = { keysFor, target }
+
+    return () => {
+      liveScope.current = null
+    }
+  }, [keysFor, target])
+
   // A `/` fetch that succeeds after a failed warm-up also feeds this composer's
   // Review pane buttons, unless the composer moved to another scope meanwhile.
-  const publishCatalog = useCallback(
-    (catalogKey: string, catalog: CommandsCatalogLike) => {
-      if (keysFor().catalogKey === catalogKey) {
-        rememberComposerCommandsCatalog(target, catalog)
-      }
-    },
-    [keysFor, target]
-  )
+  const publishCatalog = useCallback((catalogKey: string, catalog: CommandsCatalogLike) => {
+    const live = liveScope.current
+
+    if (live && live.keysFor().catalogKey === catalogKey) {
+      rememberComposerCommandsCatalog(live.target, catalog)
+    }
+  }, [])
 
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {

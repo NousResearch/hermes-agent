@@ -47,6 +47,7 @@ async def test_refusal_write_storage_error_retries_and_still_settles_that_head(t
 
     from gateway import session_api_turn, session_authority, session_finite
     from gateway.config import Platform
+    import hermes_state_runtime
 
     db, authority = _authority(tmp_path, monkeypatch, platform=Platform.API_SERVER)
     monkeypatch.setattr(session_authority, '_CLAIM_RETRY_MIN_S', 0.0)
@@ -62,14 +63,15 @@ async def test_refusal_write_storage_error_retries_and_still_settles_that_head(t
         return 'done'
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
 
-    cancel = session_authority.cancel_session_input
+    cancel = hermes_state_runtime.cancel_session_input
 
     def locked_once(db, **kwargs):
         cancels.append(kwargs['admission_id'])
         if len(cancels) == 1:
             raise sqlite3.OperationalError('database is locked')
         return cancel(db, **kwargs)
-    monkeypatch.setattr(session_authority, 'cancel_session_input', locked_once)
+    # The authority cancels through the storage port, whose local backend calls this at run time.
+    monkeypatch.setattr(hermes_state_runtime, 'cancel_session_input', locked_once)
 
     with db:
         authority._schedule = lambda ref: None
@@ -94,6 +96,7 @@ async def test_storage_error_after_the_refusal_commits_still_publishes_its_compl
 
     from gateway import session_api_turn, session_authority, session_finite, session_queued_controls
     from gateway.config import Platform
+    import hermes_state_runtime
 
     db, authority = _authority(tmp_path, monkeypatch, platform=Platform.API_SERVER)
     monkeypatch.setattr(session_authority, '_CLAIM_RETRY_MIN_S', 0.0)
@@ -109,7 +112,7 @@ async def test_storage_error_after_the_refusal_commits_still_publishes_its_compl
         return 'done'
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
 
-    cancel, rows = session_authority.cancel_session_input, session_queued_controls.pending_rows
+    cancel, rows = hermes_state_runtime.cancel_session_input, session_queued_controls.pending_rows
 
     def cancel_and_note(db, **kwargs):
         row = cancel(db, **kwargs)
@@ -121,7 +124,8 @@ async def test_storage_error_after_the_refusal_commits_still_publishes_its_compl
             committed.append('locked')
             raise sqlite3.OperationalError('database is locked')  # inside the settlement's pending read
         return rows(*args, **kwargs)
-    monkeypatch.setattr(session_authority, 'cancel_session_input', cancel_and_note)
+    # The authority cancels through the storage port, whose local backend calls this at run time.
+    monkeypatch.setattr(hermes_state_runtime, 'cancel_session_input', cancel_and_note)
     monkeypatch.setattr(session_queued_controls, 'pending_rows', locked_once_after_the_commit)
 
     with db:

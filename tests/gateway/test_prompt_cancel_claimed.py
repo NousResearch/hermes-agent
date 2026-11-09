@@ -10,19 +10,21 @@ from tests.gateway.test_session_authority_cancel_settlement import REF, _authori
 async def test_prompt_cancel_racing_the_claim_stops_the_claimed_turn(tmp_path, monkeypatch):
     from gateway import session_authority
     from gateway.session_controls import AuthorityConnection
+    import hermes_state_runtime
     from hermes_state_runtime import claim_session_input
 
     db, authority = _authority(tmp_path, monkeypatch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     agent = Agent()
     authority.runner._cached_agent_for = {'route': agent}.get
-    real_cancel = session_authority.cancel_session_input
+    real_cancel = hermes_state_runtime.cancel_session_input
 
     def claimed_first(db, **kwargs):
         # The drain's claim commits between the client's queued read and the cancel transaction.
         claim_session_input(db, epoch=authority.epoch, session_id='s')
         return real_cancel(db, **kwargs)
-    monkeypatch.setattr(session_authority, 'cancel_session_input', claimed_first)
+    # The authority cancels through the storage port, whose local backend calls this at run time.
+    monkeypatch.setattr(hermes_state_runtime, 'cancel_session_input', claimed_first)
     with db:
         receipt = await _submit(authority, 'withdrawn')
         conn = AuthorityConnection(authority, object(), {'user_id': 'human'})

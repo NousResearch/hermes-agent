@@ -164,14 +164,16 @@ async def test_head_cancelled_after_its_last_preclaim_check_does_not_hand_the_cl
             raise RuntimeStoreError('permission_denied')  # B's own source binding is revoked
         return True
     monkeypatch.setattr(session_hosted_transport, 'check_remote_hosted_admission', check_remote_hosted_admission)
-    claim = session_authority.claim_session_input
+    import hermes_state_runtime
+    claim = hermes_state_runtime.claim_session_input
 
     def claim_behind_the_cancellation(*args, **kwargs):
         if not head_cancelled.is_set():
             claim_waiting.set()
             head_cancelled.wait(5)
         return claim(*args, **kwargs)
-    monkeypatch.setattr(session_authority, 'claim_session_input', claim_behind_the_cancellation)
+    # The drain claims through the storage port, whose local backend calls this at run time.
+    monkeypatch.setattr(hermes_state_runtime, 'claim_session_input', claim_behind_the_cancellation)
 
     async def execute(authority, ref, row):
         executed.append(row['request_id'])

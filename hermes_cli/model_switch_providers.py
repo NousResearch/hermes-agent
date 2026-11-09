@@ -1007,6 +1007,20 @@ def _picker_slug_for_key(provider_key: str) -> str:
     return custom_provider_slug(key)
 
 
+def _routable_identity(aliases: set[str]) -> set[str]:
+    """The aliases of a ``providers:`` row that the runtime would actually route to THAT row.
+
+    ``_shadowed_by_builtin`` defers a bare canonical built-in id to the built-in, so a session that
+    stored such a name — every ``providers:`` row used to persist its bare key — is resolved to the
+    built-in by its next turn, and the ``custom:<key>`` row must not claim that identity as current
+    (#150823). Every ``custom:`` spelling and every name no built-in claims stays routable.
+    """
+    from hermes_cli.runtime_provider_custom import _shadowed_by_builtin
+
+    return {str(alias).lower() for alias in aliases
+            if str(alias).lower().startswith("custom:") or not _shadowed_by_builtin(str(alias).lower())}
+
+
 def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
     """Section 3: ``providers:`` dict entries, grouped by (api_url, credential, api_mode,
     extra_headers) so keyed providers on one endpoint with the same wire protocol collapse into
@@ -1048,7 +1062,7 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
 
         ep_url_norm = _norm_url(api_url)
         ep_aliases = {str(alias).lower() for alias in grp["aliases"]}
-        is_current = b.endpoint_is_current(ep_name, ep_aliases, ep_url_norm)
+        is_current = b.endpoint_is_current(ep_name, _routable_identity(ep_aliases), ep_url_norm)
         discovered, native_catalog_empty, _ = b.discover_endpoint(
             grp["api_key"], api_url,
             ep_name if str(ep_name).strip().lower() in {"ollama", "custom:ollama"} else "custom",
@@ -1180,7 +1194,7 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
         if grp_url_norm and grp_url_norm in b.builtin_endpoints:
             continue
         is_current = b.endpoint_is_current(
-            slug, {str(alias).lower() for alias in grp["aliases"]}, grp_url_norm,
+            slug, _routable_identity({str(alias).lower() for alias in grp["aliases"]}), grp_url_norm,
             url_match_ok=current_url_group_count == 1)
         discovered, native_catalog_empty, probe_live = b.discover_endpoint(
             api_key, api_url,

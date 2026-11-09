@@ -1,6 +1,6 @@
 name: call-recorder
 repo: https://github.com/jacebenson/hermes-hackathon-call-recorder
-sha: 8c3b1a49972ccb549eaaad974e92f4b55f4679bb
+sha: 00ce57a6cd411fcdda2249d9b273bcbb19852981
 description: Records both sides of a call as a two-track file (system audio + microphone)
   and transcribes it locally, with a record control in the composer, a live transcript
   strip, and a pane listing recordings with their transcripts.
@@ -8,17 +8,18 @@ maintainer: jacebenson
 tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
-version: "1.3.2"
+version: "1.5.0"
 title: Call Recorder
 platforms: [linux, windows]
 docs_url: https://github.com/jacebenson/hermes-hackathon-call-recorder#readme
-image: https://raw.githubusercontent.com/jacebenson/hermes-hackathon-call-recorder/8c3b1a49972ccb549eaaad974e92f4b55f4679bb/docs/screenshots/in-context.png
+image: https://raw.githubusercontent.com/jacebenson/hermes-hackathon-call-recorder/00ce57a6cd411fcdda2249d9b273bcbb19852981/docs/screenshots/in-context.png
 screenshots:
-  - https://raw.githubusercontent.com/jacebenson/hermes-hackathon-call-recorder/8c3b1a49972ccb549eaaad974e92f4b55f4679bb/docs/screenshots/composer-and-live-strip.png
-  - https://raw.githubusercontent.com/jacebenson/hermes-hackathon-call-recorder/8c3b1a49972ccb549eaaad974e92f4b55f4679bb/docs/screenshots/recorder-pane.png
+  - https://raw.githubusercontent.com/jacebenson/hermes-hackathon-call-recorder/00ce57a6cd411fcdda2249d9b273bcbb19852981/docs/screenshots/composer-and-live-strip.png
+  - https://raw.githubusercontent.com/jacebenson/hermes-hackathon-call-recorder/00ce57a6cd411fcdda2249d9b273bcbb19852981/docs/screenshots/recorder-pane.png
 known_issues:
   - "Needs a logged-in desktop session on the machine being recorded; a background session has no audio to capture on either platform."
   - "Transcription needs faster-whisper on the recording machine. Without it the plugin records and reports transcription as unavailable."
+  - "Browser recording captures the device microphone only: one mixed voice track, no system audio and no live transcript."
 capabilities:
   provides_tools: []
   provides_hooks: []

@@ -166,7 +166,8 @@ def _lock_old_path(path: Path, timeout: float | None) -> int | None:
     """:func:`lock_path` on a lock's old location; -1 when this process cannot open it at all.
 
     A file it may only read is still locked through a read-only descriptor: an older process
-    outside a sandbox that mounts the install read-only locks that same file.
+    outside a sandbox that mounts the install read-only locks that same file. Only opening it
+    may fail quietly; an error while taking its lock reaches the caller.
     """
     try:
         return lock_path(path, timeout=timeout, create_dir=True)
@@ -174,8 +175,12 @@ def _lock_old_path(path: Path, timeout: float | None) -> int | None:
         if exc.errno not in _READ_ONLY_ERRNOS:
             raise
     try:
-        return lock_path(path, timeout=timeout, read_only=True)
+        os.close(os.open(path, os.O_RDONLY))
     except OSError:
+        return -1
+    try:
+        return lock_path(path, timeout=timeout, read_only=True)
+    except FileNotFoundError:  # an older collector removed it since: nothing left to hold
         return -1
 
 

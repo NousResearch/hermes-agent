@@ -110,9 +110,9 @@ jobs:
       - name: Install WhatsApp bridge dependencies
         uses: ./.github/actions/retry
         with:
-          command: npm ci --ignore-scripts --no-audit --no-fund --prefix scripts/whatsapp-bridge
+          command: just js-install-whatsapp-bridge
       - name: Run WhatsApp bridge node tests
-        run: node --test scripts/whatsapp-bridge/*.test.mjs
+        run: just test-whatsapp-bridge
 
       # Every check runs at the same time. The step fails only after all of
       # them finish. There are two reasons this is not ``pnpm -r run check``.

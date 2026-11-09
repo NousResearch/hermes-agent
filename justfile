@@ -23,6 +23,11 @@ js-install:
 js-install-tests:
     pnpm install --frozen-lockfile --filter "{./tests-js}..." --prod --ignore-scripts
 
+# Install the WhatsApp bridge's own npm lockfile, without native builds
+[group('setup')]
+js-install-whatsapp-bridge:
+    npm ci --ignore-scripts --no-audit --no-fund --prefix scripts/whatsapp-bridge
+
 # Prepare the pm-locked Electron binary the desktop app and its E2E suites launch
 [group('setup')]
 electron-runtime:
@@ -50,6 +55,36 @@ check-js:
 check-js-ci:
     node .github/scripts/run-workspace-checks.mjs
 
+# Fail when the committed icons differ from the generator's output (scripts/ci/check_icons.sh)
+[group('check')]
+check-icons:
+    scripts/ci/check_icons.sh
+
+# Run the repo-guards history and supply-chain steps against the merge base with origin/main
+[group('check')]
+check-repo-guards:
+    scripts/ci/local_step.sh scripts/ci/check_infographic_images.py scripts/ci/check_common_ancestor.py scripts/ci/check_contributor_emails.py 'scripts/ci/scan_supply_chain.py patterns' 'scripts/ci/scan_supply_chain.py dependency-bounds'
+
+# Fail when uv.lock is out of sync with pyproject.toml (re-resolves against PyPI; prepares pm's runtime in the Hermes home)
+[group('check')]
+check-uv-lock:
+    scripts/ci/local_step.sh scripts/ci/verify_uv_lock.py
+
+# Lint the Dockerfiles (pinned hadolint image) and docker/ shell scripts (shellcheck on PATH)
+[group('check')]
+lint-docker:
+    scripts/ci/lint_docker.sh
+
+# Validate every plugin-catalog entry's structure (no clone, no install)
+[group('check')]
+check-plugin-catalog:
+    scripts/hermes-python scripts/validate_plugin_catalog.py plugin-catalog/
+
+# Run the flake's checks (needs nix with flakes)
+[group('check')]
+check-nix:
+    nix --extra-experimental-features 'nix-command flakes' flake check . --print-build-logs
+
 # Run the named test files or directories (pytest flags pass through)
 [group('test')]
 [positional-arguments]
@@ -66,6 +101,21 @@ test-all:
 test-js:
     pnpm --dir ui-tui run build:ink
     pnpm -r test
+
+# Run the plugin-catalog tests, the files scripts/ci/catalog_test_files.py selects
+[group('test')]
+test-catalog:
+    scripts/hermes-python scripts/ci/catalog_test_files.py | scripts/run_tests.sh --files-from -
+
+# Run the WhatsApp bridge's node tests (after `just js-install-whatsapp-bridge`)
+[group('test')]
+test-whatsapp-bridge:
+    node --test scripts/whatsapp-bridge/*.test.mjs
+
+# Run the bootstrap installer's Rust unit tests (needs cargo and Tauri's system libraries)
+[group('test')]
+test-rust:
+    cargo test --lib --manifest-path apps/bootstrap-installer/src-tauri/Cargo.toml
 
 # Start the desktop app in development mode
 [group('dev')]

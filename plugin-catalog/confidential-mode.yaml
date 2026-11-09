@@ -1,6 +1,6 @@
 name: confidential-mode
 repo: https://github.com/ainsleys/hermes-confidential-mode
-sha: 7000cac7f2730297223282553c875443569e5b1e
+sha: 88d0fe02f7df64d19ee836bff6de0cc9648ebcf7
 description: >-
   Hermes Confidential Mode locks a Hermes profile to one tier: attested (a Tinfoil enclave, or NEAR AI
   Cloud's gateway and models, verified and pinned to a build you approve) or on-host-only (loopback and

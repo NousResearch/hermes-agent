@@ -1,0 +1,22 @@
+name: hermes-openui
+title: Hermes OpenUI
+repo: https://github.com/Revenue-Architect/hermes-kaizen-ui
+sha: "2400585a725c02df54005f92573a10730d068236"
+subdir: packages/openui
+description: "Interactive OpenUI views in the Hermes Desktop and Webapp chat: dashboards, charts, tables, cards, forms and galleries, drawn from OpenUI Lang with a text fallback for other clients. Disclosure — no network calls of its own, subprocesses or credentials; a view can load https images the model names; saves each view in the plugin's data folder (newest 500); clicking a view sends an ordinary message in that chat."
+maintainer: Revenue-Architect
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Revenue-Architect/hermes-kaizen-ui/tree/main/packages/openui#readme
+version: "1.0.0"
+readme: true
+platforms: []
+known_issues:
+  - "A Desktop that connects to Hermes on another machine needs the Desktop half installed there too (Capabilities > Plugins > Install from Git)."
+  - "The Android app receives a readable file instead of the interactive view."
+capabilities:
+  provides_tools: [openui_present]
+  provides_hooks: [pre_llm_call, transform_llm_output]
+  provides_middleware: []
+  requires_env: []

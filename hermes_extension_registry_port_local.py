@@ -23,6 +23,12 @@ The registry's home is frozen when it opens, from the absolute path it was given
 one is refused, because which file it named could not be established later. A profile's
 registry is served by one handle at a time (the file is unwired today); concurrent writers would
 race a read-modify-write, and the last atomic replace wins.
+
+Opening also migrates a file an older registry wrote: its switch rows were keyed by the
+entry's bare name, and the switch row is keyed by its entry's identity — its level and name —
+now, so those keys are rewritten to the owner-level one on open (a local entry is always
+owner-wide, so a bare name always means ``owner:<name>``), through the same atomic write as
+every other change, once — an already-migrated file is written by nothing.
 """
 
 from __future__ import annotations
@@ -61,6 +67,7 @@ class LocalExtensionRegistry(ExtensionRegistry):
         self.home = Path(os.fspath(home))
         self.path = self.home / REGISTRY_FILE
         self._home_key = hermes_home_key(self.home)
+        self._migrate_switch_keys()
 
     # --- the pin ---------------------------------------------------------------------------
 
@@ -111,6 +118,22 @@ class LocalExtensionRegistry(ExtensionRegistry):
         from utils import atomic_json_write
         self.path.parent.mkdir(parents=True, exist_ok=True)
         atomic_json_write(self.path, data)
+
+    def _migrate_switch_keys(self) -> None:
+        """An older registry keyed a switch row by its entry's bare name; the row is keyed by
+        its entry's identity — its level and name — now, and a local entry is always
+        owner-wide, so a bare name always means ``owner:<name>``. Opening rewrites those keys
+        once, through the same atomic write as every other change: a key that already carries
+        its level is left alone (and its value wins, should both forms appear), so an
+        already-migrated file is written by nothing."""
+        data = self._load()
+        switches = data["switches"]
+        bare = [key for key in switches if not key.startswith(("owner:", "tenant:"))]
+        if not bare:
+            return
+        for key in bare:
+            switches.setdefault(f"owner:{key}", switches.pop(key))
+        self._save(data)
 
     # --- resolution ------------------------------------------------------------------------
 
